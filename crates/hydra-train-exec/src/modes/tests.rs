@@ -4,10 +4,7 @@ use crate::test_support::unique_test_path as shared_unique_test_path;
 use hydra_train_runtime::config::{
     BcHyperparamConfig, ProbeCliRequest, RlTrainConfig, TrainConfig, ValidationGateConfig,
 };
-use hydra_train_runtime::preflight::{
-    EffectiveRuntimeConfig, ExplicitSettings, LoaderRuntimeConfig, PreflightConfig,
-    PreflightTuningMode, ProbeKind, ProbeResult, ProbeStatus, SelectedRuntimeConfig,
-};
+use hydra_train_runtime::preflight::{PreflightConfig, ProbeKind, ProbeResult, ProbeStatus};
 
 fn cli() -> TrainCli {
     TrainCli {
@@ -25,6 +22,8 @@ fn preflight_cli_options(config: PreflightConfig) -> PreflightCliOptions {
     PreflightCliOptions {
         preflight_config: config,
         profile: hydra_train_runtime::config::PreflightProfile::Default,
+        output_dir: PathBuf::from("preflight_bench"),
+        device: "cpu".to_string(),
     }
 }
 
@@ -113,108 +112,6 @@ fn write_tiny_replay_data_dir(label: &str) -> PathBuf {
     std::fs::write(data_dir.join("game.mjai.json"), tiny_real_mjai_replay())
         .expect("write tiny replay");
     data_dir
-}
-
-#[test]
-fn formats_rl_and_bc_preflight_selection_messages() {
-    let rl_message = format_rl_preflight_selection_message(EffectiveRuntimeConfig {
-        selected: SelectedRuntimeConfig {
-            train_microbatch_size: 8,
-            validation_microbatch_size: 8,
-            accum_steps: 32,
-            unsafe_selected_batch_size: None,
-            unsafe_selected_learning_rate: None,
-            unsafe_selected_min_learning_rate: None,
-            unsafe_selected_warmup_steps: None,
-        },
-        loader: LoaderRuntimeConfig {
-            num_threads: None,
-            buffer_games: 32,
-            buffer_samples: 512,
-            archive_queue_bound: 8,
-        },
-        requested_precision: hydra_train_runtime::config::PrecisionMode::Bf16Autocast,
-        effective_precision:
-            hydra_train_runtime::config::EffectivePrecision::Fp32NoopForBf16Request,
-    });
-    assert!(rl_message.contains("Preflight:"));
-    assert!(rl_message.contains("selected rl.games_per_batch=32 rl.microbatch_size=8"));
-    assert!(rl_message.contains("requested_precision=bf16_autocast effective_precision=fp32_noop"));
-
-    let bc_message = format_bc_preflight_selection_message(
-        EffectiveRuntimeConfig {
-            selected: SelectedRuntimeConfig {
-                train_microbatch_size: 64,
-                validation_microbatch_size: 32,
-                accum_steps: 4,
-                unsafe_selected_batch_size: None,
-                unsafe_selected_learning_rate: None,
-                unsafe_selected_min_learning_rate: None,
-                unsafe_selected_warmup_steps: None,
-            },
-            loader: LoaderRuntimeConfig {
-                num_threads: Some(6),
-                buffer_games: 64,
-                buffer_samples: 512,
-                archive_queue_bound: 8,
-            },
-            requested_precision: hydra_train_runtime::config::PrecisionMode::Fp32,
-            effective_precision: hydra_train_runtime::config::EffectivePrecision::Fp32,
-        },
-        ExplicitSettings {
-            train_microbatch_explicit: false,
-            validation_microbatch_explicit: true,
-        },
-        PreflightTuningMode::Safe,
-    );
-    assert!(bc_message.contains("Preflight:"));
-    assert!(bc_message.contains("saved train_mb=64 val_mb=32"));
-    assert!(bc_message.contains("accum_steps=4"));
-    assert!(bc_message.contains("threads=6"));
-    assert!(bc_message.contains("explicit(train=false, val=true)"));
-    assert!(bc_message.contains("requested_precision=fp32 effective_precision=fp32"));
-}
-
-#[test]
-fn formats_unsafe_preflight_selection_message_truthfully() {
-    let message = format_bc_preflight_selection_message(
-        EffectiveRuntimeConfig {
-            selected: SelectedRuntimeConfig {
-                train_microbatch_size: 128,
-                validation_microbatch_size: 64,
-                accum_steps: 2,
-                unsafe_selected_batch_size: Some(512),
-                unsafe_selected_learning_rate: Some(5.0e-4),
-                unsafe_selected_min_learning_rate: Some(2.0e-6),
-                unsafe_selected_warmup_steps: Some(2000),
-            },
-            loader: LoaderRuntimeConfig {
-                num_threads: None,
-                buffer_games: 64,
-                buffer_samples: 512,
-                archive_queue_bound: 8,
-            },
-            requested_precision: hydra_train_runtime::config::PrecisionMode::Bf16Autocast,
-            effective_precision:
-                hydra_train_runtime::config::EffectivePrecision::Fp32NoopForBf16Request,
-        },
-        ExplicitSettings {
-            train_microbatch_explicit: false,
-            validation_microbatch_explicit: false,
-        },
-        PreflightTuningMode::Unsafe,
-    );
-
-    assert!(message.contains("mode=Unsafe"));
-    assert!(message.contains("saved train_mb=128 val_mb=64"));
-    assert!(message.contains("unsafe_can_change_logical_batch=true"));
-    assert!(message.contains("requested_precision=bf16_autocast"));
-    assert!(message.contains("effective_precision=fp32_noop"));
-    assert!(message.contains("selected_batch=512"));
-    assert!(message.contains("selected_lr=5.00e-4"));
-    assert!(message.contains("selected_min_lr=2.00e-6"));
-    assert!(message.contains("selected_warmup_steps=2000"));
-    assert!(message.contains("lr_auto_scaled=false"));
 }
 
 #[test]
@@ -332,21 +229,19 @@ fn handle_probe_mode_validates_config_before_probe_runtime() {
 
 #[test]
 fn dispatches_preflight_before_other_modes() {
-    let config_path = write_preflight_config(
-        "dispatch-preflight-before-other-modes-config",
-        "data_dir: /tmp/hydra-test-data\noutput_dir: /tmp/hydra-test-out\nnum_epochs: 1\npreflight:\n  tuning_mode: safe\n",
-    );
+    let output_path = unique_test_path("dispatch-preflight-artifact-file");
+    std::fs::write(&output_path, "not a directory").expect("write output blocker");
     let mut cli = cli();
-    cli.config_path = Some(config_path.clone());
-    cli.preflight = Some(preflight_cli_options(PreflightConfig::default()));
+    cli.config_path = None;
+    let mut preflight = preflight_cli_options(PreflightConfig::default());
+    preflight.output_dir = output_path.clone();
+    cli.preflight = Some(preflight);
     cli.delta_q_promotion = true;
-    let mut config = config();
-    config.batch_size = 0;
 
-    let err = run_train_modes(cli, config).expect_err("preflight should validate first");
+    let err = run_train_modes(cli, config()).expect_err("preflight should dispatch first");
 
-    assert_eq!(err, "batch_size must be greater than 0");
-    let _ = std::fs::remove_file(config_path);
+    assert!(err.contains("failed to create BC artifact dir"));
+    let _ = std::fs::remove_file(output_path);
 }
 
 #[test]
@@ -378,8 +273,6 @@ fn resolves_probe_defaults_before_dispatching_probe_mode() {
         measure_steps: Some(5),
     });
     let mut config = config();
-    let mut preflight = PreflightConfig::default();
-    preflight.warmup_steps = 7;
     config.batch_size = 0;
 
     let err = run_train_modes(cli, config).expect_err("probe mode should validate first");
@@ -459,41 +352,6 @@ fn handle_delta_q_promotion_mode_returns_validation_errors_from_bootstrap() {
     assert_eq!(err, "buffer_samples must be greater than 0");
 }
 
-fn write_preflight_config(label: &str, yaml: &str) -> PathBuf {
-    let path = unique_test_path(label).with_extension("yaml");
-    std::fs::write(&path, yaml).expect("write preflight config");
-    path
-}
-
-#[test]
-fn handle_preflight_mode_validates_bc_and_rl_configs_before_runtime() {
-    let config_path = write_preflight_config(
-        "preflight-explicit-tuning-mode-config",
-        "data_dir: /tmp/hydra-test-data\noutput_dir: /tmp/hydra-test-out\nnum_epochs: 1\npreflight:\n  tuning_mode: safe\n",
-    );
-    let mut bc_config = config();
-    bc_config.num_epochs = 0;
-    let bc_err = handle_preflight_mode(
-        &config_path,
-        &bc_config,
-        preflight_cli_options(PreflightConfig::default()),
-    )
-    .expect_err("invalid BC config should fail before preflight runtime");
-    assert_eq!(bc_err, "num_epochs must be greater than 0");
-
-    let mut rl_config = config();
-    rl_config.num_epochs = 0;
-    rl_config.rl = Some(RlTrainConfig::default());
-    let rl_err = handle_preflight_mode(
-        &config_path,
-        &rl_config,
-        preflight_cli_options(PreflightConfig::default()),
-    )
-    .expect_err("invalid RL config should fail before preflight runtime");
-    assert_eq!(rl_err, "num_epochs must be greater than 0");
-    let _ = std::fs::remove_file(config_path);
-}
-
 #[test]
 fn normal_training_does_not_require_explicit_preflight_tuning_mode() {
     let config_path =
@@ -538,94 +396,6 @@ fn handle_probe_mode_validates_rl_probe_requests_before_runtime() {
 }
 
 #[test]
-fn handle_preflight_mode_bc_branch_allows_bf16_past_top_level_gate() {
-    let data_dir = write_tiny_replay_data_dir("bf16-bc-preflight-no-stable-data");
-    let output_dir = unique_test_path("bf16-bc-preflight-no-stable-out");
-    let mut config = config();
-    config.data_dir = data_dir.clone();
-    config.output_dir = output_dir.clone();
-    config.device = "definitely-not-a-device".to_string();
-    let mut preflight = PreflightConfig::default();
-    preflight.allow_override_explicit_microbatch = true;
-    preflight.required_successes = 1;
-    config.precision_mode = hydra_train_runtime::config::PrecisionMode::Bf16Autocast;
-    let config_path = unique_test_path("bf16-bc-preflight-no-stable-config").with_extension("yaml");
-    let config_yaml =
-        serde_yaml::to_string(&config).expect("serialize valid BF16 BC preflight config");
-    std::fs::write(&config_path, config_yaml).expect("write valid BF16 BC preflight config");
-
-    let err = handle_preflight_mode(
-        &config_path,
-        &config,
-        preflight_cli_options(preflight.clone()),
-    )
-    .expect_err("BF16 BC preflight should fall through the mode gate");
-
-    assert_eq!(
-        err,
-        "precision_mode=bf16_autocast requires a CUDA device for BC training"
-    );
-    let _ = std::fs::remove_dir_all(data_dir);
-    let _ = std::fs::remove_dir_all(output_dir);
-    let _ = std::fs::remove_file(config_path);
-}
-
-#[test]
-fn handle_preflight_mode_rl_branch_allows_bf16_past_top_level_gate() {
-    let data_dir = unique_test_path("bf16-rl-preflight-no-stable-data");
-    std::fs::create_dir_all(&data_dir).expect("create empty BF16 RL preflight data dir");
-    let output_dir = unique_test_path("bf16-rl-preflight-no-stable-out");
-    let mut config = config();
-    config.data_dir = data_dir.clone();
-    config.output_dir = output_dir.clone();
-    config.device = "definitely-not-a-device".to_string();
-    let mut preflight = PreflightConfig::default();
-    preflight.allow_override_explicit_microbatch = false;
-    preflight.required_successes = 1;
-    config.rl = Some(RlTrainConfig::default());
-    config.precision_mode = hydra_train_runtime::config::PrecisionMode::Bf16Autocast;
-    let config_path = unique_test_path("bf16-rl-preflight-no-stable-config").with_extension("yaml");
-    let config_yaml =
-        serde_yaml::to_string(&config).expect("serialize valid BF16 RL preflight config");
-    std::fs::write(&config_path, config_yaml).expect("write valid BF16 RL preflight config");
-
-    let err = handle_preflight_mode(
-        &config_path,
-        &config,
-        preflight_cli_options(preflight.clone()),
-    )
-    .expect_err("BF16 RL preflight should fall through the top-level gate");
-
-    assert_eq!(
-        err,
-        "precision_mode=bf16_autocast is not supported for RL training yet"
-    );
-    let _ = std::fs::remove_dir_all(data_dir);
-    let _ = std::fs::remove_dir_all(output_dir);
-    let _ = std::fs::remove_file(config_path);
-}
-
-#[test]
-fn handle_preflight_mode_rl_branch_rejects_invalid_device_before_runtime() {
-    let config_path = write_preflight_config(
-        "rl-preflight-invalid-device-config",
-        "data_dir: /tmp/hydra-test-data\noutput_dir: /tmp/hydra-test-out\nnum_epochs: 1\npreflight:\n  tuning_mode: safe\n",
-    );
-    let mut config = config();
-    config.rl = Some(RlTrainConfig::default());
-    config.device = "definitely-not-a-device".to_string();
-
-    let err = handle_preflight_mode(
-        &config_path,
-        &config,
-        preflight_cli_options(PreflightConfig::default()),
-    )
-    .expect_err("invalid device should fail before RL preflight runtime");
-    assert!(err.contains("unsupported HYDRA_TRAIN_DEVICE=definitely-not-a-device"));
-    let _ = std::fs::remove_file(config_path);
-}
-
-#[test]
 fn handle_probe_mode_bc_branch_allows_bf16_past_top_level_gate() {
     let data_dir = write_tiny_replay_data_dir("bf16-bc-probe-no-stable-data");
     let output_dir = unique_test_path("bf16-bc-probe-no-stable-out");
@@ -633,9 +403,6 @@ fn handle_probe_mode_bc_branch_allows_bf16_past_top_level_gate() {
     config.data_dir = data_dir.clone();
     config.output_dir = output_dir.clone();
     config.device = "definitely-not-a-device".to_string();
-    let mut preflight = PreflightConfig::default();
-    preflight.allow_override_explicit_microbatch = true;
-    preflight.required_successes = 1;
     config.precision_mode = hydra_train_runtime::config::PrecisionMode::Bf16Autocast;
     let config_path = unique_test_path("bf16-bc-probe-no-stable-config").with_extension("yaml");
     let config_yaml = serde_yaml::to_string(&config).expect("serialize valid BF16 BC probe config");
@@ -742,72 +509,6 @@ fn format_probe_table_message_supports_rl_microbatch_rows() {
 }
 
 #[test]
-fn handle_preflight_mode_bubbles_bc_and_rl_runtime_setup_errors() {
-    let config_path = write_preflight_config(
-        "preflight-runtime-setup-config",
-        "data_dir: /tmp/hydra-test-data\noutput_dir: /tmp/hydra-test-out\nnum_epochs: 1\n",
-    );
-    let mut bc_config = config();
-    bc_config.data_dir = unique_test_path("missing-bc-data");
-    bc_config.output_dir = unique_test_path("bc-out");
-    let bc_err = handle_preflight_mode(
-        &config_path,
-        &bc_config,
-        preflight_cli_options(PreflightConfig::default()),
-    )
-    .expect_err("missing dataset should fail during BC preflight runtime");
-    assert!(bc_err.starts_with("failed to scan preflight data from "));
-    assert!(bc_err.contains("/tmp/hydra-test-data"));
-
-    let mut rl_config = config();
-    rl_config.rl = Some(RlTrainConfig::default());
-    rl_config.output_dir = unique_test_path("rl-out");
-    let rl_err = handle_preflight_mode(
-        Path::new("config.txt"),
-        &rl_config,
-        preflight_cli_options(PreflightConfig::default()),
-    )
-    .expect_err("invalid config extension should fail during RL preflight runtime");
-    assert!(rl_err.contains("failed to read config config.txt"));
-    let _ = std::fs::remove_file(config_path);
-}
-
-#[test]
-fn handle_preflight_mode_bubbles_artifact_dir_creation_errors() {
-    let config_path = write_preflight_config(
-        "preflight-artifact-dir-config",
-        "data_dir: /tmp/hydra-test-data\noutput_dir: /tmp/hydra-test-out\nnum_epochs: 1\npreflight:\n  tuning_mode: safe\n",
-    );
-    let bc_output_path = unique_test_path("bc-preflight-artifact-file");
-    std::fs::write(&bc_output_path, "not a directory").expect("write BC artifact blocker file");
-    let mut bc_config = config();
-    bc_config.output_dir = bc_output_path.clone();
-    let bc_err = handle_preflight_mode(
-        &config_path,
-        &bc_config,
-        preflight_cli_options(PreflightConfig::default()),
-    )
-    .expect_err("file-backed output path should fail BC artifact dir creation");
-    assert!(bc_err.contains("failed to create BC artifact dir"));
-    let _ = std::fs::remove_file(bc_output_path);
-
-    let rl_output_path = unique_test_path("rl-preflight-artifact-file");
-    std::fs::write(&rl_output_path, "not a directory").expect("write RL artifact blocker file");
-    let mut rl_config = config();
-    rl_config.output_dir = rl_output_path.clone();
-    rl_config.rl = Some(RlTrainConfig::default());
-    let rl_err = handle_preflight_mode(
-        &config_path,
-        &rl_config,
-        preflight_cli_options(PreflightConfig::default()),
-    )
-    .expect_err("file-backed output path should fail RL artifact dir creation");
-    assert!(rl_err.contains("failed to create RL artifact dir"));
-    let _ = std::fs::remove_file(rl_output_path);
-    let _ = std::fs::remove_file(config_path);
-}
-
-#[test]
 fn handle_probe_mode_bubbles_ladder_scan_and_artifact_errors() {
     let mut bc_config = config();
     bc_config.data_dir = unique_test_path("missing-probe-data");
@@ -856,9 +557,6 @@ fn handle_probe_mode_bubbles_no_stable_results_from_ladder_failures() {
     config.data_dir = data_dir.clone();
     config.output_dir = output_dir.clone();
     config.device = "definitely-not-a-device".to_string();
-    let mut preflight = PreflightConfig::default();
-    preflight.allow_override_explicit_microbatch = true;
-    preflight.required_successes = 1;
     let config_path = unique_test_path("probe-no-stable-config").with_extension("yaml");
     let config_yaml = serde_yaml::to_string(&config).expect("serialize valid probe config");
     std::fs::write(&config_path, config_yaml).expect("write valid probe config");

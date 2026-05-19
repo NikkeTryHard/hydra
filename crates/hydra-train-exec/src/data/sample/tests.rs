@@ -2,7 +2,14 @@ use super::*;
 use burn::backend::NdArray;
 use hydra_core::tile::permute_tile_type;
 
+use hydra_bc_shards::BcShardHostScratch;
 type B = NdArray<f32>;
+fn expect_collation_err<T>(result: Result<Option<T>, String>, message: &str) -> String {
+    match result {
+        Ok(_) => panic!("{message}"),
+        Err(err) => err,
+    }
+}
 
 fn dummy_sample(action: u8, score_delta: i32) -> MjaiSample {
     let mut legal_mask = [0.0f32; HYDRA_ACTION_SPACE];
@@ -400,9 +407,10 @@ fn batch_to_hydra_targets_rejects_delta_q_when_pair_is_incomplete() {
     target_only.delta_q_target = Some(target);
     mask_only.delta_q_mask = Some(mask);
 
-    let err = collate_batch_samples::<B>(&[target_only, mask_only], false, &device)
-        .err()
-        .expect("incomplete delta_q pair should fail");
+    let err = expect_collation_err(
+        collate_batch_samples::<B>(&[target_only, mask_only], false, &device),
+        "incomplete delta_q pair should fail",
+    );
     assert!(err.contains("delta_q target/mask mismatch for sample collation"));
 }
 
@@ -465,9 +473,10 @@ fn batch_to_hydra_targets_rejects_belief_target_without_presence() {
     let device = Default::default();
     let mut sample = dummy_sample(0, 0);
     sample.belief_fields = Some([0.0; 16 * 34]);
-    let err = collate_batch_samples::<B>(&[sample], false, &device)
-        .err()
-        .expect("belief target without presence should fail");
+    let err = expect_collation_err(
+        collate_batch_samples::<B>(&[sample], false, &device),
+        "belief target without presence should fail",
+    );
     assert!(err.contains("belief_fields target/presence mismatch for sample collation"));
 }
 
@@ -476,9 +485,10 @@ fn batch_to_hydra_targets_rejects_belief_presence_without_target() {
     let device = Default::default();
     let mut sample = dummy_sample(0, 0);
     sample.belief_fields_present = true;
-    let err = collate_batch_samples::<B>(&[sample], false, &device)
-        .err()
-        .expect("belief presence without target should fail");
+    let err = expect_collation_err(
+        collate_batch_samples::<B>(&[sample], false, &device),
+        "belief presence without target should fail",
+    );
     assert!(err.contains("belief_fields target/presence mismatch for sample collation"));
 }
 
@@ -487,9 +497,10 @@ fn batch_to_hydra_targets_rejects_mixture_target_without_presence() {
     let device = Default::default();
     let mut sample = dummy_sample(0, 0);
     sample.mixture_weights = Some([0.0; 4]);
-    let err = collate_batch_samples::<B>(&[sample], false, &device)
-        .err()
-        .expect("mixture target without presence should fail");
+    let err = expect_collation_err(
+        collate_batch_samples::<B>(&[sample], false, &device),
+        "mixture target without presence should fail",
+    );
     assert!(err.contains("mixture_weight target/presence mismatch for sample collation"));
 }
 
@@ -498,9 +509,10 @@ fn batch_to_hydra_targets_rejects_mixture_presence_without_target() {
     let device = Default::default();
     let mut sample = dummy_sample(0, 0);
     sample.mixture_weights_present = true;
-    let err = collate_batch_samples::<B>(&[sample], false, &device)
-        .err()
-        .expect("mixture presence without target should fail");
+    let err = expect_collation_err(
+        collate_batch_samples::<B>(&[sample], false, &device),
+        "mixture presence without target should fail",
+    );
     assert!(err.contains("mixture_weight target/presence mismatch for sample collation"));
 }
 
@@ -1036,4 +1048,186 @@ fn collate_sample_refs_bc_owned_matches_split_batch_targets_and_exit_surface() {
             .expect("split ref oracle mask")
             .to_data()
     );
+}
+
+#[cfg(feature = "libtorch")]
+#[test]
+fn collate_samples_into_host_scratch_matches_bc_owned_without_augmentation() {
+    let device = Default::default();
+    let mut sample = dummy_sample(2, 100);
+    sample.oracle_target = Some([0.1, -0.1, 0.2, -0.2]);
+    let mut exit_target = [0.0f32; HYDRA_ACTION_SPACE];
+    let mut exit_mask = [0.0f32; HYDRA_ACTION_SPACE];
+    exit_target[2] = 0.75;
+    exit_target[45] = -0.25;
+    exit_mask[2] = 1.0;
+    exit_mask[45] = 1.0;
+    sample.exit_target = Some(exit_target);
+    sample.exit_mask = Some(exit_mask);
+    let samples = [sample];
+
+    let mut scratch = BcShardHostScratch::new(samples.len(), false, true, false);
+    let rows = collate_samples_into_host_scratch(&samples, false, &mut scratch)
+        .expect("host scratch collation should succeed")
+        .expect("non-empty host scratch batch");
+    assert_eq!(rows, samples.len());
+    let device_batch =
+        crate::epoch_runner::materialize_host_batch_owned::<B>(scratch.take_batch(), &device);
+
+    let (obs, bc_batch, targets) = collate_samples_bc_owned::<B>(&samples, false, &device)
+        .expect("bc owned collate")
+        .expect("bc owned batch present");
+
+    assert_eq!(device_batch.obs.to_data(), obs.to_data());
+    assert_eq!(
+        device_batch.batch.actions.to_data(),
+        bc_batch.actions.to_data()
+    );
+    assert_eq!(
+        device_batch
+            .batch
+            .exit_target
+            .as_ref()
+            .expect("host exit target")
+            .to_data(),
+        bc_batch
+            .exit_target
+            .as_ref()
+            .expect("bc exit target")
+            .to_data()
+    );
+    assert_eq!(
+        device_batch
+            .batch
+            .exit_mask
+            .as_ref()
+            .expect("host exit mask")
+            .to_data(),
+        bc_batch.exit_mask.as_ref().expect("bc exit mask").to_data()
+    );
+    assert_eq!(
+        device_batch.targets.policy_target.to_data(),
+        targets.policy_target.to_data()
+    );
+    assert_eq!(
+        device_batch.targets.legal_mask.to_data(),
+        targets.legal_mask.to_data()
+    );
+    assert_eq!(
+        device_batch.targets.value_target.to_data(),
+        targets.value_target.to_data()
+    );
+    assert_eq!(
+        device_batch.targets.grp_target.to_data(),
+        targets.grp_target.to_data()
+    );
+    assert_eq!(
+        device_batch
+            .targets
+            .oracle_target
+            .expect("host oracle")
+            .to_data(),
+        targets.oracle_target.expect("bc oracle").to_data()
+    );
+    assert_eq!(
+        device_batch
+            .targets
+            .oracle_guidance_mask
+            .expect("host oracle mask")
+            .to_data(),
+        targets
+            .oracle_guidance_mask
+            .expect("bc oracle mask")
+            .to_data()
+    );
+}
+
+#[cfg(feature = "libtorch")]
+#[test]
+fn collate_samples_into_host_scratch_matches_bc_owned_with_augmentation() {
+    let device = Default::default();
+    let mut sample = dummy_sample(0, 0);
+    sample.obs = [0.0; OBS_SIZE];
+    sample.obs[40 * 34] = 1.0;
+    sample.opp_next = [0, 9, 27];
+    sample.danger[0] = 0.25;
+    sample.danger[34 + 9] = 0.5;
+    sample.danger_mask[18] = 1.0;
+    let mut safety_residual = [0.0f32; HYDRA_ACTION_SPACE];
+    let mut safety_residual_mask = [0.0f32; HYDRA_ACTION_SPACE];
+    safety_residual[0] = -0.75;
+    safety_residual[1] = 0.4;
+    safety_residual_mask[0] = 1.0;
+    safety_residual_mask[1] = 1.0;
+    sample.safety_residual = Some(safety_residual);
+    sample.safety_residual_mask = Some(safety_residual_mask);
+    let mut delta_q_target = [0.0f32; HYDRA_ACTION_SPACE];
+    let mut delta_q_mask = [0.0f32; HYDRA_ACTION_SPACE];
+    delta_q_target[0] = 0.6;
+    delta_q_target[1] = -0.25;
+    delta_q_mask[0] = 1.0;
+    delta_q_mask[1] = 1.0;
+    sample.delta_q_target = Some(delta_q_target);
+    sample.delta_q_mask = Some(delta_q_mask);
+    let samples = [sample];
+
+    let mut scratch = BcShardHostScratch::new(ALL_PERMUTATIONS.len(), true, false, true);
+    let rows = collate_samples_into_host_scratch(&samples, true, &mut scratch)
+        .expect("host scratch collation should succeed")
+        .expect("non-empty host scratch batch");
+    assert_eq!(rows, ALL_PERMUTATIONS.len());
+    let device_batch =
+        crate::epoch_runner::materialize_host_batch_owned::<B>(scratch.take_batch(), &device);
+
+    let (obs, _bc_batch, targets) = collate_samples_bc_owned::<B>(&samples, true, &device)
+        .expect("bc owned collate")
+        .expect("bc owned batch present");
+
+    assert_eq!(device_batch.obs.to_data(), obs.to_data());
+    assert_eq!(
+        device_batch.targets.policy_target.to_data(),
+        targets.policy_target.to_data()
+    );
+    assert_eq!(
+        device_batch.targets.legal_mask.to_data(),
+        targets.legal_mask.to_data()
+    );
+    assert_eq!(
+        device_batch.targets.danger_target.to_data(),
+        targets.danger_target.to_data()
+    );
+    assert_eq!(
+        device_batch.targets.danger_mask.to_data(),
+        targets.danger_mask.to_data()
+    );
+    assert_eq!(
+        device_batch.targets.opp_next_target.to_data(),
+        targets.opp_next_target.to_data()
+    );
+    assert_eq!(
+        device_batch
+            .targets
+            .safety_residual_target
+            .expect("host safety")
+            .to_data(),
+        targets.safety_residual_target.expect("bc safety").to_data()
+    );
+    assert_eq!(
+        device_batch
+            .targets
+            .delta_q_target
+            .expect("host delta_q")
+            .to_data(),
+        targets.delta_q_target.expect("bc delta_q").to_data()
+    );
+}
+
+#[test]
+fn collate_samples_into_host_scratch_rejects_optional_target_mask_mismatch() {
+    let mut sample = dummy_sample(0, 0);
+    sample.exit_target = Some([0.0; HYDRA_ACTION_SPACE]);
+    let mut scratch = BcShardHostScratch::new(1, false, true, false);
+    let err = collate_samples_into_host_scratch(&[sample], false, &mut scratch)
+        .expect_err("incomplete exit pair should fail");
+    assert!(err.contains("exit target/mask mismatch for host scratch collation"));
 }

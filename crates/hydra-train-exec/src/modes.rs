@@ -15,10 +15,8 @@ use hydra_train_runtime::config::{
 };
 use hydra_train_runtime::config_runtime::validate_preflight_config;
 
-use crate::config_runtime::{configure_threads, device_label, train_device, validate_config};
-use hydra_train_runtime::preflight::{
-    EffectiveRuntimeConfig, ExplicitSettings, ProbeKind, ProbeResult,
-};
+use crate::config_runtime::{configure_threads, device_label, validate_config};
+use hydra_train_runtime::preflight::{ProbeKind, ProbeResult};
 use hydra_train_runtime::probe_request::{ProbeRequest, probe_request_from_cli};
 use hydra_train_types::config::BCTrainerConfig;
 
@@ -31,120 +29,38 @@ use crate::bootstrap::{
 use crate::data_pipeline::TrainValidationLoader;
 use crate::delta_q_promotion::handle_delta_q_promotion_mode as run_delta_q_promotion_mode;
 use crate::epoch_runner::{EpochRunnerContext, EpochRuntimeMut, run_epoch};
-use crate::preflight_runtime::{run_preflight, run_probe_ladder_only, run_rl_preflight};
+use crate::preflight_runtime::{run_preflight_bench, run_probe_ladder_only};
 use crate::presentation::{
-    BcHyperparamSummaryInput, bc_hyperparam_summary, explicit_preflight_summary,
-    format_advisory_line, format_preflight_selection_line, format_preflight_summary_line,
-    format_probe_results_table, format_status_line, format_timed_phase_message,
-    precision_runtime_summary, print_banner_field, print_header_block, timestamped,
-    unsafe_preflight_math_summary,
+    BcHyperparamSummaryInput, bc_hyperparam_summary, format_advisory_line,
+    format_preflight_bench_markdown_table, format_preflight_selection_line,
+    format_probe_results_table, format_status_line, format_timed_phase_message, print_banner_field,
+    print_header_block, timestamped,
 };
 use crate::probe_summary::{best_probe_summary, format_probe_selection_summary, probe_kind_name};
 use crate::resume::BestValidation;
 use crate::rl_runner::run_rl_training_loop;
 use crate::validation_runner::materialize_validation_samples;
 
-/// Runs explicit preflight mode for BC or RL training.
-pub fn handle_preflight_mode(
-    config_path: &Path,
-    config: &TrainConfig,
-    preflight: PreflightCliOptions,
-) -> Result<(), String> {
+/// Runs standalone synthetic benchmark preflight from explicit CLI arguments.
+pub fn handle_preflight_mode(preflight: PreflightCliOptions) -> Result<(), String> {
     let preflight_wall_start = Instant::now();
     let preflight_config = &preflight.preflight_config;
-    validate_config(config)?;
     validate_preflight_config(preflight_config)?;
+    let config = TrainConfig {
+        bc_shards_manifest_path: None,
+        output_dir: preflight.output_dir.clone(),
+        device: preflight.device.clone(),
+        ..TrainConfig::default_preflight_bench()
+    };
     configure_threads(config.num_threads)?;
-    if config.rl.is_some() {
-        let train_device = train_device(&config.device)?;
-        let device_name = device_label(&config.device);
-        print_preflight_banner("Hydra RL preflight", config, &device_name);
-        let preflight = run_rl_preflight(config_path, config, preflight_config, &train_device)?;
-        println!(
-            "{}",
-            format_rl_preflight_selection_message(preflight.runtime)
-        );
-        print_probe_table(
-            "RL preflight games table",
-            ProbeKind::RlGames,
-            &preflight.rl_games_probe_results,
-            preflight.selected_games_per_batch,
-        );
-        print_probe_table(
-            "RL preflight microbatch table",
-            ProbeKind::RlMicrobatch,
-            &preflight.rl_microbatch_probe_results,
-            preflight.selected_microbatch_size,
-        );
-        println!(
-            "{}",
-            format_timed_phase_message(
-                "preflight_wall_clock",
-                "total elapsed including output",
-                preflight_wall_start.elapsed().as_secs_f64(),
-            )
-        );
-        return Ok(());
-    }
     let artifacts = BcArtifactPaths::new(&config.output_dir, 0);
     artifacts.create_root_dir()?;
     let device_name = device_label(&config.device);
-    print_preflight_banner("Hydra preflight", config, &device_name);
-    let preflight = run_preflight(
-        config_path,
-        config,
-        preflight_config,
-        &HydraModelConfig::learner(),
-        &device_name,
-        &artifacts,
-    )?;
+    print_preflight_banner("Hydra preflight", &config, &device_name);
+    let preflight = run_preflight_bench(&config, preflight_config, &device_name)?;
     println!(
         "{}",
-        format_bc_preflight_selection_message(
-            preflight.runtime,
-            preflight.explicit,
-            preflight_config.tuning_mode,
-        )
-    );
-    if let Some(benchmark) = preflight.benchmark.as_ref() {
-        println!(
-            "{}",
-            format_preflight_selection_line(format!(
-                "benchmark winner tuning_mode={:?} benchmark_mode={:?} wall_clock_effective={:.2} samples/s train_only={:.2} train_mb={} val_mb={} loader=({}, {}, {}, {:?}) {}",
-                preflight_config.tuning_mode,
-                benchmark.metadata.mode,
-                benchmark.score.wall_clock_samples_per_second,
-                benchmark.score.train_only_samples_per_second,
-                benchmark.runtime.train_microbatch_size,
-                benchmark.runtime.validation_microbatch_size,
-                benchmark.runtime.loader.archive_queue_bound,
-                benchmark.runtime.loader.buffer_samples,
-                benchmark.runtime.loader.buffer_games,
-                benchmark.runtime.loader.num_threads,
-                precision_runtime_summary(
-                    preflight.runtime.requested_precision,
-                    preflight.runtime.effective_precision
-                ),
-            ))
-        );
-    }
-    if let Some(math_summary) = unsafe_preflight_math_summary(preflight.runtime, &config.bc) {
-        println!("{}", format_preflight_selection_line(math_summary));
-    }
-    for advisory in &preflight.advisories {
-        println!("{}", format_advisory_line(advisory));
-    }
-    print_probe_table(
-        "Preflight train table",
-        ProbeKind::Train,
-        &preflight.train_probe_results,
-        preflight.runtime.selected.train_microbatch_size,
-    );
-    print_probe_table(
-        "Preflight validation table",
-        ProbeKind::Validation,
-        &preflight.validation_probe_results,
-        preflight.runtime.selected.validation_microbatch_size,
+        format_preflight_bench_markdown_table(&preflight.report)
     );
     println!(
         "{}",
@@ -228,31 +144,6 @@ pub fn print_preflight_banner(title: &str, config: &TrainConfig, device_name: &s
     println!();
 }
 
-/// Formats the RL preflight selected runtime line.
-pub fn format_rl_preflight_selection_message(runtime: EffectiveRuntimeConfig) -> String {
-    format_preflight_summary_line(
-        "Preflight:",
-        format!(
-            "selected rl.games_per_batch={} rl.microbatch_size={} {}",
-            runtime.loader.buffer_games,
-            runtime.selected.train_microbatch_size,
-            precision_runtime_summary(runtime.requested_precision, runtime.effective_precision),
-        ),
-    )
-}
-
-/// Formats the BC preflight selected runtime line.
-pub fn format_bc_preflight_selection_message(
-    runtime: EffectiveRuntimeConfig,
-    explicit: ExplicitSettings,
-    tuning_mode: hydra_train_runtime::preflight::PreflightTuningMode,
-) -> String {
-    format_preflight_summary_line(
-        "Preflight:",
-        explicit_preflight_summary(runtime, explicit, tuning_mode),
-    )
-}
-
 /// Formats a preflight/probe table with title and selected candidate marker.
 pub fn format_probe_table_message(
     title: &str,
@@ -265,13 +156,6 @@ pub fn format_probe_table_message(
         title.bold().cyan(),
         format_probe_results_table(kind, results, Some(selected))
     ))
-}
-
-fn print_probe_table(title: &str, kind: ProbeKind, results: &[ProbeResult], selected: usize) {
-    println!(
-        "{}",
-        format_probe_table_message(title, kind, results, selected)
-    );
 }
 
 /// Formats probe-only request status detail.
@@ -657,13 +541,12 @@ pub fn run_train_modes(cli: TrainCli, config: TrainConfig) -> Result<(), String>
     if cli.list_devices {
         return handle_list_devices_mode();
     }
-    let config_path = cli
-        .config_path
-        .as_deref()
-        .ok_or_else(|| "config path is required unless --list-devices is used".to_string())?;
     if let Some(preflight) = cli.preflight {
-        return handle_preflight_mode(config_path, &config, preflight);
+        return handle_preflight_mode(preflight);
     }
+    let config_path = cli.config_path.as_deref().ok_or_else(|| {
+        "config path is required unless --list-devices or --preflight is used".to_string()
+    })?;
     if cli.delta_q_promotion {
         return handle_delta_q_promotion_mode(config_path, config, cli.delta_q_baseline_checkpoint);
     }

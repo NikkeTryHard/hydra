@@ -4,13 +4,16 @@ use std::time::Duration;
 use burn::backend::libtorch::LibTorchDevice;
 use burn::backend::{Autodiff, LibTorch};
 use burn::module::AutodiffModule;
+use burn::optim::AdamConfig;
+use hydra_bc_shards::BcShardHostScratch;
 use hydra_bc_shards::{BcShardSplit, BcShardSplitMode, load_bc_shard_reader};
 use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::arena::{Trajectory, TrajectoryStep};
 use hydra_core::encoder::OBS_SIZE;
 use hydra_model::model::{HydraModelConfig, HydraModelInit};
 use hydra_replay_loader::mjai_loader::{
-    ReplayObservationProfile, ReplayTargetProfile, SidecarProvenance, load_game_from_reader,
+    ReplayMaterializationStats, ReplayObservationProfile, ReplayTargetProfile, SidecarProvenance,
+    drain_replay_materialization_stats, load_game_from_reader, load_game_from_reader_into_sink,
     load_game_from_reader_with_sidecar,
 };
 use hydra_search_labels::live_exit::LiveExitConfig;
@@ -22,15 +25,26 @@ use hydra_selfplay::{
 };
 use hydra_train_exec::bc_runtime::{BcExitConfig, bc_total_with_optional_exit_from_breakdown};
 use hydra_train_exec::bc_shard_builder::{BuildBcShardsConfig, build_bc_shards};
-use hydra_train_exec::data::sample::{MjaiSample, collate_samples_bc_owned, collate_samples_owned};
+use hydra_train_exec::data::sample::{
+    MjaiSample, ReplayHostScratchSink, collate_samples_bc_owned, collate_samples_into_host_scratch,
+    collate_samples_owned,
+};
 use hydra_train_exec::data_pipeline::{
     SourceFilterConfig, StreamingLoaderConfig, scan_data_sources_with_progress,
     stream_val_microbatches, stream_val_pass,
 };
-use hydra_train_exec::epoch_runner::materialize_host_batch_owned;
+use hydra_train_exec::epoch_runner::{
+    TrainLogicalBatchConfig, materialize_host_batch_owned, train_logical_batch,
+    train_logical_batch_via_host_scratch, train_logical_batch_via_recycled_host_batch,
+};
 use hydra_train_exec::losses::HydraLoss;
 use hydra_train_exec::model::HydraTrainModelExt;
+use hydra_train_runtime::head_gates::{HeadActivationConfig, HeadActivationController};
 use hydra_train_types::losses::{HydraLossConfig, LossBreakdown};
+use riichienv_core::action::Phase;
+use riichienv_core::rule::GameRule;
+use riichienv_core::state::GameState;
+use std::collections::HashMap;
 
 type TrainBackend = Autodiff<LibTorch<f32>>;
 type ValidBackend = <TrainBackend as burn::tensor::backend::AutodiffBackend>::InnerBackend;
@@ -78,6 +92,111 @@ fn tiny_real_mjai_replay() -> String {
     .join("\n")
 }
 
+fn synthetic_mjai_replay(seed: u64) -> String {
+    let mut state = GameState::new(0, false, Some(seed), 0, GameRule::default_tenhou());
+    let mut steps = 0u32;
+    while !state.is_done && steps < 10_000 {
+        if state.needs_initialize_next_round {
+            state.step(&HashMap::new());
+            continue;
+        }
+
+        let mut actions = HashMap::new();
+        match state.phase {
+            Phase::WaitAct => {
+                let obs = state.get_observation(state.current_player);
+                if let Some(action) = obs.legal_actions_method().first().cloned() {
+                    actions.insert(state.current_player, action);
+                }
+            }
+            Phase::WaitResponse => {
+                let active_players =
+                    state.active_players[..state.active_player_count as usize].to_vec();
+                for pid in active_players {
+                    let obs = state.get_observation(pid);
+                    if let Some(action) = obs.legal_actions_method().first().cloned() {
+                        actions.insert(pid, action);
+                    }
+                }
+            }
+        }
+        state.step(&actions);
+        steps += 1;
+    }
+    state.mjai_log.join("\n")
+}
+
+fn synthetic_mjai_corpus(game_count: usize) -> Vec<String> {
+    (0..game_count)
+        .map(|idx| synthetic_mjai_replay(idx as u64))
+        .collect()
+}
+
+fn load_replay_corpus(corpus: &[String]) -> (usize, ReplayMaterializationStats) {
+    let _ = drain_replay_materialization_stats();
+    let mut samples = 0usize;
+    for replay in corpus {
+        let game = load_game_from_reader(std::io::Cursor::new(replay.as_bytes()))
+            .expect("synthetic materialization replay should parse");
+        samples = samples.saturating_add(game.samples.len());
+    }
+    (samples, drain_replay_materialization_stats())
+}
+
+fn print_replay_materialization_metric(
+    label: &str,
+    samples: usize,
+    stats: ReplayMaterializationStats,
+) {
+    let elapsed_ns = stats.elapsed().as_nanos();
+    if elapsed_ns == 0 || stats.event_count == 0 || stats.decision_count == 0 {
+        return;
+    }
+
+    let ns_per_event = elapsed_ns as f64 / stats.event_count as f64;
+    let ns_per_decision = elapsed_ns as f64 / stats.decision_count as f64;
+    let pct = |part: u128| part as f64 * 100.0 / elapsed_ns as f64;
+    eprintln!(
+        "[bench-replay-materialization] {label} samples={samples} events={} decisions={} ns_per_event={ns_per_event:.1} ns_per_decision={ns_per_decision:.1} parse={:.1}% update={:.1}% obs_encode={:.1}% mask={:.1}%",
+        stats.event_count,
+        stats.decision_count,
+        pct(stats.json_parse_ns),
+        pct(stats.replay_update_ns),
+        pct(stats.observation_encode_ns),
+        pct(stats.mask_build_ns),
+    );
+}
+
+fn bench_replay_materialization_profile(c: &mut Criterion) {
+    let fixtures = [
+        ("synthetic_1_game", synthetic_mjai_corpus(1)),
+        ("synthetic_8_games", synthetic_mjai_corpus(8)),
+        ("synthetic_32_games", synthetic_mjai_corpus(32)),
+    ];
+
+    for (label, corpus) in &fixtures {
+        let (samples, stats) = load_replay_corpus(corpus);
+        assert!(
+            samples > 50,
+            "synthetic materialization corpus should produce real samples"
+        );
+        print_replay_materialization_metric(label, samples, stats);
+    }
+
+    let mut group = c.benchmark_group("replay_materialization_profile");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(8));
+    for (label, corpus) in &fixtures {
+        group.bench_function(*label, |b| {
+            b.iter(|| {
+                let (samples, stats) = load_replay_corpus(corpus);
+                black_box((samples, stats.event_count, stats.decision_count))
+            });
+        });
+    }
+    group.finish();
+}
+
 fn bench_loader(c: &mut Criterion) {
     let payload = tiny_real_mjai_replay();
     let mut group = c.benchmark_group("loader");
@@ -107,6 +226,51 @@ fn bench_loader(c: &mut Criterion) {
             black_box(game.samples.len())
         });
     });
+    group.finish();
+}
+
+fn bench_direct_replay_host_scratch(c: &mut Criterion) {
+    let payload = tiny_real_mjai_replay();
+    let device = LibTorchDevice::Cpu;
+    let legacy_game = load_game_from_reader(std::io::Cursor::new(payload.as_bytes()))
+        .expect("direct replay bench fixture should parse");
+    let sample_count = legacy_game.samples.len();
+
+    let mut group = c.benchmark_group("direct_replay_host_scratch");
+    group.sample_size(20);
+    group.measurement_time(Duration::from_secs(6));
+
+    group.bench_function("load_vec_then_host_scratch", |b| {
+        b.iter(|| {
+            let game = load_game_from_reader(std::io::Cursor::new(payload.as_bytes()))
+                .expect("direct replay bench legacy load should succeed");
+            let mut scratch = BcShardHostScratch::new(game.samples.len(), false, false, false);
+            collate_samples_into_host_scratch(&game.samples, false, &mut scratch)
+                .expect("direct replay bench legacy host scratch should succeed")
+                .expect("direct replay bench legacy rows should exist");
+            let batch = materialize_host_batch_owned::<ValidBackend>(scratch.take_batch(), &device);
+            black_box((batch.obs.dims(), batch.batch.actions.dims()));
+        });
+    });
+
+    group.bench_function("reader_into_host_scratch", |b| {
+        b.iter(|| {
+            let mut scratch = BcShardHostScratch::new(sample_count, false, false, false);
+            let mut sink = ReplayHostScratchSink::new(&mut scratch, false);
+            load_game_from_reader_into_sink(
+                "bench-game",
+                std::io::Cursor::new(payload.as_bytes()),
+                None,
+                &mut sink,
+            )
+            .expect("direct replay bench sink load should succeed");
+            sink.finish()
+                .expect("direct replay bench sink rows should exist");
+            let batch = materialize_host_batch_owned::<ValidBackend>(scratch.take_batch(), &device);
+            black_box((batch.obs.dims(), batch.batch.actions.dims()));
+        });
+    });
+
     group.finish();
 }
 
@@ -205,6 +369,22 @@ fn bench_validation_batch_stats(c: &mut Criterion) {
                 batch.0.dims(),
                 batch.1.actions.dims(),
                 batch.2.legal_mask.dims(),
+            ))
+        });
+    });
+
+    group.bench_function("collate_host_scratch_materialize_only", |b| {
+        let mut scratch = BcShardHostScratch::new(samples.len(), false, false, true);
+        b.iter(|| {
+            collate_samples_into_host_scratch(&samples, false, &mut scratch)
+                .expect("validation bench host scratch collate should succeed")
+                .expect("validation bench host scratch batch should exist");
+            let host_batch = scratch.take_batch();
+            let batch = materialize_host_batch_owned::<ValidBackend>(host_batch, &device);
+            black_box((
+                batch.obs.dims(),
+                batch.batch.actions.dims(),
+                batch.targets.legal_mask.dims(),
             ))
         });
     });
@@ -580,6 +760,122 @@ fn tiny_model_config() -> HydraModelConfig {
         .with_se_bottleneck(1)
 }
 
+fn tiny_replay_samples_for_train_step(sample_count: usize) -> Vec<MjaiSample> {
+    let payload = tiny_real_mjai_replay();
+    let game = load_game_from_reader(std::io::Cursor::new(payload.as_bytes()))
+        .expect("train-step bench replay should parse");
+    assert!(
+        !game.samples.is_empty(),
+        "train-step bench replay should yield samples"
+    );
+
+    let mut samples = Vec::with_capacity(sample_count);
+    while samples.len() < sample_count {
+        for sample in &game.samples {
+            samples.push(sample.clone());
+            if samples.len() == sample_count {
+                break;
+            }
+        }
+    }
+    samples
+}
+
+fn bench_raw_vs_host_scratch_train_step(c: &mut Criterion) {
+    let device = LibTorchDevice::Cpu;
+    let samples = tiny_replay_samples_for_train_step(8);
+    let microbatch_size = samples.len() + 1;
+    let loss_fn = HydraLoss::<TrainBackend>::new(HydraLossConfig::new());
+    let exit_cfg = BcExitConfig::default();
+
+    let mut group = c.benchmark_group("raw_vs_host_scratch_train_step");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(8));
+
+    group.bench_function("raw_replay_full_step_tiny/batch_8", |b| {
+        let mut model_slot = Some(tiny_model_config().init::<TrainBackend>(&device));
+        let mut optimizer = AdamConfig::new().init();
+        let mut head_controller =
+            HeadActivationController::new(HeadActivationConfig::default_with_params(1));
+
+        b.iter(|| {
+            let (stats, timing) = train_logical_batch(
+                black_box(samples.as_slice()),
+                TrainLogicalBatchConfig {
+                    microbatch_size,
+                    use_amp: false,
+                    augment: false,
+                    train_device: &device,
+                    loss_fn: &loss_fn,
+                    bc_exit_cfg: &exit_cfg,
+                    lr: 0.0,
+                },
+                &mut head_controller,
+                &mut model_slot,
+                &mut optimizer,
+            )
+            .expect("raw replay train-step bench should succeed");
+            black_box((stats.len(), timing));
+        });
+    });
+
+    group.bench_function("host_scratch_full_step_tiny/batch_8", |b| {
+        let mut model_slot = Some(tiny_model_config().init::<TrainBackend>(&device));
+        let mut optimizer = AdamConfig::new().init();
+        let mut head_controller =
+            HeadActivationController::new(HeadActivationConfig::default_with_params(1));
+
+        b.iter(|| {
+            let (stats, timing) = train_logical_batch_via_host_scratch(
+                black_box(samples.as_slice()),
+                TrainLogicalBatchConfig {
+                    microbatch_size,
+                    use_amp: false,
+                    augment: false,
+                    train_device: &device,
+                    loss_fn: &loss_fn,
+                    bc_exit_cfg: &exit_cfg,
+                    lr: 0.0,
+                },
+                &mut head_controller,
+                &mut model_slot,
+                &mut optimizer,
+            )
+            .expect("host-scratch train-step bench should succeed");
+            black_box((stats.len(), timing));
+        });
+    });
+
+    group.bench_function("recycled_host_batch_full_step_tiny/batch_8", |b| {
+        let mut model_slot = Some(tiny_model_config().init::<TrainBackend>(&device));
+        let mut optimizer = AdamConfig::new().init();
+        let mut head_controller =
+            HeadActivationController::new(HeadActivationConfig::default_with_params(1));
+
+        b.iter(|| {
+            let (stats, timing) = train_logical_batch_via_recycled_host_batch(
+                black_box(samples.as_slice()),
+                TrainLogicalBatchConfig {
+                    microbatch_size,
+                    use_amp: false,
+                    augment: false,
+                    train_device: &device,
+                    loss_fn: &loss_fn,
+                    bc_exit_cfg: &exit_cfg,
+                    lr: 0.0,
+                },
+                &mut head_controller,
+                &mut model_slot,
+                &mut optimizer,
+                BcShardHostScratch::new(samples.len(), false, false, false).take_batch(),
+            )
+            .expect("recycled host-batch train-step bench should succeed");
+            black_box((stats.len(), timing));
+        });
+    });
+    group.finish();
+}
+
 fn bench_model_cpu_bridge_tiny(c: &mut Criterion) {
     let device = LibTorchDevice::Cpu;
     let model = tiny_model_config().init::<TrainBackend>(&device);
@@ -651,6 +947,8 @@ fn bench_shard_collation(c: &mut Criterion) {
         delta_q_sidecar: None,
         delta_q_sidecar_path: None,
         delta_q_provenance: SidecarProvenance::default(),
+        max_games: None,
+        max_samples: None,
         num_threads: None,
         queue_bound: 128,
         resume: false,
@@ -711,11 +1009,14 @@ fn bench_shard_collation(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_loader,
+    bench_replay_materialization_profile,
+    bench_direct_replay_host_scratch,
     bench_validation_batch_stats,
     bench_validation_stream_grouping,
     bench_rl_batch_collation,
     bench_model_cpu_bridge,
     bench_model_cpu_bridge_tiny,
+    bench_raw_vs_host_scratch_train_step,
     bench_selfplay_source_generation
 );
 criterion_main!(benches);

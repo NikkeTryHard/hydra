@@ -51,6 +51,8 @@ check-training = { cmd = "cargo check -p hydra-train --no-default-features --fea
 check-data-tools = { cmd = "cargo check -p hydra-train --no-default-features --features data-tools --bins --quiet", description = "Check hydra-train data-tool bins" }
 check-debug-tools = { cmd = "cargo check -p hydra-train --no-default-features --features debug-tools --bins --quiet", description = "Check hydra-train debug-tool bins" }
 check-cuda-graph = { cmd = "cargo check -p hydra-train --no-default-features --features cuda-graph --bin train --quiet", description = "Check explicit CUDA graph path" }
+check-training-cuda = { cmd = "pixi run check-cuda-graph", description = "Check serious CUDA shard training path with pinned/prealloc transport" }
+train-cuda-shards = { cmd = "cargo run --release -p hydra-train --bin train --no-default-features --features cuda-graph --", description = "Run CUDA BC shard training with pinned/prealloc transport; pass config path after --" }
 bench-train = { cmd = "cargo bench -p hydra-train --no-default-features --features training", description = "Run hydra-train training benches" }
 timings-check = { cmd = "cargo check --workspace --all-targets --no-default-features --timings --quiet", description = "Timing report for fast default check" }
 timings-nextest-list = { cmd = "cargo nextest list --workspace --all-targets --no-default-features --cargo-profile dev --timings --cargo-quiet", description = "Timing report for test discovery" }

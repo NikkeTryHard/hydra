@@ -625,6 +625,97 @@ impl GameState {
         Ok(obs)
     }
 
+    /// Build replay legal actions without constructing an owned Observation.
+    pub fn get_replay_legal_actions_into(
+        &mut self,
+        pid: u8,
+        env_action: &Action,
+        log_action_str: &str,
+        buf: &mut Vec<Action>,
+    ) -> RiichiResult<()> {
+        let original_phase = self.phase;
+        let original_active_players = self.active_players;
+        let original_active_player_count = self.active_player_count;
+        let original_claims = self.current_claims;
+        let original_claim_counts = self.current_claim_counts;
+        let original_riichi = self.players[pid as usize].riichi_declared;
+        let original_current_player = self.current_player;
+
+        match env_action.action_type {
+            ActionType::Ron | ActionType::Chi | ActionType::Pon | ActionType::Daiminkan => {
+                self.phase = Phase::WaitResponse;
+                self.set_single_active_player(pid);
+                self.push_claim(pid as usize, *env_action);
+            }
+            _ => {}
+        }
+
+        let t_get = Instant::now();
+        self.get_legal_actions_into(pid, buf);
+        REPLAY_GET_OBSERVATION_NS.fetch_add(t_get.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+        let mut exists = buf
+            .iter()
+            .any(|a| Self::replay_action_matches_legal(a, env_action));
+
+        if !exists
+            && env_action.action_type == ActionType::Discard
+            && self.players[pid as usize].riichi_declared
+        {
+            self.players[pid as usize].riichi_declared = false;
+            let t_retry = Instant::now();
+            self.get_legal_actions_into(pid, buf);
+            REPLAY_RETRY_RIICHI_NS
+                .fetch_add(t_retry.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            let is_legal_retry = buf.iter().any(|a| {
+                a.action_type == ActionType::Discard
+                    && match (a.tile, env_action.tile) {
+                        (Some(legal_tile), Some(replay_tile)) => {
+                            Self::replay_tile_matches_mjai_semantics(legal_tile, replay_tile)
+                        }
+                        _ => false,
+                    }
+            });
+
+            if is_legal_retry {
+                exists = true;
+            } else {
+                self.players[pid as usize].riichi_declared = original_riichi;
+            }
+        }
+
+        if !exists && env_action.action_type == ActionType::Kakan && self.drawn_tile.is_some() {
+            self.set_single_active_player(pid);
+            let t_retry = Instant::now();
+            self.get_legal_actions_into(pid, buf);
+            REPLAY_RETRY_KAKAN_NS.fetch_add(t_retry.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            exists = buf
+                .iter()
+                .any(|a| Self::replay_action_matches_legal(a, env_action));
+        }
+
+        self.phase = original_phase;
+        self.current_player = original_current_player;
+        self.active_players = original_active_players;
+        self.active_player_count = original_active_player_count;
+        self.current_claims = original_claims;
+        self.current_claim_counts = original_claim_counts;
+
+        if !exists {
+            return Err(RiichiError::InvalidState {
+                message: format!(
+                    "Replay desync:\n  Env action: {:?}\n  Log action: {}\n  Self state:\n    phase: {:?}\n    drawn: {:?}",
+                    env_action,
+                    log_action_str,
+                    self.phase,
+                    self.drawn_tile
+                ),
+            });
+        }
+
+        maybe_print_replay_observation_profile();
+        Ok(())
+    }
     pub fn replay_observation_contains_action(obs: &Observation, env_action: &Action) -> bool {
         obs._legal_actions
             .iter()

@@ -1,7 +1,7 @@
 use super::*;
 use crate::config::{
-    AdvancedLossConfig, BcHyperparamConfig, EffectivePrecision, PrecisionMode, SourceFilterConfig,
-    TrainConfig, ValidationGateConfig,
+    BcHyperparamConfig, EffectivePrecision, PrecisionMode, SourceFilterConfig, TrainConfig,
+    ValidationGateConfig,
 };
 
 #[test]
@@ -188,28 +188,6 @@ fn effective_precision_fp32_noop_serde_matches_display_spelling() {
     let decoded_from_canonical: EffectivePrecision =
         serde_json::from_str("\"fp32_noop\"").expect("canonical fp32_noop should deserialize");
     assert_eq!(decoded_from_canonical, precision);
-}
-
-#[test]
-fn preflight_tuning_mode_changes_cache_signature() {
-    let safe = PreflightConfig {
-        tuning_mode: PreflightTuningMode::Safe,
-        ..Default::default()
-    };
-    let unsafe_config = PreflightConfig {
-        tuning_mode: PreflightTuningMode::Unsafe,
-        ..safe.clone()
-    };
-
-    assert_ne!(
-        preflight_config_signature(&safe),
-        preflight_config_signature(&unsafe_config)
-    );
-}
-
-#[test]
-fn default_cache_name_is_stable() {
-    assert_eq!(default_cache_name(), PathBuf::from("preflight_cache.json"));
 }
 
 #[test]
@@ -429,6 +407,12 @@ fn profiling_stage_constants_are_all_distinct() {
         PROFILING_STAGE_COLLATION,
         PROFILING_STAGE_FORWARD,
         PROFILING_STAGE_LOSS,
+        PROFILING_STAGE_LOSS_POLICY_CE,
+        PROFILING_STAGE_LOSS_VALUE_MSE,
+        PROFILING_STAGE_LOSS_BASE_HEADS,
+        PROFILING_STAGE_LOSS_ADVANCED_HEADS,
+        PROFILING_STAGE_LOSS_TOTAL_COMBINE,
+        PROFILING_STAGE_LOSS_EXIT,
         PROFILING_STAGE_BACKWARD,
         PROFILING_STAGE_OPTIMIZER_STEP,
         PROFILING_STAGE_PRODUCER_WAIT,
@@ -451,28 +435,6 @@ fn profiling_stage_constants_are_all_distinct() {
         all.len(),
         "profiling stage constants must be unique"
     );
-}
-
-fn learner_model_fingerprint_input() -> ModelFingerprintInput {
-    ModelFingerprintInput {
-        num_blocks: 24,
-        input_channels: 34,
-        hidden_channels: 256,
-        num_groups: 32,
-        action_space: 46,
-        score_bins: 55,
-    }
-}
-
-fn actor_model_fingerprint_input() -> ModelFingerprintInput {
-    ModelFingerprintInput {
-        num_blocks: 12,
-        input_channels: 34,
-        hidden_channels: 128,
-        num_groups: 16,
-        action_space: 46,
-        score_bins: 55,
-    }
 }
 
 fn dummy_config() -> TrainConfig {
@@ -516,223 +478,49 @@ fn dummy_config() -> TrainConfig {
 }
 
 #[test]
-fn advanced_loss_signature_distinguishes_none_and_some() {
-    assert_eq!(advanced_loss_signature(None), "advanced_loss:none");
-
-    let signature = advanced_loss_signature(Some(&AdvancedLossConfig {
-        exit: Some(0.5),
-        safety_residual: None,
-        belief_fields: Some(0.25),
-        mixture_weight: None,
-        opponent_hand_type: None,
-        delta_q: Some(1.0),
-    }));
-    assert!(signature.contains("\"exit\":0.5"));
-    assert!(signature.contains("\"belief_fields\":0.25"));
-    assert!(signature.contains("\"delta_q\":1.0"));
-}
-
-#[test]
-fn workload_fingerprint_uses_bf16_for_cuda_bc_precision() {
-    let mut config = dummy_config();
-    config.precision_mode = PrecisionMode::Bf16Autocast;
-    config.device = "cuda:0".to_string();
-    config.advanced_loss = Some(AdvancedLossConfig {
-        exit: Some(0.25),
-        safety_residual: Some(0.75),
-        belief_fields: None,
-        mixture_weight: None,
-        opponent_hand_type: None,
-        delta_q: None,
-    });
-    let model_config = learner_model_fingerprint_input();
-
-    let preflight = PreflightConfig::default();
-    let fingerprint = workload_fingerprint(&config, &preflight, &model_config);
-    assert_eq!(fingerprint.batch_size, 256);
-    assert!(fingerprint.augment);
-    assert_eq!(fingerprint.precision_mode, "bf16_autocast");
-    assert_eq!(fingerprint.requested_precision, "bf16_autocast");
-    assert_eq!(fingerprint.effective_precision, "bf16_amp");
-    assert_eq!(fingerprint.train_fraction_bits, 0.875f32.to_bits());
-    assert_eq!(fingerprint.max_skip_logs_per_source, 4);
-    assert_eq!(fingerprint.max_validation_batches, Some(3));
-    assert_eq!(fingerprint.max_validation_samples, Some(99));
-    assert!(fingerprint.model_signature.contains("blocks:24"));
-    assert!(fingerprint.model_signature.contains("action:46"));
-    assert!(fingerprint.code_signature.contains("hydra-train:"));
-    assert!(
-        fingerprint
-            .advanced_loss_signature
-            .contains("\"exit\":0.25")
-    );
-    assert!(
-        fingerprint
-            .advanced_loss_signature
-            .contains("\"safety_residual\":0.75")
-    );
-    assert!(
-        !fingerprint.preflight_config_signature.is_empty(),
-        "preflight config signature should be populated"
-    );
-    assert_eq!(fingerprint.explicit_train_microbatch, Some(64));
-    assert_eq!(fingerprint.explicit_validation_microbatch, Some(32));
-}
-
-#[test]
-fn hardware_and_cache_key_include_runtime_identity() {
-    let config = dummy_config();
-    let model_config = actor_model_fingerprint_input();
-
-    let hardware = hardware_fingerprint("cuda:0", 32);
-    assert_eq!(hardware.device_label, "cuda:0");
-    assert_eq!(hardware.backend, "burn-libtorch");
-    assert_eq!(hardware.cpu_logical_cores, 32);
-
-    let preflight = PreflightConfig::default();
-    let cache_key = preflight_cache_key(&config, &preflight, &model_config, "cuda:0", 32);
-    assert_eq!(cache_key.hardware.device_label, "cuda:0");
-    assert_eq!(cache_key.hardware.cpu_logical_cores, 32);
-    assert_eq!(cache_key.workload.batch_size, config.batch_size);
-    assert_eq!(cache_key.workload.precision_mode, "fp32");
-    assert_eq!(cache_key.workload.requested_precision, "fp32");
-    assert_eq!(cache_key.workload.effective_precision, "fp32");
-    assert!(cache_key.workload.model_signature.contains("blocks:12"));
-}
-
-#[test]
-fn precision_modes_change_preflight_cache_key() {
-    let fp32 = dummy_config();
-    let mut bf16 = dummy_config();
-    bf16.precision_mode = PrecisionMode::Bf16Autocast;
-    bf16.device = "cuda:0".to_string();
-    let model_config = learner_model_fingerprint_input();
-
-    let preflight = PreflightConfig::default();
-    let fp32_key = preflight_cache_key(&fp32, &preflight, &model_config, "cuda:0", 32);
-    let bf16_key = preflight_cache_key(&bf16, &preflight, &model_config, "cuda:0", 32);
-
-    assert_eq!(fp32_key.workload.precision_mode, "fp32");
-    assert_eq!(fp32_key.workload.requested_precision, "fp32");
-    assert_eq!(fp32_key.workload.effective_precision, "fp32");
-    assert_eq!(bf16_key.workload.precision_mode, "bf16_autocast");
-    assert_eq!(bf16_key.workload.requested_precision, "bf16_autocast");
-    assert_eq!(bf16_key.workload.effective_precision, "bf16_amp");
-    assert_ne!(fp32_key, bf16_key);
-}
-
-#[test]
-fn preflight_config_knob_change_invalidates_cache_key() {
-    let config = dummy_config();
-    let baseline = PreflightConfig::default();
-    let changed = PreflightConfig {
-        warmup_steps: baseline.warmup_steps + 1,
-        ..Default::default()
+fn preflight_bench_report_has_no_cache_or_runtime_fields() {
+    let report = PreflightBenchReport {
+        schema_version: 1,
+        rows: vec![PreflightBenchRow {
+            index: 0,
+            status: PreflightBenchStatus::Pass,
+            device: "cpu".to_string(),
+            mode: PreflightBenchMode::LoaderOnly,
+            batch_size: 1024,
+            ring_batches: 2,
+            loader_threads: 1,
+            prefetch_batches: 1,
+            shuffle: PreflightShuffleMode::None,
+            codec: PreflightCodec::None,
+            samples_per_second: Some(1.0),
+            mib_per_second: None,
+            p50_batch_ms: None,
+            p95_batch_ms: None,
+            producer_wait_ratio: None,
+            consumer_wait_ratio: None,
+            disk_wait_ratio: None,
+            gpu_input_wait_ratio: None,
+            cpu_user_seconds: None,
+            cpu_system_seconds: None,
+            error: None,
+        }],
+        total_elapsed_seconds: 0.0,
     };
-    let model_config = learner_model_fingerprint_input();
-
-    let baseline_key = preflight_cache_key(&config, &baseline, &model_config, "cuda:0", 32);
-    let changed_key = preflight_cache_key(&config, &changed, &model_config, "cuda:0", 32);
-
-    assert_ne!(
-        baseline_key.workload.preflight_config_signature,
-        changed_key.workload.preflight_config_signature,
-    );
-    assert_ne!(baseline_key, changed_key);
-}
-
-#[test]
-fn preflight_config_candidate_microbatches_change_invalidates_cache_key() {
-    let config = dummy_config();
-    let baseline = PreflightConfig::default();
-    let changed = PreflightConfig {
-        candidate_microbatches: vec![128, 64, 32],
-        ..Default::default()
-    };
-    let model_config = learner_model_fingerprint_input();
-
-    let baseline_key = preflight_cache_key(&config, &baseline, &model_config, "cuda:0", 32);
-    let changed_key = preflight_cache_key(&config, &changed, &model_config, "cuda:0", 32);
-
-    assert_ne!(baseline_key, changed_key);
-}
-
-#[test]
-fn explicit_train_microbatch_change_invalidates_cache_key() {
-    let mut no_override = dummy_config();
-    no_override.microbatch_size = None;
-    let mut with_override = dummy_config();
-    with_override.microbatch_size = Some(128);
-    let model_config = learner_model_fingerprint_input();
-
-    let preflight = PreflightConfig::default();
-    let no_key = preflight_cache_key(&no_override, &preflight, &model_config, "cuda:0", 32);
-    let with_key = preflight_cache_key(&with_override, &preflight, &model_config, "cuda:0", 32);
-
-    assert_eq!(no_key.workload.explicit_train_microbatch, None);
-    assert_eq!(with_key.workload.explicit_train_microbatch, Some(128));
-    assert_ne!(no_key, with_key);
-}
-
-#[test]
-fn explicit_validation_microbatch_change_invalidates_cache_key() {
-    let mut no_override = dummy_config();
-    no_override.validation_microbatch_size = None;
-    let mut with_override = dummy_config();
-    with_override.validation_microbatch_size = Some(256);
-    let model_config = learner_model_fingerprint_input();
-
-    let preflight = PreflightConfig::default();
-    let no_key = preflight_cache_key(&no_override, &preflight, &model_config, "cuda:0", 32);
-    let with_key = preflight_cache_key(&with_override, &preflight, &model_config, "cuda:0", 32);
-
-    assert_eq!(no_key.workload.explicit_validation_microbatch, None);
-    assert_eq!(with_key.workload.explicit_validation_microbatch, Some(256));
-    assert_ne!(no_key, with_key);
-}
-
-#[test]
-fn non_selection_fields_do_not_change_cache_key() {
-    let baseline = dummy_config();
-    let mut changed = dummy_config();
-    changed.num_threads = Some(99);
-    changed.buffer_samples = 9999;
-    changed.buffer_games = 9999;
-    changed.seed = 42;
-    changed.data_dir = PathBuf::from("/different/data");
-    changed.output_dir = PathBuf::from("/different/output");
-    changed.tensorboard = !baseline.tensorboard;
-    changed.log_every_n_steps = baseline.log_every_n_steps + 100;
-    changed.checkpoint_every_n_steps = baseline.checkpoint_every_n_steps + 100;
-    let model_config = learner_model_fingerprint_input();
-
-    let preflight = PreflightConfig::default();
-    let baseline_key = preflight_cache_key(&baseline, &preflight, &model_config, "cuda:0", 32);
-    let changed_key = preflight_cache_key(&changed, &preflight, &model_config, "cuda:0", 32);
-
-    assert_eq!(baseline_key, changed_key);
-}
-
-#[test]
-fn code_signature_uses_v6_version() {
-    let config = dummy_config();
-    let model_config = learner_model_fingerprint_input();
-    let preflight = PreflightConfig::default();
-    let fingerprint = workload_fingerprint(&config, &preflight, &model_config);
-    assert!(
-        fingerprint.code_signature.contains("preflight-v6"),
-        "code_signature should contain preflight-v6, got: {}",
-        fingerprint.code_signature
-    );
-}
-
-#[test]
-fn hardware_fingerprint_memory_probe_is_optional() {
-    let hardware = hardware_fingerprint("cpu", 1);
-    assert!(
-        hardware
-            .total_memory_bytes
-            .map(|bytes| bytes > 0)
-            .unwrap_or(true)
-    );
+    let json = serde_json::to_string(&report).expect("report serializes");
+    for forbidden in [
+        "selected",
+        "cache_hit",
+        "runtime",
+        "cache_key",
+        "saved",
+        "best",
+        "recommended",
+    ] {
+        assert!(
+            !json.contains(forbidden),
+            "forbidden word in report: {forbidden}"
+        );
+    }
+    assert!(json.contains("disk_wait_ratio"));
+    assert!(json.contains("gpu_input_wait_ratio"));
 }

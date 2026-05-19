@@ -68,84 +68,74 @@ Boundary rules:
 
 ## Build and validation
 
-Use Pixi from repo root. Do not use system Cargo when Pixi is available.
+Use Pixi from repo root. Do not use system Cargo for normal work; Pixi pins Rust, libtorch/PyTorch, clang/mold, sccache, protobuf, and linker env.
+
+Core gates:
+
+| Command | Use |
+|---|---|
+| `pixi run torch-check` | Verify pinned PyTorch/libtorch and CUDA visibility |
+| `pixi run check-lib` | Fastest compile gate: workspace libs, no default features |
+| `pixi run test-lib` | Fast lib unit tests, no default features |
+| `pixi run test-fast` | Fast test targets, no benches/examples |
+| `pixi run check` | Default no-heavy all-target compile gate |
+| `pixi run test` | Default no-heavy all-target tests through nextest |
+| `pixi run lint` | Fast lint: anti-game scan, rustfmt, clippy |
+| `pixi run fmt` | Rustfmt only |
+| `pixi run build` | Fast dev build |
+| `pixi run build-release` | Fast release build |
+| `pixi run build-dist` | Fat-LTO prod artifact |
+| `pixi run clean` | Cargo clean |
+
+Explicit heavy/special gates:
+
+| Command | Use |
+|---|---|
+| `pixi run check-training` | CPU LibTorch `hydra-train --features training` |
+| `pixi run check-cuda-graph` | CUDA graph/pinned transport compile gate |
+| `pixi run check-training-cuda` | Alias for serious CUDA shard training check |
+| `pixi run train-cuda-shards -- <config>` | Release CUDA BC shard training with pinned/prealloc transport |
+| `pixi run check-data-tools` | Data-tool bins (`data-tools`) |
+| `pixi run check-debug-tools` | Replay-debug bins (`debug-tools`) |
+| `pixi run test-exhaustive` | All-feature test gate |
+| `pixi run lint-exhaustive` | All-feature/CUDA clippy gate |
+| `pixi run lint-cuda-graph` | Focused CUDA graph clippy gate |
+| `pixi run bench-core` | `hydra-core` benches |
+| `pixi run bench-engine` | `hydra-engine` benches |
+| `pixi run bench-train` | `hydra-train` benches |
+
+Timing/discovery:
+
+| Command | Use |
+|---|---|
+| `pixi run timings-check` | Cargo timing report for default check |
+| `pixi run timings-nextest-list` | Timing report for test discovery |
+| `pixi run timings-build-fast` | Timing report for default build |
+| `pixi run timings-full` | Timing report for all-feature build |
+| `pixi run nextest-list` | Discover default no-heavy tests |
+| `pixi run nextest-list-all-features` | Discover all-feature tests |
+| `pixi run nextest-list-exhaustive` | Alias for all-feature test discovery |
+
+Compatibility aliases: `build-fast` -> `build-release`; `nextest` -> `test`.
+
+Fast loops:
 
 ```bash
-pixi run torch-check
 pixi run check-lib
 pixi run test-lib
-pixi run test-fast
 pixi run check
-pixi run build
 pixi run test
-pixi run lint
-pixi run fmt
-pixi run check-training
-pixi run check-data-tools
-pixi run check-debug-tools
-pixi run check-cuda-graph
-pixi run bench-core
-pixi run bench-engine
-pixi run bench-train
-pixi run test-exhaustive
-pixi run lint-exhaustive
-pixi run lint-cuda-graph
-pixi run nextest-list
-pixi run nextest-list-exhaustive
+pixi run cargo check -p <crate> --no-default-features --quiet
+pixi run cargo nextest run -p <crate> --lib --no-default-features --cargo-profile dev --cargo-quiet
+pixi run cargo nextest run <test-name> --no-default-features --cargo-profile dev --cargo-quiet
+pixi run cargo nextest run -p <crate> <ignored-test> --features <feature> --no-default-features --no-capture -- --ignored
 ```
 
-Meanings:
-- `pixi run torch-check` = print pinned PyTorch version, CUDA availability, and libtorch path.
-- `pixi run check-lib` = fastest compile gate: workspace libs only, no default features.
-- `pixi run test-lib` = fastest unit-test gate: workspace lib tests only, no default features.
-- `pixi run test-fast` = fast behavior gate: workspace test targets without benches/examples, no default features.
-- `pixi run check` / `pixi run check-all-targets` = default no-heavy all-target compile gate: `cargo check --workspace --all-targets --no-default-features --quiet`.
-- `pixi run build` = fast default dev build; `pixi run build-release` = fast release build; `pixi run build-dist` = fat-LTO final artifact build.
-- `pixi run test` = default no-heavy workspace tests: `--all-targets --no-default-features --cargo-profile dev --no-fail-fast`.
-- `pixi run test-release` = release-profile tests without heavy defaults.
-- `pixi run lint` = fast default lint: anti-game scan + rustfmt + clippy no-default-features.
-- `pixi run fmt` = Rustfmt only.
-- `pixi run test-exhaustive` / `pixi run lint-exhaustive` = explicit all-feature heavy gates; require CUDA-capable libtorch/toolkit where CUDA graph builds.
-- `pixi run check-training` = explicit CPU LibTorch training path.
-- `pixi run check-data-tools` = explicit hydra-train data-tool bins (`data-tools`).
-- `pixi run check-debug-tools` = explicit hydra-train replay-debug bins (`debug-tools`).
-- `pixi run check-cuda-graph` / `pixi run lint-cuda-graph` = explicit CUDA graph paths.
-- `pixi run bench-core`, `pixi run bench-engine`, `pixi run bench-train` = explicit benchmark targets; benches are not default targets.
-- `pixi run timings-check`, `pixi run timings-nextest-list`, `pixi run timings-build-fast`, `pixi run timings-full` = Cargo timing reports.
-- Compatibility aliases remain: `build-fast`, `nextest`, `nextest-list`, `nextest-list-all-features`, `nextest-list-exhaustive`.
-
-Fast iteration tips:
-- Use Pixi tasks, not direct system Cargo. Pixi pins Rust/libtorch/mold/sccache env; direct Cargo can pick host PyTorch and lie.
-- Inner loop: `pixi run check-lib`; add `pixi run test-lib` for unit tests or `pixi run test-fast` for integration-style test targets without benches/examples.
-- Default all-target loop: `pixi run check` then `pixi run test`; this preserves broader no-heavy coverage.
-- Exhaustive/heavy paths are opt-in only: `pixi run test-exhaustive`, `pixi run lint-exhaustive`, `pixi run check-training`, `pixi run check-cuda-graph`.
-- Tool bins are opt-in only: `pixi run check-data-tools`, `pixi run check-debug-tools`.
-- Benchmarks are opt-in only: `pixi run bench-core`, `pixi run bench-engine`, `pixi run bench-train`.
-- Narrow loop: `pixi run cargo check -p <crate> --no-default-features --quiet` or `pixi run cargo nextest run -p <crate> --lib --no-default-features --cargo-profile dev --cargo-quiet`.
-- For one test: `pixi run cargo nextest run <test-name> --no-default-features --cargo-profile dev --cargo-quiet`.
-- For ignored/manual proof tests needing stdout, still prefer Nextest: `pixi run cargo nextest run -p <crate> <test-name> --features <feature> --no-default-features --no-capture -- --ignored`. Use `--no-capture` before `--`; use `-- --ignored` after `--`.
-- Timing work: `pixi run timings-check` for default graph; `pixi run timings-nextest-list` for test discovery; `pixi run timings-full` for full heavy graph. Do not compare cold vs warm caches.
-- Use `CARGO_TARGET_DIR=$HOME/tmp/hydra-compile-bench/<name> SCCACHE_DISABLE=1 pixi run ...` for clean compile measurements; normal dev should leave sccache on.
-
-Scoped tests use Pixi-owned Cargo:
-
-```bash
-pixi run cargo nextest run -p hydra-core --no-default-features --cargo-profile dev
-pixi run cargo nextest run -p hydra-core --test golden_encoder --no-default-features --cargo-profile dev
-pixi run cargo nextest run golden_aka_flags --no-default-features --cargo-profile dev
-pixi run cargo nextest run -p hydra-core --lib --no-default-features --cargo-profile dev
-pixi run cargo nextest run -p hydra-core --tests --no-default-features --cargo-profile dev
-pixi run cargo nextest run preflight_runtime --no-default-features --cargo-profile dev
-pixi run cargo nextest run -p hydra-train-exec --all-features --cargo-profile dev
-# Ignored/manual proof test with stdout:
-pixi run cargo nextest run -p hydra-train-exec direct_tch_cuda_forced_bf16_autocast_backward_proof_probe --features bf16-autocast-proof --no-default-features --no-capture -- --ignored
-```
-
-Other gates:
-- `scripts/lint-check.sh --fast` = default: Markdown compression hook + anti-game scan + rustfmt + no-default-features clippy.
-- `scripts/lint-check.sh --exhaustive` = explicit all-features clippy after CUDA/libtorch prep.
-- `scripts/lint-check.sh --cuda-graph` = focused `hydra-train` + `hydra-train-exec` cuda-graph clippy after CUDA/libtorch prep.
-- Python scripts: `uv run python -m unittest discover -s scripts/tests`.
+Rules:
+- Heavy paths are opt-in only: training, CUDA graph, exhaustive/all-features, data/debug tools, benches.
+- Do not compare cold-cache compile timings to warm-cache timings.
+- Clean compile measurements: `CARGO_TARGET_DIR=$HOME/tmp/hydra-compile-bench/<name> SCCACHE_DISABLE=1 pixi run ...`; normal dev leaves sccache on.
+- Python script tests: `uv run python -m unittest discover -s scripts/tests`.
 - Coverage/container/Kaggle commands live in `docker/train/README.md`.
 - Perf claims must cite `research/infrastructure/ENGINE_BENCHMARKS.md` or exact command/output observed.
 
@@ -160,6 +150,15 @@ Other gates:
 - `.cargo/config.toml` is local-only/gitignored.
 - `Cargo.lock` stays committed.
 - `.codebase-memory/`, `target/`, `output/`, notebooks payloads, model/cache artifacts stay out of normal commits unless task explicitly refreshes them.
+
+## Burn dependency decisions
+
+- Burn stack is patched locally in `third_party/burn`: `burn`, `burn-autodiff`, `burn-backend`, `burn-tch`, `burn-flex`, `burn-ndarray`, `burn-optim` at `0.21.0`.
+- Current training backend is LibTorch/tch. Do not replace with `burn-flex`: Flex is CPU-only and useful only for isolated CPU smoke/parity tests.
+- Do not adopt `burn-dispatch` in production training yet. It changes device/tensor associated types (`DispatchDevice`/`DispatchTensor`) and is not throughput fix.
+- Do not use `burn-store` for BC shard/sample materialization. It is model tensor storage, not Hydra compact sample decoding. If checkpoint time is proven material, benchmark Burnpack/SafeTensors as model-payload export only; keep optimizer `.bin` contract unless full resume parity proof passes.
+- Keep Burn Adam as production optimizer. AdamW/AMSGrad/Adan are fresh-run experiments only; Muon requires parameter groups and is unsafe for global Hydra params; LBFGS does not fit streaming BC/RL. None fixes CUDA graph replay because Burn `GradientsParams` + module mapping remains blocker.
+- For profiling, keep Hydra timings + NVTX + Nsight Systems/Compute. Do not add `hdrhistogram` unless long-run online tail summaries are needed and existing JSONL timing extraction is insufficient.
 
 ## Licensing and source boundaries
 

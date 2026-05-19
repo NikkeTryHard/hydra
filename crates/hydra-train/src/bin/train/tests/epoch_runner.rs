@@ -533,6 +533,7 @@ fn emit_interval_step_summary_records_logging_scope_order() {
                 assumed_games_seen: 4,
                 epoch_optimizer_steps: 5,
                 window_stats: ScalarAverages::default().finalize(),
+                window_steps: 5,
                 step_rate: 12.0,
                 profiling: None,
                 advisories: Vec::new(),
@@ -1257,6 +1258,7 @@ fn emit_interval_step_summary_writes_skipped_validation_step_log() {
             assumed_games_seen: 0,
             epoch_optimizer_steps: 2,
             window_stats,
+            window_steps: 5,
             step_rate: 12.5,
             profiling: None,
             advisories: Vec::new(),
@@ -1311,6 +1313,7 @@ fn emit_interval_step_summary_writes_validation_and_best_metrics() {
             assumed_games_seen: 6,
             epoch_optimizer_steps: 3,
             window_stats,
+            window_steps: 2,
             step_rate: 3.0,
             profiling: None,
             advisories: Vec::new(),
@@ -1358,6 +1361,20 @@ fn emit_interval_step_summary_writes_validation_and_best_metrics() {
             .as_f64()
             .expect("best val agreement"),
         0.7,
+    );
+    assert_eq!(entry["window_steps"].as_u64(), Some(2));
+    assert_eq!(entry["window_samples"].as_u64(), Some(4));
+    assert_close(
+        entry["steps_per_second"]
+            .as_f64()
+            .expect("steps per second"),
+        3.0,
+    );
+    assert_close(
+        entry["samples_per_second"]
+            .as_f64()
+            .expect("samples per second"),
+        6.0,
     );
     assert_eq!(entry["profiling"]["stage"].as_str(), Some("bc_interval"));
     assert!(entry["profiling"]["elapsed_seconds"].as_f64().is_some());

@@ -6,7 +6,7 @@ Crate-local map for training execution composition migrated out of train binarie
 
 - BC fixed-shape train/probe execution helpers.
 - Bootstrap, modes, orchestration, epoch/RL runners.
-- Heavy preflight/probe/validation execution.
+- Heavy preflight benchmark/probe/validation execution.
 - Data pipeline and Burn-facing sample adapters.
 - GPU/libtorch/CUDA-graph/NVTX/pinned-transfer adapters where feature-gated.
 - Artifacts, resume state, progress accumulation, presentation helpers.
@@ -29,6 +29,8 @@ Crate-local map for training execution composition migrated out of train binarie
 | Feature gates | CUDA graph/pinned transfer behind feature flags |
 | API posture | some migrated compatibility seams intentionally preserve old train facade shape |
 | Boundary | execution heavy code here, operator docs in `docs/TRAINING_RUNBOOK.md` |
+| Preflight benchmark | executes exact candidate tuples and formats markdown rows; does not read config, dataset, or shard manifest; does not choose or persist training config |
+| Shard workflow | implements build/consume pieces; operator flow remains build shards -> optional manifestless markdown preflight -> human edits YAML -> train from manifest |
 
 ## Read next
 

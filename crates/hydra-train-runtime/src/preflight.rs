@@ -1,3 +1,4 @@
+use std::fmt;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -188,6 +189,27 @@ pub fn default_rl_probe_growth_safety_factor() -> f64 {
     1.35
 }
 
+pub fn default_preflight_bench_output() -> String {
+    "md".to_string()
+}
+
+pub fn default_preflight_bench_candidate_tuples() -> Vec<PreflightBenchTuple> {
+    vec![PreflightBenchTuple {
+        batch_size: 1024,
+        ring_batches: 2,
+        loader_threads: 1,
+        prefetch_batches: 1,
+    }]
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PreflightBenchTuple {
+    pub batch_size: usize,
+    pub ring_batches: usize,
+    pub loader_threads: usize,
+    pub prefetch_batches: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PreflightConfig {
@@ -279,6 +301,10 @@ pub struct PreflightConfig {
     pub rl_probe_memory_headroom_ratio: f64,
     #[serde(default = "default_rl_probe_growth_safety_factor")]
     pub rl_probe_growth_safety_factor: f64,
+    #[serde(default = "default_preflight_bench_candidate_tuples")]
+    pub bench_candidate_tuples: Vec<PreflightBenchTuple>,
+    #[serde(default = "default_preflight_bench_output")]
+    pub bench_output: String,
 }
 
 impl Default for PreflightConfig {
@@ -328,45 +354,19 @@ impl Default for PreflightConfig {
             rl_probe_min_free_memory_bytes: default_rl_probe_min_free_memory_bytes(),
             rl_probe_memory_headroom_ratio: default_rl_probe_memory_headroom_ratio(),
             rl_probe_growth_safety_factor: default_rl_probe_growth_safety_factor(),
+            bench_candidate_tuples: default_preflight_bench_candidate_tuples(),
+            bench_output: default_preflight_bench_output(),
         }
     }
 }
 
-fn total_memory_bytes() -> Option<u64> {
-    let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
-    let line = meminfo.lines().find(|line| line.starts_with("MemTotal:"))?;
-    let kb = line.split_whitespace().nth(1)?.parse::<u64>().ok()?;
-    Some(kb.saturating_mul(1024))
-}
-
-/// Returns the stable requested-precision fragment used in preflight cache keys.
+/// Returns the stable requested-precision fragment used in preflight output.
 pub fn requested_precision_signature(mode: crate::config::PrecisionMode) -> &'static str {
     match mode {
         crate::config::PrecisionMode::Fp32 => "fp32",
         crate::config::PrecisionMode::Bf16Autocast => "bf16_autocast",
     }
 }
-
-/// Returns the stable effective-precision fragment used in preflight cache keys.
-pub fn effective_precision_signature(mode: crate::config::EffectivePrecision) -> &'static str {
-    mode.as_str()
-}
-
-/// Returns the advanced-loss fragment used in preflight cache keys.
-pub fn advanced_loss_signature(config: Option<&crate::config::AdvancedLossConfig>) -> String {
-    match config {
-        Some(config) => serde_json::to_string(config)
-            .unwrap_or_else(|_| "advanced_loss:unserializable".to_string()),
-        None => "advanced_loss:none".to_string(),
-    }
-}
-
-/// Returns the preflight-config fragment used in preflight cache keys.
-pub fn preflight_config_signature(preflight: &PreflightConfig) -> String {
-    serde_json::to_string(preflight)
-        .unwrap_or_else(|_| "preflight_config:unserializable".to_string())
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelFingerprintInput {
     pub num_blocks: usize,
@@ -389,104 +389,6 @@ impl ModelFingerprintInput {
             self.score_bins,
         )
     }
-}
-
-/// Builds the workload fingerprint portion of the preflight cache key.
-pub fn workload_fingerprint(
-    config: &crate::config::TrainConfig,
-    preflight: &PreflightConfig,
-    model: &ModelFingerprintInput,
-) -> WorkloadFingerprint {
-    WorkloadFingerprint {
-        batch_size: config.batch_size,
-        augment: config.augment,
-        precision_mode: requested_precision_signature(config.precision_mode).to_string(),
-        requested_precision: requested_precision_signature(config.precision_mode).to_string(),
-        effective_precision: effective_precision_signature(config.effective_precision())
-            .to_string(),
-        train_fraction_bits: config.train_fraction.to_bits(),
-        max_skip_logs_per_source: config.max_skip_logs_per_source,
-        max_validation_batches: config.max_validation_batches,
-        max_validation_samples: config.max_validation_samples,
-        model_signature: model.signature(),
-        code_signature: format!(
-            "hydra-train:{}:{}:preflight-v6",
-            env!("CARGO_PKG_VERSION"),
-            env!("CARGO_PKG_NAME")
-        ),
-        advanced_loss_signature: advanced_loss_signature(config.advanced_loss.as_ref()),
-        preflight_config_signature: preflight_config_signature(preflight),
-        explicit_train_microbatch: config.microbatch_size,
-        explicit_validation_microbatch: config.validation_microbatch_size,
-    }
-}
-
-/// Builds the hardware fingerprint portion of the preflight cache key.
-pub fn hardware_fingerprint(device_label: &str, cpu_logical_cores: usize) -> HardwareFingerprint {
-    HardwareFingerprint {
-        device_label: device_label.to_string(),
-        backend: "burn-libtorch".to_string(),
-        cpu_logical_cores,
-        total_memory_bytes: total_memory_bytes(),
-    }
-}
-
-/// Builds the complete preflight cache key.
-pub fn preflight_cache_key(
-    config: &crate::config::TrainConfig,
-    preflight: &PreflightConfig,
-    model: &ModelFingerprintInput,
-    device_label: &str,
-    cpu_logical_cores: usize,
-) -> PreflightCacheKey {
-    PreflightCacheKey {
-        hardware: hardware_fingerprint(device_label, cpu_logical_cores),
-        workload: workload_fingerprint(config, preflight, model),
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct HardwareFingerprint {
-    pub device_label: String,
-    pub backend: String,
-    pub cpu_logical_cores: usize,
-    pub total_memory_bytes: Option<u64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkloadFingerprint {
-    pub batch_size: usize,
-    pub augment: bool,
-    /// Legacy requested-precision field retained for old cache/report readers.
-    pub precision_mode: String,
-    #[serde(default)]
-    pub requested_precision: String,
-    #[serde(default)]
-    pub effective_precision: String,
-    pub train_fraction_bits: u32,
-    pub max_skip_logs_per_source: usize,
-    pub max_validation_batches: Option<usize>,
-    pub max_validation_samples: Option<usize>,
-    pub model_signature: String,
-    pub code_signature: String,
-    pub advanced_loss_signature: String,
-    /// Serialized PreflightConfig capturing all probe/search knobs that affect
-    /// which runtime gets selected. Any knob change invalidates the cache.
-    #[serde(default)]
-    pub preflight_config_signature: String,
-    /// Explicit train microbatch override from TrainConfig, if set. Constrains
-    /// the probe search space so a change should invalidate the cache.
-    #[serde(default)]
-    pub explicit_train_microbatch: Option<usize>,
-    /// Explicit validation microbatch override from TrainConfig, if set.
-    #[serde(default)]
-    pub explicit_validation_microbatch: Option<usize>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PreflightCacheKey {
-    pub hardware: HardwareFingerprint,
-    pub workload: WorkloadFingerprint,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -659,6 +561,12 @@ pub const PROFILING_STAGE_DELTA_Q_BASELINE_FORWARD: &str = "delta_q_baseline_for
 pub const PROFILING_STAGE_COLLATION: &str = "collation";
 pub const PROFILING_STAGE_FORWARD: &str = "forward";
 pub const PROFILING_STAGE_LOSS: &str = "loss";
+pub const PROFILING_STAGE_LOSS_POLICY_CE: &str = "loss_policy_ce";
+pub const PROFILING_STAGE_LOSS_VALUE_MSE: &str = "loss_value_mse";
+pub const PROFILING_STAGE_LOSS_BASE_HEADS: &str = "loss_base_heads";
+pub const PROFILING_STAGE_LOSS_ADVANCED_HEADS: &str = "loss_advanced_heads";
+pub const PROFILING_STAGE_LOSS_TOTAL_COMBINE: &str = "loss_total_combine";
+pub const PROFILING_STAGE_LOSS_EXIT: &str = "loss_exit";
 pub const PROFILING_STAGE_BACKWARD: &str = "backward";
 pub const PROFILING_STAGE_OPTIMIZER_STEP: &str = "optimizer_step";
 pub const PROFILING_STAGE_PRODUCER_WAIT: &str = "producer_wait";
@@ -786,65 +694,95 @@ pub struct ExplicitSettings {
     pub validation_microbatch_explicit: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct PreflightCacheEntry {
-    pub cache_key: PreflightCacheKey,
-    pub runtime: EffectiveRuntimeConfig,
-    #[serde(default)]
-    pub benchmark: Option<BenchmarkResult>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum PreflightArtifactEventKind {
-    Started,
-    Completed,
-    Skipped,
-    Interrupted,
+pub enum PreflightBenchStatus {
+    Pass,
+    Error,
+}
+
+impl fmt::Display for PreflightBenchStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Pass => "pass",
+            Self::Error => "error",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PreflightBenchMode {
+    LoaderOnly,
+    Consume,
+}
+
+impl fmt::Display for PreflightBenchMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::LoaderOnly => "loader_only",
+            Self::Consume => "consume",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PreflightShuffleMode {
+    None,
+    Block,
+}
+
+impl fmt::Display for PreflightShuffleMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::None => "none",
+            Self::Block => "block",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PreflightCodec {
+    None,
+}
+
+impl fmt::Display for PreflightCodec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("none")
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct PreflightArtifactEvent {
-    pub phase: String,
-    pub kind: PreflightArtifactEventKind,
-    pub elapsed_seconds: Option<f64>,
-    pub detail: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub completed: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub planned: Option<u64>,
+pub struct PreflightBenchRow {
+    pub index: usize,
+    pub status: PreflightBenchStatus,
+    pub device: String,
+    pub mode: PreflightBenchMode,
+    pub batch_size: usize,
+    pub ring_batches: usize,
+    pub loader_threads: usize,
+    pub prefetch_batches: usize,
+    pub shuffle: PreflightShuffleMode,
+    pub codec: PreflightCodec,
+    pub samples_per_second: Option<f64>,
+    pub mib_per_second: Option<f64>,
+    pub p50_batch_ms: Option<f64>,
+    pub p95_batch_ms: Option<f64>,
+    pub producer_wait_ratio: Option<f64>,
+    pub consumer_wait_ratio: Option<f64>,
+    pub disk_wait_ratio: Option<f64>,
+    pub gpu_input_wait_ratio: Option<f64>,
+    pub cpu_user_seconds: Option<f64>,
+    pub cpu_system_seconds: Option<f64>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct PreflightCandidateRecord {
-    pub phase: String,
-    pub result: ProbeResult,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct PreflightCompletedPhase {
-    pub phase: String,
-    pub elapsed_seconds: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct PreflightState {
-    pub cache_key: PreflightCacheKey,
-    pub completed_phases: Vec<PreflightCompletedPhase>,
-    pub selected_runtime: Option<EffectiveRuntimeConfig>,
-    pub cache_written: bool,
-    #[serde(default)]
-    pub candidate_records: Vec<PreflightCandidateRecord>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct PreflightReport {
-    pub cache_key: PreflightCacheKey,
-    pub runtime: EffectiveRuntimeConfig,
-    pub cache_hit: bool,
-    pub train_probe_results: usize,
-    pub validation_probe_results: usize,
-    pub benchmark: Option<BenchmarkResult>,
+pub struct PreflightBenchReport {
+    pub schema_version: u32,
+    pub rows: Vec<PreflightBenchRow>,
     pub total_elapsed_seconds: f64,
 }
 
@@ -957,9 +895,6 @@ pub fn format_probe_result_summary(result: &ProbeResult) -> String {
         elapsed,
         result.detail
     )
-}
-pub fn default_cache_name() -> PathBuf {
-    PathBuf::from("preflight_cache.json")
 }
 
 pub fn default_manifest_cache_name() -> PathBuf {

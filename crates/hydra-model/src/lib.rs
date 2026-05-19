@@ -14,5 +14,8 @@ pub mod heads;
 pub mod inference;
 /// Full Hydra model and forward DTOs.
 pub mod model;
+mod native_group_norm_mish;
+/// Model-local profiling helpers.
+mod profiling;
 /// Search-as-Feature adaptor modules.
 pub mod saf;

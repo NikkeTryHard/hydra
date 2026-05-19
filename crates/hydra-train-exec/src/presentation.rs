@@ -6,14 +6,12 @@
 )]
 
 use std::borrow::Cow;
-use std::fmt::Write as _;
 use std::time::Duration;
 
 use colored::Colorize;
-use hydra_train_runtime::config::{BcHyperparamConfig, PrecisionMode, display_num_threads};
+use hydra_train_runtime::config::{BcHyperparamConfig, PrecisionMode};
 use hydra_train_runtime::preflight::{
-    EffectiveRuntimeConfig, ExplicitSettings, ProbeKind, ProbeResult, ProbeStatus,
-    requested_precision_signature,
+    EffectiveRuntimeConfig, ProbeKind, ProbeResult, ProbeStatus, requested_precision_signature,
 };
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use time::OffsetDateTime;
@@ -21,6 +19,7 @@ use time::format_description::well_known::Rfc3339;
 
 use crate::advisory::{AdvisorySeverity, RuntimeAdvisory};
 use crate::probe_summary::probe_summary_iter;
+use hydra_train_runtime::preflight::{PreflightBenchReport, PreflightBenchRow};
 
 /// Scalar input for rendering BC optimizer hyperparameters.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -202,6 +201,58 @@ pub fn bc_hyperparam_summary(input: BcHyperparamSummaryInput) -> String {
         input.grad_clip_norm,
         input.warmup_steps,
     )
+}
+
+fn format_optional_number(value: Option<f64>, scale: f64) -> String {
+    value
+        .map(|value| format!("{:.2}", value * scale))
+        .unwrap_or_default()
+}
+
+fn markdown_error(error: Option<&str>) -> String {
+    error
+        .unwrap_or_default()
+        .replace('|', "\\|")
+        .replace('\n', " ")
+}
+
+fn format_preflight_bench_row(row: &PreflightBenchRow) -> String {
+    format!(
+        "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+        row.index,
+        row.status,
+        row.device,
+        row.mode,
+        row.batch_size,
+        row.ring_batches,
+        row.loader_threads,
+        row.prefetch_batches,
+        row.shuffle,
+        row.codec,
+        format_optional_number(row.samples_per_second, 1.0),
+        format_optional_number(row.mib_per_second, 1.0),
+        format_optional_number(row.p50_batch_ms, 1.0),
+        format_optional_number(row.p95_batch_ms, 1.0),
+        format_optional_number(row.producer_wait_ratio, 100.0),
+        format_optional_number(row.consumer_wait_ratio, 100.0),
+        format_optional_number(row.disk_wait_ratio, 100.0),
+        format_optional_number(row.gpu_input_wait_ratio, 100.0),
+        format_optional_number(row.cpu_user_seconds, 1.0),
+        format_optional_number(row.cpu_system_seconds, 1.0),
+        markdown_error(row.error.as_deref()),
+    )
+}
+
+/// Formats the benchmark-only preflight report as the default markdown table.
+pub fn format_preflight_bench_markdown_table(report: &PreflightBenchReport) -> String {
+    let mut out = String::from(
+        "| idx | status | device | mode | batch | ring | threads | prefetch | shuffle | codec | samples/s | MiB/s | p50 ms | p95 ms | producer wait % | consumer wait % | disk wait % | gpu input wait % | cpu user s | cpu sys s | error |\n|---:|---|---|---|---:|---:|---:|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+    );
+    for row in &report.rows {
+        out.push('\n');
+        out.push_str(&format_preflight_bench_row(row));
+    }
+    out
 }
 
 /// Prints a blank-spaced section header.
@@ -674,56 +725,6 @@ pub fn format_probe_results_table(
         ));
     }
     lines.join("\n")
-}
-
-/// Formats an explicit preflight summary.
-pub fn explicit_preflight_summary(
-    runtime: EffectiveRuntimeConfig,
-    explicit: ExplicitSettings,
-    tuning_mode: hydra_train_runtime::preflight::PreflightTuningMode,
-) -> String {
-    let mut summary = format!(
-        "mode={:?} saved train_mb={} val_mb={} accum_steps={} threads={} buffer_games={} buffer_samples={} archive_queue_bound={} {} explicit(train={}, val={})",
-        tuning_mode,
-        runtime.selected.train_microbatch_size,
-        runtime.selected.validation_microbatch_size,
-        runtime.selected.accum_steps,
-        display_num_threads(runtime.loader.num_threads),
-        runtime.loader.buffer_games,
-        runtime.loader.buffer_samples,
-        runtime.loader.archive_queue_bound,
-        precision_runtime_summary(runtime.requested_precision, runtime.effective_precision),
-        explicit.train_microbatch_explicit,
-        explicit.validation_microbatch_explicit,
-    );
-    if tuning_mode == hydra_train_runtime::preflight::PreflightTuningMode::Unsafe {
-        match runtime.selected.unsafe_selected_batch_size {
-            Some(selected_batch) => {
-                write!(
-                    &mut summary,
-                    " unsafe_can_change_logical_batch=true selected_batch={selected_batch}"
-                )
-                .expect("writing to String should not fail");
-                if let Some(lr) = runtime.selected.unsafe_selected_learning_rate {
-                    write!(&mut summary, " selected_lr={lr:.2e}")
-                        .expect("writing to String should not fail");
-                }
-                if let Some(min_lr) = runtime.selected.unsafe_selected_min_learning_rate {
-                    write!(&mut summary, " selected_min_lr={min_lr:.2e}")
-                        .expect("writing to String should not fail");
-                }
-                if let Some(warmup_steps) = runtime.selected.unsafe_selected_warmup_steps {
-                    write!(&mut summary, " selected_warmup_steps={warmup_steps}")
-                        .expect("writing to String should not fail");
-                }
-                summary.push_str(" lr_auto_scaled=false");
-            }
-            None => summary.push_str(
-                " unsafe_can_change_logical_batch=true selected_batch=reserved lr_auto_scaled=false",
-            ),
-        }
-    }
-    summary
 }
 
 /// Formats unsafe preflight math selection/apply policy.

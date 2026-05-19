@@ -1230,9 +1230,11 @@ fn assert_runtime_probe_success_paths_measure_and_cache_real_train_data_case(
     config.buffer_games = 1;
     config.buffer_samples = 1;
     config.archive_queue_bound = 1;
-    let mut preflight = PreflightConfig::default();
-    preflight.warmup_steps = 1;
-    preflight.measure_steps = 1;
+    let preflight = PreflightConfig {
+        warmup_steps: 1,
+        measure_steps: 1,
+        ..Default::default()
+    };
     config.precision_mode = precision_mode;
 
     let key = runtime_tuple_key(&config);
@@ -1333,10 +1335,12 @@ fn autotune_loader_runtime_bubbles_empty_manifest_probe_failures() {
 
 #[test]
 fn autotune_loader_runtime_returns_current_loader_when_rounds_and_extra_samples_are_disabled() {
-    let mut preflight = PreflightConfig::default();
+    let preflight = PreflightConfig {
+        loader_runtime_rounds: 0,
+        loader_tuple_extra_samples: 0,
+        ..Default::default()
+    };
     let mut config = dummy_config();
-    preflight.loader_runtime_rounds = 0;
-    preflight.loader_tuple_extra_samples = 0;
     config.num_threads = Some(1);
     let manifest = DataManifest {
         sources: vec![],

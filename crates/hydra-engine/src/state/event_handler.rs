@@ -214,7 +214,7 @@ impl GameStateEventHandler for GameState {
                 self.current_player = actor as u8;
                 let c1 = parse_mjai_tile(&consumed[0]);
                 let c2 = parse_mjai_tile(&consumed[1]);
-                let form_tiles = vec![tile, c1, c2];
+                let form_tiles = [tile, c1, c2];
 
                 for t in &[c1, c2] {
                     let mjai = if *t == c1 { &consumed[0] } else { &consumed[1] };
@@ -248,7 +248,7 @@ impl GameStateEventHandler for GameState {
                 self.current_player = actor as u8;
                 let c1 = parse_mjai_tile(&consumed[0]);
                 let c2 = parse_mjai_tile(&consumed[1]);
-                let form_tiles = vec![tile, c1, c2];
+                let form_tiles = [tile, c1, c2];
 
                 for t in &[c1, c2] {
                     let mjai = if *t == c1 { &consumed[0] } else { &consumed[1] };
@@ -294,9 +294,9 @@ impl GameStateEventHandler for GameState {
             } => {
                 let tile = parse_mjai_tile(&pai);
                 self.current_player = actor as u8;
-                let mut tiles = vec![tile];
-                for c in &consumed {
-                    tiles.push(parse_mjai_tile(c));
+                let mut tiles = [tile, 0, 0, 0];
+                for (idx, c) in consumed.iter().enumerate() {
+                    tiles[idx + 1] = parse_mjai_tile(c);
                 }
 
                 for c in &consumed {
@@ -306,7 +306,7 @@ impl GameStateEventHandler for GameState {
 
                 self.players[actor].push_meld(Meld::new(
                     MeldType::Daiminkan,
-                    &tiles,
+                    &tiles[..consumed.len() + 1],
                     true,
                     -1,
                     Some(tile),
@@ -314,13 +314,19 @@ impl GameStateEventHandler for GameState {
                 self.needs_tsumo = true;
             }
             MjaiEvent::Ankan { actor, consumed } => {
-                let mut tiles = Vec::new();
-                for c in &consumed {
+                let mut tiles = [0; 4];
+                for (idx, c) in consumed.iter().enumerate() {
                     let t = parse_mjai_tile(c);
-                    tiles.push(t);
+                    tiles[idx] = t;
                     remove_replay_hand_tile_by_mjai(&mut self.players[actor], t, c);
                 }
-                self.players[actor].push_meld(Meld::new(MeldType::Ankan, &tiles, false, -1, None));
+                self.players[actor].push_meld(Meld::new(
+                    MeldType::Ankan,
+                    &tiles[..consumed.len()],
+                    false,
+                    -1,
+                    None,
+                ));
                 self.needs_tsumo = true;
             }
             MjaiEvent::Kakan { actor, pai } => {

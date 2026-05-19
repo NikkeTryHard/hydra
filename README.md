@@ -109,10 +109,10 @@ Compile training binary:
 pixi run check-training
 ```
 
-Run preflight on config:
+Run preflight benchmark:
 
 ```bash
-pixi run cargo run -p hydra-train --no-default-features --features training --bin train -- path/to/config.yaml --preflight
+pixi run cargo run -p hydra-train --no-default-features --features training --bin train -- --preflight --pf-candidate-tuples 1024:2:1:1 --pf-warmup-steps 10 --pf-measure-steps 100 --pf-repetitions 1 --pf-output md
 ```
 
 Run training with config:

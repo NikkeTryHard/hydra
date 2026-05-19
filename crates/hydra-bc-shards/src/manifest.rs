@@ -224,6 +224,19 @@ impl BcShardSplitMode {
                 | (Self::Validation, BcShardSplit::Validation)
         )
     }
+
+    /// Stable manifest string for this mode.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Both => "both",
+            Self::Train => "train",
+            Self::Validation => "validation",
+        }
+    }
+}
+
+fn default_split_mode() -> String {
+    BcShardSplitMode::Both.as_str().to_string()
 }
 
 /// Optional sidecar provenance embedded in a BC shard manifest.
@@ -311,6 +324,9 @@ pub struct BcShardManifest {
     pub train_fraction: f32,
     /// Target samples per shard used by the build.
     pub shard_samples: usize,
+    /// Split-selection mode used by the build: both, train, or validation.
+    #[serde(default = "default_split_mode")]
+    pub split_mode: String,
     /// Whether runtime augmentation is expected.
     pub augment_runtime: bool,
     /// Input path recorded by the build.
@@ -375,6 +391,13 @@ pub fn validate_bc_shard_manifest_contract(manifest: &BcShardManifest) -> Result
             manifest.obs_size, OBS_SIZE, manifest.num_channels, NUM_CHANNELS,
         ));
     }
+    if manifest.num_channels != NUM_CHANNELS {
+        return Err(format!(
+            "BC shard manifest num_channels {} does not match current NUM_CHANNELS {}. \
+             Shards must be rebuilt with the current encoder.",
+            manifest.num_channels, NUM_CHANNELS,
+        ));
+    }
     if manifest.base_record_size != BC_BASE_RECORD_SIZE {
         return Err(format!(
             "BC shard manifest base_record_size {} does not match current compact BC_BASE_RECORD_SIZE {}. Shards must be rebuilt from replay.",
@@ -394,9 +417,51 @@ pub fn validate_bc_shard_manifest_contract(manifest: &BcShardManifest) -> Result
             manifest.action_space, HYDRA_ACTION_SPACE,
         ));
     }
+    let split_mode = match manifest.split_mode.as_str() {
+        "both" => BcShardSplitMode::Both,
+        "train" => BcShardSplitMode::Train,
+        "validation" => BcShardSplitMode::Validation,
+        other => {
+            return Err(format!(
+                "BC shard manifest split_mode {other:?} is unsupported; expected one of both, train, validation"
+            ));
+        }
+    };
+    let required_split = match split_mode {
+        BcShardSplitMode::Both => None,
+        BcShardSplitMode::Train => Some(BcShardSplit::Train),
+        BcShardSplitMode::Validation => Some(BcShardSplit::Validation),
+    };
+    let mut has_train_split = false;
+    let mut has_validation_split = false;
     let mut total_samples = 0u64;
     let mut total_shards = 0usize;
     for split in &manifest.splits {
+        if !split_mode.includes(split.split) {
+            return Err(format!(
+                "BC shard manifest split_mode {} excludes {:?} split entries",
+                split_mode.as_str(),
+                split.split,
+            ));
+        }
+        match split.split {
+            BcShardSplit::Train => {
+                if has_train_split {
+                    return Err(
+                        "BC shard manifest contains duplicate train split entries".to_string()
+                    );
+                }
+                has_train_split = true;
+            }
+            BcShardSplit::Validation => {
+                if has_validation_split {
+                    return Err(
+                        "BC shard manifest contains duplicate validation split entries".to_string(),
+                    );
+                }
+                has_validation_split = true;
+            }
+        }
         validate_bc_shard_split_manifest_contract(split)?;
         total_samples += split.sample_count;
         total_shards += split.shard_count;
@@ -412,6 +477,28 @@ pub fn validate_bc_shard_manifest_contract(manifest: &BcShardManifest) -> Result
             "BC shard manifest totals.shard_count {} does not match split shard total {}",
             manifest.totals.shard_count, total_shards
         ));
+    }
+    if manifest.totals.sample_count > 0 {
+        match required_split {
+            Some(BcShardSplit::Train) if !has_train_split => {
+                return Err(
+                    "BC shard manifest split_mode train requires a train split entry".to_string(),
+                );
+            }
+            Some(BcShardSplit::Validation) if !has_validation_split => {
+                return Err(
+                    "BC shard manifest split_mode validation requires a validation split entry"
+                        .to_string(),
+                );
+            }
+            None if !has_train_split || !has_validation_split => {
+                return Err(
+                    "BC shard manifest split_mode both requires train and validation split entries"
+                        .to_string(),
+                );
+            }
+            _ => {}
+        }
     }
     Ok(())
 }

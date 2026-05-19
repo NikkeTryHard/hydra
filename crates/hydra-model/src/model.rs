@@ -7,6 +7,14 @@ use hydra_train_types::config::ModelShapeConfig;
 
 use crate::backbone::{SEResNet, SEResNetConfig};
 use crate::heads::*;
+use crate::profiling;
+
+const MODEL_SCOPE_BACKBONE: &str = "model_backbone";
+const MODEL_SCOPE_HEADS_POLICY: &str = "model_heads_policy";
+const MODEL_SCOPE_HEADS_VALUE: &str = "model_heads_value";
+const MODEL_SCOPE_HEADS_LINEAR_BASE: &str = "model_heads_linear_base";
+const MODEL_SCOPE_HEADS_SPATIAL_BASE: &str = "model_heads_spatial_base";
+const MODEL_SCOPE_HEADS_ADVANCED: &str = "model_heads_advanced";
 
 pub struct HydraOutput<B: Backend> {
     pub policy_logits: Tensor<B, 2>,
@@ -477,19 +485,36 @@ impl<B: Backend> HydraModel<B> {
     /// other 12 heads avoids ~12 unnecessary matmuls and their VRAM
     /// allocations per forward pass.
     pub fn forward_value(&self, x: Tensor<B, 3>) -> Tensor<B, 2> {
-        let (_, pooled) = self.backbone.forward(x);
+        let (_, pooled) = {
+            let _backbone_scope = profiling::scope(MODEL_SCOPE_BACKBONE);
+            self.backbone.forward(x)
+        };
+        let _value_scope = profiling::scope(MODEL_SCOPE_HEADS_VALUE);
         self.value.forward(pooled)
     }
 
     pub fn forward_policy(&self, x: Tensor<B, 3>) -> Tensor<B, 2> {
-        let (_, pooled) = self.backbone.forward(x);
+        let (_, pooled) = {
+            let _backbone_scope = profiling::scope(MODEL_SCOPE_BACKBONE);
+            self.backbone.forward(x)
+        };
+        let _policy_scope = profiling::scope(MODEL_SCOPE_HEADS_POLICY);
         self.policy.forward(pooled)
     }
 
     pub fn forward_policy_value(&self, x: Tensor<B, 3>) -> (Tensor<B, 2>, Tensor<B, 2>) {
-        let (_, pooled) = self.backbone.forward(x);
-        let policy_logits = self.policy.forward(pooled.clone());
-        let value = self.value.forward(pooled);
+        let (_, pooled) = {
+            let _backbone_scope = profiling::scope(MODEL_SCOPE_BACKBONE);
+            self.backbone.forward(x)
+        };
+        let policy_logits = {
+            let _policy_scope = profiling::scope(MODEL_SCOPE_HEADS_POLICY);
+            self.policy.forward(pooled.clone())
+        };
+        let value = {
+            let _value_scope = profiling::scope(MODEL_SCOPE_HEADS_VALUE);
+            self.value.forward(pooled)
+        };
         (policy_logits, value)
     }
 
@@ -509,20 +534,32 @@ impl<B: Backend> HydraModel<B> {
         policy: &HydraForwardPolicy,
         warmup_heads: &[ModelAdvancedHead],
     ) -> HydraOutput<B> {
-        let (spatial, pooled) = self.backbone.forward(x);
+        let (spatial, pooled) = {
+            let _backbone_scope = profiling::scope(MODEL_SCOPE_BACKBONE);
+            self.backbone.forward(x)
+        };
         let oracle_input = pooled.clone().detach();
         let is_warmup = |head: ModelAdvancedHead| warmup_heads.contains(&head);
         let batch = pooled.dims()[0];
         let device = pooled.device();
 
-        let policy_logits = self.policy.forward(pooled.clone());
-        let value = self.value.forward(pooled.clone());
-        let score_pdf = self.score_pdf.forward(pooled.clone());
-        let score_cdf = self.score_cdf.forward(pooled.clone());
-        let opp_tenpai = self.opp_tenpai.forward(pooled.clone());
-        let grp = self.grp.forward(pooled.clone());
-        let opp_next_discard = self.opp_next_discard.forward(spatial.clone());
-        let danger = self.danger.forward(spatial.clone());
+        let (policy_logits, value, score_pdf, score_cdf, opp_tenpai, grp) = {
+            let _linear_base_scope = profiling::scope(MODEL_SCOPE_HEADS_LINEAR_BASE);
+            let policy_logits = self.policy.forward(pooled.clone());
+            let value = self.value.forward(pooled.clone());
+            let score_pdf = self.score_pdf.forward(pooled.clone());
+            let score_cdf = self.score_cdf.forward(pooled.clone());
+            let opp_tenpai = self.opp_tenpai.forward(pooled.clone());
+            let grp = self.grp.forward(pooled.clone());
+            (policy_logits, value, score_pdf, score_cdf, opp_tenpai, grp)
+        };
+        let (opp_next_discard, danger) = {
+            let _spatial_base_scope = profiling::scope(MODEL_SCOPE_HEADS_SPATIAL_BASE);
+            let opp_next_discard = self.opp_next_discard.forward(spatial.clone());
+            let danger = self.danger.forward(spatial.clone());
+            (opp_next_discard, danger)
+        };
+        let _advanced_scope = profiling::scope(MODEL_SCOPE_HEADS_ADVANCED);
         let oracle_critic =
             if policy.w_oracle_critic > 0.0 && !is_warmup(ModelAdvancedHead::OracleCritic) {
                 self.oracle_critic.forward(oracle_input)
@@ -559,6 +596,7 @@ impl<B: Backend> HydraModel<B> {
             } else {
                 zero_linear_head(batch, HYDRA_ACTION_SPACE, &device)
             };
+        drop(_advanced_scope);
 
         HydraOutput {
             policy_logits,
@@ -603,23 +641,66 @@ impl<B: Backend> HydraModel<B> {
     }
 
     pub fn forward(&self, x: Tensor<B, 3>) -> HydraOutput<B> {
-        let (spatial, pooled) = self.backbone.forward(x);
+        let (spatial, pooled) = {
+            let _backbone_scope = profiling::scope(MODEL_SCOPE_BACKBONE);
+            self.backbone.forward(x)
+        };
         let oracle_input = pooled.clone().detach();
+        let (policy_logits, value, score_pdf, score_cdf, opp_tenpai, grp) = {
+            let _linear_base_scope = profiling::scope(MODEL_SCOPE_HEADS_LINEAR_BASE);
+            let policy_logits = self.policy.forward(pooled.clone());
+            let value = self.value.forward(pooled.clone());
+            let score_pdf = self.score_pdf.forward(pooled.clone());
+            let score_cdf = self.score_cdf.forward(pooled.clone());
+            let opp_tenpai = self.opp_tenpai.forward(pooled.clone());
+            let grp = self.grp.forward(pooled.clone());
+            (policy_logits, value, score_pdf, score_cdf, opp_tenpai, grp)
+        };
+        let (opp_next_discard, danger) = {
+            let _spatial_base_scope = profiling::scope(MODEL_SCOPE_HEADS_SPATIAL_BASE);
+            let opp_next_discard = self.opp_next_discard.forward(spatial.clone());
+            let danger = self.danger.forward(spatial.clone());
+            (opp_next_discard, danger)
+        };
+        let (
+            oracle_critic,
+            belief_fields,
+            mixture_weight_logits,
+            opponent_hand_type,
+            delta_q,
+            safety_residual,
+        ) = {
+            let _advanced_scope = profiling::scope(MODEL_SCOPE_HEADS_ADVANCED);
+            let oracle_critic = self.oracle_critic.forward(oracle_input);
+            let belief_fields = self.belief_field.forward(spatial);
+            let mixture_weight_logits = self.mixture_weight.forward(pooled.clone());
+            let opponent_hand_type = self.opponent_hand_type.forward(pooled.clone());
+            let delta_q = self.delta_q.forward(pooled.clone());
+            let safety_residual = self.safety_residual.forward(pooled);
+            (
+                oracle_critic,
+                belief_fields,
+                mixture_weight_logits,
+                opponent_hand_type,
+                delta_q,
+                safety_residual,
+            )
+        };
         HydraOutput {
-            policy_logits: self.policy.forward(pooled.clone()),
-            value: self.value.forward(pooled.clone()),
-            score_pdf: self.score_pdf.forward(pooled.clone()),
-            score_cdf: self.score_cdf.forward(pooled.clone()),
-            opp_tenpai: self.opp_tenpai.forward(pooled.clone()),
-            grp: self.grp.forward(pooled.clone()),
-            opp_next_discard: self.opp_next_discard.forward(spatial.clone()),
-            danger: self.danger.forward(spatial.clone()),
-            oracle_critic: self.oracle_critic.forward(oracle_input),
-            belief_fields: self.belief_field.forward(spatial),
-            mixture_weight_logits: self.mixture_weight.forward(pooled.clone()),
-            opponent_hand_type: self.opponent_hand_type.forward(pooled.clone()),
-            delta_q: self.delta_q.forward(pooled.clone()),
-            safety_residual: self.safety_residual.forward(pooled),
+            policy_logits,
+            value,
+            score_pdf,
+            score_cdf,
+            opp_tenpai,
+            grp,
+            opp_next_discard,
+            danger,
+            oracle_critic,
+            belief_fields,
+            mixture_weight_logits,
+            opponent_hand_type,
+            delta_q,
+            safety_residual,
         }
     }
 }

@@ -166,6 +166,14 @@ pub struct StepLogEntry<DeltaQPromotionSnapshot, Advisory = String> {
     pub val_policy_loss: Option<f64>,
     pub val_policy_agreement: Option<f64>,
     pub val_delta_q_promotion: Option<DeltaQPromotionSnapshot>,
+    /// Optimizer steps represented by this interval log entry.
+    pub window_steps: usize,
+    /// Training samples represented by this interval log entry.
+    pub window_samples: usize,
+    /// Optimizer steps per second for this interval.
+    pub steps_per_second: f64,
+    /// Training samples per second for this interval.
+    pub samples_per_second: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profiling: Option<ProfilingEnvelope>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

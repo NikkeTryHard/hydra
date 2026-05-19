@@ -10,10 +10,9 @@ use crate::data::sample::{
 };
 use crate::model::HydraModelInit;
 use burn::backend::{Autodiff, LibTorch};
-use burn::module::{AutodiffModule, Module, ModuleVisitor, Param};
-#[cfg(feature = "bf16-autocast-proof")]
+use burn::grad_clipping::GradientClippingConfig;
+use burn::module::{AutodiffModule, Module, ModuleVisitor, Param, list_param_ids};
 use burn::optim::record::{AdaptorRecord, AdaptorRecordV1};
-#[cfg(feature = "bf16-autocast-proof")]
 use burn::optim::{Adam, AdamState};
 use burn::optim::{AdamConfig, GradientsAccumulator, GradientsParams, Optimizer};
 use burn::prelude::Backend;
@@ -114,6 +113,72 @@ fn assert_batch_stats_close(actual: BatchStats, expected: BatchStats) {
     assert_close(actual.loss_opp_next, expected.loss_opp_next);
     assert_close(actual.loss_score_pdf, expected.loss_score_pdf);
     assert_close(actual.loss_score_cdf, expected.loss_score_cdf);
+}
+
+fn assert_loss_breakdown_close(
+    actual: hydra_train_types::losses::LossBreakdown<TestTrainBackend>,
+    expected: hydra_train_types::losses::LossBreakdown<TestTrainBackend>,
+) {
+    assert_close(
+        actual.policy.into_scalar() as f64,
+        expected.policy.into_scalar() as f64,
+    );
+    assert_close(
+        actual.value.into_scalar() as f64,
+        expected.value.into_scalar() as f64,
+    );
+    assert_close(
+        actual.grp.into_scalar() as f64,
+        expected.grp.into_scalar() as f64,
+    );
+    assert_close(
+        actual.tenpai.into_scalar() as f64,
+        expected.tenpai.into_scalar() as f64,
+    );
+    assert_close(
+        actual.danger.into_scalar() as f64,
+        expected.danger.into_scalar() as f64,
+    );
+    assert_close(
+        actual.opp_next.into_scalar() as f64,
+        expected.opp_next.into_scalar() as f64,
+    );
+    assert_close(
+        actual.score_pdf.into_scalar() as f64,
+        expected.score_pdf.into_scalar() as f64,
+    );
+    assert_close(
+        actual.score_cdf.into_scalar() as f64,
+        expected.score_cdf.into_scalar() as f64,
+    );
+    assert_close(
+        actual.oracle_critic.into_scalar() as f64,
+        expected.oracle_critic.into_scalar() as f64,
+    );
+    assert_close(
+        actual.belief_fields.into_scalar() as f64,
+        expected.belief_fields.into_scalar() as f64,
+    );
+    assert_close(
+        actual.mixture_weight.into_scalar() as f64,
+        expected.mixture_weight.into_scalar() as f64,
+    );
+    assert_close(
+        actual.opponent_hand_type.into_scalar() as f64,
+        expected.opponent_hand_type.into_scalar() as f64,
+    );
+    assert_close(
+        actual.delta_q.into_scalar() as f64,
+        expected.delta_q.into_scalar() as f64,
+    );
+    assert_close(
+        actual.safety_residual.into_scalar() as f64,
+        expected.safety_residual.into_scalar() as f64,
+    );
+    assert_close(
+        actual.total.into_scalar() as f64,
+        expected.total.into_scalar() as f64,
+    );
 }
 
 struct GenericTrainParityContext<'a> {
@@ -552,7 +617,6 @@ fn synchronize_cuda() {
     tch::Cuda::synchronize(0);
 }
 
-#[cfg(feature = "bf16-autocast-proof")]
 fn adam_state_is_fp32<const D: usize>(state: AdamState<LibTorch<f32>, D>) -> bool {
     let momentum = state.momentum;
     momentum.moment_1.dtype() == DType::F32
@@ -563,7 +627,6 @@ fn adam_state_is_fp32<const D: usize>(state: AdamState<LibTorch<f32>, D>) -> boo
             .is_none_or(|moment| moment.dtype() == DType::F32)
 }
 
-#[cfg(feature = "bf16-autocast-proof")]
 fn adam_record_is_fp32(record: AdaptorRecord<Adam, TestTrainBackend>) -> bool {
     match record {
         AdaptorRecord::V1(record) => match record {
@@ -580,7 +643,6 @@ fn adam_record_is_fp32(record: AdaptorRecord<Adam, TestTrainBackend>) -> bool {
     }
 }
 
-#[cfg(feature = "bf16-autocast-proof")]
 fn adam_optimizer_record_is_fp32(
     record: &<burn::optim::adaptor::OptimizerAdaptor<
         Adam,
@@ -589,6 +651,280 @@ fn adam_optimizer_record_is_fp32(
     > as Optimizer<HydraModel<TestTrainBackend>, TestTrainBackend>>::Record,
 ) -> bool {
     !record.is_empty() && record.values().cloned().all(adam_record_is_fp32)
+}
+
+type TestAdamOptimizer =
+    burn::optim::adaptor::OptimizerAdaptor<Adam, HydraModel<TestTrainBackend>, TestTrainBackend>;
+type TestAdamOptimizerRecord =
+    <TestAdamOptimizer as Optimizer<HydraModel<TestTrainBackend>, TestTrainBackend>>::Record;
+
+fn sorted_optimizer_record_keys(record: &TestAdamOptimizerRecord) -> Vec<burn::module::ParamId> {
+    let mut keys = record.keys().copied().collect::<Vec<_>>();
+    keys.sort();
+    keys
+}
+
+fn assert_optimizer_record_shape_matches(
+    actual: &TestAdamOptimizerRecord,
+    expected: &TestAdamOptimizerRecord,
+) {
+    assert_eq!(
+        actual.len(),
+        expected.len(),
+        "optimizer record length changed"
+    );
+    assert_eq!(
+        sorted_optimizer_record_keys(actual),
+        sorted_optimizer_record_keys(expected),
+        "optimizer ParamId key set changed"
+    );
+}
+
+fn assert_tensor_data_exact_eq(actual: TensorData, expected: TensorData, context: &str) {
+    assert_eq!(
+        actual.dtype, expected.dtype,
+        "{context}: tensor dtype changed"
+    );
+    assert_eq!(
+        actual.shape, expected.shape,
+        "{context}: tensor shape changed"
+    );
+    assert_eq!(
+        actual
+            .as_slice::<f32>()
+            .expect("actual tensor should be f32"),
+        expected
+            .as_slice::<f32>()
+            .expect("expected tensor should be f32"),
+        "{context}: tensor data changed"
+    );
+}
+
+fn assert_tensor_exact_eq<const D: usize>(
+    actual: Tensor<LibTorch<f32>, D>,
+    expected: Tensor<LibTorch<f32>, D>,
+    context: &str,
+) {
+    assert_eq!(actual.dims(), expected.dims(), "{context}: dims changed");
+    assert_tensor_data_exact_eq(actual.to_data(), expected.to_data(), context);
+}
+
+fn assert_optional_tensor_exact_eq<const D: usize>(
+    actual: Option<Tensor<LibTorch<f32>, D>>,
+    expected: Option<Tensor<LibTorch<f32>, D>>,
+    context: &str,
+) {
+    match (actual, expected) {
+        (Some(actual), Some(expected)) => assert_tensor_exact_eq(actual, expected, context),
+        (None, None) => {}
+        _ => panic!("{context}: optional Adam max_moment_2 presence changed"),
+    }
+}
+
+fn assert_adam_state_exact_eq<const D: usize>(
+    actual: AdamState<LibTorch<f32>, D>,
+    expected: AdamState<LibTorch<f32>, D>,
+    context: &str,
+) {
+    let actual = actual.momentum;
+    let expected = expected.momentum;
+    assert_eq!(actual.time, expected.time, "{context}: Adam time changed");
+    assert_tensor_exact_eq(
+        actual.moment_1,
+        expected.moment_1,
+        &format!("{context}: moment_1"),
+    );
+    assert_tensor_exact_eq(
+        actual.moment_2,
+        expected.moment_2,
+        &format!("{context}: moment_2"),
+    );
+    assert_optional_tensor_exact_eq(
+        actual.max_moment_2,
+        expected.max_moment_2,
+        &format!("{context}: max_moment_2"),
+    );
+}
+
+fn assert_adam_record_exact_eq(
+    actual: AdaptorRecord<Adam, TestTrainBackend>,
+    expected: AdaptorRecord<Adam, TestTrainBackend>,
+    context: &str,
+) {
+    match (actual, expected) {
+        (AdaptorRecord::V1(actual), AdaptorRecord::V1(expected)) => match (actual, expected) {
+            (AdaptorRecordV1::Rank0(actual), AdaptorRecordV1::Rank0(expected)) => {
+                assert_adam_state_exact_eq(actual, expected, context)
+            }
+            (AdaptorRecordV1::Rank1(actual), AdaptorRecordV1::Rank1(expected)) => {
+                assert_adam_state_exact_eq(actual, expected, context)
+            }
+            (AdaptorRecordV1::Rank2(actual), AdaptorRecordV1::Rank2(expected)) => {
+                assert_adam_state_exact_eq(actual, expected, context)
+            }
+            (AdaptorRecordV1::Rank3(actual), AdaptorRecordV1::Rank3(expected)) => {
+                assert_adam_state_exact_eq(actual, expected, context)
+            }
+            (AdaptorRecordV1::Rank4(actual), AdaptorRecordV1::Rank4(expected)) => {
+                assert_adam_state_exact_eq(actual, expected, context)
+            }
+            (AdaptorRecordV1::Rank5(actual), AdaptorRecordV1::Rank5(expected)) => {
+                assert_adam_state_exact_eq(actual, expected, context)
+            }
+            (AdaptorRecordV1::Rank6(actual), AdaptorRecordV1::Rank6(expected)) => {
+                assert_adam_state_exact_eq(actual, expected, context)
+            }
+            (AdaptorRecordV1::Rank7(actual), AdaptorRecordV1::Rank7(expected)) => {
+                assert_adam_state_exact_eq(actual, expected, context)
+            }
+            (AdaptorRecordV1::Rank8(actual), AdaptorRecordV1::Rank8(expected)) => {
+                assert_adam_state_exact_eq(actual, expected, context)
+            }
+            _ => panic!("{context}: Adam state rank changed"),
+        },
+    }
+}
+
+fn assert_optimizer_record_exact_eq(
+    actual: &TestAdamOptimizerRecord,
+    expected: &TestAdamOptimizerRecord,
+) {
+    assert_optimizer_record_shape_matches(actual, expected);
+    for key in sorted_optimizer_record_keys(expected) {
+        let actual_record = actual
+            .get(&key)
+            .unwrap_or_else(|| panic!("optimizer record missing candidate key {key:?}"));
+        let expected_record = expected
+            .get(&key)
+            .unwrap_or_else(|| panic!("optimizer record missing direct key {key:?}"));
+        assert_adam_record_exact_eq(
+            actual_record.clone(),
+            expected_record.clone(),
+            &format!("optimizer Adam state param_id={key:?}"),
+        );
+    }
+}
+
+#[derive(Clone)]
+struct CandidateAdamOptimizer {
+    delegate: TestAdamOptimizer,
+}
+
+impl CandidateAdamOptimizer {
+    fn new() -> Self {
+        Self::from_config(AdamConfig::new())
+    }
+
+    fn from_config(config: AdamConfig) -> Self {
+        Self {
+            delegate: config.init::<TestTrainBackend, HydraModel<TestTrainBackend>>(),
+        }
+    }
+
+    fn step(
+        &mut self,
+        lr: burn::optim::LearningRate,
+        model: HydraModel<TestTrainBackend>,
+        grads: GradientsParams,
+    ) -> HydraModel<TestTrainBackend> {
+        self.delegate.step(lr, model, grads)
+    }
+
+    fn to_record(&self) -> TestAdamOptimizerRecord {
+        self.delegate.to_record()
+    }
+
+    fn load_record(self, record: TestAdamOptimizerRecord) -> Self {
+        Self {
+            delegate: self.delegate.load_record(record),
+        }
+    }
+}
+
+fn run_optimizer_probe_step(
+    model: HydraModel<TestTrainBackend>,
+    logical_batch: &[MjaiSample],
+    device: &LibTorchDevice,
+) -> (HydraModel<TestTrainBackend>, TestAdamOptimizerRecord) {
+    let train_loss_fn = dummy_train_loss();
+    let grads = generic_probe_grads(
+        logical_batch,
+        GenericProbeParityContext {
+            augment: false,
+            microbatch_size: logical_batch.len().max(1),
+            train_device: device,
+            loss_fn: &train_loss_fn,
+            model: &model,
+        },
+    );
+    let mut optimizer = AdamConfig::new().init();
+    let model = optimizer.step(1e-4, model, grads);
+    (model, optimizer.to_record())
+}
+
+fn run_candidate_optimizer_probe_step(
+    model: HydraModel<TestTrainBackend>,
+    logical_batch: &[MjaiSample],
+    device: &LibTorchDevice,
+) -> (HydraModel<TestTrainBackend>, TestAdamOptimizerRecord) {
+    let train_loss_fn = dummy_train_loss();
+    let grads = generic_probe_grads(
+        logical_batch,
+        GenericProbeParityContext {
+            augment: false,
+            microbatch_size: logical_batch.len().max(1),
+            train_device: device,
+            loss_fn: &train_loss_fn,
+            model: &model,
+        },
+    );
+    let mut optimizer = CandidateAdamOptimizer::new();
+    let model = optimizer.step(1e-4, model, grads);
+    (model, optimizer.to_record())
+}
+
+fn run_optimizer_probe_step_with_config(
+    model: HydraModel<TestTrainBackend>,
+    logical_batch: &[MjaiSample],
+    device: &LibTorchDevice,
+    config: AdamConfig,
+) -> (HydraModel<TestTrainBackend>, TestAdamOptimizerRecord) {
+    let train_loss_fn = dummy_train_loss();
+    let grads = generic_probe_grads(
+        logical_batch,
+        GenericProbeParityContext {
+            augment: false,
+            microbatch_size: logical_batch.len().max(1),
+            train_device: device,
+            loss_fn: &train_loss_fn,
+            model: &model,
+        },
+    );
+    let mut optimizer = config.init();
+    let model = optimizer.step(1e-4, model, grads);
+    (model, optimizer.to_record())
+}
+
+fn run_candidate_optimizer_probe_step_with_config(
+    model: HydraModel<TestTrainBackend>,
+    logical_batch: &[MjaiSample],
+    device: &LibTorchDevice,
+    config: AdamConfig,
+) -> (HydraModel<TestTrainBackend>, TestAdamOptimizerRecord) {
+    let train_loss_fn = dummy_train_loss();
+    let grads = generic_probe_grads(
+        logical_batch,
+        GenericProbeParityContext {
+            augment: false,
+            microbatch_size: logical_batch.len().max(1),
+            train_device: device,
+            loss_fn: &train_loss_fn,
+            model: &model,
+        },
+    );
+    let mut optimizer = CandidateAdamOptimizer::from_config(config);
+    let model = optimizer.step(1e-4, model, grads);
+    (model, optimizer.to_record())
 }
 
 #[cfg(feature = "bf16-autocast-proof")]
@@ -609,9 +945,10 @@ where
 #[test]
 #[ignore = "manual CUDA BF16 AMP proof; run explicitly with --features bf16-autocast-proof"]
 fn cuda_bf16_autocast_state_restores_after_return_panic_and_nested_scope() {
-    if !Cuda::is_available() {
-        panic!("CUDA is required for autocast restoration proof");
-    }
+    assert!(
+        Cuda::is_available(),
+        "CUDA is required for autocast restoration proof"
+    );
 
     assert_cuda_autocast_state_restored(AssertUnwindSafe(|| {
         with_cuda_bf16_autocast_dtype_proof_only(|| {
@@ -822,9 +1159,10 @@ fn bc_fixed_shape_cuda_bf16_amp_train_step_runs_real_amp() {
 #[cfg(feature = "libtorch")]
 #[ignore = "manual CUDA Phase 4 parity gate; run explicitly with --features libtorch"]
 fn phase4_fixed_batch_fp32_vs_bf16_amp_parity_gate() {
-    if !Cuda::is_available() {
-        panic!("CUDA is required for Phase 4 parity gate");
-    }
+    assert!(
+        Cuda::is_available(),
+        "CUDA is required for Phase 4 parity gate"
+    );
     let (
         fp32_loss,
         fp32_logits,
@@ -862,9 +1200,10 @@ fn phase4_fixed_batch_fp32_vs_bf16_amp_parity_gate() {
 #[cfg(feature = "libtorch")]
 #[ignore = "manual CUDA Phase 4 shard smoke; run explicitly with --features libtorch"]
 fn phase4_tiny_compact_shard_bf16_smoke_gate() {
-    if !Cuda::is_available() {
-        panic!("CUDA is required for Phase 4 shard smoke");
-    }
+    assert!(
+        Cuda::is_available(),
+        "CUDA is required for Phase 4 shard smoke"
+    );
     let manifest_path = build_phase4_shards("shard-smoke");
     let config = phase4_train_config(Some(manifest_path.clone()));
     assert_eq!(config.effective_precision(), EffectivePrecision::Bf16Amp);
@@ -881,9 +1220,10 @@ fn phase4_tiny_compact_shard_bf16_smoke_gate() {
 #[cfg(feature = "libtorch")]
 #[ignore = "manual CUDA Phase 4 validation policy gate; run explicitly with --features libtorch"]
 fn phase4_validation_policy_train_bf16_validation_fp32_gate() {
-    if !Cuda::is_available() {
-        panic!("CUDA is required for Phase 4 validation policy gate");
-    }
+    assert!(
+        Cuda::is_available(),
+        "CUDA is required for Phase 4 validation policy gate"
+    );
     let device = LibTorchDevice::Cuda(0);
     let model = tiny_dummy_model(&device);
     let train_loss_fn = dummy_train_loss();
@@ -922,9 +1262,10 @@ fn phase4_validation_policy_train_bf16_validation_fp32_gate() {
 #[cfg(feature = "libtorch")]
 #[ignore = "manual CUDA Phase 4 throughput/memory smoke; run explicitly with --features libtorch"]
 fn phase4_throughput_memory_smoke_gate() {
-    if !Cuda::is_available() {
-        panic!("CUDA is required for Phase 4 throughput/memory smoke");
-    }
+    assert!(
+        Cuda::is_available(),
+        "CUDA is required for Phase 4 throughput/memory smoke"
+    );
     let manifest_path = build_phase4_shards("throughput");
     let measure = |use_amp: bool| -> (f64, f64, f64, usize) {
         synchronize_cuda();
@@ -1032,9 +1373,7 @@ fn assert_direct_tch_probe_succeeded(
         if *dtype != Kind::Float {
             panic!("direct tch {op} grad {name} dtype was {dtype:?}, expected Float");
         }
-        if !finite {
-            panic!("direct tch {op} grad {name} was not finite");
-        }
+        assert!(finite, "direct tch {op} grad {name} was not finite");
     }
 }
 
@@ -1292,6 +1631,97 @@ fn optimizer_step_probe_keeps_gradients_params_and_checkpoint_state_fp32() {
 }
 
 #[test]
+fn optimizer_parity_harness_matches_direct_adam_record_shape_and_logits() {
+    let device = LibTorchDevice::Cpu;
+    let direct_initial = tiny_dummy_model(&device);
+    let logical_batch = vec![dummy_train_sample(0), dummy_train_sample(5)];
+    let _ = sample_policy_logits(&direct_initial, &logical_batch[0], &device);
+    let candidate_initial = direct_initial.clone().fork(&device);
+    assert_eq!(
+        list_param_ids(&candidate_initial),
+        list_param_ids(&direct_initial),
+        "forked candidate model should preserve ParamIds"
+    );
+
+    let (direct_model, direct_record) =
+        run_optimizer_probe_step(direct_initial, &logical_batch, &device);
+    let (candidate_model, candidate_record) =
+        run_candidate_optimizer_probe_step(candidate_initial, &logical_batch, &device);
+
+    assert_optimizer_record_exact_eq(&candidate_record, &direct_record);
+    assert!(
+        adam_optimizer_record_is_fp32(&candidate_record),
+        "candidate optimizer state should stay fp32"
+    );
+
+    let direct_logits = sample_policy_logits(&direct_model, &logical_batch[0], &device);
+    let candidate_logits = sample_policy_logits(&candidate_model, &logical_batch[0], &device);
+    assert_eq!(direct_logits.len(), candidate_logits.len());
+    for (actual, expected) in candidate_logits.into_iter().zip(direct_logits) {
+        assert_close(actual as f64, expected as f64);
+    }
+}
+
+#[test]
+fn optimizer_candidate_preserves_per_parameter_gradient_clipping_surface() {
+    let device = LibTorchDevice::Cpu;
+    let direct_initial = tiny_dummy_model(&device);
+    let logical_batch = vec![dummy_train_sample(1), dummy_train_sample(9)];
+    let _ = sample_policy_logits(&direct_initial, &logical_batch[0], &device);
+    let candidate_initial = direct_initial.clone().fork(&device);
+    assert_eq!(
+        list_param_ids(&candidate_initial),
+        list_param_ids(&direct_initial),
+        "forked candidate model should preserve ParamIds"
+    );
+
+    let direct_config =
+        AdamConfig::new().with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)));
+    let candidate_config =
+        AdamConfig::new().with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)));
+    let (direct_model, direct_record) = run_optimizer_probe_step_with_config(
+        direct_initial,
+        &logical_batch,
+        &device,
+        direct_config,
+    );
+    let (candidate_model, candidate_record) = run_candidate_optimizer_probe_step_with_config(
+        candidate_initial,
+        &logical_batch,
+        &device,
+        candidate_config,
+    );
+
+    assert_optimizer_record_exact_eq(&candidate_record, &direct_record);
+    let direct_logits = sample_policy_logits(&direct_model, &logical_batch[0], &device);
+    let candidate_logits = sample_policy_logits(&candidate_model, &logical_batch[0], &device);
+    assert_eq!(direct_logits.len(), candidate_logits.len());
+    for (actual, expected) in candidate_logits.into_iter().zip(direct_logits) {
+        assert_close(actual as f64, expected as f64);
+    }
+}
+
+#[test]
+fn optimizer_parity_harness_checkpoint_roundtrip_preserves_record_shape() {
+    let device = LibTorchDevice::Cpu;
+    let model = tiny_dummy_model(&device);
+    let logical_batch = vec![dummy_train_sample(3), dummy_train_sample(7)];
+    let (_, optimizer_record) = run_optimizer_probe_step(model, &logical_batch, &device);
+
+    let full_precision_item = optimizer_record
+        .clone()
+        .into_item::<FullPrecisionSettings>();
+    let reloaded_record = <_ as Record<TestTrainBackend>>::from_item(full_precision_item, &device);
+    assert_optimizer_record_shape_matches(&reloaded_record, &optimizer_record);
+    let reloaded_candidate = CandidateAdamOptimizer::new().load_record(reloaded_record.clone());
+    assert_optimizer_record_shape_matches(&reloaded_candidate.to_record(), &optimizer_record);
+    assert!(
+        adam_optimizer_record_is_fp32(&reloaded_record),
+        "roundtripped optimizer state should stay fp32"
+    );
+}
+
+#[test]
 fn fixed_shape_train_chunks_metrics_match_across_chunk_sizes() {
     let device = LibTorchDevice::Cpu;
     let base_model = tiny_dummy_model(&device);
@@ -1416,6 +1846,43 @@ fn fixed_shape_train_chunks_match_generic_for_non_divisible_batches() {
 }
 
 #[test]
+fn host_scratch_train_batch_runs_and_reports_stats() {
+    let device = LibTorchDevice::Cpu;
+    let mut model_slot = Some(tiny_dummy_model(&device));
+    let mut optimizer = AdamConfig::new().init::<TestTrainBackend, HydraModel<TestTrainBackend>>();
+    let mut head_controller =
+        HeadActivationController::new(HeadActivationConfig::default_with_params(1));
+    let train_loss_fn = dummy_train_loss();
+    let logical_batch = vec![
+        dummy_train_sample(0),
+        dummy_train_sample(5),
+        dummy_train_sample(11),
+    ];
+
+    let (stats, timing) = crate::epoch_runner::train_logical_batch_via_host_scratch(
+        &logical_batch,
+        crate::epoch_runner::TrainLogicalBatchConfig {
+            microbatch_size: 2,
+            use_amp: false,
+            augment: false,
+            train_device: &device,
+            loss_fn: &train_loss_fn,
+            bc_exit_cfg: &BcExitConfig::default(),
+            lr: 0.0,
+        },
+        &mut head_controller,
+        &mut model_slot,
+        &mut optimizer,
+    )
+    .expect("host scratch train path should succeed");
+
+    assert_eq!(stats.len(), 1);
+    assert_eq!(stats[0].sample_count, logical_batch.len());
+    assert!(timing.collation_seconds > 0.0);
+    assert!(timing.h2d_tensor_materialize_seconds > 0.0);
+}
+
+#[test]
 fn fixed_shape_probe_chunks_match_generic_for_non_divisible_batches() {
     let device = LibTorchDevice::Cpu;
     let model = tiny_dummy_model(&device);
@@ -1458,6 +1925,75 @@ fn fixed_shape_probe_chunks_match_generic_for_non_divisible_batches() {
     for (actual, expected) in mixed_logits.into_iter().zip(generic_logits) {
         assert_close(actual as f64, expected as f64);
     }
+}
+
+#[test]
+fn bc_loss_matches_burn_oracle_for_baseline_heads() {
+    let device = LibTorchDevice::Cpu;
+    let model = tiny_dummy_model(&device);
+    let train_loss_fn = dummy_train_loss();
+    let logical_batch = vec![
+        dummy_train_sample(0),
+        dummy_train_sample(5),
+        dummy_train_sample(11),
+    ];
+    let (obs, batch, targets) =
+        collate_samples_owned::<TestTrainBackend>(&logical_batch, false, &device)
+            .expect("oracle seam collation should succeed")
+            .expect("oracle seam collation should produce tensors");
+    let output = model.forward(obs);
+
+    let expected = train_loss_fn.total_loss(&output, &targets);
+    let actual = train_loss_fn.bc_loss(crate::losses::BcLossInputs {
+        outputs: &output,
+        targets: &targets,
+        exit_target: batch.exit_target.as_ref(),
+        exit_mask: batch.exit_mask.as_ref(),
+        exit_cfg: &BcExitConfig::default(),
+    });
+
+    assert!(actual.total.clone().is_finite().all().into_scalar());
+    assert_close(
+        actual.total.clone().into_scalar() as f64,
+        expected.total.clone().into_scalar() as f64,
+    );
+    assert_loss_breakdown_close(actual.breakdown, expected);
+}
+
+#[test]
+fn bc_loss_matches_burn_oracle_with_exit_loss() {
+    let device = LibTorchDevice::Cpu;
+    let model = tiny_dummy_model(&device);
+    let train_loss_fn = dummy_train_loss();
+    let logical_batch = vec![
+        dummy_train_sample_with_exit(0, 1.0, 1.0),
+        dummy_train_sample_with_exit(5, 0.0, 1.0),
+        dummy_train_sample_with_exit(11, 1.0, 1.0),
+    ];
+    let exit_cfg = BcExitConfig { exit_weight: 0.25 };
+    let (obs, batch, targets) =
+        collate_samples_owned::<TestTrainBackend>(&logical_batch, false, &device)
+            .expect("exit seam collation should succeed")
+            .expect("exit seam collation should produce tensors");
+    let output = model.forward(obs);
+
+    let expected_breakdown = train_loss_fn.total_loss(&output, &targets);
+    let expected_total =
+        bc_total_with_exit_from_breakdown(&output, &batch, &expected_breakdown, &exit_cfg);
+    let actual = train_loss_fn.bc_loss(crate::losses::BcLossInputs {
+        outputs: &output,
+        targets: &targets,
+        exit_target: batch.exit_target.as_ref(),
+        exit_mask: batch.exit_mask.as_ref(),
+        exit_cfg: &exit_cfg,
+    });
+
+    assert!(actual.total.clone().is_finite().all().into_scalar());
+    assert_close(
+        actual.total.clone().into_scalar() as f64,
+        expected_total.into_scalar() as f64,
+    );
+    assert_loss_breakdown_close(actual.breakdown, expected_breakdown);
 }
 
 #[test]
@@ -1710,6 +2246,20 @@ fn fixed_shape_nvtx_scopes_fire_for_both_prefix_and_tail_remainder() {
     assert_eq!(forward_pushes, 2);
     let loss_pushes = events.iter().filter(|e| *e == "push:loss").count();
     assert_eq!(loss_pushes, 2);
+    for stage in [
+        "loss_policy_ce",
+        "loss_value_mse",
+        "loss_base_heads",
+        "loss_advanced_heads",
+        "loss_total_combine",
+        "loss_exit",
+    ] {
+        let pushes = events
+            .iter()
+            .filter(|event| event.as_str() == format!("push:{stage}"))
+            .count();
+        assert_eq!(pushes, 2, "expected two pushes for {stage}");
+    }
     let backward_pushes = events.iter().filter(|e| *e == "push:backward").count();
     assert_eq!(backward_pushes, 2);
 

@@ -6,8 +6,8 @@ use crate::{
     BcShardSplitManifest, load_bc_shard_reader,
 };
 use crate::{
-    BC_SHARD_HEADER_SIZE, FLAG_EXIT, FLAG_SAFETY_RESIDUAL, PACKED_ACTION_MASK_BYTES,
-    record_size_for_flags,
+    BC_DENSE_SHARD_MAGIC, BC_SHARD_HEADER_SIZE, DENSE_REBUILD_MESSAGE, FLAG_EXIT,
+    FLAG_SAFETY_RESIDUAL, PACKED_ACTION_MASK_BYTES, record_size_for_flags,
 };
 use hydra_data_core::sample::{
     COMPACT_MISSING_TILE, CompactObservationFacts, CompactPlayerDiscards, CompactPlayerMelds,
@@ -332,6 +332,7 @@ fn manifest_for_descriptor(descriptor: BcShardDescriptor) -> BcShardManifest {
         action_space: HYDRA_ACTION_SPACE,
         train_fraction: 1.0,
         shard_samples: descriptor.sample_count as usize,
+        split_mode: "train".to_string(),
         augment_runtime: false,
         input: "test".to_string(),
         output_dir: "test".to_string(),
@@ -597,7 +598,6 @@ fn rewrite_shard_header_for_descriptor_updates_index_and_first_sample() {
 
     let mut reader_descriptor = descriptor.clone();
     reader_descriptor.shard_index = 0;
-    reader_descriptor.first_sample_index = 0;
     let manifest = manifest_for_descriptor(reader_descriptor);
     let manifest_path = output_dir.join("manifest.json");
     std::fs::write(
@@ -605,10 +605,161 @@ fn rewrite_shard_header_for_descriptor_updates_index_and_first_sample() {
         serde_json::to_vec(&manifest).expect("manifest should serialize"),
     )
     .expect("manifest should write");
+    let err = load_bc_shard_reader(&manifest_path, BcShardSplit::Train)
+        .err()
+        .expect("reader should reject non-contiguous descriptor");
+    assert!(
+        err.contains("expected contiguous start"),
+        "unexpected error: {err}"
+    );
+
+    let _ = std::fs::remove_dir_all(output_dir);
+}
+
+fn compact_reader_test_shard(
+    test_name: &str,
+) -> (std::path::PathBuf, std::path::PathBuf, BcShardDescriptor) {
+    let output_dir = temp_output_dir(test_name);
+    let file_name = "chunk-0000-train-final.hydra-bc".to_string();
+    let samples = [dummy_sample(), dummy_sample()];
+    let mut writer =
+        ActiveShardWriter::new_named(&output_dir, BcShardSplit::Train, 0, 0, 0, file_name)
+            .expect("test shard writer should open");
+    writer
+        .write_samples(&samples)
+        .expect("test samples should write");
+    let descriptor = writer.finish().expect("test shard should finish");
+    let manifest_path = output_dir.join("manifest.json");
+    (output_dir, manifest_path, descriptor)
+}
+
+fn write_manifest_for_descriptor(manifest_path: &std::path::Path, descriptor: BcShardDescriptor) {
+    let manifest = manifest_for_descriptor(descriptor);
+    std::fs::write(
+        manifest_path,
+        serde_json::to_vec(&manifest).expect("manifest should serialize"),
+    )
+    .expect("manifest should write");
+}
+
+fn corrupt_u64(path: &std::path::Path, offset: u64, value: u64) {
+    use std::io::{Seek, SeekFrom, Write};
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .expect("shard should open for corruption");
+    file.seek(SeekFrom::Start(offset))
+        .expect("corruption seek should succeed");
+    file.write_all(&value.to_le_bytes())
+        .expect("corruption write should succeed");
+}
+
+fn corrupt_magic(path: &std::path::Path, magic: [u8; 8]) {
+    use std::io::{Seek, SeekFrom, Write};
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .expect("shard should open for magic corruption");
+    file.seek(SeekFrom::Start(0))
+        .expect("magic corruption seek should succeed");
+    file.write_all(&magic)
+        .expect("magic corruption write should succeed");
+}
+
+#[test]
+fn compact_reader_rejects_header_sample_count_mismatch() {
+    let (output_dir, manifest_path, descriptor) =
+        compact_reader_test_shard("header-sample-count-mismatch");
+    let path = output_dir.join(&descriptor.file_name);
+    write_manifest_for_descriptor(&manifest_path, descriptor);
+    corrupt_u64(&path, 28, 1);
+
+    let err = load_bc_shard_reader(&manifest_path, BcShardSplit::Train)
+        .err()
+        .expect("reader should reject mismatched header sample count");
+    assert!(
+        err.contains("sample count mismatch"),
+        "unexpected error: {err}"
+    );
+
+    let _ = std::fs::remove_dir_all(output_dir);
+}
+
+#[test]
+fn compact_reader_rejects_header_first_sample_index_mismatch() {
+    let (output_dir, manifest_path, descriptor) =
+        compact_reader_test_shard("header-first-index-mismatch");
+    let path = output_dir.join(&descriptor.file_name);
+    write_manifest_for_descriptor(&manifest_path, descriptor);
+    corrupt_u64(&path, 48, 12);
+
+    let err = load_bc_shard_reader(&manifest_path, BcShardSplit::Train)
+        .err()
+        .expect("reader should reject mismatched first sample index");
+    assert!(
+        err.contains("first sample index mismatch"),
+        "unexpected error: {err}"
+    );
+
+    let _ = std::fs::remove_dir_all(output_dir);
+}
+
+#[test]
+fn compact_reader_rejects_descriptor_byte_len_mismatch() {
+    let (output_dir, manifest_path, mut descriptor) =
+        compact_reader_test_shard("descriptor-byte-len-mismatch");
+    descriptor.byte_len += 1;
+    write_manifest_for_descriptor(&manifest_path, descriptor);
+
+    let err = load_bc_shard_reader(&manifest_path, BcShardSplit::Train)
+        .err()
+        .expect("reader should reject descriptor byte length mismatch");
+    assert!(err.contains("byte_len"), "unexpected error: {err}");
+
+    let _ = std::fs::remove_dir_all(output_dir);
+}
+
+#[test]
+fn compact_reader_rejects_dense_magic() {
+    let (output_dir, manifest_path, descriptor) = compact_reader_test_shard("dense-magic");
+    let path = output_dir.join(&descriptor.file_name);
+    write_manifest_for_descriptor(&manifest_path, descriptor);
+    corrupt_magic(&path, BC_DENSE_SHARD_MAGIC);
+
+    let err = load_bc_shard_reader(&manifest_path, BcShardSplit::Train)
+        .err()
+        .expect("reader should reject dense shard magic");
+    assert_eq!(err, DENSE_REBUILD_MESSAGE);
+
+    let _ = std::fs::remove_dir_all(output_dir);
+}
+
+#[test]
+fn compact_reader_round_trips_current_compact_record() {
+    let (output_dir, manifest_path, descriptor) =
+        compact_reader_test_shard("current-compact-roundtrip");
+    write_manifest_for_descriptor(&manifest_path, descriptor);
+
     let reader = load_bc_shard_reader(&manifest_path, BcShardSplit::Train)
-        .expect("reader should accept rewritten header");
+        .expect("reader should load current compact record");
+    let batch = reader
+        .collate_host_batch_range(0, 2, false)
+        .expect("current compact records should collate");
+    let mut expected = dummy_sample();
+    expected.obs = dense_obs_from_compact_facts(
+        &expected.obs,
+        expected
+            .compact_facts
+            .as_ref()
+            .expect("compact facts should exist"),
+    );
     assert_eq!(reader.sample_count(), 2);
-    assert_eq!(reader.feature_flags(), flags);
+    assert_dense_eq(&batch.obs_flat[..OBS_SIZE], &expected.obs);
+    assert_dense_eq(&batch.obs_flat[OBS_SIZE..OBS_SIZE * 2], &expected.obs);
+    assert_eq!(batch.actions[0], i64::from(expected.action));
+    assert_eq!(batch.actions[1], i64::from(expected.action));
 
     let _ = std::fs::remove_dir_all(output_dir);
 }

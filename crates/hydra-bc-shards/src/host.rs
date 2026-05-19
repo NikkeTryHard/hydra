@@ -206,6 +206,45 @@ impl BcShardHostScratch {
         }
     }
 
+    /// Grow buffers to at least `batch_size` rows while preserving already written rows.
+    pub fn ensure_rows(&mut self, batch_size: usize) {
+        if self.batch_size >= batch_size {
+            return;
+        }
+        self.batch_size = batch_size;
+        grow_uninit_f32(&mut self.obs_flat, batch_size * OBS_SIZE);
+        grow_uninit_i64(&mut self.actions, batch_size);
+        grow_uninit_f32(&mut self.legal_mask_flat, batch_size * HYDRA_ACTION_SPACE);
+        grow_uninit_f32(&mut self.value_target, batch_size);
+        grow_zeroed(&mut self.grp_target_flat, batch_size * GRP_CLASS_COUNT);
+        grow_uninit_f32(&mut self.oracle_target_flat, batch_size * PLAYER_COUNT);
+        grow_zeroed(&mut self.oracle_target_mask, batch_size);
+        grow_uninit_f32(&mut self.tenpai_flat, batch_size * OPPONENT_COUNT);
+        grow_uninit_f32(&mut self.danger_flat, batch_size * SPATIAL_TARGET_SIZE);
+        grow_uninit_f32(&mut self.danger_mask_flat, batch_size * SPATIAL_TARGET_SIZE);
+        grow_zeroed(&mut self.opp_next_flat, batch_size * SPATIAL_TARGET_SIZE);
+        grow_zeroed(&mut self.score_pdf_flat, batch_size * SCORE_BINS);
+        grow_zeroed(&mut self.score_cdf_flat, batch_size * SCORE_BINS);
+        if let Some(buf) = self.safety_target_flat.as_mut() {
+            grow_zeroed(buf, batch_size * HYDRA_ACTION_SPACE);
+        }
+        if let Some(buf) = self.safety_mask_flat.as_mut() {
+            grow_zeroed(buf, batch_size * HYDRA_ACTION_SPACE);
+        }
+        if let Some(buf) = self.exit_target_flat.as_mut() {
+            grow_zeroed(buf, batch_size * HYDRA_ACTION_SPACE);
+        }
+        if let Some(buf) = self.exit_mask_flat.as_mut() {
+            grow_zeroed(buf, batch_size * HYDRA_ACTION_SPACE);
+        }
+        if let Some(buf) = self.delta_q_target_flat.as_mut() {
+            grow_zeroed(buf, batch_size * HYDRA_ACTION_SPACE);
+        }
+        if let Some(buf) = self.delta_q_mask_flat.as_mut() {
+            grow_zeroed(buf, batch_size * HYDRA_ACTION_SPACE);
+        }
+    }
+
     /// Swap the filled buffers out of this scratch into an owned [`BcShardHostBatch`].
     pub fn take_batch(&mut self) -> BcShardHostBatch {
         BcShardHostBatch {
@@ -297,6 +336,33 @@ impl BcShardHostScratch {
     }
 }
 
+impl From<BcShardHostBatch> for BcShardHostScratch {
+    fn from(batch: BcShardHostBatch) -> Self {
+        Self {
+            batch_size: batch.batch_size,
+            obs_flat: batch.obs_flat,
+            actions: batch.actions,
+            legal_mask_flat: batch.legal_mask_flat,
+            value_target: batch.value_target,
+            grp_target_flat: batch.grp_target_flat,
+            oracle_target_flat: batch.oracle_target_flat,
+            oracle_target_mask: batch.oracle_target_mask,
+            tenpai_flat: batch.tenpai_flat,
+            danger_flat: batch.danger_flat,
+            danger_mask_flat: batch.danger_mask_flat,
+            opp_next_flat: batch.opp_next_flat,
+            score_pdf_flat: batch.score_pdf_flat,
+            score_cdf_flat: batch.score_cdf_flat,
+            safety_target_flat: batch.safety_target_flat,
+            safety_mask_flat: batch.safety_mask_flat,
+            exit_target_flat: batch.exit_target_flat,
+            exit_mask_flat: batch.exit_mask_flat,
+            delta_q_target_flat: batch.delta_q_target_flat,
+            delta_q_mask_flat: batch.delta_q_mask_flat,
+        }
+    }
+}
+
 /// Returns the exact BC record byte size for feature flags.
 pub const fn record_size_for_flags(flags: u32) -> u32 {
     let mut size = BC_BASE_RECORD_SIZE;
@@ -342,4 +408,33 @@ fn resize_uninit_i64(buf: &mut Vec<i64>, len: usize) {
     }
     // SAFETY: capacity >= len after the branch above; caller writes all elements.
     unsafe { buf.set_len(len) };
+}
+
+#[inline]
+fn grow_zeroed(buf: &mut Vec<f32>, len: usize) {
+    if buf.len() < len {
+        buf.resize(len, 0.0);
+    }
+}
+
+#[inline]
+fn grow_uninit_f32(buf: &mut Vec<f32>, len: usize) {
+    if buf.len() < len {
+        if buf.capacity() < len {
+            buf.reserve(len - buf.len());
+        }
+        // SAFETY: caller writes newly exposed tail before reading it.
+        unsafe { buf.set_len(len) };
+    }
+}
+
+#[inline]
+fn grow_uninit_i64(buf: &mut Vec<i64>, len: usize) {
+    if buf.len() < len {
+        if buf.capacity() < len {
+            buf.reserve(len - buf.len());
+        }
+        // SAFETY: caller writes newly exposed tail before reading it.
+        unsafe { buf.set_len(len) };
+    }
 }

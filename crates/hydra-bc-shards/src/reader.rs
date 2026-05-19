@@ -6,7 +6,7 @@ use std::path::Path;
 use std::ptr;
 
 use hydra_core::action::HYDRA_ACTION_SPACE;
-use hydra_core::encoder::OBS_SIZE;
+use hydra_core::encoder::{NUM_CHANNELS, OBS_SIZE};
 use hydra_data_core::sample::{score_delta_to_bin, score_delta_to_value};
 use memmap2::{Advice, Mmap};
 
@@ -17,11 +17,11 @@ use crate::compact::{
 use crate::host::{BcShardHostBatch, BcShardHostScratch, GRP_CLASS_COUNT};
 use crate::manifest::{
     BC_DENSE_SHARD_MAGIC, BC_SHARD_HEADER_SIZE, BC_SHARD_LAYOUT_VERSION, BC_SHARD_MAGIC,
-    BC_SHARD_VERSION, BcShardManifest, BcShardSplit, COMPACT_OBS_BASELINE_FACT_BYTES,
-    COMPACT_OBS_DENSE_BYTES, COMPACT_OBS_SCALAR_REPEATED_BYTES, DENSE_REBUILD_MESSAGE,
-    FLAG_BELIEF_FIELDS, FLAG_DELTA_Q, FLAG_EXIT, FLAG_MIXTURE_WEIGHTS, FLAG_SAFETY_RESIDUAL,
-    OPPONENT_COUNT, PACKED_ACTION_MASK_BYTES, PACKED_SPATIAL_MASK_BYTES, PLAYER_COUNT,
-    SPATIAL_TARGET_SIZE, TILE_COUNT, TILE34_BITSET_BYTES, TILE34_COUNT_BYTES,
+    BC_SHARD_VERSION, BcShardDescriptor, BcShardManifest, BcShardSplit,
+    COMPACT_OBS_BASELINE_FACT_BYTES, COMPACT_OBS_DENSE_BYTES, COMPACT_OBS_SCALAR_REPEATED_BYTES,
+    DENSE_REBUILD_MESSAGE, FLAG_BELIEF_FIELDS, FLAG_DELTA_Q, FLAG_EXIT, FLAG_MIXTURE_WEIGHTS,
+    FLAG_SAFETY_RESIDUAL, OPPONENT_COUNT, PACKED_ACTION_MASK_BYTES, PACKED_SPATIAL_MASK_BYTES,
+    PLAYER_COUNT, SPATIAL_TARGET_SIZE, TILE_COUNT, TILE34_BITSET_BYTES, TILE34_COUNT_BYTES,
     checked_compact_record_size, validate_bc_shard_manifest_contract,
 };
 
@@ -85,7 +85,7 @@ pub fn load_bc_shard_reader(
                 .map_err(|err| format!("failed to mmap BC shard {}: {err}", path.display()))?
         };
         let _ = mmap.advise(Advice::Sequential);
-        verify_shard_header(&mmap, split, shard.feature_flags, shard.record_size)?;
+        verify_shard_header(&mmap, split, shard)?;
         let expected_len = (BC_SHARD_HEADER_SIZE as u64)
             .checked_add(
                 shard
@@ -600,8 +600,7 @@ fn decode_optional_action_pair(
 fn verify_shard_header(
     mmap: &Mmap,
     split: BcShardSplit,
-    feature_flags: u32,
-    record_size: u32,
+    descriptor: &BcShardDescriptor,
 ) -> Result<(), String> {
     if mmap.len() < BC_SHARD_HEADER_SIZE as usize {
         return Err("BC shard file too small for header".to_string());
@@ -625,17 +624,27 @@ fn verify_shard_header(
         return Err("BC shard split mismatch".to_string());
     }
     let header_record_size = read_u32_le(&mmap[16..20]);
-    if header_record_size != record_size {
+    if header_record_size != descriptor.record_size {
         return Err("BC shard record size mismatch".to_string());
     }
-    if read_u32_le(&mmap[36..40]) != 192 || read_u32_le(&mmap[40..44]) != TILE_COUNT as u32 {
+    let header_sample_count = u64::from_le_bytes(mmap[28..36].try_into().expect("u64 slice"));
+    if header_sample_count != descriptor.sample_count {
+        return Err("BC shard sample count mismatch".to_string());
+    }
+    if read_u32_le(&mmap[36..40]) != NUM_CHANNELS as u32
+        || read_u32_le(&mmap[40..44]) != TILE_COUNT as u32
+    {
         return Err("BC shard encoder contract mismatch".to_string());
     }
     if read_u32_le(&mmap[44..48]) != HYDRA_ACTION_SPACE as u32 {
         return Err("BC shard action contract mismatch".to_string());
     }
+    let header_first_sample_index = u64::from_le_bytes(mmap[48..56].try_into().expect("u64 slice"));
+    if header_first_sample_index != descriptor.first_sample_index {
+        return Err("BC shard first sample index mismatch".to_string());
+    }
     let header_flags = read_u32_le(&mmap[56..60]);
-    if header_flags != feature_flags {
+    if header_flags != descriptor.feature_flags {
         return Err("BC shard feature flags mismatch".to_string());
     }
     let layout_version = read_u32_le(&mmap[60..64]);
@@ -644,10 +653,11 @@ fn verify_shard_header(
             "unsupported BC shard layout version {layout_version}"
         ));
     }
-    let expected_record_size = checked_compact_record_size(feature_flags)?;
-    if record_size != expected_record_size {
+    let expected_record_size = checked_compact_record_size(descriptor.feature_flags)?;
+    if descriptor.record_size != expected_record_size {
         return Err(format!(
-            "BC shard record_size {record_size} incompatible with current compact binary (expected {expected_record_size} for flags {feature_flags:#x}). Rebuild shards from replay.",
+            "BC shard record_size {} incompatible with current compact binary (expected {expected_record_size} for flags {:#x}). Rebuild shards from replay.",
+            descriptor.record_size, descriptor.feature_flags,
         ));
     }
     Ok(())

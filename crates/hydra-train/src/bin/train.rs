@@ -39,10 +39,21 @@ fn run() -> Result<(), String> {
     if cli.list_devices {
         return handle_list_devices_mode();
     }
-    let config_path = cli
-        .config_path
-        .as_deref()
-        .ok_or_else(|| "config path is required unless --list-devices is used".to_string())?;
+    if cli.preflight.is_some() {
+        let device = cli
+            .preflight
+            .as_ref()
+            .map(|preflight| preflight.device.clone())
+            .unwrap_or_else(hydra_train_runtime::config::default_device);
+        hydra_train_exec::gpu_config::apply_gpu_performance_flags(&device);
+        return run_train_modes(
+            cli,
+            hydra_train_runtime::config::TrainConfig::default_preflight_bench(),
+        );
+    }
+    let config_path = cli.config_path.as_deref().ok_or_else(|| {
+        "config path is required unless --list-devices or --preflight is used".to_string()
+    })?;
     let config = read_config(config_path)?;
     hydra_train_exec::gpu_config::apply_gpu_performance_flags(&config.device);
     if std::env::var_os("HYDRA_CUDA_GRAPH_PROBE_CHILD").is_some() {

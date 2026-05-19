@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use hydra_bc_shards::BcShardSplitMode;
+use hydra_bc_shards::{BcShardManifest, BcShardSplitMode, read_bc_shard_manifest};
 use hydra_replay_loader::mjai_loader::SidecarProvenance;
 use hydra_replay_sidecar::{DeltaQSidecarIndex, ExitSidecarIndex};
 use hydra_train_exec::bc_shard_builder::{
@@ -29,6 +29,8 @@ struct Cli {
     delta_q_sidecar: Option<PathBuf>,
     delta_q_source_net_hash: Option<u64>,
     delta_q_source_version: Option<u32>,
+    max_games: Option<usize>,
+    max_samples: Option<usize>,
     num_threads: Option<usize>,
     queue_bound: usize,
     resume: bool,
@@ -38,11 +40,12 @@ struct Cli {
     progress_jsonl_name: Option<String>,
     dry_scan_only: bool,
     max_error_examples: usize,
+    validate_manifest: Option<PathBuf>,
 }
 
 fn usage(program: &str) -> String {
     format!(
-        "Usage: {program} --input <dir|archive|replay> --output-dir <dir> [--manifest-name <file>] [--shard-samples <usize>] [--train-fraction <f32>] [--split train|val|both] [--exit-sidecar <path> --exit-source-net-hash <u64> --exit-source-version <u32>] [--delta-q-sidecar <path> --delta-q-source-net-hash <u64> --delta-q-source-version <u32>] [--num-threads <usize>] [--queue-bound <usize>] [--resume] [--resume-dir <dir>] [--chunk-games <usize>] [--report-name <file>|--no-report] [--progress-jsonl <file>] [--dry-scan-only] [--max-error-examples <usize>]"
+        "Usage: {program} --validate-manifest <path>\n       {program} --input <dir|archive|replay> --output-dir <dir> [--manifest-name <file>] [--shard-samples <usize>] [--train-fraction <f32>] [--split train|val|both] [--exit-sidecar <path> --exit-source-net-hash <u64> --exit-source-version <u32>] [--delta-q-sidecar <path> --delta-q-source-net-hash <u64> --delta-q-source-version <u32>] [--num-threads <usize>] [--queue-bound <usize>] [--resume] [--resume-dir <dir>] [--chunk-games <usize>] [--max-games <usize>] [--max-samples <usize>] [--report-name <file>|--no-report] [--progress-jsonl <file>] [--dry-scan-only] [--max-error-examples <usize>]"
     )
 }
 
@@ -98,6 +101,8 @@ where
     let mut delta_q_sidecar = None;
     let mut delta_q_source_net_hash = None;
     let mut delta_q_source_version = None;
+    let mut max_games = None;
+    let mut max_samples = None;
     let mut num_threads = None;
     let mut queue_bound = DEFAULT_QUEUE_BOUND;
     let mut resume = false;
@@ -107,9 +112,17 @@ where
     let mut progress_jsonl_name = None;
     let mut dry_scan_only = false;
     let mut max_error_examples = DEFAULT_MAX_ERROR_EXAMPLES;
+    let mut validate_manifest = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--validate-manifest" => {
+                if validate_manifest.is_some() {
+                    return Err("--validate-manifest may be provided only once".to_string());
+                }
+                validate_manifest =
+                    Some(PathBuf::from(next_value(&mut args, "--validate-manifest")?));
+            }
             "--input" => input = Some(PathBuf::from(next_value(&mut args, "--input")?)),
             "--output-dir" => {
                 output_dir = Some(PathBuf::from(next_value(&mut args, "--output-dir")?))
@@ -160,6 +173,12 @@ where
                         .map_err(|err| format!("invalid --delta-q-source-version: {err}"))?,
                 )
             }
+            "--max-games" => {
+                max_games = Some(parse_nonzero_usize_flag(&mut args, "--max-games")?);
+            }
+            "--max-samples" => {
+                max_samples = Some(parse_nonzero_usize_flag(&mut args, "--max-samples")?);
+            }
             "--num-threads" => {
                 num_threads = Some(parse_nonzero_usize_flag(&mut args, "--num-threads")?);
             }
@@ -187,8 +206,8 @@ where
     }
 
     let cli = Cli {
-        input: input.ok_or_else(|| usage(program))?,
-        output_dir: output_dir.ok_or_else(|| usage(program))?,
+        input: input.unwrap_or_default(),
+        output_dir: output_dir.unwrap_or_default(),
         manifest_name,
         shard_samples,
         train_fraction,
@@ -199,6 +218,8 @@ where
         delta_q_sidecar,
         delta_q_source_net_hash,
         delta_q_source_version,
+        max_games,
+        max_samples,
         num_threads,
         queue_bound,
         resume,
@@ -208,9 +229,20 @@ where
         progress_jsonl_name,
         dry_scan_only,
         max_error_examples,
+        validate_manifest,
     };
 
+    if cli.validate_manifest.is_some() {
+        if cli.input.as_os_str().is_empty() && cli.output_dir.as_os_str().is_empty() {
+            return Ok(cli);
+        }
+        return Err("--validate-manifest cannot be combined with shard build flags".to_string());
+    }
+    if cli.input.as_os_str().is_empty() || cli.output_dir.as_os_str().is_empty() {
+        return Err(usage(program));
+    }
     validate_sidecar_args(&cli)?;
+
     Ok(cli)
 }
 
@@ -282,6 +314,45 @@ fn summary(output: &BcShardBuildOutput) -> String {
     )
 }
 
+fn validate_manifest_summary(manifest: &BcShardManifest) -> String {
+    let mut out = format!(
+        "Valid BC shard manifest: storage_layout={} manifest_version={} shard_version={} layout_version={} split_mode={} total_samples={} total_shards={} train_fraction={}",
+        manifest.storage_layout,
+        manifest.manifest_version,
+        manifest.shard_version,
+        hydra_bc_shards::BC_SHARD_LAYOUT_VERSION,
+        manifest.split_mode,
+        manifest.totals.sample_count,
+        manifest.totals.shard_count,
+        manifest.train_fraction,
+    );
+    for split in &manifest.splits {
+        let byte_len: u64 = split.shards.iter().map(|shard| shard.byte_len).sum();
+        let bytes_per_sample = if split.sample_count == 0 {
+            0.0
+        } else {
+            byte_len as f64 / split.sample_count as f64
+        };
+        out.push_str(&format!(
+            "\n  {:?}: samples={} shards={} feature_flags={} record_size={} byte_len={} bytes_per_sample={:.2}",
+            split.split,
+            split.sample_count,
+            split.shard_count,
+            split.feature_flags,
+            split.record_size,
+            byte_len,
+            bytes_per_sample,
+        ));
+    }
+    out
+}
+
+fn validate_manifest_only(path: &std::path::Path) -> Result<(), String> {
+    let manifest = read_bc_shard_manifest(path)?;
+    println!("{}", validate_manifest_summary(&manifest));
+    Ok(())
+}
+
 fn write_scan_report(
     cli: &Cli,
     scan: &hydra_train_exec::data_pipeline::DataManifest,
@@ -306,6 +377,9 @@ fn builder_field_blocker(_cli: &Cli) -> Option<&'static str> {
 fn run() -> Result<(), String> {
     let program = "build_bc_shards";
     let cli = parse_args(program, std::env::args())?;
+    if let Some(path) = cli.validate_manifest.as_ref() {
+        return validate_manifest_only(path);
+    }
 
     let pb = make_progress_bar(0);
     let scan = scan_data_sources_with_progress(
@@ -356,6 +430,8 @@ fn run() -> Result<(), String> {
             cli.delta_q_source_net_hash,
             cli.delta_q_source_version,
         ),
+        max_games: cli.max_games,
+        max_samples: cli.max_samples,
         num_threads: cli.num_threads,
         queue_bound: cli.queue_bound,
         resume: cli.resume,

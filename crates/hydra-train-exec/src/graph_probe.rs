@@ -294,14 +294,24 @@ fn run_probe_step(
         }
         let warmup_host_batch =
             reader.collate_host_batch_range(0, take, bootstrap.config.augment)?;
-        let parity_host_batch_a =
-            reader.collate_host_batch_range(0, take, bootstrap.config.augment)?;
-        let parity_host_batch_b =
-            reader.collate_host_batch_range(0, take, bootstrap.config.augment)?;
         let capture_host_batch =
             reader.collate_host_batch_range(0, take, bootstrap.config.augment)?;
-        let post_replay_host_batch =
-            reader.collate_host_batch_range(0, take, bootstrap.config.augment)?;
+        let post_replay_parity_enabled = graph_probe_post_replay_parity_enabled();
+        let parity_host_batch_a = if graph_probe_warmup_parity_enabled() {
+            Some(reader.collate_host_batch_range(0, take, bootstrap.config.augment)?)
+        } else {
+            None
+        };
+        let parity_host_batch_b = if graph_probe_warmup_parity_enabled() {
+            Some(reader.collate_host_batch_range(0, take, bootstrap.config.augment)?)
+        } else {
+            None
+        };
+        let post_replay_host_batch = if post_replay_parity_enabled {
+            Some(reader.collate_host_batch_range(0, take, bootstrap.config.augment)?)
+        } else {
+            None
+        };
         let t_materialize = Instant::now();
         let warmup_device_batch = epoch_runner::materialize_host_batch_owned::<TrainBackend>(
             warmup_host_batch,
@@ -310,57 +320,93 @@ fn run_probe_step(
         let mut timing = hydra_train_runtime::progress::TrainSubStageTiming::default();
         timing.h2d_tensor_materialize_seconds += t_materialize.elapsed().as_secs_f64();
         timing.h2d_transfer_seconds += timing.h2d_tensor_materialize_seconds;
-        let (stats, timing) = epoch_runner::train_device_batch(
-            warmup_device_batch,
-            take,
-            timing,
-            TrainLogicalBatchConfig {
+        let (stats, timing) = if graph_probe_warmup_optimizer_enabled() {
+            epoch_runner::train_device_batch(
+                warmup_device_batch,
+                take,
+                timing,
+                TrainLogicalBatchConfig {
+                    microbatch_size,
+                    use_amp: bootstrap.use_amp,
+                    augment: bootstrap.config.augment,
+                    train_device: &bootstrap.train_device,
+                    loss_fn: &bootstrap.loss_fn,
+                    bc_exit_cfg: &bootstrap.bc_exit_cfg,
+                    lr,
+                },
+                &mut runtime.head_controller,
+                &mut model_slot,
+                &mut runtime.optimizer,
+            )?
+        } else {
+            let mut warmup_controller = runtime.head_controller.clone();
+            let timing = epoch_runner::probe_device_batch_compute_no_stats(
+                warmup_device_batch,
                 microbatch_size,
-                use_amp: bootstrap.use_amp,
-                augment: bootstrap.config.augment,
-                train_device: &bootstrap.train_device,
-                loss_fn: &bootstrap.loss_fn,
-                bc_exit_cfg: &bootstrap.bc_exit_cfg,
-                lr,
-            },
-            &mut runtime.head_controller,
-            &mut model_slot,
-            &mut runtime.optimizer,
-        )?;
+                bootstrap.use_amp,
+                &bootstrap.loss_fn,
+                &bootstrap.bc_exit_cfg,
+                &mut warmup_controller,
+                epoch_runner::epoch_model(&model_slot)?,
+            )?;
+            (Vec::new(), timing)
+        };
         runtime.model = take_model(model_slot)?;
-        let mut parity_controller = runtime.head_controller.clone();
-        let (parity_stats_a, _timing_a) = epoch_runner::probe_logical_batch_from_host_batch(
-            parity_host_batch_a,
-            TrainLogicalBatchConfig {
-                microbatch_size,
-                use_amp: bootstrap.use_amp,
-                augment: bootstrap.config.augment,
-                train_device: &bootstrap.train_device,
-                loss_fn: &bootstrap.loss_fn,
-                bc_exit_cfg: &bootstrap.bc_exit_cfg,
-                lr,
-            },
-            &mut parity_controller,
-            &runtime.model,
-            None,
-        )?;
-        let mut parity_controller = runtime.head_controller.clone();
-        let (parity_stats_b, _timing_b) = epoch_runner::probe_logical_batch_from_host_batch(
-            parity_host_batch_b,
-            TrainLogicalBatchConfig {
-                microbatch_size,
-                use_amp: bootstrap.use_amp,
-                augment: bootstrap.config.augment,
-                train_device: &bootstrap.train_device,
-                loss_fn: &bootstrap.loss_fn,
-                bc_exit_cfg: &bootstrap.bc_exit_cfg,
-                lr,
-            },
-            &mut parity_controller,
-            &runtime.model,
-            None,
-        )?;
-        let parity = parity_summary(&parity_stats_a, &parity_stats_b)?;
+        if let Err(err) = crate::cuda_graph::synchronize_device() {
+            return Err(format!("CUDA graph warmup sync failed: {err}"));
+        }
+        let (parity, reference_stats) =
+            if let (Some(parity_host_batch_a), Some(parity_host_batch_b)) =
+                (parity_host_batch_a, parity_host_batch_b)
+            {
+                let mut parity_controller = runtime.head_controller.clone();
+                let (parity_stats_a, _timing_a) =
+                    epoch_runner::probe_logical_batch_from_host_batch(
+                        parity_host_batch_a,
+                        TrainLogicalBatchConfig {
+                            microbatch_size,
+                            use_amp: bootstrap.use_amp,
+                            augment: bootstrap.config.augment,
+                            train_device: &bootstrap.train_device,
+                            loss_fn: &bootstrap.loss_fn,
+                            bc_exit_cfg: &bootstrap.bc_exit_cfg,
+                            lr,
+                        },
+                        &mut parity_controller,
+                        &runtime.model,
+                        None,
+                    )?;
+                let mut parity_controller = runtime.head_controller.clone();
+                let (parity_stats_b, _timing_b) =
+                    epoch_runner::probe_logical_batch_from_host_batch(
+                        parity_host_batch_b,
+                        TrainLogicalBatchConfig {
+                            microbatch_size,
+                            use_amp: bootstrap.use_amp,
+                            augment: bootstrap.config.augment,
+                            train_device: &bootstrap.train_device,
+                            loss_fn: &bootstrap.loss_fn,
+                            bc_exit_cfg: &bootstrap.bc_exit_cfg,
+                            lr,
+                        },
+                        &mut parity_controller,
+                        &runtime.model,
+                        None,
+                    )?;
+                let parity = parity_summary(&parity_stats_a, &parity_stats_b)?;
+                (parity, parity_stats_a)
+            } else {
+                (
+                    CudaGraphParitySummary {
+                        repeats: 0,
+                        max_total_loss_abs_diff: 0.0,
+                        max_policy_agreement_abs_diff: 0.0,
+                        reference_total_loss: 0.0,
+                        reference_policy_agreement: 0.0,
+                    },
+                    Vec::new(),
+                )
+            };
         let warmup = CudaGraphWarmupSummary::from_timing(
             "bc_shards",
             take,
@@ -370,7 +416,7 @@ fn run_probe_step(
         );
         let capture = guarded_capture_attempt(
             capture_host_batch,
-            Some(post_replay_host_batch),
+            post_replay_host_batch,
             microbatch_size,
             bootstrap.use_amp,
             bootstrap.config.augment,
@@ -380,7 +426,7 @@ fn run_probe_step(
             lr,
             &mut runtime.head_controller.clone(),
             &runtime.model,
-            &parity_stats_a,
+            &reference_stats,
         );
         return Ok((warmup, parity, capture));
     }
@@ -617,6 +663,22 @@ fn graph_probe_replay_repeats() -> usize {
 #[cfg(feature = "cuda-graph")]
 fn graph_probe_post_replay_parity_enabled() -> bool {
     match env::var("HYDRA_CUDA_GRAPH_PROBE_POST_REPLAY_PARITY") {
+        Ok(value) => !matches!(value.as_str(), "0" | "false" | "FALSE" | "off" | "OFF"),
+        Err(_) => true,
+    }
+}
+
+#[cfg(feature = "cuda-graph")]
+fn graph_probe_warmup_parity_enabled() -> bool {
+    match env::var("HYDRA_CUDA_GRAPH_PROBE_WARMUP_PARITY") {
+        Ok(value) => !matches!(value.as_str(), "0" | "false" | "FALSE" | "off" | "OFF"),
+        Err(_) => true,
+    }
+}
+
+#[cfg(feature = "cuda-graph")]
+fn graph_probe_warmup_optimizer_enabled() -> bool {
+    match env::var("HYDRA_CUDA_GRAPH_PROBE_WARMUP_OPTIMIZER") {
         Ok(value) => !matches!(value.as_str(), "0" | "false" | "FALSE" | "off" | "OFF"),
         Err(_) => true,
     }

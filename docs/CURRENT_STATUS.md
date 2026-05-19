@@ -30,14 +30,14 @@ File uses status vocabulary from `research/design/HYDRA_RECONCILIATION.md`.
 - `hydra-core` = real first-party runtime/encoder/simulator crate.
 - Live encoder/model contract = `192x34`; old `85x34` view = baseline-prefix only.
 - Fixed runtime action space = 46 actions with two-phase riichi and kan handling.
-- BC training normal runtime is YAML-derived. Preflight may select runtime for operators to copy into YAML (`microbatch_size`, `validation_microbatch_size`, derived `accum_steps`); normal training no longer consumes preflight cache.
+- BC training normal runtime is YAML-derived. Preflight is now markdown benchmark over exact candidate tuples; it produces evidence rows only and does not configure normal training.
 - Stronger public-teacher belief-semantics tranche shipped in current training baseline.
 - Current Hand-EV realism upgrade shipped in live baseline surface.
 - Replay-derived `safety_residual` shipped as narrow supervised lane.
 - ExIt has end-to-end carrier across live self-play lane and replay/sample sidecar-first lane.
 - Rare-action train/validation metrics shipped as observability only; no policy behavior change.
 
-- BC shards are compact-only v3 on disk. No dense/v2 storage path is supported. Shard builder writes replay-fact baseline observation records, omits advanced/search/Hand-EV dense tails, and dense v2 shards hard-error with rebuild-from-replay message. Reader expands compact records back to unchanged `192x34` training tensors with advanced channels absent/zero for replay BC shards.
+- BC shards are compact-only v3 on disk. No dense/v2 storage path is supported. Workflow is build shards, optionally run manifestless markdown preflight for runtime-shape evidence, edit YAML by hand if desired, then train from `bc_shards_manifest_path`. Shard builder writes replay-fact baseline observation records, omits advanced/search/Hand-EV dense tails, and dense v2 shards hard-error with rebuild-from-replay message. Reader expands compact records back to unchanged `192x34` training tensors with advanced channels absent/zero for replay BC shards.
 - BC shard CUDA path has reusable pinned H2D staging, preallocated GPU tensors, CPU f32 policy-target materialization, and child-process CUDA graph compute-capture probe. Production CUDA graph replay remains blocked by Burn `GradientsParams` optimizer contract; runtime labels say `cuda_graph_replay=production_off_probe_only`.
 - BC CUDA LibTorch training defaults to BF16 AMP when `precision_mode` is omitted. Explicit `precision_mode: fp32` keeps CUDA BC FP32; CPU omission stays FP32. BF16 AMP wraps BC forward only; loss/backward/optimizer/checkpoints/validation remain FP32. RL and DeltaQ promotion hard-error on BF16.
 ### Implemented but not default-on
@@ -66,9 +66,9 @@ File uses status vocabulary from `research/design/HYDRA_RECONCILIATION.md`.
 | Runtime encoder / action semantics | shipped baseline | See `docs/GAME_ENGINE.md` and `docs/COMPATIBILITY_SURFACE.md` |
 | Hand-EV baseline surface | shipped baseline | Stronger local evaluator live; representative-world CT-SMC Hand-EV still staged |
 | Belief semantics baseline | shipped baseline | Stronger public-teacher belief tranche in live baseline |
-| BC runtime authority | shipped baseline | Normal training is YAML-derived; operators may copy selected preflight runtime into YAML; normal BC/RL bootstrap no longer consumes preflight cache. |
+| BC runtime authority | shipped baseline | Normal training is YAML-derived. Benchmark rows are evidence for human YAML edit; normal BC/RL bootstrap does not consume benchmark artifacts. |
 | BF16/AMP precision | shipped BC CUDA default; hard-gated RL/DeltaQ | Omitted `precision_mode` on BC CUDA LibTorch resolves to requested `bf16_autocast` / effective `bf16_amp`; explicit `fp32` overrides. CPU omission stays FP32. Loss/backward/optimizer/checkpoints/validation remain FP32. No CUDA graph BF16 claim. |
-| Preflight cache system | shipped baseline | Fingerprint v6 key covers hardware, workload, CLI preflight config signature, explicit microbatch overrides. Identical-run fast path skips repeated preflight probes on cache hit. Normal BC/RL bootstrap no longer consumes preflight cache. |
+| Preflight benchmark | shipped baseline | `--preflight` runs exact `--pf-candidate-tuples` and emits markdown benchmark table with numeric throughput and wait ratios. It has no config input, dataset read, shard manifest read, cache authority, automatic winner, or YAML mutation. Non-applicable disk/GPU-only metrics are numeric `0.0`. |
 | NVTX profiling | shipped baseline | Orchestration-level fully instrumented (epoch, step, validation, checkpoint, logging, self-play, stage-2 benchmark). BC microbatch sub-stages (collation, forward, loss, backward, optimizer_step) instrumented. Library internals not yet instrumented. Gated by `HYDRA_NVTX` env var via dlopen. |
 | CUDA BC shard throughput | shipped baseline (transport/metrics); probe-only (CUDA graph replay) | `cuda-graph` feature enables pinned staging/preallocated tensors for shard train/probe/validation. CPU f32 policy-target path avoids lazy `IntTensor::one_hot`; metric accumulation avoids discarded progress finalization and redundant agreement kernels. Child graph probe proves compute-only capture/replay parity, but production replay is blocked by Burn optimizer gradient extraction. |
 | `safety_residual` | shipped baseline | Narrow replay-derived supervised lane |

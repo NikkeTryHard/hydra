@@ -281,28 +281,31 @@ fn parse_args_accepts_internal_probe_batch_child_flags() {
 }
 
 #[test]
-fn parse_args_rejects_preflight_without_mode() {
+fn parse_args_rejects_preflight_config_path() {
     let args = vec![
         "train".to_string(),
         "config.yaml".to_string(),
         "--preflight".to_string(),
     ];
-    let err = parse_args(args).expect_err("preflight without mode should fail");
-    assert_eq!(err, "--preflight requires --preflight-mode <safe|unsafe>");
+    let err = parse_args(args).expect_err("preflight with config path should fail");
+    assert!(err.contains("--preflight does not accept a config path"));
 }
 
 #[test]
-fn parse_args_accepts_preflight_safe_defaults() {
+fn parse_args_accepts_configless_preflight_safe_defaults() {
     let args = vec![
         "train".to_string(),
-        "config.yaml".to_string(),
         "--preflight".to_string(),
-        "--preflight-mode".to_string(),
-        "safe".to_string(),
+        "--device".to_string(),
+        "cpu".to_string(),
+        "--output-dir".to_string(),
+        "bench-out".to_string(),
     ];
-    let parsed = parse_args(args).expect("safe preflight arg should parse");
+    let parsed = parse_args(args).expect("configless preflight arg should parse");
     let preflight = parsed.preflight.expect("preflight options should exist");
-    assert_eq!(parsed.config_path, Some(PathBuf::from("config.yaml")));
+    assert!(parsed.config_path.is_none());
+    assert_eq!(preflight.output_dir, PathBuf::from("bench-out"));
+    assert_eq!(preflight.device, "cpu");
     assert_eq!(
         preflight.profile,
         hydra_train_runtime::config::PreflightProfile::Default
@@ -321,10 +324,7 @@ fn parse_args_accepts_preflight_safe_defaults() {
 fn parse_args_accepts_fast_repeated_run_profile() {
     let args = vec![
         "train".to_string(),
-        "config.yaml".to_string(),
         "--preflight".to_string(),
-        "--preflight-mode".to_string(),
-        "safe".to_string(),
         "--pf-profile".to_string(),
         "fast-repeated-run".to_string(),
     ];
@@ -347,7 +347,6 @@ fn parse_args_accepts_fast_repeated_run_profile() {
 fn parse_args_allows_fast_repeated_profile_with_unsafe_mode() {
     let args = vec![
         "train".to_string(),
-        "config.yaml".to_string(),
         "--preflight".to_string(),
         "--preflight-mode".to_string(),
         "unsafe".to_string(),
@@ -373,7 +372,6 @@ fn parse_args_allows_fast_repeated_profile_with_unsafe_mode() {
 fn parse_args_applies_profile_then_flag_overrides() {
     let args = vec![
         "train".to_string(),
-        "config.yaml".to_string(),
         "--preflight".to_string(),
         "--pf-profile".to_string(),
         "fast-repeated-run".to_string(),
@@ -392,40 +390,15 @@ fn parse_args_applies_profile_then_flag_overrides() {
 }
 
 #[test]
-fn parse_args_accepts_repeated_comma_range_candidate_microbatch() {
+fn parse_args_rejects_deprecated_candidate_microbatch() {
     let args = vec![
         "train".to_string(),
-        "config.yaml".to_string(),
         "--preflight".to_string(),
-        "--preflight-mode".to_string(),
-        "safe".to_string(),
         "--pf-candidate-microbatch".to_string(),
         "64-256*2".to_string(),
-        "--pf-candidate-microbatch".to_string(),
-        "320,384,512".to_string(),
     ];
-    let parsed = parse_args(args).expect("range list should parse");
-    let preflight = parsed.preflight.expect("preflight options");
-    assert_eq!(
-        preflight.preflight_config.candidate_microbatches,
-        vec![64, 128, 256, 320, 384, 512]
-    );
-}
-
-#[test]
-fn parse_args_rejects_bad_range_list() {
-    for value in ["1 - 2", "+1", "0", "2-1", "1-4+0", "1-4*1"] {
-        let args = vec![
-            "train".to_string(),
-            "config.yaml".to_string(),
-            "--preflight".to_string(),
-            "--preflight-mode".to_string(),
-            "safe".to_string(),
-            "--pf-candidate-microbatch".to_string(),
-            value.to_string(),
-        ];
-        parse_args(args).expect_err("bad range list should fail");
-    }
+    let err = parse_args(args).expect_err("deprecated candidate microbatch should fail");
+    assert!(err.contains("--pf-candidate-tuples"));
 }
 
 #[test]
@@ -444,7 +417,6 @@ fn parse_args_rejects_preflight_flags_without_preflight() {
 fn parse_args_rejects_unsafe_flags_in_safe_mode() {
     let args = vec![
         "train".to_string(),
-        "config.yaml".to_string(),
         "--preflight".to_string(),
         "--preflight-mode".to_string(),
         "safe".to_string(),
@@ -459,7 +431,6 @@ fn parse_args_rejects_unsafe_flags_in_safe_mode() {
 fn parse_args_accepts_unsafe_flags_in_unsafe_mode() {
     let args = vec![
         "train".to_string(),
-        "config.yaml".to_string(),
         "--preflight".to_string(),
         "--preflight-mode".to_string(),
         "unsafe".to_string(),
@@ -569,10 +540,7 @@ fn parse_args_rejects_delta_q_promotion_with_probe_flags() {
 fn parse_args_rejects_preflight_with_probe_flags() {
     let args = vec![
         "train".to_string(),
-        "config.yaml".to_string(),
         "--preflight".to_string(),
-        "--preflight-mode".to_string(),
-        "safe".to_string(),
         "--probe-kind".to_string(),
         "train".to_string(),
         "--probe-candidate-microbatch".to_string(),
@@ -1862,4 +1830,62 @@ fn steps_per_second_and_progress_message_are_stable() {
         format_progress_message(3.0, 0.25, "lr=1.00e-4 cosine", 5.5),
         "loss=3.0000 agree=25.00% steps/s=5.50 lr=1.00e-4 cosine"
     );
+}
+
+#[test]
+fn preflight_bench_matrix_expands_in_stable_order() {
+    let cli = parse_args(
+        [
+            "train",
+            "--preflight",
+            "--pf-candidate-tuples",
+            "1024:2:1:1,2048:4:2:2,4096:8:4:2",
+            "--pf-output",
+            "md",
+        ]
+        .into_iter()
+        .map(str::to_string),
+    )
+    .expect("preflight tuple args parse");
+    let preflight = cli.preflight.expect("preflight enabled");
+    let tuples = preflight.preflight_config.bench_candidate_tuples;
+    assert_eq!(tuples.len(), 3);
+    assert_eq!(
+        (
+            tuples[0].batch_size,
+            tuples[0].ring_batches,
+            tuples[0].loader_threads,
+            tuples[0].prefetch_batches
+        ),
+        (1024, 2, 1, 1)
+    );
+    assert_eq!(
+        (
+            tuples[1].batch_size,
+            tuples[1].ring_batches,
+            tuples[1].loader_threads,
+            tuples[1].prefetch_batches
+        ),
+        (2048, 4, 2, 2)
+    );
+    assert_eq!(
+        (
+            tuples[2].batch_size,
+            tuples[2].ring_batches,
+            tuples[2].loader_threads,
+            tuples[2].prefetch_batches
+        ),
+        (4096, 8, 4, 2)
+    );
+}
+
+#[test]
+fn preflight_rejects_cartesian_candidate_microbatch_flag() {
+    let err = parse_args(
+        ["train", "--preflight", "--pf-candidate-microbatch", "1024"]
+            .into_iter()
+            .map(str::to_string),
+    )
+    .expect_err("cartesian preflight flag is rejected");
+    assert!(err.contains("--pf-candidate-tuples"));
 }

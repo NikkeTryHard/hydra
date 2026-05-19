@@ -3,16 +3,15 @@ use burn::optim::{GradientsAccumulator, GradientsParams};
 use burn::tensor::backend::{AutodiffBackend, Backend};
 
 use crate::data::sample::{MjaiSample, collate_samples, collate_samples_bc_owned_timed};
-use crate::losses::HydraLoss;
+use crate::losses::{BcLossInputs, HydraLoss};
 use crate::model::{HydraModel, HydraTrainModelExt};
 use hydra_model::amp::maybe_autocast;
-use hydra_train_algo::bc::{BcExitConfig, maybe_add_exit_loss};
+use hydra_train_algo::bc::BcExitConfig;
 use hydra_train_runtime::head_gates::HeadActivationController;
 use hydra_train_runtime::preflight::{
     PROFILING_STAGE_BACKWARD, PROFILING_STAGE_COLLATION, PROFILING_STAGE_FORWARD,
     PROFILING_STAGE_LOSS,
 };
-use hydra_train_types::losses::LossBreakdown;
 
 use crate::bc_metrics::{
     BatchMetricSums, batch_metric_sums_from_outputs, batch_stats_from_metric_sums,
@@ -159,18 +158,18 @@ where
         };
         sub_timing.forward_seconds += t.elapsed().as_secs_f64();
         let t = Instant::now();
-        let (breakdown, total) = {
+        let loss = {
             let _loss_scope = crate::nvtx::scope(PROFILING_STAGE_LOSS);
-            let breakdown: LossBreakdown<B> = active_loss_fn.total_loss(&output, &targets);
-            let total = maybe_add_exit_loss(
-                breakdown.total.clone(),
-                output.policy_logits.clone(),
-                batch.exit_target.as_ref(),
-                batch.exit_mask.as_ref(),
-                bc_exit_cfg,
-            );
-            (breakdown, total)
+            active_loss_fn.bc_loss(BcLossInputs {
+                outputs: &output,
+                targets: &targets,
+                exit_target: batch.exit_target.as_ref(),
+                exit_mask: batch.exit_mask.as_ref(),
+                exit_cfg: bc_exit_cfg,
+            })
         };
+        let breakdown = loss.breakdown;
+        let total = loss.total;
         sub_timing.loss_seconds += t.elapsed().as_secs_f64();
         let chunk_weight = chunk.len() as f32 / logical_batch_len;
         let weighted_total = total.clone() * chunk_weight;
@@ -221,18 +220,18 @@ where
         };
         sub_timing.forward_seconds += t.elapsed().as_secs_f64();
         let t = Instant::now();
-        let (breakdown, total) = {
+        let loss = {
             let _loss_scope = crate::nvtx::scope(PROFILING_STAGE_LOSS);
-            let breakdown: LossBreakdown<B> = active_loss_fn.total_loss(&output, &targets);
-            let total = maybe_add_exit_loss(
-                breakdown.total.clone(),
-                output.policy_logits.clone(),
-                batch.exit_target.as_ref(),
-                batch.exit_mask.as_ref(),
-                bc_exit_cfg,
-            );
-            (breakdown, total)
+            active_loss_fn.bc_loss(BcLossInputs {
+                outputs: &output,
+                targets: &targets,
+                exit_target: batch.exit_target.as_ref(),
+                exit_mask: batch.exit_mask.as_ref(),
+                exit_cfg: bc_exit_cfg,
+            })
         };
+        let breakdown = loss.breakdown;
+        let total = loss.total;
         sub_timing.loss_seconds += t.elapsed().as_secs_f64();
         let chunk_weight = tail_remainder.len() as f32 / logical_batch_len;
         let weighted_total = total.clone() * chunk_weight;
@@ -389,14 +388,15 @@ where
         });
         sub_timing.forward_seconds += t_forward.elapsed().as_secs_f64();
         let t_loss = Instant::now();
-        let breakdown: LossBreakdown<B> = active_loss_fn.total_loss(&output, &targets);
-        let total = maybe_add_exit_loss(
-            breakdown.total.clone(),
-            output.policy_logits.clone(),
-            batch.exit_target.as_ref(),
-            batch.exit_mask.as_ref(),
-            bc_exit_cfg,
-        );
+        let loss = active_loss_fn.bc_loss(BcLossInputs {
+            outputs: &output,
+            targets: &targets,
+            exit_target: batch.exit_target.as_ref(),
+            exit_mask: batch.exit_mask.as_ref(),
+            exit_cfg: bc_exit_cfg,
+        });
+        let breakdown = loss.breakdown;
+        let total = loss.total;
         sub_timing.loss_seconds += t_loss.elapsed().as_secs_f64();
         step_batches.push(BatchStats {
             sample_count: chunk.len(),
@@ -447,14 +447,15 @@ where
         });
         sub_timing.forward_seconds += t_forward.elapsed().as_secs_f64();
         let t_loss = Instant::now();
-        let breakdown = active_loss_fn.total_loss(&output, &targets);
-        let total = maybe_add_exit_loss(
-            breakdown.total.clone(),
-            output.policy_logits.clone(),
-            batch.exit_target.as_ref(),
-            batch.exit_mask.as_ref(),
-            bc_exit_cfg,
-        );
+        let loss = active_loss_fn.bc_loss(BcLossInputs {
+            outputs: &output,
+            targets: &targets,
+            exit_target: batch.exit_target.as_ref(),
+            exit_mask: batch.exit_mask.as_ref(),
+            exit_cfg: bc_exit_cfg,
+        });
+        let breakdown = loss.breakdown;
+        let total = loss.total;
         sub_timing.loss_seconds += t_loss.elapsed().as_secs_f64();
         step_batches.push(BatchStats {
             sample_count: tail_remainder.len(),

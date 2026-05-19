@@ -3421,6 +3421,7 @@ dependencies = [
  "cc",
  "hydra-core",
  "hydra-train-types",
+ "libloading 0.8.9",
  "tch",
  "torch-sys",
 ]

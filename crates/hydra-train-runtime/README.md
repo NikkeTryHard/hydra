@@ -7,9 +7,9 @@ Crate-local map for training runtime contracts. Owns CLI/config/preflight/probe/
 - Training config and runtime-materialized config DTOs.
 - DeltaQ promotion contract types.
 - Head gates and loss policy contracts.
-- Preflight/probe request contracts.
+- Preflight benchmark request/report contracts.
 - Progress/schedule/status/validation DTOs.
-- YAML/CLI-facing runtime shape consumed by execution layer.
+- YAML/CLI-facing runtime shape consumed by execution layer; YAML remains runtime authority for normal training.
 
 ## Does not own
 
@@ -27,6 +27,8 @@ Crate-local map for training runtime contracts. Owns CLI/config/preflight/probe/
 | Serialization | serde YAML/JSON where operator-facing |
 | Boundary | no heavy execution ownership |
 | Authority | runtime contract truth for `hydra-train-exec` and `hydra-train` |
+| Preflight benchmark | exact tuple CLI input; markdown/report rows only; no config, manifest, dataset, cache authority, automatic winner, or YAML mutation |
+| Shard workflow | build shards -> optional manifestless markdown preflight -> human edits YAML if desired -> train from `bc_shards_manifest_path` |
 
 ## Read next
 

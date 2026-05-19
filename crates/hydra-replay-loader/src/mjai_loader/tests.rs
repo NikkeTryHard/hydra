@@ -129,6 +129,47 @@ fn load_game_from_reader_extracts_samples() {
     );
 }
 
+struct CollectRecordSink {
+    samples: Vec<MjaiSample>,
+}
+
+impl ReplaySampleSink for CollectRecordSink {
+    fn push_sample(&mut self, sample: ReplaySampleRecord) -> io::Result<()> {
+        self.samples.push(sample.into_sample());
+        Ok(())
+    }
+}
+
+#[test]
+fn load_game_from_reader_into_sink_matches_public_loader_samples() {
+    let (log, final_scores) = play_game_with_mjai_log(3);
+    let payload = log.join("\n");
+    let public = load_game_from_reader(Cursor::new(payload.as_bytes())).expect("load game");
+    let mut sink = CollectRecordSink {
+        samples: Vec::new(),
+    };
+
+    let sink_scores =
+        load_game_from_reader_into_sink("game-3", Cursor::new(payload.as_bytes()), None, &mut sink)
+            .expect("sink loader should succeed");
+
+    assert_eq!(public.final_scores, final_scores);
+    assert_eq!(sink_scores, public.final_scores);
+    assert_eq!(sink.samples.len(), public.samples.len());
+    for (from_sink, from_public) in sink.samples.iter().zip(public.samples.iter()).take(32) {
+        assert_eq!(from_sink.obs, from_public.obs);
+        assert_eq!(from_sink.action, from_public.action);
+        assert_eq!(from_sink.legal_mask, from_public.legal_mask);
+        assert_eq!(from_sink.score_delta, from_public.score_delta);
+        assert_eq!(from_sink.grp_label, from_public.grp_label);
+        assert_eq!(from_sink.tenpai, from_public.tenpai);
+        assert_eq!(from_sink.opp_next, from_public.opp_next);
+        assert_eq!(from_sink.danger, from_public.danger);
+        assert_eq!(from_sink.danger_mask, from_public.danger_mask);
+        assert_eq!(from_sink.compact_facts, from_public.compact_facts);
+    }
+}
+
 #[test]
 fn real_replay_compact_facts_decode_matches_dense_baseline() {
     let (log, _) = play_game_with_mjai_log(11);

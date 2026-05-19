@@ -21,11 +21,7 @@ use hydra_data_core::{
 use hydra_sample_cache::{
     ParsedSampleCacheMetadata, is_parsed_sample_cache_file, read_parsed_sample_cache_metadata,
 };
-use hydra_train_runtime::preflight::{
-    BenchmarkResult, EffectiveRuntimeConfig, ManifestCacheEntry, PreflightArtifactEvent,
-    PreflightCacheEntry, PreflightCacheKey, PreflightCandidateRecord, PreflightState,
-    default_cache_name, default_manifest_cache_name,
-};
+use hydra_train_runtime::preflight::{ManifestCacheEntry, default_manifest_cache_name};
 
 type DirectoryDiscoveryTuple = (DiscoveryMode, Vec<DataSource>, usize, usize, Vec<PathBuf>);
 use hydra_train_types::checkpoint::CheckpointMeta;
@@ -95,8 +91,6 @@ pub struct RlArtifactPaths {
 
 /// BC preflight artifact paths.
 pub struct PreflightPaths {
-    /// Runtime preflight cache path.
-    pub cache_path: PathBuf,
     /// Manifest cache path.
     pub manifest_cache_path: PathBuf,
     /// Compact discovery summary path.
@@ -121,16 +115,6 @@ pub struct PreflightBenchmarkPaths {
     pub root: PathBuf,
 }
 
-/// Persisted preflight benchmark report.
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct PreflightBenchmarkReport {
-    /// Cache key used for the benchmark.
-    pub cache_key: PreflightCacheKey,
-    /// Effective runtime config benchmarked.
-    pub runtime: EffectiveRuntimeConfig,
-    /// Benchmark result payload.
-    pub benchmark: BenchmarkResult,
-}
 /// Persisted validation gate decision artifact.
 #[derive(serde::Serialize)]
 pub struct PersistedValidationGateArtifact<'a> {
@@ -196,12 +180,6 @@ pub fn write_delta_q_promotion_artifact(
     let json = serde_json::to_string_pretty(artifact)
         .map_err(|err| format!("failed to serialize delta_q promotion artifact: {err}"))?;
     atomic_write_text(path, &json, "delta_q promotion artifact")
-}
-
-/// RL preflight cache paths.
-pub struct RlPreflightPaths {
-    /// Runtime preflight cache path.
-    pub cache_path: PathBuf,
 }
 
 /// JSONL append writer type.
@@ -276,7 +254,6 @@ impl PreflightPaths {
         let output_root = artifacts.root.parent().unwrap_or(artifacts.root.as_path());
         let preflight_root = output_root.join("preflight");
         Self {
-            cache_path: preflight_root.join("cache").join(default_cache_name()),
             manifest_cache_path: preflight_root
                 .join("cache")
                 .join(default_manifest_cache_name()),
@@ -290,10 +267,9 @@ impl PreflightPaths {
         }
     }
 
-    /// Creates parent directories for preflight logs, state, reports, and cache.
+    /// Creates parent directories for preflight logs, state, reports, and manifest cache.
     pub fn create_dirs(&self) -> Result<(), String> {
         for path in [
-            &self.cache_path,
             &self.manifest_cache_path,
             &self.discovery_summary_path,
             &self.discovery_index_path,
@@ -357,16 +333,6 @@ impl PreflightBenchmarkPaths {
     #[must_use]
     pub fn report_path(&self) -> PathBuf {
         self.root.join("report.json")
-    }
-}
-
-impl RlPreflightPaths {
-    /// Builds RL preflight cache paths from RL artifact paths.
-    #[must_use]
-    pub fn new(artifacts: &RlArtifactPaths) -> Self {
-        Self {
-            cache_path: artifacts.root.join(default_cache_name()),
-        }
     }
 }
 
@@ -908,146 +874,6 @@ pub fn latest_rl_payload_is_current(artifacts: &RlArtifactPaths, global_step: us
     ) && read_rl_resume_state(&artifacts.latest_state_path)
         .map(|state| state.global_step == global_step)
         .unwrap_or(false)
-}
-
-/// Writes a preflight cache entry.
-pub fn write_preflight_cache(path: &Path, entry: &PreflightCacheEntry) -> Result<(), String> {
-    let json = serde_json::to_string_pretty(entry).map_err(|err| {
-        format!(
-            "failed to serialize preflight cache {}: {err}",
-            path.display()
-        )
-    })?;
-    atomic_write_text(path, &json, "preflight cache")
-}
-
-/// Writes a durable preflight state snapshot.
-pub fn write_preflight_state(path: &Path, state: &PreflightState) -> Result<(), String> {
-    let json = serde_json::to_string_pretty(state).map_err(|err| {
-        format!(
-            "failed to serialize preflight state {}: {err}",
-            path.display()
-        )
-    })?;
-    atomic_write_text(path, &json, "preflight state")
-}
-
-/// Reads a durable preflight state snapshot if the path exists.
-pub fn read_preflight_state(path: &Path) -> Result<Option<PreflightState>, String> {
-    match fs::read_to_string(path) {
-        Ok(contents) => serde_json::from_str(&contents)
-            .map(Some)
-            .map_err(|err| format!("failed to parse preflight state {}: {err}", path.display())),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(format!(
-            "failed to read preflight state {}: {err}",
-            path.display()
-        )),
-    }
-}
-
-/// Writes a human-readable preflight report.
-pub fn write_preflight_report<T: serde::Serialize>(path: &Path, report: &T) -> Result<(), String> {
-    let json = serde_json::to_string_pretty(report).map_err(|err| {
-        format!(
-            "failed to serialize preflight report {}: {err}",
-            path.display()
-        )
-    })?;
-    atomic_write_text(path, &json, "preflight report")
-}
-
-/// Appends a preflight phase/event record.
-pub fn append_preflight_event_to_writer<W>(
-    writer: &mut W,
-    event: &PreflightArtifactEvent,
-) -> Result<(), String>
-where
-    W: Write,
-{
-    append_jsonl_entry(writer, event, "preflight events log", "preflight event")
-}
-
-/// Appends a preflight candidate-result record.
-pub fn append_preflight_candidate_to_writer<W>(
-    writer: &mut W,
-    candidate: &PreflightCandidateRecord,
-) -> Result<(), String>
-where
-    W: Write,
-{
-    append_jsonl_entry(
-        writer,
-        candidate,
-        "preflight candidates log",
-        "preflight candidate result",
-    )
-}
-
-/// Opens the preflight events JSONL appender.
-pub fn open_preflight_event_appender(path: &Path) -> Result<JsonlAppender, String> {
-    open_jsonl_appender(path, "preflight events log")
-}
-
-/// Opens the preflight candidate JSONL appender.
-pub fn open_preflight_candidate_appender(path: &Path) -> Result<JsonlAppender, String> {
-    open_jsonl_appender(path, "preflight candidates log")
-}
-
-/// Ensures the metrics JSONL placeholder exists without clobbering existing metrics.
-pub fn ensure_preflight_metrics_placeholder(path: &Path) -> Result<(), String> {
-    if path.exists() {
-        return Ok(());
-    }
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|err| {
-            format!(
-                "failed to create preflight metrics log dir {}: {err}",
-                parent.display()
-            )
-        })?;
-    }
-    fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(path)
-        .map(|_| ())
-        .or_else(|err| {
-            if err.kind() == io::ErrorKind::AlreadyExists {
-                Ok(())
-            } else {
-                Err(format!(
-                    "failed to create preflight metrics log {}: {err}",
-                    path.display()
-                ))
-            }
-        })
-}
-
-/// Writes a preflight benchmark report.
-pub fn write_preflight_benchmark_report(
-    path: &Path,
-    report: &PreflightBenchmarkReport,
-) -> Result<(), String> {
-    let json = serde_json::to_string_pretty(report).map_err(|err| {
-        format!(
-            "failed to serialize preflight benchmark report {}: {err}",
-            path.display()
-        )
-    })?;
-    atomic_write_text(path, &json, "preflight benchmark report")
-}
-
-/// Reads a preflight cache entry if the path exists.
-pub fn read_preflight_cache(path: &Path) -> Result<Option<PreflightCacheEntry>, String> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let raw = fs::read_to_string(path)
-        .map_err(|err| format!("failed to read preflight cache {}: {err}", path.display()))?;
-    let entry: PreflightCacheEntry = serde_json::from_str(&raw)
-        .map_err(|err| format!("failed to parse preflight cache {}: {err}", path.display()))?;
-    Ok(Some(entry))
 }
 
 /// Writes a manifest cache entry.
@@ -1810,10 +1636,7 @@ mod wrapper_moved_tests {
     use hydra_data_core::{DataManifest, DataSource};
     use hydra_train_runtime::config::{EffectivePrecision, PrecisionMode, RlPhaseConfig};
     use hydra_train_runtime::preflight::{
-        BenchmarkMetadata, BenchmarkMode, BenchmarkResult, BenchmarkRuntimeConfig, BenchmarkScore,
-        EffectiveRuntimeConfig, HardwareFingerprint, LoaderRuntimeConfig, ManifestCacheEntry,
-        PreflightCacheEntry, PreflightCacheKey, ProfilingEnvelope, SelectedRuntimeConfig,
-        WorkloadFingerprint, default_cache_name, default_manifest_cache_name,
+        ManifestCacheEntry, ProfilingEnvelope, default_manifest_cache_name,
     };
     use hydra_train_types::delta_q_promotion::ArenaPromotionDecision;
     use hydra_train_types::delta_q_promotion::{
@@ -1855,118 +1678,6 @@ mod wrapper_moved_tests {
             .expect("system time before unix epoch")
             .as_nanos();
         std::env::temp_dir().join(format!("hydra_{label}_{unique}"))
-    }
-
-    fn sample_preflight_cache_entry() -> PreflightCacheEntry {
-        PreflightCacheEntry {
-            cache_key: PreflightCacheKey {
-                hardware: HardwareFingerprint {
-                    device_label: "test-gpu".to_string(),
-                    backend: "wgpu".to_string(),
-                    cpu_logical_cores: 16,
-                    total_memory_bytes: Some(64 * 1024),
-                },
-                workload: WorkloadFingerprint {
-                    batch_size: 128,
-                    augment: true,
-                    precision_mode: "fp32".to_string(),
-                    train_fraction_bits: 1234,
-                    max_skip_logs_per_source: 5,
-                    max_validation_batches: Some(7),
-                    max_validation_samples: Some(256),
-                    model_signature: "model-sig".to_string(),
-                    code_signature: "code-sig".to_string(),
-                    advanced_loss_signature: "loss-sig".to_string(),
-                    preflight_config_signature: "preflight-sig".to_string(),
-                    explicit_train_microbatch: Some(32),
-                    explicit_validation_microbatch: Some(64),
-                    requested_precision: "fp32".to_string(),
-                    effective_precision: "fp32".to_string(),
-                },
-            },
-            runtime: EffectiveRuntimeConfig {
-                selected: SelectedRuntimeConfig {
-                    train_microbatch_size: 32,
-                    validation_microbatch_size: 64,
-                    accum_steps: 4,
-                    unsafe_selected_batch_size: None,
-                    unsafe_selected_learning_rate: None,
-                    unsafe_selected_min_learning_rate: None,
-                    unsafe_selected_warmup_steps: None,
-                },
-                loader: LoaderRuntimeConfig {
-                    num_threads: Some(8),
-                    buffer_games: 512,
-                    buffer_samples: 2048,
-                    archive_queue_bound: 32,
-                },
-                requested_precision: hydra_train_runtime::config::PrecisionMode::Fp32,
-                effective_precision: hydra_train_runtime::config::EffectivePrecision::Fp32,
-            },
-            benchmark: None,
-        }
-    }
-
-    fn sample_preflight_cache_entry_with_benchmark() -> PreflightCacheEntry {
-        let mut entry = sample_preflight_cache_entry();
-        entry.benchmark = Some(BenchmarkResult {
-            runtime: BenchmarkRuntimeConfig {
-                train_microbatch_size: 32,
-                validation_microbatch_size: 64,
-                accum_steps: 4,
-                loader: LoaderRuntimeConfig {
-                    num_threads: Some(8),
-                    buffer_games: 512,
-                    buffer_samples: 2048,
-                    archive_queue_bound: 32,
-                },
-                learning_rate: None,
-                min_learning_rate: None,
-                warmup_steps: None,
-            },
-            score: BenchmarkScore {
-                wall_clock_samples_per_second: 111.0,
-                train_only_samples_per_second: 140.0,
-                train_seconds: 10.0,
-                validation_seconds: 2.0,
-                checkpoint_seconds: 0.5,
-                logging_seconds: 0.25,
-                total_elapsed_seconds: 12.75,
-                train_steps: 64,
-                validation_samples: 1024,
-            },
-            metadata: BenchmarkMetadata {
-                mode: BenchmarkMode::CadenceAwareProjection,
-                selection_metric: "wall_clock_effective_throughput".to_string(),
-                train_probe_candidates_considered: 4,
-                validation_probe_candidates_considered: 4,
-                loader_candidates_considered: 3,
-                finalists_benchmarked: 2,
-                warmup_steps: 8,
-                measured_train_steps: 64,
-                projected_validation_events: 6.0,
-                projected_checkpoint_events: 6.0,
-                projected_logging_events: 6.0,
-            },
-            profiling: Some(ProfilingEnvelope::nested(
-                "stage_2_benchmark",
-                12.75,
-                vec![
-                    ProfilingEnvelope::leaf("train", 10.0),
-                    ProfilingEnvelope::nested(
-                        "validation",
-                        2.0,
-                        vec![
-                            ProfilingEnvelope::leaf("candidate_forward_and_loss", 1.5),
-                            ProfilingEnvelope::leaf("delta_q_baseline_forward", 0.5),
-                        ],
-                    ),
-                    ProfilingEnvelope::leaf("checkpoint", 0.5),
-                    ProfilingEnvelope::leaf("logging", 0.25),
-                ],
-            )),
-        });
-        entry
     }
 
     fn sample_manifest_cache_entry() -> ManifestCacheEntry {
@@ -2115,6 +1826,10 @@ mod wrapper_moved_tests {
             val_policy_loss: Some(0.9),
             val_policy_agreement: Some(0.75),
             val_delta_q_promotion: None,
+            window_steps: 4,
+            window_samples: 256,
+            steps_per_second: 8.0,
+            samples_per_second: 512.0,
             val_rare_actions: None,
             profiling: Some(ProfilingEnvelope::leaf("bc_interval", 0.6)),
             advisories: Vec::new(),
@@ -2278,21 +1993,12 @@ mod wrapper_moved_tests {
     }
 
     #[test]
-    fn preflight_paths_use_default_cache_name_under_artifact_roots() {
+    fn preflight_paths_use_manifest_and_discovery_paths_under_artifact_roots() {
         let output_dir = temp_dir_path("preflight_paths");
         let bc_artifacts = BcArtifactPaths::new(&output_dir, 0);
-        let rl_artifacts = RlArtifactPaths::new(&output_dir, 0);
 
         let bc_preflight = PreflightPaths::new(&bc_artifacts);
-        let rl_preflight = RlPreflightPaths::new(&rl_artifacts);
 
-        assert_eq!(
-            bc_preflight.cache_path,
-            output_dir
-                .join("preflight")
-                .join("cache")
-                .join(default_cache_name())
-        );
         assert_eq!(
             bc_preflight.manifest_cache_path,
             output_dir
@@ -2313,10 +2019,6 @@ mod wrapper_moved_tests {
                 .join("preflight")
                 .join("discovery")
                 .join("index.bin")
-        );
-        assert_eq!(
-            rl_preflight.cache_path,
-            rl_artifacts.root.join(default_cache_name())
         );
 
         cleanup_dir(&output_dir);
@@ -2343,49 +2045,6 @@ mod wrapper_moved_tests {
         assert!(rl_artifacts.root.is_dir());
         assert!(rl_artifacts.tb_root.is_dir());
         assert!(rl_artifacts.tb_session_dir.is_dir());
-
-        cleanup_dir(&output_dir);
-    }
-
-    #[test]
-    fn read_preflight_cache_returns_none_for_missing_file() {
-        let output_dir = temp_dir_path("missing_preflight_cache");
-        let path = output_dir.join("missing.json");
-
-        let entry = read_preflight_cache(&path).expect("read missing cache path");
-        assert_eq!(entry, None);
-    }
-
-    #[test]
-    fn preflight_cache_roundtrips_through_json() {
-        let output_dir = temp_dir_path("preflight_cache_roundtrip");
-        fs::create_dir_all(&output_dir).expect("create temp dir");
-        let path = output_dir.join("preflight_cache.json");
-        let entry = sample_preflight_cache_entry();
-
-        write_preflight_cache(&path, &entry).expect("write preflight cache");
-        let restored = read_preflight_cache(&path)
-            .expect("read preflight cache")
-            .expect("cache entry present");
-
-        assert_eq!(restored, entry);
-
-        cleanup_dir(&output_dir);
-    }
-
-    #[test]
-    fn preflight_cache_roundtrips_nested_benchmark_profiling() {
-        let output_dir = temp_dir_path("preflight_cache_benchmark_roundtrip");
-        fs::create_dir_all(&output_dir).expect("create temp dir");
-        let path = output_dir.join("preflight_cache.json");
-        let entry = sample_preflight_cache_entry_with_benchmark();
-
-        write_preflight_cache(&path, &entry).expect("write preflight cache with benchmark");
-        let restored = read_preflight_cache(&path)
-            .expect("read preflight cache")
-            .expect("cache entry present");
-
-        assert_eq!(restored, entry);
 
         cleanup_dir(&output_dir);
     }
@@ -2458,62 +2117,6 @@ mod wrapper_moved_tests {
             paths.report_path(),
             Path::new("/tmp/out").join("bc/preflight_benchmark/report.json")
         );
-    }
-
-    #[test]
-    fn preflight_benchmark_report_roundtrips_through_json() {
-        let output_dir = temp_dir_path("preflight_benchmark_report_roundtrip");
-        fs::create_dir_all(&output_dir).expect("create temp dir");
-        let path = output_dir.join("preflight_benchmark/report.json");
-        let benchmark = BenchmarkResult {
-            runtime: BenchmarkRuntimeConfig {
-                train_microbatch_size: 8,
-                validation_microbatch_size: 4,
-                accum_steps: 2,
-                loader: LoaderRuntimeConfig {
-                    num_threads: Some(2),
-                    buffer_games: 32,
-                    buffer_samples: 128,
-                    archive_queue_bound: 4,
-                },
-                learning_rate: None,
-                min_learning_rate: None,
-                warmup_steps: None,
-            },
-            score: BenchmarkScore {
-                wall_clock_samples_per_second: 123.456,
-                train_only_samples_per_second: 200.0,
-                train_seconds: 1.0,
-                validation_seconds: 0.5,
-                checkpoint_seconds: 0.1,
-                logging_seconds: 0.05,
-                total_elapsed_seconds: 1.65,
-                train_steps: 10,
-                validation_samples: 50,
-            },
-            metadata: BenchmarkMetadata {
-                mode: BenchmarkMode::CadenceAwareProjection,
-                ..Default::default()
-            },
-            profiling: Some(ProfilingEnvelope::leaf("stage_2_benchmark", 1.5)),
-        };
-        let report = PreflightBenchmarkReport {
-            cache_key: sample_preflight_cache_entry().cache_key,
-            runtime: sample_preflight_cache_entry().runtime,
-            benchmark,
-        };
-
-        write_preflight_benchmark_report(&path, &report).expect("write preflight benchmark report");
-
-        let raw = fs::read_to_string(&path).expect("read preflight benchmark report");
-        let restored: PreflightBenchmarkReport =
-            serde_json::from_str(&raw).expect("parse preflight benchmark report");
-
-        assert_eq!(restored.cache_key, report.cache_key);
-        assert_eq!(restored.runtime, report.runtime);
-        assert_eq!(restored.benchmark, report.benchmark);
-
-        cleanup_dir(&output_dir);
     }
 
     #[test]

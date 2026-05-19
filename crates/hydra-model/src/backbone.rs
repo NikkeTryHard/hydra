@@ -1,11 +1,20 @@
 //! SE-ResNet backbone: SEBlock, SEResBlock, and SEResNet.
 
+use crate::native_group_norm_mish;
+use crate::profiling;
 use burn::nn::{
     GroupNorm, GroupNormConfig, Linear, LinearConfig, PaddingConfig1d,
     conv::{Conv1d, Conv1dConfig},
 };
 use burn::prelude::*;
 use burn::tensor::activation;
+
+const BACKBONE_SCOPE_STEM: &str = "backbone_stem";
+const BACKBONE_SCOPE_BLOCKS: &str = "backbone_blocks";
+const BACKBONE_SCOPE_TAIL: &str = "backbone_tail";
+const BACKBONE_SCOPE_BLOCK_CONV: &str = "backbone_block_conv";
+const BACKBONE_SCOPE_BLOCK_SE: &str = "backbone_block_se";
+const BACKBONE_SCOPE_BLOCK_ADD: &str = "backbone_block_add";
 
 /// Configuration for a squeeze-excitation block.
 #[derive(Config, Debug)]
@@ -94,11 +103,18 @@ impl<B: Backend> SEResBlock<B> {
     /// Apply the residual block to a `[batch, channels, tiles]` tensor.
     pub fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
         let residual = x.clone();
-        let out = activation::mish(self.gn1.forward(x));
-        let out = self.conv1.forward(out);
-        let out = activation::mish(self.gn2.forward(out));
-        let out = self.conv2.forward(out);
-        let out = self.se.forward(out);
+        let out = {
+            let _conv_scope = profiling::scope(BACKBONE_SCOPE_BLOCK_CONV);
+            let out = native_group_norm_mish::group_norm_mish(&self.gn1, x);
+            let out = self.conv1.forward(out);
+            let out = native_group_norm_mish::group_norm_mish(&self.gn2, out);
+            self.conv2.forward(out)
+        };
+        let out = {
+            let _se_scope = profiling::scope(BACKBONE_SCOPE_BLOCK_SE);
+            self.se.forward(out)
+        };
+        let _add_scope = profiling::scope(BACKBONE_SCOPE_BLOCK_ADD);
         out + residual
     }
 }
@@ -168,11 +184,21 @@ impl SEResNetConfig {
 impl<B: Backend> SEResNet<B> {
     /// Run the backbone and return `(spatial, pooled)` features.
     pub fn forward(&self, x: Tensor<B, 3>) -> (Tensor<B, 3>, Tensor<B, 2>) {
-        let x = self.input_conv.forward(x);
-        let x = activation::mish(self.input_gn.forward(x));
-        let x = self.blocks.iter().fold(x, |acc, block| block.forward(acc));
-        let spatial = activation::mish(self.final_gn.forward(x));
-        let pooled = spatial.clone().mean_dim(2).squeeze_dim::<2>(2);
+        let x = {
+            let _stem_scope = profiling::scope(BACKBONE_SCOPE_STEM);
+            let x = self.input_conv.forward(x);
+            native_group_norm_mish::group_norm_mish(&self.input_gn, x)
+        };
+        let x = {
+            let _blocks_scope = profiling::scope(BACKBONE_SCOPE_BLOCKS);
+            self.blocks.iter().fold(x, |acc, block| block.forward(acc))
+        };
+        let (spatial, pooled) = {
+            let _tail_scope = profiling::scope(BACKBONE_SCOPE_TAIL);
+            let spatial = native_group_norm_mish::group_norm_mish(&self.final_gn, x);
+            let pooled = spatial.clone().mean_dim(2).squeeze_dim::<2>(2);
+            (spatial, pooled)
+        };
         (spatial, pooled)
     }
 }

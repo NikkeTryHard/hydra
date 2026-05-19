@@ -39,6 +39,7 @@ If rule/runtime semantics drift, code plus [`docs/GAME_ENGINE.md`](../../docs/GA
 - replay input support: loose MJAI dirs plus `.tar.zst` archives
 - shipped baseline includes replay-derived `safety_residual`, stronger public-teacher belief semantics, ExIt carrier across live self-play and replay/sample sidecar-first lanes
 - DeltaQ tooling exists but remains promotion-gated, not default-on
+- BC shard workflow: build shards, optionally run manifestless markdown preflight on exact tuples for runtime-shape evidence, edit YAML by hand if accepting measured knobs, then train from `bc_shards_manifest_path`.
 
 Read [`docs/CURRENT_STATUS.md`](../../docs/CURRENT_STATUS.md) before treating staged code as live baseline.
 
@@ -48,7 +49,7 @@ Cargo target truth comes from Cargo metadata: explicit `[[bin]]` entries plus au
 
 | Binary | Purpose |
 |---|---|
-| `train` | main entrypoint: normal train, preflight, probe-only, DeltaQ promotion |
+| `train` | main entrypoint: normal train, markdown preflight benchmark, probe-only, DeltaQ promotion |
 | `mjai_audit` | replay corpus/archive audit, failure buckets, optional failure inventories |
 | `mjai_first_failure` | first bad MJAI entry in archive |
 | `mjai_debug_failure` | detailed single-replay failure report |

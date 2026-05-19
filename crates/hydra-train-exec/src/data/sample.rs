@@ -10,11 +10,14 @@ pub use hydra_data_core::sample::{
     scores_to_grp_index,
 };
 use std::cell::RefCell;
+use std::io;
 
 use crate::data::sample_targets::collate_action_targets;
 use crate::data::sample_targets::{
     cloned_hydra_targets, into_bc_batch_and_hydra_targets_inner, into_hydra_targets_inner,
 };
+use hydra_bc_shards::{BcShardHostBatch, BcShardHostScratch};
+use hydra_replay_loader::mjai_loader::{ReplaySampleRecord, ReplaySampleSink};
 use hydra_train_types::head_gates::{AdvancedHead, TargetPresence};
 use hydra_train_types::losses::HydraTargets;
 
@@ -259,6 +262,357 @@ where
         }
         Ok(HostCollatedBatch { buffers, batch })
     })
+}
+
+pub fn collate_samples_into_host_scratch(
+    samples: &[MjaiSample],
+    augment: bool,
+    scratch: &mut BcShardHostScratch,
+) -> Result<Option<usize>, String> {
+    if samples.is_empty() {
+        return Ok(None);
+    }
+
+    let batch = if augment {
+        samples.len() * ALL_PERMUTATIONS.len()
+    } else {
+        samples.len()
+    };
+    scratch.reset(batch);
+
+    if augment {
+        for (index, (sample, perm)) in samples
+            .iter()
+            .flat_map(|sample| {
+                ALL_PERMUTATIONS
+                    .iter()
+                    .map(move |perm| (sample, Some(perm as &[u8; 3])))
+            })
+            .enumerate()
+        {
+            write_sample_into_host_scratch(index, sample, perm, scratch)?;
+        }
+    } else {
+        for (index, sample) in samples.iter().enumerate() {
+            write_sample_into_host_scratch(index, sample, None, scratch)?;
+        }
+    }
+
+    Ok(Some(batch))
+}
+
+pub fn collate_samples_into_recycled_host_batch(
+    samples: &[MjaiSample],
+    augment: bool,
+    mut recycled: BcShardHostBatch,
+) -> Result<Option<BcShardHostBatch>, String> {
+    if samples.is_empty() {
+        return Ok(None);
+    }
+
+    let need_safety = samples
+        .iter()
+        .any(|sample| sample.safety_residual.is_some() || sample.safety_residual_mask.is_some());
+    let need_exit = samples
+        .iter()
+        .any(|sample| sample.exit_target.is_some() || sample.exit_mask.is_some());
+    let need_delta_q = samples
+        .iter()
+        .any(|sample| sample.delta_q_target.is_some() || sample.delta_q_mask.is_some());
+    if need_safety != recycled.safety_target_flat.is_some()
+        || need_safety != recycled.safety_mask_flat.is_some()
+        || need_exit != recycled.exit_target_flat.is_some()
+        || need_exit != recycled.exit_mask_flat.is_some()
+        || need_delta_q != recycled.delta_q_target_flat.is_some()
+        || need_delta_q != recycled.delta_q_mask_flat.is_some()
+    {
+        recycled = BcShardHostScratch::new(0, need_safety, need_exit, need_delta_q).take_batch();
+    }
+
+    let mut scratch = BcShardHostScratch::from(recycled);
+    collate_samples_into_host_scratch(samples, augment, &mut scratch)?;
+    Ok(Some(scratch.take_batch()))
+}
+
+pub struct ReplayHostScratchSink<'a> {
+    scratch: &'a mut BcShardHostScratch,
+    augment: bool,
+    rows: usize,
+}
+
+impl<'a> ReplayHostScratchSink<'a> {
+    pub fn new(scratch: &'a mut BcShardHostScratch, augment: bool) -> Self {
+        scratch.reset(0);
+        Self {
+            scratch,
+            augment,
+            rows: 0,
+        }
+    }
+
+    pub const fn rows(&self) -> usize {
+        self.rows
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.rows == 0
+    }
+
+    pub fn finish(self) -> Option<usize> {
+        (self.rows > 0).then_some(self.rows)
+    }
+}
+
+impl ReplaySampleSink for ReplayHostScratchSink<'_> {
+    fn push_sample(&mut self, sample: ReplaySampleRecord) -> io::Result<()> {
+        if self.augment {
+            let next_rows = self.rows + ALL_PERMUTATIONS.len();
+            self.scratch.ensure_rows(next_rows);
+            for (offset, perm) in ALL_PERMUTATIONS.iter().enumerate() {
+                write_replay_record_into_host_scratch(
+                    self.rows + offset,
+                    &sample,
+                    Some(perm as &[u8; 3]),
+                    self.scratch,
+                )
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+            }
+            self.rows = next_rows;
+        } else {
+            let next_rows = self.rows + 1;
+            self.scratch.ensure_rows(next_rows);
+            write_replay_record_into_host_scratch(self.rows, &sample, None, self.scratch)
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+            self.rows = next_rows;
+        }
+        self.scratch.batch_size = self.rows;
+        Ok(())
+    }
+}
+
+fn write_sample_into_host_scratch(
+    index: usize,
+    sample: &MjaiSample,
+    perm: Option<&[u8; 3]>,
+    scratch: &mut BcShardHostScratch,
+) -> Result<(), String> {
+    let obs = perm.map_or(sample.obs, |perm| augment_obs_suit(&sample.obs, perm));
+    let action = perm.map_or(sample.action, |perm| {
+        augment_action_suit(sample.action, perm)
+    });
+    let legal_mask = perm.map_or(sample.legal_mask, |perm| {
+        augment_mask_suit(&sample.legal_mask, perm)
+    });
+    let opp_next = perm.map_or(sample.opp_next, |perm| {
+        permute_opp_next_targets(sample.opp_next, perm)
+    });
+    let danger = maybe_augment_spatial_target(sample.danger, perm);
+    let danger_mask = maybe_augment_spatial_target(sample.danger_mask, perm);
+    let safety_residual = maybe_augment_action_vector(sample.safety_residual, perm);
+    let safety_residual_mask = maybe_augment_action_vector(sample.safety_residual_mask, perm);
+    let exit_target = maybe_augment_action_vector(sample.exit_target, perm);
+    let exit_mask = maybe_augment_action_vector(sample.exit_mask, perm);
+    let delta_q_target = maybe_augment_action_vector(sample.delta_q_target, perm);
+    let delta_q_mask = maybe_augment_action_vector(sample.delta_q_mask, perm);
+
+    scratch.obs_flat[index * OBS_SIZE..(index + 1) * OBS_SIZE].copy_from_slice(&obs);
+    scratch.actions[index] = action as i64;
+    scratch.legal_mask_flat[index * HYDRA_ACTION_SPACE..(index + 1) * HYDRA_ACTION_SPACE]
+        .copy_from_slice(&legal_mask);
+    scratch.value_target[index] = score_delta_to_value(sample.score_delta);
+
+    let grp_row =
+        &mut scratch.grp_target_flat[index * GRP_CLASS_COUNT..(index + 1) * GRP_CLASS_COUNT];
+    grp_row.fill(0.0);
+    if (sample.grp_label as usize) < GRP_CLASS_COUNT {
+        grp_row[sample.grp_label as usize] = 1.0;
+    }
+
+    let oracle_row =
+        &mut scratch.oracle_target_flat[index * PLAYER_COUNT..(index + 1) * PLAYER_COUNT];
+    oracle_row.fill(0.0);
+    scratch.oracle_target_mask[index] = 0.0;
+    if let Some(oracle) = sample.oracle_target {
+        oracle_row.copy_from_slice(&oracle);
+        scratch.oracle_target_mask[index] = 1.0;
+    }
+
+    scratch.tenpai_flat[index * OPPONENT_COUNT..(index + 1) * OPPONENT_COUNT]
+        .copy_from_slice(&sample.tenpai);
+    scratch.danger_flat[index * SPATIAL_TARGET_SIZE..(index + 1) * SPATIAL_TARGET_SIZE]
+        .copy_from_slice(&danger);
+    scratch.danger_mask_flat[index * SPATIAL_TARGET_SIZE..(index + 1) * SPATIAL_TARGET_SIZE]
+        .copy_from_slice(&danger_mask);
+
+    let opp_row =
+        &mut scratch.opp_next_flat[index * SPATIAL_TARGET_SIZE..(index + 1) * SPATIAL_TARGET_SIZE];
+    opp_row.fill(0.0);
+    for (opp, tile) in opp_next.iter().copied().enumerate() {
+        if tile < TILE_COUNT as u8 {
+            opp_row[opp * TILE_COUNT + tile as usize] = 1.0;
+        }
+    }
+
+    let pdf = score_delta_to_pdf(sample.score_delta);
+    scratch.score_pdf_flat[index * SCORE_BINS..(index + 1) * SCORE_BINS].copy_from_slice(&pdf);
+    let cdf = score_delta_to_cdf(sample.score_delta);
+    scratch.score_cdf_flat[index * SCORE_BINS..(index + 1) * SCORE_BINS].copy_from_slice(&cdf);
+
+    write_optional_action_pair_into_host_scratch(
+        "safety_residual",
+        safety_residual,
+        safety_residual_mask,
+        scratch.safety_target_flat.as_mut(),
+        scratch.safety_mask_flat.as_mut(),
+        index,
+    )?;
+    write_optional_action_pair_into_host_scratch(
+        "exit",
+        exit_target,
+        exit_mask,
+        scratch.exit_target_flat.as_mut(),
+        scratch.exit_mask_flat.as_mut(),
+        index,
+    )?;
+    write_optional_action_pair_into_host_scratch(
+        "delta_q",
+        delta_q_target,
+        delta_q_mask,
+        scratch.delta_q_target_flat.as_mut(),
+        scratch.delta_q_mask_flat.as_mut(),
+        index,
+    )?;
+
+    Ok(())
+}
+
+fn write_replay_record_into_host_scratch(
+    index: usize,
+    record: &ReplaySampleRecord,
+    perm: Option<&[u8; 3]>,
+    scratch: &mut BcShardHostScratch,
+) -> Result<(), String> {
+    let obs = perm.map_or(record.obs, |perm| augment_obs_suit(&record.obs, perm));
+    let action = perm.map_or(record.action, |perm| {
+        augment_action_suit(record.action, perm)
+    });
+    let legal_mask = perm.map_or(record.legal_mask, |perm| {
+        augment_mask_suit(&record.legal_mask, perm)
+    });
+    let opp_next = perm.map_or(record.opp_next, |perm| {
+        permute_opp_next_targets(record.opp_next, perm)
+    });
+    let danger = maybe_augment_spatial_target(record.danger, perm);
+    let danger_mask = maybe_augment_spatial_target(record.danger_mask, perm);
+    let safety_residual = maybe_augment_action_vector(record.safety_residual, perm);
+    let safety_residual_mask = maybe_augment_action_vector(record.safety_residual_mask, perm);
+    let exit_target = maybe_augment_action_vector(record.exit_target, perm);
+    let exit_mask = maybe_augment_action_vector(record.exit_mask, perm);
+    let delta_q_target = maybe_augment_action_vector(record.delta_q_target, perm);
+    let delta_q_mask = maybe_augment_action_vector(record.delta_q_mask, perm);
+
+    scratch.obs_flat[index * OBS_SIZE..(index + 1) * OBS_SIZE].copy_from_slice(&obs);
+    scratch.actions[index] = action as i64;
+    scratch.legal_mask_flat[index * HYDRA_ACTION_SPACE..(index + 1) * HYDRA_ACTION_SPACE]
+        .copy_from_slice(&legal_mask);
+    scratch.value_target[index] = score_delta_to_value(record.score_delta);
+
+    let grp_row =
+        &mut scratch.grp_target_flat[index * GRP_CLASS_COUNT..(index + 1) * GRP_CLASS_COUNT];
+    grp_row.fill(0.0);
+    if (record.grp_label as usize) < GRP_CLASS_COUNT {
+        grp_row[record.grp_label as usize] = 1.0;
+    }
+
+    let oracle_row =
+        &mut scratch.oracle_target_flat[index * PLAYER_COUNT..(index + 1) * PLAYER_COUNT];
+    oracle_row.fill(0.0);
+    scratch.oracle_target_mask[index] = 0.0;
+    if let Some(oracle) = record.oracle_target {
+        oracle_row.copy_from_slice(&oracle);
+        scratch.oracle_target_mask[index] = 1.0;
+    }
+
+    scratch.tenpai_flat[index * OPPONENT_COUNT..(index + 1) * OPPONENT_COUNT]
+        .copy_from_slice(&record.tenpai);
+    scratch.danger_flat[index * SPATIAL_TARGET_SIZE..(index + 1) * SPATIAL_TARGET_SIZE]
+        .copy_from_slice(&danger);
+    scratch.danger_mask_flat[index * SPATIAL_TARGET_SIZE..(index + 1) * SPATIAL_TARGET_SIZE]
+        .copy_from_slice(&danger_mask);
+
+    let opp_row =
+        &mut scratch.opp_next_flat[index * SPATIAL_TARGET_SIZE..(index + 1) * SPATIAL_TARGET_SIZE];
+    opp_row.fill(0.0);
+    for (opp, tile) in opp_next.iter().copied().enumerate() {
+        if tile < TILE_COUNT as u8 {
+            opp_row[opp * TILE_COUNT + tile as usize] = 1.0;
+        }
+    }
+
+    let pdf = score_delta_to_pdf(record.score_delta);
+    scratch.score_pdf_flat[index * SCORE_BINS..(index + 1) * SCORE_BINS].copy_from_slice(&pdf);
+    let cdf = score_delta_to_cdf(record.score_delta);
+    scratch.score_cdf_flat[index * SCORE_BINS..(index + 1) * SCORE_BINS].copy_from_slice(&cdf);
+
+    write_optional_action_pair_into_host_scratch(
+        "safety_residual",
+        safety_residual,
+        safety_residual_mask,
+        scratch.safety_target_flat.as_mut(),
+        scratch.safety_mask_flat.as_mut(),
+        index,
+    )?;
+    write_optional_action_pair_into_host_scratch(
+        "exit",
+        exit_target,
+        exit_mask,
+        scratch.exit_target_flat.as_mut(),
+        scratch.exit_mask_flat.as_mut(),
+        index,
+    )?;
+    write_optional_action_pair_into_host_scratch(
+        "delta_q",
+        delta_q_target,
+        delta_q_mask,
+        scratch.delta_q_target_flat.as_mut(),
+        scratch.delta_q_mask_flat.as_mut(),
+        index,
+    )?;
+
+    Ok(())
+}
+
+fn write_optional_action_pair_into_host_scratch(
+    name: &str,
+    target: Option<[f32; HYDRA_ACTION_SPACE]>,
+    mask: Option<[f32; HYDRA_ACTION_SPACE]>,
+    target_flat: Option<&mut Vec<f32>>,
+    mask_flat: Option<&mut Vec<f32>>,
+    index: usize,
+) -> Result<(), String> {
+    match (target, mask) {
+        (Some(target), Some(mask)) => {
+            let Some(target_flat) = target_flat else {
+                return Err(format!(
+                    "{name} target buffer missing for host scratch collation"
+                ));
+            };
+            let Some(mask_flat) = mask_flat else {
+                return Err(format!(
+                    "{name} mask buffer missing for host scratch collation"
+                ));
+            };
+            target_flat[index * HYDRA_ACTION_SPACE..(index + 1) * HYDRA_ACTION_SPACE]
+                .copy_from_slice(&target);
+            mask_flat[index * HYDRA_ACTION_SPACE..(index + 1) * HYDRA_ACTION_SPACE]
+                .copy_from_slice(&mask);
+            Ok(())
+        }
+        (None, None) => Ok(()),
+        _ => Err(format!(
+            "{name} target/mask mismatch for host scratch collation"
+        )),
+    }
 }
 
 fn collate_with_writer<'a, B: Backend, I>(

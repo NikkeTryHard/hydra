@@ -10,11 +10,12 @@ use std::time::Instant;
 
 use hydra_bc_shards::{
     ActiveShardWriter, BC_BASE_RECORD_SIZE, BC_RECORD_SIZE_WITH_ALL_OPTIONALS,
-    BC_SHARD_HEADER_SIZE, BC_SHARD_MANIFEST_VERSION, BC_SHARD_VERSION, BcShardBuildTotals,
-    BcShardDescriptor, BcShardManifest, BcShardSidecarManifest, BcShardSplit, BcShardSplitManifest,
-    BcShardSplitMode, FLAG_DELTA_Q, FLAG_EXIT, FLAG_SAFETY_RESIDUAL, STORAGE_LAYOUT_COMPACT,
-    record_size_for_flags, rewrite_shard_header_for_descriptor,
-    validate_bc_shard_manifest_contract, validate_bc_shard_split_manifest_contract,
+    BC_SHARD_HEADER_SIZE, BC_SHARD_LAYOUT_VERSION, BC_SHARD_MANIFEST_VERSION, BC_SHARD_VERSION,
+    BcShardBuildTotals, BcShardDescriptor, BcShardManifest, BcShardSidecarManifest, BcShardSplit,
+    BcShardSplitManifest, BcShardSplitMode, FLAG_DELTA_Q, FLAG_EXIT, FLAG_SAFETY_RESIDUAL,
+    STORAGE_LAYOUT_COMPACT, checked_compact_record_size, record_size_for_flags,
+    rewrite_shard_header_for_descriptor, validate_bc_shard_manifest_contract,
+    validate_bc_shard_split_manifest_contract,
 };
 use rayon::ThreadPoolBuilder;
 use rayon::iter::{ParallelBridge, ParallelIterator};
@@ -80,6 +81,10 @@ pub struct BuildBcShardsConfig {
     pub delta_q_sidecar_path: Option<PathBuf>,
     /// Delta-Q sidecar provenance required for hydration.
     pub delta_q_provenance: SidecarProvenance,
+    /// Maximum included game attempts after split/filter.
+    pub max_games: Option<usize>,
+    /// Maximum samples; current game is finished atomically after reaching cap.
+    pub max_samples: Option<usize>,
     /// Worker threads for replay materialization. `None` uses Rayon defaults.
     pub num_threads: Option<usize>,
     /// Bounded job/result queue depth.
@@ -114,6 +119,8 @@ impl Default for BuildBcShardsConfig {
             delta_q_sidecar: None,
             delta_q_sidecar_path: None,
             delta_q_provenance: SidecarProvenance::default(),
+            max_games: None,
+            max_samples: None,
             num_threads: None,
             queue_bound: 128,
             resume: false,
@@ -150,6 +157,12 @@ pub struct BcShardBuildReport {
     pub finished_at: String,
     /// Wall-clock elapsed seconds.
     pub elapsed_seconds: f64,
+    /// Frozen compact shard ABI summary.
+    pub abi: BcShardAbiReport,
+    /// Output disk summary.
+    pub disk: BcShardDiskReport,
+    /// Planned games per split after filtering and caps.
+    pub plan_splits: Vec<BcShardSplitPlanReport>,
     /// Command/config summary.
     pub command: BcShardBuildCommandReport,
     /// Source scan summary.
@@ -164,6 +177,59 @@ pub struct BcShardBuildReport {
     pub manifest_path: String,
     /// Optional progress JSONL path.
     pub progress_jsonl_path: Option<String>,
+}
+
+/// Disk summary in a BC shard build report.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BcShardDiskReport {
+    /// Output directory path.
+    pub output_dir: String,
+    /// Existing output bytes before this build writes files.
+    pub existing_output_bytes: u64,
+    /// Available filesystem bytes before the build, when supported.
+    pub available_bytes_before: Option<u64>,
+    /// Available filesystem bytes after the build, when supported.
+    pub available_bytes_after: Option<u64>,
+    /// Projected output bytes before build, when trustworthy.
+    pub projected_output_bytes: Option<u64>,
+    /// Projected sample count before build, when trustworthy.
+    pub projected_sample_count: Option<u64>,
+    /// Projection source label.
+    pub projection_source: String,
+}
+
+/// ABI summary in a BC shard build report.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BcShardAbiReport {
+    /// Storage layout tag.
+    pub storage_layout: String,
+    /// Manifest schema version.
+    pub manifest_version: u32,
+    /// Shard binary version.
+    pub shard_version: u32,
+    /// Shard record layout version.
+    pub layout_version: u32,
+    /// Shard header byte size.
+    pub header_size: u32,
+    /// Base compact record byte size.
+    pub base_record_size: u32,
+    /// Maximum compact record byte size.
+    pub max_record_size: u32,
+    /// Dense observation f32 bytes per sample.
+    pub dense_obs_f32_bytes_per_sample: u64,
+    /// Enabled compact feature flags.
+    pub feature_flags: u32,
+    /// Compact record byte size for enabled features.
+    pub record_size: u32,
+}
+
+/// Planned game count per split in a BC shard build report.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BcShardSplitPlanReport {
+    /// Split name.
+    pub split: String,
+    /// Planned game count.
+    pub planned_games: usize,
 }
 
 /// Command/config summary in a BC shard build report.
@@ -189,6 +255,10 @@ pub struct BcShardBuildCommandReport {
     pub resume: bool,
     /// Included games per chunk.
     pub chunk_games: usize,
+    /// Optional included-game attempt cap.
+    pub limit_max_games: Option<usize>,
+    /// Optional sample cap.
+    pub limit_max_samples: Option<usize>,
     /// Optional ExIt sidecar path.
     pub exit_sidecar: Option<String>,
     /// Optional delta-Q sidecar path.
@@ -227,6 +297,10 @@ pub struct BcShardMaterializationReport {
     pub validation_samples: u64,
     /// Total samples written.
     pub total_samples: u64,
+    /// Whether any configured builder limit was reached.
+    pub limit_reached: bool,
+    /// Samples per loaded non-empty game.
+    pub samples_per_loaded_non_empty_game: Option<f64>,
     /// Capped bad-source examples.
     pub bad_source_examples: Vec<String>,
     /// Resume chunks reused.
@@ -267,6 +341,16 @@ pub struct BcShardSplitOutputReport {
     pub shard_count: usize,
     /// Split shard byte length sum.
     pub byte_len: u64,
+    /// Split feature flags.
+    pub feature_flags: u32,
+    /// Split record size.
+    pub record_size: u32,
+    /// Split bytes per sample.
+    pub bytes_per_sample: Option<f64>,
+    /// Smallest shard byte length in this split.
+    pub min_shard_bytes: Option<u64>,
+    /// Largest shard byte length in this split.
+    pub max_shard_bytes: Option<u64>,
 }
 
 /// Derived BC shard build rates.
@@ -283,21 +367,21 @@ pub struct BcShardBuildRates {
 }
 
 #[cfg(test)]
-static TEST_STOP_AFTER_BUILT_CHUNKS: std::sync::Mutex<Option<usize>> = std::sync::Mutex::new(None);
+thread_local! {
+    static TEST_STOP_AFTER_BUILT_CHUNKS: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
 
 #[cfg(all(test, feature = "libtorch"))]
 pub(crate) fn set_test_stop_after_built_chunks(chunks: Option<usize>) {
-    *TEST_STOP_AFTER_BUILT_CHUNKS
-        .lock()
-        .expect("test stop hook mutex should not be poisoned") = chunks;
+    TEST_STOP_AFTER_BUILT_CHUNKS.with(|slot| slot.set(chunks));
 }
 
 #[cfg(test)]
 fn should_stop_after_built_chunks(built_chunks: u64) -> bool {
-    TEST_STOP_AFTER_BUILT_CHUNKS
-        .lock()
-        .expect("test stop hook mutex should not be poisoned")
-        .is_some_and(|limit| built_chunks as usize >= limit)
+    TEST_STOP_AFTER_BUILT_CHUNKS.with(|slot| {
+        slot.get()
+            .is_some_and(|limit| built_chunks as usize >= limit)
+    })
 }
 
 #[cfg(not(test))]
@@ -320,17 +404,20 @@ pub fn build_bc_shards(config: &BuildBcShardsConfig) -> io::Result<BcShardBuildO
         None => scan_data_sources(&config.input)?,
     };
     let feature_flags = feature_flags_from_config(config);
+    let record_size = checked_compact_record_size(feature_flags).map_err(invalid_data)?;
+    let existing_output_bytes = existing_output_bytes(config)?;
+    let available_bytes_before = available_bytes(&config.output_dir);
     let plan = build_plan(&source_manifest, config)?;
-    let fingerprint = build_fingerprint(config, &source_manifest, &plan, feature_flags)?;
+    let fingerprint = build_fingerprint(config, &source_manifest, &plan.entries, feature_flags)?;
     let resume = prepare_resume_state(config, &fingerprint, &source_manifest, feature_flags)?;
     let worker_ctx = BuildWorkerContext::from_config(config);
-    let mut progress = ProgressSink::new(config)?;
+    let mut progress = ProgressSink::new(config, feature_flags, record_size)?;
     let progress_jsonl_path = progress.path.clone();
 
     let mut fragments = Vec::new();
     let mut reused = 0u64;
     let mut built = 0u64;
-    for (chunk_index, chunk) in plan.chunks(config.chunk_games).enumerate() {
+    for (chunk_index, chunk) in plan.entries.chunks(config.chunk_games).enumerate() {
         let global_start = chunk.first().map_or(0, |entry| entry.global_sequence);
         let global_end_exclusive = chunk
             .last()
@@ -338,14 +425,26 @@ pub fn build_bc_shards(config: &BuildBcShardsConfig) -> io::Result<BcShardBuildO
         if let Some(fragment) =
             resume.fragment_for(chunk_index, global_start, global_end_exclusive)?
         {
-            progress.fragment_reused(&fragment)?;
+            progress.fragment_reused(config, &fragment)?;
             fragments.push(fragment);
             reused += 1;
+            if fragments_reach_sample_limit(&fragments, config.max_samples) {
+                break;
+            }
             continue;
         }
 
-        let mut state =
-            WriteState::new_for_chunk(config, feature_flags, chunk_index, config.resume);
+        let prior_committed_samples = fragments
+            .iter()
+            .map(|fragment| fragment.counters.total_samples)
+            .sum::<u64>();
+        let mut state = WriteState::new_for_chunk(
+            config,
+            feature_flags,
+            chunk_index,
+            config.resume,
+            prior_committed_samples,
+        );
         materialize_chunk(chunk, config, &worker_ctx, &mut state, &mut progress)?;
         let fragment = state.finalize_fragment(
             chunk_index,
@@ -357,9 +456,12 @@ pub fn build_bc_shards(config: &BuildBcShardsConfig) -> io::Result<BcShardBuildO
         if config.resume {
             atomic_write_json(&resume.fragment_path(chunk_index), &fragment)?;
         }
-        progress.fragment_built(&fragment)?;
+        progress.fragment_built(config, &fragment)?;
         fragments.push(fragment);
         built += 1;
+        if fragments_reach_sample_limit(&fragments, config.max_samples) {
+            break;
+        }
         if should_stop_after_built_chunks(built) {
             return Err(invalid_data("test stop after committed resume chunk"));
         }
@@ -392,6 +494,9 @@ pub fn build_bc_shards(config: &BuildBcShardsConfig) -> io::Result<BcShardBuildO
         &fragments,
         reused,
         built,
+        &plan,
+        existing_output_bytes,
+        available_bytes_before,
     )?;
     let report_path = match &config.report_name {
         Some(name) => {
@@ -411,6 +516,12 @@ pub fn build_bc_shards(config: &BuildBcShardsConfig) -> io::Result<BcShardBuildO
 }
 
 fn validate_config(config: &BuildBcShardsConfig) -> io::Result<()> {
+    if !config.train_fraction.is_finite() {
+        return Err(invalid_data("train_fraction must be finite"));
+    }
+    if !(0.0..=1.0).contains(&config.train_fraction) {
+        return Err(invalid_data("train_fraction must be in 0..=1"));
+    }
     if config.shard_samples == 0 {
         return Err(invalid_data("shard_samples must be > 0"));
     }
@@ -556,6 +667,7 @@ struct WriteState<'a> {
     train_state: Option<ChunkSplitBuildState>,
     val_state: Option<ChunkSplitBuildState>,
     counters: BuildCounters,
+    prior_committed_samples: u64,
     bad_source_examples: Vec<String>,
 }
 
@@ -565,6 +677,7 @@ impl<'a> WriteState<'a> {
         feature_flags: u32,
         chunk_index: usize,
         chunk_names: bool,
+        prior_committed_samples: u64,
     ) -> Self {
         Self {
             config,
@@ -588,17 +701,26 @@ impl<'a> WriteState<'a> {
                     )
                 }),
             counters: BuildCounters::default(),
+            prior_committed_samples,
             bad_source_examples: Vec::new(),
         }
     }
 
-    fn handle_materialized(&mut self, game: MaterializedGame) -> io::Result<()> {
+    fn sample_limit_reached(&self) -> bool {
+        self.config.max_samples.is_some_and(|max| {
+            self.prior_committed_samples
+                .saturating_add(self.counters.total_samples)
+                >= max as u64
+        })
+    }
+
+    fn handle_materialized(&mut self, game: MaterializedGame) -> io::Result<bool> {
         self.counters.materialized_games += 1;
         match game.result {
             Ok(game_data) => {
                 if game_data.samples.is_empty() {
                     self.counters.empty_games += 1;
-                    return Ok(());
+                    return Ok(self.sample_limit_reached());
                 }
                 let sample_count = game_data.samples.len() as u64;
                 match game.split {
@@ -642,7 +764,7 @@ impl<'a> WriteState<'a> {
                 );
             }
         }
-        Ok(())
+        Ok(self.sample_limit_reached())
     }
 
     fn finalize_fragment(
@@ -781,16 +903,26 @@ impl ChunkSplitBuildState {
     }
 }
 
+#[derive(Debug)]
+struct BuildPlan {
+    entries: Vec<BuildPlanEntry>,
+    max_games_reached: bool,
+}
 fn build_plan(
     source_manifest: &DataManifest,
     config: &BuildBcShardsConfig,
-) -> io::Result<Vec<BuildPlanEntry>> {
+) -> io::Result<BuildPlan> {
     let mut out = Vec::new();
+    let mut max_games_reached = false;
     for (source_index, source) in source_manifest.sources.iter().enumerate() {
         match source {
             DataSource::LooseFile(path) => {
                 let identity = identity_for_loose_file(path)?;
                 if let Some(split) = split_for_identity(&identity, config) {
+                    if config.max_games.is_some_and(|max| out.len() >= max) {
+                        max_games_reached = true;
+                        break;
+                    }
                     out.push(BuildPlanEntry {
                         global_sequence: out.len(),
                         source_index,
@@ -801,7 +933,10 @@ fn build_plan(
                 }
             }
             DataSource::Archive(path) => {
-                enumerate_archive_entries(path, config, source_index, &mut out)?
+                if enumerate_archive_entries(path, config, source_index, &mut out)? {
+                    max_games_reached = true;
+                    break;
+                }
             }
             DataSource::ParsedSampleCache { path, .. } => {
                 return Err(invalid_data(format!(
@@ -811,7 +946,10 @@ fn build_plan(
             }
         }
     }
-    Ok(out)
+    Ok(BuildPlan {
+        entries: out,
+        max_games_reached,
+    })
 }
 
 fn enumerate_archive_entries(
@@ -819,7 +957,7 @@ fn enumerate_archive_entries(
     config: &BuildBcShardsConfig,
     source_index: usize,
     out: &mut Vec<BuildPlanEntry>,
-) -> io::Result<()> {
+) -> io::Result<bool> {
     let file = File::open(path)?;
     let reader = archive_reader(path, file)?;
     let mut archive = tar::Archive::new(reader);
@@ -830,6 +968,9 @@ fn enumerate_archive_entries(
             continue;
         }
         let identity = identity_for_archive_entry(path, &entry_path)?;
+        if config.max_games.is_some_and(|max| out.len() >= max) {
+            return Ok(true);
+        }
         if let Some(split) = split_for_identity(&identity, config) {
             out.push(BuildPlanEntry {
                 global_sequence: out.len(),
@@ -843,7 +984,7 @@ fn enumerate_archive_entries(
             });
         }
     }
-    Ok(())
+    Ok(false)
 }
 
 fn archive_reader(path: &Path, file: File) -> io::Result<Box<dyn Read + Send>> {
@@ -934,6 +1075,9 @@ fn materialize_chunk(
                 progress,
             )?,
         }
+        if write_state.sample_limit_reached() {
+            break;
+        }
     }
     Ok(())
 }
@@ -993,7 +1137,7 @@ fn materialize_loose_group_ordered(
             });
         })
         .map_err(|err| io::Error::other(format!("failed to spawn loose workers: {err}")))?;
-    collect_materialized_in_order(result_rx, entries.len(), write_state, progress)?;
+    collect_materialized_in_order(result_rx, entries.len(), config, write_state, progress)?;
     producer
         .join()
         .map_err(|_| io::Error::other("loose producer thread panicked"))??;
@@ -1078,7 +1222,7 @@ fn materialize_archive_group_ordered(
             });
         })
         .map_err(|err| io::Error::other(format!("failed to spawn archive workers: {err}")))?;
-    collect_materialized_in_order(result_rx, entries.len(), write_state, progress)?;
+    collect_materialized_in_order(result_rx, entries.len(), config, write_state, progress)?;
     producer
         .join()
         .map_err(|_| io::Error::other("archive producer thread panicked"))??;
@@ -1091,26 +1235,48 @@ fn materialize_archive_group_ordered(
 fn collect_materialized_in_order(
     results: mpsc::Receiver<io::Result<MaterializedGame>>,
     expected_count: usize,
+    config: &BuildBcShardsConfig,
     state: &mut WriteState<'_>,
     progress: &mut ProgressSink,
 ) -> io::Result<()> {
     let mut next = 0usize;
     let mut pending = BTreeMap::new();
+    let mut stopped_on_sample_limit = false;
     for item in results {
         let game = item?;
         pending.insert(game.sequence, game);
         while let Some(game) = pending.remove(&next) {
-            state.handle_materialized(game)?;
-            progress.game_committed(&state.counters)?;
+            let limit_reached = state.handle_materialized(game)?;
+            progress.game_committed(config, &state.counters)?;
             next += 1;
+            if limit_reached {
+                stopped_on_sample_limit = true;
+                break;
+            }
+        }
+        if stopped_on_sample_limit {
+            break;
         }
     }
-    if next != expected_count {
+    if !stopped_on_sample_limit && next != expected_count {
         return Err(invalid_data(format!(
             "materialized {next} games, expected {expected_count}"
         )));
     }
     Ok(())
+}
+
+fn fragments_reach_sample_limit(
+    fragments: &[BcShardBuildFragment],
+    max_samples: Option<usize>,
+) -> bool {
+    max_samples.is_some_and(|max| {
+        fragments
+            .iter()
+            .map(|fragment| fragment.counters.total_samples)
+            .sum::<u64>()
+            >= max as u64
+    })
 }
 
 fn make_optional_pool(num_threads: Option<usize>, label: &str) -> io::Result<rayon::ThreadPool> {
@@ -1139,6 +1305,8 @@ struct ConfigFingerprintInput<'a> {
     exit_sidecar: Option<BcShardSidecarManifest>,
     delta_q_sidecar: Option<BcShardSidecarManifest>,
     chunk_games: usize,
+    max_games: Option<usize>,
+    max_samples: Option<usize>,
     source_manifest_fingerprint: &'a str,
     plan_fingerprint: &'a str,
 }
@@ -1162,6 +1330,8 @@ fn build_fingerprint(
             config.delta_q_provenance,
         ),
         chunk_games: config.chunk_games,
+        max_games: config.max_games,
+        max_samples: config.max_samples,
         source_manifest_fingerprint: &source_manifest_fingerprint,
         plan_fingerprint: &plan_fingerprint,
     };
@@ -1187,6 +1357,8 @@ struct BcShardBuildStateHeader {
     exit_sidecar: Option<BcShardSidecarManifest>,
     delta_q_sidecar: Option<BcShardSidecarManifest>,
     chunk_games: usize,
+    max_games: Option<usize>,
+    max_samples: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1321,6 +1493,8 @@ fn resume_header(
             config.delta_q_provenance,
         ),
         chunk_games: config.chunk_games,
+        max_games: config.max_games,
+        max_samples: config.max_samples,
     }
 }
 
@@ -1467,6 +1641,7 @@ fn make_manifest(
         action_space: hydra_core::action::HYDRA_ACTION_SPACE,
         train_fraction: config.train_fraction,
         shard_samples: config.shard_samples,
+        split_mode: config.split_mode.as_str().to_string(),
         augment_runtime: true,
         input: config.input.display().to_string(),
         output_dir: config.output_dir.display().to_string(),
@@ -1503,6 +1678,9 @@ fn make_report(
     fragments: &[BcShardBuildFragment],
     reused: u64,
     built: u64,
+    plan: &BuildPlan,
+    existing_output_bytes: u64,
+    available_bytes_before: Option<u64>,
 ) -> io::Result<BcShardBuildReport> {
     let mut counters = BuildCounters::default();
     let mut bad_source_examples = Vec::new();
@@ -1539,11 +1717,36 @@ fn make_report(
         (output_bytes > 0).then(|| dense_equivalent_observation_bytes as f64 / output_bytes as f64);
     let input_bytes = input_compressed_bytes(source_manifest);
     let seconds = elapsed_seconds.max(0.000_001);
+    let feature_flags = feature_flags_from_config(config);
+    let record_size = checked_compact_record_size(feature_flags).map_err(invalid_data)?;
+    let available_bytes_after = available_bytes(&config.output_dir);
     Ok(BcShardBuildReport {
         schema_version: REPORT_SCHEMA_VERSION,
         started_at,
         finished_at,
         elapsed_seconds,
+        abi: BcShardAbiReport {
+            storage_layout: STORAGE_LAYOUT_COMPACT.to_string(),
+            manifest_version: BC_SHARD_MANIFEST_VERSION,
+            shard_version: BC_SHARD_VERSION,
+            layout_version: BC_SHARD_LAYOUT_VERSION,
+            header_size: BC_SHARD_HEADER_SIZE,
+            base_record_size: BC_BASE_RECORD_SIZE,
+            max_record_size: BC_RECORD_SIZE_WITH_ALL_OPTIONALS,
+            dense_obs_f32_bytes_per_sample: hydra_bc_shards::DENSE_OBS_F32_BYTES as u64,
+            feature_flags,
+            record_size,
+        },
+        disk: BcShardDiskReport {
+            output_dir: config.output_dir.display().to_string(),
+            existing_output_bytes,
+            available_bytes_before,
+            available_bytes_after,
+            projected_output_bytes: None,
+            projected_sample_count: None,
+            projection_source: "unavailable".to_string(),
+        },
+        plan_splits: plan_split_reports(&plan.entries),
         command: BcShardBuildCommandReport {
             input: config.input.display().to_string(),
             output_dir: config.output_dir.display().to_string(),
@@ -1555,6 +1758,8 @@ fn make_report(
             queue_bound: config.queue_bound,
             resume: config.resume,
             chunk_games: config.chunk_games,
+            limit_max_games: config.max_games,
+            limit_max_samples: config.max_samples,
             exit_sidecar: config
                 .exit_sidecar_path
                 .as_ref()
@@ -1579,6 +1784,12 @@ fn make_report(
             train_samples: counters.train_samples,
             validation_samples: counters.validation_samples,
             total_samples: counters.total_samples,
+            limit_reached: plan.max_games_reached
+                || config
+                    .max_samples
+                    .is_some_and(|max| counters.total_samples >= max as u64),
+            samples_per_loaded_non_empty_game: (counters.loaded_games > 0)
+                .then(|| counters.total_samples as f64 / counters.loaded_games as f64),
             bad_source_examples,
             resume_chunks_reused: reused,
             resume_chunks_built: built,
@@ -1594,11 +1805,20 @@ fn make_report(
             splits: manifest
                 .splits
                 .iter()
-                .map(|split| BcShardSplitOutputReport {
-                    split: split_name(split.split).to_string(),
-                    sample_count: split.sample_count,
-                    shard_count: split.shard_count,
-                    byte_len: split.shards.iter().map(|shard| shard.byte_len).sum(),
+                .map(|split| {
+                    let byte_len = split.shards.iter().map(|shard| shard.byte_len).sum::<u64>();
+                    BcShardSplitOutputReport {
+                        split: split_name(split.split).to_string(),
+                        sample_count: split.sample_count,
+                        shard_count: split.shard_count,
+                        byte_len,
+                        feature_flags: split.feature_flags,
+                        record_size: split.record_size,
+                        bytes_per_sample: (split.sample_count > 0)
+                            .then(|| byte_len as f64 / split.sample_count as f64),
+                        min_shard_bytes: split.shards.iter().map(|shard| shard.byte_len).min(),
+                        max_shard_bytes: split.shards.iter().map(|shard| shard.byte_len).max(),
+                    }
                 })
                 .collect(),
         },
@@ -1617,11 +1837,23 @@ struct ProgressSink {
     path: Option<PathBuf>,
     file: Option<File>,
     committed_games: u64,
+    feature_flags: u32,
+    record_size: u32,
 }
 
 #[derive(Serialize)]
 struct ProgressEvent<'a> {
     event: &'a str,
+    event_version: u32,
+    scope: &'a str,
+    output_dir: &'a str,
+    manifest_name: &'a str,
+    split_mode: &'a str,
+    shard_samples: usize,
+    train_fraction: f32,
+    storage_layout: &'a str,
+    feature_flags: u32,
+    record_size: u32,
     committed_games: u64,
     loaded_games: u64,
     skipped_games: u64,
@@ -1632,40 +1864,72 @@ struct ProgressEvent<'a> {
 }
 
 impl ProgressSink {
-    fn new(config: &BuildBcShardsConfig) -> io::Result<Self> {
+    fn new(config: &BuildBcShardsConfig, feature_flags: u32, record_size: u32) -> io::Result<Self> {
         let path = config
             .progress_jsonl_name
             .as_ref()
             .map(|name| config.output_dir.join(name));
         let file = match &path {
-            Some(path) => Some(OpenOptions::new().create(true).append(true).open(path)?),
+            Some(path) => Some(
+                OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .truncate(true)
+                    .open(path)?,
+            ),
             None => None,
         };
-        Ok(Self {
+        let mut sink = Self {
             path,
             file,
             committed_games: 0,
-        })
+            feature_flags,
+            record_size,
+        };
+        sink.write_event(
+            "run_started",
+            "cumulative",
+            config,
+            &BuildCounters::default(),
+            None,
+        )?;
+        Ok(sink)
     }
 
-    fn game_committed(&mut self, counters: &BuildCounters) -> io::Result<()> {
+    fn game_committed(
+        &mut self,
+        config: &BuildBcShardsConfig,
+        counters: &BuildCounters,
+    ) -> io::Result<()> {
         self.committed_games += 1;
         if self.committed_games == 1 || self.committed_games.is_multiple_of(PROGRESS_EVERY_GAMES) {
-            self.write_event("game_committed", counters, None)?;
+            self.write_event("game_committed", "chunk", config, counters, None)?;
         }
         Ok(())
     }
 
-    fn fragment_reused(&mut self, fragment: &BcShardBuildFragment) -> io::Result<()> {
+    fn fragment_reused(
+        &mut self,
+        config: &BuildBcShardsConfig,
+        fragment: &BcShardBuildFragment,
+    ) -> io::Result<()> {
         self.write_event(
             "fragment_reused",
+            "chunk",
+            config,
             &fragment.counters,
             Some(fragment.chunk_index),
         )
     }
-    fn fragment_built(&mut self, fragment: &BcShardBuildFragment) -> io::Result<()> {
+    fn fragment_built(
+        &mut self,
+        config: &BuildBcShardsConfig,
+        fragment: &BcShardBuildFragment,
+    ) -> io::Result<()> {
         self.write_event(
             "fragment_built",
+            "chunk",
+            config,
             &fragment.counters,
             Some(fragment.chunk_index),
         )
@@ -1674,14 +1938,27 @@ impl ProgressSink {
     fn write_event(
         &mut self,
         event: &'static str,
+        scope: &'static str,
+        config: &BuildBcShardsConfig,
         counters: &BuildCounters,
         chunk_index: Option<usize>,
     ) -> io::Result<()> {
         let Some(file) = self.file.as_mut() else {
             return Ok(());
         };
+        let output_dir = config.output_dir.display().to_string();
         let event = ProgressEvent {
             event,
+            event_version: REPORT_SCHEMA_VERSION,
+            scope,
+            output_dir: &output_dir,
+            manifest_name: &config.manifest_name,
+            split_mode: split_mode_name(config.split_mode),
+            shard_samples: config.shard_samples,
+            train_fraction: config.train_fraction,
+            storage_layout: STORAGE_LAYOUT_COMPACT,
+            feature_flags: self.feature_flags,
+            record_size: self.record_size,
             committed_games: self.committed_games,
             loaded_games: counters.loaded_games,
             skipped_games: counters.skipped_games,
@@ -1747,6 +2024,64 @@ fn stable_json_hash<T: Serialize + ?Sized>(value: &T) -> io::Result<String> {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     Ok(format!("{hash:016x}"))
+}
+
+fn plan_split_reports(entries: &[BuildPlanEntry]) -> Vec<BcShardSplitPlanReport> {
+    let train = entries
+        .iter()
+        .filter(|entry| entry.split == BcShardSplit::Train)
+        .count();
+    let validation = entries
+        .iter()
+        .filter(|entry| entry.split == BcShardSplit::Validation)
+        .count();
+    let mut splits = Vec::with_capacity(2);
+    if train > 0 {
+        splits.push(BcShardSplitPlanReport {
+            split: split_name(BcShardSplit::Train).to_string(),
+            planned_games: train,
+        });
+    }
+    if validation > 0 {
+        splits.push(BcShardSplitPlanReport {
+            split: split_name(BcShardSplit::Validation).to_string(),
+            planned_games: validation,
+        });
+    }
+    splits
+}
+
+fn existing_output_bytes(config: &BuildBcShardsConfig) -> io::Result<u64> {
+    let mut total = 0u64;
+    if !config.output_dir.exists() {
+        return Ok(0);
+    }
+    for entry in fs::read_dir(&config.output_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let include = name.ends_with(".hydra-bc")
+            || name == config.manifest_name
+            || config.report_name.as_deref() == Some(name)
+            || config.progress_jsonl_name.as_deref() == Some(name);
+        if include {
+            total = total
+                .checked_add(fs::metadata(&path)?.len())
+                .ok_or_else(|| {
+                    invalid_data(format!(
+                        "existing output byte count overflow under {}",
+                        config.output_dir.display()
+                    ))
+                })?;
+        }
+    }
+    Ok(total)
+}
+
+fn available_bytes(_path: &Path) -> Option<u64> {
+    None
 }
 
 fn reject_stale_non_resume_output(config: &BuildBcShardsConfig) -> io::Result<()> {

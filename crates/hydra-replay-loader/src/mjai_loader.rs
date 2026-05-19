@@ -9,7 +9,8 @@ use flate2::read::GzDecoder;
 use hydra_core::action::{AKA_5M, DISCARD_END};
 use hydra_core::action::{ActionPhase, HYDRA_ACTION_SPACE, riichienv_to_hydra};
 use hydra_core::bridge::{
-    BridgeEncodeProfile, encode_extracted_observation_facts_with_profile, extract_observation_facts,
+    BridgeEncodeProfile, encode_extracted_observation_facts_with_profile,
+    encode_observation_ref_with_profile, extract_observation_facts, extract_observation_facts_ref,
 };
 use hydra_core::encoder::{OBS_SIZE, ObservationEncoder};
 use hydra_core::safety::SafetyInfo;
@@ -222,6 +223,108 @@ impl MjaiGame {
     }
 }
 
+/// Decoded training sample passed to streaming replay sinks.
+pub struct ReplaySampleRecord {
+    /// Encoded observation planes flattened as `[NUM_CHANNELS * 34]`.
+    pub obs: [f32; OBS_SIZE],
+    /// Replay-derived compact facts for shard storage.
+    pub compact_facts: CompactObservationFacts,
+    /// Hydra action id in the 46-action policy space.
+    pub action: u8,
+    /// Legal-action mask over the Hydra policy space.
+    pub legal_mask: [f32; HYDRA_ACTION_SPACE],
+    /// Final placement for the acting player.
+    pub placement: u8,
+    /// Final score delta for the acting player.
+    pub score_delta: i32,
+    /// Global rank permutation class label.
+    pub grp_label: u8,
+    /// Optional oracle policy distribution.
+    pub oracle_target: Option<[f32; 4]>,
+    /// Opponent tenpai targets in seat order.
+    pub tenpai: [f32; 3],
+    /// Opponent next-danger tile ids in seat order, or sentinel values.
+    pub opp_next: [u8; 3],
+    /// Opponent/tile danger targets flattened as `3 * 34`.
+    pub danger: [f32; 102],
+    /// Mask for `danger`.
+    pub danger_mask: [f32; 102],
+    /// Optional safety residual target over actions.
+    pub safety_residual: Option<[f32; HYDRA_ACTION_SPACE]>,
+    /// Optional mask for `safety_residual`.
+    pub safety_residual_mask: Option<[f32; HYDRA_ACTION_SPACE]>,
+    /// Optional ExIt target over actions.
+    pub exit_target: Option<[f32; HYDRA_ACTION_SPACE]>,
+    /// Optional mask for `exit_target`.
+    pub exit_mask: Option<[f32; HYDRA_ACTION_SPACE]>,
+    /// Optional delta-Q target over actions.
+    pub delta_q_target: Option<[f32; HYDRA_ACTION_SPACE]>,
+    /// Optional mask for `delta_q_target`.
+    pub delta_q_mask: Option<[f32; HYDRA_ACTION_SPACE]>,
+    /// Optional belief targets flattened as `16 * 34`.
+    pub belief_fields: Option<[f32; 16 * 34]>,
+    /// Optional mixture weights for belief supervision.
+    pub mixture_weights: Option<[f32; 4]>,
+    /// Whether belief-field supervision is present.
+    pub belief_fields_present: bool,
+    /// Whether mixture-weight supervision is present.
+    pub mixture_weights_present: bool,
+}
+
+impl ReplaySampleRecord {
+    fn into_sample(self) -> MjaiSample {
+        MjaiSample {
+            obs: self.obs,
+            compact_facts: Some(self.compact_facts),
+            action: self.action,
+            legal_mask: self.legal_mask,
+            placement: self.placement,
+            score_delta: self.score_delta,
+            grp_label: self.grp_label,
+            oracle_target: self.oracle_target,
+            tenpai: self.tenpai,
+            opp_next: self.opp_next,
+            danger: self.danger,
+            danger_mask: self.danger_mask,
+            safety_residual: self.safety_residual,
+            safety_residual_mask: self.safety_residual_mask,
+            exit_target: self.exit_target,
+            exit_mask: self.exit_mask,
+            delta_q_target: self.delta_q_target,
+            delta_q_mask: self.delta_q_mask,
+            belief_fields: self.belief_fields,
+            mixture_weights: self.mixture_weights,
+            belief_fields_present: self.belief_fields_present,
+            mixture_weights_present: self.mixture_weights_present,
+        }
+    }
+}
+
+/// Streaming destination for replay materialization.
+pub trait ReplaySampleSink {
+    /// Accepts one decoded sample in replay order.
+    fn push_sample(&mut self, sample: ReplaySampleRecord) -> io::Result<()>;
+}
+
+struct VecReplaySampleSink {
+    samples: Vec<MjaiSample>,
+}
+
+impl VecReplaySampleSink {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            samples: Vec::with_capacity(capacity),
+        }
+    }
+}
+
+impl ReplaySampleSink for VecReplaySampleSink {
+    fn push_sample(&mut self, sample: ReplaySampleRecord) -> io::Result<()> {
+        self.samples.push(sample.into_sample());
+        Ok(())
+    }
+}
+
 pub struct MjaiDataset {
     pub games: Vec<MjaiGame>,
     pub train_fraction: f32,
@@ -396,6 +499,18 @@ pub fn should_sample_replay_event(event: &MjaiEvent) -> bool {
             | MjaiEvent::Ankan { .. }
             | MjaiEvent::Kakan { .. }
     )
+}
+
+fn replay_log_action_str(event: &MjaiEvent, env_action: &EngineAction) -> String {
+    match event {
+        MjaiEvent::Dahai { pai, .. }
+        | MjaiEvent::Pon { pai, .. }
+        | MjaiEvent::Chi { pai, .. }
+        | MjaiEvent::Kan { pai, .. }
+        | MjaiEvent::Kakan { pai, .. } => pai.clone(),
+        MjaiEvent::Ankan { consumed, .. } => consumed.first().cloned().unwrap_or_default(),
+        _ => env_action.to_mjai(),
+    }
 }
 
 pub struct PreparedReplayDecision {
@@ -646,12 +761,12 @@ fn finalize_prepared_replay_decision(
     state: &GameState,
     safety: &[SafetyInfo; 4],
     encoder: &mut ObservationEncoder,
-    legal: &[EngineAction],
     options: ReplayDecisionOptions,
 ) -> io::Result<Option<PreparedReplayDecision>> {
     let hydra_action = riichienv_to_hydra(&env_action)
         .map_err(|err| invalid_data(format!("hydra action mapping failed: {err}")))?;
     let t_legal = Instant::now();
+    let legal = obs.legal_actions_ref();
     let (legal_mask, legal_mask_f32, chosen_is_legal, _) =
         analyze_replay_legal_actions(legal, phase, hydra_action.id());
     REPLAY_LEGAL_MASK_BUILD_NS.fetch_add(t_legal.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -696,6 +811,88 @@ fn finalize_prepared_replay_decision(
     }))
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "replay decision finalization needs the full state context"
+)]
+fn finalize_prepared_replay_decision_ref(
+    actor: usize,
+    env_action: EngineAction,
+    phase: ActionPhase,
+    state: &GameState,
+    safety: &[SafetyInfo; 4],
+    encoder: &mut ObservationEncoder,
+    legal: &[EngineAction],
+) -> io::Result<Option<PreparedReplayDecision>> {
+    let hydra_action = riichienv_to_hydra(&env_action)
+        .map_err(|err| invalid_data(format!("hydra action mapping failed: {err}")))?;
+    let t_legal = Instant::now();
+    let (legal_mask, legal_mask_f32, chosen_is_legal, _) =
+        analyze_replay_legal_actions(legal, phase, hydra_action.id());
+    REPLAY_LEGAL_MASK_BUILD_NS.fetch_add(t_legal.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    if !chosen_is_legal {
+        return Ok(None);
+    }
+
+    let t_encode = Instant::now();
+    let obs_ref = state.observe(actor as u8);
+    let obs_encoded = encode_observation_ref_with_profile(
+        encoder,
+        &obs_ref,
+        &safety[actor],
+        BridgeEncodeProfile::bc_minimal(),
+    );
+    let extracted_facts = extract_observation_facts_ref(&obs_ref);
+    let compact_facts = CompactObservationFacts::from_encoder_inputs(
+        extracted_facts.hand,
+        extracted_facts.open_meld_counts,
+        extracted_facts.drawn_tile,
+        extracted_facts.shanten_batch.base,
+        extracted_facts.shanten_batch.discard,
+        &extracted_facts.discards,
+        &extracted_facts.melds,
+        &extracted_facts.dora,
+        &extracted_facts.meta,
+        &safety[actor],
+        &obs_encoded,
+        false,
+    );
+    REPLAY_ENCODE_OBS_NS.fetch_add(t_encode.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+    Ok(Some(PreparedReplayDecision {
+        actor,
+        obs: empty_replay_observation(actor),
+        action_id: hydra_action.id(),
+        legal_mask,
+        legal_mask_f32,
+        obs_encoded,
+        compact_facts,
+    }))
+}
+
+fn empty_replay_observation(actor: usize) -> Observation {
+    Observation::new(
+        actor as u8,
+        std::array::from_fn(|_| Vec::new()),
+        std::array::from_fn(|_| Vec::new()),
+        std::array::from_fn(|_| Vec::new()),
+        Vec::new(),
+        [0; 4],
+        [false; 4],
+        Vec::new(),
+        Vec::new(),
+        0,
+        0,
+        0,
+        0,
+        0,
+        Vec::new(),
+        false,
+        [None; 4],
+        [None; 4],
+        None,
+    )
+}
 fn observation_for_replay_event(
     state: &mut GameState,
     actor: usize,
@@ -758,9 +955,12 @@ fn prepare_implicit_pass_decisions(
 
         let pass_action = EngineAction::new(ActionType::Pass, None, &[], Some(pid));
         let obs = observation_for_implicit_pass(state, pid)?;
-        let legal = obs.legal_actions_method();
-        let (_, _, _, had_ron) =
-            analyze_replay_legal_actions(&legal, ActionPhase::Normal, hydra_core::action::PASS);
+        let had_ron = {
+            let legal = obs.legal_actions_ref();
+            let (_, _, _, had_ron) =
+                analyze_replay_legal_actions(legal, ActionPhase::Normal, hydra_core::action::PASS);
+            had_ron
+        };
         if let Some(decision) = finalize_prepared_replay_decision(
             pid as usize,
             pass_action,
@@ -769,7 +969,6 @@ fn prepare_implicit_pass_decisions(
             state,
             safety,
             encoder,
-            &legal,
             options,
         )? {
             decisions.push(decision);
@@ -826,8 +1025,29 @@ fn prepare_replay_decisions_with_options(
         return Ok(decisions);
     };
 
+    if options.observation_profile == ReplayObservationProfile::BcMinimal {
+        let mut legal = Vec::new();
+        let log_action_str = replay_log_action_str(event, &env_action);
+        let t_obs = Instant::now();
+        state
+            .get_replay_legal_actions_into(actor as u8, &env_action, &log_action_str, &mut legal)
+            .map_err(|err| invalid_data(format!("replay observation failed: {err}")))?;
+        REPLAY_OBSERVATION_NS.fetch_add(t_obs.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        if let Some(decision) = finalize_prepared_replay_decision_ref(
+            actor,
+            env_action,
+            replay_phase_for_event(event, state, actor),
+            state,
+            safety,
+            encoder,
+            &legal,
+        )? {
+            decisions.push(decision);
+        }
+        return Ok(decisions);
+    }
+
     let obs = observation_for_replay_event(state, actor, &env_action)?;
-    let legal = obs.legal_actions_method();
     if let Some(decision) = finalize_prepared_replay_decision(
         actor,
         env_action,
@@ -836,7 +1056,6 @@ fn prepare_replay_decisions_with_options(
         state,
         safety,
         encoder,
-        &legal,
         options,
     )? {
         decisions.push(decision);
@@ -916,7 +1135,7 @@ where
     clippy::too_many_arguments,
     reason = "loader seam carries target and sidecar policy"
 )]
-fn load_game_from_events_internal(
+fn load_game_from_events_into_sink<S: ReplaySampleSink>(
     source_hash: Option<u64>,
     exit_provenance: SidecarProvenance,
     delta_q_provenance: SidecarProvenance,
@@ -925,7 +1144,8 @@ fn load_game_from_events_internal(
     events: Vec<MjaiEvent>,
     exit_sidecar: Option<&ExitSidecarIndex>,
     delta_q_sidecar: Option<&DeltaQSidecarIndex>,
-) -> io::Result<MjaiGame> {
+    sink: &mut S,
+) -> io::Result<[i32; 4]> {
     let mut stats = ReplayProfileStats::default();
     let t_precompute = Instant::now();
     let final_scores = final_scores(&events);
@@ -939,7 +1159,6 @@ fn load_game_from_events_internal(
     let mut state = GameState::new(0, true, Some(0), 0, GameRule::default_tenhou());
     let mut safety = array::from_fn(|_| SafetyInfo::default());
     let mut encoder = ObservationEncoder::new();
-    let mut samples = Vec::with_capacity(events.len());
     let needs_exit_lookup =
         profile.exit && exit_sidecar.is_some() && exit_provenance.complete().is_some();
     let needs_delta_q_lookup =
@@ -1044,9 +1263,9 @@ fn load_game_from_events_internal(
             );
             stats.sidecar_lookup_ns += t_sidecar.elapsed().as_nanos();
             let t_push = Instant::now();
-            samples.push(MjaiSample {
+            sink.push_sample(ReplaySampleRecord {
                 obs: decision.obs_encoded,
-                compact_facts: Some(decision.compact_facts),
+                compact_facts: decision.compact_facts,
                 action: decision.action_id,
                 legal_mask,
                 placement: placements[actor],
@@ -1067,7 +1286,7 @@ fn load_game_from_events_internal(
                 mixture_weights,
                 belief_fields_present,
                 mixture_weights_present,
-            });
+            })?;
             stats.sample_push_ns += t_push.elapsed().as_nanos();
         }
 
@@ -1097,8 +1316,37 @@ fn load_game_from_events_internal(
 
     maybe_print_replay_profile(&stats);
 
+    Ok(final_scores)
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "loader seam carries target and sidecar policy"
+)]
+fn load_game_from_events_internal(
+    source_hash: Option<u64>,
+    exit_provenance: SidecarProvenance,
+    delta_q_provenance: SidecarProvenance,
+    profile: ReplayTargetProfile,
+    observation_profile: ReplayObservationProfile,
+    events: Vec<MjaiEvent>,
+    exit_sidecar: Option<&ExitSidecarIndex>,
+    delta_q_sidecar: Option<&DeltaQSidecarIndex>,
+) -> io::Result<MjaiGame> {
+    let mut sink = VecReplaySampleSink::with_capacity(events.len());
+    let final_scores = load_game_from_events_into_sink(
+        source_hash,
+        exit_provenance,
+        delta_q_provenance,
+        profile,
+        observation_profile,
+        events,
+        exit_sidecar,
+        delta_q_sidecar,
+        &mut sink,
+    )?;
     Ok(MjaiGame {
-        samples,
+        samples: sink.samples,
         final_scores,
     })
 }
@@ -1238,6 +1486,55 @@ pub fn load_game_from_reader_with_sidecar<R: BufRead>(
         exit_sidecar,
         delta_q_sidecar,
     )
+}
+
+/// Loads one already-decompressed MJAI stream into a caller-owned sample sink.
+///
+/// Samples are emitted in replay order without building `MjaiGame.samples`; the
+/// returned scores are the final game scores. `source_identity` is used only for
+/// joined sidecar replay-key hashing when `policy` contains sidecar indexes.
+pub fn load_game_from_reader_into_sink<R, S>(
+    source_identity: &str,
+    reader: R,
+    policy: Option<&ReplayLoadPolicy<'_>>,
+    sink: &mut S,
+) -> io::Result<[i32; 4]>
+where
+    R: BufRead,
+    S: ReplaySampleSink,
+{
+    let t_parse = Instant::now();
+    let events = read_mjai_events(reader)
+        .map_err(|err| invalid_data(format!("failed to parse MJAI events: {err}")))?;
+    record_replay_materialization_stats(ReplayMaterializationStats {
+        json_parse_ns: t_parse.elapsed().as_nanos(),
+        ..ReplayMaterializationStats::default()
+    });
+
+    match policy.filter(|policy| policy.has_joined_sidecars()) {
+        Some(policy) => load_game_from_events_into_sink(
+            Some(source_hash_from_identity(source_identity)),
+            policy.exit_provenance,
+            policy.delta_q_provenance,
+            policy.profile,
+            policy.observation_profile,
+            events,
+            policy.exit_sidecar,
+            policy.delta_q_sidecar,
+            sink,
+        ),
+        None => load_game_from_events_into_sink(
+            None,
+            SidecarProvenance::default(),
+            SidecarProvenance::default(),
+            ReplayTargetProfile::minimal_bc(),
+            ReplayObservationProfile::BcMinimal,
+            events,
+            None,
+            None,
+            sink,
+        ),
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StreamCompression {

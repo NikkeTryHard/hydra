@@ -19,6 +19,7 @@ hydra-train-types = { path = "../hydra-train-types" }
 burn = { version = "0.21", default-features = false, features = ["std"] }
 tch = { version = "0.22", optional = true }
 torch-sys = { version = "0.22", optional = true }
+libloading = "0.8"
 
 [dev-dependencies]
 burn = { version = "0.21", default-features = false, features = ["std", "autodiff", "ndarray"] }

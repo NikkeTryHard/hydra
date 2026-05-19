@@ -20,7 +20,7 @@ pub struct NvtxRangeGuard(GuardState);
 enum GuardState {
     Noop,
     #[cfg(all(not(test), not(feature = "test-nvtx-recorder")))]
-    Active,
+    Active(u64),
     #[cfg(any(test, feature = "test-nvtx-recorder"))]
     Recorded(&'static str),
 }
@@ -30,7 +30,7 @@ impl Drop for NvtxRangeGuard {
         match &self.0 {
             GuardState::Noop => {}
             #[cfg(all(not(test), not(feature = "test-nvtx-recorder")))]
-            GuardState::Active => backend_pop(),
+            GuardState::Active(range_id) => backend_pop(*range_id),
             #[cfg(any(test, feature = "test-nvtx-recorder"))]
             GuardState::Recorded(stage) => record_test_event("pop", stage),
         }
@@ -67,23 +67,24 @@ pub fn scope(stage: &'static str) -> NvtxRangeGuard {
         return NvtxRangeGuard(GuardState::Noop);
     };
 
-    if unsafe { (backend.push)(name.as_ptr()) } >= 0 {
-        NvtxRangeGuard(GuardState::Active)
+    let range_id = unsafe { (backend.start)(name.as_ptr()) };
+    if range_id != 0 {
+        NvtxRangeGuard(GuardState::Active(range_id))
     } else {
         NvtxRangeGuard(GuardState::Noop)
     }
 }
 
 #[cfg(all(not(test), not(feature = "test-nvtx-recorder")))]
-type NvtxPush = unsafe extern "C" fn(*const std::ffi::c_char) -> i32;
+type NvtxRangeStart = unsafe extern "C" fn(*const std::ffi::c_char) -> u64;
 #[cfg(all(not(test), not(feature = "test-nvtx-recorder")))]
-type NvtxPop = unsafe extern "C" fn() -> i32;
+type NvtxRangeEnd = unsafe extern "C" fn(u64) -> i32;
 
 #[cfg(all(not(test), not(feature = "test-nvtx-recorder")))]
 struct NvtxBackend {
     _library: Library,
-    push: NvtxPush,
-    pop: NvtxPop,
+    start: NvtxRangeStart,
+    end: NvtxRangeEnd,
 }
 
 #[cfg(all(not(test), not(feature = "test-nvtx-recorder")))]
@@ -94,9 +95,9 @@ fn nvtx_enabled() -> bool {
 }
 
 #[cfg(all(not(test), not(feature = "test-nvtx-recorder")))]
-fn backend_pop() {
+fn backend_pop(range_id: u64) {
     if let Some(backend) = backend() {
-        let _ = unsafe { (backend.pop)() };
+        let _ = unsafe { (backend.end)(range_id) };
     }
 }
 
@@ -121,15 +122,15 @@ fn load_backend() -> Option<NvtxBackend> {
 
     LIB_NAMES.iter().find_map(|name| {
         let library = unsafe { Library::new(name).ok()? };
-        let (push, pop) = unsafe {
-            let push: Symbol<'_, NvtxPush> = library.get(b"nvtxRangePushA\0").ok()?;
-            let pop: Symbol<'_, NvtxPop> = library.get(b"nvtxRangePop\0").ok()?;
-            (*push, *pop)
+        let (start, end) = unsafe {
+            let start: Symbol<'_, NvtxRangeStart> = library.get(b"nvtxRangeStartA\0").ok()?;
+            let end: Symbol<'_, NvtxRangeEnd> = library.get(b"nvtxRangeEnd\0").ok()?;
+            (*start, *end)
         };
         Some(NvtxBackend {
             _library: library,
-            push,
-            pop,
+            start,
+            end,
         })
     })
 }

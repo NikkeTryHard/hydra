@@ -461,10 +461,6 @@ fn preflight_paths_use_output_root_layout_and_compact_discovery_names() {
     let paths = PreflightPaths::new(&artifacts);
 
     assert_eq!(
-        paths.cache_path,
-        output_dir.join("preflight/cache/preflight_cache.json")
-    );
-    assert_eq!(
         paths.manifest_cache_path,
         output_dir.join("preflight/cache/preflight_manifest.json")
     );

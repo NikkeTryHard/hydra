@@ -1,8 +1,9 @@
 use super::*;
+use hydra_core::action::HYDRA_ACTION_SPACE;
+use hydra_core::encoder::{NUM_CHANNELS, OBS_SIZE};
 
-#[test]
-fn bc_shard_manifest_geometry_uses_frozen_runtime_abi() {
-    let manifest = BcShardManifest {
+fn base_manifest() -> BcShardManifest {
+    BcShardManifest {
         manifest_version: BC_SHARD_MANIFEST_VERSION,
         shard_version: BC_SHARD_VERSION,
         shard_header_size: BC_SHARD_HEADER_SIZE,
@@ -13,6 +14,7 @@ fn bc_shard_manifest_geometry_uses_frozen_runtime_abi() {
         action_space: HYDRA_ACTION_SPACE,
         train_fraction: 1.0,
         shard_samples: 1,
+        split_mode: "both".to_string(),
         augment_runtime: true,
         input: String::new(),
         output_dir: String::new(),
@@ -27,7 +29,35 @@ fn bc_shard_manifest_geometry_uses_frozen_runtime_abi() {
         totals: BcShardBuildTotals::default(),
         splits: Vec::new(),
         storage_layout: STORAGE_LAYOUT_COMPACT.to_string(),
-    };
+    }
+}
+
+fn split_manifest(split: BcShardSplit, sample_count: u64) -> BcShardSplitManifest {
+    BcShardSplitManifest {
+        split,
+        shard_count: 1,
+        sample_count,
+        feature_flags: 0,
+        record_size: BC_BASE_RECORD_SIZE,
+        shards: vec![BcShardDescriptor {
+            split,
+            shard_index: 0,
+            file_name: match split {
+                BcShardSplit::Train => "train.hydra-bc".to_string(),
+                BcShardSplit::Validation => "validation.hydra-bc".to_string(),
+            },
+            sample_count,
+            first_sample_index: 0,
+            byte_len: BC_SHARD_HEADER_SIZE as u64 + sample_count * u64::from(BC_BASE_RECORD_SIZE),
+            feature_flags: 0,
+            record_size: BC_BASE_RECORD_SIZE,
+        }],
+    }
+}
+
+#[test]
+fn bc_shard_manifest_geometry_uses_frozen_runtime_abi() {
+    let manifest = base_manifest();
 
     assert_eq!(OBS_SIZE, 6528);
     assert_eq!(NUM_CHANNELS, 192);
@@ -42,4 +72,101 @@ fn bc_shard_manifest_geometry_uses_frozen_runtime_abi() {
     assert_eq!(COMPACT_OBS_SCALAR_REPEATED_BYTES, 0);
     assert_eq!(COMPACT_OBS_DENSE_BYTES, 0);
     assert_eq!(COMPACT_OBS_BYTES, 1_675);
+}
+
+#[test]
+fn bc_shard_manifest_rejects_num_channel_mismatch() {
+    let mut manifest = base_manifest();
+    manifest.num_channels = NUM_CHANNELS - 1;
+
+    let err = validate_bc_shard_manifest_contract(&manifest).expect_err("num_channels mismatch");
+    assert!(err.contains("num_channels"), "unexpected error: {err}");
+}
+
+#[test]
+fn bc_shard_manifest_rejects_invalid_split_mode() {
+    let mut manifest = base_manifest();
+    manifest.split_mode = "holdout".to_string();
+
+    let err = validate_bc_shard_manifest_contract(&manifest).expect_err("invalid split mode");
+    assert!(err.contains("split_mode"), "unexpected error: {err}");
+}
+
+#[test]
+fn bc_shard_manifest_rejects_duplicate_split_entries() {
+    let mut manifest = base_manifest();
+    manifest.split_mode = "train".to_string();
+    manifest.splits = vec![
+        split_manifest(BcShardSplit::Train, 2),
+        split_manifest(BcShardSplit::Train, 3),
+    ];
+    manifest.totals.sample_count = 5;
+    manifest.totals.shard_count = 2;
+
+    let err = validate_bc_shard_manifest_contract(&manifest).expect_err("duplicate split");
+    assert!(err.contains("duplicate train"), "unexpected error: {err}");
+}
+
+#[test]
+fn bc_shard_manifest_requires_splits_for_non_empty_split_mode() {
+    let mut manifest = base_manifest();
+    manifest.splits = vec![split_manifest(BcShardSplit::Train, 2)];
+    manifest.totals.sample_count = 2;
+    manifest.totals.shard_count = 1;
+
+    let err = validate_bc_shard_manifest_contract(&manifest).expect_err("missing validation split");
+    assert!(
+        err.contains("requires train and validation"),
+        "unexpected error: {err}"
+    );
+
+    manifest.split_mode = "train".to_string();
+    validate_bc_shard_manifest_contract(&manifest).expect("train-only manifest should be valid");
+
+    manifest.splits = vec![split_manifest(BcShardSplit::Validation, 2)];
+    manifest.split_mode = "validation".to_string();
+    validate_bc_shard_manifest_contract(&manifest)
+        .expect("validation-only manifest should be valid");
+}
+
+#[test]
+fn bc_shard_manifest_rejects_splits_excluded_by_split_mode() {
+    let mut manifest = base_manifest();
+    manifest.split_mode = "train".to_string();
+    manifest.splits = vec![
+        split_manifest(BcShardSplit::Train, 2),
+        split_manifest(BcShardSplit::Validation, 1),
+    ];
+    manifest.totals.sample_count = 3;
+    manifest.totals.shard_count = 2;
+
+    let err = validate_bc_shard_manifest_contract(&manifest)
+        .expect_err("train mode should reject validation split");
+    assert!(err.contains("excludes"), "unexpected error: {err}");
+
+    manifest.split_mode = "validation".to_string();
+    let err = validate_bc_shard_manifest_contract(&manifest)
+        .expect_err("validation mode should reject train split");
+    assert!(err.contains("excludes"), "unexpected error: {err}");
+}
+
+#[test]
+fn bc_shard_manifest_deserializes_missing_split_mode_as_both() {
+    let mut manifest = base_manifest();
+    manifest.splits = vec![
+        split_manifest(BcShardSplit::Train, 2),
+        split_manifest(BcShardSplit::Validation, 1),
+    ];
+    manifest.totals.sample_count = 3;
+    manifest.totals.shard_count = 2;
+    let mut value = serde_json::to_value(&manifest).expect("manifest should serialize");
+    value
+        .as_object_mut()
+        .expect("manifest JSON should be an object")
+        .remove("split_mode");
+
+    let decoded: BcShardManifest =
+        serde_json::from_value(value).expect("missing split_mode should deserialize");
+    assert_eq!(decoded.split_mode, "both");
+    validate_bc_shard_manifest_contract(&decoded).expect("default both manifest should validate");
 }

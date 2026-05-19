@@ -2,7 +2,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::preflight::{PreflightConfig, ProbeKind};
+use crate::preflight::{PreflightBenchTuple, PreflightConfig, ProbeKind};
 pub use hydra_data_core::SourceFilterConfig;
 use hydra_train_types::phase::TrainingPhase as PipelineTrainingPhase;
 
@@ -128,6 +128,46 @@ impl TrainConfig {
             PrecisionMode::Bf16Autocast => EffectivePrecision::Bf16Amp,
         }
     }
+
+    pub fn default_preflight_bench() -> Self {
+        Self {
+            data_dir: PathBuf::new(),
+            output_dir: PathBuf::from("preflight_bench"),
+            num_epochs: 0,
+            batch_size: default_batch_size(),
+            microbatch_size: None,
+            validation_microbatch_size: None,
+            exit_sidecar_path: None,
+            delta_q_sidecar_path: None,
+            bc_shards_manifest_path: None,
+            shard_prefetch_depth: Some(default_shard_prefetch_depth()),
+            train_fraction: default_train_fraction(),
+            source_filters: SourceFilterConfig::default(),
+            augment: default_augment(),
+            resume_checkpoint: None,
+            seed: default_seed(),
+            advanced_loss: None,
+            validation_gates: ValidationGateConfig::default(),
+            rl: None,
+            bc: BcHyperparamConfig::default(),
+            nsight_trace: None,
+            device: default_device(),
+            precision_mode: PrecisionMode::default(),
+            buffer_games: default_buffer_games(),
+            buffer_samples: default_buffer_samples(),
+            num_threads: None,
+            tensorboard: default_tensorboard(),
+            archive_queue_bound: default_archive_queue_bound(),
+            validation_every_n_epochs: default_validation_every_n_epochs(),
+            max_skip_logs_per_source: default_max_skip_logs_per_source(),
+            log_every_n_steps: default_log_every_n_steps(),
+            validate_every_n_steps: default_validate_every_n_steps(),
+            checkpoint_every_n_steps: default_checkpoint_every_n_steps(),
+            max_train_steps: None,
+            max_validation_batches: None,
+            max_validation_samples: default_max_validation_samples(),
+        }
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -233,6 +273,8 @@ pub enum PreflightProfile {
 pub struct PreflightCliOptions {
     pub preflight_config: PreflightConfig,
     pub profile: PreflightProfile,
+    pub output_dir: PathBuf,
+    pub device: String,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -629,9 +671,51 @@ fn parse_f64_list(flag: &str, raw: &str) -> Result<Vec<f64>, String> {
     Ok(values)
 }
 
+fn parse_preflight_bench_candidate_tuples(raw: &str) -> Result<Vec<PreflightBenchTuple>, String> {
+    let mut out = Vec::new();
+    for atom in raw.split(',') {
+        let atom = atom.trim();
+        if atom.is_empty() {
+            return Err("--pf-candidate-tuples contains an empty tuple".to_string());
+        }
+        let mut fields = atom.split(':');
+        let batch_size = parse_positive_usize_text(
+            "--pf-candidate-tuples batch",
+            fields.next().unwrap_or_default(),
+        )?;
+        let ring_batches = parse_positive_usize_text(
+            "--pf-candidate-tuples ring",
+            fields.next().unwrap_or_default(),
+        )?;
+        let loader_threads = parse_positive_usize_text(
+            "--pf-candidate-tuples threads",
+            fields.next().unwrap_or_default(),
+        )?;
+        let prefetch_batches = parse_positive_usize_text(
+            "--pf-candidate-tuples prefetch",
+            fields.next().unwrap_or_default(),
+        )?;
+        if fields.next().is_some() {
+            return Err(format!(
+                "invalid --pf-candidate-tuples tuple {atom}: expected batch:ring:threads:prefetch"
+            ));
+        }
+        out.push(PreflightBenchTuple {
+            batch_size,
+            ring_batches,
+            loader_threads,
+            prefetch_batches,
+        });
+    }
+    if out.is_empty() {
+        return Err("--pf-candidate-tuples must contain at least one tuple".to_string());
+    }
+    Ok(out)
+}
+
 pub fn usage(program: &str) -> String {
     format!(
-        "Usage:\n  {program} <config.yaml>\n  {program} <config.yaml> --preflight --preflight-mode <safe|unsafe> [--pf-profile <default|fast-repeated-run>] [--pf-candidate-microbatch <range-list>]\n  {program} --list-devices\n  {program} <config.yaml> --delta-q-promotion [--delta-q-baseline-checkpoint <path>]\n  {program} <config.yaml> --probe-kind <train|validation> --probe-candidate-microbatch <N> [--probe-warmup-steps <N>] [--probe-measure-steps <N>]\n\nPreflight range-list: N, A-B, A-B+S, A-B*M; comma values and repeated flags append."
+        "Usage:\n  {program} <config.yaml>\n  {program} --preflight [--device <cpu|cuda[:N]>] [--output-dir <dir>] [--pf-candidate-tuples <batch:ring:threads:prefetch,...>] [--pf-warmup-steps <N>] [--pf-measure-steps <N>] [--pf-repetitions <N>] [--pf-output md]\n  {program} --list-devices\n  {program} <config.yaml> --delta-q-promotion [--delta-q-baseline-checkpoint <path>]\n  {program} <config.yaml> --probe-kind <train|validation> --probe-candidate-microbatch <N> [--probe-warmup-steps <N>] [--probe-measure-steps <N>]\n"
     )
 }
 
@@ -663,33 +747,29 @@ where
 {
     let mut args = args.into_iter();
     let program = args.next().unwrap_or_else(|| "train".to_string());
-    let mut first = args.next().ok_or_else(|| usage(&program))?;
+    let first = args.next().ok_or_else(|| usage(&program))?;
     if first == "--" {
-        first = args.next().ok_or_else(|| usage(&program))?;
+        return Err(usage(&program));
     }
-    match first.as_str() {
-        "--help" | "-h" => return Err(usage(&program)),
-        "--version" | "-V" => return Err(version(&program)),
-        "--list-devices" => {
-            if args.next().is_some() {
-                return Err(
-                    "--list-devices cannot be combined with config path or train mode flags"
-                        .to_string(),
-                );
-            }
-            return Ok(TrainCli {
-                config_path: None,
-                list_devices: true,
-                preflight: None,
-                delta_q_promotion: false,
-                delta_q_baseline_checkpoint: None,
-                probe_only: None,
-                probe_child: None,
-            });
+    if first == "--list-devices" {
+        if args.next().is_some() {
+            return Err(
+                "--list-devices cannot be combined with config path or train mode flags"
+                    .to_string(),
+            );
         }
-        _ => {}
+        return Ok(TrainCli {
+            config_path: None,
+            list_devices: true,
+            preflight: None,
+            delta_q_promotion: false,
+            delta_q_baseline_checkpoint: None,
+            probe_only: None,
+            probe_child: None,
+        });
     }
-    let config_path = PathBuf::from(first);
+    let mut config_path = None;
+    let mut pending_arg = Some(first);
     let mut probe_kind = None;
     let mut candidate_microbatch = None;
     let mut warmup_steps = None;
@@ -704,7 +784,6 @@ where
     let mut preflight_mode = None;
     let mut preflight_profile = PreflightProfile::Default;
     let mut preflight_config = PreflightConfig::default();
-    let mut candidate_microbatch_seen = false;
     let mut unsafe_batch_seen = false;
     let mut unsafe_lr_seen = false;
     let mut unsafe_warmup_seen = false;
@@ -712,9 +791,17 @@ where
     let mut unsafe_flag_seen = false;
     let mut delta_q_promotion = false;
     let mut delta_q_baseline_checkpoint = None;
-
-    while let Some(arg) = args.next() {
+    let mut preflight_output_dir = PathBuf::from("preflight_bench");
+    let mut preflight_device = default_device();
+    while let Some(arg) = pending_arg.take().or_else(|| args.next()) {
         let normalized = normalize_long_flag(&arg);
+        if !arg.starts_with('-') {
+            if config_path.is_some() {
+                return Err(usage(&program));
+            }
+            config_path = Some(PathBuf::from(arg));
+            continue;
+        }
         match normalized.as_str() {
             "--help" | "-h" => return Err(usage(&program)),
             "--version" | "-V" => return Err(version(&program)),
@@ -749,17 +836,38 @@ where
                 }
             }
             "--pf-candidate-microbatch" => {
+                return Err("--pf-candidate-microbatch is deprecated for benchmark preflight; use --pf-candidate-tuples <batch:ring:threads:prefetch,...>".to_string());
+            }
+            "--pf-candidate-tuples" => {
                 preflight_flag_seen = true;
                 let value = args
                     .next()
-                    .ok_or_else(|| "missing value for --pf-candidate-microbatch".to_string())?;
-                if !candidate_microbatch_seen {
-                    preflight_config.candidate_microbatches.clear();
-                    candidate_microbatch_seen = true;
+                    .ok_or_else(|| "missing value for --pf-candidate-tuples".to_string())?;
+                preflight_config.bench_candidate_tuples =
+                    parse_preflight_bench_candidate_tuples(&value)?;
+            }
+            "--pf-output" => {
+                preflight_flag_seen = true;
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --pf-output".to_string())?;
+                if value != "md" {
+                    return Err("--pf-output only supports md in benchmark preflight".to_string());
                 }
-                preflight_config
-                    .candidate_microbatches
-                    .extend(parse_usize_range_list("--pf-candidate-microbatch", &value)?);
+                preflight_config.bench_output = value;
+            }
+            "--output-dir" => {
+                preflight_flag_seen = true;
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --output-dir".to_string())?;
+                preflight_output_dir = PathBuf::from(value);
+            }
+            "--device" => {
+                preflight_flag_seen = true;
+                preflight_device = args
+                    .next()
+                    .ok_or_else(|| "missing value for --device".to_string())?;
             }
             "--pf-min-microbatch" => {
                 preflight_flag_seen = true;
@@ -785,6 +893,11 @@ where
                 preflight_flag_seen = true;
                 preflight_config.required_successes =
                     parse_usize_flag_allowing_zero("--pf-required-successes", args.next(), false)?;
+            }
+            "--pf-repetitions" => {
+                preflight_flag_seen = true;
+                preflight_config.required_successes =
+                    parse_usize_flag_allowing_zero("--pf-repetitions", args.next(), false)?;
             }
             "--pf-noise-tolerance" => {
                 preflight_flag_seen = true;
@@ -1106,8 +1219,13 @@ where
         return Err("--pf-* flags require --preflight".to_string());
     }
     let preflight = if preflight_enabled {
-        let mode = preflight_mode
-            .ok_or_else(|| "--preflight requires --preflight-mode <safe|unsafe>".to_string())?;
+        if config_path.is_some() {
+            return Err(
+                "--preflight does not accept a config path; pass benchmark flags explicitly"
+                    .to_string(),
+            );
+        }
+        let mode = preflight_mode.unwrap_or(PreflightModeArg::Safe);
         match mode {
             PreflightModeArg::Safe => {
                 if unsafe_flag_seen {
@@ -1123,6 +1241,8 @@ where
         Some(PreflightCliOptions {
             preflight_config,
             profile: preflight_profile,
+            output_dir: preflight_output_dir.clone(),
+            device: preflight_device.clone(),
         })
     } else {
         None
@@ -1184,7 +1304,7 @@ where
         probe_attempts,
     ) {
         (None, None, None, None, None) => Ok(TrainCli {
-            config_path: Some(config_path),
+            config_path,
             list_devices: false,
             preflight,
             delta_q_promotion,
@@ -1193,7 +1313,7 @@ where
             probe_child: None,
         }),
         (Some(kind), Some(candidate_microbatch), None, None, None) => Ok(TrainCli {
-            config_path: Some(config_path),
+            config_path: Some(config_path.ok_or_else(|| usage(&program))?),
             list_devices: false,
             preflight: None,
             delta_q_promotion: false,
@@ -1207,7 +1327,7 @@ where
             probe_child: None,
         }),
         (Some(kind), Some(candidate_microbatch), Some(result_path), None, None) => Ok(TrainCli {
-            config_path: Some(config_path),
+            config_path: Some(config_path.ok_or_else(|| usage(&program))?),
             list_devices: false,
             preflight: None,
             delta_q_promotion: false,
@@ -1228,7 +1348,7 @@ where
         }),
         (Some(kind), Some(candidate_microbatch), None, Some(results_path), Some(attempts)) => {
             Ok(TrainCli {
-                config_path: Some(config_path),
+                config_path: Some(config_path.ok_or_else(|| usage(&program))?),
                 list_devices: false,
                 preflight: None,
                 delta_q_promotion: false,
@@ -1294,5 +1414,26 @@ fn precision_mode_is_omitted(raw: &str) -> Result<bool, serde_yaml::Error> {
             Ok(!mapping.contains_key(serde_yaml::Value::String("precision_mode".to_string())))
         }
         _ => Ok(true),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_pf_repetitions_aliases_required_successes() {
+        let cli = parse_args(vec![
+            "train".to_string(),
+            "--preflight".to_string(),
+            "--pf-repetitions".to_string(),
+            "5".to_string(),
+            "--pf-candidate-tuples".to_string(),
+            "1024:2:1:1,2048:4:2:2".to_string(),
+        ])
+        .expect("pf repetitions should parse");
+        let preflight = cli.preflight.expect("preflight options should be present");
+        assert_eq!(preflight.preflight_config.required_successes, 5);
+        assert_eq!(preflight.preflight_config.bench_candidate_tuples.len(), 2);
     }
 }

@@ -1,6 +1,7 @@
 use hydra_train_runtime::config::BcHyperparamConfig;
 use hydra_train_runtime::preflight::{
-    EffectiveRuntimeConfig, ExplicitSettings, LoaderRuntimeConfig, PreflightTuningMode, ProbeKind,
+    EffectiveRuntimeConfig, LoaderRuntimeConfig, PreflightBenchMode, PreflightBenchReport,
+    PreflightBenchRow, PreflightBenchStatus, PreflightCodec, PreflightShuffleMode, ProbeKind,
     ProbeResult, ProbeStatus, SelectedRuntimeConfig,
 };
 
@@ -499,38 +500,7 @@ fn format_probe_results_table_renders_selection_averages_and_missing_metrics() {
 }
 
 #[test]
-fn explicit_preflight_helpers_render_saved_runtime_and_recommendation() {
-    let summary = explicit_preflight_summary(
-        EffectiveRuntimeConfig {
-            selected: SelectedRuntimeConfig {
-                train_microbatch_size: 64,
-                validation_microbatch_size: 32,
-                accum_steps: 4,
-                unsafe_selected_batch_size: None,
-                unsafe_selected_learning_rate: None,
-                unsafe_selected_min_learning_rate: None,
-                unsafe_selected_warmup_steps: None,
-            },
-            loader: LoaderRuntimeConfig {
-                num_threads: Some(6),
-                buffer_games: 128,
-                buffer_samples: 4096,
-                archive_queue_bound: 16,
-            },
-            requested_precision: hydra_train_runtime::config::PrecisionMode::Fp32,
-            effective_precision: hydra_train_runtime::config::EffectivePrecision::Fp32,
-        },
-        ExplicitSettings {
-            train_microbatch_explicit: true,
-            validation_microbatch_explicit: false,
-        },
-        PreflightTuningMode::Safe,
-    );
-    assert_eq!(
-        summary,
-        "mode=Safe saved train_mb=64 val_mb=32 accum_steps=4 threads=6 buffer_games=128 buffer_samples=4096 archive_queue_bound=16 requested_precision=fp32 effective_precision=fp32 explicit(train=true, val=false)"
-    );
-
+fn unsafe_preflight_math_summary_reports_fresh_start_policy() {
     let unsafe_runtime = EffectiveRuntimeConfig {
         selected: SelectedRuntimeConfig {
             train_microbatch_size: 128,
@@ -551,24 +521,6 @@ fn explicit_preflight_helpers_render_saved_runtime_and_recommendation() {
         effective_precision:
             hydra_train_runtime::config::EffectivePrecision::Fp32NoopForBf16Request,
     };
-    let unsafe_summary = explicit_preflight_summary(
-        unsafe_runtime,
-        ExplicitSettings {
-            train_microbatch_explicit: false,
-            validation_microbatch_explicit: false,
-        },
-        PreflightTuningMode::Unsafe,
-    );
-    assert!(unsafe_summary.contains("mode=Unsafe"));
-    assert!(unsafe_summary.contains("unsafe_can_change_logical_batch=true"));
-    assert!(unsafe_summary.contains("requested_precision=bf16_autocast"));
-    assert!(unsafe_summary.contains("effective_precision=fp32_noop"));
-    assert!(unsafe_summary.contains("selected_batch=512"));
-    assert!(unsafe_summary.contains("selected_lr=5.00e-4"));
-    assert!(unsafe_summary.contains("selected_min_lr=2.00e-6"));
-    assert!(unsafe_summary.contains("selected_warmup_steps=2000"));
-    assert!(unsafe_summary.contains("lr_auto_scaled=false"));
-
     let bc = BcHyperparamConfig {
         learning_rate: 2.5e-4,
         min_learning_rate: 1.0e-6,
@@ -583,4 +535,63 @@ fn explicit_preflight_helpers_render_saved_runtime_and_recommendation() {
     assert!(math_summary.contains("selected_warmup_steps=2000"));
     assert!(math_summary.contains("apply=fresh_start_only"));
     assert!(math_summary.contains("resume=ignored_or_refused_if_checkpoint_contract_mismatch"));
+}
+
+#[test]
+fn preflight_bench_markdown_table_matches_snapshot() {
+    let report = PreflightBenchReport {
+        schema_version: 1,
+        rows: vec![PreflightBenchRow {
+            index: 0,
+            status: PreflightBenchStatus::Pass,
+            device: "cpu".to_string(),
+            mode: PreflightBenchMode::LoaderOnly,
+            batch_size: 1024,
+            ring_batches: 2,
+            loader_threads: 1,
+            prefetch_batches: 1,
+            shuffle: PreflightShuffleMode::None,
+            codec: PreflightCodec::None,
+            samples_per_second: Some(1234.5),
+            mib_per_second: Some(67.89),
+            p50_batch_ms: Some(1.2),
+            p95_batch_ms: Some(3.4),
+            producer_wait_ratio: Some(0.01),
+            consumer_wait_ratio: Some(0.02),
+            disk_wait_ratio: Some(0.03),
+            gpu_input_wait_ratio: Some(0.04),
+            cpu_user_seconds: Some(5.6),
+            cpu_system_seconds: Some(7.8),
+            error: None,
+        }],
+        total_elapsed_seconds: 9.0,
+    };
+    assert_eq!(
+        format_preflight_bench_markdown_table(&report),
+        "| idx | status | device | mode | batch | ring | threads | prefetch | shuffle | codec | samples/s | MiB/s | p50 ms | p95 ms | producer wait % | consumer wait % | disk wait % | gpu input wait % | cpu user s | cpu sys s | error |\n|---:|---|---|---|---:|---:|---:|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|\n| 0 | pass | cpu | loader_only | 1024 | 2 | 1 | 1 | none | none | 1234.50 | 67.89 | 1.20 | 3.40 | 1.00 | 2.00 | 3.00 | 4.00 | 5.60 | 7.80 |  |"
+    );
+}
+
+#[test]
+fn preflight_generated_output_contains_no_authority_words() {
+    let report = PreflightBenchReport {
+        schema_version: 1,
+        rows: Vec::new(),
+        total_elapsed_seconds: 0.0,
+    };
+    let output = format_preflight_bench_markdown_table(&report);
+    for forbidden in [
+        "selected",
+        "cache_hit",
+        "runtime",
+        "cache_key",
+        "saved",
+        "best",
+        "recommended",
+    ] {
+        assert!(
+            !output.contains(forbidden),
+            "forbidden word in output: {forbidden}"
+        );
+    }
 }

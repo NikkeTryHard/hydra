@@ -38,6 +38,10 @@ path = "src/bin/build_bc_shards.rs"
 required-features = ["training"]
 
 [[bin]]
+name = "extract_timing_metrics"
+path = "src/bin/extract_timing_metrics.rs"
+
+[[bin]]
 name = "build_parsed_sample_cache"
 path = "src/bin/build_parsed_sample_cache.rs"
 required-features = ["data-tools"]

@@ -664,8 +664,6 @@ where
     let prefetch_depth = run_config.shard_prefetch_depth;
     let (tx, rx) =
         mpsc::sync_channel::<Result<(ExtractedBcShardHostBatch, usize), String>>(prefetch_depth);
-    let (recycle_tx, recycle_rx) =
-        mpsc::sync_channel::<ExtractedBcShardHostBatch>(prefetch_depth + 1);
 
     let consumer_result: Result<(), String> = std::thread::scope(|scope| {
         scope.spawn(move || {
@@ -676,11 +674,7 @@ where
                 let result = reader
                     .collate_host_batch_range_into(idx, take, false, &mut scratch)
                     .map(|()| {
-                        let batch = if let Ok(mut recycled) = recycle_rx.try_recv() {
-                            scratch.swap_batch(&mut recycled)
-                        } else {
-                            scratch.take_batch()
-                        };
+                        let batch = scratch.take_batch();
                         (batch, take)
                     });
                 if tx.send(result).is_err() {
@@ -720,7 +714,6 @@ where
                 progress.inc(take as u64);
             }
         }
-        let _ = recycle_tx;
         Ok(())
     });
     consumer_result?;

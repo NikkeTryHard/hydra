@@ -8,7 +8,10 @@ use crate::bc_metrics::{
     BatchMetricSums, batch_metric_sums_from_outputs, batch_stats_from_metric_sums,
 };
 use crate::bc_runtime::{BcExitConfig, gated_bc_context, maybe_add_exit_loss};
-use crate::data::sample::{MjaiBcBatch, MjaiSample, collate_samples_bc_owned};
+use crate::data::sample::{
+    MjaiBcBatch, MjaiSample, collate_samples_bc_owned, collate_samples_into_host_scratch,
+    collate_samples_into_recycled_host_batch,
+};
 use crate::losses::HydraLoss;
 use crate::model::{HydraModel, HydraTrainModelExt};
 use crate::nvtx;
@@ -17,7 +20,7 @@ use burn::optim::{GradientsAccumulator, GradientsParams, Optimizer};
 use burn::tensor::backend::{AutodiffBackend, Backend};
 use burn::tensor::{Int, Tensor, TensorData};
 use colored::Colorize;
-use hydra_bc_shards::{BcShardHostBatch, BcShardSplit, load_bc_shard_reader};
+use hydra_bc_shards::{BcShardHostBatch, BcShardHostScratch, BcShardSplit, load_bc_shard_reader};
 use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::encoder::NUM_CHANNELS;
 use hydra_model::amp::maybe_autocast;
@@ -45,7 +48,7 @@ use hydra_train_types::losses::{HydraTargets, LossBreakdown};
 use indicatif::{MultiProgress, ProgressBar};
 use std::collections::VecDeque;
 use std::io::Write;
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::Instant;
 use tboard::EventWriter;
 
@@ -771,6 +774,8 @@ pub struct IntervalStepSummaryContext<'a> {
     pub epoch_optimizer_steps: usize,
     /// Windowed training metrics.
     pub window_stats: ScalarAverages,
+    /// Optimizer steps represented by this interval.
+    pub window_steps: usize,
     /// Windowed step rate.
     pub step_rate: f64,
     /// Optional profiling envelope for the interval.
@@ -1130,6 +1135,11 @@ fn benchmark_quiet() -> bool {
     std::env::var_os("HYDRA_BENCHMARK_QUIET").is_some()
 }
 
+fn emit_runtime_line(line: impl AsRef<str>) {
+    eprintln!("{}", line.as_ref());
+    let _ = std::io::stderr().flush();
+}
+
 impl EpochFinalValidationSummary<crate::validation::DeltaQPromotionSnapshot>
     for crate::validation::ValidationSummary
 {
@@ -1439,6 +1449,7 @@ where
         assumed_games_seen,
         epoch_optimizer_steps,
         window_stats,
+        window_steps,
         step_rate,
         mut profiling,
         advisories,
@@ -1546,6 +1557,14 @@ where
         val_delta_q_promotion: val_summary
             .as_ref()
             .and_then(|summary| summary.delta_q_promotion_snapshot),
+        window_steps,
+        window_samples: window_stats.num_samples,
+        steps_per_second: step_rate,
+        samples_per_second: if window_steps == 0 {
+            0.0
+        } else {
+            step_rate * window_stats.num_samples as f64 / window_steps as f64
+        },
         profiling,
         advisories,
         best_val_policy_loss: best_validation.map(|best| best.policy_loss),
@@ -1984,6 +2003,102 @@ where
     Ok((batch_stats, sub_timing_fallback))
 }
 
+/// Runs forward/backward/optimizer for one raw replay logical batch via the host-batch path.
+pub fn train_logical_batch_via_host_scratch<B, O>(
+    logical_batch: &[MjaiSample],
+    config: TrainLogicalBatchConfig<'_, B>,
+    head_controller: &mut HeadActivationController,
+    model_slot: &mut Option<HydraModel<B>>,
+    optimizer: &mut O,
+) -> Result<(Vec<BatchStats>, TrainSubStageTiming), String>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<FloatTensorPrimitive = TchTensor, IntTensorPrimitive = TchTensor>,
+    O: Optimizer<HydraModel<B>, B>,
+{
+    if logical_batch.is_empty() {
+        return Ok((Vec::new(), TrainSubStageTiming::default()));
+    }
+
+    let need_safety = logical_batch
+        .iter()
+        .any(|sample| sample.safety_residual.is_some() || sample.safety_residual_mask.is_some());
+    let need_exit = logical_batch
+        .iter()
+        .any(|sample| sample.exit_target.is_some() || sample.exit_mask.is_some());
+    let need_delta_q = logical_batch
+        .iter()
+        .any(|sample| sample.delta_q_target.is_some() || sample.delta_q_mask.is_some());
+    let batch_size = if config.augment {
+        logical_batch.len() * hydra_core::tile::ALL_PERMUTATIONS.len()
+    } else {
+        logical_batch.len()
+    };
+    let mut scratch = BcShardHostScratch::new(batch_size, need_safety, need_exit, need_delta_q);
+    let collation_started = Instant::now();
+    let sample_count =
+        collate_samples_into_host_scratch(logical_batch, config.augment, &mut scratch)
+            .map_err(|err| format!("training host-scratch collation failed: {err}"))?
+            .unwrap_or(0);
+    let host_batch = scratch.take_batch();
+    let (drained, mut timing, _) = train_logical_batch_from_host_batch(
+        host_batch,
+        config,
+        head_controller,
+        model_slot,
+        optimizer,
+        #[cfg(feature = "cuda-graph")]
+        None,
+    )?;
+    timing.collation_seconds += collation_started.elapsed().as_secs_f64();
+    debug_assert_eq!(sample_count, batch_size);
+    Ok((drained, timing))
+}
+
+/// Runs one raw replay logical batch through caller-provided host-batch storage.
+pub fn train_logical_batch_via_recycled_host_batch<B, O>(
+    logical_batch: &[MjaiSample],
+    config: TrainLogicalBatchConfig<'_, B>,
+    head_controller: &mut HeadActivationController,
+    model_slot: &mut Option<HydraModel<B>>,
+    optimizer: &mut O,
+    recycled: BcShardHostBatch,
+) -> Result<(Vec<BatchStats>, TrainSubStageTiming), String>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<FloatTensorPrimitive = TchTensor, IntTensorPrimitive = TchTensor>,
+    O: Optimizer<HydraModel<B>, B>,
+{
+    if logical_batch.is_empty() {
+        return Ok((Vec::new(), TrainSubStageTiming::default()));
+    }
+
+    let batch_size = if config.augment {
+        logical_batch.len() * hydra_core::tile::ALL_PERMUTATIONS.len()
+    } else {
+        logical_batch.len()
+    };
+    let collation_started = Instant::now();
+    let host_batch =
+        collate_samples_into_recycled_host_batch(logical_batch, config.augment, recycled)
+            .map_err(|err| format!("training host-scratch collation failed: {err}"))?
+            .unwrap_or_else(BcShardHostBatch::empty);
+    debug_assert_eq!(host_batch.batch_size, batch_size);
+    let (drained, mut timing, _) = train_logical_batch_from_host_batch(
+        host_batch,
+        config,
+        head_controller,
+        model_slot,
+        optimizer,
+        #[cfg(feature = "cuda-graph")]
+        None,
+    )?;
+    timing.collation_seconds += collation_started.elapsed().as_secs_f64();
+    Ok((drained, timing))
+}
+
 /// Runs forward/backward/optimizer for one device-resident BC shard batch.
 pub fn train_device_batch<B, O>(
     device_batch: BcShardDeviceBatch<B>,
@@ -2324,33 +2439,83 @@ where
         return Ok(sub_timing);
     }
 
+    let logical_batch_len = batch_size.max(1) as f32;
     let effective_microbatch = microbatch_size.max(1);
-    if effective_microbatch < batch_size {
-        return Err("CUDA graph capture probe requires full-batch microbatch to avoid capture-unsafe slice/materialization ops".to_string());
+    if effective_microbatch >= batch_size {
+        let (active_loss_fn, warmup_heads) =
+            gated_bc_context(Some(head_controller), loss_fn, &targets);
+        let t = Instant::now();
+        let output = {
+            let _forward_scope = nvtx::scope(PROFILING_STAGE_FORWARD);
+            maybe_autocast(use_amp, || {
+                model.forward_with_warmup_train(obs, &active_loss_fn.config, &warmup_heads)
+            })
+        };
+        sub_timing.forward_seconds += t.elapsed().as_secs_f64();
+        let t = Instant::now();
+        let breakdown = active_loss_fn.total_loss(&output, &targets);
+        let total = maybe_add_exit_loss(
+            breakdown.total,
+            output.policy_logits,
+            batch.exit_target.as_ref(),
+            batch.exit_mask.as_ref(),
+            bc_exit_cfg,
+        );
+        sub_timing.loss_seconds += t.elapsed().as_secs_f64();
+        let t = Instant::now();
+        let _backward_scope = nvtx::scope(PROFILING_STAGE_BACKWARD);
+        let _grads = total.backward();
+        sub_timing.backward_seconds += t.elapsed().as_secs_f64();
+    } else {
+        for start in (0..batch_size).step_by(effective_microbatch) {
+            let end = (start + effective_microbatch).min(batch_size);
+            let chunk_len = end - start;
+            #[allow(
+                clippy::single_range_in_vec_init,
+                reason = "Burn slice API expects a one-element range slice"
+            )]
+            let r = [start..end];
+            let obs_chunk = obs.clone().slice(r.clone());
+            let batch_chunk = MjaiBcBatch {
+                actions: batch.actions.clone().slice(r.clone()),
+                exit_target: batch
+                    .exit_target
+                    .as_ref()
+                    .map(|t| t.clone().slice(r.clone())),
+                exit_mask: batch.exit_mask.as_ref().map(|t| t.clone().slice(r.clone())),
+            };
+            let targets_chunk = targets.slice_batch(start, end);
+            let (active_loss_fn, warmup_heads) =
+                gated_bc_context(Some(head_controller), loss_fn, &targets_chunk);
+            let t = Instant::now();
+            let output = {
+                let _forward_scope = nvtx::scope(PROFILING_STAGE_FORWARD);
+                maybe_autocast(use_amp, || {
+                    model.forward_with_warmup_train(
+                        obs_chunk,
+                        &active_loss_fn.config,
+                        &warmup_heads,
+                    )
+                })
+            };
+            sub_timing.forward_seconds += t.elapsed().as_secs_f64();
+            let t = Instant::now();
+            let breakdown = active_loss_fn.total_loss(&output, &targets_chunk);
+            let total = maybe_add_exit_loss(
+                breakdown.total,
+                output.policy_logits,
+                batch_chunk.exit_target.as_ref(),
+                batch_chunk.exit_mask.as_ref(),
+                bc_exit_cfg,
+            );
+            let weighted_total = total * (chunk_len as f32 / logical_batch_len);
+            sub_timing.loss_seconds += t.elapsed().as_secs_f64();
+            let t = Instant::now();
+            let _backward_scope = nvtx::scope(PROFILING_STAGE_BACKWARD);
+            let _grads = weighted_total.backward();
+            sub_timing.backward_seconds += t.elapsed().as_secs_f64();
+        }
     }
-    let (active_loss_fn, warmup_heads) = gated_bc_context(Some(head_controller), loss_fn, &targets);
-    let t = Instant::now();
-    let output = {
-        let _forward_scope = nvtx::scope(PROFILING_STAGE_FORWARD);
-        maybe_autocast(use_amp, || {
-            model.forward_with_warmup_train(obs, &active_loss_fn.config, &warmup_heads)
-        })
-    };
-    sub_timing.forward_seconds += t.elapsed().as_secs_f64();
-    let t = Instant::now();
-    let breakdown = active_loss_fn.total_loss(&output, &targets);
-    let total = maybe_add_exit_loss(
-        breakdown.total,
-        output.policy_logits,
-        batch.exit_target.as_ref(),
-        batch.exit_mask.as_ref(),
-        bc_exit_cfg,
-    );
-    sub_timing.loss_seconds += t.elapsed().as_secs_f64();
-    let t = Instant::now();
-    let _backward_scope = nvtx::scope(PROFILING_STAGE_BACKWARD);
-    let _grads = total.backward();
-    sub_timing.backward_seconds += t.elapsed().as_secs_f64();
     Ok(sub_timing)
 }
 
@@ -2882,6 +3047,7 @@ where
                         assumed_games_seen,
                         epoch_optimizer_steps,
                         window_stats,
+                        window_steps,
                         step_rate,
                         profiling: Some(interval_profiling.clone()),
                         advisories: interval_runtime_advisories(interval_timing_input_for_config(
@@ -3154,8 +3320,10 @@ where
 
     let multi = MultiProgress::new();
     let train_label = phase_label("train", epoch, config.num_epochs);
-    let estimated_steps =
-        ((total_rows.saturating_sub(samples_to_skip)) / config.batch_size.max(1)).max(1);
+    let estimated_steps = total_rows
+        .saturating_sub(samples_to_skip)
+        .div_ceil(config.batch_size.max(1))
+        .max(1);
     let train_pb = if let Some(max_train_steps) = config.max_train_steps {
         multi.add(make_bar(
             max_train_steps as u64,
@@ -3167,6 +3335,24 @@ where
             &format!("[{train_label}] [{{bar:30.green/black}}] {{pos}}/{{len}} steps {{msg}}"),
         )?)
     };
+    emit_runtime_line(timestamped(format!(
+        "{} epoch={} total_rows={} skip_samples={} estimated_steps={} batch_size={} log_every={} validate_every={} checkpoint_every={} max_train_steps={} shard_prefetch_depth={} manifest={}",
+        "BC shard train start".bold().cyan(),
+        epoch + 1,
+        total_rows,
+        samples_to_skip,
+        estimated_steps,
+        config.batch_size,
+        config.log_every_n_steps,
+        config.validate_every_n_steps,
+        config.checkpoint_every_n_steps,
+        config
+            .max_train_steps
+            .map(|steps| steps.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        hydra_train_runtime::config::shard_prefetch_depth(config),
+        shard_manifest_path.display(),
+    )));
 
     let mut stats = ScalarAverages::default();
     let mut step_window = ScalarAverages::default();
@@ -3211,6 +3397,7 @@ where
     )?;
 
     while let Some(prefetched) = prefetcher.recv()? {
+        let slot_seq = prefetched.slot_seq;
         let host_batch = prefetched.host_batch;
         let take = prefetched.sample_count;
         let producer_wait_seconds = prefetched.producer_wait_seconds;
@@ -3237,9 +3424,10 @@ where
             )?
         };
         let train_seconds = train_started.elapsed().as_secs_f64();
-        if let Some(host_batch) = recycled_host_batch {
-            prefetcher.recycle(host_batch);
-        }
+        prefetcher.recycle(
+            slot_seq,
+            recycled_host_batch.unwrap_or_else(BcShardHostBatch::empty),
+        );
 
         record_drained_batch_stats(drained, &mut stats, &mut step_window);
         step_window_train_seconds += train_seconds;
@@ -3335,6 +3523,7 @@ where
                     assumed_games_seen: 0,
                     epoch_optimizer_steps,
                     window_stats,
+                    window_steps,
                     step_rate,
                     profiling: Some(interval_profiling.clone()),
                     advisories: interval_runtime_advisories(interval_timing_input_for_config(
@@ -3384,10 +3573,28 @@ where
         }
     }
 
+    train_pb.finish_with_message(format!(
+        "shard training loop complete step={} samples_seen={}/{}",
+        *global_step, seen_samples, total_rows
+    ));
+    emit_runtime_line(timestamped(format!(
+        "{} step={} samples_seen={}/{} epoch_completed={}",
+        "BC shard train loop complete".bold().cyan(),
+        *global_step,
+        seen_samples,
+        total_rows,
+        epoch_completed,
+    )));
     prefetcher.join()?;
 
     let train_total_loss = stats.finalize().total_loss;
     let continuation = build_epoch_continuation(epoch, epoch_completed, epoch_optimizer_steps);
+    emit_runtime_line(timestamped(format!(
+        "{} step={} epoch_completed={}",
+        "checkpoint latest start".bold().yellow(),
+        *global_step,
+        continuation.epoch_completed,
+    )));
     let checkpoint_started = Instant::now();
     {
         let _checkpoint_scope = nvtx::scope(PROFILING_STAGE_CHECKPOINT);
@@ -3405,6 +3612,12 @@ where
         )?;
     }
     let checkpoint_seconds = checkpoint_started.elapsed().as_secs_f64();
+    emit_runtime_line(timestamped(format!(
+        "{} step={} elapsed_s={:.3}",
+        "checkpoint latest end".bold().yellow(),
+        *global_step,
+        checkpoint_seconds,
+    )));
     epoch_checkpoint_seconds += checkpoint_seconds;
     if !continuation.epoch_completed {
         emit_paused_training_message(&continuation);
@@ -3487,21 +3700,82 @@ where
     })
 }
 
+/// One fixed ring slot used by the BC shard prefetch producer.
+struct BcShardRingSlot {
+    seq: usize,
+    batch: BcShardHostBatch,
+}
+type BcShardPrefetchResult = Result<(BcShardRingSlot, usize, usize), String>;
+
+/// Point-in-time BC shard prefetch timing and occupancy metrics.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BcShardPrefetchMetrics {
+    /// Seconds spent waiting for producer output in `recv` calls.
+    pub producer_wait_seconds: f64,
+    /// Seconds spent returning consumed slots to the producer.
+    pub consumer_wait_seconds: f64,
+    /// Minimum observed ready-ring occupancy.
+    pub ring_occupancy_min: usize,
+    /// Average observed ready-ring occupancy.
+    pub ring_occupancy_avg: f64,
+}
+
+#[derive(Debug, Default)]
+struct BcShardPrefetchMetricState {
+    producer_wait_seconds: f64,
+    consumer_wait_seconds: f64,
+    occupancy_min: Option<usize>,
+    occupancy_sum: usize,
+    occupancy_samples: usize,
+}
+
+impl BcShardPrefetchMetricState {
+    fn observe_occupancy(&mut self, occupancy: usize) {
+        self.occupancy_min = Some(
+            self.occupancy_min
+                .map_or(occupancy, |min| min.min(occupancy)),
+        );
+        self.occupancy_sum += occupancy;
+        self.occupancy_samples += 1;
+    }
+
+    fn snapshot(&self) -> BcShardPrefetchMetrics {
+        BcShardPrefetchMetrics {
+            producer_wait_seconds: self.producer_wait_seconds,
+            consumer_wait_seconds: self.consumer_wait_seconds,
+            ring_occupancy_min: self.occupancy_min.unwrap_or(0),
+            ring_occupancy_avg: if self.occupancy_samples == 0 {
+                0.0
+            } else {
+                self.occupancy_sum as f64 / self.occupancy_samples as f64
+            },
+        }
+    }
+}
+
 /// One host batch received from the BC shard prefetch producer.
 pub struct BcShardPrefetchBatch {
+    /// Ring slot sequence number, returned with the consumed host batch.
+    pub slot_seq: usize,
+    /// First sample index in this contiguous batch range.
+    pub start_index: usize,
     /// Collated host batch ready for device materialization.
     pub host_batch: BcShardHostBatch,
     /// Number of samples collated into this batch.
     pub sample_count: usize,
-    /// Seconds spent waiting for the producer to provide this batch.
+    /// Seconds this consumer call blocked waiting for this batch.
     pub producer_wait_seconds: f64,
+    /// Prefetcher metrics observed after receiving this batch.
+    pub metrics: BcShardPrefetchMetrics,
 }
 
 /// Producer/consumer prefetcher for contiguous BC shard training batches.
 pub struct BcShardPrefetcher {
-    rx: mpsc::Receiver<Result<(BcShardHostBatch, usize), String>>,
-    recycle_tx: mpsc::SyncSender<BcShardHostBatch>,
+    rx: Option<mpsc::Receiver<BcShardPrefetchResult>>,
+    free_tx: Option<mpsc::SyncSender<BcShardRingSlot>>,
     producer_handle: Option<std::thread::JoinHandle<()>>,
+    metrics: Arc<Mutex<BcShardPrefetchMetricState>>,
+    ready_count: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl BcShardPrefetcher {
@@ -3516,27 +3790,53 @@ impl BcShardPrefetcher {
     ) -> Result<Self, String> {
         let reader = load_bc_shard_reader(manifest_path, BcShardSplit::Train)?;
         let producer_start_index = start_index.min(total_rows);
-        let (tx, rx) =
-            mpsc::sync_channel::<Result<(BcShardHostBatch, usize), String>>(prefetch_depth);
-        let (recycle_tx, recycle_rx) = mpsc::sync_channel::<BcShardHostBatch>(prefetch_depth + 1);
+        let depth = prefetch_depth.max(1);
+        let need_safety = reader.feature_flags() & hydra_bc_shards::FLAG_SAFETY_RESIDUAL != 0;
+        let need_exit = reader.feature_flags() & hydra_bc_shards::FLAG_EXIT != 0;
+        let need_delta_q = reader.feature_flags() & hydra_bc_shards::FLAG_DELTA_Q != 0;
+        let (tx, rx) = mpsc::sync_channel::<BcShardPrefetchResult>(depth);
+        let (free_tx, free_rx) = mpsc::sync_channel::<BcShardRingSlot>(depth);
+        for seq in 0..depth {
+            let mut scratch =
+                BcShardHostScratch::new(batch_size, need_safety, need_exit, need_delta_q);
+            let slot = BcShardRingSlot {
+                seq,
+                batch: scratch.take_batch(),
+            };
+            free_tx
+                .send(slot)
+                .map_err(|_| "failed to initialize BC shard ring slots".to_string())?;
+        }
+        let metrics = Arc::new(Mutex::new(BcShardPrefetchMetricState::default()));
+        let ready_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let producer_metrics = Arc::clone(&metrics);
+        let producer_ready_count = Arc::clone(&ready_count);
         let producer_handle = std::thread::Builder::new()
             .name("bc-shard-prefetch".into())
             .spawn(move || {
-                let mut scratch = reader.new_scratch(batch_size);
                 let mut idx = producer_start_index;
                 while idx < total_rows {
+                    let mut slot = match free_rx.recv() {
+                        Ok(slot) => slot,
+                        Err(_) => break,
+                    };
                     let take = batch_size.min(total_rows - idx);
+                    let start = idx;
+                    let batch = std::mem::replace(&mut slot.batch, BcShardHostBatch::empty());
+                    let mut scratch = BcShardHostScratch::from(batch);
                     let result = reader
-                        .collate_host_batch_range_into(idx, take, augment, &mut scratch)
+                        .collate_host_batch_range_into(start, take, augment, &mut scratch)
                         .map(|()| {
-                            let batch = if let Ok(mut recycled) = recycle_rx.try_recv() {
-                                scratch.swap_batch(&mut recycled)
-                            } else {
-                                scratch.take_batch()
-                            };
-                            (batch, take)
+                            slot.batch = scratch.take_batch();
+                            (slot, start, take)
                         });
+                    let ready =
+                        producer_ready_count.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
+                    if let Ok(mut metrics) = producer_metrics.lock() {
+                        metrics.observe_occupancy(ready);
+                    }
                     if tx.send(result).is_err() {
+                        producer_ready_count.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
                         break;
                     }
                     idx += take;
@@ -3545,42 +3845,94 @@ impl BcShardPrefetcher {
             .map_err(|err| format!("failed to spawn bc-shard-prefetch thread: {err}"))?;
 
         Ok(Self {
-            rx,
-            recycle_tx,
+            rx: Some(rx),
+            free_tx: Some(free_tx),
             producer_handle: Some(producer_handle),
+            metrics,
+            ready_count,
         })
     }
 
     /// Receives the next prefetched host batch, including producer wait timing.
     pub fn recv(&self) -> Result<Option<BcShardPrefetchBatch>, String> {
+        let Some(rx) = self.rx.as_ref() else {
+            return Ok(None);
+        };
         let recv_started = Instant::now();
-        let recv_result = match self.rx.recv() {
+        let recv_result = match rx.recv() {
             Ok(result) => result,
             Err(_) => return Ok(None),
         };
         let producer_wait_seconds = recv_started.elapsed().as_secs_f64();
-        let (host_batch, sample_count) = recv_result?;
+        let occupancy = self
+            .ready_count
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel)
+            .saturating_sub(1);
+        let metrics = {
+            let mut metrics = self
+                .metrics
+                .lock()
+                .map_err(|_| "bc-shard-prefetch metrics lock poisoned".to_string())?;
+            metrics.producer_wait_seconds += producer_wait_seconds;
+            metrics.observe_occupancy(occupancy);
+            metrics.snapshot()
+        };
+        let (slot, start_index, sample_count) = recv_result?;
         Ok(Some(BcShardPrefetchBatch {
-            host_batch,
+            slot_seq: slot.seq,
+            start_index,
+            host_batch: slot.batch,
             sample_count,
             producer_wait_seconds,
+            metrics,
         }))
     }
 
-    /// Returns a consumed host batch to the producer for allocation reuse.
-    pub fn recycle(&self, host_batch: BcShardHostBatch) {
-        let _ = self.recycle_tx.try_send(host_batch);
+    /// Returns a consumed host batch to the producer for allocation reuse after materialization.
+    pub fn recycle(&self, slot_seq: usize, host_batch: BcShardHostBatch) {
+        let Some(free_tx) = self.free_tx.as_ref() else {
+            return;
+        };
+        let started = Instant::now();
+        let _ = free_tx.send(BcShardRingSlot {
+            seq: slot_seq,
+            batch: host_batch,
+        });
+        let consumer_wait_seconds = started.elapsed().as_secs_f64();
+        if let Ok(mut metrics) = self.metrics.lock() {
+            metrics.consumer_wait_seconds += consumer_wait_seconds;
+        }
+    }
+
+    /// Returns current prefetcher metrics.
+    pub fn metrics(&self) -> BcShardPrefetchMetrics {
+        self.metrics
+            .lock()
+            .map(|metrics| metrics.snapshot())
+            .unwrap_or_default()
     }
 
     /// Stops the prefetcher and propagates producer panics.
     pub fn join(mut self) -> Result<(), String> {
-        drop(self.rx);
-        drop(self.recycle_tx);
+        self.rx.take();
+        self.free_tx.take();
+        self.join_producer()
+    }
+
+    fn join_producer(&mut self) -> Result<(), String> {
         if let Some(handle) = self.producer_handle.take() {
             handle
                 .join()
                 .map_err(|_| "bc-shard-prefetch thread panicked".to_string())?;
         }
         Ok(())
+    }
+}
+
+impl Drop for BcShardPrefetcher {
+    fn drop(&mut self) {
+        self.rx.take();
+        self.free_tx.take();
+        let _ = self.join_producer();
     }
 }

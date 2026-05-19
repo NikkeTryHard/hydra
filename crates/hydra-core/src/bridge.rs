@@ -857,13 +857,7 @@ pub fn compute_public_hand_ev_ref(
 }
 
 #[inline]
-pub fn encode_observation_ref_with_search_context_and_profile(
-    encoder: &mut ObservationEncoder,
-    obs: &ObservationRef<'_>,
-    safety: &SafetyInfo,
-    search_context: &SearchContext<'_>,
-    profile: BridgeEncodeProfile,
-) -> [f32; OBS_SIZE] {
+pub fn extract_observation_facts_ref(obs: &ObservationRef<'_>) -> ExtractedObservationFacts {
     let hand = extract_hand_ref(obs);
     let discards = extract_discards_ref(obs);
     let melds = extract_melds_ref(obs);
@@ -879,17 +873,37 @@ pub fn encode_observation_ref_with_search_context_and_profile(
         obs.riichi_sticks.min(255) as u8,
         shanten_batch.base,
     );
-    let drawn_tile = obs.drawn_tile.map(|t| t / 4);
+    ExtractedObservationFacts {
+        hand,
+        drawn_tile: obs.drawn_tile.map(|t| t / 4),
+        open_meld_counts,
+        discards,
+        melds,
+        dora,
+        meta,
+        shanten_batch,
+    }
+}
+
+#[inline]
+pub fn encode_observation_ref_with_search_context_and_profile(
+    encoder: &mut ObservationEncoder,
+    obs: &ObservationRef<'_>,
+    safety: &SafetyInfo,
+    search_context: &SearchContext<'_>,
+    profile: BridgeEncodeProfile,
+) -> [f32; OBS_SIZE] {
+    let facts = extract_observation_facts_ref(obs);
     encode_extracted_observation_with_profile(
         encoder,
-        &hand,
-        drawn_tile,
-        &open_meld_counts,
-        &discards,
-        &melds,
-        &dora,
-        &meta,
-        &shanten_batch,
+        &facts.hand,
+        facts.drawn_tile,
+        &facts.open_meld_counts,
+        &facts.discards,
+        &facts.melds,
+        &facts.dora,
+        &facts.meta,
+        &facts.shanten_batch,
         safety,
         search_context,
         profile,

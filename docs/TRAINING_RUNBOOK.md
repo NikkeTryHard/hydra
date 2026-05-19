@@ -25,15 +25,15 @@ Modes:
 | Mode | Invoke | Use |
 |---|---|---|
 | normal train | `train config.yaml` | BC/RL per YAML |
-| preflight | `train config.yaml --preflight --preflight-mode safe` | measure/select runtime tuple, cache repeated preflight result |
+| preflight | `train --preflight --pf-candidate-tuples ... --pf-output md` | benchmark exact runtime tuples against synthetic/in-memory work; no config, manifest, dataset, cache, choice, or YAML write |
 | probe-only | `train config.yaml --probe-kind <train|validation|rl_games|rl_microbatch> --probe-candidate-microbatch <N> ...` | bounded candidate check, no full train |
 | DeltaQ promotion | `train config.yaml --delta-q-promotion --delta-q-baseline-checkpoint <path>` | candidate-vs-baseline gated eval |
 
 Internal child probe path exists. Not op entrypoint.
 
 Choose:
-- normal: runtime tuple already trusted or config explicit.
-- preflight: new GPU/machine, precision change, workload/shard change, old cache suspect.
+- normal: YAML already contains intended runtime knobs.
+- preflight: new GPU/machine, precision change, workload/shard change, or explicit shard-throughput comparison.
 - probe-only: test one candidate train/validation microbatch, RL microbatch, or RL game-count setting.
 - DeltaQ promotion: candidate checkpoint exists; DeltaQ lane needs promote/no-promote evidence. Not normal train.
 
@@ -47,8 +47,8 @@ Choose:
 | `output_dir` | checkpoints, logs, reports, caches |
 | `num_epochs` | BC epoch count |
 | `batch_size` | logical batch before microbatch/accum |
-| `microbatch_size` | explicit train selected-runtime override |
-| `validation_microbatch_size` | explicit validation selected-runtime override |
+| `microbatch_size` | explicit train microbatch override |
+| `validation_microbatch_size` | explicit validation microbatch override |
 | `train_fraction` | deterministic train/validation split |
 | `source_filters` | replay include/exclude identity filters |
 | `augment` | suit permutation augmentation |
@@ -125,100 +125,55 @@ Current RL phase enum:
 
 Status: BC path is stable baseline. `bf16_autocast` runs BC CUDA AMP forward as effective `bf16_amp`; loss/backward/optimizer/checkpoint/validation stay FP32. RL and DeltaQ promotion hard-error on BF16.
 
-## Preflight authority + cache
+## Preflight benchmark + YAML authority
 
-Preflight answers: what runtime tuple can this machine/workload sustain under selected tuning safety?
+Preflight is benchmark mode. It runs tuples operator supplies and emits markdown table. It is not config authority, does not read YAML, does not read shard manifest or dataset, does not read/write runtime cache, does not choose winner, and does not mutate YAML.
 
-YAML `preflight:` is forbidden. `TrainConfig` rejects it. Preflight tuning is CLI-owned.
+YAML `preflight:` is forbidden. `TrainConfig` rejects it. Preflight tuning is CLI-owned; training authority stays in YAML. Positional config paths and `--bc-shards-manifest-path` are not accepted in preflight mode.
 
-Default safe preflight:
-
-```bash
-train config.yaml --preflight --preflight-mode safe
-```
-
-`--preflight-mode` is mandatory with `--preflight`.
-
-Safe mode tunes only math-preserving runtime knobs: train microbatch, validation microbatch, derived accumulation for unchanged `batch_size`, loader tuple (`num_threads`, `buffer_games`, `buffer_samples`, `archive_queue_bound`), and probe/benchmark search effort. It must not change logical optimizer batch, LR/schedule, precision, loss, model, data split, augmentation, sample set, labels, or targets.
-
-Unsafe mode is explicit and may tune math-affecting performance knobs:
+Benchmark invocation shape:
 
 ```bash
-train config.yaml --preflight --preflight-mode unsafe \
-  --pf-unsafe-batch-size 1024,2048,4096 \
-  --pf-unsafe-lr-scale 0.5,1.0,1.5 \
-  --pf-unsafe-warmup-steps 500-2000+500
+train --preflight \
+  --pf-candidate-tuples 1024:2:1:1,2048:4:2:2,4096:4:2:2,4096:8:4:2,8192:8:4:2 \
+  --pf-warmup-steps 100 \
+  --pf-measure-steps 1000 \
+  --pf-repetitions 5 \
+  --pf-output md
 ```
 
-Unsafe flags hard-error unless `--preflight-mode unsafe`. Reports include selected values and `lr_auto_scaled=false`; values are explicit candidates, not silent automatic scaling.
+Tuple grammar is exact, not Cartesian:
+
+```text
+<batch>:<ring_batches>:<loader_threads>:<prefetch_batches>
+```
+
+Markdown table contract:
+
+```md
+| idx | status | device | mode | batch | ring | threads | prefetch | shuffle | codec | samples/s | MiB/s | p50 ms | p95 ms | producer wait % | consumer wait % | disk wait % | gpu input wait % | cpu user s | cpu sys s | error |
+|---:|---|---|---|---:|---:|---:|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+```
+
+`status=pass` rows carry numeric throughput and wait ratios. Metrics that require real disk or GPU work and do not apply to this manifestless benchmark are emitted as numeric `0.0` by definition. `status=error` rows preserve tuple identity and put failure in `error`. Current benchmark codec is `none` only.
 
 Operator contract:
-- normal `train config.yaml` does not read preflight tuning config.
-- normal training does not apply preflight cache.
-- YAML runtime fields are authority: `microbatch_size`, `validation_microbatch_size`, `num_threads`, `buffer_games`, `buffer_samples`, `archive_queue_bound`.
-- unsafe math authority is YAML too: `batch_size`, `bc.learning_rate`, `bc.min_learning_rate`, `bc.warmup_steps`.
-- after preflight, copy selected runtime values into YAML before training if desired.
+- normal `train config.yaml` uses YAML fields only.
+- YAML runtime fields are authority: `batch_size`, `microbatch_size`, `validation_microbatch_size`, `num_threads`, `buffer_games`, `buffer_samples`, `archive_queue_bound`, `shard_prefetch_depth`.
+- unsafe math authority is YAML too: `bc.learning_rate`, `bc.min_learning_rate`, `bc.warmup_steps`.
+- benchmark rows are evidence for human edit, not automatic training config.
 
-Selected-runtime tuple:
-- `train_microbatch_size` -> copy to `microbatch_size`
-- `validation_microbatch_size` -> copy to `validation_microbatch_size`
-- derived `accum_steps`
-- unsafe-only `unsafe_selected_batch_size` -> copy to `batch_size` only if intentionally accepting unsafe math
-- unsafe-only selected LR/min LR/warmup fields -> copy to `bc.learning_rate`, `bc.min_learning_rate`, `bc.warmup_steps` only if intentionally accepting unsafe math
-
-Loader-runtime tuple: data/replay loader knobs `num_threads`, `buffer_games`, `buffer_samples`, `archive_queue_bound`; copy into YAML when accepting result.
-
-Cache key covers hardware, workload, CLI preflight config signature, explicit microbatch overrides. Manifest-cache scan reuse also requires replay-selection contract match: `train_fraction`, `source_filters`. Cache key deliberately excludes knobs not defining selected-runtime contract: `data_dir`, `seed`, `num_threads`, `buffer_games`, `buffer_samples`. Meaning: same runtime-selection problem, not byte-identical YAML.
-
-Identical-run fast path:
-- `run_preflight` / `run_rl_preflight` can hit v6 cache and skip probes.
-- Probe result vectors empty on that path because no probe ran.
-- Cache is preflight-identical-run only; normal BC/RL bootstrap does not consume it.
-
-Preflight CLI knobs worth knowing:
-- safety label: `--preflight-mode <safe|unsafe>`
-- profile: `--pf-profile <default|fast-repeated-run>`
-- candidate ladder: `--pf-candidate-microbatch`, `--pf-min-microbatch`, `--pf-allow-explicit-microbatch-override`
-- probe stability: `--pf-warmup-steps`, `--pf-measure-steps`, `--pf-required-successes`, `--pf-noise-tolerance`
-- loader search: `--pf-loader-rounds`, `--pf-loader-tuple-margin`, `--pf-loader-extra-samples`
-- stage-2: `--pf-real-benchmark`, `--pf-real-benchmark-*`
-- refinement: `--pf-local-refinement`, `--pf-local-refinement-*`, `--pf-search-coordinate-rounds`, `--pf-search-top-k`
-- unsafe candidates: `--pf-unsafe-batch-size`, `--pf-unsafe-lr-scale`, `--pf-unsafe-warmup-steps`
-
-Internal artifact/cache field names keep serialized names (`tuning_mode`, `candidate_microbatches`, `unsafe_candidate_batch_sizes`, etc.). Do not rename when reading reports.
-
-Stage-2 benchmark may reuse bounded validation cache only when validation sample limit finite and finalists share loader-runtime + resolved validation limit. Materialization cost still counted. Shard-backed validation does not use this in-memory cache path.
-
-Shard-backed preflight changes behavior:
-- train + validation probes load shard readers directly.
-- loader-runtime tuning collapses to config-derived loader tuple.
-- stage-2 finalist benchmark skipped even if enabled.
-- Not comparable to loose-replay preflight for replay-scan throughput.
-
-Fast repeated shard profile only when hardware, requested/effective precision, shard manifest, prior runtime known-good. YAML keeps workload/runtime inputs only:
-
-```yaml
-bc_shards_manifest_path: /output/bc-shards/bc_shards_manifest.json
-microbatch_size: 256
-validation_microbatch_size: 128
-```
-
-CLI owns fast preflight tuning:
-
-```bash
-train config.yaml --preflight --preflight-mode safe --pf-profile fast-repeated-run
-```
-
-`fast-repeated-run` profile sets one-candidate fast probe (`fast_repeated_run_profile=true`, window `1`, successes/warmup/measure `1`, loader rounds/extra samples `0`, real benchmark off). All other preflight fields stay default unless explicit `--pf-*` flags override.
-
-New hardware, new shard artifact, changed requested/effective precision, or odd throughput: use full default preflight.
+Preflight benchmark behavior:
+- no config file, YAML, dataset, or shard manifest is read.
+- candidate tuple comes from each exact CLI tuple.
+- synthetic/in-memory benchmark rows are not comparable to loose-replay or shard-reader throughput.
+- benchmark output/report text must not contain authority words such as `selected`, `saved`, `recommended`, `runtime`, `cache_hit`, or `cache_key`.
 
 Common preflight traps:
-- explicit microbatch can still be rejected by safety/authority.
-- cache hit can skip probes; absence of probe rows not failure.
-- precision change invalidates assumptions.
-- advisory `selected_*_runtime_slower_than_best_probe_candidate` means optimization gap, not wrong result.
-- unsafe mode can change logical `batch_size` and selected LR/min LR/warmup when candidate fields are configured; apply only by copying reported values into YAML intentionally.
+- passing config path or shard manifest to preflight; use only explicit benchmark CLI flags.
+- treating fastest row as automatically applied; it is only evidence.
+- editing YAML without preserving logical training intent (`batch_size`, LR schedule, split, precision, labels).
+- comparing synthetic/in-memory preflight rows with shard-backed or loose/archive replay runs as if they were same data path.
 ## BC shards
 
 BC shards = production steady-state input for replay-driven BC. Build once, consume many.
@@ -235,12 +190,14 @@ Raw loose/archive replay remains slow path for audit, shard production, debug, o
 Build CLI:
 
 ```bash
-cargo run -p hydra-train --bin build_bc_shards -- \
+pixi run cargo run -p hydra-train --bin build_bc_shards --no-default-features --features training -- \
   --input <dir|archive|replay> \
   --output-dir <dir> \
   [--manifest-name <file>] \
   [--shard-samples <usize>] \
   [--train-fraction <f32>] \
+  [--max-games <usize>] \
+  [--max-samples <usize>] \
   [--split train|val|both] \
   [--num-threads <usize>] \
   [--queue-bound <usize>] \
@@ -252,6 +209,8 @@ cargo run -p hydra-train --bin build_bc_shards -- \
   [--dry-scan-only] \
   [--exit-sidecar ...] \
   [--delta-q-sidecar ...]
+
+pixi run cargo run -p hydra-train --bin build_bc_shards --no-default-features --features training -- --validate-manifest <path>
 ```
 
 Defaults: manifest `bc_shards_manifest.json`, `--shard-samples 10000`, `--train-fraction 0.9`, `--split both`. Parallel/resume/report defaults are builder-owned; inspect `--help` for current binary defaults.
@@ -266,13 +225,24 @@ Operator rules:
 - non-resume output should be new/empty; do not mix stale shards with new manifest.
 - `--dry-scan-only` uses build scan path; it must not become second scanner.
 
+Phase 1 compact-shard proof:
+1. Build bounded compact shards with `--split both`, `--progress-jsonl <file>`, and report enabled.
+2. Validate: `pixi run cargo run -p hydra-train --bin build_bc_shards --no-default-features --features training -- --validate-manifest <proof-shards-dir>/bc_shards_manifest.json`.
+3. Inspect report ABI, disk, split plan, output split stats, and rates.
+4. Train from `bc_shards_manifest_path` with `shard_prefetch_depth: 2`.
+5. Extract timing with `extract_timing_metrics`.
+6. Tune `shard_prefetch_depth` only after proof, one value at time, same manifest/config.
+
+
+CUDA shard no-starvation proof result: serious CUDA BC compact-shard runs should use `pixi run train-cuda-shards -- <config.yaml>` or equivalent explicit feature command `pixi run cargo run --release -p hydra-train --bin train --no-default-features --features cuda-graph -- <config.yaml>`. This enables pinned H2D staging and preallocated device tensors; production graph replay remains off/probe-only. Representative proof with batch 1024, microbatch 256, `shard_prefetch_depth: 2`, and fp32 passed input gates: producer wait 0.0004/0.0004%, H2D 0.602/0.627%, input starvation 0.605/0.627%, compute 98.97%, 2498.21 samples/s. `--features training` alone is semantically valid but does not enable CUDA pinned/prealloc transport and can be limited by pageable H2D materialization.
 Prod workflow:
 1. Audit replay corpus and sidecar inputs.
 2. Build train+validation shards using same train fraction + sidecar provenance intended for training; use `--resume` for long builds.
-3. Inspect manifest split counts/totals/sidecar provenance and build report skipped/empty/rates.
-4. Set `bc_shards_manifest_path: /output/bc-shards/bc_shards_manifest.json` (example path).
-5. Run preflight + training against same manifest.
-6. Rebuild on dataset/contract change.
+3. Validate manifest and inspect split counts/totals/sidecar provenance plus build report skipped/empty/rates.
+4. Run manifestless markdown preflight benchmark with exact `--pf-candidate-tuples` if choosing candidate runtime shapes.
+5. Human edits YAML runtime fields if desired, preserving YAML as authority.
+6. Train from `bc_shards_manifest_path` using same manifest.
+7. Rebuild on dataset/contract change.
 
 Shard consume semantics:
 - train reads prebuilt shard rows, not raw replay scan.
@@ -304,17 +274,17 @@ Manifest fields to inspect:
 - top-level `storage_layout` must be `compact`; v3 manifest/header/layout versions must match current binary
 
 Build report fields to inspect:
-- loaded/skipped/empty game counts
+- ABI, disk, planned splits, loaded/skipped/empty game counts
 - shard/sample totals and rates
 - error examples, bounded by CLI config
 - resume reused/built chunks when enabled
 - output `report_path`; manifest path remains training input
-- output `bytes_per_sample` and `savings_ratio_vs_dense_observation` show compact storage effect; dense equivalent is report-only
+- output split `bytes_per_sample`, min/max shard bytes, feature flags, and record size show compact storage effect; dense equivalent is report-only
 
 Sidecar-backed shard build requires full provenance tuple. Partial tuple rejected.
 
 ```bash
-cargo run -p hydra-train --bin build_bc_shards -- \
+pixi run cargo run -p hydra-train --bin build_bc_shards --no-default-features --features training -- \
   --input /data/replays \
   --output-dir /output/bc-shards \
   --exit-sidecar /labels/exit.jsonl \
@@ -332,7 +302,7 @@ Required serial baseline before code change: same semantic config as after run. 
 ```bash
 rm -rf /home/cachybtw/tmp/hydra-bc-shard-baseline-2019
 /usr/bin/time -v \
-  cargo run -p hydra-train --bin build_bc_shards --no-default-features --quiet -- \
+  pixi run cargo run -p hydra-train --bin build_bc_shards --no-default-features --features training --quiet -- \
     --input /home/cachybtw/Downloads/dataset_bundle/majsoul-jade-mjai-2019 \
     --output-dir /home/cachybtw/tmp/hydra-bc-shard-baseline-2019 \
     --manifest-name manifest.json \
@@ -373,7 +343,7 @@ After impl: same input/config, new output dir, plus parallel/resume/report flags
 ```bash
 rm -rf /home/cachybtw/tmp/hydra-bc-shard-after-2019
 /usr/bin/time -v \
-  cargo run -p hydra-train --bin build_bc_shards --no-default-features --quiet -- \
+  pixi run cargo run -p hydra-train --bin build_bc_shards --no-default-features --features training --quiet -- \
     --input /home/cachybtw/Downloads/dataset_bundle/majsoul-jade-mjai-2019 \
     --output-dir /home/cachybtw/tmp/hydra-bc-shard-after-2019 \
     --manifest-name manifest.json \
@@ -416,7 +386,7 @@ Archive benchmark when tar/tar.zst corpus exists:
 
 ```bash
 /usr/bin/time -v \
-  cargo run -p hydra-train --bin build_bc_shards --no-default-features --quiet -- \
+  pixi run cargo run -p hydra-train --bin build_bc_shards --no-default-features --features training --quiet -- \
     --input <path/to/replays.tar.zst> \
     --output-dir <tmp>/hydra-bc-shard-after-archive \
     --manifest-name manifest.json \
@@ -441,7 +411,7 @@ Full dataset dry scan after `--dry-scan-only` exists:
 
 ```bash
 /usr/bin/time -v \
-  cargo run -p hydra-train --bin build_bc_shards --no-default-features --quiet -- \
+  pixi run cargo run -p hydra-train --bin build_bc_shards --no-default-features --features training --quiet -- \
     --input <full-replay-root> \
     --output-dir <tmp>/hydra-bc-shard-dry-scan \
     --train-fraction 0.9 \
@@ -615,15 +585,15 @@ Current status:
 - BF16 AMP wraps BC forward only. Loss construction, backward, optimizer state, checkpoints, and validation remain FP32.
 - RL and DeltaQ promotion hard-error on BF16. On CUDA DeltaQ promotion, set explicit `precision_mode: fp32`. Do not claim CUDA graph BF16 support without exact measurement.
 Shard CUDA fast path available only when all true:
-- `hydra-train` default features enabled (default includes `cuda-graph`; use `--no-default-features` to opt out).
+- `hydra-train` built with `--features cuda-graph` (or run via `pixi run train-cuda-shards -- <config.yaml>`).
 - runtime device CUDA.
 - `bc_shards_manifest_path` set.
 
 Build/run:
 
 ```bash
-cargo run --release -p hydra-train --bin train -- /path/to/config.yaml
-cargo build --release -p hydra-train
+pixi run train-cuda-shards -- /path/to/config.yaml
+pixi run cargo build --release -p hydra-train --bin train --no-default-features --features cuda-graph
 ```
 
 Semantics:
@@ -674,9 +644,9 @@ New BC steady-state run:
 2. Build sidecars if using ExIt/DeltaQ supervision; capture reports.
 3. Build BC shards with matching sidecar provenance.
 4. Inspect manifest split/sample totals and sidecar provenance.
-5. Point config at `bc_shards_manifest_path`.
-6. Run `train config.yaml --preflight --preflight-mode safe` on new/changed hardware/workload.
-7. Copy selected runtime into YAML before training if desired; then train with same manifest/config.
+5. Run manifestless markdown preflight with exact candidate tuples if choosing runtime shapes.
+6. Edit YAML runtime fields by hand if accepting row.
+7. Train with `bc_shards_manifest_path` pointing at same manifest.
 8. Treat validation gates as best-checkpoint gate, not latest-checkpoint blocker.
 
 Debug/audit run:
