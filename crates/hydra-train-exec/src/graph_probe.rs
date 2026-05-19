@@ -17,12 +17,13 @@ use hydra_model::model::HydraModel;
 use hydra_train_runtime::schedule::{TrainerScheduleConfig, effective_lr};
 
 const GRAPH_PROBE_SCHEMA_VERSION: u32 = 2;
-const GRAPH_PROBE_MODE: &str = "compute_capture_only";
-const GRAPH_PROBE_PRODUCTION_REPLAY: &str = "blocked";
-const GRAPH_PROBE_TRAINING_SEMANTICS: &str = "unchanged_probe_child_only";
-const GRAPH_PROBE_BLOCKER_BURN_GRADS: &str = "Burn GradientsParams prevents production replay";
+const GRAPH_PROBE_MODE: &str = "experimental_compute_capture_probe";
+const GRAPH_PROBE_REPLAY_STATUS: &str = "experimental_probe_only";
+const GRAPH_PROBE_TRAINING_SEMANTICS: &str = "probe_child_only_training_unchanged";
+const GRAPH_PROBE_BLOCKER_BURN_GRADS: &str =
+    "Burn-owned autodiff/optimizer state keeps CUDA graph replay out of production training";
 #[cfg(feature = "cuda-graph")]
-const GRAPH_PROBE_REPLAY_SCOPE: &str = "prematerialized_compute_only";
+const GRAPH_PROBE_REPLAY_SCOPE: &str = "prematerialized_static_input_compute_only";
 
 fn graph_probe_blockers() -> Vec<&'static str> {
     vec![GRAPH_PROBE_BLOCKER_BURN_GRADS]
@@ -45,11 +46,11 @@ pub struct CudaGraphProbeReport {
     pub schema_version: u32,
     /// Probe execution mode.
     pub probe_mode: &'static str,
-    /// Production replay status.
+    /// CUDA graph replay status for production training.
     pub production_replay: &'static str,
     /// Training-semantics status.
     pub training_semantics: &'static str,
-    /// Known blockers preventing production graph replay.
+    /// Known blockers keeping graph replay out of production training.
     pub blockers: Vec<&'static str>,
     /// Warmup timing summary.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -113,9 +114,9 @@ pub struct CudaGraphCaptureSummary {
     pub message: String,
     /// Replay scope guarded by this probe.
     pub replay_scope: &'static str,
-    /// Production replay status.
+    /// CUDA graph replay status for production training.
     pub production_replay: &'static str,
-    /// Known production replay blocker.
+    /// Known blocker keeping graph replay out of production training.
     pub blocker: &'static str,
     /// Capture seconds when available.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -150,7 +151,7 @@ impl CudaGraphProbeReport {
             elapsed_seconds,
             schema_version: GRAPH_PROBE_SCHEMA_VERSION,
             probe_mode: GRAPH_PROBE_MODE,
-            production_replay: GRAPH_PROBE_PRODUCTION_REPLAY,
+            production_replay: GRAPH_PROBE_REPLAY_STATUS,
             training_semantics: GRAPH_PROBE_TRAINING_SEMANTICS,
             blockers: graph_probe_blockers(),
             warmup: None,
@@ -176,7 +177,7 @@ impl CudaGraphProbeReport {
             elapsed_seconds,
             schema_version: GRAPH_PROBE_SCHEMA_VERSION,
             probe_mode: GRAPH_PROBE_MODE,
-            production_replay: GRAPH_PROBE_PRODUCTION_REPLAY,
+            production_replay: GRAPH_PROBE_REPLAY_STATUS,
             training_semantics: GRAPH_PROBE_TRAINING_SEMANTICS,
             blockers: graph_probe_blockers(),
             warmup: Some(warmup),
@@ -230,7 +231,7 @@ pub fn handle_graph_probe_child(config_path: &Path) -> Result<(), String> {
         Ok((warmup, parity, capture)) => {
             let report = CudaGraphProbeReport::success(
                 "capture_probe",
-                "child-process CUDA graph probe completed warmup, static parity, and guarded compute capture attempt",
+                "child-process experimental CUDA graph probe completed warmup, static parity, and guarded compute capture attempt",
                 started.elapsed().as_secs_f64(),
                 warmup,
                 parity,
@@ -466,7 +467,7 @@ fn run_probe_step(
         timing,
     );
     Err(format!(
-        "raw replay warmup succeeded (stats_count={}), but static parity currently requires bc_shards so the exact host batch can be replayed without reloading/reordering samples",
+        "raw replay warmup succeeded (stats_count={}), but static parity currently requires bc_shards so the exact host batch can be re-used without reloading/reordering samples",
         warmup.stats_count
     ))
 }
@@ -582,10 +583,10 @@ fn guarded_capture_attempt(
                             status: "success".to_string(),
                             stage: "replay".to_string(),
                             message:
-                                "prematerialized compute-only capture and repeated replay completed"
+                                "experimental prematerialized compute-only capture and repeated replay completed"
                                     .to_string(),
                             replay_scope: GRAPH_PROBE_REPLAY_SCOPE,
-                            production_replay: GRAPH_PROBE_PRODUCTION_REPLAY,
+                            production_replay: GRAPH_PROBE_REPLAY_STATUS,
                             blocker: GRAPH_PROBE_BLOCKER_BURN_GRADS,
                             capture_seconds: Some(capture_seconds),
                             replay_repeats: Some(replay_repeats),
@@ -610,7 +611,7 @@ fn guarded_capture_attempt(
             stage: "compute".to_string(),
             message: panic_message(payload),
             replay_scope: GRAPH_PROBE_REPLAY_SCOPE,
-            production_replay: GRAPH_PROBE_PRODUCTION_REPLAY,
+            production_replay: GRAPH_PROBE_REPLAY_STATUS,
             blocker: GRAPH_PROBE_BLOCKER_BURN_GRADS,
             capture_seconds: None,
             replay_repeats: None,
@@ -633,7 +634,7 @@ fn capture_summary_failure(stage: &str, message: String) -> CudaGraphCaptureSumm
         stage: stage.to_string(),
         message,
         replay_scope: GRAPH_PROBE_REPLAY_SCOPE,
-        production_replay: GRAPH_PROBE_PRODUCTION_REPLAY,
+        production_replay: GRAPH_PROBE_REPLAY_STATUS,
         blocker: GRAPH_PROBE_BLOCKER_BURN_GRADS,
         capture_seconds: None,
         replay_repeats: None,

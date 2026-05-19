@@ -198,7 +198,7 @@ fn optimized_path_summary_reports_raw_replay_defaults() {
 
     assert_eq!(
         optimized_path_summary(&config),
-        "input=raw_replay pinned_h2d=off prealloc_gpu_tensors=off cuda_graph_replay=production_off_probe_only copy_compute_overlap=off"
+        "input=raw_replay pinned_h2d=off prealloc_gpu_tensors=off cuda_graph_replay=experimental_probe_only copy_compute_overlap=off"
     );
 }
 
@@ -209,7 +209,7 @@ fn optimized_path_summary_reports_shard_path() {
 
     let summary = optimized_path_summary(&config);
     assert!(summary.contains("input=bc_shards"));
-    assert!(summary.contains("cuda_graph_replay=production_off_probe_only"));
+    assert!(summary.contains("cuda_graph_replay=experimental_probe_only"));
 }
 
 #[test]

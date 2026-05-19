@@ -12,7 +12,6 @@ unsafe extern "C" {
     fn hydra_cuda_graph_capture_begin(g: *mut c_void, pool_first: u64, pool_second: u64) -> c_int;
     fn hydra_cuda_graph_capture_end(g: *mut c_void) -> c_int;
     fn hydra_cuda_graph_replay(g: *mut c_void) -> c_int;
-    fn hydra_cuda_graph_reset(g: *mut c_void) -> c_int;
     fn hydra_cuda_graph_free(g: *mut c_void);
     fn hydra_cuda_last_error_code() -> c_int;
     fn hydra_cuda_error_name(code: c_int) -> *const c_char;
@@ -165,7 +164,7 @@ pub fn synchronize_device() -> Result<(), String> {
     )
 }
 
-/// RAII wrapper for a CUDA graph capture/replay handle.
+/// RAII wrapper for an explicit CUDA graph capture/replay probe handle.
 pub struct CudaGraph {
     ptr: NonNull<c_void>,
 }
@@ -185,28 +184,12 @@ impl CudaGraph {
         Self { ptr }
     }
 
-    /// Begins graph capture and panics on failure.
-    pub fn capture_begin(&self, pool: (u64, u64)) {
-        check_cuda_graph_status(
-            unsafe { hydra_cuda_graph_capture_begin(self.ptr.as_ptr(), pool.0, pool.1) },
-            "capture_begin",
-        );
-    }
-
     /// Begins graph capture and returns an error on failure.
     pub fn try_capture_begin(&self, pool: (u64, u64)) -> Result<(), String> {
         cuda_graph_result(
             unsafe { hydra_cuda_graph_capture_begin(self.ptr.as_ptr(), pool.0, pool.1) },
             "capture_begin",
         )
-    }
-
-    /// Ends graph capture and panics on failure.
-    pub fn capture_end(&self) {
-        check_cuda_graph_status(
-            unsafe { hydra_cuda_graph_capture_end(self.ptr.as_ptr()) },
-            "capture_end",
-        );
     }
 
     /// Ends graph capture and returns an error on failure.
@@ -217,14 +200,6 @@ impl CudaGraph {
         )
     }
 
-    /// Replays the captured graph and panics on failure.
-    pub fn replay(&self) {
-        check_cuda_graph_status(
-            unsafe { hydra_cuda_graph_replay(self.ptr.as_ptr()) },
-            "replay",
-        );
-    }
-
     /// Replays the captured graph and returns an error on failure.
     pub fn try_replay(&self) -> Result<(), String> {
         cuda_graph_result(
@@ -232,30 +207,12 @@ impl CudaGraph {
             "replay",
         )
     }
-
-    /// Resets captured graph state.
-    pub fn reset(&self) {
-        check_cuda_graph_status(
-            unsafe { hydra_cuda_graph_reset(self.ptr.as_ptr()) },
-            "reset",
-        );
-    }
 }
 
 impl Drop for CudaGraph {
     fn drop(&mut self) {
         unsafe { hydra_cuda_graph_free(self.ptr.as_ptr()) }
     }
-}
-
-fn check_cuda_graph_status(status: c_int, op: &str) {
-    assert_eq!(
-        status,
-        0,
-        "CUDA graph {op} failed: backend={} ({})",
-        cuda_graph_backend_label(),
-        cuda_graph_backend_guidance()
-    );
 }
 
 fn cuda_graph_result(status: c_int, op: &str) -> Result<(), String> {

@@ -751,9 +751,9 @@ pub fn unsafe_preflight_math_summary(
     ))
 }
 
-/// Returns the CUDA graph replay status label.
+/// Returns the CUDA graph replay status label for production training surfaces.
 pub fn cuda_graph_replay_label() -> &'static str {
-    "production_off_probe_only"
+    "experimental_probe_only"
 }
 
 #[cfg(test)]

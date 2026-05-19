@@ -793,7 +793,7 @@ fn assert_optimizer_record_exact_eq(
     for key in sorted_optimizer_record_keys(expected) {
         let actual_record = actual
             .get(&key)
-            .unwrap_or_else(|| panic!("optimizer record missing candidate key {key:?}"));
+            .unwrap_or_else(|| panic!("optimizer record missing checked key {key:?}"));
         let expected_record = expected
             .get(&key)
             .unwrap_or_else(|| panic!("optimizer record missing direct key {key:?}"));
@@ -802,42 +802,6 @@ fn assert_optimizer_record_exact_eq(
             expected_record.clone(),
             &format!("optimizer Adam state param_id={key:?}"),
         );
-    }
-}
-
-#[derive(Clone)]
-struct CandidateAdamOptimizer {
-    delegate: TestAdamOptimizer,
-}
-
-impl CandidateAdamOptimizer {
-    fn new() -> Self {
-        Self::from_config(AdamConfig::new())
-    }
-
-    fn from_config(config: AdamConfig) -> Self {
-        Self {
-            delegate: config.init::<TestTrainBackend, HydraModel<TestTrainBackend>>(),
-        }
-    }
-
-    fn step(
-        &mut self,
-        lr: burn::optim::LearningRate,
-        model: HydraModel<TestTrainBackend>,
-        grads: GradientsParams,
-    ) -> HydraModel<TestTrainBackend> {
-        self.delegate.step(lr, model, grads)
-    }
-
-    fn to_record(&self) -> TestAdamOptimizerRecord {
-        self.delegate.to_record()
-    }
-
-    fn load_record(self, record: TestAdamOptimizerRecord) -> Self {
-        Self {
-            delegate: self.delegate.load_record(record),
-        }
     }
 }
 
@@ -862,27 +826,6 @@ fn run_optimizer_probe_step(
     (model, optimizer.to_record())
 }
 
-fn run_candidate_optimizer_probe_step(
-    model: HydraModel<TestTrainBackend>,
-    logical_batch: &[MjaiSample],
-    device: &LibTorchDevice,
-) -> (HydraModel<TestTrainBackend>, TestAdamOptimizerRecord) {
-    let train_loss_fn = dummy_train_loss();
-    let grads = generic_probe_grads(
-        logical_batch,
-        GenericProbeParityContext {
-            augment: false,
-            microbatch_size: logical_batch.len().max(1),
-            train_device: device,
-            loss_fn: &train_loss_fn,
-            model: &model,
-        },
-    );
-    let mut optimizer = CandidateAdamOptimizer::new();
-    let model = optimizer.step(1e-4, model, grads);
-    (model, optimizer.to_record())
-}
-
 fn run_optimizer_probe_step_with_config(
     model: HydraModel<TestTrainBackend>,
     logical_batch: &[MjaiSample],
@@ -901,28 +844,6 @@ fn run_optimizer_probe_step_with_config(
         },
     );
     let mut optimizer = config.init();
-    let model = optimizer.step(1e-4, model, grads);
-    (model, optimizer.to_record())
-}
-
-fn run_candidate_optimizer_probe_step_with_config(
-    model: HydraModel<TestTrainBackend>,
-    logical_batch: &[MjaiSample],
-    device: &LibTorchDevice,
-    config: AdamConfig,
-) -> (HydraModel<TestTrainBackend>, TestAdamOptimizerRecord) {
-    let train_loss_fn = dummy_train_loss();
-    let grads = generic_probe_grads(
-        logical_batch,
-        GenericProbeParityContext {
-            augment: false,
-            microbatch_size: logical_batch.len().max(1),
-            train_device: device,
-            loss_fn: &train_loss_fn,
-            model: &model,
-        },
-    );
-    let mut optimizer = CandidateAdamOptimizer::from_config(config);
     let model = optimizer.step(1e-4, model, grads);
     (model, optimizer.to_record())
 }
@@ -1631,53 +1552,53 @@ fn optimizer_step_probe_keeps_gradients_params_and_checkpoint_state_fp32() {
 }
 
 #[test]
-fn optimizer_parity_harness_matches_direct_adam_record_shape_and_logits() {
+fn adam_parity_harness_matches_direct_adam_record_shape_and_logits() {
     let device = LibTorchDevice::Cpu;
     let direct_initial = tiny_dummy_model(&device);
     let logical_batch = vec![dummy_train_sample(0), dummy_train_sample(5)];
     let _ = sample_policy_logits(&direct_initial, &logical_batch[0], &device);
-    let candidate_initial = direct_initial.clone().fork(&device);
+    let checked_initial = direct_initial.clone().fork(&device);
     assert_eq!(
-        list_param_ids(&candidate_initial),
+        list_param_ids(&checked_initial),
         list_param_ids(&direct_initial),
-        "forked candidate model should preserve ParamIds"
+        "forked checked model should preserve ParamIds"
     );
 
     let (direct_model, direct_record) =
         run_optimizer_probe_step(direct_initial, &logical_batch, &device);
-    let (candidate_model, candidate_record) =
-        run_candidate_optimizer_probe_step(candidate_initial, &logical_batch, &device);
+    let (checked_model, checked_record) =
+        run_optimizer_probe_step(checked_initial, &logical_batch, &device);
 
-    assert_optimizer_record_exact_eq(&candidate_record, &direct_record);
+    assert_optimizer_record_exact_eq(&checked_record, &direct_record);
     assert!(
-        adam_optimizer_record_is_fp32(&candidate_record),
-        "candidate optimizer state should stay fp32"
+        adam_optimizer_record_is_fp32(&checked_record),
+        "checked optimizer state should stay fp32"
     );
 
     let direct_logits = sample_policy_logits(&direct_model, &logical_batch[0], &device);
-    let candidate_logits = sample_policy_logits(&candidate_model, &logical_batch[0], &device);
-    assert_eq!(direct_logits.len(), candidate_logits.len());
-    for (actual, expected) in candidate_logits.into_iter().zip(direct_logits) {
+    let checked_logits = sample_policy_logits(&checked_model, &logical_batch[0], &device);
+    assert_eq!(direct_logits.len(), checked_logits.len());
+    for (actual, expected) in checked_logits.into_iter().zip(direct_logits) {
         assert_close(actual as f64, expected as f64);
     }
 }
 
 #[test]
-fn optimizer_candidate_preserves_per_parameter_gradient_clipping_surface() {
+fn adam_parity_harness_preserves_per_parameter_gradient_clipping_surface() {
     let device = LibTorchDevice::Cpu;
     let direct_initial = tiny_dummy_model(&device);
     let logical_batch = vec![dummy_train_sample(1), dummy_train_sample(9)];
     let _ = sample_policy_logits(&direct_initial, &logical_batch[0], &device);
-    let candidate_initial = direct_initial.clone().fork(&device);
+    let checked_initial = direct_initial.clone().fork(&device);
     assert_eq!(
-        list_param_ids(&candidate_initial),
+        list_param_ids(&checked_initial),
         list_param_ids(&direct_initial),
-        "forked candidate model should preserve ParamIds"
+        "forked checked model should preserve ParamIds"
     );
 
     let direct_config =
         AdamConfig::new().with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)));
-    let candidate_config =
+    let checked_config =
         AdamConfig::new().with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)));
     let (direct_model, direct_record) = run_optimizer_probe_step_with_config(
         direct_initial,
@@ -1685,18 +1606,18 @@ fn optimizer_candidate_preserves_per_parameter_gradient_clipping_surface() {
         &device,
         direct_config,
     );
-    let (candidate_model, candidate_record) = run_candidate_optimizer_probe_step_with_config(
-        candidate_initial,
+    let (checked_model, checked_record) = run_optimizer_probe_step_with_config(
+        checked_initial,
         &logical_batch,
         &device,
-        candidate_config,
+        checked_config,
     );
 
-    assert_optimizer_record_exact_eq(&candidate_record, &direct_record);
+    assert_optimizer_record_exact_eq(&checked_record, &direct_record);
     let direct_logits = sample_policy_logits(&direct_model, &logical_batch[0], &device);
-    let candidate_logits = sample_policy_logits(&candidate_model, &logical_batch[0], &device);
-    assert_eq!(direct_logits.len(), candidate_logits.len());
-    for (actual, expected) in candidate_logits.into_iter().zip(direct_logits) {
+    let checked_logits = sample_policy_logits(&checked_model, &logical_batch[0], &device);
+    assert_eq!(direct_logits.len(), checked_logits.len());
+    for (actual, expected) in checked_logits.into_iter().zip(direct_logits) {
         assert_close(actual as f64, expected as f64);
     }
 }
@@ -1713,8 +1634,10 @@ fn optimizer_parity_harness_checkpoint_roundtrip_preserves_record_shape() {
         .into_item::<FullPrecisionSettings>();
     let reloaded_record = <_ as Record<TestTrainBackend>>::from_item(full_precision_item, &device);
     assert_optimizer_record_shape_matches(&reloaded_record, &optimizer_record);
-    let reloaded_candidate = CandidateAdamOptimizer::new().load_record(reloaded_record.clone());
-    assert_optimizer_record_shape_matches(&reloaded_candidate.to_record(), &optimizer_record);
+    let reloaded_optimizer = AdamConfig::new()
+        .init::<TestTrainBackend, HydraModel<TestTrainBackend>>()
+        .load_record(reloaded_record.clone());
+    assert_optimizer_record_shape_matches(&reloaded_optimizer.to_record(), &optimizer_record);
     assert!(
         adam_optimizer_record_is_fp32(&reloaded_record),
         "roundtripped optimizer state should stay fp32"

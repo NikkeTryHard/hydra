@@ -127,7 +127,7 @@ pub fn startup_runtime_advisories(
     if !is_cuda {
         advisories.push(RuntimeAdvisory::warning(
             "cpu_device_for_training",
-            "device is CPU; CUDA feeding optimizations, pinned H2D staging, and CUDA graphs are off",
+            "device is CPU; CUDA feeding optimizations and pinned H2D staging are off",
         ));
     }
 
@@ -138,7 +138,7 @@ pub fn startup_runtime_advisories(
         ));
         advisories.push(RuntimeAdvisory::info(
             "optimized_path_raw_replay",
-            "runtime path: input=raw_replay pinned_h2d=off prealloc_gpu_tensors=off cuda_graph_replay=production_off_probe_only copy_compute_overlap=off",
+            "runtime path: input=raw_replay pinned_h2d=off prealloc_gpu_tensors=off cuda_graph_replay=experimental_probe_only copy_compute_overlap=off",
         ));
     }
 
@@ -151,7 +151,7 @@ pub fn startup_runtime_advisories(
         if cuda_graph_feature_active() {
             advisories.push(RuntimeAdvisory::info(
                 "cuda_shards_pinned_h2d_staging_enabled",
-                "CUDA shard run uses cuda-graph feature path: reusable pinned H2D staging and preallocated device tensors are on; current path is single-buffered and waits before compute, so Nsight is still required to prove copy/compute overlap",
+                "CUDA shard run uses reusable pinned H2D staging and preallocated device tensors; current path is single-buffered and waits before compute, so Nsight is still required to prove copy/compute overlap",
             ));
         } else {
             advisories.push(RuntimeAdvisory::warning(
@@ -162,7 +162,7 @@ pub fn startup_runtime_advisories(
         advisories.push(RuntimeAdvisory::info(
             "optimized_path_bc_shards",
             format!(
-                "runtime path: input=bc_shards pinned_h2d={} prealloc_gpu_tensors={} cuda_graph_replay=production_off_probe_only copy_compute_overlap={}",
+                "runtime path: input=bc_shards pinned_h2d={} prealloc_gpu_tensors={} cuda_graph_replay=experimental_probe_only copy_compute_overlap={}",
                 if cuda_graph_feature_active() { "on" } else { "off" },
                 if cuda_graph_feature_active() { "on" } else { "off" },
                 if cuda_graph_feature_active() {
@@ -393,7 +393,7 @@ pub fn interval_runtime_advisories(input: IntervalTimingInput) -> Vec<RuntimeAdv
         advisories.push(RuntimeAdvisory::info(
             "model_compute_dominates_cuda_interval",
             format!(
-                "forward+backward used {:.1}% of interval wall time (forward={:.3}s backward={:.3}s); optimize model kernels or graph-capture compute only after static-input parity proof",
+                "forward+backward used {:.1}% of interval wall time (forward={:.3}s backward={:.3}s); optimize model kernels or use the CUDA graph probe only after static-input parity proof",
                 pct(input.forward_seconds + input.backward_seconds) * 100.0,
                 input.forward_seconds,
                 input.backward_seconds,
@@ -408,7 +408,7 @@ pub fn interval_runtime_advisories(input: IntervalTimingInput) -> Vec<RuntimeAdv
             advisories.push(RuntimeAdvisory::warning(
                 "cuda_launch_fragmentation_overhead",
                 format!(
-                    "CUDA trace shows {} kernel launches with {:.1}% tiny kernels and {:.3}s launch API time; backend op fusion or CUDA graph capture may improve throughput without changing BC targets/losses",
+                    "CUDA trace shows {} kernel launches with {:.1}% tiny kernels and {:.3}s launch API time; backend op fusion may improve throughput without changing BC targets/losses; CUDA graph replay remains experimental/probe-only",
                     launch_count,
                     tiny_fraction * 100.0,
                     launch_seconds,
