@@ -127,3 +127,23 @@ fn topk_endgame_preserves_selected_particle_weights() {
         "weighted top-k Q should match posterior mass"
     );
 }
+
+#[test]
+fn endgame_degenerate_log_weights_use_uniform_mass() {
+    let particles = vec![
+        Particle {
+            allocation: [[1; 4]; 34],
+            log_weight: f64::NEG_INFINITY,
+        },
+        Particle {
+            allocation: [[3; 4]; 34],
+            log_weight: f64::NAN,
+        },
+    ];
+    let mut mask = [false; HYDRA_ACTION_SPACE];
+    mask[0] = true;
+    let eval = |p: &Particle, _: u8| p.allocation[0][0] as f32;
+    let q = pimc_endgame_q(&particles, &mask, &eval);
+    assert!(q[0].is_finite());
+    assert!((q[0] - 2.0).abs() < 1e-6, "uniform fallback expected");
+}

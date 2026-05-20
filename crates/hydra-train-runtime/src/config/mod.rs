@@ -523,22 +523,5 @@ fn precision_mode_is_omitted(raw: &str) -> Result<bool, serde_yaml::Error> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_pf_repetitions_aliases_required_successes() {
-        let cli = parse_args(vec![
-            "train".to_string(),
-            "--preflight".to_string(),
-            "--pf-repetitions".to_string(),
-            "5".to_string(),
-            "--pf-candidate-tuples".to_string(),
-            "1024:2:1:1,2048:4:2:2".to_string(),
-        ])
-        .expect("pf repetitions should parse");
-        let preflight = cli.preflight.expect("preflight options should be present");
-        assert_eq!(preflight.preflight_config.required_successes, 5);
-        assert_eq!(preflight.preflight_config.bench_candidate_tuples.len(), 2);
-    }
-}
+#[path = "tests.rs"]
+mod tests;

@@ -43,6 +43,9 @@ pub mod delta_q_promotion;
 /// Epoch-runner execution helpers shared by train execution.
 #[cfg(feature = "libtorch")]
 pub mod epoch_runner;
+#[cfg(test)]
+#[cfg(feature = "libtorch")]
+mod epoch_runner_tests;
 /// Global libtorch GPU performance flags.
 #[cfg(feature = "libtorch")]
 pub mod gpu_config;

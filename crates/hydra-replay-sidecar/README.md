@@ -25,7 +25,8 @@ Crate-local map for pure replay sidecar JSONL contracts.
 | Layer | pure schema/index/hash/provenance contracts |
 | Format | JSONL records keyed by replay decision identity |
 | Model independence | no training runtime dependency |
-| Validation | contract validators live with record/schema types |
+| Validation | contract validators live with record/schema types; missing keys are absent, present contract mismatches hard-error |
+| IO errors | malformed JSONL maps to `InvalidData` at reader/path boundaries |
 
 ## Read next
 

@@ -19,6 +19,22 @@ fn new_safety_info_is_zeroed() {
 }
 
 #[test]
+fn bit_helpers_ignore_out_of_bounds_indexes() {
+    let mut field = 0;
+
+    bit_set(&mut field, 0);
+    bit_set(&mut field, NUM_TILES - 1);
+    assert!(bit_test(field, 0));
+    assert!(bit_test(field, NUM_TILES - 1));
+
+    bit_set(&mut field, NUM_TILES);
+    bit_set(&mut field, usize::MAX);
+    assert!(!bit_test(field, NUM_TILES));
+    assert!(!bit_test(field, usize::MAX));
+    assert_eq!(field, (1u64 << 0) | (1u64 << (NUM_TILES - 1)));
+}
+
+#[test]
 fn on_discard_sets_genbutsu_all() {
     let mut si = SafetyInfo::new();
     si.on_discard(5, 0, false); // 6m tsumogiri by opponent 0
@@ -75,6 +91,40 @@ fn kabe_at_four_visible() {
     si.on_discard(15, 1, false); // 4th copy
     assert!(bit_test(si.kabe, 15));
     assert!(!bit_test(si.one_chance, 15)); // no longer one-chance at 4
+}
+
+#[test]
+fn fourth_visible_boundary_sets_kabe_and_clears_one_chance() {
+    let mut si = SafetyInfo::new();
+
+    si.on_dora_revealed(33);
+    si.on_call(&[33]);
+    assert_eq!(si.visible_counts[33], 2);
+    assert!(!bit_test(si.one_chance, 33));
+    assert!(!bit_test(si.kabe, 33));
+
+    si.on_discard(33, 0, false);
+    assert_eq!(si.visible_counts[33], 3);
+    assert!(bit_test(si.one_chance, 33));
+    assert!(!bit_test(si.kabe, 33));
+
+    si.on_discard(33, 1, false);
+    assert_eq!(si.visible_counts[33], 4);
+    assert!(!bit_test(si.one_chance, 33));
+    assert!(bit_test(si.kabe, 33));
+}
+
+#[test]
+fn fifth_observation_saturates_without_clearing_kabe() {
+    let mut si = SafetyInfo::new();
+
+    for _ in 0..5 {
+        si.on_discard(15, 0, false);
+    }
+
+    assert_eq!(si.visible_counts[15], 5);
+    assert!(bit_test(si.kabe, 15));
+    assert!(!bit_test(si.one_chance, 15));
 }
 
 #[test]

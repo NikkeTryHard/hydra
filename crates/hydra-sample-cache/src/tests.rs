@@ -1,4 +1,7 @@
 use super::*;
+use std::fs;
+use std::io::{Cursor, ErrorKind};
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn unique_temp_path(label: &str) -> PathBuf {
@@ -79,6 +82,69 @@ fn sample_with_optionals(action: u8) -> MjaiSample {
     }
 }
 
+fn valid_header_bytes(sample_count: u32) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(PARSED_SAMPLE_CACHE_MAGIC);
+    bytes.extend_from_slice(&PARSED_SAMPLE_CACHE_VERSION.to_le_bytes());
+    bytes.extend_from_slice(&sample_count.to_le_bytes());
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes
+}
+
+fn valid_sample_bytes(
+    flags: u16,
+    belief_fields_present: u8,
+    mixture_weights_present: u8,
+) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    write_f32_array(&mut bytes, &[0.0; OBS_SIZE]).expect("obs should encode");
+    write_u8(&mut bytes, 0).expect("action should encode");
+    write_f32_array(&mut bytes, &[0.0; HYDRA_ACTION_SPACE]).expect("mask should encode");
+    write_u8(&mut bytes, 0).expect("placement should encode");
+    write_i32(&mut bytes, 0).expect("score should encode");
+    write_u8(&mut bytes, 0).expect("grp should encode");
+    write_f32_array(&mut bytes, &[0.0; 3]).expect("tenpai should encode");
+    bytes.extend_from_slice(&[0u8; 3]);
+    write_f32_array(&mut bytes, &[0.0; DANGER_TARGET_SIZE]).expect("danger should encode");
+    write_f32_array(&mut bytes, &[0.0; DANGER_TARGET_SIZE]).expect("danger mask should encode");
+    write_u8(&mut bytes, belief_fields_present).expect("belief bool should encode");
+    write_u8(&mut bytes, mixture_weights_present).expect("mixture bool should encode");
+    write_u16(&mut bytes, flags).expect("flags should encode");
+    if flags & FLAG_BELIEF_FIELDS != 0 {
+        write_f32_array(&mut bytes, &[0.0; BELIEF_FIELD_SIZE]).expect("belief should encode");
+    }
+    if flags & FLAG_MIXTURE_WEIGHTS != 0 {
+        write_f32_array(&mut bytes, &[0.0; 4]).expect("mixture should encode");
+    }
+    bytes
+}
+
+fn assert_invalid_data<T>(result: io::Result<T>) {
+    let err = match result {
+        Ok(_) => panic!("corruption should fail"),
+        Err(err) => err,
+    };
+    assert_eq!(err.kind(), ErrorKind::InvalidData);
+}
+
+#[test]
+fn writer_rejects_oversized_metadata_strings() {
+    let path = unique_temp_path("oversized_metadata_write");
+    let game = ParsedSampleCacheGame {
+        samples: Vec::new(),
+        final_scores: [25_000; 4],
+    };
+    let oversized = "x".repeat(MAX_PARSED_SAMPLE_CACHE_METADATA_STRING_LEN + 1);
+
+    let result = write_parsed_sample_cache(&path, Path::new("source.json"), &oversized, &game);
+
+    let err = result.expect_err("oversized metadata should fail before writing payload");
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert!(err.to_string().contains("metadata string length"));
+    let _ = fs::remove_file(path);
+}
+
 fn assert_sample_eq(lhs: &MjaiSample, rhs: &MjaiSample) {
     assert_eq!(lhs.obs, rhs.obs);
     assert_eq!(lhs.action, rhs.action);
@@ -139,4 +205,86 @@ fn parsed_sample_cache_file_name_rewrites_mjai_suffix() {
         .expect("cache filename should build");
     assert_eq!(file_name, "game_0001.mjai.samples.cache");
     assert!(is_parsed_sample_cache_file(Path::new(&file_name)));
+}
+
+#[test]
+fn parsed_sample_cache_rejects_header_magic_mismatch() {
+    let mut bytes = valid_header_bytes(0);
+    bytes[0] = b'X';
+
+    assert_invalid_data(read_header_internal(&mut Cursor::new(bytes)));
+}
+
+#[test]
+fn parsed_sample_cache_rejects_unsupported_version() {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(PARSED_SAMPLE_CACHE_MAGIC);
+    bytes.extend_from_slice(&(PARSED_SAMPLE_CACHE_VERSION + 1).to_le_bytes());
+
+    assert_invalid_data(read_header_internal(&mut Cursor::new(bytes)));
+}
+
+#[test]
+fn parsed_sample_cache_rejects_excessive_metadata_string_length() {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(PARSED_SAMPLE_CACHE_MAGIC);
+    bytes.extend_from_slice(&PARSED_SAMPLE_CACHE_VERSION.to_le_bytes());
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(
+        &((MAX_PARSED_SAMPLE_CACHE_METADATA_STRING_LEN as u32) + 1).to_le_bytes(),
+    );
+
+    assert_invalid_data(read_header_internal(&mut Cursor::new(bytes)));
+}
+
+#[test]
+fn parsed_sample_cache_rejects_excessive_sample_count() {
+    let bytes = valid_header_bytes(MAX_PARSED_SAMPLE_CACHE_SAMPLES + 1);
+
+    assert_invalid_data(read_header_internal(&mut Cursor::new(bytes)));
+}
+
+#[test]
+fn parsed_sample_cache_rejects_invalid_bool_in_sample() {
+    let bytes = valid_sample_bytes(0, 2, 0);
+
+    assert_invalid_data(read_sample(&mut Cursor::new(bytes)));
+}
+
+#[test]
+fn parsed_sample_cache_rejects_unknown_optional_flag_bits() {
+    let bytes = valid_sample_bytes(1 << 15, 0, 0);
+
+    assert_invalid_data(read_sample(&mut Cursor::new(bytes)));
+}
+
+#[test]
+fn parsed_sample_cache_rejects_belief_presence_flag_mismatch() {
+    let bytes = valid_sample_bytes(0, 1, 0);
+
+    assert_invalid_data(read_sample(&mut Cursor::new(bytes)));
+}
+
+#[test]
+fn parsed_sample_cache_rejects_mixture_presence_flag_mismatch() {
+    let bytes = valid_sample_bytes(FLAG_MIXTURE_WEIGHTS, 0, 0);
+
+    assert_invalid_data(read_sample(&mut Cursor::new(bytes)));
+}
+
+#[test]
+fn parsed_sample_cache_rejects_writer_sample_count_over_format_limit() {
+    let err = checked_sample_count((MAX_PARSED_SAMPLE_CACHE_SAMPLES as usize) + 1)
+        .expect_err("oversized writer sample count should fail");
+
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+}
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn parsed_sample_cache_rejects_writer_sample_count_over_u32_capacity() {
+    let err = checked_sample_count((u32::MAX as usize) + 1)
+        .expect_err("u32-overflowing writer sample count should fail");
+
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
 }

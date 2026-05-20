@@ -34,6 +34,23 @@ fn model_shape_defaults_match_legacy_model_config() {
 }
 
 #[test]
+fn model_shape_summary_reports_exact_shape_kind() {
+    assert_eq!(
+        ModelShapeConfig::actor().summary(),
+        "actor(blocks=12, input=192, hidden=256, groups=32, se=64, actions=46, score_bins=64, opponents=3, grp=24, belief_components=4, hand_type_classes=8)"
+    );
+    assert_eq!(
+        ModelShapeConfig::learner().summary(),
+        "learner(blocks=24, input=192, hidden=256, groups=32, se=64, actions=46, score_bins=64, opponents=3, grp=24, belief_components=4, hand_type_classes=8)"
+    );
+    assert!(
+        ModelShapeConfig::new(16)
+            .summary()
+            .starts_with("custom(blocks=16,")
+    );
+}
+
+#[test]
 fn rl_config_defaults_match_legacy_contract() {
     let phase2 = RlConfig::default_phase2();
     assert_eq!(phase2.tau_drda, 4.0);
@@ -73,13 +90,46 @@ fn ach_config_defaults_and_validation_match_algo_contract() {
 }
 
 #[test]
+fn config_validation_rejects_non_finite_scalars() {
+    assert_eq!(
+        AchConfig::new().with_beta_ent(f32::NAN).validate(),
+        Err("ach config values must be finite")
+    );
+    let oracle = OracleGuidingConfig {
+        lr_decay_factor: f32::INFINITY,
+        ..OracleGuidingConfig::default()
+    };
+    assert_eq!(
+        oracle.validate(),
+        Err("oracle config values must be finite")
+    );
+    assert_eq!(
+        BCTrainerConfig::new(ModelShapeConfig::actor())
+            .with_lr(f64::NAN)
+            .validate(),
+        Err("learning rates must be finite")
+    );
+    assert_eq!(
+        RlConfig::default_phase2()
+            .with_aux_weight(f32::INFINITY)
+            .validate(),
+        Err("rl config values must be finite")
+    );
+}
+
+#[test]
 fn learning_rate_helpers_cover_zero_total_and_post_warmup_edges() {
     assert!((cosine_annealing_lr(3, 0, 1e-3, 1e-5) - 1e-3).abs() < 1e-12);
 
     let warmup_lr = warmup_then_cosine_lr(1, 4, 10, 1e-3, 1e-5);
-    assert!((warmup_lr - 2.5e-4).abs() < 1e-12);
+    assert!((warmup_lr - 5.0e-4).abs() < 1e-12);
 
     let post_warmup_lr = warmup_then_cosine_lr(7, 4, 10, 1e-3, 1e-5);
     let expected = cosine_annealing_lr(3, 6, 1e-3, 1e-5);
     assert!((post_warmup_lr - expected).abs() < 1e-12);
+
+    let long_warmup_lr = warmup_then_cosine_lr(0, 10, 4, 1e-8, 1e-6);
+    assert!((long_warmup_lr - 1e-6).abs() < 1e-12);
+    let end_warmup_lr = warmup_then_cosine_lr(9, 10, 4, 1e-3, 1e-6);
+    assert!((end_warmup_lr - 1e-3).abs() < 1e-12);
 }

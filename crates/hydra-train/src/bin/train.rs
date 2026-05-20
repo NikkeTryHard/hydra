@@ -1,19 +1,12 @@
-#[cfg(test)]
-#[path = "train/epoch_runner.rs"]
-mod epoch_runner;
-
-use std::env;
-#[cfg(test)]
-use std::time::{SystemTime, UNIX_EPOCH};
-
-#[cfg(test)]
-use burn::backend::{Autodiff, LibTorch};
 use colored::control as color_control;
+use std::env;
 
 use hydra_train_exec::graph_probe::{handle_graph_probe_child, handle_graph_probe_parent};
 use hydra_train_exec::modes::{handle_list_devices_mode, run_train_modes};
 use hydra_train_exec::preflight_runtime::run_probe_child_mode;
 use hydra_train_runtime::config::{parse_args, read_config};
+#[cfg(test)]
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
 use hydra_train_exec::resume::{
@@ -26,9 +19,6 @@ use hydra_train_runtime::config::{
     AdvancedLossConfig, BcHyperparamConfig, TrainConfig, default_seed, validation_microbatch_size,
     validation_sample_limit,
 };
-
-#[cfg(test)]
-type TrainBackend = Autodiff<LibTorch<f32>>;
 
 fn run() -> Result<(), String> {
     color_control::set_override(true);
@@ -75,9 +65,6 @@ fn main() {
     }
 }
 
-#[cfg(test)]
-#[path = "train/tests/epoch_runner.rs"]
-mod epoch_runner_tests;
 #[cfg(test)]
 #[path = "train/tests/mod.rs"]
 mod tests;

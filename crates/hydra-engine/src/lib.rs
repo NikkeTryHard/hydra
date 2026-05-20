@@ -5,6 +5,16 @@ pub mod errors;
 pub mod hand_evaluator;
 pub mod hand_evaluator_3p;
 pub mod score;
+#[cfg(test)]
+pub(crate) mod test_support {
+    pub(crate) fn parsed_tile(text: &str) -> u8 {
+        crate::parser::parse_tile(text).expect("test tile should parse")
+    }
+
+    pub(crate) fn tiles_to_u32(tiles: &[u8]) -> Vec<u32> {
+        tiles.iter().copied().map(u32::from).collect()
+    }
+}
 mod tests;
 pub mod types;
 pub mod yaku;

@@ -154,3 +154,88 @@ fn test_kl_divergence_identical_distributions() {
     let v: f32 = kl.into_scalar().elem();
     assert!(v.abs() < 1e-6, "KL(p, p) should be ~0, got {v}");
 }
+
+#[test]
+fn masked_mean_reduces_only_selected_samples() {
+    let device = Default::default();
+    let per_sample = Tensor::<B, 1>::from_floats([1.0, 3.0, 100.0], &device);
+    let mask = Tensor::<B, 1>::from_floats([1.0, 1.0, 0.0], &device);
+    let loss = masked_mean(per_sample, Some(mask));
+    let v: f32 = loss.into_scalar().elem();
+    assert!(
+        (v - 2.0).abs() < 1e-6,
+        "masked mean should ignore zero mask, got {v}"
+    );
+}
+
+#[test]
+fn masked_mean_all_zero_mask_returns_zero_sum_not_nan() {
+    let device = Default::default();
+    let per_sample = Tensor::<B, 1>::from_floats([1.0, 3.0, 5.0], &device);
+    let mask = Tensor::<B, 1>::zeros([3], &device);
+    let loss = masked_mean(per_sample, Some(mask));
+    let v: f32 = loss.into_scalar().elem();
+    assert!(v.is_finite(), "all-zero masked mean must be finite: {v}");
+    assert!(
+        v.abs() < 1e-6,
+        "all-zero masked mean should be zero, got {v}"
+    );
+}
+
+#[test]
+fn masked_action_mse_divides_by_active_action_count() {
+    let device = Default::default();
+    let pred = Tensor::<B, 2>::from_floats([[2.0, 4.0, 100.0]], &device);
+    let target = Tensor::<B, 2>::from_floats([[0.0, 0.0, 0.0]], &device);
+    let mask = Tensor::<B, 2>::from_floats([[1.0, 1.0, 0.0]], &device);
+    let loss = masked_action_mse(pred, target, mask);
+    let v: f32 = loss.into_scalar().elem();
+    assert!(
+        (v - 5.0).abs() < 1e-6,
+        "masked action MSE should average active half-squared errors, got {v}"
+    );
+}
+
+#[test]
+fn masked_action_mse_all_zero_mask_returns_zero() {
+    let device = Default::default();
+    let pred = Tensor::<B, 2>::from_floats([[2.0, 4.0]], &device);
+    let target = Tensor::<B, 2>::zeros([1, 2], &device);
+    let mask = Tensor::<B, 2>::zeros([1, 2], &device);
+    let loss = masked_action_mse(pred, target, mask);
+    let v: f32 = loss.into_scalar().elem();
+    assert!(v.is_finite(), "all-zero action mask must be finite: {v}");
+    assert!(
+        v.abs() < 1e-6,
+        "all-zero action mask should produce zero loss, got {v}"
+    );
+}
+
+#[test]
+fn compute_cvar_rejects_nonfinite_alpha() {
+    assert_eq!(compute_cvar(&[1.0, 0.0], f32::NAN), 0.0);
+}
+
+#[test]
+#[should_panic(expected = "temperature must be finite and positive")]
+fn policy_temperature_rejects_zero() {
+    let device = Default::default();
+    let logits = Tensor::<B, 2>::zeros([1, 2], &device);
+    let target = Tensor::<B, 2>::from_floats([[1.0, 0.0]], &device);
+    let mask = Tensor::<B, 2>::ones([1, 2], &device);
+    let _ = policy_ce_with_temperature(logits, target, mask, 0.0);
+}
+
+#[test]
+#[should_panic(expected = "label smoothing alpha must be in [0,1]")]
+fn label_smoothing_rejects_alpha_above_one() {
+    let device = Default::default();
+    let target = Tensor::<B, 2>::from_floats([[1.0, 0.0]], &device);
+    let _ = label_smoothing(target, 1.1);
+}
+
+#[test]
+#[should_panic(expected = "lambda_weight must be in [0,1]")]
+fn value_target_from_gae_rejects_lambda_out_of_range() {
+    let _ = value_target_from_gae(1.0, 0.0, -0.1);
+}

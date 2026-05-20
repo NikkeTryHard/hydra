@@ -245,7 +245,7 @@ fn parse_preflight_bench_candidate_tuples(raw: &str) -> Result<Vec<PreflightBenc
 
 pub fn usage(program: &str) -> String {
     format!(
-        "Usage:\n  {program} <config.yaml>\n  {program} --preflight [--device <cpu|cuda[:N]>] [--output-dir <dir>] [--pf-candidate-tuples <batch:ring:threads:prefetch,...>] [--pf-warmup-steps <N>] [--pf-measure-steps <N>] [--pf-repetitions <N>] [--pf-output md]\n  {program} --list-devices\n  {program} <config.yaml> --delta-q-promotion [--delta-q-baseline-checkpoint <path>]\n  {program} <config.yaml> --probe-kind <train|validation> --probe-candidate-microbatch <N> [--probe-warmup-steps <N>] [--probe-measure-steps <N>]\n"
+        "Usage:\n  {program} <config.yaml>\n  {program} --preflight [--device <cpu|cuda[:N]>] [--output-dir <dir>] [--pf-candidate-tuples <batch:ring:threads:prefetch,...>] [--pf-warmup-steps <N>] [--pf-measure-steps <N>] [--pf-repetitions <N>] [--pf-output md]\n  {program} --list-devices\n  {program} <config.yaml> --delta-q-promotion [--delta-q-baseline-checkpoint <path>]\n  {program} <config.yaml> --probe-kind <train|validation|rl_games|rl_microbatch> --probe-candidate-microbatch <N> [--probe-warmup-steps <N>] [--probe-measure-steps <N>]\n"
     )
 }
 
@@ -277,9 +277,9 @@ where
 {
     let mut args = args.into_iter();
     let program = args.next().unwrap_or_else(|| "train".to_string());
-    let first = args.next().ok_or_else(|| usage(&program))?;
+    let mut first = args.next().ok_or_else(|| usage(&program))?;
     if first == "--" {
-        return Err(usage(&program));
+        first = args.next().ok_or_else(|| usage(&program))?;
     }
     if first == "--list-devices" {
         if args.next().is_some() {
@@ -900,7 +900,7 @@ where
             })
         }
         _ => Err(format!(
-            "{}\nprobe mode requires both --probe-kind and --probe-candidate-microbatch",
+            "{}\nprobe-only mode requires both --probe-kind and --probe-candidate-microbatch",
             usage(&program)
         )),
     }

@@ -119,15 +119,16 @@ fn fatal_probe_backend_error(results: &[ProbeResult]) -> Option<String> {
             result.status == ProbeStatus::BackendError
                 && result.detail.contains(UNSUPPORTED_DEVICE_PREFIX)
         })
-        .and_then(|result| {
+        .map(|result| {
             result
                 .detail
                 .rsplit_once("detail=")
                 .map(|(_, detail)| detail)
-                .map(str::trim)
-                .filter(|detail| detail.starts_with(UNSUPPORTED_DEVICE_PREFIX))
-                .map(str::to_string)
+                .unwrap_or(result.detail.as_str())
         })
+        .map(str::trim)
+        .filter(|detail| detail.starts_with(UNSUPPORTED_DEVICE_PREFIX))
+        .map(str::to_string)
 }
 
 pub struct ProbeRunSpec {

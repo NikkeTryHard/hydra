@@ -52,6 +52,56 @@ pub struct DeltaQPromotionSliceInputs<'a> {
     pub legal_mask_width: usize,
 }
 
+impl DeltaQPromotionSliceInputs<'_> {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        validate_flat_rows(
+            self.policy_logits,
+            self.policy_rows,
+            self.policy_width,
+            "policy_logits",
+        )?;
+        validate_flat_rows(
+            self.candidate_delta_q,
+            self.candidate_delta_q_rows,
+            self.candidate_delta_q_width,
+            "candidate_delta_q",
+        )?;
+        validate_flat_rows(
+            self.teacher_target,
+            self.teacher_target_rows,
+            self.teacher_target_width,
+            "teacher_target",
+        )?;
+        validate_flat_rows(
+            self.teacher_mask,
+            self.teacher_mask_rows,
+            self.teacher_mask_width,
+            "teacher_mask",
+        )?;
+        validate_flat_rows(
+            self.legal_mask,
+            self.legal_mask_rows,
+            self.legal_mask_width,
+            "legal_mask",
+        )?;
+        if self.policy_rows != self.candidate_delta_q_rows
+            || self.policy_rows != self.teacher_target_rows
+            || self.policy_rows != self.teacher_mask_rows
+            || self.policy_rows != self.legal_mask_rows
+        {
+            return Err("delta-q slice row counts must match");
+        }
+        if self.policy_width != self.candidate_delta_q_width
+            || self.policy_width != self.teacher_target_width
+            || self.policy_width != self.teacher_mask_width
+            || self.policy_width != self.legal_mask_width
+        {
+            return Err("delta-q slice widths must match");
+        }
+        Ok(())
+    }
+}
+
 /// Flat slice inputs for DeltaQ policy-transfer metric collection.
 #[derive(Debug, Clone, Copy)]
 pub struct DeltaQPolicyTransferSliceInputs<'a> {
@@ -70,6 +120,56 @@ pub struct DeltaQPolicyTransferSliceInputs<'a> {
     pub legal_mask: &'a [f32],
     pub legal_mask_rows: usize,
     pub legal_mask_width: usize,
+}
+
+impl DeltaQPolicyTransferSliceInputs<'_> {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        validate_flat_rows(
+            self.candidate_policy_logits,
+            self.candidate_policy_rows,
+            self.candidate_policy_width,
+            "candidate_policy_logits",
+        )?;
+        validate_flat_rows(
+            self.baseline_policy_logits,
+            self.baseline_policy_rows,
+            self.baseline_policy_width,
+            "baseline_policy_logits",
+        )?;
+        validate_flat_rows(
+            self.teacher_target,
+            self.teacher_target_rows,
+            self.teacher_target_width,
+            "teacher_target",
+        )?;
+        validate_flat_rows(
+            self.teacher_mask,
+            self.teacher_mask_rows,
+            self.teacher_mask_width,
+            "teacher_mask",
+        )?;
+        validate_flat_rows(
+            self.legal_mask,
+            self.legal_mask_rows,
+            self.legal_mask_width,
+            "legal_mask",
+        )?;
+        if self.candidate_policy_rows != self.baseline_policy_rows
+            || self.candidate_policy_rows != self.teacher_target_rows
+            || self.candidate_policy_rows != self.teacher_mask_rows
+            || self.candidate_policy_rows != self.legal_mask_rows
+        {
+            return Err("delta-q policy-transfer slice row counts must match");
+        }
+        if self.candidate_policy_width != self.baseline_policy_width
+            || self.candidate_policy_width != self.teacher_target_width
+            || self.candidate_policy_width != self.teacher_mask_width
+            || self.candidate_policy_width != self.legal_mask_width
+        {
+            return Err("delta-q policy-transfer slice widths must match");
+        }
+        Ok(())
+    }
 }
 
 /// Arena confirmation report persisted with DeltaQ promotion artifacts.
@@ -713,6 +813,15 @@ pub fn collect_promotion_metrics_from_slices(
     inputs: DeltaQPromotionSliceInputs<'_>,
     high_gap_quantile: f64,
 ) -> DeltaQPromotionReport {
+    collect_promotion_metrics_from_slices_checked(inputs, high_gap_quantile).unwrap_or_default()
+}
+
+/// Collect DeltaQ promotion metrics after validating exact flat slice shapes.
+pub fn collect_promotion_metrics_from_slices_checked(
+    inputs: DeltaQPromotionSliceInputs<'_>,
+    high_gap_quantile: f64,
+) -> Result<DeltaQPromotionReport, &'static str> {
+    inputs.validate()?;
     let batch = inputs
         .policy_rows
         .min(inputs.candidate_delta_q_rows)
@@ -772,7 +881,7 @@ pub fn collect_promotion_metrics_from_slices(
         }
     }
     if comparisons.is_empty() {
-        return report;
+        return Ok(report);
     }
     let mut top_gaps: Vec<f64> = comparisons
         .iter()
@@ -794,13 +903,21 @@ pub fn collect_promotion_metrics_from_slices(
             }
         }
     }
-    report
+    Ok(report)
 }
 
 /// Collect DeltaQ policy-transfer metrics from flat row-major slices.
 pub fn collect_policy_transfer_metrics_from_slices(
     inputs: DeltaQPolicyTransferSliceInputs<'_>,
 ) -> DeltaQPolicyTransferReport {
+    collect_policy_transfer_metrics_from_slices_checked(inputs).unwrap_or_default()
+}
+
+/// Collect DeltaQ policy-transfer metrics after validating exact flat slice shapes.
+pub fn collect_policy_transfer_metrics_from_slices_checked(
+    inputs: DeltaQPolicyTransferSliceInputs<'_>,
+) -> Result<DeltaQPolicyTransferReport, &'static str> {
+    inputs.validate()?;
     let batch = inputs
         .candidate_policy_rows
         .min(inputs.baseline_policy_rows)
@@ -856,13 +973,34 @@ pub fn collect_policy_transfer_metrics_from_slices(
             }
         }
     }
-    report
+    Ok(report)
 }
 
 fn row_slice(values: &[f32], row: usize, width: usize) -> Option<&[f32]> {
     let start = row.checked_mul(width)?;
     let end = start.checked_add(width)?;
     values.get(start..end)
+}
+
+fn validate_flat_rows(
+    values: &[f32],
+    rows: usize,
+    width: usize,
+    label: &'static str,
+) -> Result<(), &'static str> {
+    let Some(expected_len) = rows.checked_mul(width) else {
+        return Err("delta-q slice shape overflows");
+    };
+    if width == 0 {
+        return Err("delta-q slice width must be > 0");
+    }
+    if values.len() != expected_len {
+        return Err(label);
+    }
+    if !values.iter().all(|value| value.is_finite()) {
+        return Err("delta-q slice values must be finite");
+    }
+    Ok(())
 }
 
 fn compare_delta_q_state(

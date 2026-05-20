@@ -196,6 +196,69 @@ impl StreamingLoaderConfig {
     }
 }
 
+/// Replay sidecar hydration inputs shared by loose/archive/cache loaders.
+#[derive(Clone)]
+pub(crate) struct SidecarHydrationSpec {
+    /// Replay target heads requested after sidecar presence is applied.
+    replay_target_profile: ReplayTargetProfile,
+    /// Optional hydrated ExIt sidecar index.
+    exit_sidecar: Option<Arc<ExitSidecarIndex>>,
+    /// ExIt sidecar checkpoint/version provenance.
+    exit_provenance: SidecarProvenance,
+    /// Optional hydrated DeltaQ sidecar index.
+    delta_q_sidecar: Option<Arc<DeltaQSidecarIndex>>,
+    /// DeltaQ sidecar checkpoint/version provenance.
+    delta_q_provenance: SidecarProvenance,
+}
+
+impl SidecarHydrationSpec {
+    /// Creates a hydration spec from explicit policy parts.
+    pub(crate) fn from_parts(
+        replay_target_profile: ReplayTargetProfile,
+        exit_sidecar: Option<Arc<ExitSidecarIndex>>,
+        exit_provenance: SidecarProvenance,
+        delta_q_sidecar: Option<Arc<DeltaQSidecarIndex>>,
+        delta_q_provenance: SidecarProvenance,
+    ) -> Self {
+        Self {
+            replay_target_profile,
+            exit_sidecar,
+            exit_provenance,
+            delta_q_sidecar,
+            delta_q_provenance,
+        }
+    }
+
+    /// Creates a hydration spec from streaming loader config authority.
+    pub(crate) fn from_loader_config(config: &StreamingLoaderConfig) -> Self {
+        Self::from_parts(
+            config.effective_replay_target_profile(),
+            config.exit_sidecar.clone(),
+            SidecarProvenance::new(
+                config.exit_sidecar_source_net_hash,
+                config.exit_sidecar_source_version,
+            ),
+            config.delta_q_sidecar.clone(),
+            SidecarProvenance::new(
+                config.delta_q_sidecar_source_net_hash,
+                config.delta_q_sidecar_source_version,
+            ),
+        )
+    }
+
+    /// Builds the replay loader policy for one materialization call.
+    fn replay_load_policy(&self) -> ReplayLoadPolicy<'_> {
+        ReplayLoadPolicy::new(
+            self.replay_target_profile,
+            ReplayObservationProfile::BcMinimal,
+            self.exit_provenance,
+            self.delta_q_provenance,
+            self.exit_sidecar.as_deref(),
+            self.delta_q_sidecar.as_deref(),
+        )
+    }
+}
+
 #[derive(Clone, Copy)]
 enum StreamSplit {
     Train,
@@ -250,13 +313,7 @@ struct SkipLogState {
 struct ProducerLoadContext {
     queue_bound: usize,
     num_threads: Option<usize>,
-    replay_target_profile: ReplayTargetProfile,
-    exit_sidecar: Option<Arc<ExitSidecarIndex>>,
-    exit_sidecar_source_net_hash: Option<u64>,
-    exit_sidecar_source_version: Option<u32>,
-    delta_q_sidecar: Option<Arc<DeltaQSidecarIndex>>,
-    delta_q_sidecar_source_net_hash: Option<u64>,
-    delta_q_sidecar_source_version: Option<u32>,
+    sidecar: SidecarHydrationSpec,
     skip_state: Arc<SkipLogState>,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -296,45 +353,23 @@ fn record_raw_producer_queue_wait(queue_wait_block_ns: u128, samples_loaded: usi
 }
 
 struct LooseBatchWorkerContext {
-    replay_target_profile: ReplayTargetProfile,
-    exit_sidecar: Option<Arc<ExitSidecarIndex>>,
-    exit_provenance: SidecarProvenance,
-    delta_q_sidecar: Option<Arc<DeltaQSidecarIndex>>,
-    delta_q_provenance: SidecarProvenance,
+    sidecar: SidecarHydrationSpec,
     skip_state: Arc<SkipLogState>,
 }
 
 struct ArchiveParsePolicy {
-    replay_target_profile: ReplayTargetProfile,
-    exit_sidecar: Option<Arc<ExitSidecarIndex>>,
-    exit_provenance: SidecarProvenance,
-    delta_q_sidecar: Option<Arc<DeltaQSidecarIndex>>,
-    delta_q_provenance: SidecarProvenance,
+    sidecar: SidecarHydrationSpec,
 }
 
 impl LooseBatchWorkerContext {
     fn replay_load_policy(&self) -> ReplayLoadPolicy<'_> {
-        ReplayLoadPolicy::new(
-            self.replay_target_profile,
-            ReplayObservationProfile::BcMinimal,
-            self.exit_provenance,
-            self.delta_q_provenance,
-            self.exit_sidecar.as_deref(),
-            self.delta_q_sidecar.as_deref(),
-        )
+        self.sidecar.replay_load_policy()
     }
 }
 
 impl ArchiveParsePolicy {
     fn replay_load_policy(&self) -> ReplayLoadPolicy<'_> {
-        ReplayLoadPolicy::new(
-            self.replay_target_profile,
-            ReplayObservationProfile::BcMinimal,
-            self.exit_provenance,
-            self.delta_q_provenance,
-            self.exit_sidecar.as_deref(),
-            self.delta_q_sidecar.as_deref(),
-        )
+        self.sidecar.replay_load_policy()
     }
 }
 
@@ -405,13 +440,7 @@ fn build_producer_load_context(
     ProducerLoadContext {
         queue_bound: config.archive_queue_bound.max(1),
         num_threads: config.num_threads,
-        replay_target_profile: config.effective_replay_target_profile(),
-        exit_sidecar: config.exit_sidecar.clone(),
-        exit_sidecar_source_net_hash: config.exit_sidecar_source_net_hash,
-        exit_sidecar_source_version: config.exit_sidecar_source_version,
-        delta_q_sidecar: config.delta_q_sidecar.clone(),
-        delta_q_sidecar_source_net_hash: config.delta_q_sidecar_source_net_hash,
-        delta_q_sidecar_source_version: config.delta_q_sidecar_source_version,
+        sidecar: SidecarHydrationSpec::from_loader_config(config),
         skip_state: Arc::new(SkipLogState::new(
             skip_source,
             config.max_skip_logs_per_source,
@@ -493,11 +522,7 @@ fn run_loose_batch_stream(input: LooseBatchStreamInput) -> io::Result<()> {
         .map_err(|err| io::Error::other(format!("failed to spawn loose lister thread: {err}")))?;
 
     let worker_for_pool = LooseBatchWorkerContext {
-        replay_target_profile: worker.replay_target_profile,
-        exit_sidecar: worker.exit_sidecar.clone(),
-        exit_provenance: worker.exit_provenance,
-        delta_q_sidecar: worker.delta_q_sidecar.clone(),
-        delta_q_provenance: worker.delta_q_provenance,
+        sidecar: worker.sidecar.clone(),
         skip_state: Arc::clone(&worker.skip_state),
     };
 
@@ -579,11 +604,7 @@ fn run_parsed_sample_cache_batch_stream(
         })?;
 
     let worker_for_pool = LooseBatchWorkerContext {
-        replay_target_profile: worker.replay_target_profile,
-        exit_sidecar: worker.exit_sidecar.clone(),
-        exit_provenance: worker.exit_provenance,
-        delta_q_sidecar: worker.delta_q_sidecar.clone(),
-        delta_q_provenance: worker.delta_q_provenance,
+        sidecar: worker.sidecar.clone(),
         skip_state: Arc::clone(&worker.skip_state),
     };
 
@@ -1010,29 +1031,11 @@ fn spawn_archive_stream(
     let ProducerLoadContext {
         queue_bound: archive_queue_bound,
         num_threads,
-        replay_target_profile,
-        exit_sidecar,
-        exit_sidecar_source_net_hash,
-        exit_sidecar_source_version,
-        delta_q_sidecar,
-        delta_q_sidecar_source_net_hash,
-        delta_q_sidecar_source_version,
+        sidecar,
         skip_state,
     } = producer;
-    let parse_policy = if exit_sidecar.is_some() || delta_q_sidecar.is_some() {
-        Some(ArchiveParsePolicy {
-            replay_target_profile,
-            exit_sidecar,
-            exit_provenance: SidecarProvenance::new(
-                exit_sidecar_source_net_hash,
-                exit_sidecar_source_version,
-            ),
-            delta_q_sidecar,
-            delta_q_provenance: SidecarProvenance::new(
-                delta_q_sidecar_source_net_hash,
-                delta_q_sidecar_source_version,
-            ),
-        })
+    let parse_policy = if sidecar.exit_sidecar.is_some() || sidecar.delta_q_sidecar.is_some() {
+        Some(ArchiveParsePolicy { sidecar })
     } else {
         None
     };
@@ -1167,28 +1170,12 @@ fn spawn_loose_batch_stream(
     let ProducerLoadContext {
         queue_bound,
         num_threads,
-        replay_target_profile,
-        exit_sidecar,
-        exit_sidecar_source_net_hash,
-        exit_sidecar_source_version,
-        delta_q_sidecar,
-        delta_q_sidecar_source_net_hash,
-        delta_q_sidecar_source_version,
+        sidecar,
         skip_state,
     } = producer;
     let (game_tx, game_rx) = mpsc::sync_channel::<MjaiGame>(queue_bound);
     let worker = LooseBatchWorkerContext {
-        replay_target_profile,
-        exit_sidecar,
-        exit_provenance: SidecarProvenance::new(
-            exit_sidecar_source_net_hash,
-            exit_sidecar_source_version,
-        ),
-        delta_q_sidecar,
-        delta_q_provenance: SidecarProvenance::new(
-            delta_q_sidecar_source_net_hash,
-            delta_q_sidecar_source_version,
-        ),
+        sidecar,
         skip_state,
     };
 
@@ -1227,28 +1214,12 @@ fn spawn_parsed_sample_cache_batch_stream(
     let ProducerLoadContext {
         queue_bound,
         num_threads,
-        replay_target_profile,
-        exit_sidecar,
-        exit_sidecar_source_net_hash,
-        exit_sidecar_source_version,
-        delta_q_sidecar,
-        delta_q_sidecar_source_net_hash,
-        delta_q_sidecar_source_version,
+        sidecar,
         skip_state,
     } = producer;
     let (game_tx, game_rx) = mpsc::sync_channel::<MjaiGame>(queue_bound);
     let worker = LooseBatchWorkerContext {
-        replay_target_profile,
-        exit_sidecar,
-        exit_provenance: SidecarProvenance::new(
-            exit_sidecar_source_net_hash,
-            exit_sidecar_source_version,
-        ),
-        delta_q_sidecar,
-        delta_q_provenance: SidecarProvenance::new(
-            delta_q_sidecar_source_net_hash,
-            delta_q_sidecar_source_version,
-        ),
+        sidecar,
         skip_state,
     };
 

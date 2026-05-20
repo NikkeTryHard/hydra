@@ -120,11 +120,20 @@ pub fn compute_ess_from_log_weights(log_weights: &[f64]) -> f32 {
         .iter()
         .cloned()
         .fold(f64::NEG_INFINITY, f64::max);
-    let weights: Vec<f64> = log_weights.iter().map(|w| (w - max_w).exp()).collect();
-    let sum: f64 = weights.iter().sum();
-    let sum_sq: f64 = weights.iter().map(|w| w * w).sum();
-    if sum_sq == 0.0 {
-        return 0.0;
+    if !max_w.is_finite() {
+        return log_weights.len() as f32;
+    }
+    let mut sum = 0.0f64;
+    let mut sum_sq = 0.0f64;
+    for weight in log_weights {
+        let w = (*weight - max_w).exp();
+        if w.is_finite() {
+            sum += w;
+            sum_sq += w * w;
+        }
+    }
+    if sum <= 0.0 || !sum.is_finite() || sum_sq <= 0.0 || !sum_sq.is_finite() {
+        return log_weights.len() as f32;
     }
     ((sum * sum) / sum_sq) as f32
 }
@@ -313,17 +322,32 @@ impl CtSmc {
             .iter()
             .map(|p| p.log_weight)
             .fold(f64::NEG_INFINITY, f64::max);
+        if !max_w.is_finite() {
+            let sum: usize = self
+                .particles
+                .iter()
+                .map(|p| p.allocation[tile as usize][col as usize] as usize)
+                .sum();
+            return sum as f32 / self.particles.len() as f32;
+        }
         let mut sum = 0.0f64;
         let mut w_sum = 0.0f64;
         for p in &self.particles {
             let w = (p.log_weight - max_w).exp();
-            sum += w * p.allocation[tile as usize][col as usize] as f64;
-            w_sum += w;
+            if w.is_finite() {
+                sum += w * p.allocation[tile as usize][col as usize] as f64;
+                w_sum += w;
+            }
         }
-        if w_sum > 0.0 {
+        if w_sum > 0.0 && w_sum.is_finite() {
             (sum / w_sum) as f32
         } else {
-            0.0
+            let sum: usize = self
+                .particles
+                .iter()
+                .map(|p| p.allocation[tile as usize][col as usize] as usize)
+                .sum();
+            sum as f32 / self.particles.len() as f32
         }
     }
 
@@ -391,15 +415,20 @@ impl CtSmc {
             .iter()
             .map(|p| p.log_weight)
             .fold(f64::NEG_INFINITY, f64::max);
-        let weights: Vec<f64> = self
-            .particles
-            .iter()
-            .map(|p| (p.log_weight - max_w).exp())
-            .collect();
-        let sum: f64 = weights.iter().sum();
-        let sum_sq: f64 = weights.iter().map(|w| w * w).sum();
-        if sum_sq == 0.0 {
-            return 0.0;
+        if !max_w.is_finite() {
+            return self.particles.len() as f32;
+        }
+        let mut sum = 0.0f64;
+        let mut sum_sq = 0.0f64;
+        for p in &self.particles {
+            let w = (p.log_weight - max_w).exp();
+            if w.is_finite() {
+                sum += w;
+                sum_sq += w * w;
+            }
+        }
+        if sum <= 0.0 || !sum.is_finite() || sum_sq <= 0.0 || !sum_sq.is_finite() {
+            return self.particles.len() as f32;
         }
         ((sum * sum) / sum_sq) as f32
     }
@@ -414,12 +443,26 @@ impl CtSmc {
             .iter()
             .map(|p| p.log_weight)
             .fold(f64::NEG_INFINITY, f64::max);
-        let weights: Vec<f64> = self
-            .particles
-            .iter()
-            .map(|p| (p.log_weight - max_w).exp())
-            .collect();
-        let total: f64 = weights.iter().sum();
+        if !max_w.is_finite() {
+            for p in &mut self.particles {
+                p.log_weight = 0.0;
+            }
+            return;
+        }
+        let mut weights = Vec::with_capacity(n);
+        let mut total = 0.0f64;
+        for p in &self.particles {
+            let w = (p.log_weight - max_w).exp();
+            let w = if w.is_finite() { w } else { 0.0 };
+            weights.push(w);
+            total += w;
+        }
+        if total <= 0.0 || !total.is_finite() {
+            for p in &mut self.particles {
+                p.log_weight = 0.0;
+            }
+            return;
+        }
         let step = total / n as f64;
         let mut u: f64 = rng.random::<f64>() * step;
         let mut cumsum = 0.0;

@@ -1,7 +1,8 @@
 //! MJAI `.json` / `.json.gz` / `.json.zst` loader for behavioral cloning data.
 
 use crate::replay_targets::{
-    build_safety_residual_targets, build_stage_a_belief_targets, exact_waits,
+    build_safety_residual_targets, build_stage_a_belief_targets, build_stage_a_belief_targets_ref,
+    exact_waits,
 };
 use crate::target_helpers::{obs_hash, oracle_target_from_scores};
 use flate2::read::GzDecoder;
@@ -18,7 +19,8 @@ use hydra_data_core::{
     CompactObservationFacts, MjaiSample, score_to_placements, scores_to_grp_index,
 };
 use hydra_replay_sidecar::{
-    DeltaQSidecarIndex, ExitSidecarIndex, ReplayDecisionKey, source_hash_from_identity,
+    ActionLabelPair, DeltaQSidecarIndex, ExitSidecarIndex, ReplayDecisionKey, SidecarContractError,
+    SidecarKind, source_hash_from_identity,
 };
 use riichienv_core::action::{Action as EngineAction, ActionType, Phase};
 use riichienv_core::observation::Observation;
@@ -530,6 +532,7 @@ pub struct PreparedReplayDecision {
     pub legal_mask_f32: [f32; HYDRA_ACTION_SPACE],
     pub obs_encoded: [f32; OBS_SIZE],
     pub compact_facts: CompactObservationFacts,
+    pub use_ref_targets: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -817,6 +820,7 @@ fn finalize_prepared_replay_decision(
         legal_mask_f32,
         obs_encoded,
         compact_facts,
+        use_ref_targets: false,
     }))
 }
 
@@ -876,6 +880,7 @@ fn finalize_prepared_replay_decision_ref(
         legal_mask_f32,
         obs_encoded,
         compact_facts,
+        use_ref_targets: true,
     }))
 }
 
@@ -1115,8 +1120,9 @@ fn lookup_joined_label<T, F>(
     action: u8,
     legal_mask: &[f32; HYDRA_ACTION_SPACE],
     provenance: SidecarProvenance,
+    sidecar_kind: SidecarKind,
     lookup: F,
-) -> Option<([f32; HYDRA_ACTION_SPACE], [f32; HYDRA_ACTION_SPACE])>
+) -> Result<Option<ActionLabelPair>, SidecarContractError>
 where
     F: FnOnce(
         &T,
@@ -1125,11 +1131,20 @@ where
         &[f32; HYDRA_ACTION_SPACE],
         u64,
         u32,
-    ) -> Option<([f32; HYDRA_ACTION_SPACE], [f32; HYDRA_ACTION_SPACE])>,
+    ) -> Result<Option<ActionLabelPair>, SidecarContractError>,
 {
-    let replay_key = replay_key?;
-    let (source_net_hash, source_version) = provenance.complete()?;
-    let sidecar = sidecar?;
+    let Some(replay_key) = replay_key else {
+        return Ok(None);
+    };
+    let Some(sidecar) = sidecar else {
+        return Ok(None);
+    };
+    let Some((source_net_hash, source_version)) = provenance.complete() else {
+        return Err(SidecarContractError::Provenance {
+            sidecar: sidecar_kind,
+            expected: "complete source_net_hash and source_version",
+        });
+    };
     lookup(
         sidecar,
         &replay_key,
@@ -1168,10 +1183,8 @@ fn load_game_from_events_into_sink<S: ReplaySampleSink>(
     let mut state = GameState::new(0, true, Some(0), 0, GameRule::default_tenhou());
     let mut safety = array::from_fn(|_| SafetyInfo::default());
     let mut encoder = ObservationEncoder::new();
-    let needs_exit_lookup =
-        profile.exit && exit_sidecar.is_some() && exit_provenance.complete().is_some();
-    let needs_delta_q_lookup =
-        profile.delta_q && delta_q_sidecar.is_some() && delta_q_provenance.complete().is_some();
+    let needs_exit_lookup = profile.exit && exit_sidecar.is_some();
+    let needs_delta_q_lookup = profile.delta_q && delta_q_sidecar.is_some();
     let needs_replay_key = source_hash.is_some() && (needs_exit_lookup || needs_delta_q_lookup);
     let decision_options = ReplayDecisionOptions {
         observation_profile,
@@ -1193,9 +1206,9 @@ fn load_game_from_events_into_sink<S: ReplaySampleSink>(
             stats.decision_count += 1;
             let actor = decision.actor;
             let legal_mask = decision.legal_mask_f32;
-            let actor_targets = if profile == ReplayTargetProfile::minimal_bc() {
-                ActorRelativeOpponentTargets::default()
-            } else {
+            let needs_opponent_targets = profile != ReplayTargetProfile::minimal_bc()
+                && (profile.safety_residual || !decision.use_ref_targets);
+            let actor_targets = if needs_opponent_targets {
                 let t_opp = Instant::now();
                 let actor_targets =
                     actor_relative_opponent_targets(actor, &mut event_targets, &state);
@@ -1203,6 +1216,8 @@ fn load_game_from_events_into_sink<S: ReplaySampleSink>(
                 stats.exact_waits_ns += event_targets.exact_waits_ns;
                 event_targets.exact_waits_ns = 0;
                 actor_targets
+            } else {
+                ActorRelativeOpponentTargets::default()
             };
             let (safety_residual, safety_residual_mask) = if profile.safety_residual {
                 let t_safety = Instant::now();
@@ -1220,7 +1235,12 @@ fn load_game_from_events_into_sink<S: ReplaySampleSink>(
                 if profile.belief || profile.mixture {
                     let t_belief = Instant::now();
                     let (belief_fields, mixture_weights, belief_present, mixture_present) =
-                        build_stage_a_belief_targets(&state, actor, &decision.obs);
+                        if decision.use_ref_targets {
+                            let obs_ref = state.observe(actor as u8);
+                            build_stage_a_belief_targets_ref(&state, actor, &obs_ref)
+                        } else {
+                            build_stage_a_belief_targets(&state, actor, &decision.obs)
+                        };
                     stats.belief_targets_ns += t_belief.elapsed().as_nanos();
                     (
                         if profile.belief { belief_fields } else { None },
@@ -1252,10 +1272,12 @@ fn load_game_from_events_into_sink<S: ReplaySampleSink>(
                 decision.action_id,
                 &legal_mask,
                 exit_provenance,
+                SidecarKind::Exit,
                 |sidecar, key, action, legal_mask, source_net_hash, source_version| {
                     sidecar.lookup_label(key, action, legal_mask, source_net_hash, source_version)
                 },
-            );
+            )
+            .map_err(|err| invalid_data(err.to_string()))?;
             let joined_delta_q = lookup_joined_label(
                 if needs_delta_q_lookup {
                     delta_q_sidecar
@@ -1266,10 +1288,12 @@ fn load_game_from_events_into_sink<S: ReplaySampleSink>(
                 decision.action_id,
                 &legal_mask,
                 delta_q_provenance,
+                SidecarKind::DeltaQ,
                 |sidecar, key, action, legal_mask, source_net_hash, source_version| {
                     sidecar.lookup_label(key, action, legal_mask, source_net_hash, source_version)
                 },
-            );
+            )
+            .map_err(|err| invalid_data(err.to_string()))?;
             stats.sidecar_lookup_ns += t_sidecar.elapsed().as_nanos();
             let t_push = Instant::now();
             sink.push_sample(ReplaySampleRecord {
@@ -1531,30 +1555,47 @@ where
         ..ReplayMaterializationStats::default()
     });
 
-    match policy.filter(|policy| policy.has_joined_sidecars()) {
-        Some(policy) => load_game_from_events_into_sink(
-            Some(source_hash_from_identity(source_identity)),
+    let (
+        source_hash,
+        exit_provenance,
+        delta_q_provenance,
+        profile,
+        observation_profile,
+        exit_sidecar,
+        delta_q_sidecar,
+    ) = match policy {
+        Some(policy) => (
+            policy
+                .has_joined_sidecars()
+                .then(|| source_hash_from_identity(source_identity)),
             policy.exit_provenance,
             policy.delta_q_provenance,
             policy.profile,
             policy.observation_profile,
-            events,
             policy.exit_sidecar,
             policy.delta_q_sidecar,
-            sink,
         ),
-        None => load_game_from_events_into_sink(
+        None => (
             None,
             SidecarProvenance::default(),
             SidecarProvenance::default(),
             ReplayTargetProfile::minimal_bc(),
             ReplayObservationProfile::BcMinimal,
-            events,
             None,
             None,
-            sink,
         ),
-    }
+    };
+    load_game_from_events_into_sink(
+        source_hash,
+        exit_provenance,
+        delta_q_provenance,
+        profile,
+        observation_profile,
+        events,
+        exit_sidecar,
+        delta_q_sidecar,
+        sink,
+    )
 }
 
 pub fn load_game_from_stream_into_sink<R, S>(
@@ -1789,7 +1830,7 @@ pub fn load_game_from_path_with_policy(
     policy: Option<&ReplayLoadPolicy<'_>>,
 ) -> io::Result<MjaiGame> {
     let path = path.as_ref();
-    match policy.filter(|policy| policy.has_joined_sidecars()) {
+    match policy {
         Some(policy) => load_game_from_path_with_sidecar(
             path,
             policy.exit_provenance,
@@ -1808,7 +1849,7 @@ pub fn load_game_from_stream_with_policy<R: Read>(
     reader: R,
     policy: Option<&ReplayLoadPolicy<'_>>,
 ) -> io::Result<MjaiGame> {
-    match policy.filter(|policy| policy.has_joined_sidecars()) {
+    match policy {
         Some(policy) => load_game_from_stream_with_sidecar(
             source_identity,
             policy.exit_provenance,

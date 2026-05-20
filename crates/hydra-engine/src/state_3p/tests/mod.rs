@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::{parsed_tile, tiles_to_u32};
 mod event_handler;
 mod game_mode;
 mod legal_actions;
@@ -17,11 +18,6 @@ fn test_state_with_mode(game_mode: u8, skip_mjai_logging: bool) -> GameState3P {
 fn test_state(skip_mjai_logging: bool) -> GameState3P {
     test_state_with_mode(5, skip_mjai_logging)
 }
-
-fn tiles_to_u32(tiles: &[u8]) -> Vec<u32> {
-    tiles.iter().copied().map(u32::from).collect()
-}
-
 fn direct_state(rule: GameRule) -> GameState3P {
     let mut state = GameState3P::new(5, true, Some(7), 0, rule);
     for player in &mut state.players {
@@ -71,11 +67,6 @@ fn set_closed_hand(state: &mut GameState3P, pid: usize, text: &str) {
     }
     state.players[pid].hand_slice_mut().sort();
 }
-
-fn parsed_tile(text: &str) -> u8 {
-    crate::parser::parse_tile(text).expect("test tile should parse")
-}
-
 fn test_start_kyoku_event() -> Value {
     serde_json::json!({
         "type": "start_kyoku",

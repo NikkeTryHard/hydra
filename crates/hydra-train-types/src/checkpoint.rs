@@ -15,12 +15,13 @@ pub struct CheckpointMeta {
 
 impl CheckpointMeta {
     #[must_use]
-    pub fn new(
+    pub fn with_timestamp(
         epoch: u32,
         train_loss: f64,
         eval_agreement: Option<f64>,
         eval_policy_loss: Option<f64>,
         eval_total_loss: Option<f64>,
+        timestamp: u64,
     ) -> Self {
         Self {
             epoch,
@@ -28,13 +29,28 @@ impl CheckpointMeta {
             eval_agreement,
             eval_policy_loss,
             eval_total_loss,
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0),
+            timestamp,
             num_blocks: 24,
             hidden_channels: 256,
         }
+    }
+
+    #[must_use]
+    pub fn new(
+        epoch: u32,
+        train_loss: f64,
+        eval_agreement: Option<f64>,
+        eval_policy_loss: Option<f64>,
+        eval_total_loss: Option<f64>,
+    ) -> Self {
+        Self::with_timestamp(
+            epoch,
+            train_loss,
+            eval_agreement,
+            eval_policy_loss,
+            eval_total_loss,
+            current_unix_timestamp_secs(),
+        )
     }
 
     #[must_use]
@@ -55,6 +71,12 @@ impl CheckpointMeta {
             self.epoch, self.train_loss, eval_summary
         )
     }
+}
+
+fn current_unix_timestamp_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
 }
 
 #[cfg(test)]

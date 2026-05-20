@@ -37,11 +37,11 @@ check-all-targets = { cmd = "cargo check --workspace --all-targets --no-default-
 build = { cmd = "cargo build --workspace --no-default-features --quiet", description = "Fast default workspace build" }
 build-release = { cmd = "cargo build --workspace --no-default-features --release --quiet", description = "Fast release workspace build" }
 build-dist = { cmd = "cargo build --workspace --profile prod --quiet", description = "Fat-LTO final artifact build" }
-test = { cmd = "cargo nextest run --workspace --all-targets --no-default-features --cargo-profile dev --cargo-quiet --no-fail-fast", description = "Default no-heavy all-target workspace tests" }
-test-lib = { cmd = "cargo nextest run --workspace --lib --no-default-features --cargo-profile dev --cargo-quiet --no-fail-fast", description = "Fast workspace lib unit tests" }
-test-fast = { cmd = "cargo nextest run --workspace --tests --no-default-features --cargo-profile dev --cargo-quiet --no-fail-fast", description = "Fast workspace tests without benches/examples" }
-test-release = { cmd = "cargo nextest run --workspace --all-targets --no-default-features --release --cargo-quiet --no-fail-fast", description = "Release-profile tests without heavy defaults" }
-test-exhaustive = { cmd = "cargo nextest run --workspace --all-targets --all-features --cargo-profile dev --cargo-quiet --no-fail-fast", description = "Explicit all-feature test gate" }
+test = { cmd = "scripts/nextest-quiet.sh run --workspace --all-targets --no-default-features --cargo-profile dev --cargo-quiet --no-fail-fast", description = "Default no-heavy all-target workspace tests" }
+test-lib = { cmd = "scripts/nextest-quiet.sh run --workspace --lib --no-default-features --cargo-profile dev --cargo-quiet --no-fail-fast", description = "Fast workspace lib unit tests" }
+test-fast = { cmd = "scripts/nextest-quiet.sh run --workspace --tests --no-default-features --cargo-profile dev --cargo-quiet --no-fail-fast", description = "Fast workspace tests without benches/examples" }
+test-release = { cmd = "scripts/nextest-quiet.sh run --workspace --all-targets --no-default-features --release --cargo-quiet --no-fail-fast", description = "Release-profile tests without heavy defaults" }
+test-exhaustive = { cmd = "scripts/nextest-quiet.sh run --workspace --all-targets --all-features --cargo-profile dev --cargo-quiet --no-fail-fast", description = "Explicit all-feature test gate" }
 lint = { cmd = "scripts/lint-check.sh --fast", description = "Fast default lint" }
 lint-exhaustive = { cmd = "scripts/lint-check.sh --exhaustive", description = "Explicit all-feature/CUDA lint gate" }
 lint-cuda-graph = { cmd = "scripts/lint-check.sh --cuda-graph", description = "Focused CUDA graph lint gate" }
@@ -55,14 +55,14 @@ check-training-cuda = { cmd = "pixi run check-cuda-graph", description = "Check 
 train-cuda-shards = { cmd = "cargo run --release -p hydra-train --bin train --no-default-features --features cuda-graph --", description = "Run CUDA BC shard training with pinned/prealloc transport; pass config path after --" }
 bench-train = { cmd = "cargo bench -p hydra-train --no-default-features --features training", description = "Run hydra-train training benches" }
 timings-check = { cmd = "cargo check --workspace --all-targets --no-default-features --timings --quiet", description = "Timing report for fast default check" }
-timings-nextest-list = { cmd = "cargo nextest list --workspace --all-targets --no-default-features --cargo-profile dev --timings --cargo-quiet", description = "Timing report for test discovery" }
+timings-nextest-list = { cmd = "scripts/nextest-quiet.sh list --workspace --all-targets --no-default-features --cargo-profile dev --timings --cargo-quiet", description = "Timing report for test discovery" }
 timings-build-fast = { cmd = "cargo build --workspace --no-default-features --timings --quiet", description = "Timing report for default no-heavy build" }
 timings-full = { cmd = "cargo build --workspace --all-features --timings --quiet", description = "Timing report for full heavy path" }
-build-fast = { cmd = "pixi run build-release", description = "Compatibility alias for fast release workspace build" }
-nextest = { cmd = "pixi run test", description = "Compatibility alias for default no-heavy all-target tests" }
-nextest-list = { cmd = "cargo nextest list --workspace --all-targets --no-default-features --cargo-profile dev --cargo-quiet", description = "Discover default no-heavy all-target workspace tests" }
-nextest-list-all-features = { cmd = "cargo nextest list --workspace --all-targets --all-features --cargo-profile dev --cargo-quiet", description = "Discover all-feature workspace tests" }
-nextest-list-exhaustive = { cmd = "pixi run nextest-list-all-features", description = "Compatibility alias for all-feature test discovery" }
+build-fast = { cmd = "pixi -q run build-release", description = "Compatibility alias for fast release workspace build" }
+nextest = { cmd = "pixi -q run test", description = "Compatibility alias for default no-heavy all-target tests" }
+nextest-list = { cmd = "scripts/nextest-quiet.sh list --workspace --all-targets --no-default-features --cargo-profile dev --cargo-quiet", description = "Discover default no-heavy all-target workspace tests" }
+nextest-list-all-features = { cmd = "scripts/nextest-quiet.sh list --workspace --all-targets --all-features --cargo-profile dev --cargo-quiet", description = "Discover all-feature workspace tests" }
+nextest-list-exhaustive = { cmd = "pixi -q run nextest-list-all-features", description = "Compatibility alias for all-feature test discovery" }
 rustc-wrapper = { cmd = "scripts/rustc-wrapper.sh", description = "Run rustc through the repo sccache wrapper; accepts rustc args" }
 torch-check = { cmd = "python -c \"import torch, os; print(torch.__version__); print(torch.cuda.is_available()); print(os.path.join(os.path.dirname(torch.__file__), 'lib'))\"", description = "Print PyTorch version, CUDA availability, and libtorch path" }
 clean = { cmd = "cargo clean", description = "Delete Cargo build artifacts" }

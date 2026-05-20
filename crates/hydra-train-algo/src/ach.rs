@@ -1,5 +1,6 @@
 //! Actor-Critic Hedge loss (LuckyJ's algorithm, ICLR 2022).
 
+use crate::losses::{MASKED_LOGIT_SENTINEL, masked_logits};
 use burn::prelude::*;
 use burn::tensor::activation;
 pub use hydra_train_types::config::AchConfig;
@@ -12,16 +13,20 @@ pub fn ach_policy_loss<B: Backend>(
     advantages: Tensor<B, 1>,
     cfg: &AchConfig,
 ) -> Tensor<B, 1> {
-    let neg_inf_mask = (legal_mask.clone().ones_like() - legal_mask.clone()) * (-1e9f32);
-    let masked_logits = logits + neg_inf_mask;
+    assert!(cfg.eta.is_finite(), "eta must be finite");
+    assert!(cfg.eps.is_finite(), "eps must be finite");
+    assert!(cfg.l_th.is_finite(), "l_th must be finite");
+    assert!(cfg.beta_ent.is_finite(), "beta_ent must be finite");
+    assert!(cfg.l_th > 0.0, "l_th must be positive");
+    let masked_logits = masked_logits(logits, legal_mask.clone());
 
     let legal_sum = legal_mask.clone().sum_dim(1).clamp_min(1.0);
     let legal_mean = (masked_logits.clone() * legal_mask.clone()).sum_dim(1) / legal_sum;
     let centered = masked_logits - legal_mean;
     let clamped = centered.clamp(-cfg.l_th, cfg.l_th);
 
-    let neg_inf_mask2 = (legal_mask.clone().ones_like() - legal_mask.clone()) * (-1e9f32);
-    let for_softmax = clamped.clone() + neg_inf_mask2;
+    let for_softmax = clamped.clone()
+        + (legal_mask.clone().ones_like() - legal_mask.clone()) * MASKED_LOGIT_SENTINEL;
     let pi = activation::softmax(for_softmax, 1);
 
     let actions_2d = actions.unsqueeze_dim::<2>(1);

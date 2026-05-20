@@ -45,7 +45,7 @@ fn process_archive(
     multi: &MultiProgress,
     total_files: &AtomicU64,
     total_bytes_out: &AtomicU64,
-) -> io::Result<()> {
+) -> Result<(), String> {
     let archive_name = archive_path
         .file_name()
         .and_then(|n| n.to_str())
@@ -73,8 +73,18 @@ fn process_archive(
     std::thread::scope(|s| {
         // Producer: single thread reads tar entries sequentially
         let producer = s.spawn(move || -> io::Result<()> {
-            let file = File::open(archive_path)?;
-            let zst_reader = zstd::Decoder::new(file)?;
+            let file = File::open(archive_path).map_err(|err| {
+                io::Error::new(
+                    err.kind(),
+                    format!("failed to open archive {}: {err}", archive_path.display()),
+                )
+            })?;
+            let zst_reader = zstd::Decoder::new(file).map_err(|err| {
+                io::Error::new(
+                    err.kind(),
+                    format!("failed to decode archive {}: {err}", archive_path.display()),
+                )
+            })?;
             let mut archive = tar::Archive::new(zst_reader);
 
             for entry_result in archive.entries()? {
@@ -108,10 +118,12 @@ fn process_archive(
                 let rx = &rx;
                 let output_dir = &output_dir_owned;
                 let pb = &pb_writer;
-                s.spawn(move || {
+                s.spawn(move || -> io::Result<()> {
                     loop {
                         let entry = {
-                            let guard = rx.lock().expect("lock rx");
+                            let guard = rx.lock().map_err(|_| {
+                                io::Error::other("recompress receiver lock poisoned")
+                            })?;
                             guard.recv()
                         };
                         let Ok(entry) = entry else { break };
@@ -126,17 +138,37 @@ fn process_archive(
                         archive_files_ref.fetch_add(1, Ordering::Relaxed);
                         pb.inc(1);
                     }
+                    Ok(())
                 })
             })
             .collect();
 
-        if let Err(err) = producer.join().expect("producer thread panicked") {
-            eprintln!("  read error in {archive_name}: {err}");
+        match producer.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => eprintln!("  read error in {archive_name}: {err}"),
+            Err(_) => {
+                return Err(format!(
+                    "producer thread panicked while reading {archive_name}"
+                ));
+            }
         }
-        for w in workers {
-            w.join().expect("worker thread panicked");
+        for worker in workers {
+            match worker.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => {
+                    return Err(format!(
+                        "worker failed while processing {archive_name}: {err}"
+                    ));
+                }
+                Err(_) => {
+                    return Err(format!(
+                        "worker thread panicked while processing {archive_name}"
+                    ));
+                }
+            }
         }
-    });
+        Ok(())
+    })?;
 
     let files = archive_files.load(Ordering::Relaxed);
     let bytes = archive_bytes.load(Ordering::Relaxed);
@@ -149,7 +181,7 @@ fn process_archive(
     Ok(())
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 3 {
         eprintln!("Usage: recompress <output_dir> <archive1.tar.zst> [archive2.tar.zst ...]");
@@ -159,7 +191,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output_dir = PathBuf::from(&args[1]);
     let archive_paths: Vec<PathBuf> = args[2..].iter().map(PathBuf::from).collect();
 
-    fs::create_dir_all(&output_dir)?;
+    fs::create_dir_all(&output_dir).map_err(|err| {
+        format!(
+            "failed to create output directory {}: {err}",
+            output_dir.display()
+        )
+    })?;
 
     let multi = MultiProgress::new();
     let total_start = Instant::now();

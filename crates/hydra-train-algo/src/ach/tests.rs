@@ -111,3 +111,21 @@ fn test_ach_batch_of_8() {
     let val = loss.into_scalar().elem::<f32>();
     assert!(val.is_finite(), "batch ACH should be finite: {val}");
 }
+
+#[test]
+#[should_panic(expected = "l_th must be positive")]
+fn ach_loss_rejects_nonpositive_logit_threshold() {
+    let device = Default::default();
+    let (logits, mask, actions, pi_old, advantages) = make_ach_inputs(&device);
+    let cfg = AchConfig::new().with_l_th(0.0);
+    let _ = ach_policy_loss(logits, mask, actions, pi_old, advantages, &cfg);
+}
+
+#[test]
+#[should_panic(expected = "eps must be finite")]
+fn ach_loss_rejects_nonfinite_eps() {
+    let device = Default::default();
+    let (logits, mask, actions, pi_old, advantages) = make_ach_inputs(&device);
+    let cfg = AchConfig::new().with_eps(f32::NAN);
+    let _ = ach_policy_loss(logits, mask, actions, pi_old, advantages, &cfg);
+}

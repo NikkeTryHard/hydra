@@ -103,6 +103,29 @@ fn bayesian_update_collapsed_no_nan() {
 }
 
 #[test]
+fn bayesian_update_all_degenerate_resets_uniform() {
+    let kernel = [1.0f64; 136];
+    let row_sums = [4.0f64; 34];
+    let col_sums = [34.0; 4];
+    let mut mix = MixtureSib::new(4, &kernel, &row_sums, &col_sums);
+    mix.bayesian_update(&[
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+        f64::NAN,
+        f64::NEG_INFINITY,
+    ]);
+    let weights = mix.weights();
+    assert_eq!(weights.len(), 4);
+    for (idx, weight) in weights.iter().enumerate() {
+        assert!(weight.is_finite(), "weight[{idx}] should be finite");
+        assert!(
+            (*weight - 0.25).abs() < 1e-12,
+            "weight[{idx}] should reset uniform"
+        );
+    }
+}
+
+#[test]
 fn mixture_ess_decreases_after_biased_update() {
     let kernel = [1.0f64; 136];
     let row_sums = [4.0f64; 34];

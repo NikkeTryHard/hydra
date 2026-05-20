@@ -165,8 +165,33 @@ impl AfbsTree {
         idx
     }
 
+    /// Returns a node by index without panicking on stale or foreign indices.
+    pub fn node(&self, idx: NodeIdx) -> Option<&AfbsNode> {
+        self.nodes.get(idx as usize)
+    }
+
+    /// Returns a mutable node by index without panicking on stale or foreign indices.
+    pub fn node_mut(&mut self, idx: NodeIdx) -> Option<&mut AfbsNode> {
+        self.nodes.get_mut(idx as usize)
+    }
+
+    /// Adds a child edge if both parent and child indices are valid.
+    pub fn add_child(&mut self, parent_idx: NodeIdx, action: u8, child_idx: NodeIdx) -> bool {
+        if action as usize >= HYDRA_ACTION_SPACE {
+            return false;
+        }
+        if self.node(child_idx).is_none() {
+            return false;
+        }
+        let Some(parent) = self.node_mut(parent_idx) else {
+            return false;
+        };
+        parent.children.push((action, child_idx));
+        true
+    }
+
     pub fn puct_select(&self, parent_idx: NodeIdx) -> Option<(u8, NodeIdx)> {
-        let parent = &self.nodes[parent_idx as usize];
+        let parent = self.node(parent_idx)?;
         if parent.children.is_empty() {
             return None;
         }
@@ -174,7 +199,9 @@ impl AfbsTree {
         let mut best_ucb = f32::NEG_INFINITY;
         let mut best = None;
         for &(action, child_idx) in &parent.children {
-            let child = &self.nodes[child_idx as usize];
+            let Some(child) = self.node(child_idx) else {
+                continue;
+            };
             let q = child.q_value();
             let u = C_PUCT * child.prior * sqrt_n / (1.0 + child.visit_count as f32);
             let ucb = q + u;
@@ -238,7 +265,9 @@ impl AfbsTree {
 
     pub fn backpropagate(&mut self, path: &[NodeIdx], value: f32) {
         for &idx in path {
-            let node = &mut self.nodes[idx as usize];
+            let Some(node) = self.node_mut(idx) else {
+                continue;
+            };
             node.visit_count += 1;
             node.total_value += value as f64;
         }
@@ -273,12 +302,17 @@ impl AfbsTree {
         }
 
         if !tau.is_finite() || tau <= 0.0 {
-            if let Some((action, _)) = root.children.iter().max_by(|(_, lhs), (_, rhs)| {
-                self.nodes[*lhs as usize]
-                    .q_value()
-                    .partial_cmp(&self.nodes[*rhs as usize].q_value())
-                    .unwrap_or(Ordering::Equal)
-            }) {
+            if let Some((action, _)) = root
+                .children
+                .iter()
+                .filter(|(_, idx)| self.node(*idx).is_some())
+                .max_by(|(_, lhs), (_, rhs)| {
+                    self.node(*lhs)
+                        .map_or(0.0, AfbsNode::q_value)
+                        .partial_cmp(&self.node(*rhs).map_or(0.0, AfbsNode::q_value))
+                        .unwrap_or(Ordering::Equal)
+                })
+            {
                 policy[*action as usize] = 1.0;
             }
             return policy;
@@ -286,19 +320,30 @@ impl AfbsTree {
 
         let mut max_q = f32::NEG_INFINITY;
         for &(_, child_idx) in &root.children {
-            let q = self.nodes[child_idx as usize].q_value();
+            let Some(child) = self.node(child_idx) else {
+                continue;
+            };
+            let q = child.q_value();
             if q > max_q {
                 max_q = q;
             }
         }
+        if !max_q.is_finite() {
+            return policy;
+        }
         let mut total = 0.0f32;
         for &(action, child_idx) in &root.children {
-            let q = self.nodes[child_idx as usize].q_value();
+            let Some(child) = self.node(child_idx) else {
+                continue;
+            };
+            let q = child.q_value();
             let exp_q = ((q - max_q) / tau).exp();
-            policy[action as usize] = exp_q;
-            total += exp_q;
+            if exp_q.is_finite() && exp_q > 0.0 {
+                policy[action as usize] = exp_q;
+                total += exp_q;
+            }
         }
-        if total > 0.0 {
+        if total > 0.0 && total.is_finite() {
             for p in &mut policy {
                 *p /= total;
             }
@@ -307,11 +352,12 @@ impl AfbsTree {
     }
 
     pub fn best_action(&self, root_idx: NodeIdx) -> Option<u8> {
-        let root = &self.nodes[root_idx as usize];
+        let root = self.node(root_idx)?;
         root.children
             .iter()
-            .max_by_key(|(_, idx)| self.nodes[*idx as usize].visit_count)
-            .map(|(action, _)| *action)
+            .filter_map(|(action, idx)| self.node(*idx).map(|node| (*action, node.visit_count)))
+            .max_by_key(|(_, visits)| *visits)
+            .map(|(action, _)| action)
     }
 
     pub fn find_child_by_action(&self, parent_idx: NodeIdx, action: u8) -> Option<NodeIdx> {
@@ -374,18 +420,35 @@ impl AfbsTree {
     }
 
     pub fn max_depth(&self, root: NodeIdx) -> u8 {
-        let node = &self.nodes[root as usize];
-        if node.children.is_empty() {
-            return 0;
+        self.try_max_depth(root).unwrap_or(0)
+    }
+
+    pub fn try_max_depth(&self, root: NodeIdx) -> Option<u8> {
+        let mut visiting = vec![false; self.nodes.len()];
+        self.try_max_depth_inner(root, &mut visiting)
+    }
+
+    fn try_max_depth_inner(&self, root: NodeIdx, visiting: &mut [bool]) -> Option<u8> {
+        let root_idx = root as usize;
+        let node = self.nodes.get(root_idx)?;
+        if visiting[root_idx] {
+            return Some(0);
         }
+        if node.children.is_empty() {
+            return Some(0);
+        }
+        visiting[root_idx] = true;
         let mut max_d = 0u8;
         for &(_, child) in &node.children {
-            let d = self.max_depth(child);
+            let Some(d) = self.try_max_depth_inner(child, visiting) else {
+                continue;
+            };
             if d > max_d {
                 max_d = d;
             }
         }
-        max_d + 1
+        visiting[root_idx] = false;
+        Some(max_d.saturating_add(1))
     }
 }
 

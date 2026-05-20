@@ -1,5 +1,6 @@
 //! DRDA wrapper: Dilated Regularized Dual Averaging (Farina et al., ICLR 2025).
 
+use crate::losses::MASKED_LOGIT_SENTINEL;
 use burn::prelude::*;
 use burn::tensor::activation;
 pub use hydra_train_types::config::MIN_TAU_DRDA;
@@ -103,7 +104,7 @@ pub fn compute_rebase_kl<B: Backend>(
     legal_mask: Tensor<B, 2>,
 ) -> f32 {
     let combined = combined_logits(base_logits.clone(), residual_logits, tau_drda);
-    let neg_inf = (legal_mask.clone().ones_like() - legal_mask) * (-1e9f32);
+    let neg_inf = (legal_mask.clone().ones_like() - legal_mask) * MASKED_LOGIT_SENTINEL;
     let pi_before = activation::softmax(combined + neg_inf.clone(), 1);
     let pi_after = activation::softmax(base_logits + neg_inf, 1);
     verify_rebase_preserves_pi(pi_before, pi_after)

@@ -1,24 +1,32 @@
 # AGENTS.md -- Hydra code-agent guide
 
-Hydra = open-source Riichi Mahjong AI. Target LuckyJ-level strength and reproducible training. This file is compact operating contract for agents changing code; detailed doctrine lives in linked docs.
+Hydra = open-source Riichi Mahjong AI. Target LuckyJ-level strength and reproducible training.
 
-## Truth order
+## Implementation rules
 
-For doctrine/planning, read only as deep as needed:
+- Fix root cause at owning layer. Do not hide failure with warnings, fallback defaults, broad `Ok(())`, silent clamping, or compatibility shims.
+- Delete obsolete paths. No stale aliases, dead branches, TODO stubs, no-op implementations, or fake fallbacks.
+- If something cannot be turned on for production and doesnt have any value, dont leave it off as trash code in repo. Talk with user and discuss whether it should be turned on or removed.
+- Keep public API narrow. Do not make items `pub` for tests, convenience, or guessed future use.
+- App-level errors use `anyhow::Result`; library boundaries use typed errors (`thiserror`) where callers need classification.
+- No `unwrap()`/`expect()` in library/runtime code. Tests may use them only when failure cannot obscure assertion.
+- Hot paths: no needless `String`, `Vec`, heap clone, boxing, dynamic dispatch, `format!`, or per-turn allocation. Prefer borrowed slices/iterators and caller-owned buffers.
+- `clone()` must be intentional. Cheap scalar/Arc refcount OK; data clone needs local reason or refactor.
+- Training/data paths must be deterministic: explicit seeds, stable ordering, no unordered map iteration dependence where output matters.
+- Feature flags must be additive and explicit. Default dev path stays fast; CUDA/libtorch-heavy paths opt-in through commands/features.
+- Build scripts/native code must use precise `cargo:rerun-if-changed` and `cargo:rerun-if-env-changed`; no broad env/filesystem invalidation.
+- Unsafe blocks require short local safety invariant. Prefer safe Rust unless cost is material and measured.
+- Comments explain invariants/intent. Delete comments that restate code or became stale.
 
-1. `README.md` -- repo routing.
-2. `research/agent_handoffs/ARCHIVE_CANONICAL_CLAIMS.jsonl` -- canonical research ledger.
-3. Derived archive views as helpers only; JSONL wins on drift.
-4. `research/design/HYDRA_RECONCILIATION.md` -- Hydra v1 active path.
-5. `research/design/HYDRA_FINAL.md` -- Max Hydra ceiling, not immediate build license.
-6. `docs/CURRENT_STATUS.md` -- shipped/staged/default-on state.
-7. `docs/GAME_ENGINE.md`, `docs/COMPATIBILITY_SURFACE.md`, current code -- runtime truth; code wins on impl drift.
+## Codebase hygiene
 
-Rules:
-- Do not implement from raw archive corpus like `research/agent_handoffs/combined_all_variants/` directly. Promote claims into design/status docs first.
-- For impl work: pick lane from reconciliation, confirm status in current status, confirm runtime contract in game/compat docs + code.
-- Status words (`shipped baseline`, `implemented but staged`, `implemented but not default-on`, `reserve shelf`, `historical`) are contracts, not decoration.
-- If changing compatibility surface, update code + tests + owner doc in same cut.
+- One concept has one owner. Shared constants, DTOs, and runtime contracts live in owner crates; consumers import them instead of copying numbers, shapes, strings, or tuple contracts.
+- Validate before allocate. Binary/cache/shard readers must bound counts, lengths, and shapes before reserving `Vec` or reading payloads; writers must enforce same bounds readers enforce.
+- Optional data must be explicit. Present-but-incomplete sidecars, provenance, manifests, checkpoint metadata, and runtime tuples hard-error; only truly absent optional inputs may become `None`.
+- Reusable hot-path scratch keeps capacity. Do not use `mem::take`, `clone`, or temporary `Vec` handoff in per-turn/per-sample loops unless replacement preserves amortized allocation behavior or cost is proven irrelevant.
+- Public graph/tree APIs must reject invalid indices, action ids, and cycles at boundary; traversal helpers must not rely on private callers keeping structures acyclic.
+- Test attributes stay attached to tests. When inserting tests near cfg-gated cases, verify old test still runs under its feature gate.
+- CLI parsers must preserve documented separators and harness paths (`--`, probe-child, libtest forwarding); add focused regression tests before tightening usage errors.
 
 ## Compatibility facts not casually changed
 
@@ -70,51 +78,7 @@ Boundary rules:
 
 Use Pixi from repo root. Do not use system Cargo for normal work; Pixi pins Rust, libtorch/PyTorch, clang/mold, sccache, protobuf, and linker env.
 
-Core gates:
-
-| Command | Use |
-|---|---|
-| `pixi run torch-check` | Verify pinned PyTorch/libtorch and CUDA visibility |
-| `pixi run check-lib` | Fastest compile gate: workspace libs, no default features |
-| `pixi run test-lib` | Fast lib unit tests, no default features |
-| `pixi run test-fast` | Fast test targets, no benches/examples |
-| `pixi run check` | Default no-heavy all-target compile gate |
-| `pixi run test` | Default no-heavy all-target tests through nextest |
-| `pixi run lint` | Fast lint: anti-game scan, rustfmt, clippy |
-| `pixi run fmt` | Rustfmt only |
-| `pixi run build` | Fast dev build |
-| `pixi run build-release` | Fast release build |
-| `pixi run build-dist` | Fat-LTO prod artifact |
-| `pixi run clean` | Cargo clean |
-
-Explicit heavy/special gates:
-
-| Command | Use |
-|---|---|
-| `pixi run check-training` | CPU LibTorch `hydra-train --features training` |
-| `pixi run check-cuda-graph` | CUDA graph/pinned transport compile gate |
-| `pixi run check-training-cuda` | Alias for serious CUDA shard training check |
-| `pixi run train-cuda-shards -- <config>` | Release CUDA BC shard training with pinned/prealloc transport |
-| `pixi run check-data-tools` | Data-tool bins (`data-tools`) |
-| `pixi run check-debug-tools` | Replay-debug bins (`debug-tools`) |
-| `pixi run test-exhaustive` | All-feature test gate |
-| `pixi run lint-exhaustive` | All-feature/CUDA clippy gate |
-| `pixi run lint-cuda-graph` | Focused CUDA graph clippy gate |
-| `pixi run bench-core` | `hydra-core` benches |
-| `pixi run bench-engine` | `hydra-engine` benches |
-| `pixi run bench-train` | `hydra-train` benches |
-
-Timing/discovery:
-
-| Command | Use |
-|---|---|
-| `pixi run timings-check` | Cargo timing report for default check |
-| `pixi run timings-nextest-list` | Timing report for test discovery |
-| `pixi run timings-build-fast` | Timing report for default build |
-| `pixi run timings-full` | Timing report for all-feature build |
-| `pixi run nextest-list` | Discover default no-heavy tests |
-| `pixi run nextest-list-all-features` | Discover all-feature tests |
-| `pixi run nextest-list-exhaustive` | Alias for all-feature test discovery |
+Core gates: read `pixi.toml`
 
 Compatibility aliases: `build-fast` -> `build-release`; `nextest` -> `test`.
 
@@ -131,20 +95,12 @@ pixi run cargo nextest run <test-name> --no-default-features --cargo-profile dev
 pixi run cargo nextest run -p <crate> <ignored-test> --features <feature> --no-default-features --no-capture -- --ignored
 ```
 
-Rules:
-- Heavy paths are opt-in only: training, CUDA graph, exhaustive/all-features, data/debug tools, benches.
-- Do not compare cold-cache compile timings to warm-cache timings.
-- Clean compile measurements: `CARGO_TARGET_DIR=$HOME/tmp/hydra-compile-bench/<name> SCCACHE_DISABLE=1 pixi run ...`; normal dev leaves sccache on.
-- Python script tests: `uv run python -m unittest discover -s scripts/tests`.
-- Coverage/container/Kaggle commands live in `docker/train/README.md`.
-- Perf claims must cite `research/infrastructure/ENGINE_BENCHMARKS.md` or exact command/output observed.
+prefer faster nextest over cargo test
 
 ## Pixi/libtorch/tooling contract
 
-- `pixi.toml` + `pixi.lock` are dev/build env source of truth. Commit `pixi.lock` when env changes.
 - Single default Pixi env covers CPU/GPU. Hydra config selects `device: cpu` or `device: cuda:0`.
 - Current Burn LibTorch stack uses `burn-tch 0.21` -> `tch 0.22` -> `torch-sys 0.22`; requires exact PyTorch/libtorch `2.9.0`.
-- Do not use PyTorch `2.9.1`, newer libtorch, or `LIBTORCH_BYPASS_VERSION_CHECK` unless Burn dependency requirements changed.
 - Required env/linker settings live in `pixi.toml`: `LIBTORCH_USE_PYTORCH`, `PROTOC`, `LD_LIBRARY_PATH`, `CUDA_HOME`, `CUDA_PATH`, `RUSTC_WRAPPER`, `SCCACHE_DIR`, Pixi clang/mold, conda sysroot `libc_nonshared.a`.
 - Do not hardcode `/usr/bin/clang`, `/usr/bin/mold`, user-local tool paths, or local CUDA paths unless Pixi link failure is proven and documented.
 - `.cargo/config.toml` is local-only/gitignored.
@@ -154,11 +110,10 @@ Rules:
 ## Burn dependency decisions
 
 - Burn stack is patched locally in `third_party/burn`: `burn`, `burn-autodiff`, `burn-backend`, `burn-tch`, `burn-flex`, `burn-ndarray`, `burn-optim` at `0.21.0`.
-- Current training backend is LibTorch/tch. Do not replace with `burn-flex`: Flex is CPU-only and useful only for isolated CPU smoke/parity tests.
-- Do not adopt `burn-dispatch` in production training yet. It changes device/tensor associated types (`DispatchDevice`/`DispatchTensor`) and is not throughput fix.
-- Do not use `burn-store` for BC shard/sample materialization. It is model tensor storage, not Hydra compact sample decoding. If checkpoint time is proven material, benchmark Burnpack/SafeTensors as model-payload export only; keep optimizer `.bin` contract unless full resume parity proof passes.
+- Current training backend is LibTorch/tch
+- keep optimizer `.bin` contract unless full resume parity proof passes.
 - Keep Burn Adam as production optimizer. AdamW/AMSGrad/Adan are fresh-run experiments only; Muon requires parameter groups and is unsafe for global Hydra params; LBFGS does not fit streaming BC/RL. None fixes CUDA graph replay because Burn `GradientsParams` + module mapping remains blocker.
-- For profiling, keep Hydra timings + NVTX + Nsight Systems/Compute. Do not add `hdrhistogram` unless long-run online tail summaries are needed and existing JSONL timing extraction is insufficient.
+- For profiling, keep Hydra timings + NVTX + Nsight Systems/Compute.
 
 ## Licensing and source boundaries
 
@@ -167,23 +122,6 @@ Rules:
 - Allowed dependency families: MIT, Apache-2.0, BSD-compatible.
 - `hydra-engine` is Apache-2.0 vendored upstream.
 - First-party Hydra crates use repo BSL 1.1 unless crate-specific license says otherwise.
-- New dependency requires license check, compile-time cost check, and search for existing/simple in-repo alternative.
-
-## Implementation rules
-
-- Fix root cause at owning layer. Do not hide failure with warnings, fallback defaults, broad `Ok(())`, silent clamping, or compatibility shims.
-- If neighboring code does something different, find why before deviating. Assume load-bearing until proven otherwise.
-- Delete obsolete paths. No stale aliases, dead branches, TODO stubs, no-op implementations, or fake fallbacks.
-- Keep public API narrow. Do not make items `pub` for tests, convenience, or guessed future use.
-- App-level errors use `anyhow::Result`; library boundaries use typed errors (`thiserror`) where callers need classification.
-- No `unwrap()`/`expect()` in library/runtime code. Tests may use them only when failure cannot obscure assertion.
-- Hot paths: no needless `String`, `Vec`, heap clone, boxing, dynamic dispatch, `format!`, or per-turn allocation. Prefer borrowed slices/iterators and caller-owned buffers.
-- `clone()` must be intentional. Cheap scalar/Arc refcount OK; data clone needs local reason or refactor.
-- Training/data paths must be deterministic: explicit seeds, stable ordering, no unordered map iteration dependence where output matters.
-- Feature flags must be additive and explicit. Default dev path stays fast; CUDA/libtorch-heavy paths opt-in through commands/features.
-- Build scripts/native code must use precise `cargo:rerun-if-changed` and `cargo:rerun-if-env-changed`; no broad env/filesystem invalidation.
-- Unsafe blocks require short local safety invariant. Prefer safe Rust unless cost is material and measured.
-- Comments explain invariants/intent. Delete comments that restate code or became stale.
 
 ## High-risk Hydra surfaces
 
@@ -243,14 +181,3 @@ Useful invariants for runtime/data changes:
 - Markdown stays caveman-compressed: terse, exact, low fluff, technical substance preserved.
 - Do not commit `*.original.md` backups.
 - `scripts/caveman-compress-hook.sh` must leave source unchanged on validation failure; report exact failure, no bluff.
-
-## Self-check before yielding
-
-- Correct layer? Owner crate updated first, facade/bin glue thin?
-- Compatibility surface changed? Docs/tests updated?
-- Obsolete code deleted rather than shimmed?
-- Determinism/action/encoder/preflight/shard/checkpoint contracts preserved?
-- Hot path still allocation-clean?
-- Dependency/license/compile-time impact checked?
-- Test covers behavior that can break?
-- Claims match commands/docs observed?

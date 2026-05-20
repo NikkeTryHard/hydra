@@ -9,8 +9,9 @@ use riichienv_core::replay::MjaiEvent;
 use riichienv_core::state::GameState;
 
 pub use hydra_replay_sidecar::{
-    DeltaQSidecarIndex, REPLAY_DELTA_Q_PROVENANCE, REPLAY_DELTA_Q_SEMANTICS_V1,
-    ReplayDeltaQLookupKey, ReplayDeltaQRecordV1, validate_delta_q_contract,
+    DeltaQSidecarIndex, REPLAY_DELTA_Q_PROVENANCE, REPLAY_DELTA_Q_SEMANTICS_V1, ReplayDecisionKey,
+    ReplayDeltaQLookupKey, ReplayDeltaQRecordV1, legal_mask_digest_from_f32,
+    source_hash_from_identity, validate_delta_q_contract,
 };
 
 use crate::delta_q_validation::DeltaQValidationReport;
@@ -18,9 +19,6 @@ use crate::exit::ExitConfig;
 use crate::live_exit::{
     RootDecisionContext, SelfPlayExitAdapter, budget_from_legal_count, obs_hash,
     try_search_labels_from_context_with_batched_child_values,
-};
-use crate::replay_exit::{
-    ReplayDecisionKey, legal_mask_digest_from_f32, source_hash_from_identity,
 };
 use hydra_model::model::HydraModel;
 use hydra_replay_loader::mjai_loader::{prepare_replay_decision, update_safety};

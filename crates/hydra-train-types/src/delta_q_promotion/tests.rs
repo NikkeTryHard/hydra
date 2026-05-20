@@ -94,6 +94,47 @@ fn collect_promotion_metrics_reports_candidate_advantage() {
 }
 
 #[test]
+fn checked_promotion_metrics_reject_mismatched_and_non_finite_slices() {
+    let policy = vec![0.0f32; 2 * 46];
+    let candidate = vec![0.0f32; 2 * 46];
+    let target = vec![0.0f32; 2 * 46];
+    let mask = vec![1.0f32; 2 * 46];
+    let legal = vec![1.0f32; 2 * 46];
+    let mut inputs = DeltaQPromotionSliceInputs {
+        policy_logits: &policy,
+        policy_rows: 2,
+        policy_width: 46,
+        candidate_delta_q: &candidate,
+        candidate_delta_q_rows: 2,
+        candidate_delta_q_width: 46,
+        teacher_target: &target,
+        teacher_target_rows: 2,
+        teacher_target_width: 46,
+        teacher_mask: &mask,
+        teacher_mask_rows: 2,
+        teacher_mask_width: 46,
+        legal_mask: &legal,
+        legal_mask_rows: 2,
+        legal_mask_width: 46,
+    };
+
+    inputs.legal_mask_rows = 1;
+    assert_eq!(
+        collect_promotion_metrics_from_slices_checked(inputs, 0.5).unwrap_err(),
+        "legal_mask"
+    );
+
+    let mut bad_policy = policy.clone();
+    bad_policy[0] = f32::NAN;
+    inputs.legal_mask_rows = 2;
+    inputs.policy_logits = &bad_policy;
+    assert_eq!(
+        collect_promotion_metrics_from_slices_checked(inputs, 0.5).unwrap_err(),
+        "delta-q slice values must be finite"
+    );
+}
+
+#[test]
 fn collect_policy_transfer_metrics_reports_policy_advantage() {
     let mut delta_q_target = vec![0.0f32; 2 * 46];
     let mut delta_q_mask = vec![0.0f32; 2 * 46];
@@ -140,6 +181,36 @@ fn collect_policy_transfer_metrics_reports_policy_advantage() {
     assert_eq!(report.candidate_beats_baseline_count, 2);
     assert_eq!(report.negative_transfer_count, 0);
     assert!(report.mean_regret_improvement() > 0.0);
+}
+
+#[test]
+fn checked_policy_transfer_metrics_reject_shape_mismatch() {
+    let candidate = vec![0.0f32; 2 * 46];
+    let baseline = vec![0.0f32; 2 * 46];
+    let target = vec![0.0f32; 2 * 46];
+    let mask = vec![1.0f32; 2 * 46];
+    let legal = vec![1.0f32; 2 * 46];
+    let inputs = DeltaQPolicyTransferSliceInputs {
+        candidate_policy_logits: &candidate,
+        candidate_policy_rows: 2,
+        candidate_policy_width: 46,
+        baseline_policy_logits: &baseline,
+        baseline_policy_rows: 2,
+        baseline_policy_width: 45,
+        teacher_target: &target,
+        teacher_target_rows: 2,
+        teacher_target_width: 46,
+        teacher_mask: &mask,
+        teacher_mask_rows: 2,
+        teacher_mask_width: 46,
+        legal_mask: &legal,
+        legal_mask_rows: 2,
+        legal_mask_width: 46,
+    };
+    assert_eq!(
+        collect_policy_transfer_metrics_from_slices_checked(inputs).unwrap_err(),
+        "baseline_policy_logits"
+    );
 }
 
 #[test]

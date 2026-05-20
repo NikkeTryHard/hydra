@@ -258,6 +258,48 @@ fn chi_left_prefers_first_matching_tiles_when_duplicates_exist() {
 }
 
 #[test]
+fn chi_edges_reject_out_of_suit_without_wrapping() {
+    let mut hand = [0u8; 14];
+    hand[..4].copy_from_slice(&[0, 4, 8, 12]);
+
+    for (called_type, action_id) in [
+        (0u8, CHI_MID),
+        (1, CHI_RIGHT),
+        (8, CHI_LEFT),
+        (27, CHI_LEFT),
+    ] {
+        let ctx = GameContext {
+            last_discard: Some(called_type * 4),
+            phase: ActionPhase::Normal,
+            hand,
+            hand_len: 4,
+        };
+        let err = hydra_to_riichienv(HydraAction::new(action_id).unwrap(), &ctx).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("chi")
+                && (msg.contains("out of suit range") || msg.contains("suited tile")),
+            "unexpected error for called_type={called_type}, action_id={action_id}: {msg}"
+        );
+    }
+}
+
+#[test]
+fn chi_mid_at_suit_boundary_is_rejected() {
+    let mut hand = [0u8; 14];
+    hand[..4].copy_from_slice(&[7 * 4, 9 * 4, 10 * 4, 11 * 4]);
+    let ctx = GameContext {
+        last_discard: Some(8 * 4),
+        phase: ActionPhase::Normal,
+        hand,
+        hand_len: 4,
+    };
+
+    let err = hydra_to_riichienv(HydraAction::new(CHI_MID).unwrap(), &ctx).unwrap_err();
+    assert!(err.to_string().contains("out of suit range"));
+}
+
+#[test]
 fn agari_resolves_to_tsumo_in_normal_phase() {
     let ctx = GameContext {
         last_discard: None,

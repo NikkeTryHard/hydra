@@ -21,12 +21,14 @@ Env compatibility:
   HYDRA_LINT_CUDA_GRAPH=1     same as --cuda-graph unless --exhaustive is passed
   HYDRA_LINT_EXHAUSTIVE=1     same as --exhaustive
   HYDRA_LINT_SKIP_INSTALL=1    avoid hook install prompt/side effects
+  HYDRA_LINT_VERBOSE=1         print lint step names and successful CUDA prerequisite paths
 USAGE
 }
 
 INSTALL_HOOK=0
 ANTI_GAME_ONLY="${HYDRA_LINT_ANTI_GAME_ONLY:-0}"
 MODE=fast
+VERBOSE="${HYDRA_LINT_VERBOSE:-0}"
 if [[ "${HYDRA_LINT_EXHAUSTIVE:-0}" == "1" ]]; then
   MODE=exhaustive
 elif [[ "${HYDRA_LINT_CUDA_GRAPH:-0}" == "1" ]]; then
@@ -54,9 +56,23 @@ fail() {
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || fail "missing required command: $1"
 }
+run_rustfmt_check() {
+  if [[ "$VERBOSE" == "1" ]]; then
+    run_step 'checking rustfmt' cargo fmt --all -- --check
+    return
+  fi
+
+  local output
+  if ! output="$(cargo fmt --all -- --check 2>&1)"; then
+    printf '[hydra lint] rustfmt check failed; run `pixi run fmt` and re-run lint.\n' >&2
+    return 1
+  fi
+}
 
 run_step() {
-  printf '\n[hydra lint] %s\n' "$1"
+  if [[ "$VERBOSE" == "1" ]]; then
+    printf '\n[hydra lint] %s\n' "$1"
+  fi
   shift
   "$@"
 }
@@ -181,19 +197,20 @@ prepare_cuda_libtorch() {
     fail "CUDA graph/all-features lint prerequisites are incomplete; install CUDA toolkit and select a CUDA-enabled libtorch/PyTorch instead of skipping cuda-graph."
   fi
 
-  printf '[hydra lint] CUDA libtorch: %s\n' "$libtorch_root"
-  printf '[hydra lint] CUDA toolkit: %s\n' "$CUDA_HOME"
-  printf '[hydra lint] verified %s\n' "$libtorch_header"
-  printf '[hydra lint] verified %s\n' "$libtorch_c10_cuda"
-  printf '[hydra lint] verified %s\n' "$libtorch_torch_cuda"
-  printf '[hydra lint] verified %s\n' "$cuda_runtime_header"
-  printf '[hydra lint] verified %s\n' "$cudart_lib"
+  if [[ "$VERBOSE" == "1" ]]; then
+    printf '[hydra lint] CUDA libtorch: %s\n' "$libtorch_root"
+    printf '[hydra lint] CUDA toolkit: %s\n' "$CUDA_HOME"
+    printf '[hydra lint] verified %s\n' "$libtorch_header"
+    printf '[hydra lint] verified %s\n' "$libtorch_c10_cuda"
+    printf '[hydra lint] verified %s\n' "$libtorch_torch_cuda"
+    printf '[hydra lint] verified %s\n' "$cuda_runtime_header"
+    printf '[hydra lint] verified %s\n' "$cudart_lib"
+  fi
 }
 anti_game_scan() {
   need_cmd rg
   local failed=0
 
-  printf '\n[hydra lint] anti-game scan\n'
 
   if rg --line-number --hidden --glob '!target/**' --glob '!.git/**' --glob '!research/agent_handoffs/**' \
     '(^|[^[:alnum:]_])RUSTFLAGS=.*(^|[[:space:]])(-A|--allow)([[:space:]]|=)|cargo[[:space:]]+clippy[^\n]*--[^\n]*(^|[[:space:]])(-A|--allow)([[:space:]]|=)|CLIPPY_ARGS=.*(^|[[:space:]])(-A|--allow)([[:space:]]|=)' \
@@ -216,10 +233,10 @@ anti_game_scan() {
     failed=1
   fi
 
-  if rg --line-number --hidden --glob '!target/**' --glob '!.git/**' --glob '!research/agent_handoffs/**' \
-    '#!?\[allow\([^\]]*\)\]' \
-    crates scripts; then
-    printf '\n[hydra lint] allow attributes above are permitted only when narrow and justified; clippy enforces reason text\n'
+  if [[ "$VERBOSE" == "1" ]]; then
+    rg --line-number --hidden --glob '!target/**' --glob '!.git/**' --glob '!research/agent_handoffs/**' \
+      '#!?\[allow\([^\]]*\)\]' \
+      crates scripts || true
   fi
 
   [[ "$failed" == "0" ]] || fail 'anti-game scan failed'
@@ -253,19 +270,19 @@ if [[ "$ANTI_GAME_ONLY" == "1" ]]; then
 fi
 
 need_cmd cargo
-run_step 'checking rustfmt' cargo fmt --all -- --check
+run_rustfmt_check
 
 case "$MODE" in
   fast)
-    run_step 'checking clippy (no default features)' cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+    run_step 'checking clippy (no default features)' cargo clippy --workspace --all-targets --no-default-features --quiet -- -D warnings
     ;;
   exhaustive)
     prepare_cuda_libtorch
-    run_step 'checking clippy (all features)' cargo clippy --workspace --all-targets --all-features -- -D warnings
+    run_step 'checking clippy (all features)' cargo clippy --workspace --all-targets --all-features --quiet -- -D warnings
     ;;
   cuda-graph)
     prepare_cuda_libtorch
-    run_step 'checking clippy (hydra-train + hydra-train-exec cuda-graph)' cargo clippy -p hydra-train -p hydra-train-exec --all-targets --no-default-features --features cuda-graph -- -D warnings
+    run_step 'checking clippy (hydra-train + hydra-train-exec cuda-graph)' cargo clippy -p hydra-train -p hydra-train-exec --all-targets --no-default-features --features cuda-graph --quiet -- -D warnings
     ;;
   *)
     fail "internal error: unknown lint mode: $MODE"

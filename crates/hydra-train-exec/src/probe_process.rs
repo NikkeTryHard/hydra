@@ -44,7 +44,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 
 #[cfg(not(test))]
 use super::system_metrics::read_gpu_telemetry;
-#[cfg(not(test))]
+#[cfg(any(not(test), test))]
 use hydra_train_runtime::config::read_config;
 use hydra_train_runtime::preflight::PreflightConfig;
 #[cfg(not(test))]
@@ -848,11 +848,28 @@ pub fn execute_probe_request_window(
 
     #[cfg(test)]
     {
-        let _ = (config_path, classify_probe_detail);
+        let _ = classify_probe_detail;
+        let config = read_config(config_path)?;
+        let unsupported_device = !matches!(config.device.as_str(), "cpu" | "cuda")
+            && !config.device.starts_with("cuda:");
         let mut recovered = Vec::with_capacity(batches.len());
         for (batch, path) in batches.into_iter().zip(results_paths) {
             let candidate = batch.request.candidate_microbatch;
             let mut artifact = super::probe_transport::ProbeBatchArtifact::pending();
+            if unsupported_device {
+                let result = ProbeResult {
+                    kind: batch.request.kind,
+                    candidate_microbatch: candidate,
+                    status: ProbeStatus::BackendError,
+                    measured_samples_per_second: None,
+                    elapsed_seconds: Some(0.01),
+                    detail: format!("unsupported HYDRA_TRAIN_DEVICE={}", config.device),
+                };
+                artifact.push_result(result);
+                write_probe_batch_artifact(path, &artifact)?;
+                recovered.push(artifact.completed_results_before_failure().to_vec());
+                break;
+            }
             if candidate >= 512 {
                 let result = ProbeResult {
                     kind: batch.request.kind,

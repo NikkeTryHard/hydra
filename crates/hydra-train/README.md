@@ -60,7 +60,7 @@ Cargo target truth comes from Cargo metadata: explicit `[[bin]]` entries plus au
 | `recompress` | replay/data artifact recompression util |
 | `repack_tar` | tar replay corpus repack util |
 
-Main entrypoint: [`src/bin/train.rs`](src/bin/train.rs). Only `src/bin/train/epoch_runner.rs` remains as bin-local test harness; production execution lives in canonical crates above.
+Main entrypoint: [`src/bin/train.rs`](src/bin/train.rs). Bin-local tests live under `src/bin/train/tests/`; production execution lives in canonical crates above.
 
 ## Source map
 
@@ -68,7 +68,7 @@ Main entrypoint: [`src/bin/train.rs`](src/bin/train.rs). Only `src/bin/train/epo
 |---|---|
 | `src/lib.rs` | marker library; no public training facade |
 | `src/bin/train.rs` | train CLI entrypoint/env dispatch/delegation |
-| `src/bin/train/epoch_runner.rs` | bin-local tests for epoch-runner integration seams |
+| `src/bin/train/tests/` | bin-local tests for train entrypoint integration seams |
 | `src/bin/common/replay_sidecar_common.rs` | shared sidecar CLI flag parsing glue |
 | `src/bin/*.rs` | user-facing binary entrypoints |
 

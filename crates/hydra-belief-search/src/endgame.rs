@@ -122,13 +122,18 @@ fn normalized_particle_weights(particles: &[&Particle]) -> Vec<f32> {
         .iter()
         .map(|p| p.log_weight)
         .fold(f64::NEG_INFINITY, f64::max);
+    if !max_w.is_finite() {
+        let uniform = 1.0 / particles.len() as f32;
+        return vec![uniform; particles.len()];
+    }
     let weights: Vec<f64> = particles
         .iter()
         .map(|p| (p.log_weight - max_w).exp())
         .collect();
     let total: f64 = weights.iter().sum();
-    if total <= 0.0 {
-        return vec![0.0; particles.len()];
+    if total <= 0.0 || !total.is_finite() {
+        let uniform = 1.0 / particles.len() as f32;
+        return vec![uniform; particles.len()];
     }
     weights.into_iter().map(|w| (w / total) as f32).collect()
 }

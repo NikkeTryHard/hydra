@@ -84,8 +84,25 @@ fn split_divisible_prefix(
     logical_batch.split_at(fixed_shape_prefix_len)
 }
 
-fn amp_enabled_for_device(use_amp: bool, train_device: &LibTorchDevice) -> bool {
-    use_amp && matches!(train_device, LibTorchDevice::Cuda(_))
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct AmpPolicy {
+    enabled: bool,
+}
+
+impl AmpPolicy {
+    pub const fn disabled() -> Self {
+        Self { enabled: false }
+    }
+
+    pub fn from_request(use_amp: bool, train_device: &LibTorchDevice) -> Self {
+        Self {
+            enabled: use_amp && matches!(train_device, LibTorchDevice::Cuda(_)),
+        }
+    }
+
+    pub const fn enabled(self) -> bool {
+        self.enabled
+    }
 }
 
 fn merge_metric_sums<B: Backend>(
@@ -116,6 +133,7 @@ where
         model,
         use_amp,
     } = config;
+    let amp_policy = AmpPolicy::from_request(use_amp, train_device);
     if logical_batch.is_empty() {
         return Ok(None);
     }
@@ -152,7 +170,7 @@ where
         let t = Instant::now();
         let output = {
             let _forward_scope = crate::nvtx::scope(PROFILING_STAGE_FORWARD);
-            maybe_autocast(amp_enabled_for_device(use_amp, train_device), || {
+            maybe_autocast(amp_policy.enabled(), || {
                 model.forward_with_warmup_train(obs, &active_loss_fn.config, &warmup_heads)
             })
         };
@@ -214,7 +232,7 @@ where
         let t = Instant::now();
         let output = {
             let _forward_scope = crate::nvtx::scope(PROFILING_STAGE_FORWARD);
-            maybe_autocast(amp_enabled_for_device(use_amp, train_device), || {
+            maybe_autocast(amp_policy.enabled(), || {
                 model.forward_with_warmup_train(obs, &active_loss_fn.config, &warmup_heads)
             })
         };
@@ -287,6 +305,7 @@ where
         model,
         use_amp,
     } = config;
+    let amp_policy = AmpPolicy::from_request(use_amp, train_device);
     if logical_batch.is_empty() {
         return Ok(None);
     }
@@ -305,9 +324,7 @@ where
         else {
             continue;
         };
-        let output = maybe_autocast(amp_enabled_for_device(use_amp, train_device), || {
-            model.forward(obs)
-        });
+        let output = maybe_autocast(amp_policy.enabled(), || model.forward(obs));
         let breakdown = loss_fn.total_loss(&output, &targets);
         let chunk_weight = chunk.len() as f32 / logical_batch_len;
         let grads = (breakdown.total * chunk_weight).backward();
@@ -321,9 +338,7 @@ where
         else {
             return Ok(Some(accumulator.grads()));
         };
-        let output = maybe_autocast(amp_enabled_for_device(use_amp, train_device), || {
-            model.forward(obs)
-        });
+        let output = maybe_autocast(amp_policy.enabled(), || model.forward(obs));
         let breakdown = loss_fn.total_loss(&output, &targets);
         let chunk_weight = tail_remainder.len() as f32 / logical_batch_len;
         let grads = (breakdown.total * chunk_weight).backward();
@@ -352,6 +367,7 @@ where
         model,
         use_amp,
     } = config;
+    let amp_policy = AmpPolicy::from_request(use_amp, train_device);
     if logical_batch.is_empty() {
         return Ok(None);
     }
@@ -383,7 +399,7 @@ where
         let (active_loss_fn, warmup_heads) =
             gated_bc_context(Some(head_controller), loss_fn, &targets);
         let t_forward = Instant::now();
-        let output = maybe_autocast(amp_enabled_for_device(use_amp, train_device), || {
+        let output = maybe_autocast(amp_policy.enabled(), || {
             model.forward_with_warmup_train(obs, &active_loss_fn.config, &warmup_heads)
         });
         sub_timing.forward_seconds += t_forward.elapsed().as_secs_f64();
@@ -442,7 +458,7 @@ where
         let (active_loss_fn, warmup_heads) =
             gated_bc_context(Some(head_controller), loss_fn, &targets);
         let t_forward = Instant::now();
-        let output = maybe_autocast(amp_enabled_for_device(use_amp, train_device), || {
+        let output = maybe_autocast(amp_policy.enabled(), || {
             model.forward_with_warmup_train(obs, &active_loss_fn.config, &warmup_heads)
         });
         sub_timing.forward_seconds += t_forward.elapsed().as_secs_f64();

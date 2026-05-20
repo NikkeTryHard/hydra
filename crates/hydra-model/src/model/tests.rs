@@ -72,6 +72,17 @@ fn policy_value_cpu_returns_correct_shapes() {
 }
 
 #[test]
+#[should_panic(expected = "invalid Hydra model shape config")]
+fn init_validates_shape_before_building_model() {
+    let device = Default::default();
+    HydraModelConfig::new(1)
+        .with_input_channels(NUM_CHANNELS)
+        .with_hidden_channels(5)
+        .with_num_groups(4)
+        .init::<B>(&device);
+}
+
+#[test]
 fn policy_and_value_cpu_matches_policy_value_cpu() {
     let device = Default::default();
     let model = HydraModelConfig::actor().init::<B>(&device);
@@ -180,6 +191,23 @@ fn batch_value_cpu_reuse_matches_policy_value_values_on_dirty_buffer() {
     for (value, (_, expected_value)) in values.iter().zip(expected.iter()) {
         assert!((value - expected_value).abs() < 1e-6);
     }
+}
+
+#[test]
+fn reuse_return_api_moves_output_buffer_without_cloning() {
+    let device = Default::default();
+    let model = HydraModelConfig::actor().init::<B>(&device);
+    let observations = [[0.05f32; OBS_SIZE]];
+    let mut flat_buf = Vec::new();
+    let mut outputs_buf = Vec::with_capacity(4);
+
+    let outputs =
+        model.batch_policy_value_cpu_reuse(&observations, &device, &mut flat_buf, &mut outputs_buf);
+
+    assert_eq!(outputs.len(), observations.len());
+    assert_eq!(outputs_buf.capacity(), 0);
+    assert!(outputs[0].0.iter().all(|value| value.is_finite()));
+    assert!(outputs[0].1.is_finite());
 }
 
 #[test]
@@ -386,4 +414,22 @@ fn model_config_actor_learner_defaults() {
 fn validate_passes_for_standard_configs() {
     assert!(HydraModelConfig::actor().validate().is_ok());
     assert!(HydraModelConfig::learner().validate().is_ok());
+}
+
+#[test]
+fn validate_rejects_invalid_model_shapes() {
+    let invalid_grouping = HydraModelConfig::new(1)
+        .with_input_channels(NUM_CHANNELS)
+        .with_hidden_channels(5)
+        .with_num_groups(4);
+    assert_eq!(
+        invalid_grouping.validate(),
+        Err("hidden_channels must be divisible by num_groups")
+    );
+
+    let invalid_blocks = HydraModelConfig::new(0)
+        .with_input_channels(NUM_CHANNELS)
+        .with_hidden_channels(4)
+        .with_num_groups(4);
+    assert_eq!(invalid_blocks.validate(), Err("num_blocks must be > 0"));
 }

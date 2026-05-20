@@ -1,5 +1,7 @@
 //! Pure Hydra action-space runtime types.
 
+use crate::tile::{FIVE_MANZU, FIVE_PINZU, FIVE_SOUZU};
+
 /// Total number of distinct actions in Hydra's action space.
 pub const HYDRA_ACTION_SPACE: usize = 46;
 
@@ -63,18 +65,18 @@ impl HydraAction {
     /// Check whether this action is an aka (red five) discard.
     #[inline]
     pub const fn is_aka_discard(self) -> bool {
-        matches!(self.0, 34..=36)
+        matches!(self.0, AKA_5M | AKA_5P | AKA_5S)
     }
 
     /// For discard actions, returns the base tile type (0-33).
-    /// Aka discards map back: 34->4(5m), 35->13(5p), 36->22(5s).
+    /// Aka discards map back to their base five tile types.
     #[inline]
     pub const fn discard_tile_type(self) -> Option<u8> {
         match self.0 {
-            0..=33 => Some(self.0),
-            34 => Some(4),
-            35 => Some(13),
-            36 => Some(22),
+            DISCARD_START..=33 => Some(self.0),
+            AKA_5M => Some(FIVE_MANZU),
+            AKA_5P => Some(FIVE_PINZU),
+            AKA_5S => Some(FIVE_SOUZU),
             _ => None,
         }
     }

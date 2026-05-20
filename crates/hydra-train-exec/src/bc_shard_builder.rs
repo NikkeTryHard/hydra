@@ -37,6 +37,10 @@ const DEFAULT_RESUME_DIR_NAME: &str = ".hydra-bc-build-state";
 const PROGRESS_EVERY_GAMES: u64 = 1_000;
 const REPORT_SCHEMA_VERSION: u32 = 1;
 const RESUME_SCHEMA_VERSION: u32 = 1;
+const SAMPLE_CAP_OUTCOME_NONE: &str = "none";
+const SAMPLE_CAP_OUTCOME_NOT_REACHED: &str = "not_reached";
+const SAMPLE_CAP_OUTCOME_REACHED_EXACT: &str = "reached_exact";
+const SAMPLE_CAP_OUTCOME_REACHED_AFTER_CURRENT_GAME: &str = "reached_after_current_game";
 
 /// Builds a dense policy-target matrix from sparse action IDs.
 pub fn policy_target_vec_from_actions(actions: &[i64], batch_size: usize) -> Vec<f32> {
@@ -299,6 +303,8 @@ pub struct BcShardMaterializationReport {
     pub total_samples: u64,
     /// Whether any configured builder limit was reached.
     pub limit_reached: bool,
+    /// Explicit outcome for `--max-samples` collection.
+    pub sample_cap_outcome: String,
     /// Samples per loaded non-empty game.
     pub samples_per_loaded_non_empty_game: Option<f64>,
     /// Capped bad-source examples.
@@ -1274,6 +1280,26 @@ fn fragments_reach_sample_limit(
     })
 }
 
+fn sample_cap_reached(config: &BuildBcShardsConfig, total_samples: u64) -> bool {
+    config
+        .max_samples
+        .is_some_and(|max_samples| total_samples >= max_samples as u64)
+}
+
+fn sample_cap_outcome(config: &BuildBcShardsConfig, total_samples: u64) -> &'static str {
+    let Some(max_samples) = config.max_samples else {
+        return SAMPLE_CAP_OUTCOME_NONE;
+    };
+    let max_samples = max_samples as u64;
+    if total_samples < max_samples {
+        SAMPLE_CAP_OUTCOME_NOT_REACHED
+    } else if total_samples == max_samples {
+        SAMPLE_CAP_OUTCOME_REACHED_EXACT
+    } else {
+        SAMPLE_CAP_OUTCOME_REACHED_AFTER_CURRENT_GAME
+    }
+}
+
 fn make_optional_pool(num_threads: Option<usize>, label: &str) -> io::Result<rayon::ThreadPool> {
     let mut builder = ThreadPoolBuilder::new();
     if let Some(n) = num_threads {
@@ -1780,9 +1806,8 @@ fn make_report(
             validation_samples: counters.validation_samples,
             total_samples: counters.total_samples,
             limit_reached: plan.max_games_reached
-                || config
-                    .max_samples
-                    .is_some_and(|max| counters.total_samples >= max as u64),
+                || sample_cap_reached(config, counters.total_samples),
+            sample_cap_outcome: sample_cap_outcome(config, counters.total_samples).to_string(),
             samples_per_loaded_non_empty_game: (counters.loaded_games > 0)
                 .then(|| counters.total_samples as f64 / counters.loaded_games as f64),
             bad_source_examples,

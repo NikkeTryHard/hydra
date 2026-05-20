@@ -13,6 +13,54 @@ fn puct_selects_high_prior_unvisited() {
 }
 
 #[test]
+fn public_node_accessors_are_checked() {
+    let mut tree = AfbsTree::new();
+    let root = tree.add_node(0, 1.0, false);
+    assert!(tree.node(root).is_some());
+    assert!(tree.node(NodeIdx::MAX).is_none());
+    assert!(tree.node_mut(root).is_some());
+    assert!(tree.node_mut(NodeIdx::MAX).is_none());
+    assert_eq!(tree.puct_select(NodeIdx::MAX), None);
+    assert_eq!(tree.best_action(NodeIdx::MAX), None);
+    assert_eq!(tree.try_max_depth(NodeIdx::MAX), None);
+}
+
+#[test]
+fn dangling_child_edges_do_not_panic_public_queries() {
+    let mut tree = AfbsTree::new();
+    let root = tree.add_node(0, 1.0, false);
+    tree.nodes[root as usize].children = smallvec::smallvec![(3, NodeIdx::MAX)];
+    assert_eq!(tree.puct_select(root), None);
+    assert_eq!(tree.best_action(root), None);
+    assert_eq!(tree.root_exit_policy(root, 1.0).iter().sum::<f32>(), 0.0);
+    assert_eq!(tree.root_exit_policy(root, 0.0).iter().sum::<f32>(), 0.0);
+    assert_eq!(tree.max_depth(root), 1);
+}
+
+#[test]
+fn add_child_rejects_invalid_indices_and_actions() {
+    let mut tree = AfbsTree::new();
+    let root = tree.add_node(0, 1.0, false);
+    let child = tree.add_node(1, 0.5, false);
+    assert!(tree.add_child(root, 2, child));
+    assert!(!tree.add_child(root, HYDRA_ACTION_SPACE as u8, child));
+    assert!(!tree.add_child(root, 3, NodeIdx::MAX));
+    assert!(!tree.add_child(NodeIdx::MAX, 3, child));
+    assert_eq!(tree.child_actions(root), vec![2]);
+}
+
+#[test]
+fn cyclic_child_edges_do_not_recurse_forever() {
+    let mut tree = AfbsTree::new();
+    let root = tree.add_node(0, 1.0, false);
+    let child = tree.add_node(1, 0.5, false);
+    tree.nodes[root as usize].children = smallvec::smallvec![(0, child)];
+    tree.nodes[child as usize].children = smallvec::smallvec![(1, root)];
+
+    assert_eq!(tree.try_max_depth(root), Some(2));
+}
+
+#[test]
 fn expand_creates_top_k_children() {
     let mut tree = AfbsTree::new();
     let root = tree.add_node(0, 1.0, false);

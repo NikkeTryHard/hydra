@@ -327,17 +327,20 @@ pub fn score_delta_to_cdf(score_delta: i32) -> [f32; SCORE_BINS] {
 }
 
 /// Returns one player's final placement, where `0` is first place.
-pub fn score_to_placement(scores: [i32; 4], player: u8) -> u8 {
-    score_to_placements(scores)[player as usize]
+///
+/// Returns `None` when `player` is outside the four-player score array.
+pub fn score_to_placement(scores: [i32; 4], player: u8) -> Option<u8> {
+    score_to_placements(scores).get(player as usize).copied()
 }
 
 /// Returns final placements for all players, where `0` is first place.
 pub fn score_to_placements(scores: [i32; 4]) -> [u8; 4] {
-    let mut indexed: Vec<(i32, u8)> = scores
-        .iter()
-        .enumerate()
-        .map(|(i, &s)| (s, i as u8))
-        .collect();
+    let mut indexed: [(i32, u8); 4] = [
+        (scores[0], 0),
+        (scores[1], 1),
+        (scores[2], 2),
+        (scores[3], 3),
+    ];
     indexed.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     let mut placements = [3u8; 4];
     for (placement, (_, player)) in indexed.into_iter().enumerate() {

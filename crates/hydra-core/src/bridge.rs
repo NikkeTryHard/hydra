@@ -749,12 +749,12 @@ pub fn extract_discards_ref(obs: &ObservationRef<'_>) -> [PlayerDiscards; 4] {
     std::array::from_fn(|relative_idx| {
         let abs = (observer + relative_idx) % 4;
         let disc = obs.discards[abs];
-        let tedashi = obs.tsumogiri_flags[abs];
+        let from_hand = obs.tsumogiri_flags[abs];
         let mut pd = PlayerDiscards::new();
         for (turn, &tile136) in disc.iter().enumerate() {
             pd.push(DiscardEntry {
                 tile: (tile136 / 4),
-                is_tedashi: tedashi.get(turn).copied().unwrap_or(false),
+                is_tedashi: from_hand.get(turn).copied().unwrap_or(false),
                 turn: turn as u16,
             });
         }

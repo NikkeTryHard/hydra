@@ -146,7 +146,7 @@ impl PipelineState {
 
     /// Returns remaining GPU-hour budget across the complete rollout.
     pub fn remaining_budget(&self) -> f32 {
-        2000.0 - self.gpu_hours_used
+        (Self::total_budget() - self.gpu_hours_used).clamp(0.0, Self::total_budget())
     }
 
     /// Returns total GPU-hour budget across all phases.
@@ -156,7 +156,7 @@ impl PipelineState {
 
     /// Returns total rollout progress clamped to `[0, 1]`.
     pub fn overall_progress(&self) -> f32 {
-        (self.gpu_hours_used / Self::total_budget()).min(1.0)
+        (self.gpu_hours_used / Self::total_budget()).clamp(0.0, 1.0)
     }
 
     /// Returns current phase-local progress.
@@ -193,7 +193,9 @@ impl PipelineState {
 
     /// Adds elapsed GPU-hours.
     pub fn tick_gpu_hours(&mut self, hours: f32) {
-        self.gpu_hours_used += hours;
+        if hours.is_finite() {
+            self.gpu_hours_used = (self.gpu_hours_used + hours).clamp(0.0, Self::total_budget());
+        }
     }
 
     /// Returns whether cumulative budget permits advancing out of this phase.

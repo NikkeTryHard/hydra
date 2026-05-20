@@ -2,7 +2,10 @@ use super::*;
 use hydra_train_types::phase::TrainingPhase;
 use std::fs;
 
-use hydra_train_runtime::config::{EffectivePrecision, PrecisionMode, TrainConfig};
+use hydra_train_runtime::config::{
+    EffectivePrecision, PrecisionMode, RlPhaseConfig, RlTrainConfig, TrainConfig,
+};
+use hydra_train_types::config::DEFAULT_RL_MICROBATCH_SIZE;
 
 fn dummy_train_config() -> TrainConfig {
     TrainConfig {

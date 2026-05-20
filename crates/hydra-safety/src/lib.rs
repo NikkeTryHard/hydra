@@ -12,16 +12,29 @@ pub const TENPAI_HINT_THRESHOLD: f32 = 0.5;
 /// Number of tile types.
 const NUM_TILES: usize = hydra_runtime_types::tile::NUM_TILE_TYPES;
 
-/// Set bit `idx` (0-33) in a u64 bitfield.
+/// Set bit `idx` in a tile bitfield.
+///
+/// Indexes outside the tile-kind domain (`0..34`) are ignored.
 #[inline]
 pub fn bit_set(field: &mut u64, idx: usize) {
-    *field |= 1u64 << idx;
+    if idx < NUM_TILES {
+        *field |= 1u64 << idx;
+    }
 }
 
-/// Test bit `idx` (0-33) in a u64 bitfield.
+/// Test bit `idx` in a tile bitfield.
+///
+/// Returns `false` for indexes outside the tile-kind domain (`0..34`).
 #[inline]
 pub fn bit_test(field: u64, idx: usize) -> bool {
-    (field >> idx) & 1 != 0
+    idx < NUM_TILES && ((field >> idx) & 1 != 0)
+}
+
+#[inline]
+fn bit_clear(field: &mut u64, idx: usize) {
+    if idx < NUM_TILES {
+        *field &= !(1u64 << idx);
+    }
 }
 
 /// Safety information for the current player against all opponents.
@@ -147,9 +160,7 @@ impl SafetyInfo {
             bit_set(&mut self.genbutsu_riichi_era[opponent_idx], t);
         }
 
-        // Update visible counts and kabe/one-chance
-        self.visible_counts[t] = self.visible_counts[t].saturating_add(1);
-        self.update_kabe_one_chance(t);
+        self.record_visible_tile(t);
 
         // Update suji for this opponent
         self.update_suji(opponent_idx, t);
@@ -218,8 +229,7 @@ impl SafetyInfo {
             match (p_low, p_high) {
                 (true, true) => {
                     self.suji[opp][tile] = 1.0;
-                    // Clear half_suji bit
-                    self.half_suji[opp] &= !(1u64 << tile);
+                    bit_clear(&mut self.half_suji[opp], tile);
                 }
                 (true, false) | (false, true) => {
                     self.suji[opp][tile] = 0.5;
@@ -227,10 +237,20 @@ impl SafetyInfo {
                 }
                 (false, false) => {
                     self.suji[opp][tile] = 0.0;
-                    self.half_suji[opp] &= !(1u64 << tile);
+                    bit_clear(&mut self.half_suji[opp], tile);
                 }
             }
         }
+    }
+
+    #[inline]
+    fn record_visible_tile(&mut self, tile: usize) {
+        if tile >= NUM_TILES {
+            return;
+        }
+
+        self.visible_counts[tile] = self.visible_counts[tile].saturating_add(1);
+        self.update_kabe_one_chance(tile);
     }
 
     /// Update kabe and one-chance flags based on visible tile counts.
@@ -242,7 +262,7 @@ impl SafetyInfo {
         if self.visible_counts[tile] == 3 {
             bit_set(&mut self.one_chance, tile);
         } else {
-            self.one_chance &= !(1u64 << tile);
+            bit_clear(&mut self.one_chance, tile);
         }
     }
 }
@@ -260,22 +280,14 @@ impl SafetyInfo {
     #[inline]
     pub fn on_call(&mut self, tiles: &[u8]) {
         for &t in tiles {
-            let idx = t as usize;
-            if idx < NUM_TILES {
-                self.visible_counts[idx] = self.visible_counts[idx].saturating_add(1);
-                self.update_kabe_one_chance(idx);
-            }
+            self.record_visible_tile(t as usize);
         }
     }
 
     /// Update visible counts when a dora indicator is revealed.
     #[inline]
     pub fn on_dora_revealed(&mut self, tile_type: u8) {
-        let idx = tile_type as usize;
-        if idx < NUM_TILES {
-            self.visible_counts[idx] = self.visible_counts[idx].saturating_add(1);
-            self.update_kabe_one_chance(idx);
-        }
+        self.record_visible_tile(tile_type as usize);
     }
 }
 

@@ -3,7 +3,7 @@
 use std::io;
 
 use burn::prelude::Backend;
-use hydra_core::action::HYDRA_ACTION_SPACE;
+use hydra_core::action::{DISCARD_END, HYDRA_ACTION_SPACE};
 use hydra_core::safety::SafetyInfo;
 use hydra_replay_sidecar::legal_mask_digest_from_bool;
 use riichienv_core::replay::MjaiEvent;
@@ -82,7 +82,7 @@ pub fn generate_replay_exit_records<B: Backend>(
 
             if let Some(label) = label {
                 let supported_actions = label.mask.iter().filter(|&&m| m > 0.0).count() as u8;
-                let legal_discard_count = ctx.legal_mask[..=36]
+                let legal_discard_count = ctx.legal_mask[..=DISCARD_END as usize]
                     .iter()
                     .filter(|&&is_legal| is_legal)
                     .count() as u8;

@@ -1,5 +1,6 @@
 //! Continuous distillation: LearnerNet -> ActorNet (IMPALA-style).
 
+use crate::losses::masked_logits;
 use burn::prelude::*;
 use burn::tensor::activation;
 
@@ -46,9 +47,12 @@ pub fn distill_loss<B: Backend>(
     kd_kl_weight: f32,
     kd_mse_weight: f32,
 ) -> Tensor<B, 1> {
-    let neg_inf = (legal_mask.ones_like() - legal_mask) * (-1e9f32);
-    let teacher_pi = activation::softmax(learner_logits + neg_inf.clone(), 1);
-    let student_log_pi = activation::log_softmax(actor_logits + neg_inf, 1);
+    assert!(kd_kl_weight.is_finite(), "kd_kl_weight must be finite");
+    assert!(kd_mse_weight.is_finite(), "kd_mse_weight must be finite");
+    assert!(kd_kl_weight >= 0.0, "kd_kl_weight must be non-negative");
+    assert!(kd_mse_weight >= 0.0, "kd_mse_weight must be non-negative");
+    let teacher_pi = activation::softmax(masked_logits(learner_logits, legal_mask.clone()), 1);
+    let student_log_pi = activation::log_softmax(masked_logits(actor_logits, legal_mask), 1);
     let teacher_log_pi = teacher_pi.clone().clamp(1e-8, 1.0).log();
     let kl = (teacher_pi * (teacher_log_pi - student_log_pi))
         .sum_dim(1)

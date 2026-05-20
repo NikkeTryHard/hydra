@@ -10,6 +10,7 @@ pub mod loss_policy;
 pub mod preflight;
 pub mod probe_request;
 pub mod progress;
+pub mod resume;
 pub mod schedule;
 pub mod status;
 pub mod timing_metrics;

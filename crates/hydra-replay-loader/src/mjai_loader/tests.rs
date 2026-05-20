@@ -13,7 +13,7 @@ use riichienv_core::action::{ActionType, Phase};
 use riichienv_core::replay::read_mjai_events;
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{Cursor, Write};
+use std::io::{self, Cursor, ErrorKind, Write};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zstd::stream::write::Encoder as ZstdEncoder;
@@ -674,6 +674,30 @@ fn loader_replay_key_parity_matches_exit_and_delta_q_sidecars() {
 }
 
 #[test]
+fn present_sidecar_with_incomplete_provenance_errors() {
+    let events =
+        read_mjai_events(Cursor::new(replay_sidecar_guardrail_log())).expect("parse events");
+    let exit_records = synthetic_exit_records("game-1", 123, 1);
+
+    let err = match load_game_from_events_with_sidecar(
+        "game-1",
+        SidecarProvenance::new(Some(123), None),
+        SidecarProvenance::default(),
+        ReplayTargetProfile::with_optional_heads(false, false, false, false, true, false),
+        ReplayObservationProfile::BcMinimal,
+        events,
+        Some(&ExitSidecarIndex::from_records(exit_records)),
+        None,
+    ) {
+        Ok(_) => panic!("present sidecar without complete provenance must fail"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    assert!(err.to_string().contains("complete source_net_hash"));
+}
+
+#[test]
 fn mismatched_obs_hash_prevents_sidecar_hydration() {
     let log = replay_sidecar_guardrail_log();
     let events = read_mjai_events(Cursor::new(log)).expect("parse events");
@@ -730,7 +754,7 @@ fn mismatched_exit_provenance_does_not_block_delta_q_hydration() {
     let exit_records = synthetic_exit_records("game-1", 123, 1);
     let delta_q_records = synthetic_delta_q_records("game-1", 456, 2);
 
-    let game = load_game_from_events_with_sidecar(
+    let err = match load_game_from_events_with_sidecar(
         "game-1",
         SidecarProvenance::new(Some(999), Some(99)),
         SidecarProvenance::new(Some(456), Some(2)),
@@ -739,24 +763,15 @@ fn mismatched_exit_provenance_does_not_block_delta_q_hydration() {
         events,
         Some(&ExitSidecarIndex::from_records(exit_records)),
         Some(&DeltaQSidecarIndex::from_records(delta_q_records)),
-    )
-    .expect("load with mismatched exit provenance");
+    ) {
+        Ok(_) => panic!("mismatched exit provenance should hard-error"),
+        Err(err) => err,
+    };
 
+    assert_eq!(err.kind(), ErrorKind::InvalidData);
     assert!(
-        game.samples
-            .iter()
-            .all(|sample| sample.exit_target.is_none())
-    );
-    assert!(game.samples.iter().all(|sample| sample.exit_mask.is_none()));
-    assert!(
-        game.samples
-            .iter()
-            .any(|sample| sample.delta_q_target.is_some())
-    );
-    assert!(
-        game.samples
-            .iter()
-            .any(|sample| sample.delta_q_mask.is_some())
+        err.to_string()
+            .contains("replay ExIt sidecar source net hash mismatch")
     );
 }
 
@@ -767,7 +782,7 @@ fn mismatched_delta_q_provenance_does_not_block_exit_hydration() {
     let exit_records = synthetic_exit_records("game-1", 123, 1);
     let delta_q_records = synthetic_delta_q_records("game-1", 456, 2);
 
-    let game = load_game_from_events_with_sidecar(
+    let err = match load_game_from_events_with_sidecar(
         "game-1",
         SidecarProvenance::new(Some(123), Some(1)),
         SidecarProvenance::new(Some(999), Some(99)),
@@ -776,24 +791,15 @@ fn mismatched_delta_q_provenance_does_not_block_exit_hydration() {
         events,
         Some(&ExitSidecarIndex::from_records(exit_records)),
         Some(&DeltaQSidecarIndex::from_records(delta_q_records)),
-    )
-    .expect("load with mismatched delta_q provenance");
+    ) {
+        Ok(_) => panic!("mismatched delta_q provenance should hard-error"),
+        Err(err) => err,
+    };
 
+    assert_eq!(err.kind(), ErrorKind::InvalidData);
     assert!(
-        game.samples
-            .iter()
-            .any(|sample| sample.exit_target.is_some())
-    );
-    assert!(game.samples.iter().any(|sample| sample.exit_mask.is_some()));
-    assert!(
-        game.samples
-            .iter()
-            .all(|sample| sample.delta_q_target.is_none())
-    );
-    assert!(
-        game.samples
-            .iter()
-            .all(|sample| sample.delta_q_mask.is_none())
+        err.to_string()
+            .contains("replay delta_q sidecar source net hash mismatch")
     );
 }
 
@@ -911,9 +917,9 @@ fn load_game_from_stream_with_policy_uses_explicit_source_identity() {
 }
 
 #[test]
-fn load_game_from_stream_with_empty_policy_falls_back_to_default_loader() {
+fn load_game_from_stream_with_empty_policy_honors_non_sidecar_targets() {
     let policy = ReplayLoadPolicy::new(
-        ReplayTargetProfile::with_optional_heads(false, false, false, false, true, true),
+        ReplayTargetProfile::with_optional_heads(true, false, false, false, true, true),
         ReplayObservationProfile::BcMinimal,
         SidecarProvenance::default(),
         SidecarProvenance::default(),
@@ -931,6 +937,12 @@ fn load_game_from_stream_with_empty_policy_falls_back_to_default_loader() {
     assert!(
         game.samples
             .iter()
+            .any(|sample| sample.oracle_target.is_some()),
+        "non-sidecar optional heads should be materialized even when sidecars are absent"
+    );
+    assert!(
+        game.samples
+            .iter()
             .all(|sample| sample.exit_target.is_none())
     );
     assert!(game.samples.iter().all(|sample| sample.exit_mask.is_none()));
@@ -944,6 +956,46 @@ fn load_game_from_stream_with_empty_policy_falls_back_to_default_loader() {
             .iter()
             .all(|sample| sample.delta_q_mask.is_none())
     );
+}
+
+#[test]
+fn bc_minimal_belief_targets_use_real_observation_facts() {
+    let (log, _) = play_game_with_mjai_log(37);
+    let game = load_game_from_reader_with_sidecar(
+        "game-37",
+        SidecarProvenance::default(),
+        SidecarProvenance::default(),
+        ReplayTargetProfile::with_optional_heads(false, false, true, false, false, false),
+        ReplayObservationProfile::BcMinimal,
+        Cursor::new(log.join("\n")),
+        None,
+        None,
+    )
+    .expect("load game with belief targets");
+
+    let sample = game
+        .samples
+        .iter()
+        .find(|sample| sample.belief_fields_present)
+        .expect("BcMinimal path should produce belief targets");
+    let compact_facts = sample
+        .compact_facts
+        .as_ref()
+        .expect("compact facts should be attached");
+    assert!(
+        compact_facts.hand_counts.iter().any(|&count| count > 0),
+        "regression guard: test must exercise non-empty replay facts"
+    );
+    let belief_fields = sample
+        .belief_fields
+        .as_ref()
+        .expect("belief fields should be attached");
+    assert!(
+        belief_fields.iter().any(|&value| value > 0.0),
+        "belief target should not be built from empty observation facts"
+    );
+    assert!(sample.mixture_weights.is_none());
+    assert!(!sample.mixture_weights_present);
 }
 
 #[test]

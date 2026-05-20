@@ -15,6 +15,21 @@ fn main() {
     println!("cargo:rerun-if-env-changed=DEP_TCH_LIBTORCH_LIB");
     println!("cargo:rerun-if-env-changed=LIBTORCH_INCLUDE");
     println!("cargo:rerun-if-env-changed=LIBTORCH_USE_PYTORCH");
+    println!("cargo:rerun-if-env-changed=LIBTORCH");
+    println!("cargo:rerun-if-env-changed=LIBTORCH_LIB");
+    println!("cargo:rerun-if-env-changed=LIBTORCH_BYPASS_VERSION_CHECK");
+    println!("cargo:rerun-if-env-changed=LIBTORCH_CXX11_ABI");
+    println!("cargo:rerun-if-env-changed=LIBTORCH_STATIC");
+    println!("cargo:rerun-if-env-changed=PYTHON");
+    println!("cargo:rerun-if-env-changed=CC");
+    println!("cargo:rerun-if-env-changed=CXX");
+    println!("cargo:rerun-if-env-changed=CXXFLAGS");
+    println!("cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS");
+    println!("cargo:rerun-if-env-changed=TARGET");
+    println!("cargo:rerun-if-env-changed=HOST");
+    println!("cargo:rerun-if-env-changed=OPT_LEVEL");
+    println!("cargo:rerun-if-env-changed=DEBUG");
+    println!("cargo:rerun-if-env-changed=PROFILE");
 
     let libtorch_lib = env::var("DEP_TCH_LIBTORCH_LIB")
         .map(PathBuf::from)

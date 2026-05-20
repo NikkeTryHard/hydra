@@ -39,6 +39,13 @@ impl AchConfig {
     }
 
     pub fn validate(&self) -> Result<(), &'static str> {
+        if !self.eta.is_finite()
+            || !self.eps.is_finite()
+            || !self.l_th.is_finite()
+            || !self.beta_ent.is_finite()
+        {
+            return Err("ach config values must be finite");
+        }
         if self.eta <= 0.0 {
             return Err("eta must be positive");
         }
@@ -47,6 +54,9 @@ impl AchConfig {
         }
         if self.l_th <= 0.0 {
             return Err("l_th must be positive");
+        }
+        if self.beta_ent < 0.0 {
+            return Err("beta_ent must be non-negative");
         }
         Ok(())
     }
@@ -71,16 +81,18 @@ pub fn warmup_then_cosine_lr(
     lr_max: f64,
     lr_min: f64,
 ) -> f64 {
-    if step < warmup_steps {
-        lr_max * (step as f64 / warmup_steps as f64)
-    } else {
-        cosine_annealing_lr(
-            step - warmup_steps,
-            total_steps - warmup_steps,
-            lr_max,
-            lr_min,
-        )
+    if warmup_steps > 0 && step < warmup_steps {
+        let warmup_fraction = (step.saturating_add(1) as f64 / warmup_steps as f64).min(1.0);
+        return (lr_max * warmup_fraction).max(lr_min);
     }
+
+    let anneal_steps = total_steps.saturating_sub(warmup_steps);
+    cosine_annealing_lr(
+        step.saturating_sub(warmup_steps),
+        anneal_steps,
+        lr_max,
+        lr_min,
+    )
 }
 
 /// Behavioral-cloning ExIt loss weighting.
@@ -113,6 +125,12 @@ impl OracleGuidingConfig {
 
     /// Validates scalar schedule ranges.
     pub fn validate(&self) -> Result<(), &'static str> {
+        if !self.dropout_start.is_finite()
+            || !self.dropout_end.is_finite()
+            || !self.lr_decay_factor.is_finite()
+        {
+            return Err("oracle config values must be finite");
+        }
         if self.dropout_start < 0.0 || self.dropout_start > 1.0 {
             return Err("dropout_start in [0,1]");
         }
@@ -194,14 +212,27 @@ pub struct ModelShapeConfig {
 
 impl ModelShapeConfig {
     pub fn summary(&self) -> String {
-        let kind = if self.num_blocks <= 12 {
+        let kind = if self.is_actor() {
             "actor"
-        } else {
+        } else if self.is_learner() {
             "learner"
+        } else {
+            "custom"
         };
         format!(
-            "{}(blocks={}, ch={})",
-            kind, self.num_blocks, self.hidden_channels
+            "{}(blocks={}, input={}, hidden={}, groups={}, se={}, actions={}, score_bins={}, opponents={}, grp={}, belief_components={}, hand_type_classes={})",
+            kind,
+            self.num_blocks,
+            self.input_channels,
+            self.hidden_channels,
+            self.num_groups,
+            self.se_bottleneck,
+            self.action_space,
+            self.score_bins,
+            self.num_opponents,
+            self.grp_classes,
+            self.num_belief_components,
+            self.opponent_hand_type_classes,
         )
     }
 
@@ -214,14 +245,32 @@ impl ModelShapeConfig {
     }
 
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.num_groups == 0 || !self.hidden_channels.is_multiple_of(self.num_groups) {
-            return Err("hidden_channels must be divisible by num_groups");
-        }
         if self.num_blocks == 0 {
             return Err("num_blocks must be > 0");
         }
+        if self.input_channels == 0 {
+            return Err("input_channels must be > 0");
+        }
+        if self.hidden_channels == 0 {
+            return Err("hidden_channels must be > 0");
+        }
+        if self.num_groups == 0 || !self.hidden_channels.is_multiple_of(self.num_groups) {
+            return Err("hidden_channels must be divisible by num_groups");
+        }
         if self.se_bottleneck == 0 {
             return Err("se_bottleneck must be > 0");
+        }
+        if self.action_space == 0 {
+            return Err("action_space must be > 0");
+        }
+        if self.score_bins == 0 {
+            return Err("score_bins must be > 0");
+        }
+        if self.num_opponents == 0 {
+            return Err("num_opponents must be > 0");
+        }
+        if self.grp_classes == 0 {
+            return Err("grp_classes must be > 0");
         }
         if self.num_belief_components == 0 {
             return Err("num_belief_components must be > 0");
@@ -336,6 +385,12 @@ impl BCTrainerConfig {
     }
 
     pub fn validate(&self) -> Result<(), &'static str> {
+        if !self.lr.is_finite() || !self.min_learning_rate.is_finite() {
+            return Err("learning rates must be finite");
+        }
+        if !self.grad_clip_norm.is_finite() || !self.weight_decay.is_finite() {
+            return Err("optimizer scalar values must be finite");
+        }
         if self.lr <= 0.0 {
             return Err("lr must be positive");
         }
@@ -357,7 +412,7 @@ impl BCTrainerConfig {
         if self.warmup_steps == 0 {
             return Err("warmup_steps must be > 0");
         }
-        Ok(())
+        self.model_config.validate()
     }
 
     pub fn total_batches(&self, num_samples: usize) -> usize {
@@ -443,12 +498,25 @@ impl RlConfig {
     }
 
     pub fn validate(&self) -> Result<(), &'static str> {
+        if !self.tau_drda.is_finite()
+            || !self.lr.is_finite()
+            || !self.exit_weight.is_finite()
+            || !self.aux_weight.is_finite()
+        {
+            return Err("rl config values must be finite");
+        }
         if self.tau_drda < MIN_TAU_DRDA {
             return Err("tau_drda below minimum");
         }
         self.ach_cfg.validate()?;
         if self.lr <= 0.0 {
             return Err("lr must be positive");
+        }
+        if self.exit_weight < 0.0 || self.aux_weight < 0.0 {
+            return Err("rl loss weights must be non-negative");
+        }
+        if self.microbatch_size == Some(0) {
+            return Err("microbatch_size must be > 0");
         }
         Ok(())
     }

@@ -161,6 +161,107 @@ pub fn legal_discard_actions(step: &StepRecord) -> Vec<usize> {
         .collect()
 }
 
+fn legal_discard_actions_from_mask(legal_mask: &[bool; HYDRA_ACTION_SPACE]) -> Vec<usize> {
+    (0..=DISCARD_END as usize)
+        .filter(|&action| legal_mask[action])
+        .collect()
+}
+
+struct LiveSearchRoot {
+    legal_f32: [f32; HYDRA_ACTION_SPACE],
+    legal_discards: Vec<usize>,
+    base_pi: [f32; HYDRA_ACTION_SPACE],
+    budget: u32,
+    tree: AfbsTree,
+    root: NodeIdx,
+}
+
+fn prepare_live_search_root(
+    state: &GameState,
+    ctx: &RootDecisionContext,
+    cfg: &ExitConfig,
+    adapter: &impl ExitSearchAdapter,
+) -> Option<LiveSearchRoot> {
+    let legal_f32 = ctx.legal_mask.map(|b| if b { 1.0 } else { 0.0 });
+    if !compatible_discard_state(&legal_f32) {
+        return None;
+    }
+
+    let legal_discards = legal_discard_actions_from_mask(&ctx.legal_mask);
+    if legal_discards.len() < 2 {
+        return None;
+    }
+
+    let base_pi = softmax_temperature(&ctx.policy_logits, &ctx.legal_mask, 1.0);
+    let mut hard_slice = [0.0f32; 34];
+    for (idx, &action) in legal_discards.iter().enumerate() {
+        hard_slice[idx] = base_pi[action];
+    }
+    if !is_hard_state(
+        &hard_slice[..legal_discards.len()],
+        cfg.hard_state_threshold,
+    ) {
+        return None;
+    }
+
+    let budget = budget_from_legal_count(cfg, legal_discards.len());
+    let root_hash = adapter.root_hash(state, ctx.player_id, &ctx.obs_encoded);
+    let mut tree = AfbsTree::new();
+    let root = tree.add_node(root_hash, 1.0, false);
+    let priors: Vec<(u8, f32)> = legal_discards
+        .iter()
+        .map(|&action| (action as u8, base_pi[action]))
+        .collect();
+    seed_root_children_all_legal(&mut tree, root, root_hash, &priors);
+
+    Some(LiveSearchRoot {
+        legal_f32,
+        legal_discards,
+        base_pi,
+        budget,
+        tree,
+        root,
+    })
+}
+
+fn run_prepared_root_with_values(search: &mut LiveSearchRoot, values: &[f32]) {
+    let first_child_idx = search.tree.nodes[search.root as usize]
+        .children
+        .first()
+        .map(|&(_, idx)| idx);
+    search
+        .tree
+        .run_search_iterations(search.root, search.budget, &|child_idx| {
+            first_child_idx
+                .and_then(|first| child_idx.checked_sub(first))
+                .and_then(|offset| values.get(offset as usize).copied())
+                .unwrap_or(0.0)
+        });
+}
+
+fn labels_from_prepared_root(
+    search: &LiveSearchRoot,
+    cfg: &ExitConfig,
+) -> Option<TrajectorySearchLabels> {
+    let exit = build_exit_from_afbs_tree(
+        &search.tree,
+        search.root,
+        &search.base_pi,
+        &search.legal_f32,
+        search.budget,
+        cfg.safety_valve_max_kl,
+    )
+    .and_then(|(target, mask)| TrajectoryExitLabel::from_slices(&target, &mask));
+    let delta_q = build_delta_q_from_afbs_tree(&search.tree, search.root, &search.legal_f32)
+        .and_then(|(target, mask)| TrajectoryDeltaQLabel::from_slices(&target, &mask));
+
+    if exit.is_none() && delta_q.is_none() {
+        None
+    } else {
+        Some(TrajectorySearchLabels { exit, delta_q })
+    }
+}
+
 /// Computes the base prior from raw policy logits at temperature 1.0.
 ///
 /// Uses the raw network logits, not `pi_old` which includes self-play
@@ -263,45 +364,15 @@ where
     M: FnMut(&[f32; OBS_SIZE]) -> ([f32; HYDRA_ACTION_SPACE], f32),
 {
     let ctx = RootDecisionContext::from_step(step);
-    if !compatible_discard_state(&ctx.legal_mask.map(|b| if b { 1.0 } else { 0.0 })) {
-        return None;
-    }
+    let mut search = prepare_live_search_root(state, &ctx, cfg, adapter)?;
 
-    let legal_discards = legal_discard_actions(step);
-    if legal_discards.len() < 2 {
-        return None;
-    }
-
-    let base_pi = softmax_temperature(&ctx.policy_logits, &ctx.legal_mask, 1.0);
-    let mut hard_slice = [0.0f32; 34];
-    for (idx, &action) in legal_discards.iter().enumerate() {
-        hard_slice[idx] = base_pi[action];
-    }
-    if !is_hard_state(
-        &hard_slice[..legal_discards.len()],
-        cfg.hard_state_threshold,
-    ) {
-        return None;
-    }
-
-    let budget = budget_from_legal_count(cfg, legal_discards.len());
-    let root_hash = adapter.root_hash(state, ctx.player_id, &ctx.obs_encoded);
-    let mut tree = AfbsTree::new();
-    let root = tree.add_node(root_hash, 1.0, false);
-    let priors: Vec<(u8, f32)> = legal_discards
-        .iter()
-        .map(|&a| (a as u8, base_pi[a]))
-        .collect();
-    seed_root_children_all_legal(&mut tree, root, root_hash, &priors);
-
-    let player_safety = safety;
-    let mut values = Vec::with_capacity(legal_discards.len());
-    for &action in &legal_discards {
+    let mut values = Vec::with_capacity(search.legal_discards.len());
+    for &action in &search.legal_discards {
         let child_obs = adapter.child_public_obs_after_discard_ref(
             state,
             ctx.player_id,
             action as u8,
-            player_safety,
+            safety,
         )?;
         let (_child_logits, v_child) = model_pv(&child_obs);
         if !v_child.is_finite() {
@@ -309,35 +380,8 @@ where
         }
         values.push(v_child);
     }
-    let first_child_idx = tree.nodes[root as usize]
-        .children
-        .first()
-        .map(|&(_, idx)| idx);
-    tree.run_search_iterations(root, budget, &|child_idx| {
-        first_child_idx
-            .and_then(|first| child_idx.checked_sub(first))
-            .and_then(|offset| values.get(offset as usize).copied())
-            .unwrap_or(0.0)
-    });
-
-    let legal_f32 = ctx.legal_mask.map(|b| if b { 1.0 } else { 0.0 });
-    let exit = build_exit_from_afbs_tree(
-        &tree,
-        root,
-        &base_pi,
-        &legal_f32,
-        budget,
-        cfg.safety_valve_max_kl,
-    )
-    .and_then(|(target, mask)| TrajectoryExitLabel::from_slices(&target, &mask));
-    let delta_q = build_delta_q_from_afbs_tree(&tree, root, &legal_f32)
-        .and_then(|(target, mask)| TrajectoryDeltaQLabel::from_slices(&target, &mask));
-
-    if exit.is_none() && delta_q.is_none() {
-        None
-    } else {
-        Some(TrajectorySearchLabels { exit, delta_q })
-    }
+    run_prepared_root_with_values(&mut search, &values);
+    labels_from_prepared_root(&search, cfg)
 }
 
 /// Attempts to produce an ExIt label from a reusable root-decision context.
@@ -404,56 +448,10 @@ where
     M: FnMut(&[f32; OBS_SIZE]) -> ([f32; HYDRA_ACTION_SPACE], f32),
     A: ExitSearchAdapter,
 {
-    // Step 1: state compatibility gate
-    let legal_f32 = ctx.legal_mask.map(|b| if b { 1.0 } else { 0.0 });
-    if !compatible_discard_state(&legal_f32) {
-        return None;
-    }
+    let mut search = prepare_live_search_root(state, ctx, cfg, adapter)?;
 
-    // Step 2: minimum legal discards gate
-    let legal_discards = (0..=DISCARD_END as usize)
-        .filter(|&a| ctx.legal_mask[a])
-        .collect::<Vec<_>>();
-    if legal_discards.len() < 2 {
-        return None;
-    }
-
-    // Step 3: base policy from raw logits (not exploration temperature)
-    let base_pi = softmax_temperature(&ctx.policy_logits, &ctx.legal_mask, 1.0);
-
-    // Step 4: hard-state gate
-    let mut hard_slice = [0.0f32; 34];
-    for (idx, &action) in legal_discards.iter().enumerate() {
-        hard_slice[idx] = base_pi[action];
-    }
-    if !is_hard_state(
-        &hard_slice[..legal_discards.len()],
-        cfg.hard_state_threshold,
-    ) {
-        return None;
-    }
-
-    // Step 5: compute dynamic visit budget
-    let budget = budget_from_legal_count(cfg, legal_discards.len());
-
-    // Step 6: build AFBS tree with all legal discard children
-    let root_hash = adapter.root_hash(state, ctx.player_id, &ctx.obs_encoded);
-    let mut tree = AfbsTree::new();
-    let root = tree.add_node(root_hash, 1.0, false);
-
-    let legal_discards = (0..=DISCARD_END as usize)
-        .filter(|&a| ctx.legal_mask[a])
-        .collect::<Vec<_>>();
-    let priors: Vec<(u8, f32)> = legal_discards
-        .iter()
-        .map(|&a| (a as u8, base_pi[a]))
-        .collect();
-    seed_root_children_all_legal(&mut tree, root, root_hash, &priors);
-
-    // Step 7: evaluate each child with the model value head
-    // Cache child values so repeated PUCT visits reuse the same score.
-    let mut values = Vec::with_capacity(legal_discards.len());
-    for &action in &legal_discards {
+    let mut values = Vec::with_capacity(search.legal_discards.len());
+    for &action in &search.legal_discards {
         let child_obs = adapter.child_public_obs_after_discard(
             state,
             obs,
@@ -467,37 +465,8 @@ where
         }
         values.push(v_child);
     }
-    let first_child_idx = tree.nodes[root as usize]
-        .children
-        .first()
-        .map(|&(_, idx)| idx);
-
-    // Step 8: run root-only AFBS search with cached child values
-    tree.run_search_iterations(root, budget, &|child_idx| {
-        first_child_idx
-            .and_then(|first| child_idx.checked_sub(first))
-            .and_then(|offset| values.get(offset as usize).copied())
-            .unwrap_or(0.0)
-    });
-
-    // Step 9: build the label using the canonical visit-based teacher
-    let exit = build_exit_from_afbs_tree(
-        &tree,
-        root,
-        &base_pi,
-        &legal_f32,
-        budget,
-        cfg.safety_valve_max_kl,
-    )
-    .and_then(|(target, mask)| TrajectoryExitLabel::from_slices(&target, &mask));
-    let delta_q = build_delta_q_from_afbs_tree(&tree, root, &legal_f32)
-        .and_then(|(target, mask)| TrajectoryDeltaQLabel::from_slices(&target, &mask));
-
-    if exit.is_none() && delta_q.is_none() {
-        None
-    } else {
-        Some(TrajectorySearchLabels { exit, delta_q })
-    }
+    run_prepared_root_with_values(&mut search, &values);
+    labels_from_prepared_root(&search, cfg)
 }
 
 /// Attempts to produce ExIt and delta-q labels using batched child values.
@@ -518,43 +487,10 @@ where
     M: FnMut(&[[f32; OBS_SIZE]]) -> Vec<f32>,
     A: ExitSearchAdapter,
 {
-    let legal_f32 = ctx.legal_mask.map(|b| if b { 1.0 } else { 0.0 });
-    if !compatible_discard_state(&legal_f32) {
-        return None;
-    }
+    let mut search = prepare_live_search_root(state, ctx, cfg, adapter)?;
 
-    let legal_discards = (0..=DISCARD_END as usize)
-        .filter(|&a| ctx.legal_mask[a])
-        .collect::<Vec<_>>();
-    if legal_discards.len() < 2 {
-        return None;
-    }
-
-    let base_pi = softmax_temperature(&ctx.policy_logits, &ctx.legal_mask, 1.0);
-    let mut hard_slice = [0.0f32; 34];
-    for (idx, &action) in legal_discards.iter().enumerate() {
-        hard_slice[idx] = base_pi[action];
-    }
-    if !is_hard_state(
-        &hard_slice[..legal_discards.len()],
-        cfg.hard_state_threshold,
-    ) {
-        return None;
-    }
-
-    let budget = budget_from_legal_count(cfg, legal_discards.len());
-    let root_hash = adapter.root_hash(state, ctx.player_id, &ctx.obs_encoded);
-    let mut tree = AfbsTree::new();
-    let root = tree.add_node(root_hash, 1.0, false);
-
-    let priors: Vec<(u8, f32)> = legal_discards
-        .iter()
-        .map(|&a| (a as u8, base_pi[a]))
-        .collect();
-    seed_root_children_all_legal(&mut tree, root, root_hash, &priors);
-
-    let mut child_observations = Vec::with_capacity(legal_discards.len());
-    for &action in &legal_discards {
+    let mut child_observations = Vec::with_capacity(search.legal_discards.len());
+    for &action in &search.legal_discards {
         let child_obs = adapter.child_public_obs_after_discard(
             state,
             obs,
@@ -566,38 +502,12 @@ where
     }
 
     let values = child_values(&child_observations);
-    if values.len() != legal_discards.len() || values.iter().any(|value| !value.is_finite()) {
+    if values.len() != search.legal_discards.len() || values.iter().any(|value| !value.is_finite())
+    {
         return None;
     }
-    let first_child_idx = tree.nodes[root as usize]
-        .children
-        .first()
-        .map(|&(_, idx)| idx);
-
-    tree.run_search_iterations(root, budget, &|child_idx| {
-        first_child_idx
-            .and_then(|first| child_idx.checked_sub(first))
-            .and_then(|offset| values.get(offset as usize).copied())
-            .unwrap_or(0.0)
-    });
-
-    let exit = build_exit_from_afbs_tree(
-        &tree,
-        root,
-        &base_pi,
-        &legal_f32,
-        budget,
-        cfg.safety_valve_max_kl,
-    )
-    .and_then(|(target, mask)| TrajectoryExitLabel::from_slices(&target, &mask));
-    let delta_q = build_delta_q_from_afbs_tree(&tree, root, &legal_f32)
-        .and_then(|(target, mask)| TrajectoryDeltaQLabel::from_slices(&target, &mask));
-
-    if exit.is_none() && delta_q.is_none() {
-        None
-    } else {
-        Some(TrajectorySearchLabels { exit, delta_q })
-    }
+    run_prepared_root_with_values(&mut search, &values);
+    labels_from_prepared_root(&search, cfg)
 }
 
 /// Configuration for the live ExIt producer.

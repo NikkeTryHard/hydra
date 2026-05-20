@@ -10,6 +10,7 @@ Crate-local map for self-play coordination primitives.
 - Trajectory-to-RL-batch conversion helpers.
 - Live ExIt/DeltaQ validation hooks over self-play trajectories.
 - Cooperative state used by live search-label coordination.
+- Allocation cleanup wave: active-player turn staging uses fixed 4-seat buffers; RL advantage scratch reused; misleading batched wrapper removed after caller audit.
 
 ## Does not own
 

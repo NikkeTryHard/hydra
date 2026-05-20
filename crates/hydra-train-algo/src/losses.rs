@@ -1,7 +1,11 @@
 use burn::prelude::*;
 use burn::tensor::activation;
 
-const NEG_INF: f32 = -1e9;
+pub(crate) const MASKED_LOGIT_SENTINEL: f32 = -1e9;
+
+pub(crate) fn masked_logits<B: Backend>(logits: Tensor<B, 2>, mask: Tensor<B, 2>) -> Tensor<B, 2> {
+    logits + (mask.ones_like() - mask) * MASKED_LOGIT_SENTINEL
+}
 
 /// Computes masked soft-label policy cross entropy per sample.
 pub fn policy_ce<B: Backend>(
@@ -9,8 +13,7 @@ pub fn policy_ce<B: Backend>(
     target: Tensor<B, 2>,
     mask: Tensor<B, 2>,
 ) -> Tensor<B, 1> {
-    let masked = logits + (mask.ones_like() - mask) * NEG_INF;
-    let log_probs = activation::log_softmax(masked, 1);
+    let log_probs = activation::log_softmax(masked_logits(logits, mask), 1);
     (target * log_probs).sum_dim(1).neg().squeeze_dim::<1>(1)
 }
 
@@ -144,14 +147,18 @@ pub fn masked_action_mse<B: Backend>(
 
 /// Computes lower-tail conditional value-at-risk from a discrete PDF.
 pub fn compute_cvar(pdf: &[f32], alpha: f32) -> f32 {
-    let n = pdf.len();
-    if n == 0 || alpha <= 0.0 {
+    if pdf.is_empty() || !alpha.is_finite() || alpha <= 0.0 {
         return 0.0;
     }
+    let alpha = alpha.min(1.0);
+    let n = pdf.len();
     let mut cumsum = 0.0f32;
     let mut weighted_sum = 0.0f32;
     let bin_width = 1.0 / n as f32;
     for (i, &p) in pdf.iter().enumerate() {
+        if !p.is_finite() || p <= 0.0 {
+            continue;
+        }
         let next_cum = cumsum + p;
         if cumsum < alpha {
             let contrib = p.min(alpha - cumsum);
@@ -160,15 +167,16 @@ pub fn compute_cvar(pdf: &[f32], alpha: f32) -> f32 {
         }
         cumsum = next_cum;
     }
-    if alpha > 0.0 {
-        weighted_sum / alpha
-    } else {
-        0.0
-    }
+    weighted_sum / alpha
 }
 
 /// Mixes GAE return with a baseline value and clamps the target to [-1, 1].
 pub fn value_target_from_gae(gae_return: f32, value_baseline: f32, lambda_weight: f32) -> f32 {
+    assert!(lambda_weight.is_finite(), "lambda_weight must be finite");
+    assert!(
+        (0.0..=1.0).contains(&lambda_weight),
+        "lambda_weight must be in [0,1]"
+    );
     (lambda_weight * gae_return + (1.0 - lambda_weight) * value_baseline).clamp(-1.0, 1.0)
 }
 
@@ -179,15 +187,17 @@ pub fn soft_target_from_exit<B: Backend>(
     mask: Tensor<B, 2>,
     mix: f32,
 ) -> Tensor<B, 2> {
-    let model_probs = burn::tensor::activation::softmax(
-        model_logits + (mask.ones_like() - mask.clone()) * (-1e9f32),
-        1,
-    );
+    let model_probs = burn::tensor::activation::softmax(masked_logits(model_logits, mask), 1);
     model_probs * (1.0 - mix) + exit_target * mix
 }
 
 /// Applies uniform label smoothing to a 2-D target distribution.
 pub fn label_smoothing<B: Backend>(target: Tensor<B, 2>, alpha: f32) -> Tensor<B, 2> {
+    assert!(alpha.is_finite(), "label smoothing alpha must be finite");
+    assert!(
+        (0.0..=1.0).contains(&alpha),
+        "label smoothing alpha must be in [0,1]"
+    );
     let n = target.dims()[1] as f32;
     target * (1.0 - alpha) + (alpha / n)
 }
@@ -199,6 +209,10 @@ pub fn policy_ce_with_temperature<B: Backend>(
     mask: Tensor<B, 2>,
     temperature: f32,
 ) -> Tensor<B, 1> {
+    assert!(
+        temperature.is_finite() && temperature > 0.0,
+        "temperature must be finite and positive"
+    );
     policy_ce(logits / temperature, target, mask)
 }
 
@@ -264,8 +278,7 @@ pub fn mean_entropy<B: Backend>(probs: Tensor<B, 2>) -> Tensor<B, 1> {
 
 /// Computes masked log-softmax over action logits.
 pub fn masked_log_softmax<B: Backend>(logits: Tensor<B, 2>, mask: Tensor<B, 2>) -> Tensor<B, 2> {
-    let neg_inf = (mask.ones_like() - mask) * (-1e9f32);
-    burn::tensor::activation::log_softmax(logits + neg_inf, 1)
+    burn::tensor::activation::log_softmax(masked_logits(logits, mask), 1)
 }
 
 /// Computes soft-label cross entropy from log probabilities per sample.

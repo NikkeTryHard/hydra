@@ -8,6 +8,26 @@ fn pipeline_state_defaults() {
 }
 
 #[test]
+fn budget_and_progress_are_clamped() {
+    let mut state = PipelineState {
+        gpu_hours_used: -10.0,
+        ..PipelineState::default()
+    };
+    assert_eq!(state.remaining_budget(), PipelineState::total_budget());
+    assert_eq!(state.overall_progress(), 0.0);
+
+    state.tick_gpu_hours(f32::NAN);
+    assert_eq!(state.gpu_hours_used, -10.0);
+    state.tick_gpu_hours(3_000.0);
+    assert_eq!(state.gpu_hours_used, PipelineState::total_budget());
+    assert_eq!(state.remaining_budget(), 0.0);
+    assert_eq!(state.overall_progress(), 1.0);
+
+    state.tick_gpu_hours(-3_000.0);
+    assert_eq!(state.gpu_hours_used, 0.0);
+}
+
+#[test]
 fn phase_advancement() {
     let mut state = PipelineState::default();
     state.advance_phase();

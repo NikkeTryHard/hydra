@@ -57,7 +57,12 @@ fn simulate_single_game_with_runner(
 ) -> GameResult {
     let mut selector = crate::game_loop::FirstActionSelector;
     runner.reset_for_new_game(seed);
-    runner.run_to_completion(&mut selector);
+    let outcome = runner.run_to_completion(&mut selector);
+    assert_eq!(
+        outcome,
+        crate::game_loop::StepOutcome::Complete,
+        "batch simulator stopped before game completion: {outcome:?}"
+    );
     GameResult {
         scores: runner.scores(),
         rounds_played: runner.rounds_played(),

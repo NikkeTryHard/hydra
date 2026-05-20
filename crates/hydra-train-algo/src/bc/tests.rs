@@ -54,7 +54,7 @@ fn learning_rate_helpers_cover_zero_total_and_post_warmup_edges() {
     assert!((cosine_annealing_lr(3, 0, 1e-3, 1e-5) - 1e-3).abs() < 1e-12);
 
     let warmup_lr = warmup_then_cosine_lr(1, 4, 10, 1e-3, 1e-5);
-    assert!((warmup_lr - 2.5e-4).abs() < 1e-12);
+    assert!((warmup_lr - 5.0e-4).abs() < 1e-12);
 
     let post_warmup_lr = warmup_then_cosine_lr(7, 4, 10, 1e-3, 1e-5);
     let expected = cosine_annealing_lr(3, 6, 1e-3, 1e-5);
@@ -81,4 +81,26 @@ fn maybe_add_exit_loss_is_noop_without_targets() {
         .into_scalar()
         .elem::<f32>();
     assert!((output - 2.0).abs() < 1e-6);
+}
+
+#[test]
+fn policy_agreement_ignores_illegal_high_logit() {
+    let device: <NdArray<f32> as burn::tensor::backend::BackendTypes>::Device = Default::default();
+    let logits = Tensor::<NdArray<f32>, 2>::from_floats([[0.0, 100.0, 1.0]], &device);
+    let mask = Tensor::<NdArray<f32>, 2>::from_floats([[1.0, 0.0, 1.0]], &device);
+    let targets = Tensor::<NdArray<f32>, 1, Int>::from_ints([2], &device);
+
+    assert_eq!(policy_agreement_counts(logits, mask, targets), (1, 1));
+}
+
+#[test]
+#[should_panic(expected = "keep_prob must be finite")]
+fn oracle_guidance_mask_values_rejects_nan_keep_prob() {
+    let _ = oracle_guidance_mask_values(1, f32::NAN, &[0.0]);
+}
+
+#[test]
+#[should_panic(expected = "keep_prob must be in [0,1]")]
+fn oracle_guidance_mask_values_rejects_out_of_range_keep_prob() {
+    let _ = oracle_guidance_mask_values(1, 1.1, &[0.0]);
 }

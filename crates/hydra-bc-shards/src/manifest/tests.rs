@@ -170,3 +170,35 @@ fn bc_shard_manifest_deserializes_missing_split_mode_as_both() {
     assert_eq!(decoded.split_mode, "both");
     validate_bc_shard_manifest_contract(&decoded).expect("default both manifest should validate");
 }
+
+#[test]
+fn bc_shard_manifest_rejects_split_sample_total_overflow() {
+    let mut manifest = base_manifest();
+    let mut train = split_manifest(BcShardSplit::Train, 0);
+    train.sample_count = u64::MAX;
+    let validation = split_manifest(BcShardSplit::Validation, 1);
+    manifest.splits = vec![train, validation];
+
+    let err = validate_bc_shard_manifest_contract(&manifest)
+        .expect_err("split sample total should overflow");
+    assert!(
+        err.contains("sample_count total overflow"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn bc_shard_manifest_rejects_split_shard_total_overflow() {
+    let mut manifest = base_manifest();
+    let mut train = split_manifest(BcShardSplit::Train, 0);
+    train.shard_count = usize::MAX;
+    let validation = split_manifest(BcShardSplit::Validation, 0);
+    manifest.splits = vec![train, validation];
+
+    let err = validate_bc_shard_manifest_contract(&manifest)
+        .expect_err("split shard total should overflow");
+    assert!(
+        err.contains("shard_count total overflow"),
+        "unexpected error: {err}"
+    );
+}

@@ -199,3 +199,39 @@ fn extreme_omega_no_nan_inf() {
         }
     }
 }
+
+#[test]
+fn ess_degenerate_log_weights_use_uniform_mass() {
+    let weights = [f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NAN];
+    let ess = compute_ess_from_log_weights(&weights);
+    assert!(
+        (ess - 3.0).abs() < 1e-6,
+        "degenerate weights -> uniform ESS"
+    );
+}
+
+#[test]
+fn smc_degenerate_log_weights_use_uniform_mass() {
+    let mut rng = ChaCha8Rng::seed_from_u64(91);
+    let mut smc = CtSmc::new(CtSmcConfig {
+        rng_seed: 91,
+        num_particles: 2,
+        ess_threshold: 0.4,
+    });
+    smc.particles = vec![
+        Particle {
+            allocation: [[1; 4]; 34],
+            log_weight: f64::NEG_INFINITY,
+        },
+        Particle {
+            allocation: [[3; 4]; 34],
+            log_weight: f64::NAN,
+        },
+    ];
+
+    assert!((smc.ess() - 2.0).abs() < 1e-6);
+    assert!((smc.weighted_mean_tile_count(0, 0) - 2.0).abs() < 1e-6);
+    smc.systematic_resample(&mut rng);
+    assert_eq!(smc.particles.len(), 2);
+    assert!(smc.particles.iter().all(|p| p.log_weight == 0.0));
+}

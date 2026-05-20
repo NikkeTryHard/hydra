@@ -1,19 +1,11 @@
 use super::*;
+use crate::test_support::{parsed_tile, tiles_to_u32};
 mod game_mode;
 mod legal_actions;
 
 fn fresh_state() -> GameState {
     GameState::new(1, false, Some(7), 0, GameRule::default_tenhou())
 }
-
-fn parsed_tile(text: &str) -> u8 {
-    crate::parser::parse_tile(text).expect("test tile should parse")
-}
-
-fn tiles_to_u32(tiles: &[u8]) -> Vec<u32> {
-    tiles.iter().map(|&tile| tile as u32).collect()
-}
-
 #[test]
 fn sorted_insert_helpers_keep_tiles_ordered_across_edge_positions() {
     let mut hand = [0u8; 14];

@@ -1,5 +1,20 @@
+use crate::artifacts::{BcArtifactPaths, LatestCheckpointState, save_latest_checkpoint_and_state};
+use crate::bc_runtime::BcExitConfig;
+use crate::data::sample::MjaiSample;
+use crate::data_pipeline::{DataManifest, StreamingLoaderConfig};
+use crate::epoch_runner as exec_epoch;
 use crate::epoch_runner::*;
-use hydra_train_exec::epoch_runner as exec_epoch;
+use crate::losses::HydraLoss;
+use crate::model::{HydraModel, HydraModelConfig, HydraModelInit};
+use crate::progress::TrainSubStageTiming;
+use crate::resume::{BestValidation, EpochContinuation, RuntimeResumeContract};
+use crate::validation::ValidationSummary;
+use hydra_train_runtime::preflight::{
+    PROFILING_STAGE_BACKWARD, PROFILING_STAGE_CHECKPOINT, PROFILING_STAGE_COLLATION,
+    PROFILING_STAGE_FORWARD, PROFILING_STAGE_LOGGING, PROFILING_STAGE_LOSS,
+    PROFILING_STAGE_OPTIMIZER_STEP,
+};
+use hydra_train_runtime::progress::{BatchStats, ScalarAverages};
 use hydra_train_types::config::BCTrainerConfig;
 
 use std::fs;
@@ -7,22 +22,23 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use crate::validation_runner::{ValidationContext, ValidationRuntime};
 use burn::backend::libtorch::LibTorchDevice;
 use burn::optim::AdamConfig;
 use burn::tensor::backend::AutodiffBackend;
-use hydra_train_exec::model::{HydraModelConfig, HydraModelInit};
-use hydra_train_exec::validation_runner::{ValidationContext, ValidationRuntime};
 use hydra_train_runtime::head_gates::{HeadActivationConfig, HeadActivationController};
 use hydra_train_types::losses::HydraLossConfig;
 use indicatif::MultiProgress;
 use tboard::EventWriter;
 
-use crate::TrainBackend;
+use burn::backend::{Autodiff, LibTorch};
+
+type TrainBackend = Autodiff<LibTorch<f32>>;
 
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
 type TestValidBackend = ValidBackendOf<TrainBackend>;
 
-use hydra_train_exec::resume::read_resume_state;
+use crate::resume::read_resume_state;
 use hydra_train_runtime::config::{BcHyperparamConfig, TrainConfig};
 
 fn batch_stats(sample_count: usize, total_loss: f64, policy_agreement: f64) -> BatchStats {
@@ -124,7 +140,7 @@ impl ValidationExecutor<TrainBackend> for FakeValidationExecutor {
         _context: ValidationContext<
             '_,
             TrainConfig,
-            hydra_train_exec::data_pipeline::TrainValidationLoader<'_>,
+            crate::data_pipeline::TrainValidationLoader<'_>,
             ValidBackendOf<TrainBackend>,
         >,
         _runtime: ValidationRuntime<'_>,
@@ -383,7 +399,7 @@ fn train_logical_batch_records_microbatch_sub_stage_scope_order() {
     let train_loss_fn = dummy_train_loss();
     let logical_batch = vec![dummy_train_sample(0), dummy_train_sample(5)];
 
-    let (_, events) = hydra_train_exec::nvtx::with_test_recorder(|| {
+    let (_, events) = crate::nvtx::with_test_recorder(|| {
         train_logical_batch(
             &logical_batch,
             TrainLogicalBatchConfig {
@@ -489,30 +505,47 @@ fn train_logical_batch_sub_stage_timing_has_nonzero_values() {
     );
 
     let children = sub_timing.to_profiling_children();
-    assert_eq!(children.len(), 8);
+    assert_eq!(
+        children.len(),
+        TrainSubStageTiming::default().to_profiling_children().len()
+    );
     assert!(
-        children.iter().all(|c| {
-            c.stage == PROFILING_STAGE_PRODUCER_WAIT
-                || c.stage == PROFILING_STAGE_H2D_TRANSFER
-                || c.elapsed_seconds > 0.0
-        }),
-        "active profiling children should have positive elapsed_seconds"
+        children
+            .iter()
+            .filter(|child| child.elapsed_seconds > 0.0)
+            .any(|child| child.stage == PROFILING_STAGE_COLLATION)
+            && children
+                .iter()
+                .filter(|child| child.elapsed_seconds > 0.0)
+                .any(|child| child.stage == PROFILING_STAGE_FORWARD)
+            && children
+                .iter()
+                .filter(|child| child.elapsed_seconds > 0.0)
+                .any(|child| child.stage == PROFILING_STAGE_LOSS)
+            && children
+                .iter()
+                .filter(|child| child.elapsed_seconds > 0.0)
+                .any(|child| child.stage == PROFILING_STAGE_BACKWARD)
+            && children
+                .iter()
+                .filter(|child| child.elapsed_seconds > 0.0)
+                .any(|child| child.stage == PROFILING_STAGE_OPTIMIZER_STEP),
+        "active compute profiling children should have positive elapsed_seconds"
     );
 }
 
 #[test]
 fn emit_interval_step_summary_records_logging_scope_order() {
     let artifacts = test_artifacts("nvtx_interval_logging_scope");
-    let mut step_log =
-        hydra_train_exec::artifacts::open_step_log_appender(&artifacts.step_log_path)
-            .expect("open step log appender");
+    let mut step_log = crate::artifacts::open_step_log_appender(&artifacts.step_log_path)
+        .expect("open step log appender");
     let mut tb: Option<EventWriter<Vec<u8>>> = None;
     let multi = MultiProgress::new();
     let config = dummy_config();
     let manifest = dummy_manifest(true);
     let validation_summary = dummy_validation_summary(0.4, 0.7);
 
-    let (_, events) = hydra_train_exec::nvtx::with_test_recorder(|| {
+    let (_, events) = crate::nvtx::with_test_recorder(|| {
         emit_interval_step_summary(
             &multi,
             &mut tb,
@@ -1236,9 +1269,8 @@ fn emit_interval_step_summary_writes_skipped_validation_step_log() {
     let manifest = dummy_manifest(false);
     let multi = MultiProgress::new();
     let mut tb: Option<EventWriter<Vec<u8>>> = None;
-    let mut step_log =
-        hydra_train_exec::artifacts::open_step_log_appender(&artifacts.step_log_path)
-            .expect("open step log appender");
+    let mut step_log = crate::artifacts::open_step_log_appender(&artifacts.step_log_path)
+        .expect("open step log appender");
     let window_stats = ScalarAverages::default();
 
     emit_interval_step_summary(
@@ -1285,9 +1317,8 @@ fn emit_interval_step_summary_writes_validation_and_best_metrics() {
     let manifest = dummy_manifest(true);
     let multi = MultiProgress::new();
     let mut tb: Option<EventWriter<Vec<u8>>> = None;
-    let mut step_log =
-        hydra_train_exec::artifacts::open_step_log_appender(&artifacts.step_log_path)
-            .expect("open step log appender");
+    let mut step_log = crate::artifacts::open_step_log_appender(&artifacts.step_log_path)
+        .expect("open step log appender");
     let mut window_stats = ScalarAverages::default();
     window_stats.record_batch(batch_stats(4, 2.5, 0.4));
     let window_stats = window_stats.finalize();
@@ -1483,14 +1514,14 @@ fn finalize_epoch_outputs_writes_training_log_with_validation_metrics() {
     let train_cfg = BCTrainerConfig::new(HydraModelConfig::learner());
     let mut tb: Option<EventWriter<Vec<u8>>> = None;
     let mut training_log =
-        hydra_train_exec::artifacts::open_training_log_appender(&artifacts.training_log_path)
+        crate::artifacts::open_training_log_appender(&artifacts.training_log_path)
             .expect("open training log appender");
     let mut train_stats = ScalarAverages::default();
     train_stats.record_batch(batch_stats(4, 3.5, 0.55));
     let train_stats = train_stats.finalize();
     let val_summary = dummy_validation_summary(0.95, 0.68);
 
-    finalize_epoch_outputs::<Vec<u8>, _, _, hydra_train_exec::advisory::RuntimeAdvisory>(
+    finalize_epoch_outputs::<Vec<u8>, _, _, crate::advisory::RuntimeAdvisory>(
         &mut tb,
         &mut training_log,
         EpochFinalizeContext::new(
@@ -1552,7 +1583,7 @@ fn finalize_epoch_outputs_preserves_train_sub_stage_children_in_json() {
     let train_cfg = BCTrainerConfig::new(HydraModelConfig::learner());
     let mut tb: Option<EventWriter<Vec<u8>>> = None;
     let mut training_log =
-        hydra_train_exec::artifacts::open_training_log_appender(&artifacts.training_log_path)
+        crate::artifacts::open_training_log_appender(&artifacts.training_log_path)
             .expect("open training log appender");
     let mut train_stats = ScalarAverages::default();
     train_stats.record_batch(batch_stats(4, 3.5, 0.55));
@@ -1570,10 +1601,11 @@ fn finalize_epoch_outputs_preserves_train_sub_stage_children_in_json() {
         backward_seconds: 0.3,
         metric_readback_seconds: 0.02,
         optimizer_step_seconds: 0.05,
+        ..TrainSubStageTiming::default()
     };
     let profiling = bc_epoch_profiling(0.88, &sub_timing, None, 0.1, 0.0);
 
-    finalize_epoch_outputs::<Vec<u8>, _, _, hydra_train_exec::advisory::RuntimeAdvisory>(
+    finalize_epoch_outputs::<Vec<u8>, _, _, crate::advisory::RuntimeAdvisory>(
         &mut tb,
         &mut training_log,
         EpochFinalizeContext::new(
@@ -1661,7 +1693,7 @@ fn bc_interval_profiling_records_checkpoint_separately_from_logging() {
         exec_epoch::child_elapsed_seconds(&profiling, PROFILING_STAGE_LOGGING),
         0.0
     );
-    let input = interval_timing_input(&dummy_config(), &profiling, 4);
+    let input = interval_timing_input(&dummy_config().device, None, None, None, &profiling, 4);
     assert_eq!(input.checkpoint_seconds, 0.25);
     assert_eq!(input.logging_seconds, 0.0);
 }
@@ -1673,10 +1705,10 @@ fn finalize_epoch_outputs_writes_skipped_validation_epoch_log() {
     let train_cfg = BCTrainerConfig::new(HydraModelConfig::learner());
     let mut tb: Option<EventWriter<Vec<u8>>> = None;
     let mut training_log =
-        hydra_train_exec::artifacts::open_training_log_appender(&artifacts.training_log_path)
+        crate::artifacts::open_training_log_appender(&artifacts.training_log_path)
             .expect("open training log appender");
 
-    finalize_epoch_outputs::<Vec<u8>, _, _, hydra_train_exec::advisory::RuntimeAdvisory>(
+    finalize_epoch_outputs::<Vec<u8>, _, _, crate::advisory::RuntimeAdvisory>(
         &mut tb,
         &mut training_log,
         EpochFinalizeContext::new(
@@ -1726,11 +1758,10 @@ fn run_epoch_empty_manifest_finalizes_and_advances_epoch() {
     let mut best_validation = None;
     let mut tb: Option<EventWriter<Vec<u8>>> = None;
     let mut training_log =
-        hydra_train_exec::artifacts::open_training_log_appender(&artifacts.training_log_path)
+        crate::artifacts::open_training_log_appender(&artifacts.training_log_path)
             .expect("open training log appender");
-    let mut step_log =
-        hydra_train_exec::artifacts::open_step_log_appender(&artifacts.step_log_path)
-            .expect("open step log appender");
+    let mut step_log = crate::artifacts::open_step_log_appender(&artifacts.step_log_path)
+        .expect("open step log appender");
     let mut last_log_step = 0usize;
     let mut last_log_time = Instant::now();
     let run_start = Instant::now();
@@ -1831,11 +1862,10 @@ fn run_epoch_empty_manifest_stops_when_session_budget_is_already_exhausted() {
     });
     let mut tb: Option<EventWriter<Vec<u8>>> = None;
     let mut training_log =
-        hydra_train_exec::artifacts::open_training_log_appender(&artifacts.training_log_path)
+        crate::artifacts::open_training_log_appender(&artifacts.training_log_path)
             .expect("open training log appender");
-    let mut step_log =
-        hydra_train_exec::artifacts::open_step_log_appender(&artifacts.step_log_path)
-            .expect("open step log appender");
+    let mut step_log = crate::artifacts::open_step_log_appender(&artifacts.step_log_path)
+        .expect("open step log appender");
     let mut last_log_step = 11usize;
     let mut last_log_time = Instant::now();
     let run_start = Instant::now();
@@ -1918,11 +1948,10 @@ fn run_epoch_empty_manifest_completes_with_latest_state_and_best_checkpoint() {
     let mut best_validation = None;
     let mut tb: Option<EventWriter<Vec<u8>>> = None;
     let mut training_log =
-        hydra_train_exec::artifacts::open_training_log_appender(&artifacts.training_log_path)
+        crate::artifacts::open_training_log_appender(&artifacts.training_log_path)
             .expect("open training log appender");
-    let mut step_log =
-        hydra_train_exec::artifacts::open_step_log_appender(&artifacts.step_log_path)
-            .expect("open step log appender");
+    let mut step_log = crate::artifacts::open_step_log_appender(&artifacts.step_log_path)
+        .expect("open step log appender");
     let mut last_log_step = 0usize;
     let mut last_log_time = Instant::now();
     let run_start = Instant::now();
@@ -2076,18 +2105,17 @@ fn run_epoch_empty_manifest_records_bc_epoch_scope_order() {
     let mut best_validation = None;
     let mut tb: Option<EventWriter<Vec<u8>>> = None;
     let mut training_log =
-        hydra_train_exec::artifacts::open_training_log_appender(&artifacts.training_log_path)
+        crate::artifacts::open_training_log_appender(&artifacts.training_log_path)
             .expect("open training log appender");
-    let mut step_log =
-        hydra_train_exec::artifacts::open_step_log_appender(&artifacts.step_log_path)
-            .expect("open step log appender");
+    let mut step_log = crate::artifacts::open_step_log_appender(&artifacts.step_log_path)
+        .expect("open step log appender");
     let mut last_log_step = 0usize;
     let mut last_log_time = Instant::now();
     let run_start = Instant::now();
     let mut head_controller =
         HeadActivationController::new(HeadActivationConfig::default_with_params(1));
 
-    let (_, events) = hydra_train_exec::nvtx::with_test_recorder(|| {
+    let (_, events) = crate::nvtx::with_test_recorder(|| {
         run_epoch(
             EpochRunnerContext {
                 epoch: 1,

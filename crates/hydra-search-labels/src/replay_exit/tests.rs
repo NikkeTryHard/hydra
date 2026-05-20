@@ -127,10 +127,20 @@ fn sidecar_lookup_requires_matching_contract() {
         mask: mask.to_vec(),
     };
     let index = ExitSidecarIndex::from_records(vec![record]);
-    assert!(index.lookup_label(&key, 2, &mask, 9, 1).is_some());
-    assert!(index.lookup_label(&key, 3, &mask, 9, 1).is_none());
-    assert!(index.lookup_label(&key, 2, &mask, 10, 1).is_none());
-    assert!(index.lookup_label(&key, 2, &mask, 9, 2).is_none());
+    assert!(
+        index
+            .lookup_label(&key, 2, &mask, 9, 1)
+            .expect("lookup should not hard-error")
+            .is_some()
+    );
+    assert!(
+        index
+            .lookup_label(&key, 3, &mask, 9, 1)
+            .expect("missing key should not hard-error")
+            .is_none()
+    );
+    assert!(index.lookup_label(&key, 2, &mask, 10, 1).is_err());
+    assert!(index.lookup_label(&key, 2, &mask, 9, 2).is_err());
 }
 
 #[test]
@@ -185,8 +195,22 @@ fn sidecar_index_keeps_distinct_actions_for_same_replay_state() {
         },
     ];
     let index = ExitSidecarIndex::from_records(records);
-    assert_eq!(index.lookup_label(&key, 2, &mask, 9, 1).unwrap().0[2], 1.0);
-    assert_eq!(index.lookup_label(&key, 5, &mask, 9, 1).unwrap().0[5], 1.0);
+    assert_eq!(
+        index
+            .lookup_label(&key, 2, &mask, 9, 1)
+            .expect("lookup should not hard-error")
+            .expect("record should exist")
+            .0[2],
+        1.0
+    );
+    assert_eq!(
+        index
+            .lookup_label(&key, 5, &mask, 9, 1)
+            .expect("lookup should not hard-error")
+            .expect("record should exist")
+            .0[5],
+        1.0
+    );
 }
 
 #[test]
@@ -240,7 +264,10 @@ fn duplicate_exit_sidecar_key_last_record_wins() {
         },
     ];
     let index = ExitSidecarIndex::from_records(records);
-    let (target, loaded_mask) = index.lookup_label(&key, 2, &mask, 9, 1).expect("lookup");
+    let (target, loaded_mask) = index
+        .lookup_label(&key, 2, &mask, 9, 1)
+        .expect("lookup should not hard-error")
+        .expect("record should exist");
     assert!((target[2] - 0.75).abs() < 1e-6);
     assert_eq!(loaded_mask[2], 1.0);
 }
@@ -350,7 +377,7 @@ fn exit_sidecar_index_rejects_malformed_target_shapes() {
         mask: vec![1.0; HYDRA_ACTION_SPACE],
     };
     let index = ExitSidecarIndex::from_records(vec![record]);
-    assert!(index.lookup_label(&key, 2, &mask, 9, 1).is_none());
+    assert!(index.lookup_label(&key, 2, &mask, 9, 1).is_err());
 }
 
 #[test]
@@ -383,7 +410,7 @@ fn exit_sidecar_index_rejects_malformed_mask_shapes() {
         mask: vec![1.0; HYDRA_ACTION_SPACE - 1],
     };
     let index = ExitSidecarIndex::from_records(vec![record]);
-    assert!(index.lookup_label(&key, 2, &mask, 9, 1).is_none());
+    assert!(index.lookup_label(&key, 2, &mask, 9, 1).is_err());
 }
 
 #[test]
@@ -438,7 +465,7 @@ fn exit_sidecar_index_rejects_version_semantics_and_provenance_mismatches() {
     assert!(
         ExitSidecarIndex::from_records(vec![record.clone()])
             .lookup_label(&key, 2, &mask, 9, 1)
-            .is_none()
+            .is_err()
     );
 
     record.version = 1;
@@ -446,7 +473,7 @@ fn exit_sidecar_index_rejects_version_semantics_and_provenance_mismatches() {
     assert!(
         ExitSidecarIndex::from_records(vec![record.clone()])
             .lookup_label(&key, 2, &mask, 9, 1)
-            .is_none()
+            .is_err()
     );
 
     record.semantics = REPLAY_EXIT_SEMANTICS_V1.to_string();
@@ -454,7 +481,7 @@ fn exit_sidecar_index_rejects_version_semantics_and_provenance_mismatches() {
     assert!(
         ExitSidecarIndex::from_records(vec![record])
             .lookup_label(&key, 2, &mask, 9, 1)
-            .is_none()
+            .is_err()
     );
 }
 
@@ -493,7 +520,7 @@ fn exit_sidecar_index_rejects_legal_mask_digest_mismatch() {
     assert!(
         ExitSidecarIndex::from_records(vec![record])
             .lookup_label(&key, 2, &lookup_mask, 9, 1)
-            .is_none()
+            .is_err()
     );
 }
 

@@ -221,7 +221,7 @@ fn test_generate_self_play_batch_source_without_exit() {
 }
 
 #[test]
-fn test_batched_source_matches_serial() {
+fn test_cooperative_source_matches_serial() {
     let device = Default::default();
     let model = small_test_model_config().init::<B>(&device);
     let seeds = [42u64];
@@ -232,7 +232,7 @@ fn test_batched_source_matches_serial() {
 
     let serial = generate_self_play_batch_source(&seeds, 1.0, 40, &model, &device, cfg.clone());
     let batched =
-        generate_self_play_batch_source_batched(&seeds, 1.0, 40, &model, &device, &device, cfg);
+        generate_self_play_batch_source_cooperative(&seeds, 1.0, 40, &model, &device, cfg);
 
     assert_eq!(serial.trajectories.len(), batched.trajectories.len());
     assert_eq!(serial.values.len(), batched.values.len());
@@ -485,8 +485,8 @@ fn cooperative_runner_waits_for_pending_exit_search_before_flushing_turn() {
     let mut runner = CooperativeGameRunner::new(42, 1.0, 123, LiveExitConfig::default());
     let mut tree = AfbsTree::new();
     let root = tree.add_node(7, 1.0, false);
-    let mut turn_state = PendingTurnState::new(vec![0], 7);
-    turn_state.next_index = turn_state.players.len();
+    let mut turn_state = PendingTurnState::new(&[0], 7);
+    turn_state.next_index = turn_state.player_count;
     turn_state.pending_steps.push(None);
     turn_state.pending_values.push(0.25);
     runner.turn_state = Some(turn_state);
@@ -524,7 +524,7 @@ fn cooperative_runner_finalizes_pending_exit_step_into_original_slot() {
     let mut runner = CooperativeGameRunner::new(42, 1.0, 123, LiveExitConfig::default());
     let preserved_a_action = 0u8;
     let preserved_b_action = 1u8;
-    let mut turn_state = PendingTurnState::new(vec![0, 1, 2], 3);
+    let mut turn_state = PendingTurnState::new(&[0, 1, 2], 3);
     turn_state.pending_steps = vec![
         Some(make_test_trajectory_step(0, preserved_a_action, 3)),
         None,

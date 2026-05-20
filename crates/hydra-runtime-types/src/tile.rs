@@ -28,6 +28,10 @@ pub const SOUZU_START: u8 = 18;
 /// First honor (jihai) tile type index.
 pub const JIHAI_START: u8 = 27;
 
+pub(crate) const FIVE_MANZU: u8 = MANZU_START + 4;
+pub(crate) const FIVE_PINZU: u8 = PINZU_START + 4;
+pub(crate) const FIVE_SOUZU: u8 = SOUZU_START + 4;
+
 /// East wind tile type index.
 pub const EAST: u8 = 27;
 /// South wind tile type index.
@@ -47,12 +51,12 @@ pub const CHUN: u8 = 33;
 // Aka-dora constants (136-format indices for red fives)
 // ---------------------------------------------------------------------------
 
-/// Red 5m in 136-format. The 0th copy of tile type 4 (5m) is red.
-pub const AKA_MANZU_136: u8 = 16;
-/// Red 5p in 136-format. The 0th copy of tile type 13 (5p) is red.
-pub const AKA_PINZU_136: u8 = 52;
-/// Red 5s in 136-format. The 0th copy of tile type 22 (5s) is red.
-pub const AKA_SOUZU_136: u8 = 88;
+/// Red 5m in 136-format. The 0th copy of tile type `FIVE_MANZU` is red.
+pub const AKA_MANZU_136: u8 = FIVE_MANZU * 4;
+/// Red 5p in 136-format. The 0th copy of tile type `FIVE_PINZU` is red.
+pub const AKA_PINZU_136: u8 = FIVE_PINZU * 4;
+/// Red 5s in 136-format. The 0th copy of tile type `FIVE_SOUZU` is red.
+pub const AKA_SOUZU_136: u8 = FIVE_SOUZU * 4;
 
 /// Extended tile type indices for aka-dora (used in action encoding).
 pub const AKA_MANZU_TYPE: u8 = 34;
@@ -202,9 +206,9 @@ pub const fn tile136_is_aka(tile136: u8) -> bool {
 #[inline]
 pub const fn deaka(tile: u8) -> u8 {
     match tile {
-        AKA_MANZU_TYPE => 4,  // 5m base
-        AKA_PINZU_TYPE => 13, // 5p base
-        AKA_SOUZU_TYPE => 22, // 5s base
+        AKA_MANZU_TYPE => FIVE_MANZU,
+        AKA_PINZU_TYPE => FIVE_PINZU,
+        AKA_SOUZU_TYPE => FIVE_SOUZU,
         other => other,
     }
 }
@@ -217,9 +221,9 @@ pub const fn re_akaize(tile: u8, was_aka: bool) -> u8 {
         return tile;
     }
     match tile {
-        4 => AKA_MANZU_TYPE,
-        13 => AKA_PINZU_TYPE,
-        22 => AKA_SOUZU_TYPE,
+        FIVE_MANZU => AKA_MANZU_TYPE,
+        FIVE_PINZU => AKA_PINZU_TYPE,
+        FIVE_SOUZU => AKA_SOUZU_TYPE,
         other => other,
     }
 }

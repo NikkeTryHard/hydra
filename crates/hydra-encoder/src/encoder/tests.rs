@@ -10,6 +10,223 @@ fn encoder_geometry_abi_constants_are_frozen() {
     assert_eq!(OBS_SIZE, NUM_CHANNELS * NUM_TILES);
 }
 
+#[test]
+fn baseline_layout_metadata_covers_exact_85_prefix() {
+    assert_eq!(BASELINE_LAYOUT[0].start, 0);
+    let mut cursor = 0;
+    for range in BASELINE_LAYOUT {
+        assert_eq!(range.start, cursor);
+        assert!(range.end > range.start);
+        cursor = range.end;
+    }
+    assert_eq!(cursor, BASELINE_CHANNELS);
+    assert_eq!(BASELINE_CHANNELS * NUM_TILES, CH_SEARCH * NUM_TILES);
+}
+
+type EncoderInputs = (
+    [u8; NUM_TILES],
+    Option<u8>,
+    [u8; NUM_TILES],
+    [PlayerDiscards; NUM_PLAYERS],
+    [PlayerMelds; NUM_PLAYERS],
+    DoraInfo,
+    GameMetadata,
+    SafetyInfo,
+);
+
+fn nontrivial_encoder_inputs() -> EncoderInputs {
+    let mut hand = [0u8; NUM_TILES];
+    hand[0] = 1;
+    hand[1] = 1;
+    hand[2] = 1;
+    hand[3] = 1;
+    hand[4] = 1;
+    hand[5] = 1;
+    hand[9] = 2;
+    hand[18] = 1;
+    hand[22] = 1;
+    hand[27] = 2;
+    hand[31] = 1;
+    hand[33] = 1;
+
+    let mut open_meld = [0u8; NUM_TILES];
+    open_meld[12] = 3;
+    open_meld[30] = 4;
+
+    let mut discards = empty_discards();
+    discards[0].push(DiscardEntry {
+        tile: 6,
+        is_tedashi: true,
+        turn: 0,
+    });
+    discards[0].push(DiscardEntry {
+        tile: 8,
+        is_tedashi: false,
+        turn: 3,
+    });
+    discards[1].push(DiscardEntry {
+        tile: 14,
+        is_tedashi: true,
+        turn: 2,
+    });
+    discards[2].push(DiscardEntry {
+        tile: 28,
+        is_tedashi: false,
+        turn: 1,
+    });
+
+    let mut melds = empty_melds();
+    melds[1].push(MeldInfo {
+        tiles: [12, 13, 14, 0],
+        tile_count: 3,
+        meld_type: MeldType::Chi,
+    });
+    melds[2].push(MeldInfo {
+        tiles: [30, 30, 30, 30],
+        tile_count: 4,
+        meld_type: MeldType::Kan,
+    });
+
+    let dora = DoraInfo {
+        indicators: [4, 4, 17, 0, 0],
+        indicator_count: 3,
+        aka_flags: [true, false, true],
+    };
+    let meta = GameMetadata {
+        riichi: [false, true, false, true],
+        scores: [32000, 18000, 25000, 25000],
+        shanten: 1,
+        kyoku_index: 5,
+        honba: 3,
+        kyotaku: 2,
+    };
+    let mut safety = SafetyInfo::new();
+    bit_set(&mut safety.genbutsu_all[0], 6);
+    bit_set(&mut safety.genbutsu_tedashi[1], 14);
+    bit_set(&mut safety.genbutsu_riichi_era[2], 28);
+    safety.suji[0][0] = 1.0;
+    bit_set(&mut safety.half_suji[1], 7);
+    safety.matagi[2][12] = 0.75;
+    bit_set(&mut safety.kabe, 31);
+    bit_set(&mut safety.one_chance, 19);
+    safety.set_tenpai_prediction(0, 0.9);
+
+    (
+        hand,
+        Some(22),
+        open_meld,
+        discards,
+        melds,
+        dora,
+        meta,
+        safety,
+    )
+}
+
+fn assert_prefix_eq(left: &[f32; OBS_SIZE], right: &[f32; OBS_SIZE], end_channel: usize) {
+    for i in 0..end_channel * NUM_TILES {
+        assert_eq!(left[i], right[i], "prefix mismatch at flat index {i}");
+    }
+}
+
+#[test]
+fn precomputed_shanten_full_encode_preserves_85_prefix() {
+    let (hand, drawn_tile, open_meld, discards, melds, dora, meta, safety) =
+        nontrivial_encoder_inputs();
+    let total: u8 = hand.iter().sum();
+    let shanten_batch = shanten_batch::batch_discard_shanten(&hand, total / 3);
+
+    let mut computed = ObservationEncoder::new();
+    computed.encode(
+        &hand, drawn_tile, &open_meld, &discards, &melds, &dora, &meta, &safety,
+    );
+
+    let mut precomputed = ObservationEncoder::new();
+    precomputed.encode_with_context_and_shanten_batch(
+        &hand,
+        drawn_tile,
+        &open_meld,
+        &discards,
+        &melds,
+        &dora,
+        &meta,
+        &safety,
+        &shanten_batch,
+        None,
+        None,
+    );
+
+    assert_prefix_eq(
+        computed.as_slice(),
+        precomputed.as_slice(),
+        BASELINE_CHANNELS,
+    );
+    assert!(
+        precomputed.as_slice()[BASELINE_CHANNELS * NUM_TILES..]
+            .iter()
+            .all(|&v| v == 0.0)
+    );
+}
+
+#[test]
+fn precomputed_shanten_path_preserves_context_order_after_85_prefix() {
+    let (hand, drawn_tile, open_meld, discards, melds, dora, meta, safety) =
+        nontrivial_encoder_inputs();
+    let total: u8 = hand.iter().sum();
+    let shanten_batch = shanten_batch::batch_discard_shanten(&hand, total / 3);
+    let mut search = SearchFeaturePlanes {
+        belief_features_present: true,
+        search_features_present: true,
+        ..SearchFeaturePlanes::default()
+    };
+    search.belief_fields[0][5] = 0.25;
+    search.delta_q[7] = -0.5;
+    let mut hand_ev = HandEvFeatures::default();
+    hand_ev.tenpai_prob[3][1] = 0.4;
+    hand_ev.expected_score[3] = 3900.0;
+
+    let mut computed = ObservationEncoder::new();
+    computed.encode_with_context(
+        &hand,
+        drawn_tile,
+        &open_meld,
+        &discards,
+        &melds,
+        &dora,
+        &meta,
+        &safety,
+        Some(&search),
+        Some(&hand_ev),
+    );
+
+    let mut precomputed = ObservationEncoder::new();
+    precomputed.encode_with_context_and_shanten_batch(
+        &hand,
+        drawn_tile,
+        &open_meld,
+        &discards,
+        &melds,
+        &dora,
+        &meta,
+        &safety,
+        &shanten_batch,
+        Some(&search),
+        Some(&hand_ev),
+    );
+
+    for i in 0..OBS_SIZE {
+        assert_eq!(
+            computed.as_slice()[i],
+            precomputed.as_slice()[i],
+            "context path mismatch at flat index {i}"
+        );
+    }
+    assert_eq!(get(&precomputed, SEARCH_CHANNEL_START, 5), 0.25);
+    assert_eq!(get(&precomputed, SEARCH_DELTA_Q_CHANNEL, 7), -0.5);
+    assert_eq!(get(&precomputed, HAND_EV_CHANNEL_START + 1, 3), 0.4);
+    assert_eq!(get(&precomputed, HAND_EV_CHANNEL_START + 6, 3), 3900.0);
+}
+
 /// Helper: read a single cell from the obs buffer.
 fn get(enc: &ObservationEncoder, ch: usize, tile: usize) -> f32 {
     enc.as_slice()[ch * NUM_TILES + tile]

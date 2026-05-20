@@ -105,10 +105,20 @@ fn sidecar_lookup_requires_matching_contract() {
         mask: mask.to_vec(),
     };
     let index = DeltaQSidecarIndex::from_records(vec![record]);
-    assert!(index.lookup_label(&key, 2, &mask, 9, 1).is_some());
-    assert!(index.lookup_label(&key, 3, &mask, 9, 1).is_none());
-    assert!(index.lookup_label(&key, 2, &mask, 10, 1).is_none());
-    assert!(index.lookup_label(&key, 2, &mask, 9, 2).is_none());
+    assert!(
+        index
+            .lookup_label(&key, 2, &mask, 9, 1)
+            .expect("lookup should not hard-error")
+            .is_some()
+    );
+    assert!(
+        index
+            .lookup_label(&key, 3, &mask, 9, 1)
+            .expect("missing key should not hard-error")
+            .is_none()
+    );
+    assert!(index.lookup_label(&key, 2, &mask, 10, 1).is_err());
+    assert!(index.lookup_label(&key, 2, &mask, 9, 2).is_err());
 }
 
 #[test]
@@ -183,7 +193,10 @@ fn duplicate_delta_q_sidecar_key_last_record_wins() {
         },
     ];
     let index = DeltaQSidecarIndex::from_records(records);
-    let (target, loaded_mask) = index.lookup_label(&key, 2, &mask, 9, 1).expect("lookup");
+    let (target, loaded_mask) = index
+        .lookup_label(&key, 2, &mask, 9, 1)
+        .expect("lookup should not hard-error")
+        .expect("record should exist");
     assert!((target[2] + 0.5).abs() < 1e-6);
     assert_eq!(loaded_mask[2], 1.0);
 }
@@ -227,7 +240,7 @@ fn sidecar_lookup_rejects_invalid_delta_q_structure() {
         mask: mask.to_vec(),
     };
     let index = DeltaQSidecarIndex::from_records(vec![record]);
-    assert!(index.lookup_label(&key, 2, &legal_mask, 9, 1).is_none());
+    assert!(index.lookup_label(&key, 2, &legal_mask, 9, 1).is_err());
 }
 
 #[test]
@@ -355,7 +368,7 @@ fn delta_q_sidecar_lookup_rejects_version_semantics_and_provenance_mismatches() 
     assert!(
         DeltaQSidecarIndex::from_records(vec![record.clone()])
             .lookup_label(&key, 2, &legal_mask, 9, 1)
-            .is_none()
+            .is_err()
     );
 
     record.version = 1;
@@ -363,7 +376,7 @@ fn delta_q_sidecar_lookup_rejects_version_semantics_and_provenance_mismatches() 
     assert!(
         DeltaQSidecarIndex::from_records(vec![record.clone()])
             .lookup_label(&key, 2, &legal_mask, 9, 1)
-            .is_none()
+            .is_err()
     );
 
     record.semantics = REPLAY_DELTA_Q_SEMANTICS_V1.to_string();
@@ -371,7 +384,7 @@ fn delta_q_sidecar_lookup_rejects_version_semantics_and_provenance_mismatches() 
     assert!(
         DeltaQSidecarIndex::from_records(vec![record])
             .lookup_label(&key, 2, &legal_mask, 9, 1)
-            .is_none()
+            .is_err()
     );
 }
 
@@ -407,7 +420,7 @@ fn delta_q_sidecar_lookup_rejects_digest_mismatch_and_missing_masked_action() {
     assert!(
         DeltaQSidecarIndex::from_records(vec![record.clone()])
             .lookup_label(&key, 2, &lookup_legal_mask, 9, 1)
-            .is_none()
+            .is_err()
     );
 
     let no_mask_record = ReplayDeltaQRecordV1 {
@@ -417,7 +430,7 @@ fn delta_q_sidecar_lookup_rejects_digest_mismatch_and_missing_masked_action() {
     assert!(
         DeltaQSidecarIndex::from_records(vec![no_mask_record])
             .lookup_label(&key, 2, &stored_legal_mask, 9, 1)
-            .is_none()
+            .is_err()
     );
 }
 

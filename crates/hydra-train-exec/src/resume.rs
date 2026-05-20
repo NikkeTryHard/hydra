@@ -3,8 +3,6 @@
     reason = "moved train execution support preserves existing public surface"
 )]
 
-pub const DEFAULT_RL_MICROBATCH_SIZE: usize = 128;
-
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,94 +10,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use colored::Colorize;
 
-use hydra_train_types::phase::PipelineState;
-
 use super::artifacts::atomic_write_text;
-use hydra_train_runtime::config::{
-    EffectivePrecision, PrecisionMode, RlPhaseConfig, RlTrainConfig, TrainConfig,
-    train_microbatch_size, validation_microbatch_size,
-};
-
+use hydra_train_runtime::config::{EffectivePrecision, PrecisionMode, TrainConfig};
 use hydra_train_runtime::preflight::requested_precision_signature;
-#[derive(Debug, Clone, Copy, serde::Serialize, PartialEq, Eq)]
-pub struct RuntimeResumeContract {
-    pub batch_size: usize,
-    pub train_microbatch_size: usize,
-    pub validation_microbatch_size: usize,
-    pub accum_steps: usize,
-    /// Legacy requested-precision field retained for current resume-state compatibility.
-    pub precision_mode: PrecisionMode,
-    pub requested_precision: PrecisionMode,
-    pub effective_precision: EffectivePrecision,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RuntimeResumeContractYaml {
-    batch_size: usize,
-    train_microbatch_size: usize,
-    validation_microbatch_size: usize,
-    accum_steps: usize,
-    precision_mode: PrecisionMode,
-    requested_precision: Option<PrecisionMode>,
-    effective_precision: Option<EffectivePrecision>,
-}
-
-impl<'de> serde::Deserialize<'de> for RuntimeResumeContract {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let raw = RuntimeResumeContractYaml::deserialize(deserializer)?;
-        let requested_precision = raw.requested_precision.unwrap_or(raw.precision_mode);
-        let effective_precision = raw
-            .effective_precision
-            .unwrap_or_else(|| legacy_effective_precision_for_missing_field(requested_precision));
-        Ok(Self {
-            batch_size: raw.batch_size,
-            train_microbatch_size: raw.train_microbatch_size,
-            validation_microbatch_size: raw.validation_microbatch_size,
-            accum_steps: raw.accum_steps,
-            precision_mode: raw.precision_mode,
-            requested_precision,
-            effective_precision,
-        })
-    }
-}
-
-const fn legacy_effective_precision_for_missing_field(
-    requested_precision: PrecisionMode,
-) -> EffectivePrecision {
-    match requested_precision {
-        PrecisionMode::Fp32 => EffectivePrecision::Fp32,
-        PrecisionMode::Bf16Autocast => EffectivePrecision::Fp32NoopForBf16Request,
-    }
-}
-
-#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct BestValidation {
-    pub policy_loss: f64,
-    pub agreement: f64,
-}
-
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-pub enum ResumeSemantics {
-    RestoreOptimizerSkipSeenSamples,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct BcResumeState {
-    pub schema_version: u32,
-    pub resume_semantics: ResumeSemantics,
-    pub next_epoch: usize,
-    pub skip_optimizer_steps_in_epoch: usize,
-    pub global_step: usize,
-    pub best_validation: Option<BestValidation>,
-    pub runtime: RuntimeResumeContract,
-    pub saved_at_unix_s: u64,
-}
+pub use hydra_train_runtime::resume::{
+    BcResumeState, BestValidation, ResumeSemantics, RlResumeSemantics, RlResumeState,
+    RlRuntimeResumeContract, RuntimeResumeContract, rl_runtime_resume_contract,
+    runtime_resume_contract, validate_resume_runtime_compatibility,
+    validate_rl_resume_runtime_compatibility,
+};
+use hydra_train_types::phase::PipelineState;
 
 pub struct ResumeContext {
     pub checkpoint_base: Option<PathBuf>,
@@ -107,65 +27,6 @@ pub struct ResumeContext {
     pub optimizer_base: Option<PathBuf>,
     pub session_start_global_step: usize,
     pub start_epoch: usize,
-}
-
-#[derive(Debug, Clone, Copy, serde::Serialize, PartialEq, Eq)]
-pub struct RlRuntimeResumeContract {
-    pub games_per_batch: usize,
-    pub microbatch_size: usize,
-    pub phase: RlPhaseConfig,
-    /// Legacy requested-precision field retained for current resume-state compatibility.
-    pub precision_mode: PrecisionMode,
-    pub requested_precision: PrecisionMode,
-    pub effective_precision: EffectivePrecision,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RlRuntimeResumeContractYaml {
-    games_per_batch: usize,
-    microbatch_size: usize,
-    phase: RlPhaseConfig,
-    precision_mode: PrecisionMode,
-    requested_precision: Option<PrecisionMode>,
-    effective_precision: Option<EffectivePrecision>,
-}
-
-impl<'de> serde::Deserialize<'de> for RlRuntimeResumeContract {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let raw = RlRuntimeResumeContractYaml::deserialize(deserializer)?;
-        let requested_precision = raw.requested_precision.unwrap_or(raw.precision_mode);
-        let effective_precision = raw
-            .effective_precision
-            .unwrap_or_else(|| legacy_effective_precision_for_missing_field(requested_precision));
-        Ok(Self {
-            games_per_batch: raw.games_per_batch,
-            microbatch_size: raw.microbatch_size,
-            phase: raw.phase,
-            precision_mode: raw.precision_mode,
-            requested_precision,
-            effective_precision,
-        })
-    }
-}
-
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-pub enum RlResumeSemantics {
-    RestoreOptimizerFreshSelfPlay,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct RlResumeState {
-    pub schema_version: u32,
-    pub resume_semantics: RlResumeSemantics,
-    pub global_step: usize,
-    pub pipeline_state: PipelineState,
-    pub runtime: RlRuntimeResumeContract,
-    pub saved_at_unix_s: u64,
 }
 
 pub struct RlResumeContext {
@@ -351,78 +212,6 @@ pub fn read_rl_resume_state(path: &Path) -> Result<RlResumeState, String> {
         ));
     }
     Ok(state)
-}
-
-pub fn runtime_resume_contract(config: &TrainConfig) -> RuntimeResumeContract {
-    let train_microbatch_size = train_microbatch_size(config);
-    RuntimeResumeContract {
-        batch_size: config.batch_size,
-        train_microbatch_size,
-        validation_microbatch_size: validation_microbatch_size(config),
-        accum_steps: config.batch_size.div_ceil(train_microbatch_size).max(1),
-        precision_mode: config.precision_mode,
-        requested_precision: config.precision_mode,
-        effective_precision: config.effective_precision(),
-    }
-}
-
-pub fn rl_runtime_resume_contract(rl: &RlTrainConfig) -> RlRuntimeResumeContract {
-    RlRuntimeResumeContract {
-        games_per_batch: rl.games_per_batch,
-        microbatch_size: rl.microbatch_size.unwrap_or(DEFAULT_RL_MICROBATCH_SIZE),
-        phase: rl.phase,
-        precision_mode: PrecisionMode::Fp32,
-        requested_precision: PrecisionMode::Fp32,
-        effective_precision: EffectivePrecision::Fp32,
-    }
-}
-
-pub fn validate_rl_resume_runtime_compatibility(
-    state: &RlResumeState,
-    current: RlRuntimeResumeContract,
-) -> Result<(), String> {
-    if state.runtime != current {
-        return Err(format!(
-            "RL resume runtime mismatch: checkpoint games_per_batch={} microbatch_size={} phase={:?} current games_per_batch={} microbatch_size={} phase={:?}",
-            state.runtime.games_per_batch,
-            state.runtime.microbatch_size,
-            state.runtime.phase,
-            current.games_per_batch,
-            current.microbatch_size,
-            current.phase,
-        ));
-    }
-    Ok(())
-}
-
-pub fn validate_resume_runtime_compatibility(
-    state: &BcResumeState,
-    current: RuntimeResumeContract,
-) -> Result<(), String> {
-    if state.runtime.batch_size != current.batch_size {
-        return Err(format!(
-            "resume batch_size mismatch: checkpoint={} current={}",
-            state.runtime.batch_size, current.batch_size
-        ));
-    }
-
-    if state.skip_optimizer_steps_in_epoch > 0 && state.runtime != current {
-        return Err(format!(
-            "partial-epoch resume requires identical runtime contract; checkpoint train_mb={} val_mb={} accum_steps={} requested_precision={} effective_precision={} current train_mb={} val_mb={} accum_steps={} requested_precision={} effective_precision={}",
-            state.runtime.train_microbatch_size,
-            state.runtime.validation_microbatch_size,
-            state.runtime.accum_steps,
-            requested_precision_signature(state.runtime.requested_precision),
-            state.runtime.effective_precision,
-            current.train_microbatch_size,
-            current.validation_microbatch_size,
-            current.accum_steps,
-            requested_precision_signature(current.requested_precision),
-            current.effective_precision,
-        ));
-    }
-
-    Ok(())
 }
 
 pub fn test_runtime_resume_contract(

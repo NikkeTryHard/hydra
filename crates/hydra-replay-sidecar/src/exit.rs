@@ -7,6 +7,8 @@ use std::io::BufRead;
 use hydra_core::action::HYDRA_ACTION_SPACE;
 use serde::{Deserialize, Serialize};
 
+use crate::ActionLabelPair;
+use crate::error::{SidecarContractError, SidecarKind};
 use crate::jsonl::read_jsonl_records;
 use crate::key::ReplayDecisionKey;
 use crate::label::{copy_label_arrays, legal_mask_digest_from_f32};
@@ -81,6 +83,10 @@ impl ExitSidecarIndex {
     }
 
     /// Returns the validated label for a matching key/action/source contract.
+    ///
+    /// Missing replay/action keys return `Ok(None)`. Present records with a
+    /// mismatched contract return [`SidecarContractError`] so callers cannot
+    /// silently treat incompatible sidecars as absent labels.
     pub fn lookup_label(
         &self,
         key: &ReplayDecisionKey,
@@ -88,21 +94,17 @@ impl ExitSidecarIndex {
         legal_mask: &[f32; HYDRA_ACTION_SPACE],
         source_net_hash: u64,
         source_version: u32,
-    ) -> Option<([f32; HYDRA_ACTION_SPACE], [f32; HYDRA_ACTION_SPACE])> {
-        let record = self.records.get(&ReplayExitLookupKey {
+    ) -> Result<Option<ActionLabelPair>, SidecarContractError> {
+        let Some(record) = self.records.get(&ReplayExitLookupKey {
             replay: *key,
             action,
-        })?;
-        if record.version != 1
-            || record.semantics != REPLAY_EXIT_SEMANTICS_V1
-            || record.provenance != REPLAY_EXIT_PROVENANCE
-            || record.legal_mask_digest != legal_mask_digest_from_f32(legal_mask)
-            || record.source_net_hash != source_net_hash
-            || record.source_version != source_version
-        {
-            return None;
-        }
+        }) else {
+            return Ok(None);
+        };
+        validate_common_exit_record(record, legal_mask, source_net_hash, source_version)?;
         copy_label_arrays(&record.target, &record.mask)
+            .ok_or_else(|| invalid_shape_error(SidecarKind::Exit, record))
+            .map(Some)
     }
 
     /// Builds an index from a JSONL reader.
@@ -127,5 +129,73 @@ impl ExitSidecarIndex {
     /// Returns true when no records are indexed.
     pub fn is_empty(&self) -> bool {
         self.records.is_empty()
+    }
+}
+
+fn validate_common_exit_record(
+    record: &ReplayExitRecordV1,
+    legal_mask: &[f32; HYDRA_ACTION_SPACE],
+    source_net_hash: u64,
+    source_version: u32,
+) -> Result<(), SidecarContractError> {
+    if record.version != 1 {
+        return Err(SidecarContractError::Version {
+            sidecar: SidecarKind::Exit,
+            expected: 1,
+            actual: record.version,
+        });
+    }
+    if record.semantics != REPLAY_EXIT_SEMANTICS_V1 {
+        return Err(SidecarContractError::Semantics {
+            sidecar: SidecarKind::Exit,
+            expected: REPLAY_EXIT_SEMANTICS_V1,
+        });
+    }
+    if record.provenance != REPLAY_EXIT_PROVENANCE {
+        return Err(SidecarContractError::Provenance {
+            sidecar: SidecarKind::Exit,
+            expected: REPLAY_EXIT_PROVENANCE,
+        });
+    }
+    let expected_digest = legal_mask_digest_from_f32(legal_mask);
+    if record.legal_mask_digest != expected_digest {
+        return Err(SidecarContractError::LegalMaskDigest {
+            sidecar: SidecarKind::Exit,
+            expected: expected_digest,
+            actual: record.legal_mask_digest,
+        });
+    }
+    if record.source_net_hash != source_net_hash {
+        return Err(SidecarContractError::SourceNetHash {
+            sidecar: SidecarKind::Exit,
+            expected: source_net_hash,
+            actual: record.source_net_hash,
+        });
+    }
+    if record.source_version != source_version {
+        return Err(SidecarContractError::SourceVersion {
+            sidecar: SidecarKind::Exit,
+            expected: source_version,
+            actual: record.source_version,
+        });
+    }
+    Ok(())
+}
+
+fn invalid_shape_error(sidecar: SidecarKind, record: &ReplayExitRecordV1) -> SidecarContractError {
+    if record.target.len() != HYDRA_ACTION_SPACE {
+        SidecarContractError::Shape {
+            sidecar,
+            field: "target",
+            expected: HYDRA_ACTION_SPACE,
+            actual: record.target.len(),
+        }
+    } else {
+        SidecarContractError::Shape {
+            sidecar,
+            field: "mask",
+            expected: HYDRA_ACTION_SPACE,
+            actual: record.mask.len(),
+        }
     }
 }

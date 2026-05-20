@@ -404,6 +404,10 @@ fn build_bc_shards_stops_after_max_samples_after_current_game() {
         Some(per_game_samples as usize + 1)
     );
     assert!(report.build.limit_reached);
+    assert_eq!(
+        report.build.sample_cap_outcome,
+        "reached_after_current_game"
+    );
 }
 
 #[test]
@@ -439,6 +443,7 @@ fn build_bc_shards_stops_after_max_samples_before_next_source_group() {
     assert_eq!(report.build.loaded_games, 1);
     assert_eq!(report.build.total_samples, per_game_samples);
     assert!(report.build.limit_reached);
+    assert_eq!(report.build.sample_cap_outcome, "reached_exact");
 }
 
 #[test]
@@ -474,6 +479,10 @@ fn build_bc_shards_max_samples_counts_prior_chunks() {
     let report = built.report.as_ref().expect("report should exist");
     assert_eq!(report.build.loaded_games, 2);
     assert!(report.build.limit_reached);
+    assert_eq!(
+        report.build.sample_cap_outcome,
+        "reached_after_current_game"
+    );
 }
 #[test]
 fn build_report_records_limit_fields() {
@@ -494,6 +503,10 @@ fn build_report_records_limit_fields() {
     assert_eq!(report.command.limit_max_games, Some(1));
     assert_eq!(report.command.limit_max_samples, Some(1));
     assert!(report.build.limit_reached);
+    assert_eq!(
+        report.build.sample_cap_outcome,
+        "reached_after_current_game"
+    );
     assert_eq!(
         report.build.samples_per_loaded_non_empty_game,
         Some(report.build.total_samples as f64 / report.build.loaded_games as f64)
@@ -521,6 +534,24 @@ fn build_report_does_not_mark_natural_exact_max_games_as_limit_reached() {
         1
     );
     assert!(!report.build.limit_reached);
+}
+
+#[test]
+fn build_report_records_absent_sample_cap_outcome() {
+    let input_dir = test_dir("no-sample-cap-report-input");
+    let paths = vec![write_replay(&input_dir, "a.mjai")];
+    let output_dir = test_dir("no-sample-cap-report-output");
+
+    let built = build_bc_shards(&BuildBcShardsConfig {
+        num_threads: Some(1),
+        queue_bound: 1,
+        ..base_config(&input_dir, &output_dir, &paths)
+    })
+    .expect("uncapped report build should pass");
+    let report = built.report.as_ref().expect("report should exist");
+
+    assert_eq!(report.command.limit_max_samples, None);
+    assert_eq!(report.build.sample_cap_outcome, "none");
 }
 
 #[test]

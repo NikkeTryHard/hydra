@@ -462,9 +462,15 @@ pub fn validate_bc_shard_manifest_contract(manifest: &BcShardManifest) -> Result
                 has_validation_split = true;
             }
         }
+        total_samples = total_samples
+            .checked_add(split.sample_count)
+            .ok_or_else(|| "BC shard manifest split sample_count total overflow".to_string())?;
+        total_shards = total_shards
+            .checked_add(split.shard_count)
+            .ok_or_else(|| "BC shard manifest split shard_count total overflow".to_string())?;
+    }
+    for split in &manifest.splits {
         validate_bc_shard_split_manifest_contract(split)?;
-        total_samples += split.sample_count;
-        total_shards += split.shard_count;
     }
     if manifest.totals.sample_count != total_samples {
         return Err(format!(

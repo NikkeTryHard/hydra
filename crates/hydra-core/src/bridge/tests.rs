@@ -1,5 +1,4 @@
 use super::*;
-use riichienv_core::action::{Action, ActionType};
 use riichienv_core::rule::GameRule;
 use riichienv_core::state::GameState;
 
@@ -31,33 +30,24 @@ fn extract_discards_initially_empty() {
 }
 
 #[test]
-fn extract_discards_ref_matches_owned_observation_tedashi_flags() {
+fn extract_discards_ref_uses_engine_from_hand_flags_as_tedashi() {
     let rule = GameRule::default_tenhou();
     let mut state = GameState::new(0, true, Some(42), 0, rule);
-    let pid = state.current_player;
-    if let Some(tile136) = state.players[pid as usize].hand_slice().first().copied() {
-        let mut actions = [None; 4];
-        actions[pid as usize] = Some(Action::new(ActionType::Discard, Some(tile136), &[], None));
-        state.step_unchecked(&actions);
-    }
+    let actor = state.current_player as usize;
+    state.players[actor].discards[0] = 4;
+    state.players[actor].discard_from_hand[0] = true;
+    state.players[actor].discards[1] = 8;
+    state.players[actor].discard_from_hand[1] = false;
+    state.players[actor].discard_len = 2;
 
-    let owned = extract_discards(&state.get_observation(state.current_player));
     let observed = state.observe(state.current_player);
     let borrowed = extract_discards_ref(&observed);
 
-    for rel in 0..4 {
-        assert_eq!(owned[rel].len, borrowed[rel].len);
-        for idx in 0..owned[rel].len as usize {
-            assert_eq!(
-                owned[rel].as_slice()[idx].tile,
-                borrowed[rel].as_slice()[idx].tile
-            );
-            assert_eq!(
-                owned[rel].as_slice()[idx].is_tedashi,
-                borrowed[rel].as_slice()[idx].is_tedashi
-            );
-        }
-    }
+    assert_eq!(borrowed[0].len, 2);
+    assert_eq!(borrowed[0].as_slice()[0].tile, 1);
+    assert!(borrowed[0].as_slice()[0].is_tedashi);
+    assert_eq!(borrowed[0].as_slice()[1].tile, 2);
+    assert!(!borrowed[0].as_slice()[1].is_tedashi);
 }
 
 #[test]

@@ -8,6 +8,8 @@ use hydra_core::action::{AKA_5M, AKA_5P, AKA_5S, DISCARD_END, HYDRA_ACTION_SPACE
 use hydra_core::arena::TrajectoryDeltaQLabel;
 use serde::{Deserialize, Serialize};
 
+use crate::ActionLabelPair;
+use crate::error::{SidecarContractError, SidecarKind};
 use crate::jsonl::read_jsonl_records;
 use crate::key::ReplayDecisionKey;
 use crate::label::{copy_label_arrays, legal_mask_digest_from_f32};
@@ -72,6 +74,10 @@ impl DeltaQSidecarIndex {
     }
 
     /// Returns the validated label for a matching key/action/source contract.
+    ///
+    /// Missing replay/action keys return `Ok(None)`. Present records with a
+    /// mismatched contract return [`SidecarContractError`] so callers cannot
+    /// silently treat incompatible sidecars as absent labels.
     pub fn lookup_label(
         &self,
         key: &ReplayDecisionKey,
@@ -79,23 +85,22 @@ impl DeltaQSidecarIndex {
         legal_mask: &[f32; HYDRA_ACTION_SPACE],
         source_net_hash: u64,
         source_version: u32,
-    ) -> Option<([f32; HYDRA_ACTION_SPACE], [f32; HYDRA_ACTION_SPACE])> {
-        let record = self.records.get(&ReplayDeltaQLookupKey {
+    ) -> Result<Option<ActionLabelPair>, SidecarContractError> {
+        let Some(record) = self.records.get(&ReplayDeltaQLookupKey {
             replay: *key,
             action,
-        })?;
-        if record.version != 1
-            || record.semantics != REPLAY_DELTA_Q_SEMANTICS_V1
-            || record.provenance != REPLAY_DELTA_Q_PROVENANCE
-            || record.legal_mask_digest != legal_mask_digest_from_f32(legal_mask)
-            || record.source_net_hash != source_net_hash
-            || record.source_version != source_version
-        {
-            return None;
-        }
-        let (target, mask) = copy_label_arrays(&record.target, &record.mask)?;
-        let validated = validate_delta_q_contract(&target, &mask, legal_mask)?;
-        Some((validated.target, validated.mask))
+        }) else {
+            return Ok(None);
+        };
+        validate_common_delta_q_record(record, legal_mask, source_net_hash, source_version)?;
+        let (target, mask) = copy_label_arrays(&record.target, &record.mask)
+            .ok_or_else(|| invalid_shape_error(SidecarKind::DeltaQ, record))?;
+        let validated = validate_delta_q_contract(&target, &mask, legal_mask).ok_or(
+            SidecarContractError::DeltaQContract {
+                sidecar: SidecarKind::DeltaQ,
+            },
+        )?;
+        Ok(Some((validated.target, validated.mask)))
     }
 
     /// Builds an index from a JSONL reader.
@@ -120,6 +125,77 @@ impl DeltaQSidecarIndex {
     /// Returns true when no records are indexed.
     pub fn is_empty(&self) -> bool {
         self.records.is_empty()
+    }
+}
+
+fn validate_common_delta_q_record(
+    record: &ReplayDeltaQRecordV1,
+    legal_mask: &[f32; HYDRA_ACTION_SPACE],
+    source_net_hash: u64,
+    source_version: u32,
+) -> Result<(), SidecarContractError> {
+    if record.version != 1 {
+        return Err(SidecarContractError::Version {
+            sidecar: SidecarKind::DeltaQ,
+            expected: 1,
+            actual: record.version,
+        });
+    }
+    if record.semantics != REPLAY_DELTA_Q_SEMANTICS_V1 {
+        return Err(SidecarContractError::Semantics {
+            sidecar: SidecarKind::DeltaQ,
+            expected: REPLAY_DELTA_Q_SEMANTICS_V1,
+        });
+    }
+    if record.provenance != REPLAY_DELTA_Q_PROVENANCE {
+        return Err(SidecarContractError::Provenance {
+            sidecar: SidecarKind::DeltaQ,
+            expected: REPLAY_DELTA_Q_PROVENANCE,
+        });
+    }
+    let expected_digest = legal_mask_digest_from_f32(legal_mask);
+    if record.legal_mask_digest != expected_digest {
+        return Err(SidecarContractError::LegalMaskDigest {
+            sidecar: SidecarKind::DeltaQ,
+            expected: expected_digest,
+            actual: record.legal_mask_digest,
+        });
+    }
+    if record.source_net_hash != source_net_hash {
+        return Err(SidecarContractError::SourceNetHash {
+            sidecar: SidecarKind::DeltaQ,
+            expected: source_net_hash,
+            actual: record.source_net_hash,
+        });
+    }
+    if record.source_version != source_version {
+        return Err(SidecarContractError::SourceVersion {
+            sidecar: SidecarKind::DeltaQ,
+            expected: source_version,
+            actual: record.source_version,
+        });
+    }
+    Ok(())
+}
+
+fn invalid_shape_error(
+    sidecar: SidecarKind,
+    record: &ReplayDeltaQRecordV1,
+) -> SidecarContractError {
+    if record.target.len() != HYDRA_ACTION_SPACE {
+        SidecarContractError::Shape {
+            sidecar,
+            field: "target",
+            expected: HYDRA_ACTION_SPACE,
+            actual: record.target.len(),
+        }
+    } else {
+        SidecarContractError::Shape {
+            sidecar,
+            field: "mask",
+            expected: HYDRA_ACTION_SPACE,
+            actual: record.mask.len(),
+        }
     }
 }
 

@@ -170,6 +170,8 @@ impl DiscoveryManifest {
 
 /// Binary discovery index format version.
 pub const DISCOVERY_INDEX_VERSION: u8 = 1;
+const MAX_DISCOVERY_INDEX_STRING_LEN: usize = 16 * 1024 * 1024;
+const MAX_DISCOVERY_INDEX_SOURCES: usize = 1_000_000;
 
 impl DiscoveryManifest {
     /// Writes the discovery source index in a compact binary format.
@@ -251,14 +253,14 @@ impl DiscoveryManifest {
                 "discovery summary mode does not match index",
             ));
         }
-        let ignored_archive_count = read_u64(reader)? as usize;
+        let ignored_archive_count = read_count(reader, "ignored archive count")?;
         if ignored_archive_count != summary.ignored_archive_count {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "discovery summary ignored archive count does not match index",
             ));
         }
-        let ignored_file_count = read_u64(reader)? as usize;
+        let ignored_file_count = read_count(reader, "ignored file count")?;
         if ignored_file_count != summary.ignored_file_count {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -272,7 +274,21 @@ impl DiscoveryManifest {
                 "discovery summary fingerprint does not match index",
             ));
         }
-        let len = read_u64(reader)? as usize;
+        let len = read_count(reader, "source count")?;
+        if len != summary.source_count {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "discovery summary source count does not match index",
+            ));
+        }
+        if len > MAX_DISCOVERY_INDEX_SOURCES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "discovery index source count {len} exceeds maximum {MAX_DISCOVERY_INDEX_SOURCES}"
+                ),
+            ));
+        }
         let mut sources = Vec::with_capacity(len);
         for _ in 0..len {
             sources.push(match read_u8(reader)? {
@@ -291,12 +307,7 @@ impl DiscoveryManifest {
                 }
             });
         }
-        if len != summary.source_count {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "discovery summary source count does not match index",
-            ));
-        }
+
         Ok(Self { sources, summary })
     }
 }
@@ -315,6 +326,17 @@ fn read_u8<R: Read>(reader: &mut R) -> io::Result<u8> {
     let mut buf = [0u8; 1];
     reader.read_exact(&mut buf)?;
     Ok(buf[0])
+}
+
+fn read_count<R: Read>(reader: &mut R, field: &'static str) -> io::Result<usize> {
+    usize::try_from(read_u64(reader)?).map_err(|_| invalid_count(field))
+}
+
+fn invalid_count(field: &'static str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("discovery index {field} exceeds platform usize"),
+    )
 }
 
 fn write_path<W: Write>(writer: &mut W, root: Option<&Path>, path: &Path) -> io::Result<()> {
@@ -346,7 +368,10 @@ fn write_str<W: Write>(writer: &mut W, value: &str) -> io::Result<()> {
 }
 
 fn read_string<R: Read>(reader: &mut R) -> io::Result<String> {
-    let len = read_u64(reader)? as usize;
+    let len = read_count(reader, "string length")?;
+    if len > MAX_DISCOVERY_INDEX_STRING_LEN {
+        return Err(invalid_count("string length"));
+    }
     let mut bytes = vec![0u8; len];
     reader.read_exact(&mut bytes)?;
     String::from_utf8(bytes).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))
@@ -377,49 +402,5 @@ impl DataSource {
             Self::Archive(path) | Self::LooseFile(path) => path.as_path(),
             Self::ParsedSampleCache { path, .. } => path.as_path(),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn discovery_binary_index_roundtrips_sources_and_summary() {
-        let manifest = DataManifest {
-            sources: vec![
-                DataSource::LooseFile(PathBuf::from("games/a.json")),
-                DataSource::Archive(PathBuf::from("archives/b.tar.zst")),
-                DataSource::ParsedSampleCache {
-                    path: PathBuf::from("cache/c.bin"),
-                    original_identity: "raw/c.json".to_owned(),
-                    original_source_path: PathBuf::from("raw/c.json"),
-                },
-            ],
-            total_games: 2,
-            train_count: 1,
-            val_count: 1,
-            counts_exact: false,
-        };
-        let discovery = DiscoveryManifest::from_data_manifest(
-            manifest,
-            DiscoveryMode::LooseGames,
-            4,
-            0,
-            Vec::new(),
-        );
-        let mut bytes = Vec::new();
-        discovery
-            .write_binary_index(&mut bytes)
-            .expect("write binary discovery index");
-        let roundtrip = DiscoveryManifest::read_binary_index(
-            &mut std::io::Cursor::new(bytes),
-            discovery.summary.clone(),
-        )
-        .expect("read binary discovery index");
-
-        assert_eq!(roundtrip, discovery);
-        assert_eq!(roundtrip.summary.source_count, 3);
-        assert_eq!(roundtrip.summary.ignored_archive_count, 4);
     }
 }

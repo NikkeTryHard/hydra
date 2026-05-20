@@ -14,3 +14,10 @@ fn checkpoint_meta_summary_reports_eval_metrics() {
         "epoch=10 loss=2.5000 policy_ce=1.7500 total=2.2500 agree=37.50%"
     );
 }
+
+#[test]
+fn checkpoint_meta_accepts_caller_timestamp() {
+    let meta = CheckpointMeta::with_timestamp(10, 2.5, None, None, None, 42);
+    assert_eq!(meta.timestamp, 42);
+    assert_eq!(meta.summary(), "epoch=10 loss=2.5000 eval=n/a");
+}

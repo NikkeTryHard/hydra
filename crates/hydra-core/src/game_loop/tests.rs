@@ -16,6 +16,17 @@ fn game_completes_with_first_action() {
 }
 
 #[test]
+fn run_to_completion_reports_normal_completion() {
+    let mut runner = GameRunner::new(Some(42), 0);
+    let mut selector = FirstActionSelector;
+    assert_eq!(
+        runner.run_to_completion(&mut selector),
+        StepOutcome::Complete
+    );
+    assert!(runner.is_done());
+}
+
+#[test]
 fn safety_updated_during_game() {
     let mut runner = GameRunner::new(Some(42), 0);
     let mut selector = FirstActionSelector;
@@ -97,4 +108,32 @@ fn track_action_maps_actor_to_relative_opponent_slot() {
     assert!(bit_test(runner.safety(3).genbutsu_all[2], 6));
     assert!(!bit_test(runner.safety(0).genbutsu_all[0], 6));
     assert!(!bit_test(runner.safety(0).genbutsu_all[2], 6));
+}
+
+#[test]
+fn duplicate_post_riichi_discard_preserves_riichi_era_safety() {
+    let mut runner = GameRunner::new(Some(7), 0);
+    runner.state.drawn_tile = None;
+    let discard = Action::new(ActionType::Discard, Some(6 * 4), &[], None);
+
+    runner.track_action(2, &discard);
+    runner.safety[0].opponent_riichi[1] = true;
+    runner.track_action(2, &discard);
+
+    assert_eq!(runner.safety(0).visible_counts[6], 1);
+    assert!(bit_test(runner.safety(0).genbutsu_all[1], 6));
+    assert!(bit_test(runner.safety(0).genbutsu_riichi_era[1], 6));
+}
+
+#[test]
+fn checked_step_reports_step_limit_without_marking_done() {
+    let mut runner = GameRunner::new(Some(42), 0);
+    let mut selector = FirstActionSelector;
+    runner.total_actions = MAX_STEPS;
+
+    assert_eq!(
+        runner.step_once_checked(&mut selector),
+        StepOutcome::StepLimitExceeded
+    );
+    assert!(!runner.is_done());
 }

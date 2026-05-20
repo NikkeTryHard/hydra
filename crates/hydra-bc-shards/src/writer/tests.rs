@@ -6,8 +6,8 @@ use crate::{
     BcShardSplitManifest, load_bc_shard_reader,
 };
 use crate::{
-    BC_DENSE_SHARD_MAGIC, BC_SHARD_HEADER_SIZE, DENSE_REBUILD_MESSAGE, FLAG_EXIT,
-    FLAG_SAFETY_RESIDUAL, PACKED_ACTION_MASK_BYTES, record_size_for_flags,
+    BC_DENSE_SHARD_MAGIC, BC_SHARD_HEADER_SIZE, BC_SHARD_LAYOUT_VERSION, DENSE_REBUILD_MESSAGE,
+    FLAG_EXIT, FLAG_SAFETY_RESIDUAL, PACKED_ACTION_MASK_BYTES, record_size_for_flags,
 };
 use hydra_data_core::sample::{
     COMPACT_MISSING_TILE, CompactObservationFacts, CompactPlayerDiscards, CompactPlayerMelds,
@@ -655,6 +655,38 @@ fn corrupt_u64(path: &std::path::Path, offset: u64, value: u64) {
         .expect("corruption write should succeed");
 }
 
+fn corrupt_u32(path: &std::path::Path, offset: u64, value: u32) {
+    use std::io::{Seek, SeekFrom, Write};
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .expect("shard should open for corruption");
+    file.seek(SeekFrom::Start(offset))
+        .expect("corruption seek should succeed");
+    file.write_all(&value.to_le_bytes())
+        .expect("corruption write should succeed");
+}
+
+fn assert_compact_reader_rejects_corrupt_header_u32(
+    test_name: &str,
+    offset: u64,
+    value: u32,
+    expected_error: &str,
+) {
+    let (output_dir, manifest_path, descriptor) = compact_reader_test_shard(test_name);
+    let path = output_dir.join(&descriptor.file_name);
+    write_manifest_for_descriptor(&manifest_path, descriptor);
+    corrupt_u32(&path, offset, value);
+
+    let err = load_bc_shard_reader(&manifest_path, BcShardSplit::Train)
+        .err()
+        .expect("reader should reject corrupt header");
+    assert!(err.contains(expected_error), "unexpected error: {err}");
+
+    let _ = std::fs::remove_dir_all(output_dir);
+}
+
 fn corrupt_magic(path: &std::path::Path, magic: [u8; 8]) {
     use std::io::{Seek, SeekFrom, Write};
 
@@ -685,6 +717,96 @@ fn compact_reader_rejects_header_sample_count_mismatch() {
     );
 
     let _ = std::fs::remove_dir_all(output_dir);
+}
+
+#[test]
+fn compact_reader_rejects_header_version_mismatch() {
+    assert_compact_reader_rejects_corrupt_header_u32(
+        "header-version-mismatch",
+        8,
+        BC_SHARD_VERSION + 1,
+        "unsupported compact BC shard version",
+    );
+}
+
+#[test]
+fn compact_reader_rejects_header_size_mismatch() {
+    assert_compact_reader_rejects_corrupt_header_u32(
+        "header-size-mismatch",
+        12,
+        BC_SHARD_HEADER_SIZE + 4,
+        "header size mismatch",
+    );
+}
+
+#[test]
+fn compact_reader_rejects_header_record_size_mismatch() {
+    assert_compact_reader_rejects_corrupt_header_u32(
+        "header-record-size-mismatch",
+        16,
+        BC_BASE_RECORD_SIZE + 4,
+        "record size mismatch",
+    );
+}
+
+#[test]
+fn compact_reader_rejects_header_split_mismatch() {
+    assert_compact_reader_rejects_corrupt_header_u32(
+        "header-split-mismatch",
+        20,
+        BcShardSplit::Validation.split_id(),
+        "split mismatch",
+    );
+}
+
+#[test]
+fn compact_reader_rejects_header_encoder_num_channels_mismatch() {
+    assert_compact_reader_rejects_corrupt_header_u32(
+        "header-encoder-channels-mismatch",
+        36,
+        NUM_CHANNELS as u32 - 1,
+        "encoder contract mismatch",
+    );
+}
+
+#[test]
+fn compact_reader_rejects_header_encoder_tile_count_mismatch() {
+    assert_compact_reader_rejects_corrupt_header_u32(
+        "header-encoder-tiles-mismatch",
+        40,
+        TILE_COUNT as u32 - 1,
+        "encoder contract mismatch",
+    );
+}
+
+#[test]
+fn compact_reader_rejects_header_action_space_mismatch() {
+    assert_compact_reader_rejects_corrupt_header_u32(
+        "header-action-space-mismatch",
+        44,
+        HYDRA_ACTION_SPACE as u32 - 1,
+        "action contract mismatch",
+    );
+}
+
+#[test]
+fn compact_reader_rejects_header_feature_flags_mismatch() {
+    assert_compact_reader_rejects_corrupt_header_u32(
+        "header-feature-flags-mismatch",
+        56,
+        FLAG_EXIT,
+        "feature flags mismatch",
+    );
+}
+
+#[test]
+fn compact_reader_rejects_header_layout_version_mismatch() {
+    assert_compact_reader_rejects_corrupt_header_u32(
+        "header-layout-version-mismatch",
+        60,
+        BC_SHARD_LAYOUT_VERSION + 1,
+        "unsupported BC shard layout version",
+    );
 }
 
 #[test]

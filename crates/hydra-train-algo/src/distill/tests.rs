@@ -69,6 +69,42 @@ fn validate_rejects_bad_learning_rate_and_ema_decay() {
 }
 
 #[test]
+#[should_panic(expected = "kd_kl_weight must be non-negative")]
+fn distill_loss_rejects_negative_kl_weight() {
+    let device = Default::default();
+    let logits = Tensor::<B, 2>::zeros([1, 2], &device);
+    let value = Tensor::<B, 2>::zeros([1, 1], &device);
+    let mask = Tensor::<B, 2>::ones([1, 2], &device);
+    let _ = distill_loss(
+        logits.clone(),
+        logits,
+        value.clone(),
+        value,
+        mask,
+        -1.0,
+        0.5,
+    );
+}
+
+#[test]
+#[should_panic(expected = "kd_mse_weight must be finite")]
+fn distill_loss_rejects_nan_mse_weight() {
+    let device = Default::default();
+    let logits = Tensor::<B, 2>::zeros([1, 2], &device);
+    let value = Tensor::<B, 2>::zeros([1, 1], &device);
+    let mask = Tensor::<B, 2>::ones([1, 2], &device);
+    let _ = distill_loss(
+        logits.clone(),
+        logits,
+        value.clone(),
+        value,
+        mask,
+        1.0,
+        f32::NAN,
+    );
+}
+
+#[test]
 fn distill_state_tracks_ticks_recording_and_health() {
     let config = DistillConfig::new().with_update_interval_secs(5);
     let mut state = DistillState::new();

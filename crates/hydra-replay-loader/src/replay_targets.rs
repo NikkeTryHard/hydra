@@ -1,10 +1,12 @@
 use crate::replay_targets::belief::{StageABeliefConfig, build_stage_a_teacher};
 use hydra_core::action::{AKA_5M, AKA_5P, AKA_5S, DISCARD_END, HYDRA_ACTION_SPACE};
 use hydra_core::bridge::{
-    extract_discards, extract_dora, extract_hand, extract_melds, extract_public_remaining_counts,
+    extract_discards, extract_discards_ref, extract_dora, extract_dora_ref, extract_hand,
+    extract_hand_ref, extract_melds, extract_melds_ref, extract_public_remaining_counts,
 };
 use hydra_core::safety::SafetyInfo;
 use riichienv_core::observation::Observation;
+use riichienv_core::observation_ref::ObservationRef;
 use riichienv_core::shanten::calc_shanten_from_counts;
 use riichienv_core::state::GameState;
 
@@ -290,12 +292,7 @@ pub fn build_stage_a_belief_targets(
     let melds = extract_melds(obs);
     let dora = extract_dora(obs);
     let remaining = extract_public_remaining_counts(&hand, &discards, &melds, &dora);
-    let hidden_counts = [
-        state.players[(actor + 1) % 4].hand_len as usize,
-        state.players[(actor + 2) % 4].hand_len as usize,
-        state.players[(actor + 3) % 4].hand_len as usize,
-        state.wall.remaining(),
-    ];
+    let hidden_counts = belief_hidden_counts(state, actor, &remaining);
     let target = build_stage_a_teacher(&remaining, &hidden_counts, StageABeliefConfig::default());
     match target {
         Some(target) => (
@@ -306,6 +303,45 @@ pub fn build_stage_a_belief_targets(
         ),
         None => (None, None, false, false),
     }
+}
+
+pub fn build_stage_a_belief_targets_ref(
+    state: &GameState,
+    actor: usize,
+    obs: &ObservationRef<'_>,
+) -> (Option<[f32; 16 * 34]>, Option<[f32; 4]>, bool, bool) {
+    let hand = extract_hand_ref(obs);
+    let discards = extract_discards_ref(obs);
+    let melds = extract_melds_ref(obs);
+    let dora = extract_dora_ref(obs);
+    let remaining = extract_public_remaining_counts(&hand, &discards, &melds, &dora);
+    let hidden_counts = belief_hidden_counts(state, actor, &remaining);
+    let target = build_stage_a_teacher(&remaining, &hidden_counts, StageABeliefConfig::default());
+    match target {
+        Some(target) => (
+            Some(target.belief_fields),
+            target.mixture_weights,
+            true,
+            target.mixture_weights.is_some(),
+        ),
+        None => (None, None, false, false),
+    }
+}
+
+fn belief_hidden_counts(state: &GameState, actor: usize, remaining: &[f32; 34]) -> [usize; 4] {
+    let opponent_hidden = [
+        state.players[(actor + 1) % 4].hand_len as usize,
+        state.players[(actor + 2) % 4].hand_len as usize,
+        state.players[(actor + 3) % 4].hand_len as usize,
+    ];
+    let opponent_total = opponent_hidden.iter().sum::<usize>();
+    let public_remaining_total = remaining.iter().sum::<f32>() as usize;
+    [
+        opponent_hidden[0],
+        opponent_hidden[1],
+        opponent_hidden[2],
+        public_remaining_total.saturating_sub(opponent_total),
+    ]
 }
 
 #[cfg(test)]

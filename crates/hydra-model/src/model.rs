@@ -204,6 +204,7 @@ impl HydraModelInit for ModelShapeConfig {
         &self,
         device: &<B as burn::tensor::backend::BackendTypes>::Device,
     ) -> HydraModel<B> {
+        self.validate().expect("invalid Hydra model shape config");
         let backbone_cfg = SEResNetConfig::new(
             self.num_blocks,
             self.input_channels,
@@ -266,15 +267,12 @@ impl<B: Backend> HydraModel<B> {
             NUM_TILES,
         ]);
         let (policy_logits, value) = self.forward_policy_value(input);
-        let logits_vec = policy_logits
-            .to_data()
-            .convert::<f32>()
+        let logits_data = policy_logits.to_data().convert::<f32>();
+        let logits_slice = logits_data
             .as_slice::<f32>()
-            .expect("policy logits extraction failed")
-            .to_vec();
-        let logits: [f32; HYDRA_ACTION_SPACE] = logits_vec
-            .try_into()
-            .expect("policy logits length mismatch");
+            .expect("policy logits extraction failed");
+        let mut logits = [0.0f32; HYDRA_ACTION_SPACE];
+        logits.copy_from_slice(&logits_slice[..HYDRA_ACTION_SPACE]);
         let value_scalar = value
             .to_data()
             .convert::<f32>()
@@ -383,7 +381,7 @@ impl<B: Backend> HydraModel<B> {
         outputs: &mut Vec<([f32; HYDRA_ACTION_SPACE], f32)>,
     ) -> Vec<([f32; HYDRA_ACTION_SPACE], f32)> {
         self.fill_batch_policy_value_cpu(observations, device, flat_buf, outputs);
-        outputs.clone()
+        std::mem::take(outputs)
     }
 
     pub fn fill_batch_value_cpu(
@@ -425,7 +423,7 @@ impl<B: Backend> HydraModel<B> {
         values_out: &mut Vec<f32>,
     ) -> Vec<f32> {
         self.fill_batch_value_cpu(observations, device, flat_buf, values_out);
-        values_out.clone()
+        std::mem::take(values_out)
     }
 
     /// Runs a batch of observations through the full model and returns
@@ -453,18 +451,14 @@ impl<B: Backend> HydraModel<B> {
             NUM_TILES as i32,
         ]);
         let (policy_logits, value) = self.forward_policy_value(input);
-        let logits_flat = policy_logits
-            .to_data()
-            .convert::<f32>()
+        let logits_data = policy_logits.to_data().convert::<f32>();
+        let logits_flat = logits_data
             .as_slice::<f32>()
-            .expect("batch policy logits extraction failed")
-            .to_vec();
-        let values_flat = value
-            .to_data()
-            .convert::<f32>()
+            .expect("batch policy logits extraction failed");
+        let values_data = value.to_data().convert::<f32>();
+        let values_flat = values_data
             .as_slice::<f32>()
-            .expect("batch value extraction failed")
-            .to_vec();
+            .expect("batch value extraction failed");
 
         (0..n)
             .map(|i| {

@@ -2992,6 +2992,14 @@ fn fixed_shape_train_handles_microbatch_larger_than_batch() {
 }
 
 #[test]
+fn amp_policy_only_enables_cuda_requests() {
+    assert!(!AmpPolicy::disabled().enabled());
+    assert!(!AmpPolicy::from_request(false, &LibTorchDevice::Cpu).enabled());
+    assert!(!AmpPolicy::from_request(true, &LibTorchDevice::Cpu).enabled());
+    assert!(AmpPolicy::from_request(true, &LibTorchDevice::Cuda(0)).enabled());
+}
+
+#[test]
 fn fixed_shape_nvtx_scopes_fire_for_both_prefix_and_tail_remainder() {
     let device = LibTorchDevice::Cpu;
     let model = tiny_dummy_model(&device);

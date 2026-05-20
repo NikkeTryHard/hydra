@@ -559,7 +559,9 @@ fn parse_args_rejects_partial_probe_flags() {
         "train".to_string(),
     ];
     let err = parse_args(args).expect_err("partial probe args should fail");
-    assert!(err.contains("probe mode requires both --probe-kind and --probe-candidate-microbatch"));
+    assert!(
+        err.contains("probe-only mode requires both --probe-kind and --probe-candidate-microbatch")
+    );
 }
 
 #[test]

@@ -6,7 +6,7 @@ use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::arena::{Trajectory, TrajectoryDeltaQLabel, TrajectoryExitLabel};
 use hydra_core::encoder::{NUM_CHANNELS, OBS_SIZE};
 use hydra_search_labels::exit::{collate_delta_q_targets, collate_exit_targets};
-use hydra_train_algo::gae::{GaeConfig, compute_single_player_gae, normalize_advantages};
+use hydra_train_algo::gae::{GaeConfig, normalize_advantages};
 use hydra_train_types::config::{GAE_GAMMA, GAE_LAMBDA};
 use hydra_train_types::head_gates::{AdvancedHead, TargetPresence};
 use hydra_train_types::losses::HydraTargets;
@@ -23,6 +23,7 @@ pub struct RlBatchScratch {
     actions: Vec<i32>,
     pi_old: Vec<f32>,
     advantages: Vec<f32>,
+    trajectory_advantages: Vec<f32>,
     legal_mask: Vec<f32>,
     policy_target: Vec<f32>,
     value_target: Vec<f32>,
@@ -56,13 +57,16 @@ pub fn finalize_rewards(trajectory: &mut Trajectory) {
     }
 }
 
-fn compute_trajectory_advantages_reuse(
+fn compute_trajectory_advantages_reuse<'a>(
     trajectory: &Trajectory,
     values: &[f32],
     gae_config: &GaeConfig,
-    scratch: &mut RlBatchScratch,
-) -> Vec<f32> {
-    let mut advantages = vec![0.0f32; trajectory.steps.len()];
+    scratch: &'a mut RlBatchScratch,
+) -> &'a [f32] {
+    scratch.trajectory_advantages.clear();
+    scratch
+        .trajectory_advantages
+        .resize(trajectory.steps.len(), 0.0);
 
     for player in 0..4u8 {
         scratch.player_indices.clear();
@@ -97,20 +101,30 @@ fn compute_trajectory_advantages_reuse(
         }
         scratch.player_values.push(0.0);
 
-        scratch.player_advantages = compute_single_player_gae(
-            &scratch.player_rewards,
-            &scratch.player_values,
-            &scratch.dones,
-            gae_config.gamma,
-            gae_config.lambda,
-        );
+        scratch.player_advantages.clear();
+        scratch
+            .player_advantages
+            .resize(scratch.player_rewards.len(), 0.0);
+        let mut gae = 0.0f32;
+        for idx in (0..scratch.player_rewards.len()).rev() {
+            let mask = if idx + 1 == scratch.player_rewards.len() {
+                0.0
+            } else {
+                1.0
+            };
+            let delta = scratch.player_rewards[idx]
+                + gae_config.gamma * scratch.player_values[idx + 1] * mask
+                - scratch.player_values[idx];
+            gae = delta + gae_config.gamma * gae_config.lambda * mask * gae;
+            scratch.player_advantages[idx] = gae;
+        }
 
         for (local_idx, &global_idx) in scratch.player_indices.iter().enumerate() {
-            advantages[global_idx] = scratch.player_advantages[local_idx];
+            scratch.trajectory_advantages[global_idx] = scratch.player_advantages[local_idx];
         }
     }
 
-    advantages
+    &scratch.trajectory_advantages
 }
 
 fn score_to_bin(score: i32) -> usize {
@@ -202,14 +216,15 @@ pub fn trajectories_to_rl_batch_reuse<B: Backend>(
     let mut global_step = 0usize;
     for (trajectory_idx, trajectory) in trajectories.iter().enumerate() {
         let trajectory_values = values.get(trajectory_idx).map_or(&[][..], Vec::as_slice);
-        let trajectory_advantages =
-            compute_trajectory_advantages_reuse(trajectory, trajectory_values, gae_config, scratch);
+        compute_trajectory_advantages_reuse(trajectory, trajectory_values, gae_config, scratch);
 
         for (step_idx, step) in trajectory.steps.iter().enumerate() {
             scratch.obs_flat.extend_from_slice(&step.obs);
             scratch.actions.push(step.action as i32);
             scratch.pi_old.push(step.pi_old[step.action as usize]);
-            scratch.advantages.push(trajectory_advantages[step_idx]);
+            scratch
+                .advantages
+                .push(scratch.trajectory_advantages[step_idx]);
 
             for action_idx in 0..HYDRA_ACTION_SPACE {
                 scratch.legal_mask.push(if step.legal_mask[action_idx] {

@@ -511,8 +511,8 @@ advanced_loss:
 Use A/B: same shards, same split, one changed weight.
 
 Failure modes:
-- wrong `source_version` or checkpoint hash => no hydration.
-- legal-mask drift blocks join.
+- missing sidecar key => no hydration for that decision.
+- present sidecar record with wrong `source_version`, checkpoint hash, legal-mask digest, schema/shape, or provenance => hard error; do not treat as absent.
 - identity mismatch loose-vs-archive blocks join.
 - valid JSONL alone not enough.
 

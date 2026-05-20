@@ -8,7 +8,7 @@ use riichienv_core::action::{Action, ActionType, Phase};
 use riichienv_core::rule::GameRule;
 use riichienv_core::state::GameState;
 
-use crate::safety::SafetyInfo;
+use crate::safety::{SafetyInfo, bit_test};
 use crate::seeding::SessionRng;
 
 /// Trait for action selection policies.
@@ -26,6 +26,21 @@ pub struct FirstActionSelector;
 impl ActionSelector for FirstActionSelector {
     fn select_action(&mut self, _player: u8, legal_actions: &[Action]) -> Action {
         legal_actions[0]
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepOutcome {
+    Advanced,
+    Complete,
+    StepLimitExceeded,
+    NoLegalAction { player: u8 },
+}
+
+impl StepOutcome {
+    #[inline]
+    pub fn advanced(self) -> bool {
+        matches!(self, Self::Advanced)
     }
 }
 
@@ -118,10 +133,18 @@ impl GameRunner {
 const MAX_STEPS: u32 = 50_000;
 
 impl GameRunner {
-    /// Advance the game by one step. Returns false if game is over.
+    /// Advance the game by one step. Returns false if game is over or cannot advance.
     pub fn step_once<S: ActionSelector>(&mut self, selector: &mut S) -> bool {
-        if self.state.is_done || self.total_actions >= MAX_STEPS {
-            return false;
+        self.step_once_checked(selector).advanced()
+    }
+
+    /// Advance one step and report why iteration stopped.
+    pub fn step_once_checked<S: ActionSelector>(&mut self, selector: &mut S) -> StepOutcome {
+        if self.state.is_done {
+            return StepOutcome::Complete;
+        }
+        if self.total_actions >= MAX_STEPS {
+            return StepOutcome::StepLimitExceeded;
         }
 
         // Handle round transitions
@@ -132,7 +155,11 @@ impl GameRunner {
             for s in &mut self.safety {
                 s.reset();
             }
-            return !self.state.is_done;
+            return if self.state.is_done {
+                StepOutcome::Complete
+            } else {
+                StepOutcome::Advanced
+            };
         }
 
         self.actions = [None; 4];
@@ -140,9 +167,10 @@ impl GameRunner {
         match self.state.phase {
             Phase::WaitAct => {
                 let pid = self.state.current_player;
+                self.legal_buf.clear();
                 self.state.get_legal_actions_into(pid, &mut self.legal_buf);
                 if self.legal_buf.is_empty() {
-                    return false;
+                    return StepOutcome::NoLegalAction { player: pid };
                 }
                 let chosen = selector.select_action(pid, &self.legal_buf);
                 self.track_action(pid, &chosen);
@@ -153,6 +181,7 @@ impl GameRunner {
                 let mut pids = [0u8; 4];
                 pids[..n].copy_from_slice(self.state.active_player_slice());
                 for &pid in &pids[..n] {
+                    self.legal_buf.clear();
                     self.state.get_legal_actions_into(pid, &mut self.legal_buf);
                     if self.legal_buf.is_empty() {
                         continue;
@@ -166,7 +195,11 @@ impl GameRunner {
 
         self.state.step_unchecked(&self.actions);
         self.total_actions += 1;
-        !self.state.is_done
+        if self.state.is_done {
+            StepOutcome::Complete
+        } else {
+            StepOutcome::Advanced
+        }
     }
 }
 
@@ -191,8 +224,14 @@ impl GameRunner {
                         // from the observer's perspective: [observer+1, +2, +3] mod 4.
                         let opp_idx = ((actor + 4 - observer) % 4).wrapping_sub(1) as usize;
                         if opp_idx < 3 {
-                            self.safety[observer as usize]
-                                .on_discard(tile_type, opp_idx, is_tedashi);
+                            let safety = &mut self.safety[observer as usize];
+                            let already_visible =
+                                bit_test(safety.genbutsu_all[opp_idx], tile_type as usize);
+                            safety.on_discard(tile_type, opp_idx, is_tedashi);
+                            if already_visible {
+                                safety.visible_counts[tile_type as usize] =
+                                    safety.visible_counts[tile_type as usize].saturating_sub(1);
+                            }
                         }
                     }
                 }
@@ -203,8 +242,10 @@ impl GameRunner {
                 for (i, &t) in action.consume_slice().iter().enumerate() {
                     tile_types[i] = t / 4;
                 }
-                for s in &mut self.safety {
-                    s.on_call(&tile_types[..count]);
+                if count > 0 {
+                    for s in &mut self.safety {
+                        s.on_call(&tile_types[..count]);
+                    }
                 }
             }
             ActionType::Riichi => {
@@ -223,8 +264,13 @@ impl GameRunner {
     }
 
     /// Run the full game to completion.
-    pub fn run_to_completion<S: ActionSelector>(&mut self, selector: &mut S) {
-        while self.step_once(selector) {}
+    pub fn run_to_completion<S: ActionSelector>(&mut self, selector: &mut S) -> StepOutcome {
+        loop {
+            match self.step_once_checked(selector) {
+                StepOutcome::Advanced => {}
+                outcome => return outcome,
+            }
+        }
     }
 }
 

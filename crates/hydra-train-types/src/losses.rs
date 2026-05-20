@@ -34,34 +34,28 @@ pub struct LossBreakdown<B: Backend> {
 
 impl<B: Backend> LossBreakdown<B> {
     pub fn all_finite(&self) -> bool {
-        let metrics = Tensor::cat(
-            vec![
-                self.policy.clone(),
-                self.value.clone(),
-                self.grp.clone(),
-                self.tenpai.clone(),
-                self.danger.clone(),
-                self.opp_next.clone(),
-                self.score_pdf.clone(),
-                self.score_cdf.clone(),
-                self.oracle_critic.clone(),
-                self.belief_fields.clone(),
-                self.mixture_weight.clone(),
-                self.opponent_hand_type.clone(),
-                self.delta_q.clone(),
-                self.safety_residual.clone(),
-                self.total.clone(),
-            ],
-            0,
-        )
-        .into_data()
-        .convert::<f32>();
-        metrics
-            .as_slice::<f32>()
-            .expect("loss breakdown scalars should be readable as f32")
-            .iter()
-            .all(|v| v.is_finite())
+        tensor_scalar_finite(&self.policy)
+            && tensor_scalar_finite(&self.value)
+            && tensor_scalar_finite(&self.grp)
+            && tensor_scalar_finite(&self.tenpai)
+            && tensor_scalar_finite(&self.danger)
+            && tensor_scalar_finite(&self.opp_next)
+            && tensor_scalar_finite(&self.score_pdf)
+            && tensor_scalar_finite(&self.score_cdf)
+            && tensor_scalar_finite(&self.oracle_critic)
+            && tensor_scalar_finite(&self.belief_fields)
+            && tensor_scalar_finite(&self.mixture_weight)
+            && tensor_scalar_finite(&self.opponent_hand_type)
+            && tensor_scalar_finite(&self.delta_q)
+            && tensor_scalar_finite(&self.safety_residual)
+            && tensor_scalar_finite(&self.total)
     }
+}
+
+fn tensor_scalar_finite<B: Backend>(tensor: &Tensor<B, 1>) -> bool {
+    let data = tensor.clone().into_data().convert::<f32>();
+    data.as_slice::<f32>()
+        .is_ok_and(|values| values.len() == 1 && values[0].is_finite())
 }
 
 /// Batched supervised targets consumed by Hydra loss functions.
@@ -283,22 +277,27 @@ impl HydraLossConfig {
         )
     }
 
-    /// Validates that every configured loss weight is non-negative.
+    /// Validates that every configured loss weight is finite and non-negative.
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.w_pi < 0.0
-            || self.w_v < 0.0
-            || self.w_grp < 0.0
-            || self.w_tenpai < 0.0
-            || self.w_danger < 0.0
-            || self.w_opp < 0.0
-            || self.w_score < 0.0
-            || self.w_oracle_critic < 0.0
-            || self.w_belief_fields < 0.0
-            || self.w_mixture_weight < 0.0
-            || self.w_opponent_hand_type < 0.0
-            || self.w_delta_q < 0.0
-            || self.w_safety_residual < 0.0
-        {
+        let weights = [
+            self.w_pi,
+            self.w_v,
+            self.w_grp,
+            self.w_tenpai,
+            self.w_danger,
+            self.w_opp,
+            self.w_score,
+            self.w_oracle_critic,
+            self.w_belief_fields,
+            self.w_mixture_weight,
+            self.w_opponent_hand_type,
+            self.w_delta_q,
+            self.w_safety_residual,
+        ];
+        if weights.iter().any(|weight| !weight.is_finite()) {
+            return Err("loss weights must be finite");
+        }
+        if weights.iter().any(|&weight| weight < 0.0) {
             return Err("loss weights must be non-negative");
         }
         Ok(())

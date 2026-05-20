@@ -32,6 +32,17 @@ fn find_tile_in_hand(hand: &[u8], tile_type: u8) -> Result<u8> {
         .ok_or_else(|| anyhow::anyhow!("tile type {} not in hand", tile_type))
 }
 
+fn chi_consume_type(called_type: u8, offset: i8) -> Result<u8> {
+    if called_type >= 27 {
+        bail!("chi requires suited tile, got tile type {called_type}");
+    }
+    let consume_type = i16::from(called_type) + i16::from(offset);
+    if !(0..=26).contains(&consume_type) || consume_type / 9 != i16::from(called_type / 9) {
+        bail!("chi variant out of suit range: called tile type {called_type}, offset {offset}");
+    }
+    Ok(consume_type as u8)
+}
+
 /// Context from the game state needed to resolve certain Hydra actions
 /// into complete riichienv-core Actions.
 #[derive(Debug, Clone)]
@@ -107,8 +118,8 @@ pub fn hydra_to_riichienv(hydra: HydraAction, ctx: &GameContext) -> Result<Actio
                 39 => (-1i8, 1i8), // mid: called is middle
                 _ => (-2i8, -1i8), // right: called is highest
             };
-            let type_a = (called_type as i8 + offset_a) as u8;
-            let type_b = (called_type as i8 + offset_b) as u8;
+            let type_a = chi_consume_type(called_type, offset_a)?;
+            let type_b = chi_consume_type(called_type, offset_b)?;
             let tile_a = find_tile_in_hand(&ctx.hand[..ctx.hand_len as usize], type_a)?;
             let tile_b = find_tile_in_hand(&ctx.hand[..ctx.hand_len as usize], type_b)?;
             Ok(Action::new(

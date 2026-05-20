@@ -54,6 +54,7 @@ const MAX_SELF_PLAY_STEPS: u32 = 50_000;
 #[cfg(test)]
 const MAX_SELF_PLAY_STEPS: u32 = 500;
 const NUM_OPPONENTS: usize = 3;
+const MAX_RESPONSE_PLAYERS: usize = 4;
 
 #[derive(Clone, Copy)]
 struct PendingContext {
@@ -360,8 +361,9 @@ where
                 );
             }
             Phase::WaitResponse => {
-                let active_players = state.active_player_slice().to_vec();
-                for pid in active_players {
+                let mut active_players = [0u8; MAX_RESPONSE_PLAYERS];
+                let active_count = copy_active_players(&state, &mut active_players);
+                for &pid in &active_players[..active_count] {
                     run_player_decision(
                         &mut DecisionEnv {
                             state: &mut state,
@@ -426,8 +428,9 @@ pub fn run_mixed_policy_game_scores<B: Backend>(
                 );
             }
             Phase::WaitResponse => {
-                let active_players = state.active_player_slice().to_vec();
-                for pid in active_players {
+                let mut active_players = [0u8; MAX_RESPONSE_PLAYERS];
+                let active_count = copy_active_players(&state, &mut active_players);
+                for &pid in &active_players[..active_count] {
                     run_mixed_player_decision(
                         &mut state,
                         &mut selector,
@@ -483,6 +486,7 @@ struct CooperativeGameRunner {
     live_exit_cfg: LiveExitConfig,
     step_values: Vec<f32>,
     exit_child_requests: Vec<(NodeIdx, [f32; OBS_SIZE])>,
+    exit_child_priors: Vec<(u8, f32)>,
 }
 
 impl CooperativeGameRunner {
@@ -503,6 +507,7 @@ impl CooperativeGameRunner {
             live_exit_cfg,
             step_values: Vec::new(),
             exit_child_requests: Vec::new(),
+            exit_child_priors: Vec::new(),
         }
     }
 
@@ -573,17 +578,24 @@ impl CooperativeGameRunner {
             }
 
             if self.turn_state.is_none() {
-                let players = match self.state.phase {
-                    Phase::WaitAct => vec![self.state.current_player],
-                    Phase::WaitResponse => self.state.active_player_slice().to_vec(),
+                let mut players = [0u8; MAX_RESPONSE_PLAYERS];
+                let player_count = match self.state.phase {
+                    Phase::WaitAct => {
+                        players[0] = self.state.current_player;
+                        1
+                    }
+                    Phase::WaitResponse => copy_active_players(&self.state, &mut players),
                 };
-                self.turn_state = Some(PendingTurnState::new(players, self.total_steps));
+                self.turn_state = Some(PendingTurnState::new(
+                    &players[..player_count],
+                    self.total_steps,
+                ));
             }
 
             if self
                 .turn_state
                 .as_ref()
-                .is_some_and(|turn| turn.next_index >= turn.players.len())
+                .is_some_and(|turn| turn.next_index >= turn.player_count)
             {
                 if self.has_pending_exit_search() {
                     return GameAdvance::default();
@@ -813,12 +825,12 @@ impl CooperativeGameRunner {
         }
 
         let base_pi = base_pi_from_logits(step_record);
-        let hard_slice: Vec<f32> = legal_discards
-            .iter()
-            .map(|&action| base_pi[action])
-            .collect();
+        let mut hard_slice = [0.0f32; HYDRA_ACTION_SPACE];
+        for (idx, &action) in legal_discards.iter().enumerate() {
+            hard_slice[idx] = base_pi[action];
+        }
         if !is_hard_state(
-            &hard_slice,
+            &hard_slice[..legal_discards.len()],
             self.live_exit_cfg.exit_config.hard_state_threshold,
         ) {
             return None;
@@ -830,25 +842,30 @@ impl CooperativeGameRunner {
             .root_hash(&self.state, ctx.player_id, &ctx.obs_encoded);
         let mut tree = AfbsTree::new();
         let root = tree.add_node(root_hash, 1.0, false);
-        let priors: Vec<(u8, f32)> = legal_discards
-            .iter()
-            .map(|&action| (action as u8, base_pi[action]))
-            .collect();
-        seed_root_children_all_legal(&mut tree, root, root_hash, &priors);
+        self.exit_child_priors.clear();
+        self.exit_child_priors.reserve(legal_discards.len());
+        for &action in &legal_discards {
+            self.exit_child_priors.push((action as u8, base_pi[action]));
+        }
+        seed_root_children_all_legal(&mut tree, root, root_hash, &self.exit_child_priors);
 
-        let player_safety = self.selector.safety(step_record.player_id).clone();
         self.exit_child_requests.clear();
         self.exit_child_requests
             .reserve(tree.nodes[root as usize].children.len());
-        for &(action, child_idx) in &tree.nodes[root as usize].children.clone() {
+        for &(action, child_idx) in &tree.nodes[root as usize].children {
             let child_obs = self.exit_adapter.child_public_obs_after_discard_ref(
                 &self.state,
                 ctx.player_id,
                 action,
-                &player_safety,
+                self.selector.safety(step_record.player_id),
             )?;
             self.exit_child_requests.push((child_idx, child_obs));
         }
+
+        let child_requests = std::mem::replace(
+            &mut self.exit_child_requests,
+            Vec::with_capacity(legal_discards.len()),
+        );
 
         Some(PreparedExitSearch {
             step: PendingExitStep {
@@ -863,7 +880,7 @@ impl CooperativeGameRunner {
                 child_count: 0,
                 output_index: 0,
             },
-            child_requests: std::mem::take(&mut self.exit_child_requests),
+            child_requests,
         })
     }
 
@@ -1210,25 +1227,6 @@ pub fn generate_self_play_batch_source_cooperative_reuse<B: Backend>(
     )
 }
 
-pub fn generate_self_play_batch_source_batched<B: Backend>(
-    game_seeds: &[u64],
-    temperature: f32,
-    rng_seed: u64,
-    model: &HydraModel<B>,
-    device: &<B as burn::tensor::backend::BackendTypes>::Device,
-    _inference_device: &<B as burn::tensor::backend::BackendTypes>::Device,
-    live_exit_cfg: LiveExitConfig,
-) -> SelfPlayBatchSource {
-    generate_self_play_batch_source_cooperative(
-        game_seeds,
-        temperature,
-        rng_seed,
-        model,
-        device,
-        live_exit_cfg,
-    )
-}
-
 /// Generates a complete RL training batch from self-play games.
 ///
 /// Self-play inference runs on the inner (non-autodiff) backend via
@@ -1365,6 +1363,14 @@ fn run_mixed_player_decision<B: Backend>(
     );
     selector.track_action(pid, drawn_tile_before_action, &action);
     chosen_actions[pid as usize] = Some(action);
+}
+
+fn copy_active_players(state: &GameState, out: &mut [u8; MAX_RESPONSE_PLAYERS]) -> usize {
+    let active = state.active_player_slice();
+    debug_assert!(active.len() <= out.len());
+    let count = active.len().min(out.len());
+    out[..count].copy_from_slice(&active[..count]);
+    count
 }
 
 fn infer_action_phase(legal_actions: &[Action]) -> ActionPhase {

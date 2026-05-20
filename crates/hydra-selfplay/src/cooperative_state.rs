@@ -100,8 +100,10 @@ pub struct PendingTurnState {
     /// Chosen riichi-env actions by player id.
     pub chosen_actions: [Option<Action>; 4],
     /// Players that must act/respond this turn.
-    pub players: Vec<u8>,
-    /// Next player index inside `players`.
+    pub players: [u8; 4],
+    /// Number of valid entries in `players`.
+    pub player_count: usize,
+    /// Next player index inside `players[..player_count]`.
     pub next_index: usize,
     /// Self-play turn index.
     pub turn: u32,
@@ -114,14 +116,18 @@ pub struct PendingTurnState {
 impl PendingTurnState {
     /// Creates pending turn state for the supplied acting players.
     #[must_use]
-    pub fn new(players: Vec<u8>, turn: u32) -> Self {
-        let pending_steps = Vec::with_capacity(players.len());
+    pub fn new(players: &[u8], turn: u32) -> Self {
+        debug_assert!(players.len() <= 4);
+        let mut player_buf = [0u8; 4];
+        let player_count = players.len().min(4);
+        player_buf[..player_count].copy_from_slice(&players[..player_count]);
         Self {
             chosen_actions: [None; 4],
-            players,
+            players: player_buf,
+            player_count,
             next_index: 0,
             turn,
-            pending_steps,
+            pending_steps: Vec::with_capacity(player_count),
             pending_values: Vec::new(),
         }
     }

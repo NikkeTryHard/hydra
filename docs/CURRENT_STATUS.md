@@ -72,7 +72,7 @@ File uses status vocabulary from `research/design/HYDRA_RECONCILIATION.md`.
 | NVTX profiling | shipped baseline | Orchestration-level fully instrumented (epoch, step, validation, checkpoint, logging, self-play, stage-2 benchmark). BC microbatch sub-stages (collation, forward, loss, backward, optimizer_step) instrumented. Library internals not yet instrumented. Gated by `HYDRA_NVTX` env var via dlopen. |
 | CUDA BC shard throughput | shipped baseline (transport/metrics); probe-only (CUDA graph replay) | `cuda-graph` feature enables pinned staging/preallocated tensors for shard train/probe/validation. CPU f32 policy-target path avoids lazy `IntTensor::one_hot`; metric accumulation avoids discarded progress finalization and redundant agreement kernels. Child graph probe proves compute-only capture/replay parity, but production replay is blocked by Burn optimizer gradient extraction. |
 | `safety_residual` | shipped baseline | Narrow replay-derived supervised lane |
-| ExIt carrier | shipped baseline | Live self-play lane + replay/sample sidecar-first lane |
+| ExIt carrier | shipped baseline | Live self-play lane + replay/sample sidecar-first lane; replay sidecar missing keys remain absent, but present contract mismatches hard-error instead of silently disabling hydration. |
 | DeltaQ lane | implemented but not default-on | Arena-confirmation path impl; promotion artifact now records pre-arena rec plus final `arena_decision`/`arena_report` |
 | `mixture_weight` activation | implemented but staged | Surface exists, promotion remains deferred |
 | `opponent_hand_type` activation | implemented but staged | Surface exists, target closure remains incomplete |

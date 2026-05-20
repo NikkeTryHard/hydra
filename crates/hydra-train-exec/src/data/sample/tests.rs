@@ -42,44 +42,6 @@ fn dummy_sample(action: u8, score_delta: i32) -> MjaiSample {
 }
 
 #[test]
-fn test_grp_index_sorted() {
-    assert_eq!(
-        scores_to_grp_index([40000, 30000, 20000, 10000]).unwrap(),
-        0
-    );
-}
-
-#[test]
-fn test_grp_index_reversed() {
-    let idx = scores_to_grp_index([10000, 20000, 30000, 40000]).unwrap();
-    assert_ne!(idx, 0);
-    assert!(idx < 24);
-}
-
-#[test]
-fn test_grp_perm_table_has_24_unique() {
-    let mut seen = std::collections::HashSet::new();
-    for perm in &GRP_PERM_TABLE {
-        assert!(seen.insert(*perm), "duplicate perm {perm:?}");
-    }
-    assert_eq!(seen.len(), 24);
-}
-
-#[test]
-fn test_grp_all_tie_scores() {
-    let idx = scores_to_grp_index([25000, 25000, 25000, 25000]).unwrap();
-    assert!(idx < 24);
-}
-
-#[test]
-fn test_score_bin_boundaries() {
-    assert_eq!(score_delta_to_bin(-50000), 0);
-    assert_eq!(score_delta_to_bin(60000), SCORE_BINS - 1);
-    let mid = score_delta_to_bin(5000);
-    assert!(mid > 0 && mid < SCORE_BINS - 1);
-}
-
-#[test]
 fn test_batch_shapes() {
     let device = Default::default();
     let samples: Vec<_> = (0..32)
@@ -104,33 +66,6 @@ fn test_batch_shapes() {
     );
     assert_eq!(batch.score_pdf_target.dims(), [32, 64]);
     assert_eq!(batch.score_cdf_target.dims(), [32, 64]);
-}
-
-#[test]
-fn test_score_pdf_is_one_hot() {
-    let pdf = score_delta_to_pdf(5000);
-    let sum: f32 = pdf.iter().sum();
-    assert!((sum - 1.0).abs() < 1e-5, "pdf should sum to 1");
-    let nonzero = pdf.iter().filter(|&&v| v > 0.0).count();
-    assert_eq!(nonzero, 1, "pdf should be one-hot");
-}
-
-#[test]
-fn test_score_cdf_monotonic() {
-    let cdf = score_delta_to_cdf(5000);
-    for i in 1..64 {
-        assert!(cdf[i] >= cdf[i - 1], "cdf not monotonic at {i}");
-    }
-    assert!((cdf[63] - 1.0).abs() < 1e-5, "cdf should end at 1");
-}
-
-#[test]
-fn test_value_target_range() {
-    assert!((score_delta_to_value(0) - 0.0).abs() < 1e-5);
-    assert!((score_delta_to_value(100_000) - 1.0).abs() < 1e-5);
-    assert!((score_delta_to_value(-100_000) - (-1.0)).abs() < 1e-5);
-    let mid = score_delta_to_value(50_000);
-    assert!(mid > 0.0 && mid < 1.0);
 }
 
 #[test]
@@ -186,13 +121,6 @@ fn test_extreme_score_deltas() {
     assert!((vals[0] - (-1.0)).abs() < 1e-5);
     assert!((vals[1] - 1.0).abs() < 1e-5);
     assert!((vals[2] - 0.0).abs() < 1e-5);
-}
-
-#[test]
-fn test_score_to_placement() {
-    assert_eq!(score_to_placement([40000, 30000, 20000, 10000], 0), 0);
-    assert_eq!(score_to_placement([40000, 30000, 20000, 10000], 3), 3);
-    assert_eq!(score_to_placement([25000, 25000, 25000, 25000], 0), 0);
 }
 
 #[test]

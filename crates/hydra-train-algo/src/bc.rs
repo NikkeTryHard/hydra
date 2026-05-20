@@ -1,5 +1,6 @@
 //! Behavioral cloning helper algorithms.
 
+use crate::losses::masked_logits;
 use burn::prelude::*;
 pub use hydra_train_types::config::{BcExitConfig, cosine_annealing_lr, warmup_then_cosine_lr};
 
@@ -40,8 +41,7 @@ pub fn policy_agreement_counts<B: Backend>(
     mask: Tensor<B, 2>,
     targets: Tensor<B, 1, Int>,
 ) -> (usize, usize) {
-    let masked = logits + (mask.ones_like() - mask) * (-1e9f32);
-    let predicted = masked.argmax(1).squeeze_dim::<1>(1);
+    let predicted = masked_logits(logits, mask).argmax(1).squeeze_dim::<1>(1);
     let correct = predicted.equal(targets);
     let dims = correct.dims();
     let total = dims[0];
@@ -69,6 +69,11 @@ pub fn oracle_guidance_mask_values(
     keep_prob: f32,
     rng_values: &[f32],
 ) -> Vec<f32> {
+    assert!(keep_prob.is_finite(), "keep_prob must be finite");
+    assert!(
+        (0.0..=1.0).contains(&keep_prob),
+        "keep_prob must be in [0,1]"
+    );
     (0..batch_size)
         .map(|idx| {
             let sample = rng_values.get(idx).copied().unwrap_or(0.0);
@@ -94,8 +99,7 @@ fn exit_loss<B: Backend>(
     exit_mask: Tensor<B, 2>,
     weight: f32,
 ) -> Tensor<B, 1> {
-    let neg_inf = (exit_mask.ones_like() - exit_mask) * (-1e9f32);
-    let log_pi = burn::tensor::activation::log_softmax(model_logits + neg_inf, 1);
+    let log_pi = burn::tensor::activation::log_softmax(masked_logits(model_logits, exit_mask), 1);
     let ce = (exit_target * log_pi).sum_dim(1).neg().mean();
     ce * weight
 }

@@ -102,6 +102,20 @@ fn validate_rejects_negative_primary_weights() {
 }
 
 #[test]
+fn validate_rejects_non_finite_weights() {
+    assert_eq!(
+        HydraLossConfig::new().with_w_pi(f32::NAN).validate(),
+        Err("loss weights must be finite")
+    );
+    assert_eq!(
+        HydraLossConfig::new()
+            .with_w_delta_q(f32::INFINITY)
+            .validate(),
+        Err("loss weights must be finite")
+    );
+}
+
+#[test]
 fn slice_batch_clears_cached_target_presence() {
     let device = Default::default();
     let mut targets = make_dummy_targets::<B>(&device, 4);
@@ -116,4 +130,36 @@ fn slice_batch_clears_cached_target_presence() {
         sliced.target_presence.is_none(),
         "sliced targets must drop cached full-batch presence metadata"
     );
+}
+
+fn loss_breakdown_with_total<B: Backend>(
+    device: &<B as burn::tensor::backend::BackendTypes>::Device,
+    total: f32,
+) -> LossBreakdown<B> {
+    let scalar = |value| Tensor::<B, 1>::from_floats([value], device);
+    LossBreakdown {
+        policy: scalar(0.0),
+        value: scalar(0.0),
+        grp: scalar(0.0),
+        tenpai: scalar(0.0),
+        danger: scalar(0.0),
+        opp_next: scalar(0.0),
+        score_pdf: scalar(0.0),
+        score_cdf: scalar(0.0),
+        oracle_critic: scalar(0.0),
+        belief_fields: scalar(0.0),
+        mixture_weight: scalar(0.0),
+        opponent_hand_type: scalar(0.0),
+        delta_q: scalar(0.0),
+        safety_residual: scalar(0.0),
+        total: scalar(total),
+    }
+}
+
+#[test]
+fn all_finite_reports_non_finite_scalar_without_panicking() {
+    let device = Default::default();
+    assert!(loss_breakdown_with_total::<B>(&device, 1.0).all_finite());
+    assert!(!loss_breakdown_with_total::<B>(&device, f32::NAN).all_finite());
+    assert!(!loss_breakdown_with_total::<B>(&device, f32::INFINITY).all_finite());
 }
