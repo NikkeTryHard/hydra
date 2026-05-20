@@ -4,6 +4,7 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use hydra_data_core::{
     COMPACT_BASELINE_CHANNELS, COMPACT_MISSING_SHANTEN, COMPACT_MISSING_TILE, CompactMeldType,
+    CompactObservationFacts,
 };
 use hydra_replay_sidecar::{
     DeltaQSidecarIndex, ExitSidecarIndex, ReplayDecisionKey, ReplayDeltaQRecordV1,
@@ -140,6 +141,17 @@ impl ReplaySampleSink for CollectRecordSink {
     }
 }
 
+struct CollectReplayRecordSink {
+    records: Vec<ReplaySampleRecord>,
+}
+
+impl ReplaySampleSink for CollectReplayRecordSink {
+    fn push_sample(&mut self, sample: ReplaySampleRecord) -> io::Result<()> {
+        self.records.push(sample);
+        Ok(())
+    }
+}
+
 #[test]
 fn load_game_from_reader_into_sink_matches_public_loader_samples() {
     let (log, final_scores) = play_game_with_mjai_log(3);
@@ -194,6 +206,264 @@ fn assert_replay_sample_eq(from_sink: &MjaiSample, from_public: &MjaiSample) {
         from_public.mixture_weights_present
     );
     assert_eq!(from_sink.compact_facts, from_public.compact_facts);
+}
+
+fn representative_replay_payload() -> &'static str {
+    include_str!("../../../../RiichiEnv/tests/data/126_204_0_mjai.jsonl")
+}
+
+fn assert_representative_replay_events(payload: &str) {
+    let events = read_mjai_events(Cursor::new(payload)).expect("parse representative replay");
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, MjaiEvent::Hora { .. }))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, MjaiEvent::Pon { .. }))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, MjaiEvent::Chi { .. }))
+    );
+    assert!(events.iter().any(|event| matches!(
+        event,
+        MjaiEvent::Kan { .. } | MjaiEvent::Ankan { .. } | MjaiEvent::Kakan { .. }
+    )));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, MjaiEvent::Reach { .. }))
+    );
+}
+
+fn load_representative_records(
+    payload: &str,
+    observation_profile: ReplayObservationProfile,
+) -> io::Result<([i32; 4], Vec<ReplaySampleRecord>)> {
+    let policy = ReplayLoadPolicy::new(
+        ReplayTargetProfile::with_optional_heads(true, true, true, true, false, false),
+        observation_profile,
+        SidecarProvenance::default(),
+        SidecarProvenance::default(),
+        None,
+        None,
+    );
+    let mut sink = CollectReplayRecordSink {
+        records: Vec::new(),
+    };
+    let scores = load_game_from_reader_into_sink(
+        "126_204_0_mjai.jsonl",
+        Cursor::new(payload.as_bytes()),
+        Some(&policy),
+        &mut sink,
+    )?;
+    Ok((scores, sink.records))
+}
+
+fn assert_record_targets_eq(row: usize, bc: &ReplaySampleRecord, full: &ReplaySampleRecord) {
+    assert_eq!(bc.placement, full.placement, "row {row} placement");
+    assert_eq!(bc.score_delta, full.score_delta, "row {row} score_delta");
+    assert_eq!(bc.grp_label, full.grp_label, "row {row} grp_label");
+    assert_eq!(bc.oracle_target, full.oracle_target, "row {row} oracle");
+    assert_eq!(bc.tenpai, full.tenpai, "row {row} tenpai");
+    assert_eq!(bc.opp_next, full.opp_next, "row {row} opp_next");
+    assert_eq!(bc.danger, full.danger, "row {row} danger");
+    assert_eq!(bc.danger_mask, full.danger_mask, "row {row} danger_mask");
+    assert_eq!(bc.safety_residual, full.safety_residual, "row {row} safety");
+    assert_eq!(
+        bc.safety_residual_mask, full.safety_residual_mask,
+        "row {row} safety mask"
+    );
+    assert_eq!(bc.exit_target, None, "row {row} exit target");
+    assert_eq!(full.exit_target, None, "row {row} full exit target");
+    assert_eq!(bc.exit_mask, None, "row {row} exit mask");
+    assert_eq!(full.exit_mask, None, "row {row} full exit mask");
+    assert_eq!(bc.delta_q_target, None, "row {row} delta-q target");
+    assert_eq!(full.delta_q_target, None, "row {row} full delta-q target");
+    assert_eq!(bc.delta_q_mask, None, "row {row} delta-q mask");
+    assert_eq!(full.delta_q_mask, None, "row {row} full delta-q mask");
+    assert_eq!(bc.belief_fields, full.belief_fields, "row {row} belief");
+    assert_eq!(
+        bc.mixture_weights, full.mixture_weights,
+        "row {row} mixture"
+    );
+    assert_eq!(
+        bc.belief_fields_present, full.belief_fields_present,
+        "row {row} belief present"
+    );
+    assert_eq!(
+        bc.mixture_weights_present, full.mixture_weights_present,
+        "row {row} mixture present"
+    );
+}
+
+fn assert_compact_facts_eq(
+    row: usize,
+    bc: &CompactObservationFacts,
+    full: &CompactObservationFacts,
+) {
+    assert_eq!(
+        bc.hand_counts, full.hand_counts,
+        "row {row} compact hand_counts"
+    );
+    assert_eq!(
+        bc.open_meld_counts, full.open_meld_counts,
+        "row {row} compact open_meld_counts"
+    );
+    assert_eq!(
+        bc.drawn_tile, full.drawn_tile,
+        "row {row} compact drawn_tile"
+    );
+    assert_eq!(
+        bc.shanten_base, full.shanten_base,
+        "row {row} compact shanten_base"
+    );
+    assert_eq!(
+        bc.shanten_discard, full.shanten_discard,
+        "row {row} compact shanten_discard"
+    );
+    assert_eq!(bc.discards, full.discards, "row {row} compact discards");
+    assert_eq!(bc.melds, full.melds, "row {row} compact melds");
+    assert_eq!(
+        bc.dora_indicators, full.dora_indicators,
+        "row {row} compact dora"
+    );
+    assert_eq!(
+        bc.dora_indicator_count, full.dora_indicator_count,
+        "row {row} compact dora count"
+    );
+    assert_eq!(bc.aka_flags, full.aka_flags, "row {row} compact aka");
+    assert_eq!(bc.riichi, full.riichi, "row {row} compact riichi");
+    assert_eq!(bc.scores, full.scores, "row {row} compact scores");
+    assert_eq!(bc.kyoku_index, full.kyoku_index, "row {row} compact kyoku");
+    assert_eq!(bc.honba, full.honba, "row {row} compact honba");
+    assert_eq!(bc.kyotaku, full.kyotaku, "row {row} compact kyotaku");
+    assert_eq!(bc.safety, full.safety, "row {row} compact safety");
+    assert_eq!(
+        bc.advanced_tail, full.advanced_tail,
+        "row {row} compact advanced tail"
+    );
+}
+
+#[test]
+fn representative_replay_duplicate_fact_extraction_matches_single_extract_rows() {
+    let payload = representative_replay_payload();
+    assert_representative_replay_events(payload);
+
+    let events = read_mjai_events(Cursor::new(payload)).expect("parse representative replay");
+    let mut state = GameState::new(0, true, Some(0), 0, GameRule::default_tenhou());
+    let mut safety = array::from_fn(|_| SafetyInfo::default());
+    let mut encoder = ObservationEncoder::new();
+    let mut old_encoder = ObservationEncoder::new();
+    let mut checked_rows = 0usize;
+    let mut saw_pon = false;
+    let mut saw_chi = false;
+    let mut saw_kan = false;
+    let mut saw_pass = false;
+
+    for (event_idx, event) in events.iter().enumerate() {
+        let decisions = prepare_replay_decisions_with_options(
+            event,
+            &mut state,
+            &safety,
+            &mut encoder,
+            ReplayDecisionOptions {
+                observation_profile: ReplayObservationProfile::BcMinimal,
+            },
+        )
+        .expect("prepare representative replay decision");
+
+        for (decision_idx, decision) in decisions.iter().enumerate() {
+            let row = checked_rows;
+            assert!(
+                decision.use_ref_targets,
+                "event {event_idx} decision {decision_idx} ref path"
+            );
+            assert!(
+                decision.legal_mask[decision.action_id as usize],
+                "event {event_idx} decision {decision_idx} chosen legal"
+            );
+            let obs_ref = state.observe(decision.actor as u8);
+            let old_obs_encoded = hydra_core::bridge::encode_observation_ref_with_profile(
+                &mut old_encoder,
+                &obs_ref,
+                &safety[decision.actor],
+                BridgeEncodeProfile::bc_minimal(),
+            );
+            let old_extracted_facts = extract_observation_facts_ref(&obs_ref);
+            let old_compact_facts = CompactObservationFacts::from_encoder_inputs(
+                old_extracted_facts.hand,
+                old_extracted_facts.open_meld_counts,
+                old_extracted_facts.drawn_tile,
+                old_extracted_facts.shanten_batch.base,
+                old_extracted_facts.shanten_batch.discard,
+                &old_extracted_facts.discards,
+                &old_extracted_facts.melds,
+                &old_extracted_facts.dora,
+                &old_extracted_facts.meta,
+                &safety[decision.actor],
+                &old_obs_encoded,
+                false,
+            );
+
+            assert_eq!(
+                decision.obs_encoded, old_obs_encoded,
+                "event {event_idx} decision {decision_idx} obs"
+            );
+            assert_compact_facts_eq(row, &decision.compact_facts, &old_compact_facts);
+
+            saw_pon |= decision.action_id == hydra_core::action::PON;
+            saw_chi |= matches!(
+                decision.action_id,
+                hydra_core::action::CHI_LEFT
+                    | hydra_core::action::CHI_MID
+                    | hydra_core::action::CHI_RIGHT
+            );
+            saw_kan |= decision.action_id == hydra_core::action::KAN;
+            saw_pass |= decision.action_id == hydra_core::action::PASS;
+            checked_rows += 1;
+        }
+
+        update_safety(&mut safety, event).expect("update safety");
+        state.apply_mjai_event(event.clone());
+    }
+
+    assert!(
+        checked_rows > 600,
+        "expected representative replay decisions"
+    );
+    assert!(saw_pon, "expected representative pon decision");
+    assert!(saw_chi, "expected representative chi decision");
+    assert!(saw_kan, "expected representative kan decision");
+    assert!(saw_pass, "expected representative implicit pass decision");
+}
+
+#[test]
+fn representative_replay_full_and_bc_minimal_targets_stay_in_order() {
+    let payload = representative_replay_payload();
+    let (bc_scores, bc_rows) =
+        load_representative_records(payload, ReplayObservationProfile::BcMinimal)
+            .expect("load representative bc replay");
+    let (full_scores, full_rows) =
+        load_representative_records(payload, ReplayObservationProfile::Full)
+            .expect("load representative full replay");
+
+    assert_eq!(bc_scores, full_scores);
+    assert_eq!(bc_rows.len(), full_rows.len());
+    assert!(bc_rows.len() > 600, "expected representative replay rows");
+    for (row, (bc, full)) in bc_rows.iter().zip(full_rows.iter()).enumerate() {
+        assert_eq!(bc.action, full.action, "row {row} action");
+        assert_eq!(bc.legal_mask, full.legal_mask, "row {row} legal mask");
+        assert!(
+            bc.legal_mask[bc.action as usize] > 0.0,
+            "row {row} chosen legal"
+        );
+        assert_record_targets_eq(row, bc, full);
+    }
 }
 
 #[test]
@@ -1413,6 +1683,115 @@ fn prepare_replay_decision_allows_implicit_pass_alongside_hora_response() {
         })
     );
     assert!(state.players[0].missed_agari_doujun);
+    assert_eq!(state.phase, riichienv_core::action::Phase::WaitResponse);
+    assert_eq!(state.active_player_slice(), &[0, 1]);
+}
+
+fn implicit_pass_hora_event() -> MjaiEvent {
+    MjaiEvent::Hora {
+        actor: 1,
+        target: 3,
+        pai: None,
+        uradora_markers: None,
+        yaku: None,
+        fu: None,
+        han: None,
+        scores: None,
+        delta: Some(vec![0, 2000, 0, -2000]),
+    }
+}
+
+fn implicit_pass_ron_state() -> GameState {
+    let mut state = GameState::new(0, true, Some(0), 0, GameRule::default_tenhou());
+    state.phase = riichienv_core::action::Phase::WaitResponse;
+    state.active_players = [0, 1, 0, 0];
+    state.active_player_count = 2;
+    state.current_claim_counts[0] = 1;
+    state.current_claims[0][0] = EngineAction::new(ActionType::Ron, None, &[], Some(0));
+    state.current_claim_counts[1] = 1;
+    state.current_claims[1][0] = EngineAction::new(ActionType::Ron, None, &[], Some(1));
+    state.last_discard = Some((3, 48));
+    state
+}
+
+#[test]
+fn implicit_pass_bc_minimal_matches_full_action_and_legal_mask() {
+    let safety = array::from_fn(|_| SafetyInfo::default());
+    let mut bc_state = implicit_pass_ron_state();
+    let mut full_state = implicit_pass_ron_state();
+    let mut bc_encoder = ObservationEncoder::new();
+    let mut full_encoder = ObservationEncoder::new();
+
+    let bc_decisions = prepare_replay_decisions_with_options(
+        &implicit_pass_hora_event(),
+        &mut bc_state,
+        &safety,
+        &mut bc_encoder,
+        ReplayDecisionOptions {
+            observation_profile: ReplayObservationProfile::BcMinimal,
+        },
+    )
+    .expect("prepare bc minimal implicit pass");
+    let full_decisions = prepare_replay_decisions_with_options(
+        &implicit_pass_hora_event(),
+        &mut full_state,
+        &safety,
+        &mut full_encoder,
+        ReplayDecisionOptions {
+            observation_profile: ReplayObservationProfile::Full,
+        },
+    )
+    .expect("prepare full implicit pass");
+
+    assert_eq!(bc_decisions.len(), 1);
+    assert_eq!(full_decisions.len(), 1);
+    let bc = &bc_decisions[0];
+    let full = &full_decisions[0];
+    assert_eq!(bc.actor, full.actor);
+    assert_eq!(bc.action_id, hydra_core::action::PASS);
+    assert_eq!(bc.action_id, full.action_id);
+    assert_eq!(bc.legal_mask, full.legal_mask);
+    assert_eq!(bc.legal_mask_f32, full.legal_mask_f32);
+    assert!(bc.legal_mask[hydra_core::action::PASS as usize]);
+    assert_eq!(bc.legal_mask_f32[hydra_core::action::PASS as usize], 1.0);
+    assert!(bc.compact_facts.hand_counts.iter().any(|&count| count != 0));
+    assert!(bc.use_ref_targets);
+    assert!(!full.use_ref_targets);
+}
+
+#[test]
+fn prepare_replay_decision_marks_riichi_missed_agari_on_implicit_pass() {
+    let mut state = implicit_pass_ron_state();
+    state.players[0].riichi_declared = true;
+    let safety = array::from_fn(|_| SafetyInfo::default());
+    let mut encoder = ObservationEncoder::new();
+
+    let decisions = prepare_replay_decisions(
+        &implicit_pass_hora_event(),
+        &mut state,
+        &safety,
+        &mut encoder,
+    )
+    .expect("prepare replay decisions");
+
+    assert_eq!(decisions.len(), 1);
+    let decision = &decisions[0];
+    assert_eq!(decision.actor, 0);
+    assert_eq!(decision.action_id, hydra_core::action::PASS);
+    assert!(decision.legal_mask[hydra_core::action::PASS as usize]);
+    assert_eq!(
+        decision.legal_mask_f32[hydra_core::action::PASS as usize],
+        1.0
+    );
+    assert!(
+        decision
+            .compact_facts
+            .hand_counts
+            .iter()
+            .any(|&count| count != 0)
+    );
+    assert!(state.players[0].missed_agari_doujun);
+    assert!(state.players[0].missed_agari_riichi);
     assert_eq!(state.phase, riichienv_core::action::Phase::WaitResponse);
     assert_eq!(state.active_player_slice(), &[0, 1]);
 }

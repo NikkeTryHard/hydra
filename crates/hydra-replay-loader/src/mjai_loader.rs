@@ -11,7 +11,7 @@ use hydra_core::action::{AKA_5M, DISCARD_END};
 use hydra_core::action::{ActionPhase, HYDRA_ACTION_SPACE, riichienv_to_hydra};
 use hydra_core::bridge::{
     BridgeEncodeProfile, encode_extracted_observation_facts_with_profile,
-    encode_observation_ref_with_profile, extract_observation_facts, extract_observation_facts_ref,
+    extract_observation_facts, extract_observation_facts_ref,
 };
 use hydra_core::encoder::{OBS_SIZE, ObservationEncoder};
 use hydra_core::safety::SafetyInfo;
@@ -63,6 +63,10 @@ impl ReplayObservationProfile {
             Self::Full => BridgeEncodeProfile::full(),
             Self::BcMinimal => BridgeEncodeProfile::bc_minimal(),
         }
+    }
+
+    const fn uses_ref_observation(self) -> bool {
+        matches!(self, Self::BcMinimal)
     }
 }
 
@@ -849,13 +853,13 @@ fn finalize_prepared_replay_decision_ref(
 
     let t_encode = Instant::now();
     let obs_ref = state.observe(actor as u8);
-    let obs_encoded = encode_observation_ref_with_profile(
+    let extracted_facts = extract_observation_facts_ref(&obs_ref);
+    let obs_encoded = encode_extracted_observation_facts_with_profile(
         encoder,
-        &obs_ref,
+        &extracted_facts,
         &safety[actor],
         BridgeEncodeProfile::bc_minimal(),
     );
-    let extracted_facts = extract_observation_facts_ref(&obs_ref);
     let compact_facts = CompactObservationFacts::from_encoder_inputs(
         extracted_facts.hand,
         extracted_facts.open_meld_counts,
@@ -927,6 +931,18 @@ fn observation_for_implicit_pass(state: &mut GameState, actor: u8) -> io::Result
     Ok(obs)
 }
 
+fn mark_missed_agari_for_implicit_pass(state: &mut GameState, actor: u8, had_ron: bool) {
+    if !had_ron {
+        return;
+    }
+
+    let player = &mut state.players[actor as usize];
+    player.missed_agari_doujun = true;
+    if player.riichi_declared {
+        player.missed_agari_riichi = true;
+    }
+}
+
 fn prepare_implicit_pass_decisions(
     next_event: &MjaiEvent,
     state: &mut GameState,
@@ -962,36 +978,64 @@ fn prepare_implicit_pass_decisions(
     let resolve_all_passes = responding_actor.is_none();
 
     let active_players = state.active_player_slice().to_vec();
+    let mut legal = Vec::new();
     for pid in active_players {
         if Some(pid as usize) == responding_actor {
             continue;
         }
 
         let pass_action = EngineAction::new(ActionType::Pass, None, &[], Some(pid));
-        let obs = observation_for_implicit_pass(state, pid)?;
-        let had_ron = {
-            let legal = obs.legal_actions_ref();
-            let (_, _, _, had_ron) =
-                analyze_replay_legal_actions(legal, ActionPhase::Normal, hydra_core::action::PASS);
-            had_ron
-        };
-        if let Some(decision) = finalize_prepared_replay_decision(
-            pid as usize,
-            pass_action,
-            obs,
-            ActionPhase::Normal,
-            state,
-            safety,
-            encoder,
-            options,
-        )? {
-            decisions.push(decision);
-        }
+        match options.observation_profile {
+            ReplayObservationProfile::BcMinimal => {
+                legal.clear();
+                let t_obs = Instant::now();
+                state.get_legal_actions_into(pid, &mut legal);
+                REPLAY_OBSERVATION_NS
+                    .fetch_add(t_obs.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                let (_, _, _, had_ron) = analyze_replay_legal_actions(
+                    &legal,
+                    ActionPhase::Normal,
+                    hydra_core::action::PASS,
+                );
+                if let Some(decision) = finalize_prepared_replay_decision_ref(
+                    pid as usize,
+                    pass_action,
+                    ActionPhase::Normal,
+                    state,
+                    safety,
+                    encoder,
+                    &legal,
+                )? {
+                    decisions.push(decision);
+                }
 
-        if had_ron {
-            state.players[pid as usize].missed_agari_doujun = true;
-            if state.players[pid as usize].riichi_declared {
-                state.players[pid as usize].missed_agari_riichi = true;
+                mark_missed_agari_for_implicit_pass(state, pid, had_ron);
+            }
+            ReplayObservationProfile::Full => {
+                let obs = observation_for_implicit_pass(state, pid)?;
+                let had_ron = {
+                    let legal = obs.legal_actions_ref();
+                    let (_, _, _, had_ron) = analyze_replay_legal_actions(
+                        legal,
+                        ActionPhase::Normal,
+                        hydra_core::action::PASS,
+                    );
+                    had_ron
+                };
+                if let Some(decision) = finalize_prepared_replay_decision(
+                    pid as usize,
+                    pass_action,
+                    obs,
+                    ActionPhase::Normal,
+                    state,
+                    safety,
+                    encoder,
+                    options,
+                )? {
+                    decisions.push(decision);
+                }
+
+                mark_missed_agari_for_implicit_pass(state, pid, had_ron);
             }
         }
     }
@@ -1039,7 +1083,7 @@ fn prepare_replay_decisions_with_options(
         return Ok(decisions);
     };
 
-    if options.observation_profile == ReplayObservationProfile::BcMinimal {
+    if options.observation_profile.uses_ref_observation() {
         let mut legal = Vec::new();
         let log_action_str = replay_log_action_str(event, &env_action);
         let t_obs = Instant::now();
