@@ -42,6 +42,16 @@ fn dummy_sample(action: u8, score_delta: i32) -> MjaiSample {
 }
 
 #[test]
+fn sample_module_reexports_score_distribution_helpers() {
+    let bin = score_delta_to_bin(5_000);
+    let pdf = score_delta_to_pdf(5_000);
+    let cdf = score_delta_to_cdf(5_000);
+    assert_eq!(pdf[bin], 1.0);
+    assert_eq!(cdf[bin], 1.0);
+    assert_eq!(pdf.iter().filter(|&&value| value > 0.0).count(), 1);
+}
+
+#[test]
 fn test_batch_shapes() {
     let device = Default::default();
     let samples: Vec<_> = (0..32)
