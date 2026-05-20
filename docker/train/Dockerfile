@@ -35,10 +35,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     CARGO_BUILD_RUSTC_WRAPPER=/app/scripts/rustc-wrapper.sh \
     CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang \
     CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS='-C link-arg=-fuse-ld=/usr/bin/mold' \
-    cargo build --release -p hydra-train && \
+    cargo build --release -p hydra-train --no-default-features --features training --bin train --bin mjai_audit && \
     cp /app/target/release/train /tmp/train && \
-    cp /app/target/release/mjai_audit /tmp/mjai_audit && \
-    cp /app/target/release/recompress /tmp/recompress
+    cp /app/target/release/mjai_audit /tmp/mjai_audit
 
 FROM pytorch/pytorch:2.9.0-cuda12.8-cudnn9-runtime AS runtime
 
@@ -65,6 +64,5 @@ WORKDIR /app
 
 COPY --from=builder /tmp/train /usr/local/bin/train
 COPY --from=builder /tmp/mjai_audit /usr/local/bin/mjai_audit
-COPY --from=builder /tmp/recompress /usr/local/bin/recompress
 
 ENTRYPOINT ["/usr/local/bin/train"]

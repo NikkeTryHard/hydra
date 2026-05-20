@@ -171,8 +171,35 @@ Useful invariants for runtime/data changes:
 - RNG/seeding changes: read `research/design/SEEDING.md`; preserve deterministic replay/eval behavior.
 - Performance work: read/update `research/infrastructure/ENGINE_BENCHMARKS.md`.
 - Infrastructure/checkpoint/container work: read `research/infrastructure/INFRASTRUCTURE.md` and `docker/train/README.md` as applicable.
-- Before trusting replay/shard/sidecar data with suspicious low sample count/high skip count, audit: `mjai_audit` -> `mjai_first_failure` -> `mjai_debug_failure`.
+- Before trusting replay/shard/sidecar data with suspicious low sample count/high skip count, audit with `mjai_audit`; use failure inventory or focused loader tests for specific bad replays.
 - If `advanced_loss.exit` or `advanced_loss.delta_q` is positive, matching sidecar path is required; validation promotion must hydrate labels when gates require them.
+
+- Default training/perf runs use `device: cuda:0` (or `HYDRA_TRAIN_DEVICE=cuda:0`) when GPU exists. CPU train is super slow; use CPU only for explicit CPU-debug/compat checks. GPU accelerates model forward/backward/optimizer/H2D; raw replay, BC-shard decode, sample collation, and materialization still run on CPU workers.
+
+Hydra binaries quick use:
+
+- Cargo features are compile-time capability gates. Use `training` for LibTorch/Burn train/model binaries; `cuda-graph` implies `training` and checks CUDA pinned/prealloc/probe code; `data-tools` is lightweight data-conversion tooling. Omit `--features` only for bins with `Features=none`.
+- Use Pixi from repo root: `pixi run cargo run --quiet --package hydra-train --features <features> --bin <bin> -- <args>`. `cargo run` samples/s from build tools is not GPU training throughput.
+
+|Bin|Features|Purpose|Usage / key flags|
+|---|---|---|---|
+|`train`|`training` / `cuda-graph` for CUDA transport checks|Main config-driven train/probe/preflight entry.|`-- <config.yaml>` normal train. `-- --list-devices`. `-- --preflight [--device cpu|cuda:N] [--output-dir DIR] [--preflight-mode safe|unsafe] [--pf-candidate-tuples batch:ring:threads:prefetch,...] [--pf-warmup-steps N] [--pf-measure-steps N] [--pf-repetitions N] [--pf-output md]`. Config modes: `<config.yaml> --delta-q-promotion [--delta-q-baseline-checkpoint PATH]`; `<config.yaml> --probe-kind train|validation|rl_games|rl_microbatch --probe-candidate-microbatch N [--probe-warmup-steps N] [--probe-measure-steps N]`. Full training behavior lives in YAML/JSON config, not CLI overrides.|
+|`mjai_audit`|`training`|Audit replay/cache ingestion; bucket loader failures.|`-- <data-dir> [--threads N] [--failure-examples N] [--failure-inventory-dir DIR]`. Use before trusting suspicious low sample/high skip corpora.|
+|`build_bc_shards`|`training`|Raw MJAI/cache -> compact BC shards; validate manifests; materialization throughput proof.|Build: `-- --input <dir|archive|replay> --output-dir DIR [--manifest-name FILE] [--shard-samples N] [--train-fraction F] [--split train|val|both] [--num-threads N] [--queue-bound N] [--chunk-games N] [--max-games N] [--max-samples N] [--report-name FILE|--no-report] [--progress-jsonl FILE] [--dry-scan-only] [--resume] [--resume-dir DIR] [--max-error-examples N]`. Validate: `-- --validate-manifest PATH`. Sidecars require full triples: `--exit-sidecar PATH --exit-source-net-hash U64 --exit-source-version U32`; `--delta-q-sidecar PATH --delta-q-source-net-hash U64 --delta-q-source-version U32`.|
+|`extract_timing_metrics`|none|Extract timing/throughput from step/training logs.|`-- (--step-log PATH|--training-log PATH)... [--run-id ID] [--skip-initial-rows N] [--min-global-step N] [--format json|csv]`. Use for benchmark claims.|
+|`build_parsed_sample_cache`|`data-tools`|Loose MJAI `.json`/`.json.gz` -> parsed sample cache.|`-- --input <loose-file|dir> --output-dir DIR`. Archives rejected. Skips/reports per-file errors.|
+|`build_replay_exit_sidecar`|`training`|Single replay + checkpoint -> ExIt JSONL sidecar + `.report.json`.|`-- --input <replay.json|.gz> --checkpoint <model_base> --output <sidecar.jsonl> --source-version U32 [--min-visits U32] [--hard-state-threshold F32] [--max-kl F32]`. CPU model load; source hash from checkpoint.|
+|`build_replay_delta_q_sidecar`|`training`|Single replay + checkpoint -> DeltaQ JSONL sidecar + `.report.json`.|Same as ExIt, but `--source-version` must be `1` for train-side lookup.|
+
+Common examples:
+
+```bash
+pixi run cargo run --quiet --package hydra-train --features training --bin build_bc_shards -- \
+  --input data/mjai --output-dir output/bc-shards --num-threads 20 --max-games 5000 \
+  --report-name report.json
+pixi run cargo run --quiet --package hydra-train --bin extract_timing_metrics -- \
+  --step-log output/bc/step_log.jsonl --skip-initial-rows 1 --format json
+```
 
 ## Docs and Markdown
 

@@ -48,8 +48,7 @@ lint-cuda-graph = { cmd = "scripts/lint-check.sh --cuda-graph", description = "F
 bench-core = { cmd = "cargo bench -p hydra-core --no-default-features --features benchmarks", description = "Run hydra-core benches" }
 bench-engine = { cmd = "cargo bench -p hydra-engine --no-default-features --features benchmarks", description = "Run hydra-engine benches" }
 check-training = { cmd = "cargo check -p hydra-train --no-default-features --features training --bin train --quiet", description = "Check explicit CPU LibTorch training path" }
-check-data-tools = { cmd = "cargo check -p hydra-train --no-default-features --features data-tools --bins --quiet", description = "Check hydra-train data-tool bins" }
-check-debug-tools = { cmd = "cargo check -p hydra-train --no-default-features --features debug-tools --bins --quiet", description = "Check hydra-train debug-tool bins" }
+check-data-tools = { cmd = "cargo check -p hydra-train --no-default-features --features data-tools --bin build_parsed_sample_cache --quiet", description = "Check hydra-train parsed sample cache builder" }
 check-cuda-graph = { cmd = "cargo check -p hydra-train --no-default-features --features cuda-graph --bin train --quiet", description = "Check explicit CUDA graph path" }
 check-training-cuda = { cmd = "pixi run check-cuda-graph", description = "Check serious CUDA shard training path with pinned/prealloc transport" }
 train-cuda-shards = { cmd = "cargo run --release -p hydra-train --bin train --no-default-features --features cuda-graph --", description = "Run CUDA BC shard training with pinned/prealloc transport; pass config path after --" }

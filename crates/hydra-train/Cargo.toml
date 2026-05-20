@@ -25,14 +25,6 @@ path = "src/bin/mjai_audit.rs"
 required-features = ["training"]
 
 [[bin]]
-name = "recompress"
-path = "src/bin/recompress.rs"
-required-features = ["data-tools"]
-[[bin]]
-name = "repack_tar"
-path = "src/bin/repack_tar.rs"
-required-features = ["data-tools"]
-[[bin]]
 name = "build_bc_shards"
 path = "src/bin/build_bc_shards.rs"
 required-features = ["training"]
@@ -55,15 +47,6 @@ name = "build_replay_delta_q_sidecar"
 path = "src/bin/build_replay_delta_q_sidecar.rs"
 required-features = ["training"]
 
-[[bin]]
-name = "mjai_first_failure"
-path = "src/bin/mjai_first_failure.rs"
-required-features = ["debug-tools"]
-
-[[bin]]
-name = "mjai_debug_failure"
-path = "src/bin/mjai_debug_failure.rs"
-required-features = ["debug-tools"]
 
 [dependencies]
 hydra-core = { path = "../hydra-core" }
@@ -109,7 +92,6 @@ hydra-train-runtime = { path = "../hydra-train-runtime" }
 [features]
 default = []
 data-tools = []
-debug-tools = ["data-tools"]
 training = [
     "dep:hydra-train-exec",
     "dep:hydra-selfplay",

@@ -51,14 +51,11 @@ Cargo target truth comes from Cargo metadata: explicit `[[bin]]` entries plus au
 |---|---|
 | `train` | main entrypoint: normal train, markdown preflight benchmark, probe-only, DeltaQ promotion |
 | `mjai_audit` | replay corpus/archive audit, failure buckets, optional failure inventories |
-| `mjai_first_failure` | first bad MJAI entry in archive |
-| `mjai_debug_failure` | detailed single-replay failure report |
 | `build_bc_shards` | build BC shard datasets/manifests from replay corpora |
 | `build_replay_exit_sidecar` | build replay-side ExIt sidecars |
 | `build_replay_delta_q_sidecar` | build replay-side DeltaQ sidecars |
 | `build_parsed_sample_cache` | build parsed sample cache artifact |
-| `recompress` | replay/data artifact recompression util |
-| `repack_tar` | tar replay corpus repack util |
+| `extract_timing_metrics` | extract step/training timing metrics |
 
 Main entrypoint: [`src/bin/train.rs`](src/bin/train.rs). Bin-local tests live under `src/bin/train/tests/`; production execution lives in canonical crates above.
 

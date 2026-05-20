@@ -114,6 +114,16 @@ impl<'a> AdvisoryEvent<'a> {
     }
 }
 
+#[cfg(feature = "libtorch")]
+fn cuda_device_count() -> i64 {
+    tch::Cuda::device_count()
+}
+
+#[cfg(not(feature = "libtorch"))]
+fn cuda_device_count() -> i64 {
+    0
+}
+
 pub fn startup_runtime_advisories(
     config: &TrainConfig,
     explicitness: MicrobatchExplicitness,
@@ -125,10 +135,20 @@ pub fn startup_runtime_advisories(
     let mut advisories = Vec::new();
 
     if !is_cuda {
-        advisories.push(RuntimeAdvisory::info(
-            "cpu_device_for_training",
-            "device is CPU; CUDA feeding optimizations and pinned H2D staging are off",
-        ));
+        let cuda_device_count = cuda_device_count();
+        if cuda_device_count > 0 {
+            advisories.push(RuntimeAdvisory::warning(
+                "cpu_device_with_cuda_available",
+                format!(
+                    "device is CPU but {cuda_device_count} CUDA device(s) were detected; CPU training is super slow and should be used only when intentionally debugging CPU behavior. GPU mode accelerates model forward/backward/optimizer/H2D only; raw replay/shard materialization still runs on CPU workers."
+                ),
+            ));
+        } else {
+            advisories.push(RuntimeAdvisory::info(
+                "cpu_device_for_training",
+                "device is CPU; CUDA feeding optimizations and pinned H2D staging are off",
+            ));
+        }
     }
 
     if is_cuda && config.bc_shards_manifest_path.is_none() {
