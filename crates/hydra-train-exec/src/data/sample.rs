@@ -5,8 +5,9 @@ use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::encoder::{NUM_CHANNELS, OBS_SIZE};
 use hydra_core::tile::ALL_PERMUTATIONS;
 pub use hydra_data_core::sample::{
-    GRP_PERM_TABLE, MjaiSample, SCORE_BINS, one_hot_action, score_delta_to_bin,
-    score_delta_to_value, score_to_placement, score_to_placements, scores_to_grp_index,
+    GRP_PERM_TABLE, MjaiSample, SCORE_BINS, one_hot_action, score_delta_to_bin, score_delta_to_cdf,
+    score_delta_to_pdf, score_delta_to_value, score_to_placement, score_to_placements,
+    scores_to_grp_index,
 };
 use std::cell::RefCell;
 use std::io;
