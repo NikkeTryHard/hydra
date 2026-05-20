@@ -5,9 +5,8 @@ use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::encoder::{NUM_CHANNELS, OBS_SIZE};
 use hydra_core::tile::ALL_PERMUTATIONS;
 pub use hydra_data_core::sample::{
-    GRP_PERM_TABLE, MjaiSample, SCORE_BINS, one_hot_action, score_delta_to_bin, score_delta_to_cdf,
-    score_delta_to_pdf, score_delta_to_value, score_to_placement, score_to_placements,
-    scores_to_grp_index,
+    GRP_PERM_TABLE, MjaiSample, SCORE_BINS, one_hot_action, score_delta_to_bin,
+    score_delta_to_value, score_to_placement, score_to_placements, scores_to_grp_index,
 };
 use std::cell::RefCell;
 use std::io;
@@ -181,6 +180,16 @@ fn maybe_augment_spatial_target(
     perm: Option<&[u8; 3]>,
 ) -> [f32; SPATIAL_TARGET_SIZE] {
     perm.map_or(values, |perm| permute_spatial_targets_3x34(values, perm))
+}
+
+fn write_score_distribution_rows(score_delta: i32, pdf_row: &mut [f32], cdf_row: &mut [f32]) {
+    debug_assert_eq!(pdf_row.len(), SCORE_BINS);
+    debug_assert_eq!(cdf_row.len(), SCORE_BINS);
+    pdf_row.fill(0.0);
+    cdf_row.fill(0.0);
+    let bin = score_delta_to_bin(score_delta);
+    pdf_row[bin] = 1.0;
+    cdf_row[bin..].fill(1.0);
 }
 
 fn collate_optional_target_pair(
@@ -453,10 +462,11 @@ fn write_sample_into_host_scratch(
         }
     }
 
-    let pdf = score_delta_to_pdf(sample.score_delta);
-    scratch.score_pdf_flat[index * SCORE_BINS..(index + 1) * SCORE_BINS].copy_from_slice(&pdf);
-    let cdf = score_delta_to_cdf(sample.score_delta);
-    scratch.score_cdf_flat[index * SCORE_BINS..(index + 1) * SCORE_BINS].copy_from_slice(&cdf);
+    write_score_distribution_rows(
+        sample.score_delta,
+        &mut scratch.score_pdf_flat[index * SCORE_BINS..(index + 1) * SCORE_BINS],
+        &mut scratch.score_cdf_flat[index * SCORE_BINS..(index + 1) * SCORE_BINS],
+    );
 
     write_optional_action_pair_into_host_scratch(
         "safety_residual",
@@ -549,10 +559,11 @@ fn write_replay_record_into_host_scratch(
         }
     }
 
-    let pdf = score_delta_to_pdf(record.score_delta);
-    scratch.score_pdf_flat[index * SCORE_BINS..(index + 1) * SCORE_BINS].copy_from_slice(&pdf);
-    let cdf = score_delta_to_cdf(record.score_delta);
-    scratch.score_cdf_flat[index * SCORE_BINS..(index + 1) * SCORE_BINS].copy_from_slice(&cdf);
+    write_score_distribution_rows(
+        record.score_delta,
+        &mut scratch.score_pdf_flat[index * SCORE_BINS..(index + 1) * SCORE_BINS],
+        &mut scratch.score_cdf_flat[index * SCORE_BINS..(index + 1) * SCORE_BINS],
+    );
 
     write_optional_action_pair_into_host_scratch(
         "safety_residual",
@@ -854,10 +865,11 @@ impl CollateBuffers {
                 opp_row[opp * TILE_COUNT + tile as usize] = 1.0;
             }
         }
-        let pdf = score_delta_to_pdf(sample.score_delta);
-        self.pdf_flat[index * SCORE_BINS..(index + 1) * SCORE_BINS].copy_from_slice(&pdf);
-        let cdf = score_delta_to_cdf(sample.score_delta);
-        self.cdf_flat[index * SCORE_BINS..(index + 1) * SCORE_BINS].copy_from_slice(&cdf);
+        write_score_distribution_rows(
+            sample.score_delta,
+            &mut self.pdf_flat[index * SCORE_BINS..(index + 1) * SCORE_BINS],
+            &mut self.cdf_flat[index * SCORE_BINS..(index + 1) * SCORE_BINS],
+        );
         Ok(())
     }
 
