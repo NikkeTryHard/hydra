@@ -29,6 +29,7 @@ use riichienv_core::replay::{MjaiEvent, mjai_event_actor, mjai_event_to_action, 
 use riichienv_core::rule::GameRule;
 use riichienv_core::state::GameState;
 use std::array;
+use std::borrow::Cow;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::Path;
@@ -516,15 +517,17 @@ pub fn should_sample_replay_event(event: &MjaiEvent) -> bool {
     )
 }
 
-fn replay_log_action_str(event: &MjaiEvent, env_action: &EngineAction) -> String {
+fn replay_log_action_str<'a>(event: &'a MjaiEvent, env_action: &EngineAction) -> Cow<'a, str> {
     match event {
         MjaiEvent::Dahai { pai, .. }
         | MjaiEvent::Pon { pai, .. }
         | MjaiEvent::Chi { pai, .. }
         | MjaiEvent::Kan { pai, .. }
-        | MjaiEvent::Kakan { pai, .. } => pai.clone(),
-        MjaiEvent::Ankan { consumed, .. } => consumed.first().cloned().unwrap_or_default(),
-        _ => env_action.to_mjai(),
+        | MjaiEvent::Kakan { pai, .. } => Cow::Borrowed(pai.as_str()),
+        MjaiEvent::Ankan { consumed, .. } => consumed
+            .first()
+            .map_or_else(|| Cow::Borrowed(""), |pai| Cow::Borrowed(pai.as_str())),
+        _ => Cow::Owned(env_action.to_mjai()),
     }
 }
 
@@ -1221,7 +1224,11 @@ fn load_game_from_events_into_sink<S: ReplaySampleSink>(
     let oracle_target = profile
         .oracle
         .then(|| oracle_target_from_scores(final_scores));
-    let next_discards = next_discards_after(&events)?;
+    let needs_opponent_targets = profile != ReplayTargetProfile::minimal_bc()
+        && (profile.safety_residual || observation_profile != ReplayObservationProfile::BcMinimal);
+    let next_discards = needs_opponent_targets
+        .then(|| next_discards_after(&events))
+        .transpose()?;
     let grp_label = scores_to_grp_index(final_scores).map_err(invalid_data)?;
     stats.precompute_ns += t_precompute.elapsed().as_nanos();
     let mut state = GameState::new(0, true, Some(0), 0, GameRule::default_tenhou());
@@ -1245,17 +1252,16 @@ fn load_game_from_events_into_sink<S: ReplaySampleSink>(
             decision_options,
         )?;
         stats.prepare_decisions_ns += t_prepare.elapsed().as_nanos();
-        let mut event_targets = EventOpponentTargetCache::new(&next_discards, idx);
+        let mut event_targets = next_discards
+            .as_deref()
+            .map(|next_discards| EventOpponentTargetCache::new(next_discards, idx));
         for decision in decisions {
             stats.decision_count += 1;
             let actor = decision.actor;
             let legal_mask = decision.legal_mask_f32;
-            let needs_opponent_targets = profile != ReplayTargetProfile::minimal_bc()
-                && (profile.safety_residual || !decision.use_ref_targets);
-            let actor_targets = if needs_opponent_targets {
+            let actor_targets = if let Some(event_targets) = event_targets.as_mut() {
                 let t_opp = Instant::now();
-                let actor_targets =
-                    actor_relative_opponent_targets(actor, &mut event_targets, &state);
+                let actor_targets = actor_relative_opponent_targets(actor, event_targets, &state);
                 stats.opponent_targets_ns += t_opp.elapsed().as_nanos();
                 stats.exact_waits_ns += event_targets.exact_waits_ns;
                 event_targets.exact_waits_ns = 0;
