@@ -132,12 +132,6 @@ fn main() {
             "cargo:rustc-link-arg=-Wl,-rpath={}",
             cuda_paths.lib_dir.display()
         );
-        println!(
-            "cargo:warning=hydra_gpu: cuda-graph enabled; building real CUDA graph/pinned FFI with CUDA include={} lib={} libtorch_lib={}",
-            cuda_paths.include_dir.display(),
-            cuda_paths.lib_dir.display(),
-            libtorch_cuda_lib.display()
-        );
     }
 
     build.compile("hydra_train_exec_native");

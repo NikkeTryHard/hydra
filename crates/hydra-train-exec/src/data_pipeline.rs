@@ -10,7 +10,6 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
 
@@ -244,10 +243,6 @@ struct ParsedArchiveGame {
 
 struct SkipLogState {
     source: String,
-    emitted: AtomicUsize,
-    suppressed: AtomicUsize,
-    max_logs: usize,
-    aggregate_only: bool,
     class_counts: std::sync::Mutex<BTreeMap<ReplayLoadErrorClass, usize>>,
     class_examples: std::sync::Mutex<BTreeMap<ReplayLoadErrorClass, Vec<String>>>,
 }
@@ -351,13 +346,9 @@ impl SkipLogState {
         format!("[{ts}]")
     }
 
-    fn new(source: String, max_logs: usize, aggregate_only: bool) -> Self {
+    fn new(source: String, _max_logs: usize, _aggregate_only: bool) -> Self {
         Self {
             source,
-            emitted: AtomicUsize::new(0),
-            suppressed: AtomicUsize::new(0),
-            max_logs,
-            aggregate_only,
             class_counts: std::sync::Mutex::new(BTreeMap::new()),
             class_examples: std::sync::Mutex::new(BTreeMap::new()),
         }
@@ -370,23 +361,9 @@ impl SkipLogState {
         }
         if let Ok(mut examples) = self.class_examples.lock() {
             let entry = examples.entry(class).or_default();
-            if entry.len() < self.max_logs {
+            if entry.is_empty() {
                 entry.push(compact_identity(identity).to_string());
             }
-        }
-        if self.aggregate_only {
-            self.suppressed.fetch_add(1, Ordering::Relaxed);
-            return;
-        }
-        let emitted = self.emitted.fetch_add(1, Ordering::Relaxed);
-        if emitted < self.max_logs {
-            eprintln!(
-                "Skipping {}: {}",
-                compact_identity(identity),
-                class.as_str()
-            );
-        } else {
-            self.suppressed.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -416,14 +393,6 @@ impl SkipLogState {
                 Self::utc_prefix(),
                 self.source,
                 summary
-            );
-            return;
-        }
-        let suppressed = self.suppressed.load(Ordering::Relaxed);
-        if suppressed > 0 {
-            eprintln!(
-                "Suppressed {suppressed} more replay skip logs from {}",
-                self.source
             );
         }
     }

@@ -757,11 +757,6 @@ impl<'a> WriteState<'a> {
                         compact_error_message(&err)
                     ));
                 }
-                eprintln!(
-                    "Skipping {}: {}",
-                    compact_identity(&game.identity),
-                    compact_error_message(&err)
-                );
             }
         }
         Ok(self.sample_limit_reached())

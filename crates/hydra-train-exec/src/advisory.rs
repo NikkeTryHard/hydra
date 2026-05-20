@@ -125,14 +125,14 @@ pub fn startup_runtime_advisories(
     let mut advisories = Vec::new();
 
     if !is_cuda {
-        advisories.push(RuntimeAdvisory::warning(
+        advisories.push(RuntimeAdvisory::info(
             "cpu_device_for_training",
             "device is CPU; CUDA feeding optimizations and pinned H2D staging are off",
         ));
     }
 
     if is_cuda && config.bc_shards_manifest_path.is_none() {
-        advisories.push(RuntimeAdvisory::warning(
+        advisories.push(RuntimeAdvisory::info(
             "steady_state_cuda_bc_uses_loose_replay",
             "CUDA BC run uses loose/archive replay input; for steady-state throughput build BC shards and set bc_shards_manifest_path",
         ));
@@ -163,7 +163,7 @@ pub fn startup_runtime_advisories(
                 "CUDA shard run uses reusable pinned H2D staging and preallocated device tensors; current path is single-buffered and waits before compute, so Nsight is still required to prove copy/compute overlap",
             ));
         } else {
-            advisories.push(RuntimeAdvisory::warning(
+            advisories.push(RuntimeAdvisory::info(
                 "cuda_shards_without_pinned_async_h2d",
                 "CUDA shard run is semantically valid but built without cuda-graph; reusable pinned H2D staging and preallocated device tensors are off, so pageable materialization may limit throughput",
             ));
@@ -198,7 +198,7 @@ pub fn startup_runtime_advisories(
         }
     }
     if train_microbatch < config.batch_size {
-        advisories.push(RuntimeAdvisory::warning(
+        advisories.push(RuntimeAdvisory::info(
             "small_microbatch_high_accumulation_overhead",
             format!(
                 "microbatch_size={} with batch_size={} requires {} accumulation steps; larger stable microbatches may reduce CPU/framework overhead",
@@ -218,7 +218,7 @@ pub fn startup_runtime_advisories(
     }
 
     if explicitness.any() {
-        advisories.push(RuntimeAdvisory::warning(
+        advisories.push(RuntimeAdvisory::info(
             "explicit_microbatch_blocks_faster_candidate_search",
             format!(
                 "explicit microbatch settings are active (train_explicit={} effective_train={} validation_explicit={} effective_validation={}); automatic faster-candidate override is off unless allow_override_explicit_microbatch=true",
@@ -228,14 +228,14 @@ pub fn startup_runtime_advisories(
     }
 
     if config.log_every_n_steps == 1 {
-        advisories.push(RuntimeAdvisory::warning(
+        advisories.push(RuntimeAdvisory::info(
             "logging_or_metric_sync_overhead",
             "log_every_n_steps=1 records every optimizer step; metric readback/log formatting can reduce CUDA throughput",
         ));
     }
 
     if config.validate_every_n_steps == 1 || config.checkpoint_every_n_steps == 1 {
-        advisories.push(RuntimeAdvisory::warning(
+        advisories.push(RuntimeAdvisory::info(
             "validation_or_checkpoint_cadence_overhead",
             format!(
                 "validate_every_n_steps={} checkpoint_every_n_steps={} may spend most wall time on safety cadence instead of training throughput",

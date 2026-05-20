@@ -35,6 +35,9 @@ static REPLAY_RETRY_RIICHI_NS: AtomicU64 = AtomicU64::new(0);
 static REPLAY_RETRY_KAKAN_NS: AtomicU64 = AtomicU64::new(0);
 
 fn maybe_print_replay_observation_profile() {
+    if std::env::var_os("HYDRA_REPLAY_OBS_PROFILE").is_none() {
+        return;
+    }
     if REPLAY_OBS_PROFILE_PRINTED.swap(true, Ordering::SeqCst) {
         return;
     }

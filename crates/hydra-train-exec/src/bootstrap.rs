@@ -258,7 +258,7 @@ where
         seed: config.seed,
         archive_queue_bound: config.archive_queue_bound,
         max_skip_logs_per_source: config.max_skip_logs_per_source,
-        aggregate_skip_logs: false,
+        aggregate_skip_logs: true,
         source_filters: config.source_filters.clone(),
         replay_target_profile: ReplayTargetProfile::minimal_bc(),
         exit_sidecar,

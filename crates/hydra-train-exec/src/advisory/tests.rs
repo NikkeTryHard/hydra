@@ -86,7 +86,7 @@ fn startup_advisories_report_cpu_training() {
 
     assert_eq!(
         advisory(&advisories, "cpu_device_for_training").severity,
-        AdvisorySeverity::Warning
+        AdvisorySeverity::Info
     );
 }
 
@@ -101,7 +101,7 @@ fn startup_advisories_report_cuda_loose_replay() {
 
     assert_eq!(
         advisory(&advisories, "steady_state_cuda_bc_uses_loose_replay").severity,
-        AdvisorySeverity::Warning
+        AdvisorySeverity::Info
     );
     assert_eq!(
         advisory(&advisories, "optimized_path_raw_replay").severity,
@@ -143,7 +143,7 @@ fn startup_advisories_report_cuda_shards_without_pinned_async_h2d() {
 
     assert_eq!(
         advisory(&advisories, "cuda_shards_without_pinned_async_h2d").severity,
-        AdvisorySeverity::Warning
+        AdvisorySeverity::Info
     );
     assert_eq!(
         advisory(&advisories, "steady_state_cuda_bc_shards_enabled").severity,
@@ -215,7 +215,7 @@ fn startup_advisories_report_explicit_microbatch_and_cadence() {
 
     assert_eq!(
         advisory(&advisories, "small_microbatch_high_accumulation_overhead").severity,
-        AdvisorySeverity::Warning
+        AdvisorySeverity::Info
     );
     assert_eq!(
         advisory(
@@ -223,15 +223,15 @@ fn startup_advisories_report_explicit_microbatch_and_cadence() {
             "explicit_microbatch_blocks_faster_candidate_search"
         )
         .severity,
-        AdvisorySeverity::Warning
+        AdvisorySeverity::Info
     );
     assert_eq!(
         advisory(&advisories, "logging_or_metric_sync_overhead").severity,
-        AdvisorySeverity::Warning
+        AdvisorySeverity::Info
     );
     assert_eq!(
         advisory(&advisories, "validation_or_checkpoint_cadence_overhead").severity,
-        AdvisorySeverity::Warning
+        AdvisorySeverity::Info
     );
 }
 

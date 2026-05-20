@@ -370,10 +370,6 @@ fn write_scan_report(
     Ok(Some(report_path))
 }
 
-fn builder_field_blocker(_cli: &Cli) -> Option<&'static str> {
-    None
-}
-
 fn run() -> Result<(), String> {
     let program = "build_bc_shards";
     let cli = parse_args(program, std::env::args())?;
@@ -402,12 +398,6 @@ fn run() -> Result<(), String> {
                 .map_or_else(|| "disabled".to_string(), |path| path.display().to_string())
         );
         return Ok(());
-    }
-
-    if let Some(blocker) = builder_field_blocker(&cli) {
-        eprintln!(
-            "warning: {blocker}; parsed CLI flags cannot be wired until builder support lands"
-        );
     }
 
     let exit_sidecar = load_exit_sidecar(cli.exit_sidecar.as_ref())?;

@@ -165,6 +165,9 @@ fn record_replay_materialization_stats(stats: ReplayMaterializationStats) {
     replay_materialization_totals().merge_assign(stats);
 }
 fn maybe_print_replay_profile(stats: &ReplayProfileStats) {
+    if std::env::var_os("HYDRA_REPLAY_PROFILE").is_none() {
+        return;
+    }
     if REPLAY_PROFILE_PRINTED.swap(true, Ordering::SeqCst) {
         return;
     }
