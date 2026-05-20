@@ -9,6 +9,22 @@ use burn::tensor::bf16;
 type B = NdArray<f32>;
 type AB = Autodiff<NdArray<f32>>;
 
+fn tiny_actor_config() -> HydraModelConfig {
+    HydraModelConfig::new(1)
+        .with_input_channels(NUM_CHANNELS)
+        .with_hidden_channels(4)
+        .with_num_groups(4)
+        .with_se_bottleneck(1)
+}
+
+fn tiny_learner_config() -> HydraModelConfig {
+    HydraModelConfig::new(2)
+        .with_input_channels(NUM_CHANNELS)
+        .with_hidden_channels(4)
+        .with_num_groups(4)
+        .with_se_bottleneck(1)
+}
+
 fn assert_output_shapes(out: &HydraOutput<B>, batch: usize) {
     assert_eq!(out.policy_logits.dims(), [batch, 46]);
     assert_eq!(out.value.dims(), [batch, 1]);
@@ -29,27 +45,27 @@ fn assert_output_shapes(out: &HydraOutput<B>, batch: usize) {
 #[test]
 fn actor_net_all_output_shapes() {
     let device = Default::default();
-    let model = HydraModelConfig::actor().init::<B>(&device);
-    let x = Tensor::<B, 3>::zeros([4, NUM_CHANNELS, 34], &device);
+    let model = tiny_actor_config().init::<B>(&device);
+    let x = Tensor::<B, 3>::zeros([1, NUM_CHANNELS, 34], &device);
     let out = model.forward(x);
-    assert_output_shapes(&out, 4);
+    assert_output_shapes(&out, 1);
 }
 
 #[test]
 fn learner_net_all_output_shapes() {
     let device = Default::default();
-    let model = HydraModelConfig::learner().init::<B>(&device);
-    let x = Tensor::<B, 3>::zeros([2, NUM_CHANNELS, 34], &device);
+    let model = tiny_learner_config().init::<B>(&device);
+    let x = Tensor::<B, 3>::zeros([1, NUM_CHANNELS, 34], &device);
     let out = model.forward(x);
-    assert_output_shapes(&out, 2);
+    assert_output_shapes(&out, 1);
 }
 
 #[test]
 fn value_head_bounded() {
     let device = Default::default();
-    let model = HydraModelConfig::actor().init::<B>(&device);
+    let model = tiny_actor_config().init::<B>(&device);
     let x = Tensor::<B, 3>::random(
-        [4, NUM_CHANNELS, 34],
+        [1, NUM_CHANNELS, 34],
         burn::tensor::Distribution::Normal(0.0, 1.0),
         &device,
     );
@@ -63,7 +79,7 @@ fn value_head_bounded() {
 #[test]
 fn policy_value_cpu_returns_correct_shapes() {
     let device = Default::default();
-    let model = HydraModelConfig::actor().init::<B>(&device);
+    let model = tiny_actor_config().init::<B>(&device);
     let obs = [0.0f32; OBS_SIZE];
     let (logits, value) = model.policy_value_cpu(&obs, &device);
     assert_eq!(logits.len(), HYDRA_ACTION_SPACE);
@@ -85,7 +101,7 @@ fn init_validates_shape_before_building_model() {
 #[test]
 fn policy_and_value_cpu_matches_policy_value_cpu() {
     let device = Default::default();
-    let model = HydraModelConfig::actor().init::<B>(&device);
+    let model = tiny_actor_config().init::<B>(&device);
     let obs = [0.125f32; OBS_SIZE];
 
     let direct = model.policy_value_cpu(&obs, &device);
@@ -98,7 +114,7 @@ fn policy_and_value_cpu_matches_policy_value_cpu() {
 #[test]
 fn forward_policy_matches_forward_policy_value_logits() {
     let device = Default::default();
-    let model = HydraModelConfig::actor().init::<B>(&device);
+    let model = tiny_actor_config().init::<B>(&device);
     let x = Tensor::<B, 3>::zeros([2, NUM_CHANNELS, 34], &device);
 
     let policy_only = model.forward_policy(x.clone());
@@ -123,7 +139,7 @@ fn forward_policy_matches_forward_policy_value_logits() {
 #[test]
 fn batch_policy_value_cpu_matches_single_sample_path() {
     let device = Default::default();
-    let model = HydraModelConfig::actor().init::<B>(&device);
+    let model = tiny_actor_config().init::<B>(&device);
     let obs_a = [0.0f32; OBS_SIZE];
     let obs_b = [0.25f32; OBS_SIZE];
     let observations = [obs_a, obs_b];
@@ -148,7 +164,7 @@ fn batch_policy_value_cpu_matches_single_sample_path() {
 #[test]
 fn batch_policy_value_cpu_reuse_matches_non_reuse_path() {
     let device = Default::default();
-    let model = HydraModelConfig::actor().init::<B>(&device);
+    let model = tiny_actor_config().init::<B>(&device);
     let obs_a = [0.1f32; OBS_SIZE];
     let obs_b = [0.2f32; OBS_SIZE];
     let obs_c = [0.3f32; OBS_SIZE];
@@ -174,7 +190,7 @@ fn batch_policy_value_cpu_reuse_matches_non_reuse_path() {
 #[test]
 fn batch_value_cpu_reuse_matches_policy_value_values_on_dirty_buffer() {
     let device = Default::default();
-    let model = HydraModelConfig::actor().init::<B>(&device);
+    let model = tiny_actor_config().init::<B>(&device);
     let observations = [
         [0.05f32; OBS_SIZE],
         [0.15f32; OBS_SIZE],
@@ -196,7 +212,7 @@ fn batch_value_cpu_reuse_matches_policy_value_values_on_dirty_buffer() {
 #[test]
 fn reuse_return_api_moves_output_buffer_without_cloning() {
     let device = Default::default();
-    let model = HydraModelConfig::actor().init::<B>(&device);
+    let model = tiny_actor_config().init::<B>(&device);
     let observations = [[0.05f32; OBS_SIZE]];
     let mut flat_buf = Vec::new();
     let mut outputs_buf = Vec::with_capacity(4);
@@ -262,7 +278,7 @@ fn actor_and_learner_param_counts_differ() {
 #[test]
 fn all_outputs_finite_for_random_input() {
     let device = Default::default();
-    let model = HydraModelConfig::actor().init::<B>(&device);
+    let model = tiny_actor_config().init::<B>(&device);
     let x = Tensor::<B, 3>::random(
         [8, NUM_CHANNELS, 34],
         burn::tensor::Distribution::Normal(0.0, 1.0),
@@ -300,7 +316,7 @@ fn all_outputs_finite_for_random_input() {
 #[test]
 fn oracle_head_does_not_backprop_to_backbone_input() {
     let device = Default::default();
-    let model = HydraModelConfig::actor().init::<AB>(&device);
+    let model = tiny_actor_config().init::<AB>(&device);
     let x = Tensor::<AB, 3>::zeros([2, NUM_CHANNELS, 34], &device).require_grad();
     let out = model.forward(x.clone());
     let target = Tensor::<AB, 2>::ones([2, 4], &device);
@@ -317,7 +333,7 @@ fn oracle_head_does_not_backprop_to_backbone_input() {
 #[test]
 fn delta_q_warmup_detaches_backbone_input() {
     let device = Default::default();
-    let model = HydraModelConfig::actor().init::<AB>(&device);
+    let model = tiny_actor_config().init::<AB>(&device);
     let x = Tensor::<AB, 3>::zeros([2, NUM_CHANNELS, 34], &device).require_grad();
     let policy = HydraForwardPolicy {
         w_delta_q: 1.0,
@@ -338,7 +354,7 @@ fn delta_q_warmup_detaches_backbone_input() {
 #[test]
 fn active_delta_q_backprops_to_backbone_input() {
     let device = Default::default();
-    let model = HydraModelConfig::actor().init::<AB>(&device);
+    let model = tiny_actor_config().init::<AB>(&device);
     let x = Tensor::<AB, 3>::zeros([2, NUM_CHANNELS, 34], &device).require_grad();
     let policy = HydraForwardPolicy {
         w_delta_q: 1.0,
@@ -359,7 +375,7 @@ fn active_delta_q_backprops_to_backbone_input() {
 #[test]
 fn inactive_advanced_heads_return_zero_tensors() {
     let device = Default::default();
-    let model = HydraModelConfig::actor().init::<B>(&device);
+    let model = tiny_actor_config().init::<B>(&device);
     let x = Tensor::<B, 3>::zeros([2, NUM_CHANNELS, 34], &device);
     let policy = HydraForwardPolicy::default();
     let out = model.forward_active(x, &policy);

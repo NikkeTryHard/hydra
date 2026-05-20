@@ -4,8 +4,16 @@ use burn::backend::NdArray;
 
 type B = NdArray<f32>;
 
+fn tiny_actor_config() -> crate::model::HydraModelConfig {
+    crate::model::HydraModelConfig::new(1)
+        .with_input_channels(NUM_CHANNELS)
+        .with_hidden_channels(4)
+        .with_num_groups(4)
+        .with_se_bottleneck(1)
+}
+
 fn make_server(device: &<B as burn::tensor::backend::BackendTypes>::Device) -> InferenceServer<B> {
-    let actor = crate::model::HydraModelConfig::actor().init::<B>(device);
+    let actor = tiny_actor_config().init::<B>(device);
     InferenceServer::from_configs(
         actor,
         &SafConfig::new(),
@@ -128,7 +136,7 @@ fn sample_from_policy_respects_distribution() {
 #[test]
 fn inference_respects_time_budget() {
     let device = Default::default();
-    let model = crate::model::HydraModelConfig::actor().init::<B>(&device);
+    let model = tiny_actor_config().init::<B>(&device);
     let x = Tensor::<B, 3>::zeros([1, NUM_CHANNELS, 34], &device);
     let out = model.forward(x);
     let mut mask = [true; HYDRA_ACTION_SPACE];

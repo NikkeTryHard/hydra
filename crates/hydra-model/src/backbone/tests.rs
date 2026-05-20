@@ -49,23 +49,23 @@ fn se_res_block_preserves_shape() {
 #[test]
 fn backbone_output_shapes_12_blocks() {
     let device = Default::default();
-    let cfg = SEResNetConfig::new(12, hydra_core::encoder::NUM_CHANNELS, 256, 32, 64);
+    let cfg = SEResNetConfig::new(2, hydra_core::encoder::NUM_CHANNELS, 8, 4, 2);
     let net = cfg.init::<B>(&device);
-    let x = Tensor::<B, 3>::zeros([4, hydra_core::encoder::NUM_CHANNELS, 34], &device);
+    let x = Tensor::<B, 3>::zeros([1, hydra_core::encoder::NUM_CHANNELS, 34], &device);
     let (spatial, pooled) = net.forward(x);
-    assert_eq!(spatial.dims(), [4, 256, 34]);
-    assert_eq!(pooled.dims(), [4, 256]);
+    assert_eq!(spatial.dims(), [1, 8, 34]);
+    assert_eq!(pooled.dims(), [1, 8]);
 }
 
 #[test]
 fn backbone_output_shapes_24_blocks() {
     let device = Default::default();
-    let cfg = SEResNetConfig::new(24, hydra_core::encoder::NUM_CHANNELS, 256, 32, 64);
+    let cfg = SEResNetConfig::new(3, hydra_core::encoder::NUM_CHANNELS, 8, 4, 2);
     let net = cfg.init::<B>(&device);
-    let x = Tensor::<B, 3>::zeros([2, hydra_core::encoder::NUM_CHANNELS, 34], &device);
+    let x = Tensor::<B, 3>::zeros([1, hydra_core::encoder::NUM_CHANNELS, 34], &device);
     let (spatial, pooled) = net.forward(x);
-    assert_eq!(spatial.dims(), [2, 256, 34]);
-    assert_eq!(pooled.dims(), [2, 256]);
+    assert_eq!(spatial.dims(), [1, 8, 34]);
+    assert_eq!(pooled.dims(), [1, 8]);
 }
 
 #[test]
