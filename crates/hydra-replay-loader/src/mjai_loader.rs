@@ -71,6 +71,7 @@ pub struct ReplayMaterializationStats {
     pub replay_update_ns: u128,
     pub observation_encode_ns: u128,
     pub mask_build_ns: u128,
+    pub target_synthesis_ns: u128,
     pub event_count: usize,
     pub decision_count: usize,
 }
@@ -83,6 +84,7 @@ impl ReplayMaterializationStats {
                 .saturating_add(self.replay_update_ns)
                 .saturating_add(self.observation_encode_ns)
                 .saturating_add(self.mask_build_ns)
+                .saturating_add(self.target_synthesis_ns)
                 .min(u64::MAX as u128) as u64,
         )
     }
@@ -95,6 +97,9 @@ impl ReplayMaterializationStats {
             .observation_encode_ns
             .saturating_add(other.observation_encode_ns);
         self.mask_build_ns = self.mask_build_ns.saturating_add(other.mask_build_ns);
+        self.target_synthesis_ns = self
+            .target_synthesis_ns
+            .saturating_add(other.target_synthesis_ns);
         self.event_count = self.event_count.saturating_add(other.event_count);
         self.decision_count = self.decision_count.saturating_add(other.decision_count);
     }
@@ -134,6 +139,7 @@ static REPLAY_MATERIALIZATION_TOTALS: Mutex<ReplayMaterializationStats> =
         replay_update_ns: 0,
         observation_encode_ns: 0,
         mask_build_ns: 0,
+        target_synthesis_ns: 0,
         event_count: 0,
         decision_count: 0,
     });
@@ -1309,7 +1315,18 @@ fn load_game_from_events_into_sink<S: ReplaySampleSink>(
         observation_encode_ns: stats
             .replay_observation_ns
             .saturating_add(stats.encode_observation_ns),
-        mask_build_ns: stats.legal_mask_build_ns,
+        mask_build_ns: stats
+            .legal_mask_build_ns
+            .saturating_add(stats.legal_mask_convert_ns),
+        target_synthesis_ns: stats
+            .opponent_targets_ns
+            .saturating_add(stats.exact_waits_ns)
+            .saturating_add(stats.safety_residual_ns)
+            .saturating_add(stats.belief_targets_ns)
+            .saturating_add(stats.sidecar_lookup_ns)
+            .saturating_add(stats.sample_push_ns)
+            .saturating_add(stats.precompute_ns)
+            .saturating_add(stats.prepare_decisions_ns),
         event_count: stats.event_count,
         decision_count: stats.decision_count,
     });
@@ -1534,6 +1551,50 @@ where
             None,
             sink,
         ),
+    }
+}
+
+pub fn load_game_from_stream_into_sink<R, S>(
+    source_identity: &str,
+    reader: R,
+    policy: Option<&ReplayLoadPolicy<'_>>,
+    sink: &mut S,
+) -> io::Result<[i32; 4]>
+where
+    R: Read,
+    S: ReplaySampleSink,
+{
+    let mut reader = BufReader::new(reader);
+    let compression = inspect_stream_compression(&mut reader)?;
+
+    match compression {
+        StreamCompression::Gzip => {
+            let (timed, elapsed_ns) = TimedRead::new(GzDecoder::new(reader));
+            let result = load_game_from_reader_into_sink(
+                source_identity,
+                BufReader::new(timed),
+                policy,
+                sink,
+            );
+            record_decompression_result(&result, elapsed_ns.as_ref(), compression);
+            result
+        }
+        StreamCompression::Zstd => {
+            let zstd = ZstdDecoder::new(reader)
+                .map_err(|err| invalid_data(format!("failed to open zstd MJAI stream: {err}")))?;
+            let (timed, elapsed_ns) = TimedRead::new(zstd);
+            let result = load_game_from_reader_into_sink(
+                source_identity,
+                BufReader::new(timed),
+                policy,
+                sink,
+            );
+            record_decompression_result(&result, elapsed_ns.as_ref(), compression);
+            result
+        }
+        StreamCompression::Plain => {
+            load_game_from_reader_into_sink(source_identity, reader, policy, sink)
+        }
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

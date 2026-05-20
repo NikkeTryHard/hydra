@@ -63,7 +63,8 @@ use crate::artifacts::{
     write_validation_gate_artifact,
 };
 use crate::data_pipeline::{
-    DataManifest, StreamingLoaderConfig, TrainValidationLoader, stream_train_epoch,
+    DataManifest, StreamingLoaderConfig, TrainValidationLoader, drain_raw_producer_profile,
+    stream_train_epoch,
 };
 use crate::presentation::{
     format_progress_message, make_bar, make_spinner, phase_label, timestamped,
@@ -72,6 +73,7 @@ use crate::progress::EpochLogEntry;
 use crate::resume::{BestValidation, EpochContinuation, RuntimeResumeContract};
 use crate::validation::{ValidationSummary, evaluate_validation_gates, is_better_validation};
 use crate::validation_runner::{ValidationContext, ValidationRuntime, run_validation};
+use hydra_replay_loader::drain_replay_materialization_stats;
 
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
 
@@ -3181,6 +3183,24 @@ where
                     staging_context.as_mut(),
                 )?;
                 timing.collation_seconds += collation_seconds;
+                let replay_profile = drain_replay_materialization_stats();
+                let raw_profile = drain_raw_producer_profile();
+                timing.replay_zstd_read_seconds +=
+                    replay_profile.decompress_ns as f64 / 1_000_000_000.0;
+                timing.replay_json_parse_seconds +=
+                    replay_profile.json_parse_ns as f64 / 1_000_000_000.0;
+                timing.replay_simulation_seconds +=
+                    replay_profile.replay_update_ns as f64 / 1_000_000_000.0;
+                timing.replay_obs_encode_seconds +=
+                    replay_profile.observation_encode_ns as f64 / 1_000_000_000.0;
+                timing.replay_legal_mask_seconds +=
+                    replay_profile.mask_build_ns as f64 / 1_000_000_000.0;
+                timing.replay_target_synthesis_seconds +=
+                    replay_profile.target_synthesis_ns as f64 / 1_000_000_000.0;
+                timing.replay_queue_wait_block_seconds +=
+                    raw_profile.queue_wait_block_ns as f64 / 1_000_000_000.0;
+                timing.replay_augmentation_seconds += collation_seconds;
+                timing.replay_shuffle_seconds += 0.0;
                 recycled_host_batch = recycled.or_else(|| Some(BcShardHostBatch::empty()));
                 (drained, timing)
             };
@@ -3375,6 +3395,24 @@ where
                 staging_context.as_mut(),
             )?;
             timing.collation_seconds += collation_seconds;
+            let replay_profile = drain_replay_materialization_stats();
+            let raw_profile = drain_raw_producer_profile();
+            timing.replay_zstd_read_seconds +=
+                replay_profile.decompress_ns as f64 / 1_000_000_000.0;
+            timing.replay_json_parse_seconds +=
+                replay_profile.json_parse_ns as f64 / 1_000_000_000.0;
+            timing.replay_simulation_seconds +=
+                replay_profile.replay_update_ns as f64 / 1_000_000_000.0;
+            timing.replay_obs_encode_seconds +=
+                replay_profile.observation_encode_ns as f64 / 1_000_000_000.0;
+            timing.replay_legal_mask_seconds +=
+                replay_profile.mask_build_ns as f64 / 1_000_000_000.0;
+            timing.replay_target_synthesis_seconds +=
+                replay_profile.target_synthesis_ns as f64 / 1_000_000_000.0;
+            timing.replay_queue_wait_block_seconds +=
+                raw_profile.queue_wait_block_ns as f64 / 1_000_000_000.0;
+            timing.replay_augmentation_seconds += collation_seconds;
+            timing.replay_shuffle_seconds += 0.0;
             (drained, timing)
         };
         let train_seconds = train_started.elapsed().as_secs_f64();

@@ -156,17 +156,102 @@ fn load_game_from_reader_into_sink_matches_public_loader_samples() {
     assert_eq!(public.final_scores, final_scores);
     assert_eq!(sink_scores, public.final_scores);
     assert_eq!(sink.samples.len(), public.samples.len());
-    for (from_sink, from_public) in sink.samples.iter().zip(public.samples.iter()).take(32) {
-        assert_eq!(from_sink.obs, from_public.obs);
-        assert_eq!(from_sink.action, from_public.action);
-        assert_eq!(from_sink.legal_mask, from_public.legal_mask);
-        assert_eq!(from_sink.score_delta, from_public.score_delta);
-        assert_eq!(from_sink.grp_label, from_public.grp_label);
-        assert_eq!(from_sink.tenpai, from_public.tenpai);
-        assert_eq!(from_sink.opp_next, from_public.opp_next);
-        assert_eq!(from_sink.danger, from_public.danger);
-        assert_eq!(from_sink.danger_mask, from_public.danger_mask);
-        assert_eq!(from_sink.compact_facts, from_public.compact_facts);
+    assert!(sink.samples.len() > 50, "expected real replay decisions");
+    for (from_sink, from_public) in sink.samples.iter().zip(public.samples.iter()) {
+        assert_replay_sample_eq(from_sink, from_public);
+    }
+}
+
+fn assert_replay_sample_eq(from_sink: &MjaiSample, from_public: &MjaiSample) {
+    assert_eq!(from_sink.obs, from_public.obs);
+    assert_eq!(from_sink.action, from_public.action);
+    assert_eq!(from_sink.legal_mask, from_public.legal_mask);
+    assert_eq!(from_sink.placement, from_public.placement);
+    assert_eq!(from_sink.score_delta, from_public.score_delta);
+    assert_eq!(from_sink.grp_label, from_public.grp_label);
+    assert_eq!(from_sink.oracle_target, from_public.oracle_target);
+    assert_eq!(from_sink.tenpai, from_public.tenpai);
+    assert_eq!(from_sink.opp_next, from_public.opp_next);
+    assert_eq!(from_sink.danger, from_public.danger);
+    assert_eq!(from_sink.danger_mask, from_public.danger_mask);
+    assert_eq!(from_sink.safety_residual, from_public.safety_residual);
+    assert_eq!(
+        from_sink.safety_residual_mask,
+        from_public.safety_residual_mask
+    );
+    assert_eq!(from_sink.exit_target, from_public.exit_target);
+    assert_eq!(from_sink.exit_mask, from_public.exit_mask);
+    assert_eq!(from_sink.delta_q_target, from_public.delta_q_target);
+    assert_eq!(from_sink.delta_q_mask, from_public.delta_q_mask);
+    assert_eq!(from_sink.belief_fields, from_public.belief_fields);
+    assert_eq!(from_sink.mixture_weights, from_public.mixture_weights);
+    assert_eq!(
+        from_sink.belief_fields_present,
+        from_public.belief_fields_present
+    );
+    assert_eq!(
+        from_sink.mixture_weights_present,
+        from_public.mixture_weights_present
+    );
+    assert_eq!(from_sink.compact_facts, from_public.compact_facts);
+}
+
+#[test]
+fn load_game_from_reader_into_sink_matches_public_loader_with_optional_targets() {
+    let source_identity = "game-1";
+    let log = replay_sidecar_guardrail_log();
+    let exit_records = synthetic_exit_records(source_identity, 123, 1);
+    let delta_q_records = synthetic_delta_q_records(source_identity, 123, 1);
+    let exit_index = ExitSidecarIndex::from_records(exit_records);
+    let delta_q_index = DeltaQSidecarIndex::from_records(delta_q_records);
+    let policy = ReplayLoadPolicy::new(
+        ReplayTargetProfile::with_optional_heads(true, true, true, true, true, true),
+        ReplayObservationProfile::BcMinimal,
+        SidecarProvenance::new(Some(123), Some(1)),
+        SidecarProvenance::new(Some(123), Some(1)),
+        Some(&exit_index),
+        Some(&delta_q_index),
+    );
+    let public = load_game_from_stream_with_policy(
+        source_identity,
+        Cursor::new(log.as_bytes()),
+        Some(&policy),
+    )
+    .expect("public policy loader should succeed");
+    let mut sink = CollectRecordSink {
+        samples: Vec::new(),
+    };
+
+    let sink_scores = load_game_from_reader_into_sink(
+        source_identity,
+        Cursor::new(log.as_bytes()),
+        Some(&policy),
+        &mut sink,
+    )
+    .expect("sink policy loader should succeed");
+
+    assert_eq!(sink_scores, public.final_scores);
+    assert_eq!(sink.samples.len(), public.samples.len());
+    assert!(
+        sink.samples
+            .iter()
+            .any(|sample| sample.oracle_target.is_some()),
+        "oracle targets should be present under optional-head profile"
+    );
+    assert!(
+        sink.samples
+            .iter()
+            .any(|sample| sample.exit_target.is_some()),
+        "joined exit sidecar rows should hydrate"
+    );
+    assert!(
+        sink.samples
+            .iter()
+            .any(|sample| sample.delta_q_target.is_some()),
+        "joined delta-Q sidecar rows should hydrate"
+    );
+    for (from_sink, from_public) in sink.samples.iter().zip(public.samples.iter()) {
+        assert_replay_sample_eq(from_sink, from_public);
     }
 }
 

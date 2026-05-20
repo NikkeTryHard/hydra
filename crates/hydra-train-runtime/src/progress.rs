@@ -7,7 +7,11 @@ use crate::preflight::{
     PROFILING_STAGE_H2D_PAGEABLE_TO_PINNED, PROFILING_STAGE_H2D_STREAM_SYNC,
     PROFILING_STAGE_H2D_TENSOR_MATERIALIZE, PROFILING_STAGE_H2D_TRANSFER, PROFILING_STAGE_LOSS,
     PROFILING_STAGE_METRIC_READBACK, PROFILING_STAGE_OPTIMIZER_STEP, PROFILING_STAGE_PRODUCER_WAIT,
-    ProfilingEnvelope,
+    PROFILING_STAGE_REPLAY_AUGMENTATION, PROFILING_STAGE_REPLAY_JSON_PARSE,
+    PROFILING_STAGE_REPLAY_LEGAL_MASK, PROFILING_STAGE_REPLAY_OBS_ENCODE,
+    PROFILING_STAGE_REPLAY_QUEUE_WAIT_BLOCK, PROFILING_STAGE_REPLAY_SHUFFLE,
+    PROFILING_STAGE_REPLAY_SIMULATION, PROFILING_STAGE_REPLAY_TARGET_SYNTHESIS,
+    PROFILING_STAGE_REPLAY_ZSTD_READ, ProfilingEnvelope,
 };
 
 /// Scalar train sub-stage timings used to build profiling envelopes.
@@ -15,6 +19,15 @@ use crate::preflight::{
 pub struct TrainSubStageTiming {
     pub producer_wait_seconds: f64,
     pub collation_seconds: f64,
+    pub replay_zstd_read_seconds: f64,
+    pub replay_json_parse_seconds: f64,
+    pub replay_simulation_seconds: f64,
+    pub replay_obs_encode_seconds: f64,
+    pub replay_legal_mask_seconds: f64,
+    pub replay_target_synthesis_seconds: f64,
+    pub replay_augmentation_seconds: f64,
+    pub replay_shuffle_seconds: f64,
+    pub replay_queue_wait_block_seconds: f64,
     pub h2d_transfer_seconds: f64,
     pub h2d_pageable_to_pinned_seconds: f64,
     pub h2d_tensor_materialize_seconds: f64,
@@ -30,6 +43,15 @@ impl TrainSubStageTiming {
     /// Adds another timing sample into this accumulator.
     pub fn accumulate(&mut self, other: &TrainSubStageTiming) {
         self.producer_wait_seconds += other.producer_wait_seconds;
+        self.replay_zstd_read_seconds += other.replay_zstd_read_seconds;
+        self.replay_json_parse_seconds += other.replay_json_parse_seconds;
+        self.replay_simulation_seconds += other.replay_simulation_seconds;
+        self.replay_obs_encode_seconds += other.replay_obs_encode_seconds;
+        self.replay_legal_mask_seconds += other.replay_legal_mask_seconds;
+        self.replay_target_synthesis_seconds += other.replay_target_synthesis_seconds;
+        self.replay_augmentation_seconds += other.replay_augmentation_seconds;
+        self.replay_shuffle_seconds += other.replay_shuffle_seconds;
+        self.replay_queue_wait_block_seconds += other.replay_queue_wait_block_seconds;
         self.h2d_transfer_seconds += other.h2d_transfer_seconds;
         self.h2d_pageable_to_pinned_seconds += other.h2d_pageable_to_pinned_seconds;
         self.h2d_tensor_materialize_seconds += other.h2d_tensor_materialize_seconds;
@@ -47,6 +69,39 @@ impl TrainSubStageTiming {
         vec![
             ProfilingEnvelope::leaf(PROFILING_STAGE_PRODUCER_WAIT, self.producer_wait_seconds),
             ProfilingEnvelope::leaf(PROFILING_STAGE_COLLATION, self.collation_seconds),
+            ProfilingEnvelope::leaf(
+                PROFILING_STAGE_REPLAY_ZSTD_READ,
+                self.replay_zstd_read_seconds,
+            ),
+            ProfilingEnvelope::leaf(
+                PROFILING_STAGE_REPLAY_JSON_PARSE,
+                self.replay_json_parse_seconds,
+            ),
+            ProfilingEnvelope::leaf(
+                PROFILING_STAGE_REPLAY_SIMULATION,
+                self.replay_simulation_seconds,
+            ),
+            ProfilingEnvelope::leaf(
+                PROFILING_STAGE_REPLAY_OBS_ENCODE,
+                self.replay_obs_encode_seconds,
+            ),
+            ProfilingEnvelope::leaf(
+                PROFILING_STAGE_REPLAY_LEGAL_MASK,
+                self.replay_legal_mask_seconds,
+            ),
+            ProfilingEnvelope::leaf(
+                PROFILING_STAGE_REPLAY_TARGET_SYNTHESIS,
+                self.replay_target_synthesis_seconds,
+            ),
+            ProfilingEnvelope::leaf(
+                PROFILING_STAGE_REPLAY_AUGMENTATION,
+                self.replay_augmentation_seconds,
+            ),
+            ProfilingEnvelope::leaf(PROFILING_STAGE_REPLAY_SHUFFLE, self.replay_shuffle_seconds),
+            ProfilingEnvelope::leaf(
+                PROFILING_STAGE_REPLAY_QUEUE_WAIT_BLOCK,
+                self.replay_queue_wait_block_seconds,
+            ),
             ProfilingEnvelope::nested(
                 PROFILING_STAGE_H2D_TRANSFER,
                 self.h2d_transfer_seconds,

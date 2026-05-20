@@ -264,6 +264,41 @@ struct ProducerLoadContext {
     delta_q_sidecar_source_version: Option<u32>,
     skip_state: Arc<SkipLogState>,
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RawProducerProfileSnapshot {
+    pub queue_wait_block_ns: u128,
+    pub games_loaded: usize,
+    pub samples_loaded: usize,
+}
+
+static RAW_PRODUCER_PROFILE_TOTALS: std::sync::Mutex<RawProducerProfileSnapshot> =
+    std::sync::Mutex::new(RawProducerProfileSnapshot {
+        queue_wait_block_ns: 0,
+        games_loaded: 0,
+        samples_loaded: 0,
+    });
+
+fn raw_producer_profile_totals() -> std::sync::MutexGuard<'static, RawProducerProfileSnapshot> {
+    RAW_PRODUCER_PROFILE_TOTALS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+pub fn drain_raw_producer_profile() -> RawProducerProfileSnapshot {
+    let mut totals = raw_producer_profile_totals();
+    let snapshot = *totals;
+    *totals = RawProducerProfileSnapshot::default();
+    snapshot
+}
+
+fn record_raw_producer_queue_wait(queue_wait_block_ns: u128, samples_loaded: usize) {
+    let mut totals = raw_producer_profile_totals();
+    totals.queue_wait_block_ns = totals
+        .queue_wait_block_ns
+        .saturating_add(queue_wait_block_ns);
+    totals.games_loaded = totals.games_loaded.saturating_add(1);
+    totals.samples_loaded = totals.samples_loaded.saturating_add(samples_loaded);
+}
 
 struct LooseBatchWorkerContext {
     replay_target_profile: ReplayTargetProfile,
@@ -431,24 +466,6 @@ fn load_parsed_sample_cache_game(path: &Path) -> io::Result<MjaiGame> {
     })
 }
 
-fn forward_loose_game_result(
-    path: &Path,
-    result: io::Result<MjaiGame>,
-    game_tx: &mpsc::SyncSender<MjaiGame>,
-    worker: &LooseBatchWorkerContext,
-) {
-    match result {
-        Ok(game) => {
-            let _ = game_tx.send(game);
-        }
-        Err(err) => {
-            if let Ok(identity) = identity_for_loose_file(path) {
-                worker.skip_state.log_skip(&identity, &err);
-            }
-        }
-    }
-}
-
 struct LooseBatchStreamInput {
     paths: Vec<PathBuf>,
     split: StreamSplit,
@@ -523,7 +540,23 @@ fn run_loose_batch_stream(input: LooseBatchStreamInput) -> io::Result<()> {
                 pb.inc(1);
             }
 
-            forward_loose_game_result(&path, result, &game_tx, &worker_for_pool);
+            match result {
+                Ok(game) => {
+                    let samples_loaded = game.num_samples();
+                    let send_started = std::time::Instant::now();
+                    if game_tx.send(game).is_ok() {
+                        record_raw_producer_queue_wait(
+                            send_started.elapsed().as_nanos(),
+                            samples_loaded,
+                        );
+                    }
+                }
+                Err(err) => {
+                    if let Ok(identity) = identity_for_loose_file(&path) {
+                        worker_for_pool.skip_state.log_skip(&identity, &err);
+                    }
+                }
+            }
         });
     });
 
