@@ -23,6 +23,7 @@ struct AuditConfig {
     threads: usize,
     failure_examples: usize,
     failure_inventory_dir: Option<PathBuf>,
+    debug_first_failure: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -151,7 +152,7 @@ impl AuditSharedState {
 
 fn usage(program: &str) -> String {
     format!(
-        "Usage: {program} <data-dir> [--threads N] [--failure-examples N] [--failure-inventory-dir DIR]"
+        "Usage: {program} <data-dir> [--threads N] [--failure-examples N] [--failure-inventory-dir DIR] [--debug-first-failure]"
     )
 }
 
@@ -168,6 +169,7 @@ where
     let mut threads = 16usize;
     let mut failure_examples = 20usize;
     let mut failure_inventory_dir = None;
+    let mut debug_first_failure = false;
 
     while let Some(flag) = args.next() {
         match flag.as_str() {
@@ -196,6 +198,9 @@ where
                 };
                 failure_inventory_dir = Some(PathBuf::from(value));
             }
+            "--debug-first-failure" => {
+                debug_first_failure = true;
+            }
             _ => return Err(format!("unknown argument {flag:?}\n{}", usage(&program))),
         }
     }
@@ -205,6 +210,7 @@ where
         threads,
         failure_examples,
         failure_inventory_dir,
+        debug_first_failure,
     })
 }
 
@@ -584,6 +590,31 @@ fn run() -> Result<(), String> {
 
     let sources = collect_sources(&config.data_dir)?;
     let total = sources.len();
+    if config.debug_first_failure {
+        if total != 1 {
+            return Err("--debug-first-failure requires a single replay file input".to_string());
+        }
+        let source = sources.first().expect("total checked above");
+        let path = match source {
+            DataSource::LooseFile(path) => path,
+            DataSource::Archive(_) | DataSource::ParsedSampleCache { .. } => {
+                return Err("--debug-first-failure supports loose replay files only".to_string());
+            }
+        };
+        let file = fs::File::open(path)
+            .map_err(|err| format!("failed to open replay {}: {err}", path.display()))?;
+        let zstd = zstd::Decoder::new(file)
+            .map_err(|err| format!("failed to decode replay {}: {err}", path.display()))?;
+        match hydra_replay_loader::mjai_loader::debug_first_replay_failure_from_reader(
+            BufReader::new(zstd),
+        )
+        .map_err(|err| format!("failed to debug replay {}: {err}", path.display()))?
+        {
+            Some(report) => println!("{report}"),
+            None => println!("No replay failure detected."),
+        }
+        return Ok(());
+    }
     println!(
         "Auditing {} data sources from {} with {} threads",
         total,

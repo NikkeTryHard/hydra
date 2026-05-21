@@ -48,7 +48,7 @@ use crate::probe_summary::probe_kind_name;
 use crate::probe_transport::{ProbeBatchArtifact, write_probe_batch_artifact, write_probe_result};
 use crate::validation::ValidationSummary;
 use crate::validation_runner::{
-    ValidationContext, ValidationDataLoader, ValidationRuntime, run_validation,
+    ValidationContext, ValidationDataLoader, ValidationRuntime, run_validation_from_shards,
 };
 use hydra_data_core::manifest::DataManifest as CoreDataManifest;
 use hydra_train_runtime::config::{ProbeChildRequest, TrainConfig};
@@ -722,7 +722,8 @@ where
         reader.sample_count(),
         Instant::now(),
         || {
-            run_validation(
+            run_validation_from_shards(
+                &model,
                 &model,
                 ValidationContext {
                     config,
@@ -760,6 +761,7 @@ where
                     head_controller: None,
                     progress: None,
                 },
+                reader,
             )
         },
     )
@@ -1463,6 +1465,11 @@ fn probe_candidate_ladder_with_local_executor(
     probe_candidate_ladder(config_path, config, preflight, artifacts, kind, candidates)
 }
 
+fn probe_ladder_needs_manifest_scan(config: &TrainConfig, kind: ProbeKind) -> bool {
+    config.bc_shards_manifest_path.is_none()
+        || matches!(kind, ProbeKind::RlGames | ProbeKind::RlMicrobatch)
+}
+
 pub fn run_probe_ladder_only(
     config_path: &Path,
     config: &TrainConfig,
@@ -1470,30 +1477,32 @@ pub fn run_probe_ladder_only(
     preflight: &PreflightConfig,
     request: ProbeRequest,
 ) -> Result<(usize, Vec<ProbeResult>), String> {
-    let scan_pb = make_spinner("{spinner:.cyan} {msg}")?;
-    scan_pb.set_message(format!(
-        "scanning data for {} probe",
-        probe_kind_name(request.kind)
-    ));
-    let paths = PreflightPaths::new(artifacts);
-    let _ = load_or_scan_manifest_cache(
-        ManifestCacheRequest {
-            cache_path: &paths.manifest_cache_path,
-            discovery_summary_path: &paths.discovery_summary_path,
-            discovery_index_path: &paths.discovery_index_path,
-            data_dir: &config.data_dir,
-            train_fraction: config.train_fraction,
-            source_filters: &config.source_filters,
-            progress: Some(&scan_pb),
-            scan_error_context: "preflight data",
-        },
-        |_| {},
-    )?;
-    scan_pb.finish_with_message(
-        format!("scan complete for {} probe", probe_kind_name(request.kind))
-            .green()
-            .to_string(),
-    );
+    if probe_ladder_needs_manifest_scan(config, request.kind) {
+        let scan_pb = make_spinner("{spinner:.cyan} {msg}")?;
+        scan_pb.set_message(format!(
+            "scanning data for {} probe",
+            probe_kind_name(request.kind)
+        ));
+        let paths = PreflightPaths::new(artifacts);
+        let _ = load_or_scan_manifest_cache(
+            ManifestCacheRequest {
+                cache_path: &paths.manifest_cache_path,
+                discovery_summary_path: &paths.discovery_summary_path,
+                discovery_index_path: &paths.discovery_index_path,
+                data_dir: &config.data_dir,
+                train_fraction: config.train_fraction,
+                source_filters: &config.source_filters,
+                progress: Some(&scan_pb),
+                scan_error_context: "preflight data",
+            },
+            |_| {},
+        )?;
+        scan_pb.finish_with_message(
+            format!("scan complete for {} probe", probe_kind_name(request.kind))
+                .green()
+                .to_string(),
+        );
+    }
 
     let candidates = probe_only_candidate_ladder(config, preflight, request);
     let selected = probe_candidate_ladder_with_local_executor(

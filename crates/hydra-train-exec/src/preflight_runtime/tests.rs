@@ -1129,6 +1129,33 @@ fn run_probe_ladder_only_fails_before_probe_attempts_when_data_scan_fails() {
 }
 
 #[test]
+fn probe_ladder_skips_manifest_scan_for_shard_train_and_validation() {
+    let mut config = dummy_config();
+    config.bc_shards_manifest_path = Some(unique_test_path("probe-shard-manifest-skip"));
+
+    assert!(!probe_ladder_needs_manifest_scan(&config, ProbeKind::Train));
+    assert!(!probe_ladder_needs_manifest_scan(
+        &config,
+        ProbeKind::Validation
+    ));
+    assert!(probe_ladder_needs_manifest_scan(
+        &config,
+        ProbeKind::RlGames
+    ));
+    assert!(probe_ladder_needs_manifest_scan(
+        &config,
+        ProbeKind::RlMicrobatch
+    ));
+
+    config.bc_shards_manifest_path = None;
+    assert!(probe_ladder_needs_manifest_scan(&config, ProbeKind::Train));
+    assert!(probe_ladder_needs_manifest_scan(
+        &config,
+        ProbeKind::Validation
+    ));
+}
+
+#[test]
 fn run_probe_ladder_only_rescans_when_manifest_cache_data_dir_mismatches() {
     let preflight = PreflightConfig::default();
     let (root, replay_path, _) = write_real_probe_fixture("ladder-manifest-mismatch");

@@ -13,9 +13,9 @@ use hydra_bc_shards::{
     BC_SHARD_HEADER_SIZE, BC_SHARD_LAYOUT_VERSION, BC_SHARD_MANIFEST_VERSION, BC_SHARD_VERSION,
     BcShardBuildTotals, BcShardDescriptor, BcShardManifest, BcShardSidecarManifest, BcShardSplit,
     BcShardSplitManifest, BcShardSplitMode, FLAG_DELTA_Q, FLAG_EXIT, FLAG_SAFETY_RESIDUAL,
-    STORAGE_LAYOUT_COMPACT, checked_compact_record_size, record_size_for_flags,
-    rewrite_shard_header_for_descriptor, validate_bc_shard_manifest_contract,
-    validate_bc_shard_split_manifest_contract,
+    STORAGE_LAYOUT_COMPACT, checked_compact_record_size, encode_sample_records,
+    record_size_for_flags, rewrite_shard_header_for_descriptor,
+    validate_bc_shard_manifest_contract, validate_bc_shard_split_manifest_contract,
 };
 use rayon::ThreadPoolBuilder;
 use rayon::iter::{ParallelBridge, ParallelIterator};
@@ -517,7 +517,7 @@ pub fn build_bc_shards(config: &BuildBcShardsConfig) -> io::Result<BcShardBuildO
         manifest_path,
         manifest,
         report_path,
-        report: config.report_name.as_ref().map(|_| report),
+        report: Some(report),
     })
 }
 
@@ -655,6 +655,46 @@ struct MaterializedGame {
     result: io::Result<MjaiGame>,
 }
 
+struct EncodedMaterializedGame {
+    sequence: usize,
+    identity: String,
+    split: BcShardSplit,
+    result: io::Result<EncodedGameData>,
+}
+
+struct EncodedGameData {
+    sample_count: usize,
+    records: Vec<u8>,
+}
+
+fn encode_materialized_game(
+    game: MaterializedGame,
+    feature_flags: u32,
+    record_size: u32,
+) -> EncodedMaterializedGame {
+    let MaterializedGame {
+        sequence,
+        identity,
+        split,
+        result,
+    } = game;
+    let result = result.and_then(|game_data| {
+        let sample_count = game_data.samples.len();
+        encode_sample_records(&game_data.samples, feature_flags, record_size).map(|records| {
+            EncodedGameData {
+                sample_count,
+                records,
+            }
+        })
+    });
+    EncodedMaterializedGame {
+        sequence,
+        identity,
+        split,
+        result,
+    }
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct BuildCounters {
     loaded_games: u64,
@@ -720,32 +760,34 @@ impl<'a> WriteState<'a> {
         })
     }
 
-    fn handle_materialized(&mut self, game: MaterializedGame) -> io::Result<bool> {
+    fn handle_encoded_materialized(&mut self, game: EncodedMaterializedGame) -> io::Result<bool> {
         self.counters.materialized_games += 1;
         match game.result {
             Ok(game_data) => {
-                if game_data.samples.is_empty() {
+                if game_data.sample_count == 0 {
                     self.counters.empty_games += 1;
                     return Ok(self.sample_limit_reached());
                 }
-                let sample_count = game_data.samples.len() as u64;
+                let sample_count = game_data.sample_count as u64;
                 match game.split {
                     BcShardSplit::Train => {
                         if let Some(state) = self.train_state.as_mut() {
-                            state.push_samples(
+                            state.push_encoded_samples(
                                 &self.config.output_dir,
                                 self.config.shard_samples,
-                                &game_data.samples,
+                                &game_data.records,
+                                game_data.sample_count,
                             )?;
                             self.counters.train_samples += sample_count;
                         }
                     }
                     BcShardSplit::Validation => {
                         if let Some(state) = self.val_state.as_mut() {
-                            state.push_samples(
+                            state.push_encoded_samples(
                                 &self.config.output_dir,
                                 self.config.shard_samples,
-                                &game_data.samples,
+                                &game_data.records,
+                                game_data.sample_count,
                             )?;
                             self.counters.validation_samples += sample_count;
                         }
@@ -831,16 +873,17 @@ impl ChunkSplitBuildState {
         }
     }
 
-    fn push_samples(
+    fn push_encoded_samples(
         &mut self,
         output_dir: &Path,
         shard_samples: usize,
-        samples: &[hydra_data_core::MjaiSample],
+        records: &[u8],
+        sample_count: usize,
     ) -> io::Result<()> {
-        if samples.is_empty() {
+        if sample_count == 0 {
             return Ok(());
         }
-        let game_samples = samples.len() as u64;
+        let game_samples = sample_count as u64;
         if self.active.is_some()
             && self.active_samples > 0
             && self.active_samples + game_samples > shard_samples.max(1) as u64
@@ -875,7 +918,7 @@ impl ChunkSplitBuildState {
             self.active_samples = 0;
         }
         let active = self.active.as_mut().expect("active shard should exist");
-        active.write_samples(samples)?;
+        active.write_encoded_records(records, sample_count)?;
         self.active_samples += game_samples;
         self.total_samples += game_samples;
         Ok(())
@@ -1093,7 +1136,7 @@ fn materialize_loose_group_ordered(
     let pool = make_optional_pool(config.num_threads, "loose materialization")?;
     let (job_tx, job_rx) = mpsc::sync_channel::<PathJob>(config.queue_bound);
     let (result_tx, result_rx) =
-        mpsc::sync_channel::<io::Result<MaterializedGame>>(config.queue_bound);
+        mpsc::sync_channel::<io::Result<EncodedMaterializedGame>>(config.queue_bound);
     let jobs: Vec<PathJob> = entries
         .iter()
         .enumerate()
@@ -1121,6 +1164,8 @@ fn materialize_loose_group_ordered(
         })
         .map_err(|err| io::Error::other(format!("failed to spawn loose producer: {err}")))?;
     let worker = worker_ctx.clone();
+    let feature_flags = feature_flags_from_config(config);
+    let record_size = record_size_for_flags(feature_flags);
     let workers = thread::Builder::new()
         .name("bc-shard-loose-workers".into())
         .spawn(move || {
@@ -1128,12 +1173,17 @@ fn materialize_loose_group_ordered(
                 job_rx.into_iter().par_bridge().for_each(|job| {
                     let policy = worker.policy();
                     let result = load_game_from_path_with_policy(&job.path, Some(&policy));
-                    let _ = result_tx.send(Ok(MaterializedGame {
-                        sequence: job.sequence,
-                        identity: job.identity,
-                        split: job.split,
-                        result,
-                    }));
+                    let encoded = encode_materialized_game(
+                        MaterializedGame {
+                            sequence: job.sequence,
+                            identity: job.identity,
+                            split: job.split,
+                            result,
+                        },
+                        feature_flags,
+                        record_size,
+                    );
+                    let _ = result_tx.send(Ok(encoded));
                 });
             });
         })
@@ -1170,7 +1220,7 @@ fn materialize_archive_group_ordered(
         .collect();
     let (job_tx, job_rx) = mpsc::sync_channel::<ArchiveJob>(config.queue_bound);
     let (result_tx, result_rx) =
-        mpsc::sync_channel::<io::Result<MaterializedGame>>(config.queue_bound);
+        mpsc::sync_channel::<io::Result<EncodedMaterializedGame>>(config.queue_bound);
     let producer_path = archive_path.to_path_buf();
     let producer = thread::Builder::new()
         .name("bc-shard-archive-producer".into())
@@ -1202,6 +1252,8 @@ fn materialize_archive_group_ordered(
         })
         .map_err(|err| io::Error::other(format!("failed to spawn archive producer: {err}")))?;
     let worker = worker_ctx.clone();
+    let feature_flags = feature_flags_from_config(config);
+    let record_size = record_size_for_flags(feature_flags);
     let workers = thread::Builder::new()
         .name("bc-shard-archive-workers".into())
         .spawn(move || {
@@ -1213,12 +1265,17 @@ fn materialize_archive_group_ordered(
                         BufReader::new(std::io::Cursor::new(job.data)),
                         Some(&policy),
                     );
-                    let _ = result_tx.send(Ok(MaterializedGame {
-                        sequence: job.sequence,
-                        identity: job.identity,
-                        split: job.split,
-                        result,
-                    }));
+                    let encoded = encode_materialized_game(
+                        MaterializedGame {
+                            sequence: job.sequence,
+                            identity: job.identity,
+                            split: job.split,
+                            result,
+                        },
+                        feature_flags,
+                        record_size,
+                    );
+                    let _ = result_tx.send(Ok(encoded));
                 });
             });
         })
@@ -1234,7 +1291,7 @@ fn materialize_archive_group_ordered(
 }
 
 fn collect_materialized_in_order(
-    results: mpsc::Receiver<io::Result<MaterializedGame>>,
+    results: mpsc::Receiver<io::Result<EncodedMaterializedGame>>,
     expected_count: usize,
     config: &BuildBcShardsConfig,
     state: &mut WriteState<'_>,
@@ -1247,7 +1304,7 @@ fn collect_materialized_in_order(
         let game = item?;
         pending.insert(game.sequence, game);
         while let Some(game) = pending.remove(&next) {
-            let limit_reached = state.handle_materialized(game)?;
+            let limit_reached = state.handle_encoded_materialized(game)?;
             progress.game_committed(config, &state.counters)?;
             next += 1;
             if limit_reached {

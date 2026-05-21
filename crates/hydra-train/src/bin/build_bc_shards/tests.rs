@@ -166,6 +166,101 @@ fn parses_no_report_and_dry_scan_only() {
 }
 
 #[test]
+fn throughput_summary_formats_rates_and_missing_values() {
+    let report = BcShardBuildReport {
+        schema_version: 1,
+        started_at: "start".to_string(),
+        finished_at: "end".to_string(),
+        elapsed_seconds: 2.5,
+        abi: hydra_train_exec::bc_shard_builder::BcShardAbiReport {
+            storage_layout: "compact".to_string(),
+            shard_version: 1,
+            layout_version: 1,
+            manifest_version: 2,
+            feature_flags: 0,
+            record_size: 1,
+            header_size: 32,
+            base_record_size: 1,
+            max_record_size: 1,
+            dense_obs_f32_bytes_per_sample: 26_112,
+        },
+        disk: hydra_train_exec::bc_shard_builder::BcShardDiskReport {
+            output_dir: "out".to_string(),
+            existing_output_bytes: 0,
+            available_bytes_before: None,
+            available_bytes_after: None,
+            projected_output_bytes: None,
+            projected_sample_count: None,
+            projection_source: "unavailable".to_string(),
+        },
+        plan_splits: Vec::new(),
+        command: hydra_train_exec::bc_shard_builder::BcShardBuildCommandReport {
+            input: "in".to_string(),
+            output_dir: "out".to_string(),
+            manifest_name: "manifest.json".to_string(),
+            train_fraction: 1.0,
+            shard_samples: 1,
+            split: "train".to_string(),
+            num_threads: None,
+            queue_bound: 1,
+            resume: false,
+            chunk_games: 1,
+            limit_max_games: None,
+            limit_max_samples: None,
+            exit_sidecar: None,
+            delta_q_sidecar: None,
+        },
+        scan: hydra_train_exec::bc_shard_builder::BcShardScanReport {
+            source_count: 1,
+            source_total_games_hint: 1,
+            source_train_count_hint: 1,
+            source_val_count_hint: 0,
+            source_counts_exact: true,
+            input_compressed_bytes: None,
+        },
+        build: hydra_train_exec::bc_shard_builder::BcShardMaterializationReport {
+            loaded_games: 1,
+            skipped_games: 0,
+            empty_games: 0,
+            total_samples: 10,
+            train_samples: 10,
+            validation_samples: 0,
+            limit_reached: false,
+            sample_cap_outcome: "not_configured".to_string(),
+            samples_per_loaded_non_empty_game: Some(10.0),
+            bad_source_examples: Vec::new(),
+            resume_chunks_reused: 0,
+            resume_chunks_built: 1,
+        },
+        output: hydra_train_exec::bc_shard_builder::BcShardOutputReport {
+            shard_count: 1,
+            output_bytes: 10,
+            manifest_bytes: 1,
+            bytes_per_sample: Some(1.0),
+            dense_equivalent_observation_bytes: 261_120,
+            dense_equivalent_observation_bytes_per_sample: 26_112,
+            savings_ratio_vs_dense_observation: Some(26_112.0),
+            splits: Vec::new(),
+        },
+        rates: hydra_train_exec::bc_shard_builder::BcShardBuildRates {
+            games_per_second: None,
+            samples_per_second: 4.0,
+            output_mib_per_second: 0.5,
+            input_mib_per_second: Some(1.25),
+        },
+        manifest_path: "out/manifest.json".to_string(),
+        progress_jsonl_path: None,
+    };
+
+    let line = throughput_summary(&report);
+
+    assert!(line.contains("games/s=n/a"));
+    assert!(line.contains("samples/s=4.00"));
+    assert!(line.contains("input_mib/s=1.25"));
+    assert!(line.contains("output_mib/s=0.50"));
+}
+
+#[test]
 fn parse_max_games_and_max_samples_flags() {
     let cli = parse_args(
         "build_bc_shards",

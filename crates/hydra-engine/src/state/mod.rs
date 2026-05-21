@@ -459,6 +459,13 @@ impl GameState {
             _ => false,
         };
         let consumes_match = legal.consume_slice() == replay.consume_slice();
+        let kan_consumes_match = matches!(legal.action_type, ActionType::Ankan | ActionType::Kakan)
+            && legal.consume_count == replay.consume_count
+            && legal
+                .consume_slice()
+                .iter()
+                .zip(replay.consume_slice())
+                .all(|(&legal_tile, &replay_tile)| legal_tile / 4 == replay_tile / 4);
 
         if tiles_match {
             if consumes_match {
@@ -483,13 +490,19 @@ impl GameState {
             }
         }
 
-        if consumes_match && matches!(legal.action_type, ActionType::Ankan | ActionType::Kakan) {
-            return true;
-        }
-
         if matches!(legal.action_type, ActionType::Ankan | ActionType::Kakan) {
             if let (Some(legal_tile), Some(replay_tile)) = (legal.tile, replay.tile) {
-                return legal_tile / 4 == replay_tile / 4;
+                if legal_tile / 4 != replay_tile / 4 && legal_tile / 4 != replay_tile {
+                    return false;
+                }
+
+                if consumes_match || kan_consumes_match {
+                    return true;
+                }
+
+                if legal.action_type == ActionType::Kakan && replay.consume_count == 0 {
+                    return true;
+                }
             }
         }
 
@@ -527,6 +540,76 @@ impl GameState {
         }
 
         true
+    }
+
+    #[inline]
+    pub fn replay_ankan_is_pon_upgrade(&self, actor: usize, tile_type: u8) -> bool {
+        let Some(player) = self.players.get(actor) else {
+            return false;
+        };
+        player
+            .melds_slice()
+            .iter()
+            .any(|meld| meld.meld_type == MeldType::Pon && meld.tiles[0] / 4 == tile_type)
+            && player
+                .hand_slice()
+                .iter()
+                .any(|&tile| tile / 4 == tile_type)
+    }
+
+    #[inline]
+    pub fn replay_concealed_kan_tiles(&self, actor: usize, tile_type: u8) -> Option<[u8; 4]> {
+        let player = self.players.get(actor)?;
+        let mut tiles = [0u8; 4];
+        let mut len = 0usize;
+        for &tile in player.hand_slice() {
+            if tile / 4 == tile_type {
+                if len == 4 {
+                    return None;
+                }
+                tiles[len] = tile;
+                len += 1;
+            }
+        }
+        (len == 4).then_some(tiles)
+    }
+
+    #[inline]
+    pub fn replay_action_for_mjai_event(&self, event: &MjaiEvent) -> RiichiResult<Option<Action>> {
+        match event {
+            MjaiEvent::Ankan { actor, consumed } => {
+                let Some(first) = consumed.first() else {
+                    return crate::replay::mjai_event_to_action(event);
+                };
+                let tile = crate::replay::parse_mjai_tile_checked(first)?;
+                if self.replay_ankan_is_pon_upgrade(*actor, tile / 4) {
+                    Ok(Some(Action::new(
+                        ActionType::Kakan,
+                        Some(tile),
+                        &[],
+                        Some(*actor as u8),
+                    )))
+                } else {
+                    crate::replay::mjai_event_to_action(event)
+                }
+            }
+            MjaiEvent::Kakan { actor, pai } => {
+                let tile = crate::replay::parse_mjai_tile_checked(pai)?;
+                if self.replay_ankan_is_pon_upgrade(*actor, tile / 4) {
+                    crate::replay::mjai_event_to_action(event)
+                } else if let Some(tiles) = self.replay_concealed_kan_tiles(*actor, tile / 4) {
+                    Ok(Some(Action::new(
+                        ActionType::Ankan,
+                        Some(tiles[0]),
+                        &tiles,
+                        Some(*actor as u8),
+                    )))
+                } else {
+                    crate::replay::mjai_event_to_action(event)
+                }
+            }
+            _ => crate::replay::mjai_event_to_action(event),
+        }
     }
 
     /// Build an observation for replay validation, temporarily adjusting phase if needed.
@@ -2535,9 +2618,15 @@ impl GameState {
         }
     }
 
+    /// Fallibly apply a typed MJAI event to advance replay state.
+    pub fn try_apply_mjai_event(&mut self, event: MjaiEvent) -> crate::errors::RiichiResult<()> {
+        <Self as GameStateEventHandler>::try_apply_mjai_event(self, event)
+    }
+
     /// Apply a typed MJAI event to advance game state.
     pub fn apply_mjai_event(&mut self, event: MjaiEvent) {
-        <Self as GameStateEventHandler>::apply_mjai_event(self, event)
+        self.try_apply_mjai_event(event)
+            .expect("typed MJAI event should be valid for current replay state")
     }
 
     /// Apply a replay log action to advance game state.

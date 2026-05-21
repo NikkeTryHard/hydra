@@ -90,12 +90,12 @@ pixi run test-lib
 pixi run check
 pixi run test
 pixi run cargo check -p <crate> --no-default-features --quiet
-pixi run cargo nextest run -p <crate> --lib --no-default-features --cargo-profile dev --cargo-quiet
-pixi run cargo nextest run <test-name> --no-default-features --cargo-profile dev --cargo-quiet
-pixi run cargo nextest run -p <crate> <ignored-test> --features <feature> --no-default-features --no-capture -- --ignored
+pixi run scripts/nextest-quiet.sh run -p <crate> --lib --no-default-features --cargo-profile dev --cargo-quiet
+pixi run scripts/nextest-quiet.sh run <test-name> --no-default-features --cargo-profile dev --cargo-quiet
+pixi run scripts/nextest-quiet.sh run -p <crate> <ignored-test> --features <feature> --no-default-features --no-capture -- --ignored
 ```
 
-prefer faster nextest over cargo test
+Prefer faster nextest over cargo test. When invoking nextest directly, use `scripts/nextest-quiet.sh` through Pixi instead of `cargo nextest` to store full output in `target/nextest-quiet-output.log` and print only failure context.
 
 ## Pixi/libtorch/tooling contract
 

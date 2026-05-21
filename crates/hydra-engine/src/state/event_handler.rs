@@ -1,19 +1,29 @@
 use super::sorted_insert_arr;
 use crate::action::Phase;
-use crate::parser::mjai_to_tid;
-use crate::replay::{Action as LogAction, MjaiEvent};
+use crate::errors::{RiichiError, RiichiResult};
+use crate::replay::{parse_mjai_tile_checked, Action as LogAction, MjaiEvent};
 use crate::state::GameState;
 use crate::types::{Meld, MeldType, Wind};
 
-fn parse_mjai_tile(s: &str) -> u8 {
-    mjai_to_tid(s).unwrap_or(0)
+fn invalid_replay(message: impl Into<String>) -> RiichiError {
+    RiichiError::InvalidState {
+        message: message.into(),
+    }
+}
+
+fn parse_mjai_tile(s: &str) -> RiichiResult<u8> {
+    parse_mjai_tile_checked(s)
 }
 
 fn mjai_tile_has_explicit_copy(s: &str) -> bool {
     matches!(s, "5mr" | "5pr" | "5sr")
 }
 
-fn remove_replay_hand_tile_by_mjai(player: &mut super::player::PlayerState, tile: u8, mjai: &str) {
+fn remove_replay_hand_tile_by_mjai(
+    player: &mut super::player::PlayerState,
+    tile: u8,
+    mjai: &str,
+) -> Option<u8> {
     let idx = if mjai_tile_has_explicit_copy(mjai) {
         player.hand_slice().iter().position(|&t| t == tile)
     } else {
@@ -25,15 +35,58 @@ fn remove_replay_hand_tile_by_mjai(player: &mut super::player::PlayerState, tile
             .or_else(|| player.hand_slice().iter().position(|&t| t / 4 == tile_type))
     };
 
-    if let Some(idx) = idx {
-        player.remove_hand(idx);
-    }
+    idx.map(|idx| player.remove_hand(idx))
 }
 
-fn alloc_replay_hand_tile_by_mjai(player: &super::player::PlayerState, mjai: &str) -> u8 {
-    let tile = parse_mjai_tile(mjai);
+fn remove_replay_hand_tile_by_type(
+    player: &mut super::player::PlayerState,
+    tile_type: u8,
+) -> Option<u8> {
+    player
+        .hand_slice()
+        .iter()
+        .position(|&hand_tile| hand_tile / 4 == tile_type)
+        .map(|idx| player.remove_hand(idx))
+}
+
+fn remove_replay_exact_hand_tile(player: &mut super::player::PlayerState, tile: u8) -> Option<u8> {
+    player
+        .hand_slice()
+        .iter()
+        .position(|&hand_tile| hand_tile == tile)
+        .map(|idx| player.remove_hand(idx))
+}
+
+fn apply_replay_kakan(state: &mut GameState, actor: usize, tile: u8) -> RiichiResult<()> {
+    let meld_tile = remove_replay_hand_tile_by_type(&mut state.players[actor], tile / 4)
+        .ok_or_else(|| invalid_replay("kakan replay missing upgrade tile in hand"))?;
+    let Some(meld) = state.players[actor]
+        .melds_slice_mut()
+        .iter_mut()
+        .find(|meld| meld.meld_type == MeldType::Pon && meld.tiles[0] / 4 == tile / 4)
+    else {
+        return Err(invalid_replay("kakan replay missing matching open pon"));
+    };
+    meld.meld_type = MeldType::Kakan;
+    meld.push_tile(meld_tile);
+    meld.tiles_slice_mut().sort();
+    state.last_discard = Some((actor as u8, tile));
+    state.current_player = actor as u8;
+    state.phase = Phase::WaitAct;
+    state.set_single_active_player(actor as u8);
+    state.needs_tsumo = true;
+    state.is_first_turn = false;
+    state.is_after_kan = true;
+    Ok(())
+}
+
+fn alloc_replay_hand_tile_by_mjai(
+    player: &super::player::PlayerState,
+    mjai: &str,
+) -> RiichiResult<u8> {
+    let tile = parse_mjai_tile(mjai)?;
     if mjai_tile_has_explicit_copy(mjai) {
-        return tile;
+        return Ok(tile);
     }
 
     let tile_type = tile / 4;
@@ -45,37 +98,50 @@ fn alloc_replay_hand_tile_by_mjai(player: &super::player::PlayerState, mjai: &st
     for &copy in copy_order {
         let candidate = tile_type * 4 + copy;
         if !player.hand_slice().contains(&candidate) {
-            return candidate;
+            return Ok(candidate);
         }
     }
 
-    tile
+    Err(invalid_replay(
+        "replay draw would create fifth copy of tile",
+    ))
 }
 
-fn alloc_start_kyoku_tile(tile_counts: &mut [u8; 34], tile_str: &str) -> u8 {
-    let tile = parse_mjai_tile(tile_str);
+fn alloc_start_kyoku_tile(tile_counts: &mut [u8; 34], tile_str: &str) -> RiichiResult<u8> {
+    let tile = parse_mjai_tile(tile_str)?;
     let tile_type = (tile / 4) as usize;
 
     if mjai_tile_has_explicit_copy(tile_str) {
+        if tile_counts[tile_type] >= 4 {
+            return Err(invalid_replay(
+                "start_kyoku contains more than four copies of a tile",
+            ));
+        }
         tile_counts[tile_type] = tile_counts[tile_type].max(1);
-        return tile;
+        return Ok(tile);
     }
 
     let mut copy = tile_counts[tile_type];
     if matches!(tile_type, 4 | 13 | 22) {
         copy = copy.max(1);
     }
-    tile_counts[tile_type] = copy.saturating_add(1);
-    tile_type as u8 * 4 + copy
+    if copy >= 4 {
+        return Err(invalid_replay(
+            "start_kyoku contains more than four copies of a tile",
+        ));
+    }
+    tile_counts[tile_type] = copy + 1;
+    Ok(tile_type as u8 * 4 + copy)
 }
 
 pub trait GameStateEventHandler {
+    fn try_apply_mjai_event(&mut self, event: MjaiEvent) -> RiichiResult<()>;
     fn apply_mjai_event(&mut self, event: MjaiEvent);
     fn apply_log_action(&mut self, action: &LogAction);
 }
 
 impl GameStateEventHandler for GameState {
-    fn apply_mjai_event(&mut self, event: MjaiEvent) {
+    fn try_apply_mjai_event(&mut self, event: MjaiEvent) -> RiichiResult<()> {
         match event {
             MjaiEvent::StartKyoku {
                 bakaze,
@@ -104,7 +170,7 @@ impl GameStateEventHandler for GameState {
                 };
                 self.oya = oya;
                 self.wall
-                    .set_dora_indicators_single(parse_mjai_tile(&dora_marker));
+                    .set_dora_indicators_single(parse_mjai_tile(&dora_marker)?);
                 self.wall.tile_count = 136 - (13 * 4);
                 self.wall.rinshan_draw_count = 0;
                 self.wall.pending_kan_dora_count = 0;
@@ -132,7 +198,7 @@ impl GameStateEventHandler for GameState {
                     let mut tile_counts = [0u8; 34];
                     for tile_str in hand_strs {
                         self.players[i]
-                            .push_hand(alloc_start_kyoku_tile(&mut tile_counts, tile_str));
+                            .push_hand(alloc_start_kyoku_tile(&mut tile_counts, tile_str)?);
                     }
                     self.players[i].hand_slice_mut().sort();
                 }
@@ -150,7 +216,7 @@ impl GameStateEventHandler for GameState {
                 self.is_done = false;
             }
             MjaiEvent::Tsumo { actor, pai } => {
-                let tile = alloc_replay_hand_tile_by_mjai(&self.players[actor], &pai);
+                let tile = alloc_replay_hand_tile_by_mjai(&self.players[actor], &pai)?;
                 self.current_player = actor as u8;
                 self.drawn_tile = Some(tile);
                 sorted_insert_arr(
@@ -167,10 +233,11 @@ impl GameStateEventHandler for GameState {
                 self.needs_tsumo = false;
             }
             MjaiEvent::Dahai { actor, pai, .. } => {
-                let tile = parse_mjai_tile(&pai);
+                let tile = parse_mjai_tile(&pai)?;
                 let actor_u8 = actor as u8;
                 self.current_player = actor_u8;
-                remove_replay_hand_tile_by_mjai(&mut self.players[actor], tile, &pai);
+                remove_replay_hand_tile_by_mjai(&mut self.players[actor], tile, &pai)
+                    .ok_or_else(|| invalid_replay("dahai replay tile missing from hand"))?;
                 self.players[actor].push_discard(tile, false, false);
                 self.last_discard = Some((actor_u8, tile));
                 self.drawn_tile = None;
@@ -210,16 +277,21 @@ impl GameStateEventHandler for GameState {
                 consumed,
                 ..
             } => {
-                let tile = parse_mjai_tile(&pai);
+                let tile = parse_mjai_tile(&pai)?;
                 self.current_player = actor as u8;
-                let c1 = parse_mjai_tile(&consumed[0]);
-                let c2 = parse_mjai_tile(&consumed[1]);
+                let [first, second] = consumed.as_slice() else {
+                    return Err(invalid_replay("pon replay requires two consumed tiles"));
+                };
+                let c1 = parse_mjai_tile(first)?;
+                let c2 = parse_mjai_tile(second)?;
                 let form_tiles = [tile, c1, c2];
 
-                for t in &[c1, c2] {
-                    let mjai = if *t == c1 { &consumed[0] } else { &consumed[1] };
-                    remove_replay_hand_tile_by_mjai(&mut self.players[actor], *t, mjai);
-                }
+                remove_replay_hand_tile_by_mjai(&mut self.players[actor], c1, first).ok_or_else(
+                    || invalid_replay("pon replay first consumed tile missing from hand"),
+                )?;
+                remove_replay_hand_tile_by_mjai(&mut self.players[actor], c2, second).ok_or_else(
+                    || invalid_replay("pon replay second consumed tile missing from hand"),
+                )?;
 
                 self.players[actor].push_meld(Meld::new(
                     MeldType::Pon,
@@ -244,16 +316,21 @@ impl GameStateEventHandler for GameState {
                 consumed,
                 ..
             } => {
-                let tile = parse_mjai_tile(&pai);
+                let tile = parse_mjai_tile(&pai)?;
                 self.current_player = actor as u8;
-                let c1 = parse_mjai_tile(&consumed[0]);
-                let c2 = parse_mjai_tile(&consumed[1]);
+                let [first, second] = consumed.as_slice() else {
+                    return Err(invalid_replay("chi replay requires two consumed tiles"));
+                };
+                let c1 = parse_mjai_tile(first)?;
+                let c2 = parse_mjai_tile(second)?;
                 let form_tiles = [tile, c1, c2];
 
-                for t in &[c1, c2] {
-                    let mjai = if *t == c1 { &consumed[0] } else { &consumed[1] };
-                    remove_replay_hand_tile_by_mjai(&mut self.players[actor], *t, mjai);
-                }
+                remove_replay_hand_tile_by_mjai(&mut self.players[actor], c1, first).ok_or_else(
+                    || invalid_replay("chi replay first consumed tile missing from hand"),
+                )?;
+                remove_replay_hand_tile_by_mjai(&mut self.players[actor], c2, second).ok_or_else(
+                    || invalid_replay("chi replay second consumed tile missing from hand"),
+                )?;
 
                 self.players[actor].push_meld(Meld::new(
                     MeldType::Chi,
@@ -292,16 +369,19 @@ impl GameStateEventHandler for GameState {
                 consumed,
                 ..
             } => {
-                let tile = parse_mjai_tile(&pai);
+                if consumed.len() > 3 {
+                    return Err(invalid_replay("daiminkan replay consumed too many tiles"));
+                }
+                let tile = parse_mjai_tile(&pai)?;
                 self.current_player = actor as u8;
                 let mut tiles = [tile, 0, 0, 0];
                 for (idx, c) in consumed.iter().enumerate() {
-                    tiles[idx + 1] = parse_mjai_tile(c);
-                }
-
-                for c in &consumed {
-                    let tv = parse_mjai_tile(c);
-                    remove_replay_hand_tile_by_mjai(&mut self.players[actor], tv, c);
+                    let parsed = parse_mjai_tile(c)?;
+                    tiles[idx + 1] = parsed;
+                    remove_replay_hand_tile_by_mjai(&mut self.players[actor], parsed, c)
+                        .ok_or_else(|| {
+                            invalid_replay("daiminkan replay consumed tile missing from hand")
+                        })?;
                 }
 
                 self.players[actor].push_meld(Meld::new(
@@ -314,33 +394,70 @@ impl GameStateEventHandler for GameState {
                 self.needs_tsumo = true;
             }
             MjaiEvent::Ankan { actor, consumed } => {
-                let mut tiles = [0; 4];
-                for (idx, c) in consumed.iter().enumerate() {
-                    let t = parse_mjai_tile(c);
-                    tiles[idx] = t;
-                    remove_replay_hand_tile_by_mjai(&mut self.players[actor], t, c);
+                if consumed.len() != 4 {
+                    return Err(invalid_replay("ankan replay requires four consumed tiles"));
                 }
-                self.players[actor].push_meld(Meld::new(
-                    MeldType::Ankan,
-                    &tiles[..consumed.len()],
-                    false,
-                    -1,
-                    None,
-                ));
-                self.needs_tsumo = true;
+                let first_tile = consumed
+                    .first()
+                    .map(|tile| parse_mjai_tile(tile))
+                    .transpose()?;
+                if let Some(tile) =
+                    first_tile.filter(|&tile| self.replay_ankan_is_pon_upgrade(actor, tile / 4))
+                {
+                    apply_replay_kakan(self, actor, tile)?;
+                } else {
+                    let mut tiles = [0; 4];
+                    for (idx, c) in consumed.iter().enumerate() {
+                        let t = parse_mjai_tile(c)?;
+                        tiles[idx] = t;
+                        remove_replay_hand_tile_by_mjai(&mut self.players[actor], t, c)
+                            .ok_or_else(|| {
+                                invalid_replay("ankan replay consumed tile missing from hand")
+                            })?;
+                    }
+                    self.players[actor].push_meld(Meld::new(
+                        MeldType::Ankan,
+                        &tiles[..consumed.len()],
+                        false,
+                        -1,
+                        None,
+                    ));
+                    self.last_discard = first_tile.map(|tile| (actor as u8, tile));
+                    self.current_player = actor as u8;
+                    self.phase = Phase::WaitAct;
+                    self.set_single_active_player(actor as u8);
+                    self.needs_tsumo = true;
+                    self.is_first_turn = false;
+                    self.is_after_kan = true;
+                }
             }
             MjaiEvent::Kakan { actor, pai } => {
-                let tile = parse_mjai_tile(&pai);
-                remove_replay_hand_tile_by_mjai(&mut self.players[actor], tile, &pai);
-                for m in self.players[actor].melds_slice_mut().iter_mut() {
-                    if m.meld_type == MeldType::Pon && m.tiles[0] / 4 == tile / 4 {
-                        m.meld_type = MeldType::Kakan;
-                        m.push_tile(tile);
-                        m.tiles_slice_mut().sort();
-                        break;
+                let tile = parse_mjai_tile(&pai)?;
+                if self.replay_ankan_is_pon_upgrade(actor, tile / 4) {
+                    apply_replay_kakan(self, actor, tile)?;
+                } else if let Some(tiles) = self.replay_concealed_kan_tiles(actor, tile / 4) {
+                    for t in tiles {
+                        remove_replay_exact_hand_tile(&mut self.players[actor], t).ok_or_else(
+                            || invalid_replay("concealed kan replay tile missing from hand"),
+                        )?;
                     }
+                    self.players[actor].push_meld(Meld::new(
+                        MeldType::Ankan,
+                        &tiles,
+                        false,
+                        -1,
+                        None,
+                    ));
+                    self.last_discard = Some((actor as u8, tile));
+                    self.current_player = actor as u8;
+                    self.phase = Phase::WaitAct;
+                    self.set_single_active_player(actor as u8);
+                    self.needs_tsumo = true;
+                    self.is_first_turn = false;
+                    self.is_after_kan = true;
+                } else {
+                    apply_replay_kakan(self, actor, tile)?;
                 }
-                self.needs_tsumo = true;
             }
             MjaiEvent::Reach { actor } => {
                 self.players[actor].riichi_stage = true;
@@ -355,7 +472,7 @@ impl GameStateEventHandler for GameState {
                 self.riichi_pending_acceptance = None;
             }
             MjaiEvent::Dora { dora_marker } => {
-                let tile = parse_mjai_tile(&dora_marker);
+                let tile = parse_mjai_tile(&dora_marker)?;
                 self.wall.push_dora_indicator(tile);
             }
             MjaiEvent::Kita { .. } => {
@@ -366,6 +483,11 @@ impl GameStateEventHandler for GameState {
             }
             _ => {}
         }
+        Ok(())
+    }
+
+    fn apply_mjai_event(&mut self, event: MjaiEvent) {
+        let _ = self.try_apply_mjai_event(event);
     }
 
     fn apply_log_action(&mut self, action: &LogAction) {

@@ -429,7 +429,9 @@ fn representative_replay_duplicate_fact_extraction_matches_single_extract_rows()
         }
 
         update_safety(&mut safety, event).expect("update safety");
-        state.apply_mjai_event(event.clone());
+        state
+            .try_apply_mjai_event(event.clone())
+            .expect("apply representative replay event");
     }
 
     assert!(
@@ -1523,6 +1525,90 @@ fn load_game_from_reader_accepts_duplicate_plain_tiles_in_start_kyoku() {
     let game = load_game_from_reader(Cursor::new(log.join("\n"))).expect("load game");
 
     assert!(!game.samples.is_empty());
+}
+
+#[test]
+fn load_game_from_reader_rejects_fifth_start_tile_copy() {
+    let log = [
+        r#"{"type":"start_game","names":["a","b","c","d"]}"#,
+        r#"{"type":"start_kyoku","bakaze":"E","kyoku":1,"honba":0,"kyotaku":0,"oya":0,"scores":[25000,25000,25000,25000],"dora_marker":"1m","tehais":[["6m","6m","6m","6m","6m","9m","1p","2p","3p","4p","5p","6p","7p","8p"],["1s","2s","3s","4s","5s","6s","7s","8s","9s","E","S","W","N"],["1m","1m","2m","2m","3m","3m","4m","4m","5m","5m","6m","6m","7m"],["1p","1p","2p","2p","3p","3p","4p","4p","5p","5p","6p","6p","7p"]]}"#,
+        r#"{"type":"ryukyoku"}"#,
+    ];
+
+    let err = match load_game_from_reader(Cursor::new(log.join("\n"))) {
+        Ok(_) => panic!("fifth tile copy should reject"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.kind(), ErrorKind::InvalidData);
+    assert!(err.to_string().contains("more than four copies"));
+}
+
+#[test]
+fn load_game_from_reader_rejects_unsupported_event_type() {
+    let log = [
+        r#"{"type":"start_game","names":["a","b","c","d"]}"#,
+        r#"{"type":"totally_unknown"}"#,
+    ];
+
+    let err = match load_game_from_reader(Cursor::new(log.join("\n"))) {
+        Ok(_) => panic!("unknown event type should reject"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.kind(), ErrorKind::InvalidData);
+    assert!(err.to_string().contains("unsupported MJAI event type"));
+}
+
+#[test]
+fn load_game_from_reader_rejects_hora_scores_delta_mismatch() {
+    let log = [
+        r#"{"type":"start_game","names":["a","b","c","d"]}"#,
+        r#"{"type":"start_kyoku","bakaze":"E","kyoku":1,"honba":0,"kyotaku":0,"oya":0,"scores":[25000,25000,25000,25000],"dora_marker":"1m","tehais":[["1m","2m","3m","4m","5m","6m","7m","8m","9m","1p","2p","3p","4p"],["1s","2s","3s","4s","5s","6s","7s","8s","9s","E","S","W","N"],["1m","1m","2m","2m","3m","3m","4m","4m","5m","5m","6m","6m","7m"],["1p","1p","2p","2p","3p","3p","4p","4p","5p","5p","6p","6p","7p"]]}"#,
+        r#"{"type":"dahai","actor":0,"pai":"4p","tsumogiri":false}"#,
+        r#"{"type":"hora","actor":1,"target":0,"pai":"4p","scores":[25000,26000,25000,24000],"deltas":[-1000,1000,0,0]}"#,
+    ];
+
+    let err = match load_game_from_reader(Cursor::new(log.join("\n"))) {
+        Ok(_) => panic!("mismatched terminal score fields should reject"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.kind(), ErrorKind::InvalidData);
+    assert!(err.to_string().contains("scores do not match delta"));
+}
+
+#[test]
+fn load_game_from_reader_rejects_hora_han_fu_point_mismatch() {
+    let log = [
+        r#"{"type":"start_game","names":["a","b","c","d"]}"#,
+        r#"{"type":"start_kyoku","bakaze":"E","kyoku":1,"honba":0,"kyotaku":0,"oya":0,"scores":[25000,25000,25000,25000],"dora_marker":"1m","tehais":[["1m","2m","3m","4m","5m","6m","7m","8m","9m","1p","2p","3p","4p"],["1s","2s","3s","4s","5s","6s","7s","8s","9s","E","S","W","N"],["1m","1m","2m","2m","3m","3m","4m","4m","5m","5m","6m","6m","7m"],["1p","1p","2p","2p","3p","3p","4p","4p","5p","5p","6p","6p","7p"]]}"#,
+        r#"{"type":"dahai","actor":0,"pai":"4p","tsumogiri":false}"#,
+        r#"{"type":"hora","actor":1,"target":0,"pai":"4p","fu":30,"han":1,"deltas":[-2000,2000,0,0]}"#,
+    ];
+
+    let err = match load_game_from_reader(Cursor::new(log.join("\n"))) {
+        Ok(_) => panic!("wrong han/fu payment should reject"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.kind(), ErrorKind::InvalidData);
+    assert!(err.to_string().contains("points do not match"));
+}
+
+#[test]
+fn load_game_from_reader_accepts_hora_han_fu_point_match() {
+    let log = [
+        r#"{"type":"start_game","names":["a","b","c","d"]}"#,
+        r#"{"type":"start_kyoku","bakaze":"E","kyoku":1,"honba":0,"kyotaku":0,"oya":0,"scores":[25000,25000,25000,25000],"dora_marker":"1m","tehais":[["1m","2m","3m","4m","5m","6m","7m","8m","9m","1p","2p","3p","4p"],["1s","2s","3s","4s","5s","6s","7s","8s","9s","E","S","W","N"],["1m","1m","2m","2m","3m","3m","4m","4m","5m","5m","6m","6m","7m"],["1p","1p","2p","2p","3p","3p","4p","4p","5p","5p","6p","6p","7p"]]}"#,
+        r#"{"type":"dahai","actor":0,"pai":"4p","tsumogiri":false}"#,
+        r#"{"type":"hora","actor":1,"target":0,"pai":"4p","fu":30,"han":1,"deltas":[-1000,1000,0,0]}"#,
+    ];
+
+    let game = load_game_from_reader(Cursor::new(log.join("\n"))).expect("valid terminal payment");
+
+    assert!(!game.samples.is_empty());
+    assert_eq!(game.final_scores, [24_000, 26_000, 25_000, 25_000]);
 }
 
 #[test]

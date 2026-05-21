@@ -5,7 +5,7 @@ use hydra_bc_shards::{BcShardManifest, BcShardSplitMode, read_bc_shard_manifest}
 use hydra_replay_loader::mjai_loader::SidecarProvenance;
 use hydra_replay_sidecar::{DeltaQSidecarIndex, ExitSidecarIndex};
 use hydra_train_exec::bc_shard_builder::{
-    BcShardBuildOutput, BuildBcShardsConfig, build_bc_shards,
+    BcShardBuildOutput, BcShardBuildReport, BuildBcShardsConfig, build_bc_shards,
 };
 use hydra_train_exec::data_pipeline::scan_data_sources_with_progress;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -314,6 +314,23 @@ fn summary(output: &BcShardBuildOutput) -> String {
     )
 }
 
+fn format_optional_rate(value: Option<f64>) -> String {
+    value
+        .filter(|value| value.is_finite())
+        .map_or_else(|| "n/a".to_string(), |value| format!("{value:.2}"))
+}
+
+fn throughput_summary(report: &BcShardBuildReport) -> String {
+    format!(
+        "Throughput: elapsed={:.2}s games/s={} samples/s={:.2} input_mib/s={} output_mib/s={:.2}",
+        report.elapsed_seconds,
+        format_optional_rate(report.rates.games_per_second),
+        report.rates.samples_per_second,
+        format_optional_rate(report.rates.input_mib_per_second),
+        report.rates.output_mib_per_second,
+    )
+}
+
 fn validate_manifest_summary(manifest: &BcShardManifest) -> String {
     let mut out = format!(
         "Valid BC shard manifest: storage_layout={} manifest_version={} shard_version={} layout_version={} split_mode={} total_samples={} total_shards={} train_fraction={}",
@@ -439,6 +456,9 @@ fn run() -> Result<(), String> {
         scan.sources.len(),
         scan.total_games
     );
+    if let Some(report) = output.report.as_ref() {
+        println!("{}", throughput_summary(report));
+    }
     Ok(())
 }
 

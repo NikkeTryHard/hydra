@@ -132,7 +132,7 @@ fn parse_args_rejects_bad_values_and_unknown_flags() {
 fn path_classifiers_and_error_summary_match_expected_suffix_rules() {
     assert_eq!(
         usage("audit-bin"),
-        "Usage: audit-bin <data-dir> [--threads N] [--failure-examples N] [--failure-inventory-dir DIR]"
+        "Usage: audit-bin <data-dir> [--threads N] [--failure-examples N] [--failure-inventory-dir DIR] [--debug-first-failure]"
     );
 
     assert!(is_archive_file(Path::new("dataset.tar.zst")));
@@ -442,6 +442,7 @@ fn archive_mode_ignores_non_mjai_entries_and_caps_failure_examples() {
         threads: 1,
         failure_examples: 1,
         failure_inventory_dir: None,
+        debug_first_failure: false,
     };
     let state = AuditSharedState::default();
     audit_archive_source(&path, &config, &state, &mut None).expect("archive audit should work");
@@ -534,6 +535,7 @@ fn audit_source_persists_failure_inventory_for_loose_file_and_archive_entries() 
         threads: 2,
         failure_examples: 10,
         failure_inventory_dir: Some(inventory_dir.clone()),
+        debug_first_failure: false,
     };
     let state = AuditSharedState::default();
 
@@ -579,6 +581,7 @@ fn audit_source_keeps_clean_sources_artifact_free() {
         threads: 2,
         failure_examples: 10,
         failure_inventory_dir: Some(inventory_dir.clone()),
+        debug_first_failure: false,
     };
     let state = AuditSharedState::default();
 

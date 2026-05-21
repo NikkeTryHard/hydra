@@ -23,6 +23,6 @@ pub use manifest::{
 };
 pub use reader::{BcShardReader, load_bc_shard_reader, read_bc_shard_manifest};
 pub use writer::{
-    ActiveShardWriter, SplitBuildState, rewrite_shard_header_for_descriptor, write_sample_record,
-    write_shard_header,
+    ActiveShardWriter, SplitBuildState, encode_sample_records, rewrite_shard_header_for_descriptor,
+    write_sample_record, write_shard_header,
 };

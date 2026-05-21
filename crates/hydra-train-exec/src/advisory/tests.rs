@@ -99,12 +99,20 @@ fn startup_advisories_report_cpu_with_cuda_available_when_detected() {
         startup_runtime_advisories(&config, MicrobatchExplicitness::from_config(&config));
     let keys = keys(&advisories);
 
-    if tch::Cuda::device_count() > 0 {
+    if cuda_device_count() > 0 {
         let advisory = advisory(&advisories, "cpu_device_with_cuda_available");
         assert_eq!(advisory.severity, AdvisorySeverity::Warning);
         assert!(advisory.message.contains("CPU training is super slow"));
-        assert!(advisory.message.contains("model forward/backward/optimizer/H2D"));
-        assert!(advisory.message.contains("materialization still runs on CPU"));
+        assert!(
+            advisory
+                .message
+                .contains("model forward/backward/optimizer/H2D")
+        );
+        assert!(
+            advisory
+                .message
+                .contains("materialization still runs on CPU")
+        );
     } else {
         assert!(keys.contains(&"cpu_device_for_training"));
     }

@@ -304,6 +304,39 @@ fn replay_kakan_removes_matching_tile_class_from_hand() {
 }
 
 #[test]
+fn replay_ankan_matching_open_pon_applies_as_kakan() {
+    let rule = GameRule::default_tenhou();
+    let mut state = GameState::new(0, true, Some(7), 0, rule);
+    state.players[0].reset_round();
+    state.players[0].push_hand(7);
+    state.players[0].push_hand(40);
+    state.players[0].hand_slice_mut().sort();
+    state.players[0].push_meld(Meld::new(MeldType::Pon, &[4, 5, 6], true, 1, Some(4)));
+
+    state.apply_mjai_event(MjaiEvent::Ankan {
+        actor: 0,
+        consumed: vec![
+            "2m".to_string(),
+            "2m".to_string(),
+            "2m".to_string(),
+            "2m".to_string(),
+        ],
+    });
+
+    assert_eq!(state.players[0].hand_slice(), &[40]);
+    assert_eq!(state.players[0].meld_count, 1);
+    assert_eq!(state.players[0].melds_slice()[0].meld_type, MeldType::Kakan);
+    assert_eq!(
+        state.players[0].melds_slice()[0].tiles_slice(),
+        &[4, 5, 6, 7]
+    );
+    assert_eq!(state.last_discard, Some((0, 4)));
+    assert_eq!(state.current_player, 0);
+    assert!(state.needs_tsumo);
+    assert!(state.is_after_kan);
+}
+
+#[test]
 fn replay_start_kyoku_assigns_unique_tile_ids_for_duplicate_plain_tiles() {
     let rule = GameRule::default_tenhou();
     let mut state = GameState::new(0, true, Some(7), 0, rule);
@@ -403,7 +436,7 @@ fn tsumo_and_dahai_update_turn_state_and_discards() {
     });
 
     assert_eq!(state.current_player, 2);
-    assert_eq!(state.drawn_tile, Some(parse_mjai_tile("6m")));
+    assert_eq!(state.drawn_tile, Some(parse_mjai_tile("6m").unwrap()));
     assert_eq!(state.players[2].hand_len, hand_len_before + 1);
     assert!(!state.needs_tsumo);
 
@@ -416,7 +449,10 @@ fn tsumo_and_dahai_update_turn_state_and_discards() {
 
     assert_eq!(state.drawn_tile, None);
     assert!(state.needs_tsumo);
-    assert_eq!(state.last_discard, Some((2, parse_mjai_tile("6m"))));
+    assert_eq!(
+        state.last_discard,
+        Some((2, parse_mjai_tile("6m").unwrap()))
+    );
     assert_eq!(state.players[2].discard_len, 1);
     assert!(state.players[2].riichi_declared);
 }
@@ -481,7 +517,7 @@ fn replay_tsumo_prefers_a_hand_unique_non_red_copy_for_plain_tiles() {
         ],
     ]));
 
-    let existing_4p = parse_mjai_tile("4p");
+    let existing_4p = parse_mjai_tile("4p").unwrap();
     assert!(state.players[0].hand_slice().contains(&existing_4p));
 
     state.apply_mjai_event(MjaiEvent::Tsumo {
@@ -544,7 +580,7 @@ fn replay_dahai_clears_riichi_stage_after_declared_discard() {
 
     state.apply_mjai_event(MjaiEvent::Dahai {
         actor: 2,
-        pai: "6m".to_string(),
+        pai: "5m".to_string(),
         tsumogiri: false,
     });
 
@@ -615,8 +651,8 @@ fn replay_chi_sets_kuikae_forbidden_discards() {
     });
 
     let forbidden = state.players[1].forbidden_slice();
-    assert!(forbidden.contains(&parse_mjai_tile("1m")));
-    assert!(forbidden.contains(&parse_mjai_tile("4m")));
+    assert!(forbidden.contains(&parse_mjai_tile("1m").unwrap()));
+    assert!(forbidden.contains(&parse_mjai_tile("4m").unwrap()));
     assert_eq!(state.phase, Phase::WaitAct);
     assert_eq!(state.active_player_slice(), &[1]);
 }
@@ -1162,6 +1198,41 @@ fn no_tile_applies_nagashi_mangan_and_accepts_pending_riichi() {
     assert_eq!(state.riichi_pending_acceptance, None);
     assert_eq!(state.riichi_sticks, 1);
     assert!(state.is_done);
+}
+
+#[test]
+fn try_apply_mjai_event_rejects_missing_discard_tile() {
+    let rule = GameRule::default_tenhou();
+    let mut state = GameState::new(0, true, Some(7), 0, rule);
+    state.apply_mjai_event(start_kyoku_event());
+
+    let err = state
+        .try_apply_mjai_event(MjaiEvent::Dahai {
+            actor: 2,
+            pai: "6m".to_string(),
+            tsumogiri: false,
+        })
+        .expect_err("discarding absent tile should reject");
+
+    assert!(err.to_string().contains("tile missing from hand"));
+}
+
+#[test]
+fn try_apply_mjai_event_rejects_kakan_without_upgrade_tile() {
+    let rule = GameRule::default_tenhou();
+    let mut state = GameState::new(0, true, Some(7), 0, rule);
+    state.apply_mjai_event(start_kyoku_event());
+    state.players[0].reset_round();
+    state.players[0].push_meld(Meld::new(MeldType::Pon, &[4, 5, 6], true, 1, Some(4)));
+
+    let err = state
+        .try_apply_mjai_event(MjaiEvent::Kakan {
+            actor: 0,
+            pai: "2m".to_string(),
+        })
+        .expect_err("kakan without fourth hand tile should reject");
+
+    assert!(err.to_string().contains("upgrade tile"));
 }
 
 #[test]

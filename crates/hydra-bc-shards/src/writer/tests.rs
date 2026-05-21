@@ -388,6 +388,42 @@ fn compact_record_size_constant_matches_written_bytes() {
 }
 
 #[test]
+fn encode_sample_records_matches_sequential_writer_bytes() {
+    let samples = vec![dummy_sample(), dummy_sample(), dummy_sample()];
+    let flags = FLAG_SAFETY_RESIDUAL | FLAG_EXIT;
+    let mut expected = Vec::new();
+    for sample in &samples {
+        write_sample_record(&mut expected, sample, flags).expect("sample write should succeed");
+    }
+
+    let encoded = encode_sample_records(&samples, flags, record_size_for_flags(flags))
+        .expect("parallel-path sample encoding should succeed");
+
+    assert_eq!(encoded, expected);
+}
+
+#[test]
+fn active_shard_writer_rejects_misaligned_encoded_records() {
+    let output_dir = temp_output_dir("encoded-record-size");
+    let mut writer = ActiveShardWriter::new_named(
+        &output_dir,
+        BcShardSplit::Train,
+        0,
+        0,
+        FLAG_SAFETY_RESIDUAL,
+        "train-00000.hydra-bc".to_string(),
+    )
+    .expect("writer should open");
+
+    let err = writer
+        .write_encoded_records(&[0; 3], 1)
+        .expect_err("misaligned encoded bytes should reject");
+
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    assert!(err.to_string().contains("invalid byte length"));
+}
+
+#[test]
 fn compact_record_accepts_non_binary_metadata_scalars_and_matches_size() {
     let mut sample = dummy_sample();
     set_non_binary_metadata_scalars(&mut sample.obs);

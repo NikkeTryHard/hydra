@@ -250,6 +250,33 @@ fn parallel_loose_build_matches_serial_manifest_counts() {
 }
 
 #[test]
+fn build_bc_shards_retains_report_when_report_file_disabled() {
+    let input_dir = test_dir("retained-report-input");
+    let paths = vec![write_replay(&input_dir, "a.mjai")];
+    let output_dir = test_dir("retained-report-output");
+    let built = build_bc_shards(&BuildBcShardsConfig {
+        report_name: None,
+        num_threads: Some(1),
+        ..base_config(&input_dir, &output_dir, &paths)
+    })
+    .expect("build without report file should pass");
+
+    assert!(built.report_path.is_none());
+    let report = built
+        .report
+        .as_ref()
+        .expect("report should still be retained");
+    assert_eq!(
+        report.build.total_samples,
+        built.manifest.totals.sample_count
+    );
+    assert!(report.rates.games_per_second.is_some());
+    assert!(report.rates.samples_per_second.is_finite());
+    assert!(report.rates.output_mib_per_second.is_finite());
+    assert!(report.rates.input_mib_per_second.is_some());
+}
+
+#[test]
 fn bounded_loose_fixture_decodes_metadata_without_dense_tail() {
     let input_dir = test_dir("bounded-input");
     let paths = vec![write_replay(&input_dir, "bounded.mjai")];

@@ -25,16 +25,18 @@ use hydra_replay_sidecar::{
 use riichienv_core::action::{Action as EngineAction, ActionType, Phase};
 use riichienv_core::observation::Observation;
 use riichienv_core::parser::mjai_to_tid;
-use riichienv_core::replay::{MjaiEvent, mjai_event_actor, mjai_event_to_action, read_mjai_events};
+use riichienv_core::replay::{MjaiEvent, mjai_event_actor, read_mjai_events};
 use riichienv_core::rule::GameRule;
 use riichienv_core::state::GameState;
 use std::array;
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use zstd::stream::read::Decoder as ZstdDecoder;
 
@@ -465,14 +467,12 @@ pub fn next_discards_after(events: &[MjaiEvent]) -> io::Result<Vec<[Option<u8>; 
     Ok(out)
 }
 
-pub fn final_scores(events: &[MjaiEvent]) -> [i32; 4] {
+pub fn final_scores(events: &[MjaiEvent]) -> io::Result<[i32; 4]> {
     let mut scores = [25_000; 4];
     for event in events {
         match event {
             MjaiEvent::StartKyoku { scores: round, .. } => {
-                for (dst, src) in scores.iter_mut().zip(round.iter().copied()) {
-                    *dst = src;
-                }
+                copy_score_vec(round, "start_kyoku scores", &mut scores)?;
             }
             MjaiEvent::ReachAccepted { actor } => {
                 scores[*actor] -= 1_000;
@@ -485,9 +485,7 @@ pub fn final_scores(events: &[MjaiEvent]) -> [i32; 4] {
                 scores: Some(after),
                 ..
             } => {
-                for (dst, src) in scores.iter_mut().zip(after.iter().copied()) {
-                    *dst = src;
-                }
+                copy_score_vec(after, "terminal scores", &mut scores)?;
             }
             MjaiEvent::Hora {
                 delta: Some(delta), ..
@@ -495,14 +493,172 @@ pub fn final_scores(events: &[MjaiEvent]) -> [i32; 4] {
             | MjaiEvent::Ryukyoku {
                 delta: Some(delta), ..
             } => {
-                for (dst, src) in scores.iter_mut().zip(delta.iter().copied()) {
-                    *dst += src;
-                }
+                apply_score_delta(delta, "terminal delta", &mut scores)?;
             }
             _ => {}
         }
     }
-    scores
+    Ok(scores)
+}
+
+fn copy_score_vec(src: &[i32], context: &str, dst: &mut [i32; 4]) -> io::Result<()> {
+    let values = score_vec4(src, context)?;
+    *dst = values;
+    Ok(())
+}
+
+fn apply_score_delta(delta: &[i32], context: &str, scores: &mut [i32; 4]) -> io::Result<()> {
+    let values = score_vec4(delta, context)?;
+    for (score, delta) in scores.iter_mut().zip(values) {
+        *score += delta;
+    }
+    Ok(())
+}
+
+fn score_vec4(values: &[i32], context: &str) -> io::Result<[i32; 4]> {
+    let [a, b, c, d] = values else {
+        return Err(invalid_data(format!("{context} must contain four scores")));
+    };
+    Ok([*a, *b, *c, *d])
+}
+
+struct HoraTerminalFields<'a> {
+    actor: usize,
+    target: usize,
+    pai: Option<&'a str>,
+    fu: Option<u32>,
+    han: Option<u32>,
+    scores: Option<&'a [i32]>,
+    delta: Option<&'a [i32]>,
+}
+
+fn validate_terminal_event(event: &MjaiEvent, state: &GameState) -> io::Result<()> {
+    match event {
+        MjaiEvent::Hora {
+            actor,
+            target,
+            pai,
+            fu,
+            han,
+            scores,
+            delta,
+            ..
+        } => validate_hora_terminal(
+            HoraTerminalFields {
+                actor: *actor,
+                target: *target,
+                pai: pai.as_deref(),
+                fu: *fu,
+                han: *han,
+                scores: scores.as_deref(),
+                delta: delta.as_deref(),
+            },
+            state,
+        ),
+        MjaiEvent::Ryukyoku { scores, delta, .. } => {
+            validate_terminal_score_fields(scores.as_deref(), delta.as_deref(), state, "ryukyoku")
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_hora_terminal(fields: HoraTerminalFields<'_>, state: &GameState) -> io::Result<()> {
+    if fields.actor >= 4 || fields.target >= 4 {
+        return Err(invalid_data("hora actor/target out of range"));
+    }
+
+    validate_terminal_score_fields(fields.scores, fields.delta, state, "hora")?;
+
+    if let Some(pai) = fields.pai {
+        mjai_tile(pai)?;
+    }
+
+    if let (Some(fu), Some(han), Some(delta)) = (fields.fu, fields.han, fields.delta) {
+        validate_hora_point_delta(fields.actor, fields.target, fu, han, delta, state)?;
+    }
+
+    Ok(())
+}
+
+fn validate_terminal_score_fields(
+    scores: Option<&[i32]>,
+    delta: Option<&[i32]>,
+    state: &GameState,
+    context: &str,
+) -> io::Result<()> {
+    let before = current_scores(state);
+    match (scores, delta) {
+        (Some(scores), Some(delta)) => {
+            let scores = score_vec4(scores, &format!("{context} scores"))?;
+            let delta = score_vec4(delta, &format!("{context} delta"))?;
+            for idx in 0..4 {
+                if before[idx] + delta[idx] != scores[idx] {
+                    return Err(invalid_data(format!("{context} scores do not match delta")));
+                }
+            }
+        }
+        (Some(scores), None) => {
+            score_vec4(scores, &format!("{context} scores"))?;
+        }
+        (None, Some(delta)) => {
+            score_vec4(delta, &format!("{context} delta"))?;
+        }
+        (None, None) => {}
+    }
+    Ok(())
+}
+
+fn current_scores(state: &GameState) -> [i32; 4] {
+    [
+        state.players[0].score,
+        state.players[1].score,
+        state.players[2].score,
+        state.players[3].score,
+    ]
+}
+
+fn validate_hora_point_delta(
+    actor: usize,
+    target: usize,
+    fu: u32,
+    han: u32,
+    delta: &[i32],
+    state: &GameState,
+) -> io::Result<()> {
+    if han == 0 || han > u8::MAX as u32 || fu > u8::MAX as u32 {
+        return Ok(());
+    }
+    if state.honba != 0 || state.riichi_sticks != 0 || state.riichi_pending_acceptance.is_some() {
+        return Ok(());
+    }
+    let delta = score_vec4(delta, "hora delta")?;
+    let is_tsumo = actor == target;
+    let score = riichienv_core::score::calculate_score(
+        han as u8,
+        fu as u8,
+        actor as u8 == state.oya,
+        is_tsumo,
+        0,
+        4,
+    );
+    if is_tsumo {
+        for (seat, &seat_delta) in delta.iter().enumerate() {
+            if seat == actor {
+                continue;
+            }
+            let expected = if actor as u8 == state.oya || seat as u8 != state.oya {
+                score.pay_tsumo_ko
+            } else {
+                score.pay_tsumo_oya
+            } as i32;
+            if seat_delta != -expected {
+                return Err(invalid_data("hora tsumo points do not match han/fu"));
+            }
+        }
+    } else if delta[target] != -(score.pay_ron as i32) {
+        return Err(invalid_data("hora ron points do not match han/fu"));
+    }
+    Ok(())
 }
 
 pub fn should_sample_replay_event(event: &MjaiEvent) -> bool {
@@ -960,20 +1116,26 @@ fn prepare_implicit_pass_decisions(
         return Ok(decisions);
     }
 
-    if !matches!(
-        next_event,
+    match next_event {
+        MjaiEvent::Other => {
+            return Err(invalid_data(
+                "unsupported MJAI event type during response window",
+            ));
+        }
         MjaiEvent::Dahai { .. }
-            | MjaiEvent::Pon { .. }
-            | MjaiEvent::Chi { .. }
-            | MjaiEvent::Kan { .. }
-            | MjaiEvent::Ankan { .. }
-            | MjaiEvent::Kakan { .. }
-            | MjaiEvent::Reach { .. }
-            | MjaiEvent::Hora { .. }
-    ) {
-        state.resolve_replay_all_passes();
-        REPLAY_IMPLICIT_PASS_NS.fetch_add(t_pass.elapsed().as_nanos() as u64, Ordering::Relaxed);
-        return Ok(decisions);
+        | MjaiEvent::Pon { .. }
+        | MjaiEvent::Chi { .. }
+        | MjaiEvent::Kan { .. }
+        | MjaiEvent::Ankan { .. }
+        | MjaiEvent::Kakan { .. }
+        | MjaiEvent::Reach { .. }
+        | MjaiEvent::Hora { .. } => {}
+        _ => {
+            state.resolve_replay_all_passes();
+            REPLAY_IMPLICIT_PASS_NS
+                .fetch_add(t_pass.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            return Ok(decisions);
+        }
     }
 
     let responding_actor = mjai_event_actor(next_event)
@@ -1080,7 +1242,8 @@ fn prepare_replay_decisions_with_options(
         return Ok(decisions);
     }
 
-    let env_action = mjai_event_to_action(event)
+    let env_action = state
+        .replay_action_for_mjai_event(event)
         .map_err(|err| invalid_data(format!("replay action conversion failed: {err}")))?;
     let (Some(actor), Some(env_action)) = (mjai_event_actor(event), env_action) else {
         return Ok(decisions);
@@ -1219,7 +1382,7 @@ fn load_game_from_events_into_sink<S: ReplaySampleSink>(
 ) -> io::Result<[i32; 4]> {
     let mut stats = ReplayProfileStats::default();
     let t_precompute = Instant::now();
-    let final_scores = final_scores(&events);
+    let final_scores = final_scores(&events)?;
     let placements = score_to_placements(final_scores);
     let oracle_target = profile
         .oracle
@@ -1240,6 +1403,10 @@ fn load_game_from_events_into_sink<S: ReplaySampleSink>(
     let decision_options = ReplayDecisionOptions {
         observation_profile,
     };
+
+    if events.iter().any(|event| matches!(event, MjaiEvent::Other)) {
+        return Err(invalid_data("unsupported MJAI event type"));
+    }
 
     for (idx, event) in events.iter().enumerate() {
         stats.event_count += 1;
@@ -1376,8 +1543,11 @@ fn load_game_from_events_into_sink<S: ReplaySampleSink>(
         let t_update = Instant::now();
         update_safety(&mut safety, event)?;
         stats.update_safety_ns += t_update.elapsed().as_nanos();
+        validate_terminal_event(event, &state)?;
         let t_apply = Instant::now();
-        state.apply_mjai_event(event.clone());
+        state
+            .try_apply_mjai_event(event.clone())
+            .map_err(|err| invalid_data(format!("replay state update failed: {err}")))?;
         stats.apply_event_ns += t_apply.elapsed().as_nanos();
     }
 
@@ -1519,7 +1689,7 @@ pub fn debug_first_replay_failure_from_reader<R: BufRead>(reader: R) -> io::Resu
             Ok(_) => {}
             Err(err) => {
                 let actor = mjai_event_actor(event).map(|actor| actor as u8);
-                let env_action = mjai_event_to_action(event).map_err(|conv| {
+                let env_action = state.replay_action_for_mjai_event(event).map_err(|conv| {
                     invalid_data(format!("replay action conversion failed: {conv}"))
                 })?;
                 let legal_actions = if let Some(actor) = actor {
@@ -1543,7 +1713,18 @@ pub fn debug_first_replay_failure_from_reader<R: BufRead>(reader: R) -> io::Resu
         }
 
         update_safety(&mut safety, event)?;
-        state.apply_mjai_event(event.clone());
+        if let Err(err) = validate_terminal_event(event, &state) {
+            return Ok(Some(format!(
+                "EVENT_INDEX: {idx}\nEVENT: {:?}\nSTATE_PHASE: {:?}\nSTATE_DRAWN: {:?}\nLAST_DISCARD: {:?}\nERROR: {}",
+                event, state.phase, state.drawn_tile, state.last_discard, err
+            )));
+        }
+        if let Err(err) = state.try_apply_mjai_event(event.clone()) {
+            return Ok(Some(format!(
+                "EVENT_INDEX: {idx}\nEVENT: {:?}\nERROR: replay state update failed: {}",
+                event, err
+            )));
+        }
     }
 
     Ok(None)
@@ -1700,16 +1881,16 @@ enum StreamCompression {
 
 struct TimedRead<R> {
     inner: R,
-    elapsed_ns: Arc<AtomicU64>,
+    elapsed_ns: Rc<Cell<u64>>,
 }
 
 impl<R> TimedRead<R> {
-    fn new(inner: R) -> (Self, Arc<AtomicU64>) {
-        let elapsed_ns = Arc::new(AtomicU64::new(0));
+    fn new(inner: R) -> (Self, Rc<Cell<u64>>) {
+        let elapsed_ns = Rc::new(Cell::new(0));
         (
             Self {
                 inner,
-                elapsed_ns: Arc::clone(&elapsed_ns),
+                elapsed_ns: Rc::clone(&elapsed_ns),
             },
             elapsed_ns,
         )
@@ -1721,11 +1902,8 @@ impl<R: Read> Read for TimedRead<R> {
         let start = Instant::now();
         let result = self.inner.read(buf);
         let elapsed = start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
-        let _ = self
-            .elapsed_ns
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                Some(current.saturating_add(elapsed))
-            });
+        self.elapsed_ns
+            .set(self.elapsed_ns.get().saturating_add(elapsed));
         result
     }
 }
@@ -1745,12 +1923,12 @@ fn inspect_stream_compression<R: BufRead>(reader: &mut R) -> io::Result<StreamCo
 
 fn record_decompression_result<T>(
     result: &io::Result<T>,
-    elapsed_ns: &AtomicU64,
+    elapsed_ns: &Cell<u64>,
     compression: StreamCompression,
 ) {
     if result.is_ok() && !matches!(compression, StreamCompression::Plain) {
         record_replay_materialization_stats(ReplayMaterializationStats {
-            decompress_ns: u128::from(elapsed_ns.load(Ordering::Relaxed)),
+            decompress_ns: u128::from(elapsed_ns.get()),
             ..ReplayMaterializationStats::default()
         });
     }

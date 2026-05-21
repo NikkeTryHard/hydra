@@ -11,7 +11,7 @@ use crate::parser::mjai_to_tid;
 
 use serde::{Deserialize, Serialize};
 
-fn parse_mjai_tile_checked(tile: &str) -> RiichiResult<u8> {
+pub fn parse_mjai_tile_checked(tile: &str) -> RiichiResult<u8> {
     mjai_to_tid(tile).ok_or_else(|| RiichiError::Parse {
         input: tile.to_string(),
         message: "invalid MJAI tile".to_string(),

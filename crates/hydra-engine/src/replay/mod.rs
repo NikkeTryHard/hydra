@@ -14,7 +14,8 @@ pub mod mjai_replay;
 pub mod mjsoul_replay;
 
 pub use mjai_replay::{
-    load_mjai_events_from_path, mjai_event_actor, mjai_event_to_action, read_mjai_events, MjaiEvent,
+    load_mjai_events_from_path, mjai_event_actor, mjai_event_to_action, parse_mjai_tile_checked,
+    read_mjai_events, MjaiEvent,
 };
 
 #[derive(Clone, Debug)]

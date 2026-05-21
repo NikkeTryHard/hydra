@@ -182,6 +182,21 @@ impl ActiveShardWriter {
         Ok(())
     }
 
+    /// Writes already-validated compact records into the active shard.
+    pub fn write_encoded_records(&mut self, records: &[u8], sample_count: usize) -> io::Result<()> {
+        let expected_len = sample_count
+            .checked_mul(self.record_size as usize)
+            .ok_or_else(|| invalid_data("encoded BC shard record byte count overflow"))?;
+        if records.len() != expected_len {
+            return Err(invalid_data(
+                "encoded BC shard records have invalid byte length",
+            ));
+        }
+        self.writer.write_all(records)?;
+        self.sample_count += sample_count as u64;
+        Ok(())
+    }
+
     /// Finishes the shard and returns its descriptor.
     pub fn finish(mut self) -> io::Result<BcShardDescriptor> {
         self.writer.flush()?;
@@ -320,6 +335,25 @@ pub fn write_sample_record<W: Write>(
         )?;
     }
     Ok(())
+}
+
+/// Encodes compact BC shard sample records into caller-owned bytes.
+pub fn encode_sample_records(
+    samples: &[MjaiSample],
+    flags: u32,
+    record_size: u32,
+) -> io::Result<Vec<u8>> {
+    validate_feature_flags(flags).map_err(invalid_data)?;
+    let checked = checked_compact_record_size(flags).map_err(invalid_data)?;
+    if record_size_for_flags(flags) != checked || record_size != checked {
+        return Err(invalid_data("BC shard compact record-size helper mismatch"));
+    }
+    let record_size = record_size as usize;
+    let mut records = vec![0u8; samples.len().saturating_mul(record_size)];
+    for (sample, dst) in samples.iter().zip(records.chunks_exact_mut(record_size)) {
+        write_sample_record(&mut &mut *dst, sample, flags)?;
+    }
+    Ok(records)
 }
 
 fn write_compact_obs<W: Write>(writer: &mut W, sample: &MjaiSample) -> io::Result<()> {

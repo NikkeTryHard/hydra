@@ -52,19 +52,48 @@ fn helper_methods_manage_active_players_and_claims() {
 }
 
 #[test]
-fn replay_ankan_matcher_accepts_same_tile_class_with_different_copy_ids() {
-    let legal = Action::new(ActionType::Ankan, Some(16), &[16, 17, 18, 19], Some(0));
-    let replay = Action::new(ActionType::Ankan, Some(17), &[17, 17, 17, 17], Some(0));
+fn replay_ankan_event_matching_open_pon_becomes_kakan_action() {
+    let mut state = fresh_state();
+    state.players[0].reset_round();
+    state.players[0].push_hand(7);
+    state.players[0].push_meld(Meld::new(MeldType::Pon, &[4, 5, 6], true, 1, Some(4)));
 
-    assert!(GameState::replay_action_matches_legal(&legal, &replay));
+    let action = state
+        .replay_action_for_mjai_event(&MjaiEvent::Ankan {
+            actor: 0,
+            consumed: vec![
+                "2m".to_string(),
+                "2m".to_string(),
+                "2m".to_string(),
+                "2m".to_string(),
+            ],
+        })
+        .expect("convert replay action")
+        .expect("actionable event");
+
+    assert_eq!(action.action_type, ActionType::Kakan);
+    assert_eq!(action.tile, Some(4));
+    assert_eq!(action.consume_count, 0);
 }
 
 #[test]
-fn replay_kakan_matcher_accepts_same_tile_class_with_different_copy_ids() {
-    let legal = Action::new(ActionType::Kakan, Some(16), &[16, 17, 18], Some(0));
-    let replay = Action::new(ActionType::Kakan, Some(17), &[], Some(0));
+fn replay_kakan_event_without_open_pon_becomes_ankan_action() {
+    let mut state = fresh_state();
+    state.players[0].reset_round();
+    for tile in [32, 33, 34, 35] {
+        state.players[0].push_hand(tile);
+    }
 
-    assert!(GameState::replay_action_matches_legal(&legal, &replay));
+    let action = state
+        .replay_action_for_mjai_event(&MjaiEvent::Kakan {
+            actor: 0,
+            pai: "9m".to_string(),
+        })
+        .expect("convert replay action")
+        .expect("actionable event");
+
+    assert_eq!(action.action_type, ActionType::Ankan);
+    assert_eq!(action.consume_slice(), &[32, 33, 34, 35]);
 }
 
 #[test]
@@ -105,7 +134,7 @@ fn replay_kan_matcher_rejects_different_tile_classes() {
 }
 
 #[test]
-fn replay_matcher_accepts_context_implied_actions_and_kans_with_matching_consumes() {
+fn replay_matcher_accepts_context_implied_actions_but_rejects_conflicting_kan_tiles() {
     let legal_riichi = Action::new(ActionType::Riichi, Some(16), &[], Some(0));
     let replay_riichi = Action::new(ActionType::Riichi, None, &[], Some(0));
     assert!(GameState::replay_action_matches_legal(
@@ -122,9 +151,16 @@ fn replay_matcher_accepts_context_implied_actions_and_kans_with_matching_consume
 
     let legal_ankan = Action::new(ActionType::Ankan, Some(16), &[16, 17, 18, 19], Some(0));
     let replay_ankan = Action::new(ActionType::Ankan, Some(99), &[16, 17, 18, 19], Some(0));
-    assert!(GameState::replay_action_matches_legal(
+    assert!(!GameState::replay_action_matches_legal(
         &legal_ankan,
         &replay_ankan
+    ));
+
+    let legal_kakan = Action::new(ActionType::Kakan, Some(16), &[17, 18, 19], Some(0));
+    let replay_kakan = Action::new(ActionType::Kakan, Some(64), &[17, 18, 19], Some(0));
+    assert!(!GameState::replay_action_matches_legal(
+        &legal_kakan,
+        &replay_kakan
     ));
 }
 
@@ -1127,7 +1163,7 @@ fn replay_observation_accepts_sparse_kakan_action_when_drawn_tile_matches() {
 }
 
 #[test]
-fn replay_matcher_accepts_context_implied_tile_less_actions_and_consume_matched_kan_upgrades() {
+fn replay_matcher_accepts_context_implied_tile_less_actions() {
     let legal_tsumo = Action::new(ActionType::Tsumo, Some(48), &[], Some(0));
     let replay_tsumo = Action::new(ActionType::Tsumo, None, &[], Some(0));
     assert!(GameState::replay_action_matches_legal(
@@ -1140,13 +1176,6 @@ fn replay_matcher_accepts_context_implied_tile_less_actions_and_consume_matched_
     assert!(GameState::replay_action_matches_legal(
         &legal_kyushu,
         &replay_kyushu
-    ));
-
-    let legal_kakan = Action::new(ActionType::Kakan, Some(16), &[17, 18, 19], Some(0));
-    let replay_kakan = Action::new(ActionType::Kakan, Some(64), &[17, 18, 19], Some(0));
-    assert!(GameState::replay_action_matches_legal(
-        &legal_kakan,
-        &replay_kakan
     ));
 
     let legal_discard = Action::new(ActionType::Discard, Some(16), &[], Some(0));
