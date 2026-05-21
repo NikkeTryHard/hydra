@@ -352,6 +352,30 @@ fn delta_q_warmup_detaches_backbone_input() {
 }
 
 #[test]
+fn forward_with_warmup_by_matches_slice_warmup() {
+    let device = Default::default();
+    let model = tiny_actor_config().init::<B>(&device);
+    let x = Tensor::<B, 3>::zeros([2, NUM_CHANNELS, 34], &device);
+    let policy = HydraForwardPolicy {
+        w_delta_q: 1.0,
+        ..Default::default()
+    };
+
+    let from_slice = model.forward_with_warmup(x.clone(), &policy, &[ModelAdvancedHead::DeltaQ]);
+    let from_predicate =
+        model.forward_with_warmup_by(x, &policy, |head| head == ModelAdvancedHead::DeltaQ);
+
+    assert_eq!(
+        from_slice.delta_q.to_data().as_slice::<f32>().expect("f32"),
+        from_predicate
+            .delta_q
+            .to_data()
+            .as_slice::<f32>()
+            .expect("f32")
+    );
+}
+
+#[test]
 fn active_delta_q_backprops_to_backbone_input() {
     let device = Default::default();
     let model = tiny_actor_config().init::<AB>(&device);
@@ -370,6 +394,24 @@ fn active_delta_q_backprops_to_backbone_input() {
         x.grad(&grads).is_some(),
         "active delta_q loss should backpropagate through the shared backbone"
     );
+}
+
+#[test]
+fn train_forward_omits_inactive_advanced_tensors() {
+    let device = Default::default();
+    let model = tiny_actor_config().init::<B>(&device);
+    let x = Tensor::<B, 3>::zeros([2, NUM_CHANNELS, 34], &device);
+    let policy = HydraForwardPolicy::default();
+
+    let out = model.forward_train_with_warmup_by(x, &policy, |_| false);
+
+    assert_eq!(out.policy_logits.dims(), [2, HYDRA_ACTION_SPACE]);
+    assert!(out.oracle_critic.is_none());
+    assert!(out.belief_fields.is_none());
+    assert!(out.mixture_weight_logits.is_none());
+    assert!(out.opponent_hand_type.is_none());
+    assert!(out.delta_q.is_none());
+    assert!(out.safety_residual.is_none());
 }
 
 #[test]

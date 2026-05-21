@@ -4,7 +4,10 @@ use burn::tensor::Int;
 use burn::tensor::TensorData;
 use hydra_train_types::losses::LossBreakdown;
 
-use super::{batch_stats_from_breakdown, batch_stats_from_outputs, scalar1};
+use super::{
+    batch_metric_sums_from_outputs, batch_stats_from_breakdown, batch_stats_from_metric_sums,
+    batch_stats_from_outputs, scalar1,
+};
 
 #[test]
 fn batch_stats_from_breakdown_maps_all_scalar_fields() {
@@ -215,6 +218,58 @@ fn metric_prediction_respects_legal_mask() {
     assert_eq!(stats.policy_agreement, 1.0);
     assert_eq!(stats.rare_actions.discard.count, 1);
     assert_eq!(stats.rare_actions.discard.accuracy, 1.0);
+}
+
+#[test]
+fn rare_action_metrics_accumulate_across_microbatches_on_device() {
+    type B = NdArray<f32>;
+
+    let device = Default::default();
+    let actions_all = Tensor::<B, 1, Int>::from_ints([37, 37, 45, 45], &device);
+    let logits_all = Tensor::<B, 2>::from_floats(
+        [
+            row_with_best(37),
+            row_with_best(0),
+            row_with_best(45),
+            row_with_best(0),
+        ],
+        &device,
+    );
+    let mask_all = Tensor::<B, 2>::ones([4, hydra_core::action::HYDRA_ACTION_SPACE], &device);
+    let breakdown = zero_breakdown::<B>(1.0);
+    let whole = batch_stats_from_outputs(
+        4,
+        logits_all,
+        mask_all,
+        actions_all,
+        breakdown.total.clone(),
+        &breakdown,
+    );
+
+    let first = batch_metric_sums_from_outputs(
+        2,
+        Tensor::<B, 2>::from_floats([row_with_best(37), row_with_best(0)], &device),
+        Tensor::<B, 2>::ones([2, hydra_core::action::HYDRA_ACTION_SPACE], &device),
+        Tensor::<B, 1, Int>::from_ints([37, 37], &device),
+        breakdown.total.clone(),
+        &breakdown,
+    );
+    let second = batch_metric_sums_from_outputs(
+        2,
+        Tensor::<B, 2>::from_floats([row_with_best(45), row_with_best(0)], &device),
+        Tensor::<B, 2>::ones([2, hydra_core::action::HYDRA_ACTION_SPACE], &device),
+        Tensor::<B, 1, Int>::from_ints([45, 45], &device),
+        breakdown.total.clone(),
+        &breakdown,
+    );
+    let accumulated = batch_stats_from_metric_sums(4, 2, first.accumulate(second));
+
+    assert_eq!(accumulated.policy_agreement, whole.policy_agreement);
+    assert_eq!(accumulated.rare_actions.riichi.count, 2);
+    assert_eq!(accumulated.rare_actions.riichi.accuracy, 0.5);
+    assert_eq!(accumulated.rare_actions.pass.count, 2);
+    assert_eq!(accumulated.rare_actions.pass.accuracy, 0.5);
+    assert_eq!(accumulated.rare_actions, whole.rare_actions);
 }
 
 fn scalar_tensor<B: burn::tensor::backend::Backend>(value: f32) -> burn::tensor::Tensor<B, 1> {

@@ -6,7 +6,7 @@
 
 pub use hydra_model::model::{
     ActorNet, HydraForwardPolicy, HydraModel, HydraModelConfig, HydraModelInit, HydraOutput,
-    LearnerNet, ModelAdvancedHead,
+    HydraTrainOutput, LearnerNet, ModelAdvancedHead,
 };
 
 use hydra_train_types::{head_gates::AdvancedHead, losses::HydraLossConfig};
@@ -56,6 +56,14 @@ pub trait HydraTrainModelExt<B: burn::prelude::Backend> {
         loss_cfg: &HydraLossConfig,
         warmup_heads: &[AdvancedHead],
     ) -> HydraOutput<B>;
+
+    /// Runs a train-only warmup-aware forward pass that omits inactive advanced tensors.
+    fn forward_train_with_warmup_train(
+        &self,
+        x: burn::prelude::Tensor<B, 3>,
+        loss_cfg: &HydraLossConfig,
+        warmup_heads: &[AdvancedHead],
+    ) -> HydraTrainOutput<B>;
 }
 
 impl<B: burn::prelude::Backend> HydraTrainModelExt<B> for HydraModel<B> {
@@ -73,15 +81,27 @@ impl<B: burn::prelude::Backend> HydraTrainModelExt<B> for HydraModel<B> {
         loss_cfg: &HydraLossConfig,
         warmup_heads: &[AdvancedHead],
     ) -> HydraOutput<B> {
-        let model_warmup_heads: Vec<ModelAdvancedHead> = warmup_heads
-            .iter()
-            .copied()
-            .map(model_head_from_train_head)
-            .collect();
-        self.forward_with_warmup(
-            x,
-            &forward_policy_from_loss_config(loss_cfg),
-            &model_warmup_heads,
-        )
+        let mut warmup_mask = 0u8;
+        for head in warmup_heads.iter().copied().map(model_head_from_train_head) {
+            warmup_mask |= 1 << head as u8;
+        }
+        self.forward_with_warmup_by(x, &forward_policy_from_loss_config(loss_cfg), |head| {
+            warmup_mask & (1 << head as u8) != 0
+        })
+    }
+
+    fn forward_train_with_warmup_train(
+        &self,
+        x: burn::prelude::Tensor<B, 3>,
+        loss_cfg: &HydraLossConfig,
+        warmup_heads: &[AdvancedHead],
+    ) -> HydraTrainOutput<B> {
+        let mut warmup_mask = 0u8;
+        for head in warmup_heads.iter().copied().map(model_head_from_train_head) {
+            warmup_mask |= 1 << head as u8;
+        }
+        self.forward_train_with_warmup_by(x, &forward_policy_from_loss_config(loss_cfg), |head| {
+            warmup_mask & (1 << head as u8) != 0
+        })
     }
 }

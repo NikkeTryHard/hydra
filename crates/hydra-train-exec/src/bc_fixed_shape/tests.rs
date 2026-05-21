@@ -970,7 +970,6 @@ fn assert_tensor_exact_eq<const D: usize>(
     assert_tensor_data_exact_eq(actual.to_data(), expected.to_data(), context);
 }
 
-#[cfg(feature = "cuda-graph")]
 fn assert_int_tensor_data_exact_eq(actual: TensorData, expected: TensorData, context: &str) {
     assert_eq!(
         actual.dtype, expected.dtype,
@@ -991,7 +990,6 @@ fn assert_int_tensor_data_exact_eq(actual: TensorData, expected: TensorData, con
     );
 }
 
-#[cfg(feature = "cuda-graph")]
 fn assert_int_tensor_exact_eq(
     actual: Tensor<LibTorch<f32>, 1, burn::tensor::Int>,
     expected: Tensor<LibTorch<f32>, 1, burn::tensor::Int>,
@@ -1013,7 +1011,6 @@ fn assert_optional_tensor_exact_eq<const D: usize>(
     }
 }
 
-#[cfg(feature = "cuda-graph")]
 fn assert_optional_tensor2_exact_eq(
     actual: Option<Tensor<LibTorch<f32>, 2>>,
     expected: Option<Tensor<LibTorch<f32>, 2>>,
@@ -1026,7 +1023,6 @@ fn assert_optional_tensor2_exact_eq(
     }
 }
 
-#[cfg(feature = "cuda-graph")]
 fn assert_target_presence_exact_eq(
     actual: Option<hydra_train_types::head_gates::TargetPresence>,
     expected: Option<hydra_train_types::head_gates::TargetPresence>,
@@ -1046,7 +1042,6 @@ fn assert_target_presence_exact_eq(
     );
 }
 
-#[cfg(feature = "cuda-graph")]
 fn assert_device_batch_exact_eq(
     actual: crate::epoch_runner::BcShardDeviceBatch<LibTorch<f32>>,
     expected: crate::epoch_runner::BcShardDeviceBatch<LibTorch<f32>>,
@@ -2476,6 +2471,10 @@ fn host_batch_row_semantics_are_explicit() {
         1
     );
     assert_eq!(
+        crate::epoch_runner::HostBatchRows::RawReplayIndexedAugment.rows_per_logical(),
+        1
+    );
+    assert_eq!(
         crate::epoch_runner::HostBatchRows::BcShardPhysical.rows_per_logical(),
         1
     );
@@ -2587,6 +2586,29 @@ fn pinned_transfer_staging_falls_back_for_cpu_device() {
         crate::pinned_transfer::PinnedTransferStaging::from_device(1, &LibTorchDevice::Cpu)
             .is_none()
     );
+}
+
+#[test]
+fn owned_host_batch_materialization_matches_borrowed() {
+    let device = LibTorchDevice::Cpu;
+    let samples = vec![
+        dummy_train_sample_with_optional_targets(3),
+        dummy_train_sample_with_optional_targets(7),
+        dummy_train_sample_with_optional_targets(11),
+    ];
+    let host = crate::data::sample::collate_samples_into_recycled_host_batch(
+        &samples,
+        false,
+        hydra_bc_shards::BcShardHostBatch::empty(),
+    )
+    .expect("optional host batch collation should succeed")
+    .expect("optional host batch collation should produce a host batch");
+
+    let borrowed =
+        crate::epoch_runner::materialize_host_batch_borrowed::<LibTorch<f32>>(&host, &device);
+    let owned = crate::epoch_runner::materialize_host_batch_owned::<LibTorch<f32>>(host, &device);
+
+    assert_device_batch_exact_eq(owned, borrowed, "owned host materialization");
 }
 
 #[test]

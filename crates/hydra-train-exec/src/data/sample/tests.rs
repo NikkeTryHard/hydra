@@ -1313,6 +1313,44 @@ fn collate_samples_into_recycled_host_batch_matches_augmented_row_order() {
 }
 
 #[test]
+fn indexed_augmented_recycled_host_batch_uses_one_permutation_per_sample() {
+    let mut samples = Vec::new();
+    for index in 0usize..8 {
+        let mut sample = dummy_sample(0, index as i32);
+        sample.obs = [0.0; OBS_SIZE];
+        sample.obs[(index + 1) * 34] = 1.0;
+        sample.opp_next = [0, 9, 27];
+        samples.push(sample);
+    }
+
+    let start_index = 4;
+    let recycled = collate_index_augmented_samples_into_recycled_host_batch(
+        &samples,
+        start_index,
+        BcShardHostBatch::empty(),
+    )
+    .expect("indexed augmented recycled collation should succeed")
+    .expect("indexed augmented recycled collation should produce a batch");
+
+    assert_eq!(recycled.batch_size, samples.len());
+    for (offset, sample) in samples.iter().enumerate() {
+        let perm = &ALL_PERMUTATIONS[(start_index + offset) % ALL_PERMUTATIONS.len()];
+        let expected =
+            augment_samples_6x(std::slice::from_ref(sample))[permutation_index(perm)].clone();
+        assert_eq!(recycled.actions[offset], expected.action as i64);
+        assert_eq!(
+            &recycled.obs_flat[offset * OBS_SIZE..(offset + 1) * OBS_SIZE],
+            expected.obs.as_slice()
+        );
+        assert_eq!(
+            &recycled.legal_mask_flat
+                [offset * HYDRA_ACTION_SPACE..(offset + 1) * HYDRA_ACTION_SPACE],
+            expected.legal_mask.as_slice()
+        );
+    }
+}
+
+#[test]
 fn collate_samples_into_recycled_host_batch_returns_none_for_empty_input() {
     let recycled = collate_samples_into_recycled_host_batch(&[], false, BcShardHostBatch::empty())
         .expect("empty recycled collation should succeed");

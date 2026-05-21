@@ -14,6 +14,10 @@ pub struct PolicyHead<B: Backend> {
 
 impl<B: Backend> PolicyHead<B> {
     /// Run this output head forward.
+    pub(crate) fn linear(&self) -> &Linear<B> {
+        &self.linear
+    }
+
     pub fn forward(&self, pooled: Tensor<B, 2>) -> Tensor<B, 2> {
         self.linear.forward(pooled)
     }
@@ -26,6 +30,10 @@ pub struct ValueHead<B: Backend> {
 }
 
 impl<B: Backend> ValueHead<B> {
+    pub(crate) fn linear(&self) -> &Linear<B> {
+        &self.linear
+    }
+
     /// Run this output head forward.
     pub fn forward(&self, pooled: Tensor<B, 2>) -> Tensor<B, 2> {
         self.linear.forward(pooled).tanh()
@@ -39,6 +47,10 @@ pub struct ScorePdfHead<B: Backend> {
 }
 
 impl<B: Backend> ScorePdfHead<B> {
+    pub(crate) fn linear(&self) -> &Linear<B> {
+        &self.linear
+    }
+
     /// Run this output head forward.
     pub fn forward(&self, pooled: Tensor<B, 2>) -> Tensor<B, 2> {
         self.linear.forward(pooled)
@@ -52,6 +64,10 @@ pub struct ScoreCdfHead<B: Backend> {
 }
 
 impl<B: Backend> ScoreCdfHead<B> {
+    pub(crate) fn linear(&self) -> &Linear<B> {
+        &self.linear
+    }
+
     /// Run this output head forward.
     pub fn forward(&self, pooled: Tensor<B, 2>) -> Tensor<B, 2> {
         self.linear.forward(pooled)
@@ -65,6 +81,10 @@ pub struct OppTenpaiHead<B: Backend> {
 }
 
 impl<B: Backend> OppTenpaiHead<B> {
+    pub(crate) fn linear(&self) -> &Linear<B> {
+        &self.linear
+    }
+
     /// Run this output head forward.
     pub fn forward(&self, pooled: Tensor<B, 2>) -> Tensor<B, 2> {
         self.linear.forward(pooled)
@@ -78,6 +98,10 @@ pub struct GrpHead<B: Backend> {
 }
 
 impl<B: Backend> GrpHead<B> {
+    pub(crate) fn linear(&self) -> &Linear<B> {
+        &self.linear
+    }
+
     /// Run this output head forward.
     pub fn forward(&self, pooled: Tensor<B, 2>) -> Tensor<B, 2> {
         self.linear.forward(pooled)

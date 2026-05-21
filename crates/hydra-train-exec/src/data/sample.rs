@@ -311,6 +311,43 @@ pub fn collate_samples_into_host_scratch(
     Ok(Some(batch))
 }
 
+pub fn collate_index_augmented_samples_into_recycled_host_batch(
+    samples: &[MjaiSample],
+    start_index: usize,
+    mut recycled: BcShardHostBatch,
+) -> Result<Option<BcShardHostBatch>, String> {
+    if samples.is_empty() {
+        return Ok(None);
+    }
+
+    let need_safety = samples
+        .iter()
+        .any(|sample| sample.safety_residual.is_some() || sample.safety_residual_mask.is_some());
+    let need_exit = samples
+        .iter()
+        .any(|sample| sample.exit_target.is_some() || sample.exit_mask.is_some());
+    let need_delta_q = samples
+        .iter()
+        .any(|sample| sample.delta_q_target.is_some() || sample.delta_q_mask.is_some());
+    if need_safety != recycled.safety_target_flat.is_some()
+        || need_safety != recycled.safety_mask_flat.is_some()
+        || need_exit != recycled.exit_target_flat.is_some()
+        || need_exit != recycled.exit_mask_flat.is_some()
+        || need_delta_q != recycled.delta_q_target_flat.is_some()
+        || need_delta_q != recycled.delta_q_mask_flat.is_some()
+    {
+        recycled = BcShardHostScratch::new(0, need_safety, need_exit, need_delta_q).take_batch();
+    }
+
+    let mut scratch = BcShardHostScratch::from(recycled);
+    scratch.reset(samples.len());
+    for (offset, sample) in samples.iter().enumerate() {
+        let perm = &ALL_PERMUTATIONS[(start_index + offset) % ALL_PERMUTATIONS.len()];
+        write_sample_into_host_scratch(offset, sample, Some(perm), &mut scratch)?;
+    }
+    Ok(Some(scratch.take_batch()))
+}
+
 pub fn collate_samples_into_recycled_host_batch(
     samples: &[MjaiSample],
     augment: bool,

@@ -1,6 +1,7 @@
 //! Full HydraModel combining backbone and all output heads.
 
 use burn::prelude::*;
+use burn::tensor::module;
 use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::encoder::{NUM_CHANNELS, NUM_TILES, OBS_SIZE};
 use hydra_train_types::config::ModelShapeConfig;
@@ -31,6 +32,32 @@ pub struct HydraOutput<B: Backend> {
     pub opponent_hand_type: Tensor<B, 2>,
     pub delta_q: Tensor<B, 2>,
     pub safety_residual: Tensor<B, 2>,
+}
+
+pub struct HydraTrainOutput<B: Backend> {
+    pub policy_logits: Tensor<B, 2>,
+    pub value: Tensor<B, 2>,
+    pub score_pdf: Tensor<B, 2>,
+    pub score_cdf: Tensor<B, 2>,
+    pub opp_tenpai: Tensor<B, 2>,
+    pub grp: Tensor<B, 2>,
+    pub opp_next_discard: Tensor<B, 3>,
+    pub danger: Tensor<B, 3>,
+    pub oracle_critic: Option<Tensor<B, 2>>,
+    pub belief_fields: Option<Tensor<B, 3>>,
+    pub mixture_weight_logits: Option<Tensor<B, 2>>,
+    pub opponent_hand_type: Option<Tensor<B, 2>>,
+    pub delta_q: Option<Tensor<B, 2>>,
+    pub safety_residual: Option<Tensor<B, 2>>,
+}
+
+struct BaseLinearHeadOutput<B: Backend> {
+    policy_logits: Tensor<B, 2>,
+    value: Tensor<B, 2>,
+    score_pdf: Tensor<B, 2>,
+    score_cdf: Tensor<B, 2>,
+    opp_tenpai: Tensor<B, 2>,
+    grp: Tensor<B, 2>,
 }
 
 pub type ActorNet<B> = HydraModel<B>;
@@ -522,30 +549,103 @@ impl<B: Backend> HydraModel<B> {
         self.forward_with_warmup(x, policy, &[])
     }
 
+    fn forward_base_linear_heads(&self, pooled: Tensor<B, 2>) -> BaseLinearHeadOutput<B> {
+        let packed_weight = Tensor::cat(
+            vec![
+                self.policy.linear().weight.val(),
+                self.value.linear().weight.val(),
+                self.score_pdf.linear().weight.val(),
+                self.score_cdf.linear().weight.val(),
+                self.opp_tenpai.linear().weight.val(),
+                self.grp.linear().weight.val(),
+            ],
+            1,
+        );
+        let packed_bias = Tensor::cat(
+            vec![
+                self.policy
+                    .linear()
+                    .bias
+                    .as_ref()
+                    .expect("policy head bias should exist")
+                    .val(),
+                self.value
+                    .linear()
+                    .bias
+                    .as_ref()
+                    .expect("value head bias should exist")
+                    .val(),
+                self.score_pdf
+                    .linear()
+                    .bias
+                    .as_ref()
+                    .expect("score_pdf head bias should exist")
+                    .val(),
+                self.score_cdf
+                    .linear()
+                    .bias
+                    .as_ref()
+                    .expect("score_cdf head bias should exist")
+                    .val(),
+                self.opp_tenpai
+                    .linear()
+                    .bias
+                    .as_ref()
+                    .expect("opp_tenpai head bias should exist")
+                    .val(),
+                self.grp
+                    .linear()
+                    .bias
+                    .as_ref()
+                    .expect("grp head bias should exist")
+                    .val(),
+            ],
+            0,
+        );
+        let packed = module::linear(pooled, packed_weight, Some(packed_bias));
+        let batch = packed.dims()[0];
+        let policy_logits = packed.clone().slice([0..batch, 0..46]);
+        let value = packed.clone().slice([0..batch, 46..47]).tanh();
+        let score_pdf = packed.clone().slice([0..batch, 47..111]);
+        let score_cdf = packed.clone().slice([0..batch, 111..175]);
+        let opp_tenpai = packed.clone().slice([0..batch, 175..178]);
+        let grp = packed.slice([0..batch, 178..202]);
+        BaseLinearHeadOutput {
+            policy_logits,
+            value,
+            score_pdf,
+            score_cdf,
+            opp_tenpai,
+            grp,
+        }
+    }
+
     pub fn forward_with_warmup(
         &self,
         x: Tensor<B, 3>,
         policy: &HydraForwardPolicy,
         warmup_heads: &[ModelAdvancedHead],
     ) -> HydraOutput<B> {
+        self.forward_with_warmup_by(x, policy, |head| warmup_heads.contains(&head))
+    }
+
+    pub fn forward_with_warmup_by(
+        &self,
+        x: Tensor<B, 3>,
+        policy: &HydraForwardPolicy,
+        is_warmup: impl Fn(ModelAdvancedHead) -> bool,
+    ) -> HydraOutput<B> {
         let (spatial, pooled) = {
             let _backbone_scope = profiling::scope(MODEL_SCOPE_BACKBONE);
             self.backbone.forward(x)
         };
         let oracle_input = pooled.clone().detach();
-        let is_warmup = |head: ModelAdvancedHead| warmup_heads.contains(&head);
         let batch = pooled.dims()[0];
         let device = pooled.device();
 
-        let (policy_logits, value, score_pdf, score_cdf, opp_tenpai, grp) = {
+        let base = {
             let _linear_base_scope = profiling::scope(MODEL_SCOPE_HEADS_LINEAR_BASE);
-            let policy_logits = self.policy.forward(pooled.clone());
-            let value = self.value.forward(pooled.clone());
-            let score_pdf = self.score_pdf.forward(pooled.clone());
-            let score_cdf = self.score_cdf.forward(pooled.clone());
-            let opp_tenpai = self.opp_tenpai.forward(pooled.clone());
-            let grp = self.grp.forward(pooled.clone());
-            (policy_logits, value, score_pdf, score_cdf, opp_tenpai, grp)
+            self.forward_base_linear_heads(pooled.clone())
         };
         let (opp_next_discard, danger) = {
             let _spatial_base_scope = profiling::scope(MODEL_SCOPE_HEADS_SPATIAL_BASE);
@@ -593,27 +693,130 @@ impl<B: Backend> HydraModel<B> {
         drop(_advanced_scope);
 
         HydraOutput {
-            policy_logits,
-            value,
+            policy_logits: base.policy_logits,
+            value: base.value,
             score_pdf: if policy.w_score > 0.0 {
-                score_pdf
+                base.score_pdf
             } else {
-                score_pdf.detach()
+                base.score_pdf.detach()
             },
             score_cdf: if policy.w_score > 0.0 {
-                score_cdf
+                base.score_cdf
             } else {
-                score_cdf.detach()
+                base.score_cdf.detach()
             },
             opp_tenpai: if policy.w_tenpai > 0.0 {
-                opp_tenpai
+                base.opp_tenpai
             } else {
-                opp_tenpai.detach()
+                base.opp_tenpai.detach()
             },
             grp: if policy.w_grp > 0.0 {
-                grp
+                base.grp
             } else {
-                grp.detach()
+                base.grp.detach()
+            },
+            opp_next_discard: if policy.w_opp > 0.0 {
+                opp_next_discard
+            } else {
+                opp_next_discard.detach()
+            },
+            danger: if policy.w_danger > 0.0 {
+                danger
+            } else {
+                danger.detach()
+            },
+            oracle_critic,
+            belief_fields,
+            mixture_weight_logits,
+            opponent_hand_type,
+            delta_q,
+            safety_residual,
+        }
+    }
+
+    pub fn forward_train_with_warmup_by(
+        &self,
+        x: Tensor<B, 3>,
+        policy: &HydraForwardPolicy,
+        is_warmup: impl Fn(ModelAdvancedHead) -> bool,
+    ) -> HydraTrainOutput<B> {
+        let (spatial, pooled) = {
+            let _backbone_scope = profiling::scope(MODEL_SCOPE_BACKBONE);
+            self.backbone.forward(x)
+        };
+        let oracle_input = pooled.clone().detach();
+
+        let base = {
+            let _linear_base_scope = profiling::scope(MODEL_SCOPE_HEADS_LINEAR_BASE);
+            self.forward_base_linear_heads(pooled.clone())
+        };
+        let (opp_next_discard, danger) = {
+            let _spatial_base_scope = profiling::scope(MODEL_SCOPE_HEADS_SPATIAL_BASE);
+            let opp_next_discard = self.opp_next_discard.forward(spatial.clone());
+            let danger = self.danger.forward(spatial.clone());
+            (opp_next_discard, danger)
+        };
+        let _advanced_scope = profiling::scope(MODEL_SCOPE_HEADS_ADVANCED);
+        let oracle_critic =
+            if policy.w_oracle_critic > 0.0 && !is_warmup(ModelAdvancedHead::OracleCritic) {
+                Some(self.oracle_critic.forward(oracle_input))
+            } else {
+                None
+            };
+        let belief_fields =
+            if policy.w_belief_fields > 0.0 && !is_warmup(ModelAdvancedHead::BeliefFields) {
+                Some(self.belief_field.forward(spatial.clone()))
+            } else {
+                None
+            };
+        let mixture_weight_logits =
+            if policy.w_mixture_weight > 0.0 && !is_warmup(ModelAdvancedHead::MixtureWeight) {
+                Some(self.mixture_weight.forward(pooled.clone()))
+            } else {
+                None
+            };
+        let opponent_hand_type = if policy.w_opponent_hand_type > 0.0
+            && !is_warmup(ModelAdvancedHead::OpponentHandType)
+        {
+            Some(self.opponent_hand_type.forward(pooled.clone()))
+        } else {
+            None
+        };
+        let delta_q = if policy.w_delta_q > 0.0 && !is_warmup(ModelAdvancedHead::DeltaQ) {
+            Some(self.delta_q.forward(pooled.clone()))
+        } else {
+            None
+        };
+        let safety_residual =
+            if policy.w_safety_residual > 0.0 && !is_warmup(ModelAdvancedHead::SafetyResidual) {
+                Some(self.safety_residual.forward(pooled))
+            } else {
+                None
+            };
+        drop(_advanced_scope);
+
+        HydraTrainOutput {
+            policy_logits: base.policy_logits,
+            value: base.value,
+            score_pdf: if policy.w_score > 0.0 {
+                base.score_pdf
+            } else {
+                base.score_pdf.detach()
+            },
+            score_cdf: if policy.w_score > 0.0 {
+                base.score_cdf
+            } else {
+                base.score_cdf.detach()
+            },
+            opp_tenpai: if policy.w_tenpai > 0.0 {
+                base.opp_tenpai
+            } else {
+                base.opp_tenpai.detach()
+            },
+            grp: if policy.w_grp > 0.0 {
+                base.grp
+            } else {
+                base.grp.detach()
             },
             opp_next_discard: if policy.w_opp > 0.0 {
                 opp_next_discard
@@ -640,15 +843,9 @@ impl<B: Backend> HydraModel<B> {
             self.backbone.forward(x)
         };
         let oracle_input = pooled.clone().detach();
-        let (policy_logits, value, score_pdf, score_cdf, opp_tenpai, grp) = {
+        let base = {
             let _linear_base_scope = profiling::scope(MODEL_SCOPE_HEADS_LINEAR_BASE);
-            let policy_logits = self.policy.forward(pooled.clone());
-            let value = self.value.forward(pooled.clone());
-            let score_pdf = self.score_pdf.forward(pooled.clone());
-            let score_cdf = self.score_cdf.forward(pooled.clone());
-            let opp_tenpai = self.opp_tenpai.forward(pooled.clone());
-            let grp = self.grp.forward(pooled.clone());
-            (policy_logits, value, score_pdf, score_cdf, opp_tenpai, grp)
+            self.forward_base_linear_heads(pooled.clone())
         };
         let (opp_next_discard, danger) = {
             let _spatial_base_scope = profiling::scope(MODEL_SCOPE_HEADS_SPATIAL_BASE);
@@ -681,12 +878,12 @@ impl<B: Backend> HydraModel<B> {
             )
         };
         HydraOutput {
-            policy_logits,
-            value,
-            score_pdf,
-            score_cdf,
-            opp_tenpai,
-            grp,
+            policy_logits: base.policy_logits,
+            value: base.value,
+            score_pdf: base.score_pdf,
+            score_cdf: base.score_cdf,
+            opp_tenpai: base.opp_tenpai,
+            grp: base.grp,
             opp_next_discard,
             danger,
             oracle_critic,

@@ -9,7 +9,8 @@ use crate::bc_metrics::{
 };
 use crate::bc_runtime::{BcExitConfig, gated_bc_context, maybe_add_exit_loss};
 use crate::data::sample::{
-    MjaiBcBatch, MjaiSample, collate_samples_bc_owned, collate_samples_into_host_scratch,
+    MjaiBcBatch, MjaiSample, collate_index_augmented_samples_into_recycled_host_batch,
+    collate_samples_bc_owned, collate_samples_into_host_scratch,
     collate_samples_into_recycled_host_batch,
 };
 use crate::losses::HydraLoss;
@@ -2031,6 +2032,8 @@ pub enum HostBatchRows {
         /// Whether raw replay collation expanded each logical sample through all suit permutations.
         augment: bool,
     },
+    /// Rows came from raw replay with one deterministic suit permutation per logical sample.
+    RawReplayIndexedAugment,
     /// Rows came from BC shards. Each row is already a physical shard sample, even when it is a
     /// permuted view produced by shard augmentation.
     BcShardPhysical,
@@ -2042,7 +2045,9 @@ impl HostBatchRows {
     pub fn rows_per_logical(self) -> usize {
         match self {
             Self::RawReplay { augment: true } => hydra_core::tile::ALL_PERMUTATIONS.len(),
-            Self::RawReplay { augment: false } | Self::BcShardPhysical => 1,
+            Self::RawReplay { augment: false }
+            | Self::RawReplayIndexedAugment
+            | Self::BcShardPhysical => 1,
         }
     }
 }
@@ -2807,17 +2812,42 @@ where
                 (shard_batch, Some(host_batch))
             } else {
                 let t_materialize = Instant::now();
-                let shard_batch = materialize_host_batch_borrowed::<B>(&host_batch, train_device);
-                sub_timing.h2d_tensor_materialize_seconds += t_materialize.elapsed().as_secs_f64();
-                (shard_batch, Some(host_batch))
+                match host_batch_rows {
+                    HostBatchRows::RawReplay { .. } | HostBatchRows::RawReplayIndexedAugment => {
+                        let shard_batch =
+                            materialize_host_batch_borrowed::<B>(&host_batch, train_device);
+                        sub_timing.h2d_tensor_materialize_seconds +=
+                            t_materialize.elapsed().as_secs_f64();
+                        (shard_batch, Some(host_batch))
+                    }
+                    HostBatchRows::BcShardPhysical => {
+                        let shard_batch =
+                            materialize_host_batch_owned::<B>(host_batch, train_device);
+                        sub_timing.h2d_tensor_materialize_seconds +=
+                            t_materialize.elapsed().as_secs_f64();
+                        (shard_batch, None)
+                    }
+                }
             }
         }
         #[cfg(not(feature = "cuda-graph"))]
         {
             let t_materialize = Instant::now();
-            let shard_batch = materialize_host_batch_borrowed::<B>(&host_batch, train_device);
-            sub_timing.h2d_tensor_materialize_seconds += t_materialize.elapsed().as_secs_f64();
-            (shard_batch, Some(host_batch))
+            match host_batch_rows {
+                HostBatchRows::RawReplay { .. } | HostBatchRows::RawReplayIndexedAugment => {
+                    let shard_batch =
+                        materialize_host_batch_borrowed::<B>(&host_batch, train_device);
+                    sub_timing.h2d_tensor_materialize_seconds +=
+                        t_materialize.elapsed().as_secs_f64();
+                    (shard_batch, Some(host_batch))
+                }
+                HostBatchRows::BcShardPhysical => {
+                    let shard_batch = materialize_host_batch_owned::<B>(host_batch, train_device);
+                    sub_timing.h2d_tensor_materialize_seconds +=
+                        t_materialize.elapsed().as_secs_f64();
+                    (shard_batch, None)
+                }
+            }
         }
     };
     sub_timing.h2d_transfer_seconds += t.elapsed().as_secs_f64();
@@ -2849,23 +2879,29 @@ where
             let _forward_scope = nvtx::scope(PROFILING_STAGE_FORWARD);
             maybe_autocast(
                 use_amp && matches!(train_device, LibTorchDevice::Cuda(_)),
-                || model.forward_with_warmup_train(obs, &active_loss_fn.config, &warmup_heads),
+                || {
+                    model.forward_train_with_warmup_train(
+                        obs,
+                        &active_loss_fn.config,
+                        &warmup_heads,
+                    )
+                },
             )
         };
         sub_timing.forward_seconds += t.elapsed().as_secs_f64();
         let t = Instant::now();
-        let (breakdown, total) = {
+        let loss = {
             let _loss_scope = nvtx::scope(PROFILING_STAGE_LOSS);
-            let breakdown = active_loss_fn.total_loss(&output, &targets);
-            let total = maybe_add_exit_loss(
-                breakdown.total.clone(),
-                output.policy_logits.clone(),
+            active_loss_fn.bc_train_loss(
+                &output,
+                &targets,
                 batch.exit_target.as_ref(),
                 batch.exit_mask.as_ref(),
                 bc_exit_cfg,
-            );
-            (breakdown, total)
+            )
         };
+        let breakdown = loss.breakdown;
+        let total = loss.total;
         sub_timing.loss_seconds += t.elapsed().as_secs_f64();
         metric_sums = Some(batch_metric_sums_from_outputs(
             batch_size / rows_per_logical,
@@ -2913,7 +2949,7 @@ where
                 maybe_autocast(
                     use_amp && matches!(train_device, LibTorchDevice::Cuda(_)),
                     || {
-                        model.forward_with_warmup_train(
+                        model.forward_train_with_warmup_train(
                             obs_chunk,
                             &active_loss_fn.config,
                             &warmup_heads,
@@ -2923,18 +2959,18 @@ where
             };
             sub_timing.forward_seconds += t.elapsed().as_secs_f64();
             let t = Instant::now();
-            let (breakdown, total) = {
+            let loss = {
                 let _loss_scope = nvtx::scope(PROFILING_STAGE_LOSS);
-                let breakdown = active_loss_fn.total_loss(&output, &targets_chunk);
-                let total = maybe_add_exit_loss(
-                    breakdown.total.clone(),
-                    output.policy_logits.clone(),
+                active_loss_fn.bc_train_loss(
+                    &output,
+                    &targets_chunk,
                     batch_chunk.exit_target.as_ref(),
                     batch_chunk.exit_mask.as_ref(),
                     bc_exit_cfg,
-                );
-                (breakdown, total)
+                )
             };
+            let breakdown = loss.breakdown;
+            let total = loss.total;
             sub_timing.loss_seconds += t.elapsed().as_secs_f64();
             debug_assert_eq!(chunk_len % rows_per_logical, 0);
             let chunk_logical_len = chunk_len / rows_per_logical;
@@ -3086,13 +3122,9 @@ where
 
     let mut stats = ScalarAverages::default();
     let mut step_window = ScalarAverages::default();
-    let mut pending_samples = VecDeque::new();
     let samples_to_skip = steps_to_skip.saturating_mul(config.batch_size);
-    let mut samples_skipped = 0usize;
-    let mut seen_samples = 0usize;
+    let mut seen_samples;
     let mut epoch_completed = true;
-    let mut assumed_games_seen = 0usize;
-    let mut remaining_games = manifest.train_count;
     let mut epoch_optimizer_steps = steps_to_skip;
     let mut last_interval_validation: Option<ValidationEvent> = None;
     let epoch_started = Instant::now();
@@ -3104,26 +3136,29 @@ where
     let mut epoch_validation_profiling: Option<ProfilingEnvelope> = None;
     let mut step_window_sub_timing = TrainSubStageTiming::default();
     let mut epoch_sub_timing = TrainSubStageTiming::default();
-    let mut recycled_host_batch = Some(BcShardHostBatch::empty());
+    let raw_prefetcher = RawHostBatchPrefetcher::spawn(
+        manifest.clone(),
+        loader_config.clone(),
+        epoch,
+        Some(load_pb.clone()),
+        config.batch_size,
+        config.augment,
+        samples_to_skip,
+        hydra_train_runtime::config::shard_prefetch_depth(config),
+    )?;
     #[cfg(feature = "cuda-graph")]
     let mut staging_context = crate::pinned_transfer::PinnedTransferStaging::from_device(
         crate::pinned_transfer::raw_effective_host_rows(config.batch_size, config.augment),
         train_device,
     );
 
-    for buffer_result in stream_train_epoch(manifest, loader_config, epoch, Some(&load_pb)) {
-        let buffer = buffer_result.map_err(|err| format!("training stream failed: {err}"))?;
+    while let Some(prefetched) = raw_prefetcher.recv()? {
+        seen_samples = prefetched.loaded_samples_seen;
         if manifest.counts_exact {
-            let assumed_games = remaining_games.min(config.buffer_games);
-            remaining_games = remaining_games.saturating_sub(assumed_games);
-            assumed_games_seen += assumed_games;
-        }
-        seen_samples += buffer.len();
-        if manifest.counts_exact && assumed_games_seen > 0 {
             let estimated_steps = estimate_epoch_progress(
                 manifest,
                 seen_samples,
-                assumed_games_seen,
+                manifest.train_count,
                 epoch_optimizer_steps,
                 config.batch_size,
             )
@@ -3132,249 +3167,20 @@ where
             if config.max_train_steps.is_none() {
                 train_pb.set_length(estimated_steps as u64);
             }
-        } else if !manifest.counts_exact {
+        } else {
             load_pb.set_message(format!(
                 "samples={} steps={}",
                 seen_samples, epoch_optimizer_steps
             ));
         }
-
-        pending_samples.extend(buffer);
-        if samples_skipped < samples_to_skip {
-            let skip_now = (samples_to_skip - samples_skipped).min(pending_samples.len());
-            pending_samples.drain(..skip_now);
-            samples_skipped += skip_now;
-        }
-
-        while pending_samples.len() >= config.batch_size {
-            let lr = effective_train_lr(train_cfg, *global_step, total_steps);
-            let logical_batch: Vec<MjaiSample> =
-                pending_samples.drain(..config.batch_size).collect();
-            let train_started = Instant::now();
-            let collation_started = Instant::now();
-            let recycled = recycled_host_batch
-                .take()
-                .unwrap_or_else(BcShardHostBatch::empty);
-            let host_batch =
-                collate_samples_into_recycled_host_batch(&logical_batch, config.augment, recycled)
-                    .map_err(|err| format!("training host-batch collation failed: {err}"))?
-                    .unwrap_or_else(BcShardHostBatch::empty);
-            let collation_seconds = collation_started.elapsed().as_secs_f64();
-            let (drained, batch_sub_timing) = {
-                let _train_scope = nvtx::scope(PROFILING_STAGE_TRAIN);
-                let (drained, mut timing, recycled) = train_logical_batch_from_host_batch(
-                    host_batch,
-                    TrainLogicalBatchConfig {
-                        microbatch_size,
-                        use_amp,
-                        augment: config.augment,
-                        train_device,
-                        loss_fn,
-                        bc_exit_cfg,
-                        lr,
-                    },
-                    HostBatchRows::RawReplay {
-                        augment: config.augment,
-                    },
-                    head_controller,
-                    model_slot,
-                    optimizer,
-                    #[cfg(feature = "cuda-graph")]
-                    staging_context.as_mut(),
-                )?;
-                timing.collation_seconds += collation_seconds;
-                let replay_profile = drain_replay_materialization_stats();
-                let raw_profile = drain_raw_producer_profile();
-                timing.replay_zstd_read_seconds +=
-                    replay_profile.decompress_ns as f64 / 1_000_000_000.0;
-                timing.replay_json_parse_seconds +=
-                    replay_profile.json_parse_ns as f64 / 1_000_000_000.0;
-                timing.replay_simulation_seconds +=
-                    replay_profile.replay_update_ns as f64 / 1_000_000_000.0;
-                timing.replay_obs_encode_seconds +=
-                    replay_profile.observation_encode_ns as f64 / 1_000_000_000.0;
-                timing.replay_legal_mask_seconds +=
-                    replay_profile.mask_build_ns as f64 / 1_000_000_000.0;
-                timing.replay_target_synthesis_seconds +=
-                    replay_profile.target_synthesis_ns as f64 / 1_000_000_000.0;
-                timing.replay_queue_wait_block_seconds +=
-                    raw_profile.queue_wait_block_ns as f64 / 1_000_000_000.0;
-                timing.replay_augmentation_seconds += collation_seconds;
-                timing.replay_shuffle_seconds += 0.0;
-                recycled_host_batch = recycled.or_else(|| Some(BcShardHostBatch::empty()));
-                (drained, timing)
-            };
-            let train_seconds = train_started.elapsed().as_secs_f64();
-
-            record_drained_batch_stats(drained, &mut stats, &mut step_window);
-            step_window_train_seconds += train_seconds;
-            epoch_train_seconds += train_seconds;
-            step_window_sub_timing.accumulate(&batch_sub_timing);
-            epoch_sub_timing.accumulate(&batch_sub_timing);
-            epoch_optimizer_steps += 1;
-            *global_step += 1;
-            train_pb.inc(1);
-            if should_refresh_train_progress_message(
-                &EpochCadenceInput::from(config),
-                *global_step,
-                session_start_global_step,
-            ) {
-                update_train_progress_message(TrainProgressMessageContext {
-                    train_pb: &train_pb,
-                    config,
-                    train_cfg,
-                    global_step: *global_step,
-                    session_start_global_step,
-                    run_start: *run_start,
-                    lr,
-                    stats: stats.finalize(),
-                });
-            }
-
-            let session_step = session_steps_completed(*global_step, session_start_global_step);
-            let val_summary = maybe_run_interval_validation(
-                ValidationStepContext {
-                    multi: &multi,
-                    config,
-                    loader_config,
-                    manifest,
-                    train_device,
-                    valid_loss_fn,
-                    bc_exit_cfg,
-                    artifacts,
-                    session_start_global_step,
-                    cached_validation_samples,
-                },
-                epoch_model(model_slot)?,
-                Some(head_controller),
-                best_validation,
-                *global_step,
-                step_window.finalize().total_loss,
-            )?;
-            if let Some(summary) = val_summary.clone() {
-                merge_optional_profiling(
-                    &mut step_window_validation_profiling,
-                    summary.profiling.as_ref(),
-                );
-                merge_optional_profiling(
-                    &mut epoch_validation_profiling,
-                    summary.profiling.as_ref(),
-                );
-                last_interval_validation = Some(ValidationEvent {
-                    global_step: *global_step,
-                    summary,
-                });
-            }
-
-            if session_step > 0 && session_step.is_multiple_of(config.log_every_n_steps) {
-                let window_stats = std::mem::take(&mut step_window).finalize();
-                let window_steps = (*global_step).saturating_sub(*last_log_step);
-                let step_rate = steps_per_second(window_steps, last_log_time.elapsed());
-                *last_log_step = *global_step;
-                *last_log_time = Instant::now();
-                let interval_profiling = bc_interval_profiling(
-                    step_window_train_seconds,
-                    &step_window_sub_timing,
-                    step_window_validation_profiling.take(),
-                    step_window_checkpoint_seconds,
-                );
-                step_window_train_seconds = 0.0;
-                step_window_checkpoint_seconds = 0.0;
-                step_window_sub_timing = TrainSubStageTiming::default();
-
-                emit_interval_step_summary(
-                    &multi,
-                    tb,
-                    step_log,
-                    IntervalStepSummaryContext {
-                        manifest,
-                        config,
-                        session_start_global_step,
-                        global_step: *global_step,
-                        epoch,
-                        lr,
-                        best_validation: *best_validation,
-                        val_summary,
-                        seen_samples,
-                        assumed_games_seen,
-                        epoch_optimizer_steps,
-                        window_stats,
-                        window_steps,
-                        step_rate,
-                        profiling: Some(interval_profiling.clone()),
-                        advisories: interval_runtime_advisories(interval_timing_input_for_config(
-                            config,
-                            &interval_profiling,
-                            window_steps,
-                        )),
-                    },
-                )?;
-            }
-
-            let periodic_checkpoint_seconds = if should_save_periodic_checkpoint(
-                &EpochCadenceInput::from(config),
-                *global_step,
-                session_start_global_step,
-            ) {
-                maybe_save_periodic_checkpoint(
-                    epoch_model(model_slot)?,
-                    optimizer,
-                    PeriodicCheckpointContext {
-                        config,
-                        artifacts,
-                        epoch,
-                        session_start_global_step,
-                        current_runtime,
-                    },
-                    PeriodicCheckpointState {
-                        global_step: *global_step,
-                        epoch_optimizer_steps,
-                        total_loss: stats.finalize().total_loss,
-                        best_validation: *best_validation,
-                    },
-                )?
-            } else {
-                0.0
-            };
-            step_window_checkpoint_seconds += periodic_checkpoint_seconds;
-            epoch_checkpoint_seconds += periodic_checkpoint_seconds;
-
-            if reached_session_step_budget(
-                *global_step,
-                session_start_global_step,
-                config.max_train_steps,
-            ) {
-                epoch_completed = false;
-                break;
-            }
-        }
-
-        if reached_session_step_budget(
-            *global_step,
-            session_start_global_step,
-            config.max_train_steps,
-        ) {
-            epoch_completed = false;
-            break;
-        }
-    }
-
-    if !pending_samples.is_empty() && epoch_completed {
+        let slot_seq = prefetched.slot_seq;
+        let host_batch = prefetched.host_batch;
+        let logical_sample_count = prefetched.sample_count;
         let lr = effective_train_lr(train_cfg, *global_step, total_steps);
-        let logical_batch: Vec<MjaiSample> = pending_samples.drain(..).collect();
         let train_started = Instant::now();
-        let collation_started = Instant::now();
-        let recycled = recycled_host_batch
-            .take()
-            .unwrap_or_else(BcShardHostBatch::empty);
-        let host_batch =
-            collate_samples_into_recycled_host_batch(&logical_batch, config.augment, recycled)
-                .map_err(|err| format!("training host-batch collation failed: {err}"))?
-                .unwrap_or_else(BcShardHostBatch::empty);
-        let collation_seconds = collation_started.elapsed().as_secs_f64();
-        let (drained, batch_sub_timing) = {
+        let (drained, batch_sub_timing, recycled_host_batch) = {
             let _train_scope = nvtx::scope(PROFILING_STAGE_TRAIN);
-            let (drained, mut timing, _recycled) = train_logical_batch_from_host_batch(
+            let (drained, mut timing, recycled) = train_logical_batch_from_host_batch(
                 host_batch,
                 TrainLogicalBatchConfig {
                     microbatch_size,
@@ -3385,16 +3191,13 @@ where
                     bc_exit_cfg,
                     lr,
                 },
-                HostBatchRows::RawReplay {
-                    augment: config.augment,
-                },
+                HostBatchRows::RawReplayIndexedAugment,
                 head_controller,
                 model_slot,
                 optimizer,
                 #[cfg(feature = "cuda-graph")]
                 staging_context.as_mut(),
             )?;
-            timing.collation_seconds += collation_seconds;
             let replay_profile = drain_replay_materialization_stats();
             let raw_profile = drain_raw_producer_profile();
             timing.replay_zstd_read_seconds +=
@@ -3411,18 +3214,156 @@ where
                 replay_profile.target_synthesis_ns as f64 / 1_000_000_000.0;
             timing.replay_queue_wait_block_seconds +=
                 raw_profile.queue_wait_block_ns as f64 / 1_000_000_000.0;
-            timing.replay_augmentation_seconds += collation_seconds;
+            timing.producer_wait_seconds += prefetched.producer_wait_seconds;
             timing.replay_shuffle_seconds += 0.0;
-            (drained, timing)
+            (drained, timing, recycled)
         };
         let train_seconds = train_started.elapsed().as_secs_f64();
+        raw_prefetcher.recycle(
+            slot_seq,
+            recycled_host_batch.unwrap_or_else(BcShardHostBatch::empty),
+        );
+
         record_drained_batch_stats(drained, &mut stats, &mut step_window);
+        step_window_train_seconds += train_seconds;
         epoch_train_seconds += train_seconds;
+        step_window_sub_timing.accumulate(&batch_sub_timing);
         epoch_sub_timing.accumulate(&batch_sub_timing);
         epoch_optimizer_steps += 1;
         *global_step += 1;
         train_pb.inc(1);
+        if should_refresh_train_progress_message(
+            &EpochCadenceInput::from(config),
+            *global_step,
+            session_start_global_step,
+        ) {
+            update_train_progress_message(TrainProgressMessageContext {
+                train_pb: &train_pb,
+                config,
+                train_cfg,
+                global_step: *global_step,
+                session_start_global_step,
+                run_start: *run_start,
+                lr,
+                stats: stats.finalize(),
+            });
+        }
+
+        let session_step = session_steps_completed(*global_step, session_start_global_step);
+        let val_summary = maybe_run_interval_validation(
+            ValidationStepContext {
+                multi: &multi,
+                config,
+                loader_config,
+                manifest,
+                train_device,
+                valid_loss_fn,
+                bc_exit_cfg,
+                artifacts,
+                session_start_global_step,
+                cached_validation_samples,
+            },
+            epoch_model(model_slot)?,
+            Some(head_controller),
+            best_validation,
+            *global_step,
+            step_window.finalize().total_loss,
+        )?;
+        if let Some(summary) = val_summary.clone() {
+            merge_optional_profiling(
+                &mut step_window_validation_profiling,
+                summary.profiling.as_ref(),
+            );
+            merge_optional_profiling(&mut epoch_validation_profiling, summary.profiling.as_ref());
+            last_interval_validation = Some(ValidationEvent {
+                global_step: *global_step,
+                summary,
+            });
+        }
+
+        if session_step > 0 && session_step.is_multiple_of(config.log_every_n_steps) {
+            let window_stats = std::mem::take(&mut step_window).finalize();
+            let window_steps = (*global_step).saturating_sub(*last_log_step);
+            let step_rate = steps_per_second(window_steps, last_log_time.elapsed());
+            *last_log_step = *global_step;
+            *last_log_time = Instant::now();
+            let interval_profiling = bc_interval_profiling(
+                step_window_train_seconds,
+                &step_window_sub_timing,
+                step_window_validation_profiling.take(),
+                step_window_checkpoint_seconds,
+            );
+            step_window_train_seconds = 0.0;
+            step_window_checkpoint_seconds = 0.0;
+            step_window_sub_timing = TrainSubStageTiming::default();
+
+            emit_interval_step_summary(
+                &multi,
+                tb,
+                step_log,
+                IntervalStepSummaryContext {
+                    manifest,
+                    config,
+                    session_start_global_step,
+                    global_step: *global_step,
+                    epoch,
+                    lr,
+                    best_validation: *best_validation,
+                    val_summary,
+                    seen_samples,
+                    assumed_games_seen: logical_sample_count,
+                    epoch_optimizer_steps,
+                    window_stats,
+                    window_steps,
+                    step_rate,
+                    profiling: Some(interval_profiling.clone()),
+                    advisories: interval_runtime_advisories(interval_timing_input_for_config(
+                        config,
+                        &interval_profiling,
+                        window_steps,
+                    )),
+                },
+            )?;
+        }
+
+        let periodic_checkpoint_seconds = if should_save_periodic_checkpoint(
+            &EpochCadenceInput::from(config),
+            *global_step,
+            session_start_global_step,
+        ) {
+            maybe_save_periodic_checkpoint(
+                epoch_model(model_slot)?,
+                optimizer,
+                PeriodicCheckpointContext {
+                    config,
+                    artifacts,
+                    epoch,
+                    session_start_global_step,
+                    current_runtime,
+                },
+                PeriodicCheckpointState {
+                    global_step: *global_step,
+                    epoch_optimizer_steps,
+                    total_loss: stats.finalize().total_loss,
+                    best_validation: *best_validation,
+                },
+            )?
+        } else {
+            0.0
+        };
+        step_window_checkpoint_seconds += periodic_checkpoint_seconds;
+        epoch_checkpoint_seconds += periodic_checkpoint_seconds;
+
+        if reached_session_step_budget(
+            *global_step,
+            session_start_global_step,
+            config.max_train_steps,
+        ) {
+            epoch_completed = false;
+            break;
+        }
     }
+    raw_prefetcher.join()?;
 
     load_pb.finish_with_message("training data stream complete".to_string());
     let train_stats = stats.finalize();
@@ -4051,6 +3992,207 @@ pub struct BcShardPrefetcher {
     producer_handle: Option<std::thread::JoinHandle<()>>,
     metrics: Arc<Mutex<BcShardPrefetchMetricState>>,
     ready_count: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+struct RawHostBatchRingSlot {
+    seq: usize,
+    batch: BcShardHostBatch,
+}
+
+type RawHostBatchPrefetchResult = Result<(RawHostBatchRingSlot, usize, usize), String>;
+
+/// One raw replay host batch received from the prefetch producer.
+pub struct RawHostBatchPrefetchBatch {
+    /// Ring slot sequence number, returned with the consumed host batch.
+    pub slot_seq: usize,
+    /// Collated host batch ready for device materialization.
+    pub host_batch: BcShardHostBatch,
+    /// Number of logical raw samples collated into this batch before augmentation.
+    pub sample_count: usize,
+    /// Raw samples loaded by the stream when this host batch became ready.
+    pub loaded_samples_seen: usize,
+    /// Seconds this consumer call blocked waiting for this batch.
+    pub producer_wait_seconds: f64,
+}
+
+/// Producer/consumer prefetcher for raw replay host batches.
+pub struct RawHostBatchPrefetcher {
+    rx: Option<mpsc::Receiver<RawHostBatchPrefetchResult>>,
+    free_tx: Option<mpsc::SyncSender<RawHostBatchRingSlot>>,
+    producer_handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl RawHostBatchPrefetcher {
+    /// Starts a bounded producer thread streaming raw replay and collating host batches.
+    pub fn spawn(
+        manifest: DataManifest,
+        loader_config: StreamingLoaderConfig,
+        epoch: usize,
+        progress: Option<ProgressBar>,
+        batch_size: usize,
+        augment: bool,
+        samples_to_skip: usize,
+        prefetch_depth: usize,
+    ) -> Result<Self, String> {
+        let depth = prefetch_depth.max(1);
+        let (tx, rx) = mpsc::sync_channel::<RawHostBatchPrefetchResult>(depth);
+        let (free_tx, free_rx) = mpsc::sync_channel::<RawHostBatchRingSlot>(depth);
+        for seq in 0..depth {
+            free_tx
+                .send(RawHostBatchRingSlot {
+                    seq,
+                    batch: BcShardHostBatch::empty(),
+                })
+                .map_err(|_| "failed to initialize raw host-batch ring slots".to_string())?;
+        }
+        let producer_handle = std::thread::Builder::new()
+            .name("raw-host-batch-prefetch".into())
+            .spawn(move || {
+                let mut pending_samples = VecDeque::new();
+                let mut samples_skipped = 0usize;
+                let mut loaded_samples_seen = 0usize;
+                let mut collated_samples_seen = samples_to_skip;
+                for buffer_result in
+                    stream_train_epoch(&manifest, &loader_config, epoch, progress.as_ref())
+                {
+                    let buffer = match buffer_result {
+                        Ok(buffer) => buffer,
+                        Err(err) => {
+                            let _ = tx.send(Err(format!("training stream failed: {err}")));
+                            return;
+                        }
+                    };
+                    loaded_samples_seen = loaded_samples_seen.saturating_add(buffer.len());
+                    pending_samples.extend(buffer);
+                    if samples_skipped < samples_to_skip {
+                        let skip_now =
+                            (samples_to_skip - samples_skipped).min(pending_samples.len());
+                        pending_samples.drain(..skip_now);
+                        samples_skipped += skip_now;
+                    }
+                    while pending_samples.len() >= batch_size {
+                        if !Self::send_next_batch(
+                            &tx,
+                            &free_rx,
+                            &mut pending_samples,
+                            batch_size,
+                            augment,
+                            loaded_samples_seen,
+                            collated_samples_seen,
+                        ) {
+                            return;
+                        }
+                        collated_samples_seen += batch_size;
+                    }
+                }
+                if !pending_samples.is_empty() {
+                    let take = pending_samples.len();
+                    let _ = Self::send_next_batch(
+                        &tx,
+                        &free_rx,
+                        &mut pending_samples,
+                        take,
+                        augment,
+                        loaded_samples_seen,
+                        collated_samples_seen,
+                    );
+                }
+            })
+            .map_err(|err| format!("failed to spawn raw-host-batch-prefetch thread: {err}"))?;
+        Ok(Self {
+            rx: Some(rx),
+            free_tx: Some(free_tx),
+            producer_handle: Some(producer_handle),
+        })
+    }
+
+    fn send_next_batch(
+        tx: &mpsc::SyncSender<RawHostBatchPrefetchResult>,
+        free_rx: &mpsc::Receiver<RawHostBatchRingSlot>,
+        pending_samples: &mut VecDeque<MjaiSample>,
+        take: usize,
+        augment: bool,
+        loaded_samples_seen: usize,
+        start_index: usize,
+    ) -> bool {
+        let mut slot = match free_rx.recv() {
+            Ok(slot) => slot,
+            Err(_) => return false,
+        };
+        let logical_batch: Vec<MjaiSample> = pending_samples.drain(..take).collect();
+        let recycled = std::mem::replace(&mut slot.batch, BcShardHostBatch::empty());
+        let result = if augment {
+            collate_index_augmented_samples_into_recycled_host_batch(
+                &logical_batch,
+                start_index,
+                recycled,
+            )
+        } else {
+            collate_samples_into_recycled_host_batch(&logical_batch, false, recycled)
+        }
+        .map(|batch| {
+            slot.batch = batch.unwrap_or_else(BcShardHostBatch::empty);
+            (slot, take, loaded_samples_seen)
+        })
+        .map_err(|err| format!("training host-batch collation failed: {err}"));
+        tx.send(result).is_ok()
+    }
+
+    /// Receives the next prefetched raw host batch.
+    pub fn recv(&self) -> Result<Option<RawHostBatchPrefetchBatch>, String> {
+        let Some(rx) = self.rx.as_ref() else {
+            return Ok(None);
+        };
+        let recv_started = Instant::now();
+        let recv_result = match rx.recv() {
+            Ok(result) => result,
+            Err(_) => return Ok(None),
+        };
+        let producer_wait_seconds = recv_started.elapsed().as_secs_f64();
+        let (slot, sample_count, loaded_samples_seen) = recv_result?;
+        Ok(Some(RawHostBatchPrefetchBatch {
+            slot_seq: slot.seq,
+            host_batch: slot.batch,
+            sample_count,
+            loaded_samples_seen,
+            producer_wait_seconds,
+        }))
+    }
+
+    /// Returns a consumed host batch to the producer for allocation reuse.
+    pub fn recycle(&self, slot_seq: usize, host_batch: BcShardHostBatch) {
+        let Some(free_tx) = self.free_tx.as_ref() else {
+            return;
+        };
+        let _ = free_tx.send(RawHostBatchRingSlot {
+            seq: slot_seq,
+            batch: host_batch,
+        });
+    }
+
+    /// Stops the prefetcher and propagates producer panics.
+    pub fn join(mut self) -> Result<(), String> {
+        self.rx.take();
+        self.free_tx.take();
+        self.join_producer()
+    }
+
+    fn join_producer(&mut self) -> Result<(), String> {
+        if let Some(handle) = self.producer_handle.take() {
+            handle
+                .join()
+                .map_err(|_| "raw-host-batch-prefetch thread panicked".to_string())?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for RawHostBatchPrefetcher {
+    fn drop(&mut self) {
+        self.rx.take();
+        self.free_tx.take();
+        let _ = self.join_producer();
+    }
 }
 
 impl BcShardPrefetcher {

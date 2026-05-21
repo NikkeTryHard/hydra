@@ -10,19 +10,13 @@ use hydra_train_types::losses::LossBreakdown;
 /// Accumulated GPU and rare-action metric sums for one or more batches.
 pub struct BatchMetricSums<B: Backend> {
     gpu_sums: Tensor<B, 1>,
-    rare_values: [f32; 19],
 }
 
 impl<B: Backend> BatchMetricSums<B> {
     /// Adds another metric-sum accumulator into this one.
     pub fn accumulate(self, other: Self) -> Self {
-        let mut rare_values = self.rare_values;
-        for (lhs, rhs) in rare_values.iter_mut().zip(other.rare_values) {
-            *lhs += rhs;
-        }
         Self {
             gpu_sums: self.gpu_sums + other.gpu_sums,
-            rare_values,
         }
     }
 }
@@ -37,36 +31,8 @@ const AGARI_BUCKET: usize = 6;
 const RYUUKYOKU_BUCKET: usize = 7;
 const PASS_BUCKET: usize = 8;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct RareActionSums {
-    counts: [usize; 9],
-    correct: [usize; 9],
-}
-
-impl RareActionSums {
-    fn record(&mut self, action: u8, predicted: u8) {
-        let bucket = action_bucket(action);
-        self.counts[bucket] += 1;
-        if predicted == action {
-            self.correct[bucket] += 1;
-        }
-    }
-}
-
-fn action_bucket(action: u8) -> usize {
-    match action {
-        DISCARD_START..=33 => DISCARD_BUCKET,
-        AKA_5M..=AKA_5S => AKA_DISCARD_BUCKET,
-        RIICHI => RIICHI_BUCKET,
-        CHI_LEFT..=CHI_RIGHT => CHI_BUCKET,
-        PON => PON_BUCKET,
-        KAN => KAN_BUCKET,
-        AGARI => AGARI_BUCKET,
-        RYUUKYOKU => RYUUKYOKU_BUCKET,
-        PASS => PASS_BUCKET,
-        other => panic!("invalid Hydra action id for rare-action metrics: {other}"),
-    }
-}
+const LOSS_SUM_COUNT: usize = 9;
+const RARE_VALUE_COUNT: usize = 19;
 
 /// Reads a rank-1 single-element tensor into an f64 scalar.
 pub fn scalar1<B: Backend>(tensor: &Tensor<B, 1>) -> f64 {
@@ -84,10 +50,10 @@ pub fn batch_metric_sums_from_outputs<B: Backend>(
 ) -> BatchMetricSums<B> {
     let masked = policy_logits + (legal_mask.ones_like() - legal_mask) * (-1e9f32);
     let predicted_actions = masked.argmax(1).squeeze_dim::<1>(1);
-    let rare_values = rare_action_metric_values_from_predictions(predicted_actions, actions);
+    let rare_sums = rare_action_metric_sums_from_predictions(predicted_actions, actions);
     let sample_weight = sample_count as f32;
 
-    let gpu_sums = Tensor::cat(
+    let loss_sums = Tensor::cat(
         vec![
             total_loss * sample_weight,
             breakdown.policy.clone() * sample_weight,
@@ -103,8 +69,7 @@ pub fn batch_metric_sums_from_outputs<B: Backend>(
     );
 
     BatchMetricSums {
-        gpu_sums,
-        rare_values,
+        gpu_sums: Tensor::cat(vec![loss_sums, rare_sums], 0),
     }
 }
 
@@ -118,7 +83,8 @@ pub fn batch_stats_from_metric_sums<B: Backend>(
     let values = metrics
         .as_slice::<f32>()
         .expect("profiling metrics should be readable as f32");
-    let agreement = average_metric(metric_sums.rare_values[0], sample_count);
+    let rare_values = &values[LOSS_SUM_COUNT..LOSS_SUM_COUNT + RARE_VALUE_COUNT];
+    let agreement = average_metric(rare_values[0], sample_count);
 
     BatchStats {
         sample_count,
@@ -133,7 +99,7 @@ pub fn batch_stats_from_metric_sums<B: Backend>(
         loss_opp_next: average_metric(values[6], sample_count),
         loss_score_pdf: average_metric(values[7], sample_count),
         loss_score_cdf: average_metric(values[8], sample_count),
-        rare_actions: rare_metrics_from_values(&metric_sums.rare_values),
+        rare_actions: rare_metrics_from_values(rare_values),
     }
 }
 
@@ -168,33 +134,49 @@ fn average_metric(value_sum: f32, sample_count: usize) -> f64 {
     }
 }
 
-fn rare_action_metric_values_from_predictions<B: Backend>(
+fn rare_action_metric_sums_from_predictions<B: Backend>(
     predicted: Tensor<B, 1, Int>,
     actions: Tensor<B, 1, Int>,
-) -> [f32; 19] {
-    let predicted = predicted.into_data().convert::<i64>();
-    let actions = actions.into_data().convert::<i64>();
-    let predicted = predicted
-        .as_slice::<i64>()
-        .expect("predicted actions should be readable as i64");
-    let actions = actions
-        .as_slice::<i64>()
-        .expect("target actions should be readable as i64");
-    let mut sums = RareActionSums::default();
-    let mut values = [0.0f32; 19];
-    let mut overall_correct = 0usize;
-    for (&action, &predicted) in actions.iter().zip(predicted.iter()) {
-        if action == predicted {
-            overall_correct += 1;
-        }
-        sums.record(action as u8, predicted as u8);
-    }
-    values[0] = overall_correct as f32;
-    for idx in 0..9 {
-        values[1 + idx * 2] = sums.counts[idx] as f32;
-        values[1 + idx * 2 + 1] = sums.correct[idx] as f32;
-    }
-    values
+) -> Tensor<B, 1> {
+    let correct = predicted.equal(actions.clone()).int().float();
+    let overall_correct = correct.clone().sum().reshape([1]);
+    let bucket_sum = |mask: burn::tensor::Tensor<B, 1, burn::tensor::Bool>| {
+        let mask = mask.int().float();
+        let count = mask.clone().sum().reshape([1]);
+        let correct_count = (mask * correct.clone()).sum().reshape([1]);
+        Tensor::cat(vec![count, correct_count], 0)
+    };
+
+    Tensor::cat(
+        vec![
+            overall_correct,
+            bucket_sum(
+                actions
+                    .clone()
+                    .greater_equal_elem(DISCARD_START as i64)
+                    .bool_and(actions.clone().lower_equal_elem(33)),
+            ),
+            bucket_sum(
+                actions
+                    .clone()
+                    .greater_equal_elem(AKA_5M as i64)
+                    .bool_and(actions.clone().lower_equal_elem(AKA_5S as i64)),
+            ),
+            bucket_sum(actions.clone().equal_elem(RIICHI as i64)),
+            bucket_sum(
+                actions
+                    .clone()
+                    .greater_equal_elem(CHI_LEFT as i64)
+                    .bool_and(actions.clone().lower_equal_elem(CHI_RIGHT as i64)),
+            ),
+            bucket_sum(actions.clone().equal_elem(PON as i64)),
+            bucket_sum(actions.clone().equal_elem(KAN as i64)),
+            bucket_sum(actions.clone().equal_elem(AGARI as i64)),
+            bucket_sum(actions.clone().equal_elem(RYUUKYOKU as i64)),
+            bucket_sum(actions.equal_elem(PASS as i64)),
+        ],
+        0,
+    )
 }
 
 fn rare_metrics_from_values(values: &[f32]) -> RareActionMetrics {
