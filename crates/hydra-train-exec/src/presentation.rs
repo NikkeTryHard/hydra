@@ -13,6 +13,7 @@ use hydra_train_runtime::config::{BcHyperparamConfig, PrecisionMode};
 use hydra_train_runtime::preflight::{
     EffectiveRuntimeConfig, ProbeKind, ProbeResult, ProbeStatus, requested_precision_signature,
 };
+use hydra_train_runtime::timing_metrics::{MetricStats, TimingMetricsReport};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -39,7 +40,11 @@ pub struct BcHyperparamSummaryInput {
 /// Builds an indicatif progress bar using the training CLI defaults.
 pub fn make_bar(len: u64, template: &str) -> Result<ProgressBar, String> {
     let pb = ProgressBar::new(len);
-    pb.set_draw_target(ProgressDrawTarget::stdout());
+    if std::env::var_os("HYDRA_BENCHMARK_QUIET").is_some() {
+        pb.set_draw_target(ProgressDrawTarget::hidden());
+    } else {
+        pb.set_draw_target(ProgressDrawTarget::stdout());
+    }
     let style = ProgressStyle::with_template(template)
         .map_err(|err| format!("failed to build progress style: {err}"))?
         .progress_chars("=> ");
@@ -50,7 +55,11 @@ pub fn make_bar(len: u64, template: &str) -> Result<ProgressBar, String> {
 /// Builds an indicatif spinner using the training CLI defaults.
 pub fn make_spinner(template: &str) -> Result<ProgressBar, String> {
     let pb = ProgressBar::new_spinner();
-    pb.set_draw_target(ProgressDrawTarget::stdout());
+    if std::env::var_os("HYDRA_BENCHMARK_QUIET").is_some() {
+        pb.set_draw_target(ProgressDrawTarget::hidden());
+    } else {
+        pb.set_draw_target(ProgressDrawTarget::stdout());
+    }
     let style = ProgressStyle::with_template(template)
         .map_err(|err| format!("failed to build spinner style: {err}"))?
         .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ");
@@ -253,6 +262,58 @@ pub fn format_preflight_bench_markdown_table(report: &PreflightBenchReport) -> S
         out.push_str(&format_preflight_bench_row(row));
     }
     out
+}
+
+fn format_metric_stat(stat: &MetricStats, scale: f64) -> String {
+    match (stat.median, stat.p95) {
+        (Some(median), Some(p95)) => format!("{:.2} / {:.2}", median * scale, p95 * scale),
+        (Some(median), None) => format!("{:.2} / --", median * scale),
+        _ => "--".to_string(),
+    }
+}
+
+fn format_optional_bool(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "pass",
+        Some(false) => "fail",
+        None => "--",
+    }
+}
+
+/// Formats one train timing report as a preflight-style bottleneck table.
+pub fn format_train_timing_markdown_table(label: &str, report: &TimingMetricsReport) -> String {
+    let summary = &report.summary;
+    format!(
+        "| run | rows | complete | samples/s med/p95 | step/s med/p95 | interval s med/p95 | producer wait % med/p95 | collation % med/p95 | H2D % med/p95 | input starvation % med/p95 | compute % med/p95 | validation % med/p95 | checkpoint % med/p95 | logging % med/p95 | prod | collate | h2d | input | compute | CV | ring |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|---|---|---:|---|\n| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+        label,
+        summary.row_count,
+        summary.complete_row_count,
+        format_metric_stat(&summary.samples_per_second, 1.0),
+        format_metric_stat(&summary.steps_per_second, 1.0),
+        format_metric_stat(&summary.interval_seconds, 1.0),
+        format_metric_stat(&summary.producer_wait_pct, 1.0),
+        format_metric_stat(&summary.collation_pct, 1.0),
+        format_metric_stat(&summary.h2d_transfer_pct, 1.0),
+        format_metric_stat(&summary.input_starvation_pct, 1.0),
+        format_metric_stat(&summary.compute_pct, 1.0),
+        format_metric_stat(&summary.validation_pct, 1.0),
+        format_metric_stat(&summary.checkpoint_pct, 1.0),
+        format_metric_stat(&summary.logging_pct, 1.0),
+        format_optional_bool(summary.producer_wait_pass),
+        format_optional_bool(summary.collation_pass),
+        format_optional_bool(summary.h2d_pass),
+        format_optional_bool(summary.input_starvation_pass),
+        format_optional_bool(summary.compute_share_pass),
+        summary
+            .samples_per_second_cv
+            .map(|value| format!("{value:.4}"))
+            .unwrap_or_else(|| "--".to_string()),
+        if summary.ring_occupancy_available {
+            "yes"
+        } else {
+            "no"
+        },
+    )
 }
 
 /// Prints a blank-spaced section header.

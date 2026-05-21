@@ -31,4 +31,5 @@ cc = "1"
 [features]
 default = []
 libtorch = ["burn/tch", "dep:tch", "dep:torch-sys"]
+burn-cuda = ["burn/cuda", "burn/train"]
 libtorch-tests = ["libtorch"]

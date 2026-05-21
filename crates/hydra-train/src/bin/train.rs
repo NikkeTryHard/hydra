@@ -29,12 +29,25 @@ fn run() -> Result<(), String> {
     if cli.list_devices {
         return handle_list_devices_mode();
     }
-    if cli.preflight.is_some() {
+    if cli.preflight.is_some() || cli.benchmark_baseline.is_some() {
         let device = cli
             .preflight
             .as_ref()
             .map(|preflight| preflight.device.clone())
+            .or_else(|| {
+                cli.benchmark_baseline
+                    .as_ref()
+                    .map(|benchmark| benchmark.device.clone())
+            })
             .unwrap_or_else(hydra_train_runtime::config::default_device);
+        let _benchmark_quiet = if cli.benchmark_baseline.is_some() {
+            unsafe {
+                std::env::set_var("HYDRA_BENCHMARK_QUIET", "1");
+            }
+            true
+        } else {
+            false
+        };
         hydra_train_exec::gpu_config::apply_gpu_performance_flags(&device);
         return run_train_modes(
             cli,

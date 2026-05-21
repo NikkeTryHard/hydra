@@ -32,6 +32,7 @@ fn parse_args_accepts_single_config_path() {
     assert!(parsed.preflight.is_none());
     assert!(!parsed.delta_q_promotion);
     assert!(parsed.probe_only.is_none());
+    assert!(parsed.benchmark_baseline.is_none());
     assert!(parsed.probe_child.is_none());
 }
 

@@ -255,15 +255,51 @@ pub enum ProbeChildRequest {
     Batch(ProbeBatchChildRequest),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BenchmarkBaselineSource {
+    Mjai,
+    BcShards,
+    Both,
+}
+
+/// Benchmark backend selector; defaults to LibTorch and Burn-CUDA is parked probe-only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExperimentalTrainBackend {
+    LibTorch,
+    BurnCuda,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BenchmarkBaselineCliOptions {
+    pub data_dir: Option<PathBuf>,
+    pub bc_shards_manifest_path: Option<PathBuf>,
+    pub source: BenchmarkBaselineSource,
+    pub output_dir: PathBuf,
+    pub device: String,
+    pub max_games: usize,
+    pub max_train_steps: usize,
+    pub batch_size: usize,
+    pub microbatch_size: usize,
+    pub validation_microbatch_size: usize,
+    pub num_threads: usize,
+    pub train_threads: usize,
+    pub queue_bound: usize,
+    pub shard_samples: usize,
+    pub train_fraction: f32,
+    pub experimental_backend: ExperimentalTrainBackend,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrainCli {
     pub config_path: Option<PathBuf>,
     pub list_devices: bool,
     pub preflight: Option<PreflightCliOptions>,
+    pub benchmark_baseline: Option<BenchmarkBaselineCliOptions>,
     pub delta_q_promotion: bool,
     pub delta_q_baseline_checkpoint: Option<PathBuf>,
     pub probe_only: Option<ProbeCliRequest>,
     pub probe_child: Option<ProbeChildRequest>,
+    pub experimental_backend: ExperimentalTrainBackend,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

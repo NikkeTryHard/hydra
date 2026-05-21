@@ -1139,6 +1139,9 @@ fn benchmark_quiet() -> bool {
 }
 
 fn emit_runtime_line(line: impl AsRef<str>) {
+    if benchmark_quiet() {
+        return;
+    }
     eprintln!("{}", line.as_ref());
     let _ = std::io::stderr().flush();
 }

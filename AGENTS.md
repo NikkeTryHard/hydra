@@ -169,13 +169,32 @@ Useful invariants for runtime/data changes:
 
 - Train CLI/YAML/preflight/shards/sidecars: read `docs/TRAINING_RUNBOOK.md` before editing.
 - RNG/seeding changes: read `research/design/SEEDING.md`; preserve deterministic replay/eval behavior.
-- Performance work: read/update `research/infrastructure/ENGINE_BENCHMARKS.md`.
+- Performance work: use auto benchmark first, then read/update `research/infrastructure/ENGINE_BENCHMARKS.md` if results become durable claims.
 - Infrastructure/checkpoint/container work: read `research/infrastructure/INFRASTRUCTURE.md` and `docker/train/README.md` as applicable.
 - Before trusting replay/shard/sidecar data with suspicious low sample count/high skip count, audit with `mjai_audit`; use failure inventory or focused loader tests for specific bad replays.
 - If `advanced_loss.exit` or `advanced_loss.delta_q` is positive, matching sidecar path is required; validation promotion must hydrate labels when gates require them.
 
 - Default training/perf runs use `device: cuda:0` (or `HYDRA_TRAIN_DEVICE=cuda:0`) when GPU exists. CPU train is super slow; use CPU only for explicit CPU-debug/compat checks. GPU accelerates model forward/backward/optimizer/H2D; raw replay, BC-shard decode, sample collation, and materialization still run on CPU workers.
 
+### Local throughput baseline
+
+- Use no-config auto benchmark; do not hand-write YAML for baseline runs.
+- Full compare:
+```bash
+pixi run cargo run --quiet --package hydra-train --features training,cuda-graph --bin train -- \
+  --benchmark-baseline --bench-source both \
+  --data-dir /home/cachybtw/Downloads/dataset_bundle/tenhou-houou-mjai-2025 \
+  --output-dir /home/cachybtw/tmp/hydra-auto-bench --device cuda:0
+```
+- Existing shards only:
+```bash
+pixi run cargo run --quiet --package hydra-train --features training,cuda-graph --bin train -- \
+  --benchmark-baseline --bench-source bc-shards \
+  --bc-shards-manifest <bc_shards_manifest.json> \
+  --output-dir /home/cachybtw/tmp/hydra-auto-bench-shards --device cuda:0
+```
+- Defaults: `max_games=5000`, build threads `20`, train threads `8`, batch `2048`, microbatch `256`, CUDA BF16 AMP, TF32 via PyTorch `setFloat32Precision` API.
+- 2026-05-21 refs on RTX 5070: shard build `~118k samples/s`; BC-shard train `~6.65k median / ~6.7k p95 samples/s`; raw MJAI train `~6.2k median`. Treat driver/thermal/codegen drift as noise unless repeated.
 Hydra binaries quick use:
 
 - Cargo features are compile-time capability gates. Use `training` for LibTorch/Burn train/model binaries; `cuda-graph` implies `training` and checks CUDA pinned/prealloc/probe code; `data-tools` is lightweight data-conversion tooling. Omit `--features` only for bins with `Features=none`.
@@ -183,7 +202,7 @@ Hydra binaries quick use:
 
 |Bin|Features|Purpose|Usage / key flags|
 |---|---|---|---|
-|`train`|`training` / `cuda-graph` for CUDA transport checks|Main config-driven train/probe/preflight entry.|`-- <config.yaml>` normal train. `-- --list-devices`. `-- --preflight [--device cpu|cuda:N] [--output-dir DIR] [--preflight-mode safe|unsafe] [--pf-candidate-tuples batch:ring:threads:prefetch,...] [--pf-warmup-steps N] [--pf-measure-steps N] [--pf-repetitions N] [--pf-output md]`. Config modes: `<config.yaml> --delta-q-promotion [--delta-q-baseline-checkpoint PATH]`; `<config.yaml> --probe-kind train|validation|rl_games|rl_microbatch --probe-candidate-microbatch N [--probe-warmup-steps N] [--probe-measure-steps N]`. Full training behavior lives in YAML/JSON config, not CLI overrides.|
+|`train`|`training` / `cuda-graph` for CUDA transport checks|Main config-driven train/probe/preflight/benchmark entry.|`-- <config.yaml>` normal train. `-- --list-devices`. `-- --benchmark-baseline --bench-source mjai|bc-shards|both (--data-dir DIR|--bc-shards-manifest PATH) [--output-dir DIR] [--device cuda:0]`. `-- --preflight [--device cpu|cuda:N] [--output-dir DIR] [--preflight-mode safe|unsafe] [--pf-candidate-tuples batch:ring:threads:prefetch,...] [--pf-warmup-steps N] [--pf-measure-steps N] [--pf-repetitions N] [--pf-output md]`. Config modes: `<config.yaml> --delta-q-promotion [--delta-q-baseline-checkpoint PATH]`; `<config.yaml> --probe-kind train|validation|rl_games|rl_microbatch --probe-candidate-microbatch N [--probe-warmup-steps N] [--probe-measure-steps N]`. Full training behavior lives in YAML/JSON config, not CLI overrides.|
 |`mjai_audit`|`training`|Audit replay/cache ingestion; bucket loader failures.|`-- <data-dir> [--threads N] [--failure-examples N] [--failure-inventory-dir DIR]`. Use before trusting suspicious low sample/high skip corpora.|
 |`build_bc_shards`|`training`|Raw MJAI/cache -> compact BC shards; validate manifests; materialization throughput proof.|Build: `-- --input <dir|archive|replay> --output-dir DIR [--manifest-name FILE] [--shard-samples N] [--train-fraction F] [--split train|val|both] [--num-threads N] [--queue-bound N] [--chunk-games N] [--max-games N] [--max-samples N] [--report-name FILE|--no-report] [--progress-jsonl FILE] [--dry-scan-only] [--resume] [--resume-dir DIR] [--max-error-examples N]`. Validate: `-- --validate-manifest PATH`. Sidecars require full triples: `--exit-sidecar PATH --exit-source-net-hash U64 --exit-source-version U32`; `--delta-q-sidecar PATH --delta-q-source-net-hash U64 --delta-q-source-version U32`.|
 |`extract_timing_metrics`|none|Extract timing/throughput from step/training logs.|`-- (--step-log PATH|--training-log PATH)... [--run-id ID] [--skip-initial-rows N] [--min-global-step N] [--format json|csv]`. Use for benchmark claims.|

@@ -58,6 +58,7 @@ libtorch = [
     "hydra-model/libtorch",
     "hydra-search-labels/model-eval",
 ]
+burn-cuda = ["burn/train", "burn/cuda", "hydra-model/burn-cuda"]
 cuda-graph = ["libtorch"]
 bf16-autocast-proof = ["libtorch", "burn/bf16-autocast-proof"]
 bootstrap-exec-in-progress = []

@@ -105,6 +105,9 @@ training = [
     "hydra-train-exec/libtorch",
     "hydra-search-labels/model-eval",
 ]
+# Parked experimental BC-shard FP32 native Burn CUDA probe. LibTorch stays default/production;
+# this code runs only when built with this feature and selected by --experimental-backend burn-cuda.
+burn-cuda-probe = ["training", "burn/cuda", "hydra-train-exec/burn-cuda", "hydra-model/burn-cuda"]
 cuda-graph = ["training", "hydra-train-exec/cuda-graph"]
 test-nvtx-recorder = ["hydra-train-exec/test-nvtx-recorder"]
 

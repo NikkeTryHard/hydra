@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use crate::preflight::{PreflightBenchTuple, PreflightConfig, ProbeKind};
 
 use super::{
+    BenchmarkBaselineCliOptions, BenchmarkBaselineSource, ExperimentalTrainBackend,
     PreflightCliOptions, PreflightProfile, ProbeBatchChildRequest, ProbeChildRequest,
     ProbeCliRequest, ProbeSingleChildRequest, TrainCli, default_device,
     default_preflight_config_for_profile,
@@ -24,6 +25,27 @@ fn parse_preflight_mode(value: &str) -> Result<PreflightModeArg, String> {
         "unsafe" => Ok(PreflightModeArg::Unsafe),
         _ => Err(format!(
             "unsupported --preflight-mode value '{value}'; expected safe or unsafe"
+        )),
+    }
+}
+
+fn parse_benchmark_source(value: &str) -> Result<BenchmarkBaselineSource, String> {
+    match value {
+        "mjai" | "raw" | "raw_mjai" => Ok(BenchmarkBaselineSource::Mjai),
+        "bc-shards" | "bc_shards" | "shards" => Ok(BenchmarkBaselineSource::BcShards),
+        "both" => Ok(BenchmarkBaselineSource::Both),
+        _ => Err(format!(
+            "unsupported --bench-source value '{value}'; expected mjai, bc-shards, or both"
+        )),
+    }
+}
+
+fn parse_experimental_backend(value: &str) -> Result<ExperimentalTrainBackend, String> {
+    match value {
+        "libtorch" | "tch" => Ok(ExperimentalTrainBackend::LibTorch),
+        "burn-cuda" | "burn_cuda" | "cuda" => Ok(ExperimentalTrainBackend::BurnCuda),
+        _ => Err(format!(
+            "unsupported --experimental-backend value '{value}'; expected libtorch or burn-cuda"
         )),
     }
 }
@@ -245,7 +267,7 @@ fn parse_preflight_bench_candidate_tuples(raw: &str) -> Result<Vec<PreflightBenc
 
 pub fn usage(program: &str) -> String {
     format!(
-        "Usage:\n  {program} <config.yaml>\n  {program} --preflight [--device <cpu|cuda[:N]>] [--output-dir <dir>] [--pf-candidate-tuples <batch:ring:threads:prefetch,...>] [--pf-warmup-steps <N>] [--pf-measure-steps <N>] [--pf-repetitions <N>] [--pf-output md]\n  {program} --list-devices\n  {program} <config.yaml> --delta-q-promotion [--delta-q-baseline-checkpoint <path>]\n  {program} <config.yaml> --probe-kind <train|validation|rl_games|rl_microbatch> --probe-candidate-microbatch <N> [--probe-warmup-steps <N>] [--probe-measure-steps <N>]\n"
+        "Usage:\n  {program} <config.yaml>\n  {program} --benchmark-baseline --bench-source <mjai|bc-shards|both> (--data-dir <dir>|--bc-shards-manifest <path>) [--output-dir <dir>] [--device <cpu|cuda[:N]>] [--bench-max-games <N>] [--bench-steps <N>]\n  {program} --preflight [--device <cpu|cuda[:N]>] [--output-dir <dir>] [--pf-candidate-tuples <batch:ring:threads:prefetch,...>] [--pf-warmup-steps <N>] [--pf-measure-steps <N>] [--pf-repetitions <N>] [--pf-output md]\n  {program} --list-devices\n  {program} <config.yaml> --delta-q-promotion [--delta-q-baseline-checkpoint <path>]\n  {program} <config.yaml> --probe-kind <train|validation|rl_games|rl_microbatch> --probe-candidate-microbatch <N> [--probe-warmup-steps <N>] [--probe-measure-steps <N>]\n"
     )
 }
 
@@ -292,10 +314,12 @@ where
             config_path: None,
             list_devices: true,
             preflight: None,
+            benchmark_baseline: None,
             delta_q_promotion: false,
             delta_q_baseline_checkpoint: None,
             probe_only: None,
             probe_child: None,
+            experimental_backend: ExperimentalTrainBackend::LibTorch,
         });
     }
     let mut config_path = None;
@@ -323,6 +347,23 @@ where
     let mut delta_q_baseline_checkpoint = None;
     let mut preflight_output_dir = PathBuf::from("preflight_bench");
     let mut preflight_device = default_device();
+    let mut benchmark_enabled = false;
+    let mut benchmark_source = BenchmarkBaselineSource::Both;
+    let mut benchmark_data_dir = None;
+    let mut benchmark_bc_shards_manifest = None;
+    let mut benchmark_output_dir = PathBuf::from("benchmark_baseline");
+    let mut benchmark_device = default_device();
+    let mut benchmark_max_games = 5_000usize;
+    let mut benchmark_max_train_steps = 30usize;
+    let mut benchmark_batch_size = 2048usize;
+    let mut benchmark_microbatch_size = 256usize;
+    let mut benchmark_validation_microbatch_size = 128usize;
+    let mut benchmark_num_threads = 20usize;
+    let mut benchmark_train_threads = 8usize;
+    let mut benchmark_queue_bound = 256usize;
+    let mut benchmark_shard_samples = 100_000usize;
+    let mut benchmark_train_fraction = 0.9f32;
+    let mut experimental_backend = ExperimentalTrainBackend::LibTorch;
     while let Some(arg) = pending_arg.take().or_else(|| args.next()) {
         let normalized = normalize_long_flag(&arg);
         if !arg.starts_with('-') {
@@ -340,6 +381,32 @@ where
                     "--list-devices cannot be combined with config path or train mode flags"
                         .to_string(),
                 );
+            }
+            "--benchmark-baseline" | "--auto-benchmark" => benchmark_enabled = true,
+            "--data-dir" => {
+                benchmark_data_dir = Some(PathBuf::from(
+                    args.next()
+                        .ok_or_else(|| "missing value for --data-dir".to_string())?,
+                ));
+            }
+            "--bc-shards-manifest" => {
+                benchmark_bc_shards_manifest =
+                    Some(PathBuf::from(args.next().ok_or_else(|| {
+                        "missing value for --bc-shards-manifest".to_string()
+                    })?));
+            }
+            "--bench-source" => {
+                benchmark_source = parse_benchmark_source(
+                    &args
+                        .next()
+                        .ok_or_else(|| "missing value for --bench-source".to_string())?,
+                )?;
+            }
+            "--experimental-backend" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --experimental-backend".to_string())?;
+                experimental_backend = parse_experimental_backend(&value)?;
             }
             "--preflight" => preflight_enabled = true,
             "--preflight-mode" => {
@@ -387,17 +454,26 @@ where
                 preflight_config.bench_output = value;
             }
             "--output-dir" => {
-                preflight_flag_seen = true;
                 let value = args
                     .next()
                     .ok_or_else(|| "missing value for --output-dir".to_string())?;
-                preflight_output_dir = PathBuf::from(value);
+                if preflight_enabled || !benchmark_enabled {
+                    preflight_flag_seen = true;
+                    preflight_output_dir = PathBuf::from(value);
+                } else {
+                    benchmark_output_dir = PathBuf::from(value);
+                }
             }
             "--device" => {
-                preflight_flag_seen = true;
-                preflight_device = args
+                let value = args
                     .next()
                     .ok_or_else(|| "missing value for --device".to_string())?;
+                if preflight_enabled || !benchmark_enabled {
+                    preflight_flag_seen = true;
+                    preflight_device = value;
+                } else {
+                    benchmark_device = value;
+                }
             }
             "--pf-min-microbatch" => {
                 preflight_flag_seen = true;
@@ -665,6 +741,52 @@ where
                     .unsafe_candidate_warmup_steps
                     .extend(parse_usize_range_list("--pf-unsafe-warmup-steps", &value)?);
             }
+            "--bench-max-games" => {
+                benchmark_max_games =
+                    parse_usize_flag_allowing_zero("--bench-max-games", args.next(), false)?;
+            }
+            "--bench-steps" => {
+                benchmark_max_train_steps =
+                    parse_usize_flag_allowing_zero("--bench-steps", args.next(), false)?;
+            }
+            "--bench-batch-size" => {
+                benchmark_batch_size =
+                    parse_usize_flag_allowing_zero("--bench-batch-size", args.next(), false)?;
+            }
+            "--bench-microbatch-size" => {
+                benchmark_microbatch_size =
+                    parse_usize_flag_allowing_zero("--bench-microbatch-size", args.next(), false)?;
+            }
+            "--bench-validation-microbatch-size" => {
+                benchmark_validation_microbatch_size = parse_usize_flag_allowing_zero(
+                    "--bench-validation-microbatch-size",
+                    args.next(),
+                    false,
+                )?;
+            }
+            "--bench-num-threads" => {
+                benchmark_num_threads =
+                    parse_usize_flag_allowing_zero("--bench-num-threads", args.next(), false)?;
+            }
+            "--bench-train-threads" => {
+                benchmark_train_threads =
+                    parse_usize_flag_allowing_zero("--bench-train-threads", args.next(), false)?;
+            }
+            "--bench-queue-bound" => {
+                benchmark_queue_bound =
+                    parse_usize_flag_allowing_zero("--bench-queue-bound", args.next(), false)?;
+            }
+            "--bench-shard-samples" => {
+                benchmark_shard_samples =
+                    parse_usize_flag_allowing_zero("--bench-shard-samples", args.next(), false)?;
+            }
+            "--bench-train-fraction" => {
+                benchmark_train_fraction = args
+                    .next()
+                    .ok_or_else(|| "missing value for --bench-train-fraction".to_string())?
+                    .parse::<f32>()
+                    .map_err(|err| format!("invalid --bench-train-fraction: {err}"))?;
+            }
             "--pf-rl-min-free-memory-bytes" => {
                 preflight_flag_seen = true;
                 preflight_config.rl_probe_min_free_memory_bytes = parse_u64_flag_allowing_zero(
@@ -777,6 +899,66 @@ where
     } else {
         None
     };
+    let benchmark_baseline = if benchmark_enabled {
+        if config_path.is_some() {
+            return Err("--benchmark-baseline does not accept a config path".to_string());
+        }
+        if preflight_enabled {
+            return Err("--benchmark-baseline cannot be combined with --preflight".to_string());
+        }
+        if matches!(experimental_backend, ExperimentalTrainBackend::BurnCuda) {
+            if !(0.0..=1.0).contains(&benchmark_train_fraction) || benchmark_train_fraction == 0.0 {
+                return Err(
+                    "--bench-train-fraction must be greater than 0 and at most 1 for burn-cuda probe"
+                        .to_string(),
+                );
+            }
+        } else if !(0.0..1.0).contains(&benchmark_train_fraction) {
+            return Err(
+                "--bench-train-fraction must be greater than 0 and less than 1".to_string(),
+            );
+        }
+        let needs_mjai = matches!(
+            benchmark_source,
+            BenchmarkBaselineSource::Mjai | BenchmarkBaselineSource::Both
+        );
+        let needs_existing_shards = matches!(benchmark_source, BenchmarkBaselineSource::BcShards);
+        let data_dir = benchmark_data_dir.clone();
+        let bc_shards_manifest_path = benchmark_bc_shards_manifest.clone();
+        if needs_mjai && data_dir.is_none() {
+            return Err("--bench-source mjai/both requires --data-dir <dir>".to_string());
+        }
+        if needs_existing_shards && bc_shards_manifest_path.is_none() {
+            return Err(
+                "--bench-source bc-shards requires --bc-shards-manifest <path>".to_string(),
+            );
+        }
+        Some(BenchmarkBaselineCliOptions {
+            data_dir,
+            bc_shards_manifest_path,
+            source: benchmark_source,
+            output_dir: benchmark_output_dir.clone(),
+            device: benchmark_device.clone(),
+            max_games: benchmark_max_games,
+            max_train_steps: benchmark_max_train_steps,
+            batch_size: benchmark_batch_size,
+            microbatch_size: benchmark_microbatch_size,
+            validation_microbatch_size: benchmark_validation_microbatch_size,
+            num_threads: benchmark_num_threads,
+            train_threads: benchmark_train_threads,
+            queue_bound: benchmark_queue_bound,
+            shard_samples: benchmark_shard_samples,
+            train_fraction: benchmark_train_fraction,
+            experimental_backend,
+        })
+    } else {
+        if benchmark_data_dir.is_some() || benchmark_bc_shards_manifest.is_some() {
+            return Err(
+                "--data-dir/--bc-shards-manifest requires --benchmark-baseline".to_string(),
+            );
+        }
+        None
+    };
 
     if preflight.is_some()
         && (probe_kind.is_some()
@@ -788,6 +970,19 @@ where
     {
         return Err(format!(
             "{}\n--preflight cannot be combined with probe-only flags",
+            usage(&program)
+        ));
+    }
+    if benchmark_baseline.is_some()
+        && (probe_kind.is_some()
+            || probe_result_path.is_some()
+            || probe_results_path.is_some()
+            || probe_attempts.is_some()
+            || delta_q_promotion
+            || delta_q_baseline_checkpoint.is_some())
+    {
+        return Err(format!(
+            "{}\n--benchmark-baseline cannot be combined with probe-only or promotion flags",
             usage(&program)
         ));
     }
@@ -837,15 +1032,18 @@ where
             config_path,
             list_devices: false,
             preflight,
+            benchmark_baseline,
             delta_q_promotion,
             delta_q_baseline_checkpoint,
             probe_only: None,
             probe_child: None,
+            experimental_backend,
         }),
         (Some(kind), Some(candidate_microbatch), None, None, None) => Ok(TrainCli {
             config_path: Some(config_path.ok_or_else(|| usage(&program))?),
             list_devices: false,
             preflight: None,
+            benchmark_baseline: None,
             delta_q_promotion: false,
             delta_q_baseline_checkpoint: None,
             probe_only: Some(ProbeCliRequest {
@@ -855,11 +1053,13 @@ where
                 measure_steps,
             }),
             probe_child: None,
+            experimental_backend,
         }),
         (Some(kind), Some(candidate_microbatch), Some(result_path), None, None) => Ok(TrainCli {
             config_path: Some(config_path.ok_or_else(|| usage(&program))?),
             list_devices: false,
             preflight: None,
+            benchmark_baseline: None,
             delta_q_promotion: false,
             delta_q_baseline_checkpoint: None,
             probe_only: None,
@@ -875,12 +1075,14 @@ where
                 discovery_summary_path: probe_discovery_summary_path.clone(),
                 discovery_index_path: probe_discovery_index_path.clone(),
             })),
+            experimental_backend,
         }),
         (Some(kind), Some(candidate_microbatch), None, Some(results_path), Some(attempts)) => {
             Ok(TrainCli {
                 config_path: Some(config_path.ok_or_else(|| usage(&program))?),
                 list_devices: false,
                 preflight: None,
+                benchmark_baseline: None,
                 delta_q_promotion: false,
                 delta_q_baseline_checkpoint: None,
                 probe_only: None,
@@ -897,6 +1099,7 @@ where
                     discovery_summary_path: probe_discovery_summary_path,
                     discovery_index_path: probe_discovery_index_path,
                 })),
+                experimental_backend,
             })
         }
         _ => Err(format!(

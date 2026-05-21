@@ -1,6 +1,8 @@
 //! Execution-owned runtime configuration adapters.
 
 use std::env;
+#[cfg(feature = "burn-cuda")]
+use std::path::PathBuf;
 
 use burn::backend::libtorch::LibTorchDevice;
 use hydra_model::model::HydraModelConfig;
@@ -28,6 +30,68 @@ pub fn parse_train_device(value: &str) -> Result<LibTorchDevice, String> {
     }
     Err(format!(
         "unsupported HYDRA_TRAIN_DEVICE={value}; expected cpu, cuda, or cuda:<index>"
+    ))
+}
+
+#[cfg(feature = "burn-cuda")]
+/// Parses the train device string into a native Burn CUDA device.
+pub fn parse_burn_cuda_device(value: &str) -> Result<burn::backend::cuda::CudaDevice, String> {
+    let value = value.trim().to_ascii_lowercase();
+    if value == "cuda" {
+        return Ok(burn::backend::cuda::CudaDevice::new(0));
+    }
+    if let Some(index) = value.strip_prefix("cuda:") {
+        let index = index.parse::<usize>().map_err(|_| {
+            format!("unsupported Burn CUDA device={value}; expected cuda or cuda:<index>")
+        })?;
+        return Ok(burn::backend::cuda::CudaDevice::new(index));
+    }
+    Err(format!(
+        "unsupported Burn CUDA device={value}; expected cuda or cuda:<index>"
+    ))
+}
+
+#[cfg(feature = "burn-cuda")]
+/// Resolves the native Burn CUDA device, honoring `HYDRA_TRAIN_DEVICE`.
+pub fn burn_cuda_device(config_device: &str) -> Result<burn::backend::cuda::CudaDevice, String> {
+    let value = match env::var("HYDRA_TRAIN_DEVICE") {
+        Ok(value) => value,
+        Err(_) => config_device.to_string(),
+    };
+    parse_burn_cuda_device(&value)
+}
+
+#[cfg(feature = "burn-cuda")]
+/// Verifies CubeCL's NVRTC compile path can see CUDA runtime headers.
+pub fn validate_burn_cuda_headers() -> Result<(), String> {
+    let mut candidates: Vec<(&'static str, PathBuf)> = Vec::new();
+    if let Some(path) = env::var_os("CUDA_PATH") {
+        candidates.push(("CUDA_PATH", PathBuf::from(path)));
+    }
+    if let Some(path) = env::var_os("CUDA_HOME") {
+        candidates.push(("CUDA_HOME", PathBuf::from(path)));
+    }
+    candidates.push(("fallback", PathBuf::from("/usr/local/cuda")));
+    candidates.push(("fallback", PathBuf::from("/opt/cuda")));
+    candidates.push(("fallback", PathBuf::from("/usr")));
+
+    let mut probed = Vec::with_capacity(candidates.len());
+    for (source, root) in candidates {
+        let header = root.join("include/cuda_runtime.h");
+        let exists = header.exists();
+        probed.push(format!(
+            "{source}={} -> {} exists={exists}",
+            root.display(),
+            header.display()
+        ));
+        if source == "CUDA_PATH" && exists {
+            return Ok(());
+        }
+    }
+
+    Err(format!(
+        "Burn CUDA probe requires CubeCL/NVRTC-visible cuda_runtime.h. CubeCL 0.10 reads CUDA_PATH/include; set CUDA_PATH to a CUDA toolkit root. Probed: {}",
+        probed.join("; ")
     ))
 }
 

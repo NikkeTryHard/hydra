@@ -46,6 +46,9 @@ File uses status vocabulary from `research/design/HYDRA_RECONCILIATION.md`.
 - DeltaQ promotion artifacts now persist explicit `arena_decision` plus `arena_report`, but lane still **not** default-on.
 - `validation_gates` config exists for experiments; disabled by default and gates best-checkpoint promotion, not resume checkpoints.
 
+### Experimental / parked
+
+- `burn-cuda-probe` is explicit feature-gated, operator-selected BC-shard FP32 probe only. It never runs unless built with feature `burn-cuda-probe` and selected with `--experimental-backend burn-cuda`. LibTorch remains default/production backend. Current proof: Burn-CUDA FP32 BC is functional with real microbatch gradient accumulation, but measured `~238.7 samples/s` versus LibTorch FP32 `~5801 samples/s` on same shard/batch/microbatch config. Not current throughput lane; no Nsight/kernel-count work until same-order throughput.
 ### Implemented but staged
 
 - `mixture_weight` promotion remains staged.

@@ -3,6 +3,7 @@
 //! This module owns the CLI mode selection order and default train-mode bodies
 //! without depending on the compatibility `hydra-train` crate.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -11,17 +12,24 @@ use burn::tensor::backend::{AutodiffBackend, Backend};
 use colored::Colorize;
 use hydra_model::model::HydraModelConfig;
 use hydra_train_runtime::config::{
+    BenchmarkBaselineCliOptions, BenchmarkBaselineSource, ExperimentalTrainBackend, PrecisionMode,
     PreflightCliOptions, TrainCli, TrainConfig, display_num_threads,
 };
 use hydra_train_runtime::config_runtime::validate_preflight_config;
 
 use crate::config_runtime::{configure_threads, device_label, validate_config};
+use hydra_bc_shards::BcShardSplitMode;
+use hydra_replay_loader::mjai_loader::SidecarProvenance;
 use hydra_train_runtime::preflight::{ProbeKind, ProbeResult};
 use hydra_train_runtime::probe_request::{ProbeRequest, probe_request_from_cli};
+use hydra_train_runtime::timing_metrics::{
+    TimingMetricsOptions, extract_timing_metrics_from_paths,
+};
 use hydra_train_types::config::BCTrainerConfig;
 
 use crate::advisory::{AdvisoryDeduper, AdvisoryEvent, startup_runtime_advisories};
 use crate::artifacts::{BcArtifactPaths, append_advisory_event_to_writer};
+use crate::bc_shard_builder::{BuildBcShardsConfig, build_bc_shards};
 use crate::bootstrap::{
     RlTrainingBootstrap, RlTrainingRuntime, TrainBackend, TrainingBootstrap, TrainingReaders,
     TrainingRuntime, initialize_rl_training_bootstrap, initialize_training_bootstrap,
@@ -33,13 +41,455 @@ use crate::preflight_runtime::{run_preflight_bench, run_probe_ladder_only};
 use crate::presentation::{
     BcHyperparamSummaryInput, bc_hyperparam_summary, format_advisory_line,
     format_preflight_bench_markdown_table, format_preflight_selection_line,
-    format_probe_results_table, format_status_line, format_timed_phase_message, print_banner_field,
-    print_header_block, timestamped,
+    format_probe_results_table, format_status_line, format_timed_phase_message,
+    format_train_timing_markdown_table, print_banner_field, print_header_block, timestamped,
 };
 use crate::probe_summary::{best_probe_summary, format_probe_selection_summary, probe_kind_name};
 use crate::resume::BestValidation;
 use crate::rl_runner::run_rl_training_loop;
 use crate::validation_runner::materialize_validation_samples;
+
+fn benchmark_train_config(
+    options: &BenchmarkBaselineCliOptions,
+    data_dir: PathBuf,
+    output_dir: PathBuf,
+    shard_manifest_path: Option<PathBuf>,
+) -> TrainConfig {
+    let shard_input = shard_manifest_path.is_some();
+    TrainConfig {
+        data_dir,
+        output_dir,
+        num_epochs: 1,
+        batch_size: options.batch_size,
+        microbatch_size: Some(options.microbatch_size),
+        validation_microbatch_size: Some(options.validation_microbatch_size),
+        bc_shards_manifest_path: shard_manifest_path,
+        shard_prefetch_depth: Some(2),
+        train_fraction: options.train_fraction,
+        augment: true,
+        seed: 42,
+        device: options.device.clone(),
+        precision_mode: PrecisionMode::Bf16Autocast,
+        buffer_games: 512,
+        buffer_samples: 8192,
+        num_threads: Some(if shard_input {
+            1
+        } else {
+            options.train_threads
+        }),
+        tensorboard: false,
+        archive_queue_bound: if shard_input { 8 } else { options.queue_bound },
+        validation_every_n_epochs: 999,
+        max_skip_logs_per_source: 4,
+        log_every_n_steps: 5,
+        validate_every_n_steps: 1_000_000,
+        checkpoint_every_n_steps: 1_000_000,
+        max_train_steps: Some(options.max_train_steps),
+        max_validation_samples: Some(1),
+        ..TrainConfig::default_preflight_bench()
+    }
+}
+
+fn write_benchmark_config(path: &Path, config: &TrainConfig) -> Result<(), String> {
+    let yaml = serde_yaml::to_string(config).map_err(|err| {
+        format!(
+            "failed to serialize benchmark config {}: {err}",
+            path.display()
+        )
+    })?;
+    fs::write(path, yaml)
+        .map_err(|err| format!("failed to write benchmark config {}: {err}", path.display()))
+}
+
+struct BenchmarkTrainResult {
+    label: &'static str,
+    step_log_path: PathBuf,
+}
+
+struct BenchmarkRunSummary {
+    build_report: Option<String>,
+    train_reports: Vec<BenchmarkTrainResult>,
+    elapsed_seconds: f64,
+}
+
+fn format_optional_f64(value: Option<f64>, decimals: usize) -> String {
+    value
+        .map(|value| format!("{value:.decimals$}"))
+        .unwrap_or_else(|| "--".to_string())
+}
+
+fn format_build_report(build: &crate::bc_shard_builder::BcShardBuildOutput) -> Option<String> {
+    let report = build.report.as_ref()?;
+    Some(format!(
+        "| elapsed s | loaded | skipped | samples | samples/s | games/s | input MiB/s | output MiB/s | bytes/sample | manifest |\n|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|\n| {:.2} | {} | {} | {} | {:.2} | {} | {} | {:.2} | {} | {} |",
+        report.elapsed_seconds,
+        report.build.loaded_games,
+        report.build.skipped_games,
+        report.build.total_samples,
+        report.rates.samples_per_second,
+        format_optional_f64(report.rates.games_per_second, 2),
+        format_optional_f64(report.rates.input_mib_per_second, 2),
+        report.rates.output_mib_per_second,
+        format_optional_f64(report.output.bytes_per_sample, 1),
+        build.manifest_path.display(),
+    ))
+}
+
+struct EnvVarGuard {
+    key: &'static str,
+    old: Option<std::ffi::OsString>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: &str) -> Self {
+        let old = std::env::var_os(key);
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        Self { key, old }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        unsafe {
+            if let Some(value) = self.old.as_ref() {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+}
+
+fn run_quiet_training(config_path: &Path, config: TrainConfig) -> Result<(), String> {
+    let _quiet = EnvVarGuard::set("HYDRA_BENCHMARK_QUIET", "1");
+    handle_training_mode(config_path, config)
+}
+
+#[cfg(feature = "burn-cuda")]
+fn run_burn_cuda_probe(
+    config: &TrainConfig,
+    options: &BenchmarkBaselineCliOptions,
+    manifest_path: &Path,
+) -> Result<BurnCudaProbeReport, String> {
+    use burn::optim::{GradientsAccumulator, GradientsParams, Optimizer};
+    use burn::prelude::ElementConversion;
+
+    use crate::bootstrap::BurnCudaTrainBackend;
+    use crate::config_runtime::{
+        burn_cuda_device, trainer_config_from_train_config, validate_burn_cuda_headers,
+    };
+    use crate::epoch_runner::materialize_host_batch_owned;
+    use crate::losses::HydraLoss;
+    use crate::model::{HydraModel, HydraModelInit, HydraTrainModelExt};
+    use hydra_bc_shards::{BcShardSplit, load_bc_shard_reader};
+    use hydra_train_runtime::loss_policy::{build_bc_exit_config, build_loss_config};
+    use hydra_train_runtime::schedule::{TrainerScheduleConfig, effective_lr};
+
+    if !matches!(config.precision_mode, PrecisionMode::Fp32) {
+        return Err("Burn CUDA probe is FP32-only; set precision_mode: fp32".to_string());
+    }
+    if !config.device.trim().eq_ignore_ascii_case("cuda")
+        && !config.device.trim().starts_with("cuda:")
+    {
+        return Err("Burn CUDA probe requires device cuda or cuda:<index>".to_string());
+    }
+    validate_burn_cuda_headers()?;
+
+    let device = burn_cuda_device(&config.device)?;
+    let reader = load_bc_shard_reader(manifest_path, BcShardSplit::Train)?;
+    if reader.sample_count() < config.batch_size {
+        return Err(format!(
+            "Burn CUDA probe needs at least one full batch: have {} need {}",
+            reader.sample_count(),
+            config.batch_size
+        ));
+    }
+
+    let train_cfg = trainer_config_from_train_config(config);
+    let mut model = Some(HydraModelConfig::learner().init::<BurnCudaTrainBackend>(&device));
+    let mut optimizer = train_cfg.optimizer_config().init();
+    let loss_fn =
+        HydraLoss::<BurnCudaTrainBackend>::new(build_loss_config(config.advanced_loss.as_ref())?);
+    let exit_cfg = build_bc_exit_config(config.advanced_loss.as_ref());
+    let mut scratch = reader.new_scratch(config.batch_size);
+
+    let steps = options.max_train_steps.max(1);
+    let mut losses = Vec::with_capacity(steps);
+    let started = Instant::now();
+    for step in 0..steps {
+        let start = (step * config.batch_size) % (reader.sample_count() - config.batch_size + 1);
+        reader.collate_host_batch_range_into(
+            start,
+            config.batch_size,
+            config.augment,
+            &mut scratch,
+        )?;
+        let host_batch = scratch.take_batch();
+        let shard_batch = materialize_host_batch_owned::<BurnCudaTrainBackend>(host_batch, &device);
+        let schedule = TrainerScheduleConfig::new(
+            train_cfg.lr,
+            train_cfg.min_learning_rate,
+            train_cfg.warmup_steps,
+        );
+        let lr = effective_lr(schedule, step, steps);
+        let batch_size = shard_batch.batch.actions.dims()[0];
+        let microbatch_size = options.microbatch_size.min(batch_size).max(1);
+        let logical_batch_len = batch_size.max(1) as f32;
+        let mut accumulator: GradientsAccumulator<HydraModel<BurnCudaTrainBackend>> =
+            GradientsAccumulator::new();
+        let mut step_loss = 0.0f64;
+        for chunk_start in (0..batch_size).step_by(microbatch_size) {
+            let chunk_end = (chunk_start + microbatch_size).min(batch_size);
+            #[allow(
+                clippy::single_range_in_vec_init,
+                reason = "Burn slice API expects a one-element range slice"
+            )]
+            let range = [chunk_start..chunk_end];
+            let obs_chunk = shard_batch.obs.clone().slice(range.clone());
+            let batch_chunk = crate::data::sample::MjaiBcBatch {
+                actions: shard_batch.batch.actions.clone().slice(range.clone()),
+                exit_target: shard_batch
+                    .batch
+                    .exit_target
+                    .as_ref()
+                    .map(|tensor| tensor.clone().slice(range.clone())),
+                exit_mask: shard_batch
+                    .batch
+                    .exit_mask
+                    .as_ref()
+                    .map(|tensor| tensor.clone().slice(range.clone())),
+            };
+            let targets_chunk = shard_batch.targets.slice_batch(chunk_start, chunk_end);
+            let model_ref = model
+                .as_ref()
+                .ok_or_else(|| "Burn CUDA probe model slot should stay populated".to_string())?;
+            let output = model_ref.forward_train_with_warmup_train(obs_chunk, &loss_fn.config, &[]);
+            let loss = loss_fn.bc_train_loss(
+                &output,
+                &targets_chunk,
+                batch_chunk.exit_target.as_ref(),
+                batch_chunk.exit_mask.as_ref(),
+                &exit_cfg,
+            );
+            let chunk_weight = (chunk_end - chunk_start) as f32 / logical_batch_len;
+            let total = loss.total;
+            let weighted_total = total.clone() * chunk_weight;
+            let chunk_loss = total
+                .try_into_scalar()
+                .map_err(|err| format!("Burn CUDA probe failed during loss readback: {err}"))?
+                .elem::<f64>();
+            if !chunk_loss.is_finite() {
+                return Err(format!(
+                    "Burn CUDA probe produced non-finite loss at step {step}, chunk {chunk_start}..{chunk_end}: {chunk_loss}"
+                ));
+            }
+            step_loss += chunk_loss * f64::from(chunk_weight);
+            let grads = weighted_total.backward();
+            let grads = GradientsParams::from_grads(grads, model_ref);
+            accumulator.accumulate(model_ref, grads);
+        }
+        let current_model = model
+            .take()
+            .ok_or_else(|| "Burn CUDA probe model slot should stay populated".to_string())?;
+        model = Some(optimizer.step(lr, current_model, accumulator.grads()));
+        if !step_loss.is_finite() {
+            return Err(format!(
+                "Burn CUDA probe produced non-finite weighted loss at step {step}: {step_loss}"
+            ));
+        }
+        losses.push(step_loss);
+    }
+
+    Ok(BurnCudaProbeReport {
+        steps,
+        samples: steps * config.batch_size,
+        elapsed_seconds: started.elapsed().as_secs_f64(),
+        first_loss: losses[0],
+        last_loss: *losses.last().unwrap_or(&losses[0]),
+    })
+}
+
+#[cfg(feature = "burn-cuda")]
+struct BurnCudaProbeReport {
+    steps: usize,
+    samples: usize,
+    elapsed_seconds: f64,
+    first_loss: f64,
+    last_loss: f64,
+}
+
+#[cfg(feature = "burn-cuda")]
+fn format_burn_cuda_probe_report(report: &BurnCudaProbeReport) -> String {
+    let samples_per_second = report.samples as f64 / report.elapsed_seconds.max(f64::EPSILON);
+    format!(
+        "| backend | steps | samples | samples/s | first loss | last loss |\n|---|---:|---:|---:|---:|---:|\n| burn-cuda fp32 | {} | {} | {:.2} | {:.6} | {:.6} |",
+        report.steps, report.samples, samples_per_second, report.first_loss, report.last_loss,
+    )
+}
+
+/// Runs configurable no-config benchmark and prints only final Markdown tables.
+pub fn handle_benchmark_baseline_mode(options: BenchmarkBaselineCliOptions) -> Result<(), String> {
+    let started = Instant::now();
+    fs::remove_dir_all(&options.output_dir).ok();
+    fs::create_dir_all(&options.output_dir).map_err(|err| {
+        format!(
+            "failed to create benchmark output dir {}: {err}",
+            options.output_dir.display()
+        )
+    })?;
+
+    let mut summary = BenchmarkRunSummary {
+        build_report: None,
+        train_reports: Vec::new(),
+        elapsed_seconds: 0.0,
+    };
+
+    let shard_manifest = match options.source {
+        BenchmarkBaselineSource::Mjai | BenchmarkBaselineSource::Both => {
+            let data_dir = options.data_dir.clone().ok_or_else(|| {
+                "benchmark source mjai/both requires data_dir in parsed options".to_string()
+            })?;
+            let build = build_bc_shards(&BuildBcShardsConfig {
+                input: data_dir,
+                output_dir: options.output_dir.join("bc_shards"),
+                manifest_name: "bc_shards_manifest.json".to_string(),
+                train_fraction: options.train_fraction,
+                shard_samples: options.shard_samples,
+                split_mode: BcShardSplitMode::Both,
+                max_games: Some(options.max_games),
+                num_threads: Some(options.num_threads),
+                queue_bound: options.queue_bound,
+                report_name: Some("report.json".to_string()),
+                exit_provenance: SidecarProvenance::default(),
+                delta_q_provenance: SidecarProvenance::default(),
+                ..BuildBcShardsConfig::default()
+            })
+            .map_err(|err| format!("benchmark shard build failed: {err}"))?;
+            summary.build_report = format_build_report(&build);
+            Some(build.manifest_path)
+        }
+        BenchmarkBaselineSource::BcShards => options.bc_shards_manifest_path.clone(),
+    };
+
+    if matches!(
+        options.experimental_backend,
+        ExperimentalTrainBackend::BurnCuda
+    ) {
+        #[cfg(feature = "burn-cuda")]
+        {
+            let manifest_path = shard_manifest.ok_or_else(|| {
+                "Burn CUDA probe requires --bench-source bc-shards or both with a shard manifest".to_string()
+            })?;
+            let data_dir = options
+                .data_dir
+                .clone()
+                .unwrap_or_else(|| options.output_dir.join("bc_shards_input_placeholder"));
+            let output_dir = options.output_dir.join("burn_cuda_probe");
+            let mut probe_config =
+                benchmark_train_config(&options, data_dir, output_dir, Some(manifest_path.clone()));
+            probe_config.precision_mode = PrecisionMode::Fp32;
+            let report = run_burn_cuda_probe(&probe_config, &options, &manifest_path)?;
+            summary.elapsed_seconds = started.elapsed().as_secs_f64();
+            println!("# Hydra benchmark results\n");
+            if let Some(build_report) = summary.build_report.as_ref() {
+                println!("## Shard build\n");
+                println!("{build_report}\n");
+            }
+            println!("## Burn CUDA FP32 BC shard probe\n");
+            println!("{}\n", format_burn_cuda_probe_report(&report));
+            println!(
+                "## Wall clock\n\n| elapsed s | output dir |\n|---:|---|\n| {:.2} | {} |",
+                summary.elapsed_seconds,
+                options.output_dir.display()
+            );
+            return Ok(());
+        }
+        #[cfg(not(feature = "burn-cuda"))]
+        {
+            return Err(
+                "--experimental-backend burn-cuda requires hydra-train feature burn-cuda-probe"
+                    .to_string(),
+            );
+        }
+    }
+
+    if matches!(
+        options.source,
+        BenchmarkBaselineSource::Mjai | BenchmarkBaselineSource::Both
+    ) {
+        let data_dir = options.data_dir.clone().ok_or_else(|| {
+            "benchmark source mjai/both requires data_dir in parsed options".to_string()
+        })?;
+        let raw_output_dir = options.output_dir.join("raw_gpu");
+        let raw_config = benchmark_train_config(&options, data_dir, raw_output_dir.clone(), None);
+        let raw_config_path = options.output_dir.join("raw_gpu.yaml");
+        write_benchmark_config(&raw_config_path, &raw_config)?;
+        run_quiet_training(&raw_config_path, raw_config)?;
+        summary.train_reports.push(BenchmarkTrainResult {
+            label: "raw MJAI train",
+            step_log_path: BcArtifactPaths::new(&raw_output_dir, 0).step_log_path,
+        });
+    }
+
+    if matches!(
+        options.source,
+        BenchmarkBaselineSource::BcShards | BenchmarkBaselineSource::Both
+    ) {
+        let manifest_path = shard_manifest.ok_or_else(|| {
+            "benchmark source bc-shards/both requires a shard manifest".to_string()
+        })?;
+        let data_dir = options
+            .data_dir
+            .clone()
+            .unwrap_or_else(|| options.output_dir.join("bc_shards_input_placeholder"));
+        let shard_output_dir = options.output_dir.join("shard_gpu");
+        let shard_config = benchmark_train_config(
+            &options,
+            data_dir,
+            shard_output_dir.clone(),
+            Some(manifest_path),
+        );
+        let shard_config_path = options.output_dir.join("shard_gpu.yaml");
+        write_benchmark_config(&shard_config_path, &shard_config)?;
+        run_quiet_training(&shard_config_path, shard_config)?;
+        summary.train_reports.push(BenchmarkTrainResult {
+            label: "BC shard train",
+            step_log_path: BcArtifactPaths::new(&shard_output_dir, 0).step_log_path,
+        });
+    }
+
+    summary.elapsed_seconds = started.elapsed().as_secs_f64();
+
+    println!("# Hydra benchmark results\n");
+    if let Some(build_report) = summary.build_report.as_ref() {
+        println!("## Shard build\n");
+        println!("{build_report}\n");
+    }
+    for train_report in &summary.train_reports {
+        let report = extract_timing_metrics_from_paths(
+            &[train_report.step_log_path.clone()],
+            &[],
+            &TimingMetricsOptions {
+                run_id: None,
+                skip_initial_rows: 1,
+                min_global_step: None,
+            },
+        )?;
+        println!("## {}\n", train_report.label);
+        println!(
+            "{}\n",
+            format_train_timing_markdown_table(train_report.label, &report)
+        );
+    }
+    println!(
+        "## Wall clock\n\n| elapsed s | output dir |\n|---:|---|\n| {:.2} | {} |",
+        summary.elapsed_seconds,
+        options.output_dir.display()
+    );
+    Ok(())
+}
 
 /// Runs standalone synthetic benchmark preflight from explicit CLI arguments.
 pub fn handle_preflight_mode(preflight: PreflightCliOptions) -> Result<(), String> {
@@ -375,20 +825,24 @@ where
     } = runtime;
     let TrainingReaders = readers;
 
-    print_bc_training_banner(
-        &model_config,
-        &config,
-        &artifacts,
-        &device_name,
-        &banner_stats,
-        bc_hyperparam_summary_input(&train_cfg),
-    );
-    resume.print_banner_with_effective_runtime(Some(current_runtime));
+    if std::env::var_os("HYDRA_BENCHMARK_QUIET").is_none() {
+        print_bc_training_banner(
+            &model_config,
+            &config,
+            &artifacts,
+            &device_name,
+            &banner_stats,
+            bc_hyperparam_summary_input(&train_cfg),
+        );
+        resume.print_banner_with_effective_runtime(Some(current_runtime));
+    }
     let mut advisory_deduper = AdvisoryDeduper::new();
     let startup_advisories =
         advisory_deduper.retain_new(startup_runtime_advisories(&config, microbatch_explicitness));
-    for advisory in &startup_advisories {
-        println!("{}", format_advisory_line(advisory));
+    if std::env::var_os("HYDRA_BENCHMARK_QUIET").is_none() {
+        for advisory in &startup_advisories {
+            println!("{}", format_advisory_line(advisory));
+        }
     }
     if !startup_advisories.is_empty() {
         append_advisory_event_to_writer(
@@ -538,7 +992,7 @@ pub fn handle_list_devices_mode() -> Result<(), String> {
 /// Dispatches the parsed train CLI into the selected execution mode.
 ///
 /// The order preserves the previous train binary behavior:
-/// preflight, Delta-Q promotion, probe-only, then default training. Probe-only
+/// preflight, benchmark, Delta-Q promotion, probe-only, then default training. Probe-only
 /// request defaults are resolved against the already-loaded config here so the
 /// binary no longer owns mode selection semantics.
 pub fn run_train_modes(cli: TrainCli, config: TrainConfig) -> Result<(), String> {
@@ -547,6 +1001,9 @@ pub fn run_train_modes(cli: TrainCli, config: TrainConfig) -> Result<(), String>
     }
     if let Some(preflight) = cli.preflight {
         return handle_preflight_mode(preflight);
+    }
+    if let Some(benchmark) = cli.benchmark_baseline {
+        return handle_benchmark_baseline_mode(benchmark);
     }
     let config_path = cli.config_path.as_deref().ok_or_else(|| {
         "config path is required unless --list-devices or --preflight is used".to_string()

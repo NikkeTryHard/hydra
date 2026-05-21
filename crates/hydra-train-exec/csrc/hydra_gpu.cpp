@@ -32,23 +32,21 @@ extern "C" {
 
 #if HYDRA_HAS_TORCH
 
-void hydra_set_allow_tf32_cublas(int b) {
+void hydra_set_tf32_precision(int b) {
   HYDRA_PROTECT(
-    at::globalContext().setAllowTF32CuBLAS(b != 0);
-  )
-}
-
-void hydra_set_allow_tf32_cudnn(int b) {
-  HYDRA_PROTECT(
-    at::globalContext().setAllowTF32CuDNN(b != 0);
+    if (b != 0) {
+      at::globalContext().setFloat32Precision("cuda", "matmul", "tf32");
+      at::globalContext().setFloat32Precision("cudnn", "conv", "tf32");
+    } else {
+      at::globalContext().setFloat32Precision("cuda", "matmul", "ieee");
+      at::globalContext().setFloat32Precision("cudnn", "conv", "ieee");
+    }
   )
 }
 
 #else
 
-void hydra_set_allow_tf32_cublas(int) {}
-
-void hydra_set_allow_tf32_cudnn(int) {}
+void hydra_set_tf32_precision(int) {}
 
 #endif
 

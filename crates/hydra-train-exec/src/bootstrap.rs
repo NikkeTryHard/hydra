@@ -56,6 +56,13 @@ use crate::resume::{
 /// LibTorch autodiff backend used by the train binary.
 pub type TrainBackend = burn::backend::Autodiff<burn::backend::LibTorch>;
 
+#[cfg(feature = "burn-cuda")]
+/// Experimental native Burn CUDA autodiff backend. FP32 probe-only; LibTorch remains production.
+pub type BurnCudaTrainBackend = burn::backend::Autodiff<burn::backend::cuda::Cuda<f32, i32>>;
+#[cfg(feature = "burn-cuda")]
+/// Device type used by the experimental native Burn CUDA backend.
+pub type BurnCudaDevice = burn::backend::cuda::CudaDevice;
+
 type ValidBackendOf<B> = <B as AutodiffBackend>::InnerBackend;
 
 fn validate_bc_shard_manifest_for_config(

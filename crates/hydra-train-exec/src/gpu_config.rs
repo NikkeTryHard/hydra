@@ -2,8 +2,7 @@ use std::sync::Once;
 
 #[cfg(feature = "cuda-graph")]
 unsafe extern "C" {
-    fn hydra_set_allow_tf32_cublas(b: std::ffi::c_int);
-    fn hydra_set_allow_tf32_cudnn(b: std::ffi::c_int);
+    fn hydra_set_tf32_precision(b: std::ffi::c_int);
 }
 
 static LIBTORCH_CPU_POOL_CONFIG: Once = Once::new();
@@ -60,8 +59,7 @@ pub fn apply_gpu_performance_flags(device: &str) {
             // with 10-bit mantissa. Same exponent range, no overflow risk.
             // tch-rs doesn't expose globalContext TF32 setters.
             unsafe {
-                hydra_set_allow_tf32_cublas(1);
-                hydra_set_allow_tf32_cudnn(1);
+                hydra_set_tf32_precision(1);
             }
         }
     }

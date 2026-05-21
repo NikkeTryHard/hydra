@@ -11,6 +11,7 @@ fn cli() -> TrainCli {
         config_path: Some(PathBuf::from("config.yaml")),
         list_devices: false,
         preflight: None,
+        benchmark_baseline: None,
         delta_q_promotion: false,
         delta_q_baseline_checkpoint: None,
         probe_only: None,
