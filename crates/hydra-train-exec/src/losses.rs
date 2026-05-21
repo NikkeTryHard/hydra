@@ -94,6 +94,68 @@ impl<B: Backend> HydraLoss<B> {
         BcLossResult { breakdown, total }
     }
 
+    /// Computes BC training loss from policy logits only.
+    pub fn bc_policy_only_loss(
+        &self,
+        policy_logits: Tensor<B, 2>,
+        targets: &HydraTargets<B>,
+        exit_target: Option<&Tensor<B, 2>>,
+        exit_mask: Option<&Tensor<B, 2>>,
+        exit_cfg: &BcExitConfig,
+    ) -> BcLossResult<B> {
+        let breakdown = self.policy_only_loss(policy_logits.clone(), targets);
+        let total = {
+            let _exit_scope = crate::nvtx::scope(PROFILING_STAGE_LOSS_EXIT);
+            maybe_add_exit_loss(
+                breakdown.total.clone(),
+                policy_logits,
+                exit_target,
+                exit_mask,
+                exit_cfg,
+            )
+        };
+        BcLossResult { breakdown, total }
+    }
+
+    /// Computes only policy loss and zeroes every non-policy component.
+    pub fn policy_only_loss(
+        &self,
+        policy_logits: Tensor<B, 2>,
+        targets: &HydraTargets<B>,
+    ) -> LossBreakdown<B> {
+        let l_pi = {
+            let _policy_scope = crate::nvtx::scope(PROFILING_STAGE_LOSS_POLICY_CE);
+            policy_ce(
+                policy_logits.clone(),
+                targets.policy_target.clone(),
+                targets.legal_mask.clone(),
+            )
+            .mean()
+        };
+        let zero = Tensor::<B, 1>::zeros([1], &policy_logits.device());
+        let total = {
+            let _total_scope = crate::nvtx::scope(PROFILING_STAGE_LOSS_TOTAL_COMBINE);
+            l_pi.clone() * self.config.w_pi
+        };
+        LossBreakdown {
+            policy: l_pi,
+            value: zero.clone(),
+            grp: zero.clone(),
+            tenpai: zero.clone(),
+            danger: zero.clone(),
+            opp_next: zero.clone(),
+            score_pdf: zero.clone(),
+            score_cdf: zero.clone(),
+            oracle_critic: zero.clone(),
+            belief_fields: zero.clone(),
+            mixture_weight: zero.clone(),
+            opponent_hand_type: zero.clone(),
+            delta_q: zero.clone(),
+            safety_residual: zero,
+            total,
+        }
+    }
+
     /// Computes all configured loss components and their weighted total.
     pub fn total_loss(
         &self,
@@ -543,5 +605,25 @@ mod tests {
             delta_q.grad(&grads).is_none(),
             "inactive advanced output must not receive a zero-gradient edge"
         );
+    }
+
+    #[test]
+    fn policy_only_loss_reports_zero_non_policy_components() {
+        let device = Default::default();
+        let targets = dummy_targets::<TestBackend>(&device, 2);
+        let policy_logits = Tensor::<TestBackend, 2>::zeros([2, 46], &device);
+
+        let breakdown = HydraLoss::<TestBackend>::new(HydraLossConfig::new())
+            .policy_only_loss(policy_logits, &targets);
+
+        assert!(scalar(breakdown.policy.clone()) > 0.0);
+        assert_eq!(scalar(breakdown.total.clone()), scalar(breakdown.policy));
+        assert_eq!(scalar(breakdown.value), 0.0);
+        assert_eq!(scalar(breakdown.grp), 0.0);
+        assert_eq!(scalar(breakdown.tenpai), 0.0);
+        assert_eq!(scalar(breakdown.danger), 0.0);
+        assert_eq!(scalar(breakdown.opp_next), 0.0);
+        assert_eq!(scalar(breakdown.score_pdf), 0.0);
+        assert_eq!(scalar(breakdown.score_cdf), 0.0);
     }
 }

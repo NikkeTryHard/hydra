@@ -176,6 +176,16 @@ Useful invariants for runtime/data changes:
 
 - Default training/perf runs use `device: cuda:0` (or `HYDRA_TRAIN_DEVICE=cuda:0`) when GPU exists. CPU train is super slow; use CPU only for explicit CPU-debug/compat checks. GPU accelerates model forward/backward/optimizer/H2D; raw replay, BC-shard decode, sample collation, and materialization still run on CPU workers.
 
+### CUDA profiling quick start
+
+- Evidence first. Do not optimize BC CUDA from kernel names alone; attribute by Hydra stage/source first.
+- Fixed shard baseline: prefer `output/bc-feed-bench-shards-100k/bc_shards_manifest.json`; `device: cuda:0`; `batch_size: 2048`; `microbatch_size: 1024`; `precision_mode: bf16_autocast`; `bc_head_profile: full`; push validation/checkpoint cadence out; use `max_train_steps` 30 for timing, shorter only for profiler probes.
+- Normal timing: run train once without Nsight, then `extract_timing_metrics --step-log <out>/bc/step_log.jsonl --skip-initial-rows 2 --format json`. Compare H2D, forward, loss, backward, optimizer, metric readback.
+- NVTX Nsight: set `HYDRA_NVTX=1`; if NVTX ranges missing, expose Pixi NVTX lib: `LD_LIBRARY_PATH=.pixi/envs/default/lib/python3.12/site-packages/nvidia/nvtx/lib:$LD_LIBRARY_PATH`.
+- Useful reports: `nsys stats --report nvtx_kern_sum:base ... --timeunit=us`, `nsys stats --report cuda_api_gpu_sum:base ... --timeunit=us`, and `nsys export --type sqlite`.
+- PyTorch profiler shim: build with `--features torch-profiler`; gate by env `HYDRA_TORCH_PROFILER=<trace.json>`, `HYDRA_TORCH_PROFILER_START_STEP=N`, `HYDRA_TORCH_PROFILER_STOP_STEP=N`, optional `HYDRA_TORCH_PROFILER_MODE=kineto|nvtx`. Off by default; use only for focused probes.
+- Last measured backward attribution: Mish/SE/autograd elementwise largest, then backbone conv backward, GroupNorm backward, then layout transforms. `policy_only` did not reduce backward; heads/loss were not owner. Next lane from that evidence: backbone backward design/fusion, not optimizer.
+
 ### Local throughput baseline
 
 - Use no-config auto benchmark; do not hand-write YAML for baseline runs.

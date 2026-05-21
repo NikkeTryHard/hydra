@@ -91,6 +91,13 @@ augment: true
 tensorboard: true
 ```
 
+BC head profile. Default `full` is canonical BC baseline. `policy_only` is explicit experiment/probe mode: train shard path runs backbone+policy head and policy CE only; value/GRP/tenpai/danger/opp-next/score losses log as zero because they are not computed. Do not use `policy_only` for default baseline comparisons.
+
+```yaml
+bc_head_profile: full        # default
+# bc_head_profile: policy_only
+```
+
 Explicit CUDA FP32 override:
 
 ```yaml

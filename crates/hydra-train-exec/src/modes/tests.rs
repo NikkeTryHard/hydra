@@ -16,6 +16,7 @@ fn cli() -> TrainCli {
         delta_q_baseline_checkpoint: None,
         probe_only: None,
         probe_child: None,
+        experimental_backend: hydra_train_runtime::config::ExperimentalTrainBackend::LibTorch,
     }
 }
 
@@ -46,6 +47,7 @@ fn config() -> TrainConfig {
         resume_checkpoint: None,
         seed: 0,
         advanced_loss: None,
+        bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
         validation_gates: ValidationGateConfig::default(),
         rl: None,
         bc: BcHyperparamConfig::default(),

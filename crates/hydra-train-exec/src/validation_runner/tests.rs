@@ -56,6 +56,7 @@ fn dummy_config() -> hydra_train_runtime::config::TrainConfig {
         resume_checkpoint: None,
         seed: 0,
         advanced_loss: None,
+        bc_head_profile: hydra_train_runtime::config::BcHeadProfile::Full,
         validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
         rl: None,
         bc: hydra_train_runtime::config::BcHyperparamConfig::default(),

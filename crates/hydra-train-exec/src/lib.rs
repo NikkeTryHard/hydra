@@ -106,6 +106,8 @@ pub mod rl_step;
 pub mod runtime_autotune_shim;
 /// Lightweight system metrics telemetry helpers.
 pub mod system_metrics;
+#[cfg(feature = "torch-profiler")]
+pub mod torch_profiler;
 /// Heavy validation execution runner.
 #[cfg(feature = "libtorch")]
 pub mod validation_runner;

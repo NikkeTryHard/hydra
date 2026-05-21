@@ -61,6 +61,7 @@ libtorch = [
 burn-cuda = ["burn/train", "burn/cuda", "hydra-model/burn-cuda"]
 cuda-graph = ["libtorch"]
 bf16-autocast-proof = ["libtorch", "burn/bf16-autocast-proof"]
+torch-profiler = ["libtorch"]
 bootstrap-exec-in-progress = []
 rl-runner-exec-in-progress = []
 test-nvtx-recorder = []

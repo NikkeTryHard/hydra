@@ -107,6 +107,7 @@ fn dummy_rl_config(output_dir: PathBuf) -> TrainConfig {
         resume_checkpoint: None,
         seed: 7,
         advanced_loss: None,
+        bc_head_profile: hydra_train_runtime::config::BcHeadProfile::Full,
         validation_gates: ValidationGateConfig::default(),
         rl: Some(RlTrainConfig::default()),
         bc: Default::default(),

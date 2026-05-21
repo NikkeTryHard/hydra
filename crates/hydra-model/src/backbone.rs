@@ -184,6 +184,17 @@ impl SEResNetConfig {
 impl<B: Backend> SEResNet<B> {
     /// Run the backbone and return `(spatial, pooled)` features.
     pub fn forward(&self, x: Tensor<B, 3>) -> (Tensor<B, 3>, Tensor<B, 2>) {
+        let spatial = self.forward_spatial(x);
+        let pooled = spatial.clone().mean_dim(2).squeeze_dim::<2>(2);
+        (spatial, pooled)
+    }
+
+    /// Run the backbone and return pooled features only.
+    pub fn forward_pooled(&self, x: Tensor<B, 3>) -> Tensor<B, 2> {
+        self.forward_spatial(x).mean_dim(2).squeeze_dim::<2>(2)
+    }
+
+    fn forward_spatial(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
         let x = {
             let _stem_scope = profiling::scope(BACKBONE_SCOPE_STEM);
             let x = self.input_conv.forward(x);
@@ -193,13 +204,8 @@ impl<B: Backend> SEResNet<B> {
             let _blocks_scope = profiling::scope(BACKBONE_SCOPE_BLOCKS);
             self.blocks.iter().fold(x, |acc, block| block.forward(acc))
         };
-        let (spatial, pooled) = {
-            let _tail_scope = profiling::scope(BACKBONE_SCOPE_TAIL);
-            let spatial = native_group_norm_mish::group_norm_mish(&self.final_gn, x);
-            let pooled = spatial.clone().mean_dim(2).squeeze_dim::<2>(2);
-            (spatial, pooled)
-        };
-        (spatial, pooled)
+        let _tail_scope = profiling::scope(BACKBONE_SCOPE_TAIL);
+        native_group_norm_mish::group_norm_mish(&self.final_gn, x)
     }
 }
 

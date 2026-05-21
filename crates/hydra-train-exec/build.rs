@@ -13,11 +13,13 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_LIBTORCH");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_CUDA_GRAPH");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_BF16_AUTOCAST_PROOF");
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_TORCH_PROFILER");
 
     let bf16_autocast_proof_enabled = env::var_os("CARGO_FEATURE_BF16_AUTOCAST_PROOF").is_some();
     let cuda_graph_enabled = env::var_os("CARGO_FEATURE_CUDA_GRAPH").is_some();
     let libtorch_enabled = env::var_os("CARGO_FEATURE_LIBTORCH").is_some();
-    if !cuda_graph_enabled && !bf16_autocast_proof_enabled {
+    let torch_profiler_enabled = env::var_os("CARGO_FEATURE_TORCH_PROFILER").is_some();
+    if !cuda_graph_enabled && !bf16_autocast_proof_enabled && !torch_profiler_enabled {
         return;
     }
 
@@ -26,6 +28,9 @@ fn main() {
     }
     if cuda_graph_enabled {
         println!("cargo:rerun-if-changed=csrc/hydra_gpu.cpp");
+    }
+    if torch_profiler_enabled {
+        println!("cargo:rerun-if-changed=csrc/torch_profiler.cpp");
     }
     println!("cargo:rerun-if-env-changed=DEP_TCH_LIBTORCH_LIB");
     println!("cargo:rerun-if-env-changed=LIBTORCH_INCLUDE");
@@ -87,6 +92,10 @@ fn main() {
 
     if bf16_autocast_proof_enabled {
         build.file("csrc/bf16_autocast_shim.cpp");
+    }
+
+    if torch_profiler_enabled {
+        build.file("csrc/torch_profiler.cpp");
     }
 
     if cuda_graph_enabled {

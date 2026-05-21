@@ -27,6 +27,7 @@ pub(crate) fn dummy_train_config() -> TrainConfig {
         resume_checkpoint: None,
         seed: 0,
         advanced_loss: None,
+        bc_head_profile: crate::config::BcHeadProfile::default(),
         validation_gates: ValidationGateConfig::default(),
         rl: None,
         bc: BcHyperparamConfig::default(),

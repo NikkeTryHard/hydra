@@ -92,6 +92,7 @@ fn dummy_train_config(output_dir: PathBuf, data_dir: PathBuf) -> TrainConfig {
         resume_checkpoint: None,
         seed: 0,
         advanced_loss: None,
+        bc_head_profile: hydra_train_runtime::config::BcHeadProfile::Full,
         validation_gates: ValidationGateConfig::default(),
         rl: None,
         bc: BcHyperparamConfig::default(),

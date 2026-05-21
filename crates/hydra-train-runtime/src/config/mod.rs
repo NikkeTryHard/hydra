@@ -47,6 +47,8 @@ pub struct TrainConfig {
     #[serde(default)]
     pub advanced_loss: Option<AdvancedLossConfig>,
     #[serde(default)]
+    pub bc_head_profile: BcHeadProfile,
+    #[serde(default)]
     pub validation_gates: ValidationGateConfig,
     pub rl: Option<RlTrainConfig>,
     #[serde(default)]
@@ -83,6 +85,14 @@ pub struct TrainConfig {
     pub max_validation_batches: Option<usize>,
     #[serde(default = "default_max_validation_samples")]
     pub max_validation_samples: Option<usize>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BcHeadProfile {
+    #[default]
+    Full,
+    PolicyOnly,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -150,6 +160,7 @@ impl TrainConfig {
             resume_checkpoint: None,
             seed: default_seed(),
             advanced_loss: None,
+            bc_head_profile: BcHeadProfile::default(),
             validation_gates: ValidationGateConfig::default(),
             rl: None,
             bc: BcHyperparamConfig::default(),

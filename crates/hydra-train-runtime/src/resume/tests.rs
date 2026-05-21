@@ -19,6 +19,7 @@ fn dummy_config() -> TrainConfig {
         resume_checkpoint: None,
         seed: 7,
         advanced_loss: None,
+        bc_head_profile: crate::config::BcHeadProfile::Full,
         validation_gates: Default::default(),
         rl: None,
         bc: Default::default(),

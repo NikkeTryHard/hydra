@@ -2783,6 +2783,45 @@ where
     ValidBackendOf<B>: Backend<FloatTensorPrimitive = TchTensor, IntTensorPrimitive = TchTensor>,
     O: Optimizer<HydraModel<B>, B>,
 {
+    train_logical_batch_from_host_batch_with_profile(
+        host_batch,
+        config,
+        host_batch_rows,
+        hydra_train_runtime::config::BcHeadProfile::Full,
+        head_controller,
+        model_slot,
+        optimizer,
+        #[cfg(feature = "cuda-graph")]
+        staging,
+    )
+}
+
+/// Runs a host batch with an explicit BC head execution profile.
+pub fn train_logical_batch_from_host_batch_with_profile<B, O>(
+    host_batch: BcShardHostBatch,
+    config: TrainLogicalBatchConfig<'_, B>,
+    host_batch_rows: HostBatchRows,
+    head_profile: hydra_train_runtime::config::BcHeadProfile,
+    head_controller: &mut HeadActivationController,
+    model_slot: &mut Option<HydraModel<B>>,
+    optimizer: &mut O,
+    #[cfg(feature = "cuda-graph")] staging: Option<
+        &mut crate::pinned_transfer::PinnedTransferStaging,
+    >,
+) -> Result<
+    (
+        Vec<BatchStats>,
+        TrainSubStageTiming,
+        Option<BcShardHostBatch>,
+    ),
+    String,
+>
+where
+    B: AutodiffBackend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<Device = LibTorchDevice>,
+    ValidBackendOf<B>: Backend<FloatTensorPrimitive = TchTensor, IntTensorPrimitive = TchTensor>,
+    O: Optimizer<HydraModel<B>, B>,
+{
     let TrainLogicalBatchConfig {
         microbatch_size,
         use_amp,
@@ -2872,58 +2911,104 @@ where
     let mut microbatch_count = 0usize;
     let mut metric_sums: Option<BatchMetricSums<B>> = None;
     let effective_microbatch = microbatch_size.max(1) * rows_per_logical;
-
     if effective_microbatch >= batch_size {
         let (active_loss_fn, warmup_heads) =
             gated_bc_context(Some(head_controller), loss_fn, &targets);
         let model = epoch_model(model_slot)?;
-        let t = Instant::now();
-        let output = {
-            let _forward_scope = nvtx::scope(PROFILING_STAGE_FORWARD);
-            maybe_autocast(
-                use_amp && matches!(train_device, LibTorchDevice::Cuda(_)),
-                || {
-                    model.forward_train_with_warmup_train(
-                        obs,
-                        &active_loss_fn.config,
-                        &warmup_heads,
+        match head_profile {
+            hydra_train_runtime::config::BcHeadProfile::Full => {
+                let t = Instant::now();
+                let output = {
+                    let _forward_scope = nvtx::scope(PROFILING_STAGE_FORWARD);
+                    maybe_autocast(
+                        use_amp && matches!(train_device, LibTorchDevice::Cuda(_)),
+                        || {
+                            model.forward_train_with_warmup_train(
+                                obs,
+                                &active_loss_fn.config,
+                                &warmup_heads,
+                            )
+                        },
                     )
-                },
-            )
-        };
-        sub_timing.forward_seconds += t.elapsed().as_secs_f64();
-        let t = Instant::now();
-        let loss = {
-            let _loss_scope = nvtx::scope(PROFILING_STAGE_LOSS);
-            active_loss_fn.bc_train_loss(
-                &output,
-                &targets,
-                batch.exit_target.as_ref(),
-                batch.exit_mask.as_ref(),
-                bc_exit_cfg,
-            )
-        };
-        let breakdown = loss.breakdown;
-        let total = loss.total;
-        sub_timing.loss_seconds += t.elapsed().as_secs_f64();
-        metric_sums = Some(batch_metric_sums_from_outputs(
-            batch_size / rows_per_logical,
-            output.policy_logits.clone(),
-            targets.legal_mask.clone(),
-            batch.actions.clone(),
-            total.clone(),
-            &breakdown,
-        ));
-        total_samples = batch_size / rows_per_logical;
-        microbatch_count = 1;
-        let t = Instant::now();
-        {
-            let _backward_scope = nvtx::scope(PROFILING_STAGE_BACKWARD);
-            let grads = total.backward();
-            let grads = GradientsParams::from_grads(grads, model);
-            accumulator.accumulate(model, grads);
+                };
+                sub_timing.forward_seconds += t.elapsed().as_secs_f64();
+                let t = Instant::now();
+                let loss = {
+                    let _loss_scope = nvtx::scope(PROFILING_STAGE_LOSS);
+                    active_loss_fn.bc_train_loss(
+                        &output,
+                        &targets,
+                        batch.exit_target.as_ref(),
+                        batch.exit_mask.as_ref(),
+                        bc_exit_cfg,
+                    )
+                };
+                let breakdown = loss.breakdown;
+                let total = loss.total;
+                sub_timing.loss_seconds += t.elapsed().as_secs_f64();
+                metric_sums = Some(batch_metric_sums_from_outputs(
+                    batch_size / rows_per_logical,
+                    output.policy_logits.clone(),
+                    targets.legal_mask.clone(),
+                    batch.actions.clone(),
+                    total.clone(),
+                    &breakdown,
+                ));
+                total_samples = batch_size / rows_per_logical;
+                microbatch_count = 1;
+                let t = Instant::now();
+                {
+                    let _backward_scope = nvtx::scope(PROFILING_STAGE_BACKWARD);
+                    let grads = total.backward();
+                    let grads = GradientsParams::from_grads(grads, model);
+                    accumulator.accumulate(model, grads);
+                }
+                sub_timing.backward_seconds += t.elapsed().as_secs_f64();
+            }
+            hydra_train_runtime::config::BcHeadProfile::PolicyOnly => {
+                let t = Instant::now();
+                let policy_logits = {
+                    let _forward_scope = nvtx::scope(PROFILING_STAGE_FORWARD);
+                    maybe_autocast(
+                        use_amp && matches!(train_device, LibTorchDevice::Cuda(_)),
+                        || model.forward_policy_train(obs),
+                    )
+                };
+                sub_timing.forward_seconds += t.elapsed().as_secs_f64();
+                let t = Instant::now();
+                let loss = {
+                    let _loss_scope = nvtx::scope(PROFILING_STAGE_LOSS);
+                    active_loss_fn.bc_policy_only_loss(
+                        policy_logits.clone(),
+                        &targets,
+                        batch.exit_target.as_ref(),
+                        batch.exit_mask.as_ref(),
+                        bc_exit_cfg,
+                    )
+                };
+                let breakdown = loss.breakdown;
+                let total = loss.total;
+                sub_timing.loss_seconds += t.elapsed().as_secs_f64();
+                metric_sums = Some(batch_metric_sums_from_outputs(
+                    batch_size / rows_per_logical,
+                    policy_logits,
+                    targets.legal_mask.clone(),
+                    batch.actions.clone(),
+                    total.clone(),
+                    &breakdown,
+                ));
+                total_samples = batch_size / rows_per_logical;
+                microbatch_count = 1;
+                let t = Instant::now();
+                {
+                    let _backward_scope = nvtx::scope(PROFILING_STAGE_BACKWARD);
+                    let grads = total.backward();
+                    let grads = GradientsParams::from_grads(grads, model);
+                    accumulator.accumulate(model, grads);
+                }
+                sub_timing.backward_seconds += t.elapsed().as_secs_f64();
+            }
         }
-        sub_timing.backward_seconds += t.elapsed().as_secs_f64();
     } else {
         for start in (0..batch_size).step_by(effective_microbatch) {
             let end = (start + effective_microbatch).min(batch_size);
@@ -2946,61 +3031,113 @@ where
             let (active_loss_fn, warmup_heads) =
                 gated_bc_context(Some(head_controller), loss_fn, &targets_chunk);
             let model = epoch_model(model_slot)?;
-            let t = Instant::now();
-            let output = {
-                let _forward_scope = nvtx::scope(PROFILING_STAGE_FORWARD);
-                maybe_autocast(
-                    use_amp && matches!(train_device, LibTorchDevice::Cuda(_)),
-                    || {
-                        model.forward_train_with_warmup_train(
-                            obs_chunk,
-                            &active_loss_fn.config,
-                            &warmup_heads,
-                        )
-                    },
-                )
-            };
-            sub_timing.forward_seconds += t.elapsed().as_secs_f64();
-            let t = Instant::now();
-            let loss = {
-                let _loss_scope = nvtx::scope(PROFILING_STAGE_LOSS);
-                active_loss_fn.bc_train_loss(
-                    &output,
-                    &targets_chunk,
-                    batch_chunk.exit_target.as_ref(),
-                    batch_chunk.exit_mask.as_ref(),
-                    bc_exit_cfg,
-                )
-            };
-            let breakdown = loss.breakdown;
-            let total = loss.total;
-            sub_timing.loss_seconds += t.elapsed().as_secs_f64();
             debug_assert_eq!(chunk_len % rows_per_logical, 0);
             let chunk_logical_len = chunk_len / rows_per_logical;
             let chunk_weight = chunk_logical_len as f32 / logical_batch_len;
-            let weighted_total = total.clone() * chunk_weight;
-            let chunk_metric_sums = batch_metric_sums_from_outputs(
-                chunk_logical_len,
-                output.policy_logits.clone(),
-                targets_chunk.legal_mask.clone(),
-                batch_chunk.actions.clone(),
-                total,
-                &breakdown,
-            );
-            metric_sums = Some(match metric_sums.take() {
-                Some(existing) => existing.accumulate(chunk_metric_sums),
-                None => chunk_metric_sums,
-            });
-            total_samples += chunk_logical_len;
-            microbatch_count += 1;
-            let t = Instant::now();
-            {
-                let _backward_scope = nvtx::scope(PROFILING_STAGE_BACKWARD);
-                let grads = weighted_total.backward();
-                let grads = GradientsParams::from_grads(grads, model);
-                accumulator.accumulate(model, grads);
+            match head_profile {
+                hydra_train_runtime::config::BcHeadProfile::Full => {
+                    let t = Instant::now();
+                    let output = {
+                        let _forward_scope = nvtx::scope(PROFILING_STAGE_FORWARD);
+                        maybe_autocast(
+                            use_amp && matches!(train_device, LibTorchDevice::Cuda(_)),
+                            || {
+                                model.forward_train_with_warmup_train(
+                                    obs_chunk,
+                                    &active_loss_fn.config,
+                                    &warmup_heads,
+                                )
+                            },
+                        )
+                    };
+                    sub_timing.forward_seconds += t.elapsed().as_secs_f64();
+                    let t = Instant::now();
+                    let loss = {
+                        let _loss_scope = nvtx::scope(PROFILING_STAGE_LOSS);
+                        active_loss_fn.bc_train_loss(
+                            &output,
+                            &targets_chunk,
+                            batch_chunk.exit_target.as_ref(),
+                            batch_chunk.exit_mask.as_ref(),
+                            bc_exit_cfg,
+                        )
+                    };
+                    let breakdown = loss.breakdown;
+                    let total = loss.total;
+                    sub_timing.loss_seconds += t.elapsed().as_secs_f64();
+                    let weighted_total = total.clone() * chunk_weight;
+                    let chunk_metric_sums = batch_metric_sums_from_outputs(
+                        chunk_logical_len,
+                        output.policy_logits.clone(),
+                        targets_chunk.legal_mask.clone(),
+                        batch_chunk.actions.clone(),
+                        total,
+                        &breakdown,
+                    );
+                    metric_sums = Some(match metric_sums.take() {
+                        Some(existing) => existing.accumulate(chunk_metric_sums),
+                        None => chunk_metric_sums,
+                    });
+                    total_samples += chunk_logical_len;
+                    microbatch_count += 1;
+                    let t = Instant::now();
+                    {
+                        let _backward_scope = nvtx::scope(PROFILING_STAGE_BACKWARD);
+                        let grads = weighted_total.backward();
+                        let grads = GradientsParams::from_grads(grads, model);
+                        accumulator.accumulate(model, grads);
+                    }
+                    sub_timing.backward_seconds += t.elapsed().as_secs_f64();
+                }
+                hydra_train_runtime::config::BcHeadProfile::PolicyOnly => {
+                    let t = Instant::now();
+                    let policy_logits = {
+                        let _forward_scope = nvtx::scope(PROFILING_STAGE_FORWARD);
+                        maybe_autocast(
+                            use_amp && matches!(train_device, LibTorchDevice::Cuda(_)),
+                            || model.forward_policy_train(obs_chunk),
+                        )
+                    };
+                    sub_timing.forward_seconds += t.elapsed().as_secs_f64();
+                    let t = Instant::now();
+                    let loss = {
+                        let _loss_scope = nvtx::scope(PROFILING_STAGE_LOSS);
+                        active_loss_fn.bc_policy_only_loss(
+                            policy_logits.clone(),
+                            &targets_chunk,
+                            batch_chunk.exit_target.as_ref(),
+                            batch_chunk.exit_mask.as_ref(),
+                            bc_exit_cfg,
+                        )
+                    };
+                    let breakdown = loss.breakdown;
+                    let total = loss.total;
+                    sub_timing.loss_seconds += t.elapsed().as_secs_f64();
+                    let weighted_total = total.clone() * chunk_weight;
+                    let chunk_metric_sums = batch_metric_sums_from_outputs(
+                        chunk_logical_len,
+                        policy_logits,
+                        targets_chunk.legal_mask.clone(),
+                        batch_chunk.actions.clone(),
+                        total,
+                        &breakdown,
+                    );
+                    metric_sums = Some(match metric_sums.take() {
+                        Some(existing) => existing.accumulate(chunk_metric_sums),
+                        None => chunk_metric_sums,
+                    });
+                    total_samples += chunk_logical_len;
+                    microbatch_count += 1;
+                    let t = Instant::now();
+                    {
+                        let _backward_scope = nvtx::scope(PROFILING_STAGE_BACKWARD);
+                        let grads = weighted_total.backward();
+                        let grads = GradientsParams::from_grads(grads, model);
+                        accumulator.accumulate(model, grads);
+                    }
+                    sub_timing.backward_seconds += t.elapsed().as_secs_f64();
+                }
             }
-            sub_timing.backward_seconds += t.elapsed().as_secs_f64();
         }
     }
 
@@ -3183,7 +3320,7 @@ where
         let train_started = Instant::now();
         let (drained, batch_sub_timing, recycled_host_batch) = {
             let _train_scope = nvtx::scope(PROFILING_STAGE_TRAIN);
-            let (drained, mut timing, recycled) = train_logical_batch_from_host_batch(
+            let (drained, mut timing, recycled) = train_logical_batch_from_host_batch_with_profile(
                 host_batch,
                 TrainLogicalBatchConfig {
                     microbatch_size,
@@ -3195,6 +3332,7 @@ where
                     lr,
                 },
                 HostBatchRows::RawReplayIndexedAugment,
+                hydra_train_runtime::config::BcHeadProfile::Full,
                 head_controller,
                 model_slot,
                 optimizer,
@@ -3598,6 +3736,8 @@ where
     let mut step_window_sub_timing = TrainSubStageTiming::default();
     let mut epoch_sub_timing = TrainSubStageTiming::default();
     let mut seen_samples = samples_to_skip;
+    #[cfg(feature = "torch-profiler")]
+    let mut torch_profiler = crate::torch_profiler::TorchProfilerSession::from_env()?;
 
     // -- async H2D staging for pinned memory + dedicated copy stream --
     #[cfg(feature = "cuda-graph")]
@@ -3621,9 +3761,13 @@ where
         let producer_wait_seconds = prefetched.producer_wait_seconds;
         let lr = effective_train_lr(train_cfg, *global_step, total_steps);
         let train_started = Instant::now();
-        let (drained, batch_sub_timing, recycled_host_batch) = {
+        let next_session_step =
+            session_steps_completed(global_step.saturating_add(1), session_start_global_step);
+        #[cfg(feature = "torch-profiler")]
+        torch_profiler.maybe_start_before_step(next_session_step)?;
+        let batch_result = {
             let _train_scope = nvtx::scope(PROFILING_STAGE_TRAIN);
-            train_logical_batch_from_host_batch(
+            train_logical_batch_from_host_batch_with_profile(
                 host_batch,
                 TrainLogicalBatchConfig {
                     microbatch_size,
@@ -3635,13 +3779,21 @@ where
                     lr,
                 },
                 HostBatchRows::BcShardPhysical,
+                config.bc_head_profile,
                 head_controller,
                 model_slot,
                 optimizer,
                 #[cfg(feature = "cuda-graph")]
                 staging_context.as_mut(),
-            )?
+            )
         };
+        #[cfg(feature = "torch-profiler")]
+        if batch_result.is_err() {
+            torch_profiler.stop_if_active()?;
+        }
+        let (drained, batch_sub_timing, recycled_host_batch) = batch_result?;
+        #[cfg(feature = "torch-profiler")]
+        torch_profiler.maybe_stop_after_step(next_session_step)?;
         let train_seconds = train_started.elapsed().as_secs_f64();
         prefetcher.recycle(
             slot_seq,

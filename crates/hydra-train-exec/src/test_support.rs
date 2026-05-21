@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use hydra_train_runtime::config::{
-    BcHyperparamConfig, PrecisionMode, TrainConfig, ValidationGateConfig,
+    BcHeadProfile, BcHyperparamConfig, PrecisionMode, TrainConfig, ValidationGateConfig,
 };
 
 pub(crate) fn dummy_train_config() -> TrainConfig {
@@ -24,6 +24,7 @@ pub(crate) fn dummy_train_config() -> TrainConfig {
         resume_checkpoint: None,
         seed: 0,
         advanced_loss: None,
+        bc_head_profile: BcHeadProfile::default(),
         validation_gates: ValidationGateConfig::default(),
         rl: None,
         bc: BcHyperparamConfig::default(),

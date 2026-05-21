@@ -64,6 +64,9 @@ pub trait HydraTrainModelExt<B: burn::prelude::Backend> {
         loss_cfg: &HydraLossConfig,
         warmup_heads: &[AdvancedHead],
     ) -> HydraTrainOutput<B>;
+
+    /// Runs only backbone and policy head.
+    fn forward_policy_train(&self, x: burn::prelude::Tensor<B, 3>) -> burn::prelude::Tensor<B, 2>;
 }
 
 impl<B: burn::prelude::Backend> HydraTrainModelExt<B> for HydraModel<B> {
@@ -103,5 +106,9 @@ impl<B: burn::prelude::Backend> HydraTrainModelExt<B> for HydraModel<B> {
         self.forward_train_with_warmup_by(x, &forward_policy_from_loss_config(loss_cfg), |head| {
             warmup_mask & (1 << head as u8) != 0
         })
+    }
+
+    fn forward_policy_train(&self, x: burn::prelude::Tensor<B, 3>) -> burn::prelude::Tensor<B, 2> {
+        self.forward_policy(x)
     }
 }

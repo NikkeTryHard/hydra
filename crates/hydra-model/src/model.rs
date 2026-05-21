@@ -269,8 +269,7 @@ impl HydraModelInit for ModelShapeConfig {
 
 impl<B: Backend> HydraModel<B> {
     pub fn policy_logits_for(&self, x: Tensor<B, 3>) -> Tensor<B, 2> {
-        let (_, pooled) = self.backbone.forward(x);
-        self.policy.forward(pooled)
+        self.forward_policy(x)
     }
 
     /// Runs a single observation through the full model and returns policy
@@ -515,9 +514,9 @@ impl<B: Backend> HydraModel<B> {
     }
 
     pub fn forward_policy(&self, x: Tensor<B, 3>) -> Tensor<B, 2> {
-        let (_, pooled) = {
+        let pooled = {
             let _backbone_scope = profiling::scope(MODEL_SCOPE_BACKBONE);
-            self.backbone.forward(x)
+            self.backbone.forward_pooled(x)
         };
         let _policy_scope = profiling::scope(MODEL_SCOPE_HEADS_POLICY);
         self.policy.forward(pooled)
