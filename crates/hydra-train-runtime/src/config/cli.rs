@@ -6,8 +6,8 @@ use super::{
     BcBackend, BenchmarkBaselineCliOptions, BenchmarkBaselineSource,
     ExperimentalBackboneProfileConfig, ExperimentalTrainBackend, PreflightCliOptions,
     PreflightProfile, ProbeBatchChildRequest, ProbeChildRequest, ProbeCliRequest,
-    ProbeSingleChildRequest, PythonLearnerCliOptions, PythonLearnerVariant, TrainCli,
-    default_device, default_preflight_config_for_profile,
+    ProbeSingleChildRequest, PythonLearnerCliOptions, PythonLearnerInput, PythonLearnerVariant,
+    PythonResidualProfileConfig, TrainCli, default_device, default_preflight_config_for_profile,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,6 +70,20 @@ fn parse_python_variant(value: &str) -> Result<PythonLearnerVariant, String> {
         "compile_max_autotune" => Ok(PythonLearnerVariant::CompileMaxAutotune),
         _ => Err(format!(
             "unsupported --python-variant value '{value}'; expected eager_fp32, eager_bf16, compile_default, compile_reduce_overhead, or compile_max_autotune"
+        )),
+    }
+}
+
+fn parse_python_residual_profile(value: &str) -> Result<PythonResidualProfileConfig, String> {
+    match value {
+        "mish_se" => Ok(PythonResidualProfileConfig::MishSe),
+        "silu_se" => Ok(PythonResidualProfileConfig::SiluSe),
+        "relu_se" => Ok(PythonResidualProfileConfig::ReluSe),
+        "mish_no_se" => Ok(PythonResidualProfileConfig::MishNoSe),
+        "relu_no_se" => Ok(PythonResidualProfileConfig::ReluNoSe),
+        "relu_no_norm_no_se" => Ok(PythonResidualProfileConfig::ReluNoNormNoSe),
+        _ => Err(format!(
+            "unsupported --python-residual-profile value '{value}'; expected mish_se, silu_se, relu_se, mish_no_se, relu_no_se, or relu_no_norm_no_se"
         )),
     }
 }
@@ -345,7 +359,7 @@ fn parse_preflight_bench_candidate_tuples(raw: &str) -> Result<Vec<PreflightBenc
 
 pub fn usage(program: &str) -> String {
     format!(
-        "Usage:\n  {program} <config.yaml>\n  {program} --experimental-python-learner --bc-shards-manifest <path> --output-dir <dir> [--device <cpu|cuda[:N]>] [--python-variant <eager_fp32|eager_bf16|compile_default|compile_reduce_overhead|compile_max_autotune>] [--python-warmup <N>] [--python-steps <N>] [--python-compile-fullgraph-check]\n  {program} --benchmark-baseline --bench-source <mjai|bc-shards|both> (--data-dir <dir>|--bc-shards-manifest <path>) [--output-dir <dir>] [--device <cpu|cuda[:N]>] [--bench-max-games <N>] [--bench-steps <N>]\n  {program} --preflight [--device <cpu|cuda[:N]>] [--output-dir <dir>] [--pf-candidate-tuples <batch:ring:threads:prefetch,...>] [--pf-warmup-steps <N>] [--pf-measure-steps <N>] [--pf-repetitions <N>] [--pf-output md]\n  {program} --list-devices\n  {program} <config.yaml> --delta-q-promotion [--delta-q-baseline-checkpoint <path>]\n  {program} <config.yaml> --probe-kind <train|validation|rl_games|rl_microbatch> --probe-candidate-microbatch <N> [--probe-warmup-steps <N>] [--probe-measure-steps <N>]\n"
+        "Usage:\n  {program} <config.yaml>\n  {program} --experimental-python-learner --bc-shards-manifest <path> --output-dir <dir> [--device <cpu|cuda[:N]>] [--python-variant <eager_fp32|eager_bf16|compile_default|compile_reduce_overhead|compile_max_autotune>] [--python-residual-profile <mish_se|silu_se|relu_se|mish_no_se|relu_no_se|relu_no_norm_no_se>] [--python-warmup <N>] [--python-steps <N>] [--python-compile-fullgraph-check]\n  {program} --benchmark-baseline --bench-source <mjai|bc-shards|both> (--data-dir <dir>|--bc-shards-manifest <path>) [--output-dir <dir>] [--device <cpu|cuda[:N]>] [--bench-max-games <N>] [--bench-steps <N>]\n  {program} --preflight [--device <cpu|cuda[:N]>] [--output-dir <dir>] [--pf-candidate-tuples <batch:ring:threads:prefetch,...>] [--pf-warmup-steps <N>] [--pf-measure-steps <N>] [--pf-repetitions <N>] [--pf-output md]\n  {program} --list-devices\n  {program} <config.yaml> --delta-q-promotion [--delta-q-baseline-checkpoint <path>]\n  {program} <config.yaml> --probe-kind <train|validation|rl_games|rl_microbatch> --probe-candidate-microbatch <N> [--probe-warmup-steps <N>] [--probe-measure-steps <N>]\n"
     )
 }
 
@@ -457,6 +471,7 @@ where
     let mut python_compile_fullgraph_check = false;
     let mut python_oracle_critic_weight = 0.0f64;
     let mut python_safety_residual_weight = 0.0f64;
+    let mut python_residual_profile = PythonResidualProfileConfig::default();
     let mut bc_backend = None;
     while let Some(arg) = pending_arg.take().or_else(|| args.next()) {
         let normalized = normalize_long_flag(&arg);
@@ -539,6 +554,12 @@ where
             "--python-w-safety-residual" => {
                 python_safety_residual_weight =
                     parse_f64_flag("--python-w-safety-residual", args.next())?;
+            }
+            "--python-residual-profile" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --python-residual-profile".to_string())?;
+                python_residual_profile = parse_python_residual_profile(&value)?;
             }
             "--bench-source" => {
                 benchmark_source = parse_benchmark_source(
@@ -1055,12 +1076,16 @@ where
             .clone()
             .unwrap_or_else(|| preflight_output_dir.clone());
         Some(PythonLearnerCliOptions {
-            bc_shards_manifest,
+            bc_shards_manifest: bc_shards_manifest.clone(),
+            input: PythonLearnerInput::BcShards {
+                manifest: bc_shards_manifest.clone(),
+            },
             output_dir,
             device: python_device.clone(),
             batch_size: 2048,
             microbatch_size: 1024,
             variant: python_variant,
+            residual_profile: python_residual_profile,
             warmup_steps: python_warmup_steps,
             steps: python_steps,
             checkpoint_out: python_checkpoint_out.clone(),
@@ -1081,6 +1106,7 @@ where
             || python_steps != 30
             || python_oracle_critic_weight != 0.0
             || python_safety_residual_weight != 0.0
+            || python_residual_profile != PythonResidualProfileConfig::default()
         {
             return Err("--python-* flags require Python BC backend".to_string());
         }
@@ -1173,7 +1199,8 @@ where
             experimental_backbone_profile: benchmark_backbone_profile.clone(),
         })
     } else {
-        if (benchmark_data_dir.is_some() || benchmark_bc_shards_manifest.is_some())
+        if (benchmark_data_dir.is_some()
+            || (benchmark_bc_shards_manifest.is_some() && bc_backend != BcBackend::RustBurn))
             && python_learner.is_none()
         {
             return Err(

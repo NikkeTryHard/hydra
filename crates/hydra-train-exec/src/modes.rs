@@ -13,8 +13,8 @@ use colored::Colorize;
 use hydra_model::model::HydraModelConfig;
 use hydra_train_runtime::config::{
     BcBackend, BenchmarkBaselineCliOptions, BenchmarkBaselineSource, ExperimentalTrainBackend,
-    PrecisionMode, PreflightCliOptions, PythonLearnerCliOptions, TrainCli, TrainConfig,
-    display_num_threads,
+    PrecisionMode, PreflightCliOptions, PythonLearnerCliOptions, PythonLearnerInput, TrainCli,
+    TrainConfig, display_num_threads,
 };
 use hydra_train_runtime::config_runtime::validate_preflight_config;
 
@@ -498,15 +498,21 @@ pub fn handle_benchmark_baseline_mode(options: BenchmarkBaselineCliOptions) -> R
 fn python_preflight_options(
     preflight: &PreflightCliOptions,
 ) -> Result<PythonLearnerCliOptions, String> {
+    let bc_shards_manifest = preflight
+        .bc_shards_manifest_path
+        .clone()
+        .ok_or_else(|| "Python BC preflight requires --bc-shards-manifest <path>".to_string())?;
     Ok(PythonLearnerCliOptions {
-        bc_shards_manifest: preflight.bc_shards_manifest_path.clone().ok_or_else(|| {
-            "Python BC preflight requires --bc-shards-manifest <path>".to_string()
-        })?,
+        bc_shards_manifest: bc_shards_manifest.clone(),
+        input: PythonLearnerInput::BcShards {
+            manifest: bc_shards_manifest,
+        },
         output_dir: preflight.output_dir.clone(),
         device: preflight.device.clone(),
         batch_size: 2048,
         microbatch_size: 1024,
         variant: preflight.python_variant,
+        residual_profile: hydra_train_runtime::config::PythonResidualProfileConfig::default(),
         warmup_steps: preflight.preflight_config.warmup_steps,
         steps: preflight.preflight_config.measure_steps,
         checkpoint_out: None,

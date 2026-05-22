@@ -30,6 +30,11 @@ path = "src/bin/build_bc_shards.rs"
 required-features = ["training"]
 
 [[bin]]
+name = "raw_mjai_stream"
+path = "src/bin/raw_mjai_stream.rs"
+required-features = ["training"]
+
+[[bin]]
 name = "extract_timing_metrics"
 path = "src/bin/extract_timing_metrics.rs"
 

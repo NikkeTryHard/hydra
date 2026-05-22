@@ -17,6 +17,76 @@ fn parse_pf_repetitions_aliases_required_successes() {
 }
 
 #[test]
+fn python_residual_profiles_serde_and_string_contract_match() {
+    let cases = [
+        ("mish_se", PythonResidualProfileConfig::MishSe),
+        ("silu_se", PythonResidualProfileConfig::SiluSe),
+        ("relu_se", PythonResidualProfileConfig::ReluSe),
+        ("mish_no_se", PythonResidualProfileConfig::MishNoSe),
+        ("relu_no_se", PythonResidualProfileConfig::ReluNoSe),
+        (
+            "relu_no_norm_no_se",
+            PythonResidualProfileConfig::ReluNoNormNoSe,
+        ),
+    ];
+    assert_eq!(
+        PythonResidualProfileConfig::default(),
+        PythonResidualProfileConfig::MishSe
+    );
+    for (text, profile) in cases {
+        let parsed: PythonResidualProfileConfig =
+            serde_yaml::from_str(text).expect("profile should deserialize");
+        assert_eq!(parsed, profile);
+        assert_eq!(profile.as_str(), text);
+    }
+}
+
+#[test]
+fn python_variants_serde_and_string_contract_match() {
+    let cases = [
+        ("eager_fp32", PythonLearnerVariant::EagerFp32),
+        ("eager_bf16", PythonLearnerVariant::EagerBf16),
+        ("compile_default", PythonLearnerVariant::CompileDefault),
+        (
+            "compile_reduce_overhead",
+            PythonLearnerVariant::CompileReduceOverhead,
+        ),
+        (
+            "compile_max_autotune",
+            PythonLearnerVariant::CompileMaxAutotune,
+        ),
+    ];
+    assert_eq!(
+        PythonLearnerVariant::default(),
+        PythonLearnerVariant::CompileDefault
+    );
+    for (text, variant) in cases {
+        let parsed: PythonLearnerVariant =
+            serde_yaml::from_str(text).expect("variant should deserialize");
+        assert_eq!(parsed, variant);
+        assert_eq!(variant.as_str(), text);
+    }
+}
+
+#[test]
+fn python_raw_mjai_transport_serde_and_default_match() {
+    let cases = [
+        ("pinned_pyo3", PythonRawMjaiTransportConfig::PinnedPyo3),
+        ("stdout", PythonRawMjaiTransportConfig::Stdout),
+    ];
+    assert_eq!(
+        PythonRawMjaiTransportConfig::default(),
+        PythonRawMjaiTransportConfig::PinnedPyo3
+    );
+    for (text, transport) in cases {
+        let parsed: PythonRawMjaiTransportConfig =
+            serde_yaml::from_str(text).expect("transport should deserialize");
+        assert_eq!(parsed, transport);
+        assert_eq!(transport.as_str(), text);
+    }
+}
+
+#[test]
 fn usage_lists_all_probe_kinds() {
     let text = usage("train");
     assert!(text.contains("--probe-kind <train|validation|rl_games|rl_microbatch>"));
@@ -241,6 +311,8 @@ fn parse_args_accepts_explicit_python_learner_alias() {
         "--python-steps".to_string(),
         "3".to_string(),
         "--python-compile-fullgraph-check".to_string(),
+        "--python-residual-profile".to_string(),
+        "relu_no_norm_no_se".to_string(),
     ])
     .expect("explicit python learner mode should parse");
     let python = cli
@@ -256,6 +328,10 @@ fn parse_args_accepts_explicit_python_learner_alias() {
     assert_eq!(python.warmup_steps, 1);
     assert_eq!(python.steps, 3);
     assert!(python.compile_fullgraph_check);
+    assert_eq!(
+        python.residual_profile,
+        PythonResidualProfileConfig::ReluNoNormNoSe
+    );
     assert!(cli.config_path.is_none());
     assert!(cli.benchmark_baseline.is_none());
     assert_eq!(cli.bc_backend, BcBackend::Python);

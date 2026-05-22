@@ -4,7 +4,9 @@ use std::env;
 use hydra_train_exec::graph_probe::{handle_graph_probe_child, handle_graph_probe_parent};
 use hydra_train_exec::modes::{handle_list_devices_mode, run_train_modes};
 use hydra_train_exec::preflight_runtime::run_probe_child_mode;
-use hydra_train_runtime::config::{BcBackend, PythonLearnerCliOptions, parse_args, read_config};
+use hydra_train_runtime::config::{
+    BcBackend, PythonLearnerCliOptions, PythonLearnerInput, parse_args, read_config,
+};
 #[cfg(test)]
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -75,8 +77,7 @@ fn run() -> Result<(), String> {
         "config path is required unless --list-devices or --preflight is used".to_string()
     })?;
     let config = read_config(config_path)?;
-    if config.bc_shards_manifest_path.is_some()
-        && config.rl.is_none()
+    if config.rl.is_none()
         && !cli.delta_q_promotion
         && config.bc_backend.as_cli_backend() == BcBackend::Python
     {
@@ -161,12 +162,25 @@ fn python_options_from_config(
         bc_shards_manifest: config
             .bc_shards_manifest_path
             .clone()
-            .ok_or_else(|| "Python BC learner requires bc_shards_manifest_path".to_string())?,
+            .unwrap_or_else(|| config.data_dir.clone()),
+        input: if let Some(manifest) = config.bc_shards_manifest_path.clone() {
+            PythonLearnerInput::BcShards { manifest }
+        } else {
+            PythonLearnerInput::RawMjai {
+                data_dir: config.data_dir.clone(),
+                max_games: None,
+                max_samples: None,
+                train_fraction: config.train_fraction,
+                augment: config.augment,
+                transport: config.python_raw_mjai_transport,
+            }
+        },
         output_dir: config.output_dir.clone(),
         device: config.device.clone(),
         batch_size: config.batch_size,
         microbatch_size: config.microbatch_size.unwrap_or(1024),
-        variant: hydra_train_runtime::config::PythonLearnerVariant::CompileDefault,
+        variant: config.python_variant,
+        residual_profile: config.python_residual_profile,
         warmup_steps: 10,
         steps: config.max_train_steps.unwrap_or(30),
         checkpoint_out: None,

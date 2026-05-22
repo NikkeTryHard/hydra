@@ -12,6 +12,7 @@ from hydra_learner.losses import (
     base_loss,
     danger_focal_bce,
     masked_policy_ce,
+    masked_policy_ce_indices,
     opp_next_ce,
     oracle_critic_loss,
     safety_residual_loss,
@@ -19,8 +20,12 @@ from hydra_learner.losses import (
 )
 from hydra_learner.model import (
     ACTION_SPACE,
+    BACKBONE_PROFILE_CONV2D_LOCAL3,
+    BACKBONE_PROFILES,
     GRP_CLASSES,
     OPPONENTS,
+    RESIDUAL_PROFILE_RELU_NO_NORM_NO_SE,
+    RESIDUAL_PROFILES,
     SCORE_BINS,
     TILE_WIDTH,
     HydraBaseOutput,
@@ -58,6 +63,64 @@ def test_model_outputs_base_head_shapes_and_finite() -> None:
         assert bool(torch.isfinite(tensor).all())
 
 
+def test_singleton_height_conv2d_matches_tile_axis_conv1d() -> None:
+    obs = torch.randn(2, 3, 34)
+    weight = torch.randn(5, 3, 3)
+    expected = F.conv1d(obs, weight, padding=1)
+    actual = F.conv2d(obs.unsqueeze(2), weight.unsqueeze(2), padding=(0, 1)).squeeze(2)
+    torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.parametrize("profile", RESIDUAL_PROFILES)
+@pytest.mark.parametrize("backbone_profile", BACKBONE_PROFILES)
+def test_residual_profiles_keep_output_contract_and_expected_parameters(profile: str, backbone_profile: str) -> None:
+    model = HydraPolicyNet(
+        hidden=16, blocks=1, bottleneck=4, residual_profile=profile, backbone_profile=backbone_profile
+    )
+    out = model(torch.randn(2, 192, 34))
+    assert out.policy_logits.shape == (2, ACTION_SPACE)
+    assert out.opp_next_discard.shape == (2, OPPONENTS, TILE_WIDTH)
+    assert out.danger.shape == (2, OPPONENTS, TILE_WIDTH)
+    state_keys = model.state_dict().keys()
+    if profile.endswith("no_se"):
+        assert not any("se_fc" in key for key in state_keys)
+    else:
+        assert any("se_fc" in key for key in state_keys)
+    if profile == RESIDUAL_PROFILE_RELU_NO_NORM_NO_SE:
+        assert not any("norm" in key for key in state_keys)
+    else:
+        assert any("norm" in key for key in state_keys)
+    assert all(bool(torch.isfinite(tensor).all()) for tensor in (out.policy_logits, out.opp_next_discard, out.danger))
+
+
+def test_group_norm_hidden_must_match_hydra_group_contract() -> None:
+    with pytest.raises(ValueError, match=r"hidden=48 groups=32"):
+        HydraPolicyNet(hidden=48, blocks=1, bottleneck=4)
+
+
+def test_no_norm_profile_allows_non_divisible_hidden_for_ablation() -> None:
+    model = HydraPolicyNet(hidden=48, blocks=1, bottleneck=4, residual_profile=RESIDUAL_PROFILE_RELU_NO_NORM_NO_SE)
+    out = model(torch.randn(2, 192, 34))
+    assert out.policy_logits.shape == (2, ACTION_SPACE)
+    assert not any("norm" in key for key in model.state_dict())
+    assert bool(torch.isfinite(out.policy_logits).all())
+
+
+def test_invalid_backbone_profile_hard_errors() -> None:
+    with pytest.raises(ValueError, match="unsupported backbone profile"):
+        HydraPolicyNet(hidden=16, blocks=1, bottleneck=4, backbone_profile="bad_profile")
+
+
+def test_default_backbone_profile_is_conv2d_local3() -> None:
+    model = HydraPolicyNet(hidden=16, blocks=1, bottleneck=4)
+    assert model.backbone_profile == BACKBONE_PROFILE_CONV2D_LOCAL3
+
+
+def test_invalid_residual_profile_hard_errors() -> None:
+    with pytest.raises(ValueError, match="unsupported residual profile"):
+        HydraPolicyNet(hidden=16, blocks=1, bottleneck=4, residual_profile="bad_profile")
+
+
 def test_masked_policy_ce_blocks_illegal_action() -> None:
     logits = torch.tensor([[0.0, 100.0, 1.0]])
     target = torch.tensor([[0.0, 0.0, 1.0]])
@@ -65,6 +128,17 @@ def test_masked_policy_ce_blocks_illegal_action() -> None:
     actual = masked_policy_ce(logits, target, mask)
     expected = -F.log_softmax(torch.tensor([[0.0, -1.0e9, 1.0]]), dim=1)[0, 2]
     torch.testing.assert_close(actual, expected.reshape(1))
+
+
+def test_masked_policy_ce_indices_matches_dense_target() -> None:
+    logits = torch.tensor([[0.0, 100.0, 1.0]])
+    target = torch.tensor([2])
+    mask = torch.tensor([[True, False, True]])
+    actual = masked_policy_ce_indices(logits, target, mask)
+    expected = masked_policy_ce(
+        logits, F.one_hot(target, num_classes=3).to(dtype=torch.float32), mask.to(dtype=torch.float32)
+    )
+    torch.testing.assert_close(actual, expected)
 
 
 def test_value_half_mse() -> None:
@@ -192,10 +266,8 @@ def test_compiled_loss_step_matches_base_loss() -> None:
     model = HydraPolicyNet(hidden=16, blocks=1, bottleneck=4)
     batch = 1
     targets = BaseTargets(
-        policy_target=F.one_hot(torch.zeros(batch, dtype=torch.int64), num_classes=ACTION_SPACE).to(
-            dtype=torch.float32
-        ),
-        legal_mask=torch.ones(batch, ACTION_SPACE),
+        policy_target=torch.zeros(batch, dtype=torch.int64),
+        legal_mask=torch.ones(batch, ACTION_SPACE, dtype=torch.bool),
         value_target=torch.zeros(batch),
         grp_target=F.one_hot(torch.zeros(batch, dtype=torch.int64), num_classes=GRP_CLASSES).to(dtype=torch.float32),
         tenpai_target=torch.zeros(batch, OPPONENTS),
@@ -248,7 +320,7 @@ def _tiny_targets(
 ) -> BaseTargets:
     return BaseTargets(
         policy_target=torch.tensor([[1.0, 0.0, 0.0]]),
-        legal_mask=torch.tensor([[1.0, 1.0, 1.0]]),
+        legal_mask=torch.tensor([[True, True, True]]),
         value_target=torch.zeros(1),
         grp_target=grp if grp is not None else torch.tensor([[1.0, 0.0, 0.0]]),
         tenpai_target=tenpai if tenpai is not None else torch.zeros(1, 3),

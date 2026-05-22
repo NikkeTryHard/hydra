@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import mmap
 import struct
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Self
@@ -319,6 +320,7 @@ class BcShardDataset:
         self.reader = BcShardReader(manifest_path, split=split)
         self.batch_size = batch_size
         self._cursor = 0
+        self.last_fetch_decode_ms = 0.0
 
     @property
     def sample_count(self) -> int:
@@ -329,7 +331,9 @@ class BcShardDataset:
             raise ValueError(f"BC shard split has {self.sample_count} samples, needs batch {self.batch_size}")
         if self._cursor + self.batch_size > self.sample_count:
             self._cursor = 0
+        started = time.perf_counter()
         batch = self.reader.batch_range(self._cursor, self.batch_size)
+        self.last_fetch_decode_ms = (time.perf_counter() - started) * 1000.0
         self._cursor += self.batch_size
         return batch
 

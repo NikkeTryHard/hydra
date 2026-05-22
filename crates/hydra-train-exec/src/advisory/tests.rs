@@ -22,8 +22,11 @@ fn dummy_train_config() -> TrainConfig {
         resume_checkpoint: None,
         seed: 0,
         advanced_loss: None,
+        python_residual_profile: Default::default(),
+        python_variant: Default::default(),
         bc_head_profile: hydra_train_runtime::config::BcHeadProfile::Full,
         experimental_backbone_profile: None,
+        python_raw_mjai_transport: Default::default(),
         validation_gates: Default::default(),
         rl: None,
         bc: Default::default(),
@@ -87,10 +90,17 @@ fn startup_advisories_report_cpu_training() {
     let advisories =
         startup_runtime_advisories(&config, MicrobatchExplicitness::from_config(&config));
 
-    assert_eq!(
-        advisory(&advisories, "cpu_device_for_training").severity,
-        AdvisorySeverity::Info
-    );
+    if cuda_device_count() > 0 {
+        assert_eq!(
+            advisory(&advisories, "cpu_device_with_cuda_available").severity,
+            AdvisorySeverity::Warning
+        );
+    } else {
+        assert_eq!(
+            advisory(&advisories, "cpu_device_for_training").severity,
+            AdvisorySeverity::Info
+        );
+    }
 }
 
 #[test]

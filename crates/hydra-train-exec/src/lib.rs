@@ -91,6 +91,8 @@ pub mod probe_transport;
 pub mod progress;
 /// Experimental Python learner process launcher.
 pub mod python_learner;
+/// Direct raw-MJAI host-batch stream for the Python learner.
+pub mod raw_mjai_stream;
 /// Resume state contracts and helpers.
 pub mod resume;
 /// RL training-loop execution helpers.

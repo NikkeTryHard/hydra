@@ -152,6 +152,7 @@ Python gates are mandatory for Python changes. Tool deps/config live in `pyproje
 - Tensor assertions use `torch.testing.assert_close` or exact equality with explicit shape/dtype/device checks and dtype-appropriate tolerances. BF16 gets separate tolerances; never claim FP32 parity unless measured.
 - CUDA/BF16/compile claims require CUDA-marked tests or exact benchmark/profiler run on that path. CPU tests do not prove CUDA behavior.
 - Profiling evidence needs warmup, fixed inputs, named Hydra stages, and before/after comparison. Kernel names alone are not enough; tie decisions to data/H2D/forward/loss/backward/optimizer/metrics stages.
+- Training speed gains matter only after correctness and strength are preserved. Do not promote faster profile/default when it weakens validation, strength, replay correctness, or runtime contracts; keep such changes opt-in/ablation until equal-step validation and, when relevant, arena evidence prove quality-per-wall-clock improves.
 ## Licensing and source boundaries
 
 - `Mortal-Policy/` is AGPL. Never copy, adapt, derive, port line-by-line, link, or translate code from it. Black-box behavior/compatibility ideas only.
@@ -223,6 +224,9 @@ Useful invariants for runtime/data changes:
 - NVTX Nsight: set `HYDRA_NVTX=1`; if NVTX ranges missing, expose Pixi NVTX lib: `LD_LIBRARY_PATH=.pixi/envs/default/lib/python3.12/site-packages/nvidia/nvtx/lib:$LD_LIBRARY_PATH`.
 - Useful reports: `nsys stats --report nvtx_kern_sum:base ... --timeunit=us`, `nsys stats --report cuda_api_gpu_sum:base ... --timeunit=us`, and `nsys export --type sqlite`.
 - PyTorch profiler shim: build with `--features torch-profiler`; gate by env `HYDRA_TORCH_PROFILER=<trace.json>`, `HYDRA_TORCH_PROFILER_START_STEP=N`, `HYDRA_TORCH_PROFILER_STOP_STEP=N`, optional `HYDRA_TORCH_PROFILER_MODE=kineto|nvtx`. Off by default; use only for focused probes.
+- Nsight on `compile_default` can time out before capture starts because `cudaProfiler.start()` happens after TorchInductor compile/warmup. For compile profiling, avoid full-process capture; use `--cuda-profiler-range --profile-coarse`, low `--steps`, pre-warmed shapes when possible, and `--capture-range=cudaProfilerApi --capture-range-end=stop --wait=primary`. If it still stalls, profile `eager_bf16` for kernel taxonomy and use non-Nsight JSON timing for compiled throughput.
+- Keep Nsight captures tiny: `warmup=1`, `steps=1..2`, fixed `batch=2048`, `microbatch=1024`, `blocks=10`, exact raw MJAI data path, output under `/home/cachybtw/tmp`; immediately export to SQLite and query top kernels/memcpy/NVTX instead of opening large reports.
+- Current raw-MJAI Python bottleneck evidence: input/H2D ~5ms per 2048 batch; backbone GPU compute dominates. Eager Nsight top buckets were activation/elementwise (~37ms/1318 calls), layout transforms (~13ms/384 calls), conv fprop/dgrad/internal gradients (~25ms), strict GroupNorm (~5ms), H2D ~4ms. Batch scaling to 4096/8192 raised sampled util but reduced throughput; do not assume bigger batch fixes occupancy.
 - Last measured backward attribution: Mish/SE/autograd elementwise largest, then backbone conv backward, GroupNorm backward, then layout transforms. `policy_only` did not reduce backward; heads/loss were not owner. Next lane from that evidence: backbone backward design/fusion, not optimizer.
 
 ### Local throughput baseline

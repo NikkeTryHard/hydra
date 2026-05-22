@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 
-use hydra_train_runtime::config::PythonLearnerCliOptions;
+use hydra_train_runtime::config::{PythonLearnerCliOptions, PythonLearnerInput};
 use serde::Deserialize;
 
 const PYTHON_LEARNER_SCRIPT: &str = "scripts/hydra_pytorch_oracle.py";
@@ -84,10 +84,10 @@ pub fn build_python_learner_command(options: &PythonLearnerCliOptions) -> Python
         "py-train".to_string(),
         "python".to_string(),
         PYTHON_LEARNER_SCRIPT.to_string(),
-        "--manifest".to_string(),
-        options.bc_shards_manifest.display().to_string(),
         "--variant".to_string(),
         options.variant.as_str().to_string(),
+        "--residual-profile".to_string(),
+        options.residual_profile.as_str().to_string(),
         "--batch".to_string(),
         options.batch_size.to_string(),
         "--microbatch".to_string(),
@@ -104,6 +104,40 @@ pub fn build_python_learner_command(options: &PythonLearnerCliOptions) -> Python
         "--w-safety-residual".to_string(),
         options.safety_residual_weight.to_string(),
     ];
+    match &options.input {
+        PythonLearnerInput::BcShards { manifest } => {
+            args.push("--manifest".to_string());
+            args.push(manifest.display().to_string());
+        }
+        PythonLearnerInput::RawMjai {
+            data_dir,
+            max_games,
+            max_samples,
+            train_fraction,
+            augment,
+            transport,
+        } => {
+            args.push("--raw-mjai-data-dir".to_string());
+            args.push(data_dir.display().to_string());
+            args.push("--raw-mjai-worker-threads".to_string());
+            args.push("20".to_string());
+            args.push("--raw-mjai-train-fraction".to_string());
+            args.push(train_fraction.to_string());
+            args.push("--raw-mjai-transport".to_string());
+            args.push(transport.as_str().to_string());
+            if let Some(max_games) = max_games {
+                args.push("--raw-mjai-max-games".to_string());
+                args.push(max_games.to_string());
+            }
+            if let Some(max_samples) = max_samples {
+                args.push("--raw-mjai-max-samples".to_string());
+                args.push(max_samples.to_string());
+            }
+            if *augment {
+                args.push("--raw-mjai-augment".to_string());
+            }
+        }
+    }
     if options.compile_fullgraph_check {
         args.push("--compile-fullgraph-check".to_string());
     }
@@ -138,11 +172,20 @@ pub fn run_python_learner_with_runner(
     options: &PythonLearnerCliOptions,
     runner: &impl PythonLearnerRunner,
 ) -> Result<PythonLearnerReport, String> {
-    if !options.bc_shards_manifest.is_file() {
-        return Err(format!(
-            "Python BC learner manifest does not exist or is not a file: {}",
-            options.bc_shards_manifest.display()
-        ));
+    match &options.input {
+        PythonLearnerInput::BcShards { manifest } if !manifest.is_file() => {
+            return Err(format!(
+                "Python BC learner manifest does not exist or is not a file: {}",
+                manifest.display()
+            ));
+        }
+        PythonLearnerInput::RawMjai { data_dir, .. } if !data_dir.exists() => {
+            return Err(format!(
+                "Python BC learner raw MJAI data dir does not exist: {}",
+                data_dir.display()
+            ));
+        }
+        _ => {}
     }
     fs::create_dir_all(&options.output_dir).map_err(|err| {
         format!(
@@ -238,11 +281,15 @@ mod tests {
     fn options(root: &Path) -> PythonLearnerCliOptions {
         PythonLearnerCliOptions {
             bc_shards_manifest: root.join("manifest.json"),
+            input: PythonLearnerInput::BcShards {
+                manifest: root.join("manifest.json"),
+            },
             output_dir: root.join("out"),
             device: "cuda:0".to_string(),
             batch_size: 2048,
             microbatch_size: 1024,
             variant: PythonLearnerVariant::CompileDefault,
+            residual_profile: hydra_train_runtime::config::PythonResidualProfileConfig::ReluSe,
             warmup_steps: 1,
             steps: 3,
             checkpoint_out: Some(root.join("ckpt.pt")),
@@ -280,6 +327,12 @@ mod tests {
                 .windows(2)
                 .any(|w| w == ["--variant", "compile_default"])
         );
+        assert!(
+            command
+                .args
+                .windows(2)
+                .any(|w| w == ["--residual-profile", "relu_se"])
+        );
         assert!(command.args.windows(2).any(|w| w
             == [
                 "--out",
@@ -308,6 +361,53 @@ mod tests {
                 .windows(2)
                 .any(|w| w == ["--checkpoint-every-steps", "7"])
         );
+    }
+
+    #[test]
+    fn command_passes_raw_mjai_input_when_manifest_absent() {
+        let root = PathBuf::from("/tmp/hydra raw launcher");
+        let mut opts = options(&root);
+        opts.input = PythonLearnerInput::RawMjai {
+            data_dir: root.join("mjai"),
+            max_games: Some(5),
+            max_samples: Some(4096),
+            train_fraction: 0.8,
+            augment: true,
+            transport: hydra_train_runtime::config::PythonRawMjaiTransportConfig::PinnedPyo3,
+        };
+        let command = build_python_learner_command(&opts);
+        assert!(
+            command
+                .args
+                .windows(2)
+                .any(|w| w == ["--raw-mjai-data-dir", "/tmp/hydra raw launcher/mjai"])
+        );
+        assert!(
+            command
+                .args
+                .windows(2)
+                .any(|w| w == ["--raw-mjai-max-games", "5"])
+        );
+        assert!(
+            command
+                .args
+                .windows(2)
+                .any(|w| w == ["--raw-mjai-max-samples", "4096"])
+        );
+        assert!(
+            command
+                .args
+                .windows(2)
+                .any(|w| w == ["--raw-mjai-train-fraction", "0.8"])
+        );
+        assert!(
+            command
+                .args
+                .windows(2)
+                .any(|w| w == ["--raw-mjai-transport", "pinned_pyo3"])
+        );
+        assert!(command.args.contains(&"--raw-mjai-augment".to_string()));
+        assert!(!command.args.contains(&"--manifest".to_string()));
     }
 
     #[test]

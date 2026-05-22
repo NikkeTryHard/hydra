@@ -69,6 +69,17 @@ def masked_policy_ce(logits: torch.Tensor, target: torch.Tensor, mask: torch.Ten
     return -(target.to(dtype=logits.dtype) * log_probs).sum(dim=1)
 
 
+def masked_policy_ce_indices(logits: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    masked = logits.masked_fill(~mask.to(dtype=torch.bool), MASKED_LOGIT_SENTINEL)
+    return F.cross_entropy(masked, target.to(dtype=torch.int64), reduction="none")
+
+
+def policy_ce(logits: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    if target.ndim == 1:
+        return masked_policy_ce_indices(logits, target, mask)
+    return masked_policy_ce(logits, target, mask)
+
+
 def value_mse(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     diff = pred.squeeze(1) - target
     return diff * diff * 0.5
@@ -130,7 +141,7 @@ def _require_tensor(tensor: torch.Tensor | None, name: str) -> torch.Tensor:
 def base_loss(outputs: HydraBaseOutput, targets: BaseTargets, weights: LossWeights | None = None) -> LossBreakdown:
     if weights is None:
         weights = DEFAULT_LOSS_WEIGHTS
-    l_policy = masked_policy_ce(outputs.policy_logits, targets.policy_target, targets.legal_mask).mean()
+    l_policy = policy_ce(outputs.policy_logits, targets.policy_target, targets.legal_mask).mean()
     l_value = value_mse(outputs.value, targets.value_target).mean()
     l_grp = soft_ce(outputs.grp, targets.grp_target).mean()
     l_tenpai = bce_logits_mean(outputs.opp_tenpai, targets.tenpai_target, dim=1).mean()

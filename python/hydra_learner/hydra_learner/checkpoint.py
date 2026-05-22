@@ -12,7 +12,15 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from hydra_learner.model import ACTION_SPACE, OBS_CHANNELS, TILE_WIDTH, HydraPolicyNet
+from hydra_learner.model import (
+    ACTION_SPACE,
+    BACKBONE_PROFILE_DEFAULT,
+    CONV_MEMORY_FORMAT_DEFAULT,
+    OBS_CHANNELS,
+    RESIDUAL_PROFILE_DEFAULT,
+    TILE_WIDTH,
+    HydraPolicyNet,
+)
 
 if TYPE_CHECKING:
     from hydra_learner.losses import LossWeights
@@ -28,6 +36,9 @@ class ModelConfig:
     blocks: int
     bottleneck: int
     actions: int = ACTION_SPACE
+    residual_profile: str = RESIDUAL_PROFILE_DEFAULT
+    backbone_profile: str = BACKBONE_PROFILE_DEFAULT
+    conv_memory_format: str = CONV_MEMORY_FORMAT_DEFAULT
     head_mode: str = HEAD_MODE
     encoder_shape: tuple[int, int] = ENCODER_SHAPE
 
@@ -36,6 +47,12 @@ class ModelConfig:
 class OptimizerConfig:
     name: Literal["AdamW"]
     lr: float
+    weight_decay: float = 0.01
+    beta1: float = 0.9
+    beta2: float = 0.999
+    eps: float = 1.0e-8
+    foreach: bool | None = None
+    fused: bool | None = None
 
 
 @dataclass(frozen=True)

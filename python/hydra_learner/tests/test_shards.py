@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import json
 import struct
+import threading
+import time
+from collections.abc import Generator
 from pathlib import Path
 
 import numpy as np
 import pytest
 
+from hydra_learner.raw_mjai_stream import RawMjaiBridgeStats, RawMjaiPinnedStream, build_raw_mjai_stream_command
 from hydra_learner.shards import (
     ACTION_SPACE,
     BC_BASE_RECORD_SIZE,
@@ -109,6 +113,167 @@ def _write_fixture(root: Path) -> Path:
     manifest_path = root / "manifest.json"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     return manifest_path
+
+
+def test_raw_mjai_stream_command_uses_default_rust_env() -> None:
+    cmd = build_raw_mjai_stream_command(
+        data_dir=Path("/data/mjai"),
+        batch_size=2048,
+        max_games=5,
+        max_samples=4096,
+        queue_bound=8,
+        worker_threads=20,
+        train_fraction=0.9,
+        augment=True,
+    )
+    assert cmd[:5] == ["pixi", "run", "-e", "default", "cargo"]
+    assert _flag_value(cmd, "--input") == "/data/mjai"
+    assert _flag_value(cmd, "--batch-size") == "2048"
+    assert _flag_value(cmd, "--max-games") == "5"
+    assert _flag_value(cmd, "--max-samples") == "4096"
+    assert "--augment" in cmd
+
+
+def test_raw_mjai_pinned_ffi_requires_explicit_library(tmp_path: Path) -> None:
+    missing = tmp_path / "libhydra_raw_mjai_ffi.so"
+    with pytest.raises(ImportError):
+        RawMjaiPinnedStream(
+            data_dir=Path("/data/mjai"),
+            batch_size=2048,
+            queue_bound=8,
+            worker_threads=20,
+            max_games=5,
+            max_samples=4096,
+            train_fraction=0.9,
+            augment=False,
+            split="train",
+            library_path=missing,
+            ring_size=2,
+        )
+
+
+class _FakeRawMjaiNext:
+    def __init__(self, rows: int, batches: int = 1) -> None:
+        self.rows = rows
+        self.loaded_games = batches
+        self.skipped_games = 0
+        self.samples = rows * batches
+        self.batches = batches
+        self.max_games_reached = False
+        self.max_samples_reached = False
+        self.stats = RawMjaiBridgeStats(open_count=1, last_next_fill_ms=0.1)
+
+
+class _FakeRawMjaiStream:
+    next_calls = 0
+    close_calls = 0
+    fail_next = False
+    block_next = False
+    release = threading.Event()
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        type(self).next_calls = 0
+        type(self).close_calls = 0
+        type(self).release.clear()
+
+    def next_into(self, *ptrs: object) -> _FakeRawMjaiNext:
+        type(self).next_calls += 1
+        if type(self).fail_next:
+            raise RuntimeError("synthetic producer failure")
+        if type(self).block_next:
+            type(self).release.wait(timeout=5.0)
+        rows = ptrs[-1]
+        if not isinstance(rows, int):
+            raise TypeError("capacity rows must be int")
+        return _FakeRawMjaiNext(rows=rows, batches=type(self).next_calls)
+
+    def stats(self) -> RawMjaiBridgeStats:
+        return RawMjaiBridgeStats(open_count=1)
+
+    def close(self) -> None:
+        type(self).close_calls += 1
+        type(self).release.set()
+
+
+@pytest.fixture(autouse=True)
+def _clear_raw_mjai_stream_override() -> Generator[None]:
+    RawMjaiPinnedStream._set_stream_override_for_tests(None)
+    yield
+    RawMjaiPinnedStream._set_stream_override_for_tests(None)
+    _FakeRawMjaiStream.fail_next = False
+    _FakeRawMjaiStream.block_next = False
+    _FakeRawMjaiStream.release.set()
+
+
+def _fake_pinned_stream(tmp_path: Path, *, ring_size: int = 2, close_timeout_s: float = 30.0) -> RawMjaiPinnedStream:
+    RawMjaiPinnedStream._set_stream_override_for_tests(_FakeRawMjaiStream)
+    return RawMjaiPinnedStream(
+        data_dir=Path("/data/mjai"),
+        batch_size=2,
+        queue_bound=1,
+        worker_threads=1,
+        max_games=1,
+        max_samples=2,
+        train_fraction=0.9,
+        augment=False,
+        split="train",
+        library_path=tmp_path / "unused.so",
+        ring_size=ring_size,
+        close_timeout_s=close_timeout_s,
+    )
+
+
+def test_raw_mjai_pinned_close_while_producer_active_does_not_hang(tmp_path: Path) -> None:
+    _FakeRawMjaiStream.block_next = True
+    stream = _fake_pinned_stream(tmp_path, close_timeout_s=0.1)
+    started = time.perf_counter()
+    with pytest.raises(RuntimeError, match="producer did not stop"):
+        stream.close()
+    assert time.perf_counter() - started < 1.0
+
+
+def test_raw_mjai_pinned_producer_exception_reaches_consumer(tmp_path: Path) -> None:
+    _FakeRawMjaiStream.fail_next = True
+    stream = _fake_pinned_stream(tmp_path)
+    try:
+        with pytest.raises(RuntimeError, match="synthetic producer failure"):
+            stream.next_batch()
+        assert "synthetic producer failure" in (stream.queue_stats().producer_error or "")
+    finally:
+        stream.close()
+
+
+def test_raw_mjai_pinned_slot_not_reused_before_mark_inflight(tmp_path: Path) -> None:
+    stream = _fake_pinned_stream(tmp_path, ring_size=2)
+    try:
+        first, _ = stream.next_batch()
+        second, _ = stream.next_batch()
+        assert first.obs.data_ptr() != second.obs.data_ptr()
+        time.sleep(0.05)
+        stats_before = stream.queue_stats()
+        assert stats_before.free_queue_size == 0
+        stream.mark_inflight(first)
+        stream.mark_inflight(second)
+    finally:
+        stream.close()
+
+
+def test_raw_mjai_pinned_queues_remain_bounded(tmp_path: Path) -> None:
+    stream = _fake_pinned_stream(tmp_path, ring_size=3)
+    try:
+        time.sleep(0.05)
+        stats = stream.queue_stats()
+        assert stats.ready_queue_size <= 3
+        assert stats.free_queue_size <= 3
+        assert stats.produced_batches <= 3
+        assert stream.bridge_stats().open_count == 1
+    finally:
+        stream.close()
+
+
+def _flag_value(cmd: list[str], flag: str) -> str:
+    index = cmd.index(flag)
+    return cmd[index + 1]
 
 
 def test_compact_reader_decodes_policy_batch(tmp_path: Path) -> None:

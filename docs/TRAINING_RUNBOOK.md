@@ -63,15 +63,20 @@ Choose:
 | `bc_shards_manifest_path` | prebuilt BC shard manifest input |
 | `bc_backend` | BC shard train backend; default `python`; set `rust_burn` only for legacy/debug or advanced labels Python lacks |
 | `shard_prefetch_depth` | shard host-batch queue depth; default `2`, valid `1..64` |
+| `python_residual_profile` | Python BC residual profile; default `mish_se`; `mish_no_se` is opt-in throughput ablation with strength risk |
+| `python_variant` | Python BC TorchInductor strategy only; default `compile_default`; use `compile_max_autotune` for long same-architecture Python BC after break-even |
 | `validation_gates` | optional best-checkpoint gate; off by default |
 
-Minimal BC:
+Minimal raw-MJAI BC train, default Python/PyTorch backend:
 
 ```yaml
-data_dir: /data
+data_dir: /data/mjai              # raw replay root/file/archive; used directly when no BC shard manifest is set
 output_dir: /output
 num_epochs: 1
 batch_size: 2048
+microbatch_size: 1024
+device: cuda:0
+# bc_backend: python             # default plain-BC backend
 
 bc:
   learning_rate: 0.00025
@@ -92,6 +97,8 @@ device: cuda:0
 bc_shards_manifest_path: /data/bc_shards_manifest.json
 # bc_backend: python            # default
 ```
+
+If `bc_shards_manifest_path` is absent, Python learner receives `data_dir` and streams raw MJAI through Rust `raw_mjai_stream` helper. helper runs in Pixi `default` Rust/libtorch env; Python training runs in Pixi `py-train`.
 
 Legacy Rust/Burn BC path:
 
@@ -117,6 +124,34 @@ bc_head_profile: full        # default
 # bc_head_profile: policy_only
 ```
 
+Python residual profile. Default `mish_se` is canonical SE-ResNet Python BC: Mish activation, GroupNorm, squeeze-excitation every residual block, 10 blocks, 256 hidden channels. Profile name is checkpoint contract: checkpoints record exact string and reject mismatched resume.
+
+Opt-ins:
+- `silu_se`: SiLU activation, GroupNorm, SE; speed/activation probe, validation required before strength claim.
+- `relu_se`: ReLU activation, GroupNorm, SE; speed/activation probe, higher semantic risk.
+- `mish_no_se`: speed/ablation profile only; removes core SE, keeps Mish + GroupNorm. 5k equal-step raw-MJAI validation was faster in train loop but slightly worse than `mish_se`; keep opt-in, do not promote.
+- `relu_no_se`: speed/ablation profile only; ReLU + GroupNorm, no SE. Never default without separate validation + arena evidence.
+- `relu_no_norm_no_se`: speed/ablation profile only; ReLU without GroupNorm/SE. Validation-only, never default.
+
+```yaml
+python_residual_profile: mish_se          # default canonical SE-ResNet
+# python_residual_profile: mish_no_se     # speed/ablation only; do not promote from throughput alone
+# python_residual_profile: relu_no_norm_no_se # speed/ablation only; validation-only, never default
+```
+
+Python learner backbone profile is part of checkpoint metadata. Valid value now only `conv2d_local3`; default is `conv2d_local3`. Removed probe `token_linear_local3`: slower than Conv2d in raw-MJAI timing, higher architecture risk, no profiler reason to keep.
+
+```bash
+--backbone-profile conv2d_local3
+```
+
+Python compile variants do not change model math, topology, checkpoint architecture, input shape, action shape, residual profile, or losses; they only change TorchInductor compile strategy. Default remains `compile_default` for smoke/preflight/short runs. `compile_max_autotune` is recommended for long same-architecture Python BC training: 200-step raw-MJAI run (`mish_se`, 10 blocks, `batch=2048`, `microbatch=1024`, warmup 10) measured `+8.7%` train throughput and `+7.7%` end-to-end throughput excluding compile (`38974 -> 42370` train samples/s, `35264 -> 37972` e2e samples/s, step `52.55ms -> 48.34ms`). Compile/autotune overhead means short runs may be slower including compile; measured 200-step run was still below break-even when compile time was included. Inductor/autotune warning text during compile is diagnostic unless run exits non-zero or result JSON has `compile_error`. Do not add Inductor env knobs to defaults: fixed raw-MJAI `conv2d_local3`/`mish_se`/10-block/256-hidden `compile_max_autotune` probes rejected `warn_mix_layout`, `layout_optimization`, `max_autotune_pointwise`, `coordinate_descent_tuning`, and `max-autotune-no-cudagraphs`; e2e was `-0.07%` to `-1.30%`. Next same-architecture lane is fused GroupNorm+Mish(+SE), custom Triton or equivalent fusion.
+
+Python raw-MJAI pinned-readinto probe rejected. `torch.empty(..., pin_memory=True)` exposes writable NumPy/buffer storage, and direct subprocess `readinto()` into fixed field tensors works with current frame headers. H2D improved from `~5.3ms` GPU to `~1.15ms`, but batch read/decode regressed to `~20.4ms` because field reads into pinned memory through stdout/pipe are slow versus current single payload read + zero-copy NumPy views. Do not add Python stdout pinned readinto path. Next input lane: PyO3/shared-memory bridge that lets Rust fill reusable pinned host buffers directly, then Python launches async H2D.
+
+```bash
+--python-variant compile_max_autotune
+```
 Experimental backbone profile. Default absent = canonical learner: 24 blocks, 256 hidden, Mish, SE every block, two GroupNorms per block. Research infra only: final op-count ablation did not show material throughput gain. Do not use for default training, throughput-win claims, or strength claims without separate evidence.
 
 ```yaml

@@ -1,0 +1,18 @@
+[package]
+name = "hydra-raw-mjai-ffi"
+version = "0.1.0"
+edition = "2024"
+license-file = "../../LICENSE"
+description = "C ABI prototype for raw MJAI pinned host batch fill"
+repository = "https://github.com/hydra-mahjong/hydra"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+hydra-core = { path = "../hydra-core" }
+hydra-train-exec = { path = "../hydra-train-exec" }
+pyo3 = { version = "0.28.3", features = ["extension-module"] }

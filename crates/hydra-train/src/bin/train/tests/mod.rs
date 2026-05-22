@@ -651,6 +651,10 @@ num_epochs: 3
     assert!(cfg.max_validation_batches.is_none());
     assert_eq!(cfg.max_validation_samples, Some(8_192));
     assert!(cfg.advanced_loss.is_none());
+    assert_eq!(
+        cfg.python_variant,
+        hydra_train_runtime::config::PythonLearnerVariant::CompileDefault
+    );
     fs::remove_file(base).ok();
 }
 
@@ -863,8 +867,11 @@ fn schedule_total_steps_extends_from_resume_global_step() {
         resume_checkpoint: None,
         seed: 0,
         advanced_loss: None,
+        python_residual_profile: Default::default(),
+        python_variant: Default::default(),
         bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
         experimental_backbone_profile: None,
+        python_raw_mjai_transport: Default::default(),
         validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
         rl: None,
         bc: BcHyperparamConfig::default(),
@@ -908,8 +915,11 @@ fn python_guard_config() -> TrainConfig {
         resume_checkpoint: None,
         seed: 0,
         advanced_loss: None,
+        python_residual_profile: Default::default(),
+        python_variant: Default::default(),
         bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
         experimental_backbone_profile: None,
+        python_raw_mjai_transport: Default::default(),
         validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
         rl: None,
         bc: BcHyperparamConfig::default(),
@@ -943,6 +953,77 @@ fn python_options_from_config_accepts_plain_bc_defaults() {
     assert_eq!(options.batch_size, 1024);
     assert_eq!(options.microbatch_size, 1024);
     assert_eq!(options.steps, 3);
+    assert_eq!(options.residual_profile, Default::default());
+}
+
+#[test]
+fn python_options_from_config_uses_raw_mjai_when_manifest_absent() {
+    let mut config = python_guard_config();
+    config.bc_shards_manifest_path = None;
+    let options = python_options_from_config(&config).expect("plain BC should route to Python");
+    match options.input {
+        hydra_train_runtime::config::PythonLearnerInput::RawMjai {
+            data_dir,
+            train_fraction,
+            augment,
+            transport,
+            ..
+        } => {
+            assert_eq!(data_dir, PathBuf::from("/tmp/data"));
+            assert_eq!(train_fraction, 0.9);
+            assert!(augment);
+            assert_eq!(
+                transport,
+                hydra_train_runtime::config::PythonRawMjaiTransportConfig::PinnedPyo3
+            );
+        }
+        hydra_train_runtime::config::PythonLearnerInput::BcShards { .. } => {
+            panic!("expected raw MJAI input")
+        }
+    }
+}
+
+#[test]
+fn python_options_from_config_preserves_residual_profile() {
+    let mut config = python_guard_config();
+    config.python_residual_profile =
+        hydra_train_runtime::config::PythonResidualProfileConfig::ReluNoSe;
+    let options = python_options_from_config(&config).expect("plain BC should route to Python");
+    assert_eq!(
+        options.residual_profile,
+        hydra_train_runtime::config::PythonResidualProfileConfig::ReluNoSe
+    );
+}
+
+#[test]
+fn python_options_from_config_preserves_compile_variant() {
+    let mut config = python_guard_config();
+    config.python_variant = hydra_train_runtime::config::PythonLearnerVariant::CompileMaxAutotune;
+    let options = python_options_from_config(&config).expect("plain BC should route to Python");
+    assert_eq!(
+        options.variant,
+        hydra_train_runtime::config::PythonLearnerVariant::CompileMaxAutotune
+    );
+}
+
+#[test]
+fn yaml_compile_max_autotune_reaches_python_launcher_options() {
+    let yaml = r#"data_dir: /tmp/data
+output_dir: /tmp/out
+num_epochs: 1
+bc_backend: python
+python_variant: compile_max_autotune
+max_train_steps: 7
+"#;
+    let path = write_temp_file("python_variant", "yaml", yaml);
+    let config = read_config(&path).expect("config should parse python variant");
+    let options = python_options_from_config(&config).expect("plain BC should route to Python");
+    assert_eq!(
+        options.variant,
+        hydra_train_runtime::config::PythonLearnerVariant::CompileMaxAutotune
+    );
+    assert_eq!(options.steps, 7);
+    fs::remove_file(path).ok();
 }
 
 #[test]
@@ -1487,8 +1568,11 @@ fn validation_microbatch_and_sample_limit_fallbacks_work() {
         resume_checkpoint: None,
         seed: 0,
         advanced_loss: None,
+        python_residual_profile: Default::default(),
+        python_variant: Default::default(),
         bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
         experimental_backbone_profile: None,
+        python_raw_mjai_transport: Default::default(),
         validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
         rl: None,
         bc: BcHyperparamConfig::default(),
@@ -1545,8 +1629,11 @@ fn validate_config_rejects_zero_validation_microbatch_and_samples() {
         resume_checkpoint: None,
         seed: 0,
         advanced_loss: None,
+        python_residual_profile: Default::default(),
+        python_variant: Default::default(),
         bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
         experimental_backbone_profile: None,
+        python_raw_mjai_transport: Default::default(),
         validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
         rl: None,
         bc: BcHyperparamConfig::default(),
@@ -1602,8 +1689,11 @@ fn validate_config_accepts_basic_rl_block() {
         resume_checkpoint: None,
         seed: 0,
         advanced_loss: None,
+        python_residual_profile: Default::default(),
+        python_variant: Default::default(),
         bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
         experimental_backbone_profile: None,
+        python_raw_mjai_transport: Default::default(),
         validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
         rl: Some(hydra_train_runtime::config::RlTrainConfig::default()),
         bc: BcHyperparamConfig::default(),
@@ -1751,8 +1841,11 @@ fn validate_config_rejects_invalid_bc_hyperparameter_ranges() {
         resume_checkpoint: None,
         seed: 0,
         advanced_loss: None,
+        python_residual_profile: Default::default(),
+        python_variant: Default::default(),
         bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
         experimental_backbone_profile: None,
+        python_raw_mjai_transport: Default::default(),
         validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
         rl: None,
         bc: BcHyperparamConfig {
@@ -1806,8 +1899,11 @@ fn validate_config_requires_sidecar_when_exit_loss_is_enabled() {
             exit: Some(0.1),
             ..Default::default()
         }),
+        python_residual_profile: Default::default(),
+        python_variant: Default::default(),
         bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
         experimental_backbone_profile: None,
+        python_raw_mjai_transport: Default::default(),
         validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
         rl: None,
         bc: BcHyperparamConfig::default(),
@@ -1855,8 +1951,11 @@ fn validate_config_requires_sidecar_when_delta_q_loss_is_enabled() {
             delta_q: Some(0.1),
             ..Default::default()
         }),
+        python_residual_profile: Default::default(),
+        python_variant: Default::default(),
         bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
         experimental_backbone_profile: None,
+        python_raw_mjai_transport: Default::default(),
         validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
         rl: None,
         bc: BcHyperparamConfig::default(),

@@ -53,7 +53,13 @@ pub struct TrainConfig {
     #[serde(default)]
     pub bc_head_profile: BcHeadProfile,
     #[serde(default)]
+    pub python_residual_profile: PythonResidualProfileConfig,
+    #[serde(default)]
+    pub python_variant: PythonLearnerVariant,
+    #[serde(default)]
     pub experimental_backbone_profile: Option<ExperimentalBackboneProfileConfig>,
+    #[serde(default)]
+    pub python_raw_mjai_transport: PythonRawMjaiTransportConfig,
     #[serde(default)]
     pub validation_gates: ValidationGateConfig,
     pub rl: Option<RlTrainConfig>,
@@ -99,6 +105,31 @@ pub enum BcHeadProfile {
     #[default]
     Full,
     PolicyOnly,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PythonResidualProfileConfig {
+    #[default]
+    MishSe,
+    SiluSe,
+    ReluSe,
+    MishNoSe,
+    ReluNoSe,
+    ReluNoNormNoSe,
+}
+
+impl PythonResidualProfileConfig {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::MishSe => "mish_se",
+            Self::SiluSe => "silu_se",
+            Self::ReluSe => "relu_se",
+            Self::MishNoSe => "mish_no_se",
+            Self::ReluNoSe => "relu_no_se",
+            Self::ReluNoNormNoSe => "relu_no_norm_no_se",
+        }
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -198,7 +229,10 @@ impl TrainConfig {
             seed: default_seed(),
             advanced_loss: None,
             bc_head_profile: BcHeadProfile::default(),
+            python_residual_profile: PythonResidualProfileConfig::default(),
+            python_variant: PythonLearnerVariant::default(),
             experimental_backbone_profile: None,
+            python_raw_mjai_transport: PythonRawMjaiTransportConfig::default(),
             validation_gates: ValidationGateConfig::default(),
             rl: None,
             bc: BcHyperparamConfig::default(),
@@ -333,10 +367,12 @@ impl BcBackend {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
 pub enum PythonLearnerVariant {
     EagerFp32,
     EagerBf16,
+    #[default]
     CompileDefault,
     CompileReduceOverhead,
     CompileMaxAutotune,
@@ -350,6 +386,23 @@ impl PythonLearnerVariant {
             Self::CompileDefault => "compile_default",
             Self::CompileReduceOverhead => "compile_reduce_overhead",
             Self::CompileMaxAutotune => "compile_max_autotune",
+        }
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PythonRawMjaiTransportConfig {
+    #[default]
+    PinnedPyo3,
+    Stdout,
+}
+
+impl PythonRawMjaiTransportConfig {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PinnedPyo3 => "pinned_pyo3",
+            Self::Stdout => "stdout",
         }
     }
 }
@@ -374,11 +427,13 @@ impl BcBackendConfig {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PythonLearnerCliOptions {
     pub bc_shards_manifest: PathBuf,
+    pub input: PythonLearnerInput,
     pub output_dir: PathBuf,
     pub device: String,
     pub batch_size: usize,
     pub microbatch_size: usize,
     pub variant: PythonLearnerVariant,
+    pub residual_profile: PythonResidualProfileConfig,
     pub warmup_steps: usize,
     pub steps: usize,
     pub checkpoint_out: Option<PathBuf>,
@@ -387,6 +442,21 @@ pub struct PythonLearnerCliOptions {
     pub compile_fullgraph_check: bool,
     pub oracle_critic_weight: f64,
     pub safety_residual_weight: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PythonLearnerInput {
+    BcShards {
+        manifest: PathBuf,
+    },
+    RawMjai {
+        data_dir: PathBuf,
+        max_games: Option<usize>,
+        max_samples: Option<usize>,
+        train_fraction: f32,
+        augment: bool,
+        transport: PythonRawMjaiTransportConfig,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

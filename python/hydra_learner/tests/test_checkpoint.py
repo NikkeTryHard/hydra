@@ -17,7 +17,7 @@ from hydra_learner.checkpoint import (
     save_checkpoint,
 )
 from hydra_learner.losses import LossWeights
-from hydra_learner.model import HydraPolicyNet
+from hydra_learner.model import RESIDUAL_PROFILE_MISH_NO_SE, RESIDUAL_PROFILE_RELU_SE, HydraPolicyNet
 
 
 def test_save_load_restores_model_params_exactly(tmp_path: Path) -> None:
@@ -175,6 +175,72 @@ def test_model_config_mismatch_hard_errors(tmp_path: Path) -> None:
             model=model,
             optimizer=optimizer,
             expected_model_config=ModelConfig(hidden=9, blocks=1, bottleneck=4),
+            expected_optimizer_config=_optimizer_config(),
+            expected_runtime_config=_runtime_config(),
+            expected_loss_weights=LossWeights(),
+            expected_manifest_path=manifest,
+        )
+
+
+def test_stale_conv1d_checkpoint_weights_hard_error(tmp_path: Path) -> None:
+    model, optimizer = _model_optimizer()
+    manifest = _write_manifest(tmp_path, b"manifest-a")
+    ckpt = tmp_path / "ckpt.pt"
+    save_checkpoint(
+        ckpt,
+        model=model,
+        optimizer=optimizer,
+        model_config=_model_config(),
+        optimizer_config=_optimizer_config(),
+        runtime_config=_runtime_config(),
+        loss_weights=LossWeights(),
+        manifest_path=manifest,
+        global_step=0,
+        samples_seen=0,
+    )
+    checkpoint = torch.load(ckpt, map_location="cpu", weights_only=True)
+    checkpoint["model_state"]["backbone.input.weight"] = checkpoint["model_state"]["backbone.input.weight"].squeeze(2)
+    torch.save(checkpoint, ckpt)
+
+    with pytest.raises(ValueError, match=r"model_state\[backbone\.input\.weight\] shape mismatch"):
+        load_checkpoint(
+            ckpt,
+            model=model,
+            optimizer=optimizer,
+            expected_model_config=_model_config(),
+            expected_optimizer_config=_optimizer_config(),
+            expected_runtime_config=_runtime_config(),
+            expected_loss_weights=LossWeights(),
+            expected_manifest_path=manifest,
+        )
+
+
+@pytest.mark.parametrize("profile", [RESIDUAL_PROFILE_MISH_NO_SE, RESIDUAL_PROFILE_RELU_SE])
+def test_residual_profile_mismatch_hard_errors(tmp_path: Path, profile: str) -> None:
+    model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4, residual_profile=profile)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1.0e-3)
+    manifest = _write_manifest(tmp_path, b"manifest-a")
+    ckpt = tmp_path / "ckpt.pt"
+    save_checkpoint(
+        ckpt,
+        model=model,
+        optimizer=optimizer,
+        model_config=ModelConfig(hidden=8, blocks=1, bottleneck=4, residual_profile=profile),
+        optimizer_config=_optimizer_config(),
+        runtime_config=_runtime_config(),
+        loss_weights=LossWeights(),
+        manifest_path=manifest,
+        global_step=0,
+        samples_seen=0,
+    )
+    default_model, default_optimizer = _model_optimizer()
+
+    with pytest.raises(ValueError, match="model_config"):
+        load_checkpoint(
+            ckpt,
+            model=default_model,
+            optimizer=default_optimizer,
+            expected_model_config=_model_config(),
             expected_optimizer_config=_optimizer_config(),
             expected_runtime_config=_runtime_config(),
             expected_loss_weights=LossWeights(),
