@@ -1,5 +1,7 @@
 //! SE-ResNet backbone: SEBlock, SEResBlock, and SEResNet.
 
+use hydra_train_types::config::{BackboneActivationConfig, BackboneNormConfig};
+
 use crate::native_group_norm_mish;
 use crate::profiling;
 use burn::nn::{
@@ -16,6 +18,29 @@ const BACKBONE_SCOPE_BLOCK_CONV: &str = "backbone_block_conv";
 const BACKBONE_SCOPE_BLOCK_SE: &str = "backbone_block_se";
 const BACKBONE_SCOPE_BLOCK_ADD: &str = "backbone_block_add";
 
+fn apply_activation<B: Backend, const D: usize>(
+    activation_kind: BackboneActivationConfig,
+    x: Tensor<B, D>,
+) -> Tensor<B, D> {
+    match activation_kind {
+        BackboneActivationConfig::Mish => activation::mish(x),
+        BackboneActivationConfig::Silu => x.clone().mul(activation::sigmoid(x)),
+        BackboneActivationConfig::Relu => activation::relu(x),
+    }
+}
+
+fn apply_norm_activation<B: Backend>(
+    norm: &GroupNorm<B>,
+    activation_kind: BackboneActivationConfig,
+    x: Tensor<B, 3>,
+) -> Tensor<B, 3> {
+    match activation_kind {
+        BackboneActivationConfig::Mish => native_group_norm_mish::group_norm_mish(norm, x),
+        BackboneActivationConfig::Silu | BackboneActivationConfig::Relu => {
+            apply_activation(activation_kind, norm.forward(x))
+        }
+    }
+}
 /// Configuration for a squeeze-excitation block.
 #[derive(Config, Debug)]
 pub struct SEBlockConfig {
@@ -49,7 +74,7 @@ impl<B: Backend> SEBlock<B> {
     /// Apply channel attention to a `[batch, channels, tiles]` tensor.
     pub fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
         let scale = x.clone().mean_dim(2).squeeze_dim::<2>(2);
-        let scale = activation::mish(self.fc1.forward(scale));
+        let scale = apply_activation(BackboneActivationConfig::Mish, self.fc1.forward(scale));
         let scale = activation::sigmoid(self.fc2.forward(scale));
         let scale = scale.unsqueeze_dim::<3>(2);
         x.mul(scale)
@@ -65,6 +90,15 @@ pub struct SEResBlockConfig {
     pub num_groups: usize,
     /// Hidden bottleneck width for the nested SE block.
     pub se_bottleneck: usize,
+    /// Backbone activation profile.
+    #[config(default = "BackboneActivationConfig::default()")]
+    pub activation: BackboneActivationConfig,
+    /// Per-block normalization layout.
+    #[config(default = "BackboneNormConfig::default()")]
+    pub norm: BackboneNormConfig,
+    /// Whether this residual block applies SE after its second convolution.
+    #[config(default = "true")]
+    pub use_se: bool,
 }
 
 /// Residual 1D convolution block with group norm and SE gating.
@@ -75,6 +109,9 @@ pub struct SEResBlock<B: Backend> {
     gn2: GroupNorm<B>,
     conv2: Conv1d<B>,
     se: SEBlock<B>,
+    activation: BackboneActivationConfig,
+    norm: BackboneNormConfig,
+    use_se: bool,
 }
 
 impl SEResBlockConfig {
@@ -86,6 +123,7 @@ impl SEResBlockConfig {
         let conv_cfg =
             Conv1dConfig::new(self.channels, self.channels, 3).with_padding(PaddingConfig1d::Same);
         let gn_cfg = GroupNormConfig::new(self.num_groups, self.channels);
+        let use_se = self.use_se;
         let se_cfg = SEBlockConfig::new(self.channels, self.se_bottleneck);
         SEResBlock {
             gn1: gn_cfg.init(device),
@@ -95,6 +133,9 @@ impl SEResBlockConfig {
                 .with_padding(PaddingConfig1d::Same)
                 .init(device),
             se: se_cfg.init(device),
+            activation: self.activation,
+            norm: self.norm,
+            use_se,
         }
     }
 }
@@ -105,14 +146,19 @@ impl<B: Backend> SEResBlock<B> {
         let residual = x.clone();
         let out = {
             let _conv_scope = profiling::scope(BACKBONE_SCOPE_BLOCK_CONV);
-            let out = native_group_norm_mish::group_norm_mish(&self.gn1, x);
+            let out = apply_norm_activation(&self.gn1, self.activation, x);
             let out = self.conv1.forward(out);
-            let out = native_group_norm_mish::group_norm_mish(&self.gn2, out);
+            let out = match self.norm {
+                BackboneNormConfig::Both => apply_norm_activation(&self.gn2, self.activation, out),
+                BackboneNormConfig::FirstOnly => apply_activation(self.activation, out),
+            };
             self.conv2.forward(out)
         };
-        let out = {
+        let out = if self.use_se {
             let _se_scope = profiling::scope(BACKBONE_SCOPE_BLOCK_SE);
             self.se.forward(out)
+        } else {
+            out
         };
         let _add_scope = profiling::scope(BACKBONE_SCOPE_BLOCK_ADD);
         out + residual
@@ -132,6 +178,15 @@ pub struct SEResNetConfig {
     pub num_groups: usize,
     /// Hidden bottleneck width for each SE block.
     pub se_bottleneck: usize,
+    /// Backbone activation profile.
+    #[config(default = "BackboneActivationConfig::default()")]
+    pub activation: BackboneActivationConfig,
+    /// Apply SE on every Nth residual block.
+    #[config(default = "1")]
+    pub se_every_n: usize,
+    /// Per-block normalization layout.
+    #[config(default = "BackboneNormConfig::default()")]
+    pub norm: BackboneNormConfig,
 }
 
 impl SEResNetConfig {
@@ -142,6 +197,9 @@ impl SEResNetConfig {
         }
         if self.num_groups == 0 || !self.hidden_channels.is_multiple_of(self.num_groups) {
             return Err("hidden_channels % num_groups != 0");
+        }
+        if self.se_every_n == 0 {
+            return Err("se_every_n > 0");
         }
         Ok(())
     }
@@ -154,6 +212,7 @@ pub struct SEResNet<B: Backend> {
     input_gn: GroupNorm<B>,
     blocks: Vec<SEResBlock<B>>,
     final_gn: GroupNorm<B>,
+    activation: BackboneActivationConfig,
 }
 
 impl SEResNetConfig {
@@ -167,9 +226,16 @@ impl SEResNetConfig {
             .init(device);
         let input_gn = GroupNormConfig::new(self.num_groups, self.hidden_channels).init(device);
         let block_cfg =
-            SEResBlockConfig::new(self.hidden_channels, self.num_groups, self.se_bottleneck);
+            SEResBlockConfig::new(self.hidden_channels, self.num_groups, self.se_bottleneck)
+                .with_activation(self.activation)
+                .with_norm(self.norm);
         let blocks = (0..self.num_blocks)
-            .map(|_| block_cfg.init(device))
+            .map(|idx| {
+                block_cfg
+                    .clone()
+                    .with_use_se((idx + 1) % self.se_every_n == 0)
+                    .init(device)
+            })
             .collect();
         let final_gn = GroupNormConfig::new(self.num_groups, self.hidden_channels).init(device);
         SEResNet {
@@ -177,6 +243,7 @@ impl SEResNetConfig {
             input_gn,
             blocks,
             final_gn,
+            activation: self.activation,
         }
     }
 }
@@ -198,14 +265,14 @@ impl<B: Backend> SEResNet<B> {
         let x = {
             let _stem_scope = profiling::scope(BACKBONE_SCOPE_STEM);
             let x = self.input_conv.forward(x);
-            native_group_norm_mish::group_norm_mish(&self.input_gn, x)
+            apply_norm_activation(&self.input_gn, self.activation, x)
         };
         let x = {
             let _blocks_scope = profiling::scope(BACKBONE_SCOPE_BLOCKS);
             self.blocks.iter().fold(x, |acc, block| block.forward(acc))
         };
         let _tail_scope = profiling::scope(BACKBONE_SCOPE_TAIL);
-        native_group_norm_mish::group_norm_mish(&self.final_gn, x)
+        apply_norm_activation(&self.final_gn, self.activation, x)
     }
 }
 

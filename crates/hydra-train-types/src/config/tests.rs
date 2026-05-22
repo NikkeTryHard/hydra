@@ -18,6 +18,9 @@ fn model_shape_defaults_match_legacy_model_config() {
     assert_eq!(actor.hidden_channels, 256);
     assert_eq!(actor.num_groups, 32);
     assert_eq!(actor.se_bottleneck, 64);
+    assert_eq!(actor.backbone_activation, BackboneActivationConfig::Mish);
+    assert_eq!(actor.backbone_se_every_n, 1);
+    assert_eq!(actor.backbone_norm, BackboneNormConfig::Both);
     assert_eq!(actor.action_space, 46);
     assert_eq!(actor.score_bins, 64);
     assert_eq!(actor.num_opponents, 3);
@@ -37,16 +40,43 @@ fn model_shape_defaults_match_legacy_model_config() {
 fn model_shape_summary_reports_exact_shape_kind() {
     assert_eq!(
         ModelShapeConfig::actor().summary(),
-        "actor(blocks=12, input=192, hidden=256, groups=32, se=64, actions=46, score_bins=64, opponents=3, grp=24, belief_components=4, hand_type_classes=8)"
+        "actor(blocks=12, input=192, hidden=256, groups=32, se=64, activation=Mish, se_every_n=1, norm=Both, actions=46, score_bins=64, opponents=3, grp=24, belief_components=4, hand_type_classes=8)"
     );
     assert_eq!(
         ModelShapeConfig::learner().summary(),
-        "learner(blocks=24, input=192, hidden=256, groups=32, se=64, actions=46, score_bins=64, opponents=3, grp=24, belief_components=4, hand_type_classes=8)"
+        "learner(blocks=24, input=192, hidden=256, groups=32, se=64, activation=Mish, se_every_n=1, norm=Both, actions=46, score_bins=64, opponents=3, grp=24, belief_components=4, hand_type_classes=8)"
     );
     assert!(
         ModelShapeConfig::new(16)
             .summary()
             .starts_with("custom(blocks=16,")
+    );
+}
+
+#[test]
+fn experimental_backbone_profile_changes_param_estimate() {
+    let baseline = ModelShapeConfig::learner();
+    let mut ablated = ModelShapeConfig::learner()
+        .with_backbone_activation(BackboneActivationConfig::Relu)
+        .with_backbone_se_every_n(4)
+        .with_backbone_norm(BackboneNormConfig::FirstOnly)
+        .with_hidden_channels(128);
+    ablated.num_blocks = 12;
+
+    assert!(ablated.validate().is_ok());
+    assert!(ablated.estimated_params() < baseline.estimated_params());
+    assert_eq!(ablated.backbone_activation, BackboneActivationConfig::Relu);
+    assert_eq!(ablated.backbone_se_every_n, 4);
+    assert_eq!(ablated.backbone_norm, BackboneNormConfig::FirstOnly);
+}
+
+#[test]
+fn experimental_backbone_profile_rejects_zero_se_stride() {
+    assert_eq!(
+        ModelShapeConfig::learner()
+            .with_backbone_se_every_n(0)
+            .validate(),
+        Err("backbone_se_every_n must be > 0")
     );
 }
 

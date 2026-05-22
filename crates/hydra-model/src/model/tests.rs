@@ -5,6 +5,7 @@ use burn::backend::LibTorch;
 use burn::backend::NdArray;
 #[cfg(feature = "libtorch-tests")]
 use burn::tensor::bf16;
+use hydra_train_types::config::{BackboneActivationConfig, BackboneNormConfig};
 
 type B = NdArray<f32>;
 type AB = Autodiff<NdArray<f32>>;
@@ -58,6 +59,19 @@ fn learner_net_all_output_shapes() {
     let x = Tensor::<B, 3>::zeros([1, NUM_CHANNELS, 34], &device);
     let out = model.forward(x);
     assert_output_shapes(&out, 1);
+}
+
+#[test]
+fn experimental_backbone_profile_preserves_full_output_contract() {
+    let device = Default::default();
+    let model = tiny_learner_config()
+        .with_backbone_activation(BackboneActivationConfig::Relu)
+        .with_backbone_se_every_n(4)
+        .with_backbone_norm(BackboneNormConfig::FirstOnly)
+        .init::<B>(&device);
+    let x = Tensor::<B, 3>::zeros([2, NUM_CHANNELS, 34], &device);
+    let out = model.forward(x);
+    assert_output_shapes(&out, 2);
 }
 
 #[test]

@@ -600,6 +600,87 @@ fn active_shard_writer_new_named_uses_custom_file_name_and_header_values() {
 }
 
 #[test]
+fn compact_reader_exports_python_parity_fixture() {
+    let output_dir = temp_output_dir("python-parity");
+    let file_name = "train-00000.hydra-bc".to_string();
+    let mut sample = dummy_sample();
+    sample.score_delta = 12_000;
+    sample.grp_label = 7;
+    sample.tenpai = [1.0, 0.0, 1.0];
+    sample.opp_next = [3, 8, 255];
+    sample.danger[3] = 1.0;
+    sample.danger[34 + 8] = 1.0;
+    sample.danger_mask[3] = 1.0;
+    sample.danger_mask[34 + 8] = 1.0;
+    sample.safety_residual = Some(std::array::from_fn(|idx| idx as f32 / 100.0));
+    sample.safety_residual_mask = Some(std::array::from_fn(|idx| f32::from(idx % 2 == 0)));
+
+    let mut writer = ActiveShardWriter::new_named(
+        &output_dir,
+        BcShardSplit::Train,
+        0,
+        0,
+        FLAG_SAFETY_RESIDUAL,
+        file_name.clone(),
+    )
+    .expect("writer should open");
+    writer
+        .write_samples(std::slice::from_ref(&sample))
+        .expect("sample should write");
+    let descriptor = writer.finish().expect("writer should finish");
+    let manifest = manifest_for_descriptor(descriptor);
+    let manifest_path = output_dir.join("manifest.json");
+    std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+
+    let reader = load_bc_shard_reader(&manifest_path, BcShardSplit::Train)
+        .expect("reader should load compact shard");
+    let batch = reader
+        .collate_host_batch_range(0, 1, false)
+        .expect("batch should decode");
+
+    assert_eq!(batch.actions, vec![3]);
+    assert_eq!(batch.legal_mask_flat[3], 1.0);
+    assert_eq!(batch.value_target[0], 0.12);
+    assert_eq!(batch.grp_target_flat[7], 1.0);
+    assert_eq!(batch.oracle_target_flat, vec![0.1, 0.2, 0.3, 0.4]);
+    assert_eq!(batch.oracle_target_mask, vec![1.0]);
+    assert_eq!(batch.tenpai_flat, vec![1.0, 0.0, 1.0]);
+    assert_eq!(batch.opp_next_flat[3], 1.0);
+    assert_eq!(batch.opp_next_flat[34 + 8], 1.0);
+    assert_eq!(batch.danger_flat[3], 1.0);
+    assert_eq!(batch.danger_flat[34 + 8], 1.0);
+    assert_eq!(batch.danger_mask_flat[3], 1.0);
+    assert_eq!(batch.danger_mask_flat[34 + 8], 1.0);
+    assert_eq!(
+        batch.score_pdf_flat.iter().filter(|&&v| v == 1.0).count(),
+        1
+    );
+    assert_eq!(
+        batch.score_cdf_flat.iter().filter(|&&v| v == 1.0).count(),
+        28
+    );
+    assert_eq!(
+        batch.safety_target_flat.as_ref().expect("safety target")[5],
+        0.05
+    );
+    assert_eq!(
+        batch.safety_mask_flat.as_ref().expect("safety mask")[4],
+        1.0
+    );
+    assert_eq!(
+        batch.safety_mask_flat.as_ref().expect("safety mask")[5],
+        0.0
+    );
+
+    let out_dir = std::path::Path::new("target/python-parity-fixture");
+    let _ = std::fs::remove_dir_all(out_dir);
+    std::fs::create_dir_all(out_dir).expect("parity output dir");
+    std::fs::copy(&manifest_path, out_dir.join("manifest.json")).expect("copy manifest");
+    std::fs::copy(output_dir.join(&file_name), out_dir.join(&file_name)).expect("copy shard");
+    let _ = std::fs::remove_dir_all(output_dir);
+}
+
+#[test]
 fn rewrite_shard_header_for_descriptor_updates_index_and_first_sample() {
     let output_dir = temp_output_dir("rewrite-header");
     let file_name = "chunk-0003-train-final.hydra-bc".to_string();

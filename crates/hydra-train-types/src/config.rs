@@ -184,6 +184,25 @@ impl Default for OracleGuidingConfig {
     }
 }
 
+/// Backbone activation used by experimental model profiles.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackboneActivationConfig {
+    #[default]
+    Mish,
+    Silu,
+    Relu,
+}
+
+/// Per-block normalization layout used by experimental model profiles.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackboneNormConfig {
+    #[default]
+    Both,
+    FirstOnly,
+}
+
 /// Backend-independent Hydra model shape/configuration used by trainer contracts.
 #[derive(Config, Debug)]
 pub struct ModelShapeConfig {
@@ -196,6 +215,12 @@ pub struct ModelShapeConfig {
     pub num_groups: usize,
     #[config(default = "64")]
     pub se_bottleneck: usize,
+    #[config(default = "BackboneActivationConfig::default()")]
+    pub backbone_activation: BackboneActivationConfig,
+    #[config(default = "1")]
+    pub backbone_se_every_n: usize,
+    #[config(default = "BackboneNormConfig::default()")]
+    pub backbone_norm: BackboneNormConfig,
     #[config(default = "46")]
     pub action_space: usize,
     #[config(default = "64")]
@@ -220,13 +245,16 @@ impl ModelShapeConfig {
             "custom"
         };
         format!(
-            "{}(blocks={}, input={}, hidden={}, groups={}, se={}, actions={}, score_bins={}, opponents={}, grp={}, belief_components={}, hand_type_classes={})",
+            "{}(blocks={}, input={}, hidden={}, groups={}, se={}, activation={:?}, se_every_n={}, norm={:?}, actions={}, score_bins={}, opponents={}, grp={}, belief_components={}, hand_type_classes={})",
             kind,
             self.num_blocks,
             self.input_channels,
             self.hidden_channels,
             self.num_groups,
             self.se_bottleneck,
+            self.backbone_activation,
+            self.backbone_se_every_n,
+            self.backbone_norm,
             self.action_space,
             self.score_bins,
             self.num_opponents,
@@ -259,6 +287,9 @@ impl ModelShapeConfig {
         }
         if self.se_bottleneck == 0 {
             return Err("se_bottleneck must be > 0");
+        }
+        if self.backbone_se_every_n == 0 {
+            return Err("backbone_se_every_n must be > 0");
         }
         if self.action_space == 0 {
             return Err("action_space must be > 0");
@@ -294,8 +325,14 @@ impl ModelShapeConfig {
         let se_b = self.se_bottleneck;
         let input_conv = self.input_channels * h * 3 + h;
         let gn = h * 2;
-        let block = (h * h * 3 + h) * 2 + gn * 2 + (h * se_b + se_b) + (se_b * h + h);
-        let backbone = input_conv + gn + block * self.num_blocks + gn;
+        let se_blocks = self.num_blocks / self.backbone_se_every_n;
+        let norm_sites_per_block = match self.backbone_norm {
+            BackboneNormConfig::Both => 2,
+            BackboneNormConfig::FirstOnly => 1,
+        };
+        let block = (h * h * 3 + h) * 2 + gn * norm_sites_per_block;
+        let se = (h * se_b + se_b) + (se_b * h + h);
+        let backbone = input_conv + gn + block * self.num_blocks + se * se_blocks + gn;
         let policy = h * self.action_space + self.action_space;
         let value = h + 1;
         let score = (h * self.score_bins + self.score_bins) * 2;

@@ -1,5 +1,6 @@
 use super::*;
 use burn::backend::NdArray;
+use hydra_train_types::config::{BackboneActivationConfig, BackboneNormConfig};
 
 type B = NdArray<f32>;
 type AD = burn::backend::Autodiff<burn::backend::NdArray<f32>>;
@@ -66,6 +67,38 @@ fn backbone_output_shapes_24_blocks() {
     let (spatial, pooled) = net.forward(x);
     assert_eq!(spatial.dims(), [1, 8, 34]);
     assert_eq!(pooled.dims(), [1, 8]);
+}
+
+#[test]
+fn experimental_backbone_profiles_preserve_tensor_contract() {
+    let device = Default::default();
+    let profiles = [
+        SEResNetConfig::new(2, hydra_core::encoder::NUM_CHANNELS, 8, 4, 2)
+            .with_activation(BackboneActivationConfig::Silu)
+            .with_se_every_n(2),
+        SEResNetConfig::new(2, hydra_core::encoder::NUM_CHANNELS, 8, 4, 2)
+            .with_activation(BackboneActivationConfig::Relu)
+            .with_norm(BackboneNormConfig::FirstOnly)
+            .with_se_every_n(4),
+    ];
+
+    for cfg in profiles {
+        let net = cfg.init::<B>(&device);
+        let x = Tensor::<B, 3>::zeros([1, hydra_core::encoder::NUM_CHANNELS, 34], &device);
+        let (spatial, pooled) = net.forward(x);
+        assert_eq!(spatial.dims(), [1, 8, 34]);
+        assert_eq!(pooled.dims(), [1, 8]);
+    }
+}
+
+#[test]
+fn experimental_backbone_profile_rejects_zero_se_stride() {
+    assert_eq!(
+        SEResNetConfig::new(2, hydra_core::encoder::NUM_CHANNELS, 8, 4, 2)
+            .with_se_every_n(0)
+            .validate(),
+        Err("se_every_n > 0")
+    );
 }
 
 #[test]

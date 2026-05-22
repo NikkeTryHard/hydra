@@ -238,7 +238,10 @@ impl HydraModelInit for ModelShapeConfig {
             self.hidden_channels,
             self.num_groups,
             self.se_bottleneck,
-        );
+        )
+        .with_activation(self.backbone_activation)
+        .with_se_every_n(self.backbone_se_every_n)
+        .with_norm(self.backbone_norm);
         let heads_cfg = HeadsConfig::new()
             .with_hidden_channels(self.hidden_channels)
             .with_action_space(self.action_space)
