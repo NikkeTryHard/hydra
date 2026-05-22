@@ -10,7 +10,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from hydra_learner.raw_mjai_stream import RawMjaiBridgeStats, RawMjaiPinnedStream, build_raw_mjai_stream_command
+from hydra_learner.raw_mjai_stream import (
+    RawMjaiBridgeStats,
+    RawMjaiPinnedStream,
+    build_raw_mjai_stream_command,
+    decode_batch,
+)
 from hydra_learner.shards import (
     ACTION_SPACE,
     BC_BASE_RECORD_SIZE,
@@ -23,6 +28,7 @@ from hydra_learner.shards import (
     COMPACT_OBS_BASELINE_FACT_BYTES,
     NUM_CHANNELS,
     OBS_SIZE,
+    SCORE_BIN_MIN,
     TILE_WIDTH,
     BcShardReader,
     validate_manifest,
@@ -113,6 +119,30 @@ def _write_fixture(root: Path) -> Path:
     manifest_path = root / "manifest.json"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     return manifest_path
+
+
+def test_low_score_delta_clamps_to_lowest_score_bin(tmp_path: Path) -> None:
+    manifest_path = _write_fixture(tmp_path)
+    shard = tmp_path / "train-00000.hybc"
+    payload = bytearray(shard.read_bytes())
+    payload[BC_SHARD_HEADER_SIZE + 1682 : BC_SHARD_HEADER_SIZE + 1686] = struct.pack("<i", int(SCORE_BIN_MIN) - 1)
+    shard.write_bytes(payload)
+    with BcShardReader(manifest_path) as reader:
+        batch = reader.batch_range(0, 1)
+    assert batch.score_pdf[0, 0] == 1.0
+    assert float(batch.score_pdf[0, 1:].sum()) == 0.0
+
+
+def test_raw_mjai_decode_truncated_metadata_raises_value_error() -> None:
+    payload = struct.pack("<QII", 1, 0, 1)
+    with pytest.raises(ValueError, match="field header"):
+        decode_batch(payload)
+    payload += struct.pack("<HBB", 1, 1, 1)
+    with pytest.raises(ValueError, match="field shape"):
+        decode_batch(payload)
+    payload += struct.pack("<Q", 1)
+    with pytest.raises(ValueError, match="field byte length"):
+        decode_batch(payload)
 
 
 def test_raw_mjai_stream_command_uses_default_rust_env() -> None:

@@ -15,7 +15,6 @@ class StepStats:
     loss: float
     fetch_decode_ms: float = math.nan
     h2d_wall_ms: float = math.nan
-    h2d_gpu_ms: float = math.nan
     train_gpu_ms: float = math.nan
 
 
@@ -60,7 +59,6 @@ def summarize_steps(stats: list[StepStats], batch: int) -> dict[str, float]:
     loss = [s.loss for s in stats]
     fetch = [s.fetch_decode_ms for s in stats if not math.isnan(s.fetch_decode_ms)]
     h2d_wall = [s.h2d_wall_ms for s in stats if not math.isnan(s.h2d_wall_ms)]
-    h2d_gpu = [s.h2d_gpu_ms for s in stats if not math.isnan(s.h2d_gpu_ms)]
     train_gpu = [s.train_gpu_ms for s in stats if not math.isnan(s.train_gpu_ms)]
 
     def avg(xs: list[float]) -> float:
@@ -69,7 +67,6 @@ def summarize_steps(stats: list[StepStats], batch: int) -> dict[str, float]:
     mean_step = avg(step)
     mean_fetch = avg(fetch)
     mean_h2d_wall = avg(h2d_wall)
-    mean_h2d_gpu = avg(h2d_gpu)
     mean_train_gpu = avg(train_gpu)
     mean_total_wall = mean_fetch + mean_h2d_wall + mean_train_gpu
     return {
@@ -82,10 +79,8 @@ def summarize_steps(stats: list[StepStats], batch: int) -> dict[str, float]:
         "mean_optimizer_ms": avg(opt),
         "mean_fetch_decode_ms": mean_fetch,
         "mean_h2d_wall_ms": mean_h2d_wall,
-        "mean_h2d_gpu_ms": mean_h2d_gpu,
         "mean_train_gpu_ms": mean_train_gpu,
         "mean_input_pipeline_wall_ms": mean_fetch + mean_h2d_wall,
         "mean_total_wall_ms": mean_total_wall,
         "end_to_end_samples_per_s": batch * 1000.0 / mean_total_wall,
-        "h2d_train_ratio": mean_h2d_gpu / mean_train_gpu,
     }

@@ -720,7 +720,7 @@ def _decode_record(
 def _score_delta_to_bin(score_delta: int) -> int:
     normalized = (float(score_delta) - SCORE_BIN_MIN) / (SCORE_BIN_MAX - SCORE_BIN_MIN)
     bin_index = int(normalized * SCORE_BINS)
-    return min(bin_index, SCORE_BINS - 1)
+    return max(0, min(bin_index, SCORE_BINS - 1))
 
 
 def _decode_compact_obs(facts: memoryview, dst: npt.NDArray[np.float32]) -> None:

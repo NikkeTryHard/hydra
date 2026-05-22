@@ -857,6 +857,11 @@ def _decode_header(payload: bytes | bytearray, expected_batch_size: int) -> None
         raise ValueError(f"unsupported raw MJAI stream feature_flags={feature_flags} field_count={field_count}")
 
 
+def _require_payload_bytes(payload: bytes | bytearray, offset: int, size: int, context: str) -> None:
+    if offset + size > len(payload):
+        raise ValueError(f"truncated raw MJAI batch payload while reading {context}")
+
+
 def decode_batch(payload: bytes | bytearray) -> PolicyBatch:
     if len(payload) < 16:
         raise ValueError("raw MJAI batch payload too short")
@@ -867,10 +872,14 @@ def decode_batch(payload: bytes | bytearray) -> PolicyBatch:
     fields: dict[int, npt.NDArray[Any]] = {}
     owner = memoryview(payload)
     for _ in range(field_count):
+        _require_payload_bytes(payload, offset, 4, "field header")
         field_id, dtype, ndim = struct.unpack_from("<HBB", payload, offset)
         offset += 4
+        shape_bytes = 8 * ndim
+        _require_payload_bytes(payload, offset, shape_bytes, "field shape")
         shape = struct.unpack_from("<" + "Q" * ndim, payload, offset)
-        offset += 8 * ndim
+        offset += shape_bytes
+        _require_payload_bytes(payload, offset, 8, "field byte length")
         byte_len = struct.unpack_from("<Q", payload, offset)[0]
         offset += 8
         end = offset + byte_len

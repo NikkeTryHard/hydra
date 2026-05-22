@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import override
 
 import pytest
 import torch
@@ -32,7 +33,13 @@ from hydra_learner.model import (
     HydraPolicyNet,
 )
 from hydra_learner.shards import BcShardReader
-from hydra_learner.train_bc import HydraCompiledLossStep, loss_step_args, targets_from_policy_batch
+from hydra_learner.train_bc import (
+    HydraCompiledLossStep,
+    loss_step_args,
+    run_step,
+    targets_for_compiled_loss,
+    targets_from_policy_batch,
+)
 
 
 def test_model_outputs_base_head_shapes_and_finite() -> None:
@@ -292,6 +299,60 @@ def test_compiled_loss_step_matches_base_loss() -> None:
     torch.testing.assert_close(actual, expected)
 
 
+def test_compiled_loss_targets_allocate_optional_fallbacks_once() -> None:
+    targets = _tiny_targets()
+    prepared = targets_for_compiled_loss(targets, LossWeights())
+    assert prepared.oracle_target is not None
+    assert prepared.oracle_target_mask is not None
+    assert prepared.safety_target is not None
+    assert prepared.safety_mask is not None
+    assert prepared.oracle_target.shape == (1, 4)
+    assert prepared.safety_target.shape == (1, ACTION_SPACE)
+    first_safety = prepared.safety_target
+    sliced = loss_step_args(torch.zeros(1, 192, 34), prepared, 0, 1)
+    assert sliced[-2].data_ptr() == first_safety.data_ptr()
+
+
+def _cuda_event_factory(*_args: object, **_kwargs: object) -> object:
+    class _Event:
+        def record(self) -> None:
+            pass
+
+        def synchronize(self) -> None:
+            pass
+
+        def elapsed_time(self, _other: object) -> float:
+            return 0.0
+
+    return _Event()
+
+
+def test_run_step_rejects_nonfinite_first_microbatch_before_optimizer_step(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Loss(torch.nn.Module):
+        calls: int
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.param = torch.nn.Parameter(torch.tensor(1.0))
+            self.calls = 0
+
+        @override
+        def forward(self, *_args: torch.Tensor) -> torch.Tensor:
+            self.calls += 1
+            if self.calls == 1:
+                return self.param * torch.tensor(float("nan"))
+            return self.param * 0.0
+
+    monkeypatch.setattr(torch.cuda, "Event", _cuda_event_factory)
+    loss = _Loss()
+    optimizer = torch.optim.SGD(loss.parameters(), lr=1.0)
+    targets = targets_for_compiled_loss(_two_row_targets(), LossWeights())
+    before = loss.param.detach().clone()
+    with pytest.raises(RuntimeError, match="non-finite BC loss"):
+        run_step(loss, optimizer, torch.zeros(2, 192, 34), targets, 1, False, False)
+    torch.testing.assert_close(loss.param.detach(), before)
+
+
 def _tiny_outputs(
     grp: torch.Tensor | None = None,
     score_pdf: torch.Tensor | None = None,
@@ -329,4 +390,20 @@ def _tiny_targets(
         opp_next_target=torch.tensor([[[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]]]),
         score_pdf_target=score_pdf if score_pdf is not None else torch.tensor([[1.0, 0.0, 0.0]]),
         score_cdf_target=score_cdf if score_cdf is not None else torch.zeros(1, 2),
+    )
+
+
+def _two_row_targets() -> BaseTargets:
+    target = _tiny_targets()
+    return BaseTargets(
+        policy_target=target.policy_target.repeat(2, 1),
+        legal_mask=target.legal_mask.repeat(2, 1),
+        value_target=target.value_target.repeat(2),
+        grp_target=target.grp_target.repeat(2, 1),
+        tenpai_target=target.tenpai_target.repeat(2, 1),
+        danger_target=target.danger_target.repeat(2, 1, 1),
+        danger_mask=target.danger_mask.repeat(2, 1, 1),
+        opp_next_target=target.opp_next_target.repeat(2, 1, 1),
+        score_pdf_target=target.score_pdf_target.repeat(2, 1),
+        score_cdf_target=target.score_cdf_target.repeat(2, 1),
     )

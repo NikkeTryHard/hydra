@@ -112,7 +112,6 @@ def build_optimizer(model: nn.Module, config: OptimizerConfig) -> torch.optim.Op
 class InputTiming:
     fetch_decode_ms: float = math.nan
     h2d_wall_ms: float = math.nan
-    h2d_gpu_ms: float = math.nan
 
 
 def make_synthetic_batch(
@@ -161,16 +160,10 @@ def tensors_from_policy_batch(
     batch: PolicyBatch, device: torch.device, fetch_decode_ms: float
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, BaseTargets, InputTiming]:
     h2d_started = time.perf_counter()
-    h2d_start = torch.cuda.Event(enable_timing=True)
-    h2d_end = torch.cuda.Event(enable_timing=True)
-    h2d_start.record()
     obs = torch.from_numpy(batch.obs).to(device=device, non_blocking=True)
     legal = torch.from_numpy(batch.legal_mask).to(device=device, non_blocking=True)
     labels = torch.from_numpy(batch.actions).to(device=device, non_blocking=True)
     targets = targets_from_policy_batch(batch, device, labels, legal)
-    h2d_end.record()
-    h2d_end.synchronize()
-    h2d_gpu_ms = h2d_start.elapsed_time(h2d_end)
     h2d_wall_ms = (time.perf_counter() - h2d_started) * 1000.0
     if obs.shape[1:] != (192, 34) or obs.dtype != torch.float32:
         raise ValueError(f"real shard obs contract mismatch: shape={tuple(obs.shape)} dtype={obs.dtype}")
@@ -186,7 +179,6 @@ def tensors_from_policy_batch(
         InputTiming(
             fetch_decode_ms=fetch_decode_ms,
             h2d_wall_ms=h2d_wall_ms,
-            h2d_gpu_ms=h2d_gpu_ms,
         ),
     )
 
@@ -195,9 +187,6 @@ def tensors_from_pinned_policy_batch(
     batch: PinnedPolicyBatch, device: torch.device, fetch_decode_ms: float
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, BaseTargets, InputTiming]:
     h2d_started = time.perf_counter()
-    h2d_start = torch.cuda.Event(enable_timing=True)
-    h2d_end = torch.cuda.Event(enable_timing=True)
-    h2d_start.record()
     obs = batch.obs.to(device=device, non_blocking=True)
     legal = batch.legal_mask.to(device=device, non_blocking=True)
     labels = batch.actions.to(device=device, non_blocking=True)
@@ -217,9 +206,6 @@ def tensors_from_pinned_policy_batch(
         safety_target=None,
         safety_mask=None,
     )
-    h2d_end.record()
-    h2d_end.synchronize()
-    h2d_gpu_ms = h2d_start.elapsed_time(h2d_end)
     h2d_wall_ms = (time.perf_counter() - h2d_started) * 1000.0
     if obs.shape[1:] != (192, 34) or obs.dtype != torch.float32:
         raise ValueError(f"pinned raw MJAI obs contract mismatch: shape={tuple(obs.shape)} dtype={obs.dtype}")
@@ -234,7 +220,7 @@ def tensors_from_pinned_policy_batch(
         legal,
         labels,
         targets,
-        InputTiming(fetch_decode_ms=fetch_decode_ms, h2d_wall_ms=h2d_wall_ms, h2d_gpu_ms=h2d_gpu_ms),
+        InputTiming(fetch_decode_ms=fetch_decode_ms, h2d_wall_ms=h2d_wall_ms),
     )
 
 
@@ -267,6 +253,50 @@ def targets_from_policy_batch(
         oracle_target_mask=torch.from_numpy(batch.oracle_target_mask).to(device=device),
         safety_target=None if batch.safety_target is None else torch.from_numpy(batch.safety_target).to(device=device),
         safety_mask=None if batch.safety_mask is None else torch.from_numpy(batch.safety_mask).to(device=device),
+    )
+
+
+def targets_for_compiled_loss(targets: BaseTargets, weights: LossWeights) -> BaseTargets:
+    batch = targets.policy_target.shape[0]
+    if weights.oracle_critic > 0.0:
+        oracle_target = targets.oracle_target
+        oracle_target_mask = targets.oracle_target_mask
+        if oracle_target is None or oracle_target_mask is None:
+            raise ValueError("oracle targets are required when oracle_critic loss weight is positive")
+    else:
+        oracle_target = targets.oracle_target
+        if oracle_target is None:
+            oracle_target = targets.value_target.new_zeros((batch, 4))
+        oracle_target_mask = targets.oracle_target_mask
+        if oracle_target_mask is None:
+            oracle_target_mask = targets.value_target.new_zeros((batch,))
+    if weights.safety_residual > 0.0:
+        safety_target = targets.safety_target
+        safety_mask = targets.safety_mask
+        if safety_target is None or safety_mask is None:
+            raise ValueError("safety targets are required when safety_residual loss weight is positive")
+    else:
+        safety_target = targets.safety_target
+        if safety_target is None:
+            safety_target = targets.value_target.new_zeros((batch, ACTION_SPACE))
+        safety_mask = targets.safety_mask
+        if safety_mask is None:
+            safety_mask = targets.value_target.new_zeros((batch, ACTION_SPACE))
+    return BaseTargets(
+        policy_target=targets.policy_target,
+        legal_mask=targets.legal_mask,
+        value_target=targets.value_target,
+        grp_target=targets.grp_target,
+        tenpai_target=targets.tenpai_target,
+        danger_target=targets.danger_target,
+        danger_mask=targets.danger_mask,
+        opp_next_target=targets.opp_next_target,
+        score_pdf_target=targets.score_pdf_target,
+        score_cdf_target=targets.score_cdf_target,
+        oracle_target=oracle_target,
+        oracle_target_mask=oracle_target_mask,
+        safety_target=safety_target,
+        safety_mask=safety_mask,
     )
 
 
@@ -349,16 +379,16 @@ class HydraCompiledLossStep(nn.Module):
 def loss_step_args(obs: torch.Tensor, targets: BaseTargets, start: int, end: int) -> tuple[torch.Tensor, ...]:
     oracle_target = targets.oracle_target
     if oracle_target is None:
-        oracle_target = obs.new_zeros((obs.shape[0], 4))
+        raise ValueError("compiled loss targets missing oracle_target")
     oracle_target_mask = targets.oracle_target_mask
     if oracle_target_mask is None:
-        oracle_target_mask = obs.new_zeros((obs.shape[0],))
+        raise ValueError("compiled loss targets missing oracle_target_mask")
     safety_target = targets.safety_target
     if safety_target is None:
-        safety_target = obs.new_zeros((obs.shape[0], ACTION_SPACE))
+        raise ValueError("compiled loss targets missing safety_target")
     safety_mask = targets.safety_mask
     if safety_mask is None:
-        safety_mask = obs.new_zeros((obs.shape[0], ACTION_SPACE))
+        raise ValueError("compiled loss targets missing safety_mask")
     return (
         obs[start:end],
         targets.policy_target[start:end],
@@ -397,7 +427,7 @@ def run_step(
     fwd_ms = 0.0
     bwd_ms = 0.0
     amp_ctx = torch.autocast(device_type="cuda", dtype=torch.bfloat16) if autocast else nullcontext()
-    last_loss = obs.new_zeros(())
+    logical_loss = obs.new_zeros(())
     for start_idx in range(0, logical, microbatch):
         end_idx = min(start_idx + microbatch, logical)
         scale = (end_idx - start_idx) / logical
@@ -411,12 +441,17 @@ def run_step(
             ms, loss = time_cuda(fwd_loss)
             fwd_ms += ms
             assert loss is not None
+        else:
+            loss = fwd_loss()
+        loss_value = float(loss.detach())
+        if not math.isfinite(loss_value):
+            raise RuntimeError(f"non-finite BC loss: {loss_value}")
+        if timed:
             ms, _ = time_cuda(loss.backward)
             bwd_ms += ms
         else:
-            loss = fwd_loss()
             loss.backward()
-        last_loss = loss.detach()
+        logical_loss = logical_loss + loss.detach()
 
     if timed:
         opt_ms, _ = time_cuda(optimizer.step)
@@ -425,9 +460,7 @@ def run_step(
         opt_ms = 0.0
     step_end.record()
     step_ms = cuda_event_elapsed(step_start, step_end)
-    loss_value = float(last_loss.detach())
-    if not math.isfinite(loss_value):
-        raise RuntimeError(f"non-finite BC loss: {loss_value}")
+    loss_value = float(logical_loss.detach())
     stat = StepStats(step_ms=step_ms, fwd_loss_ms=fwd_ms, backward_ms=bwd_ms, optimizer_ms=opt_ms, loss=loss_value)
     stat.train_gpu_ms = step_ms
     return stat
@@ -508,6 +541,32 @@ def json_raw_mjai_progress(progress: object | None) -> dict[str, object] | None:
     if progress is None:
         return None
     return build_progress_json(cast("BuildProgress", progress))
+
+
+def save_training_checkpoint(
+    path: Path,
+    model: HydraPolicyNet,
+    optimizer: torch.optim.Optimizer,
+    model_config: ModelConfig,
+    optimizer_config: OptimizerConfig,
+    runtime_config: RuntimeConfig,
+    loss_weights: LossWeights,
+    manifest_path: Path | None,
+    global_step: int,
+    samples_seen: int,
+) -> None:
+    save_checkpoint(
+        path,
+        model=model,
+        optimizer=optimizer,
+        model_config=model_config,
+        optimizer_config=optimizer_config,
+        runtime_config=runtime_config,
+        loss_weights=loss_weights,
+        manifest_path=manifest_path,
+        global_step=global_step,
+        samples_seen=samples_seen,
+    )
 
 
 def json_config(args: argparse.Namespace, effective_raw_mjai_max_samples: int | None = None) -> dict[str, object]:
@@ -598,8 +657,29 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def validate_args(args: argparse.Namespace) -> None:
+    positive_ints = (("batch", args.batch), ("microbatch", args.microbatch), ("steps", args.steps))
+    for name, value in positive_ints:
+        if value < 1:
+            raise ValueError(f"--{name.replace('_', '-')} must be >= 1")
+    non_negative_ints = (
+        ("warmup", args.warmup),
+        ("checkpoint_every_steps", args.checkpoint_every_steps),
+        ("validation_steps", args.validation_steps),
+        ("validation_every", args.validation_every),
+    )
+    for name, value in non_negative_ints:
+        if value < 0:
+            raise ValueError(f"--{name.replace('_', '-')} must be >= 0")
+    if args.microbatch > args.batch:
+        raise ValueError("--microbatch must be <= --batch")
+    if args.actions != ACTION_SPACE:
+        raise ValueError(f"--actions must equal Hydra action space {ACTION_SPACE}")
+
+
 def main() -> int:
     args = parse_args()
+    validate_args(args)
     validate_raw_mjai_source_args(args)
     manifest_summary = None
     real_dataset = None
@@ -745,6 +825,7 @@ def main() -> int:
             t0 = time.perf_counter()
             loss_step = cast("nn.Module", torch.compile(loss_step, mode=mode, fullgraph=args.compile_fullgraph_check))
             setattr(loss_step, "_hydra_compiled", True)
+            targets = targets_for_compiled_loss(targets, weights)
             run_step(loss_step, optimizer, obs, targets, args.microbatch, autocast, False)
             torch.cuda.synchronize()
             if raw_pinned is not None:
@@ -783,6 +864,7 @@ def main() -> int:
             )
         elif real_dataset is not None:
             obs, legal, labels, targets, _input_timing = tensors_from_real_batch(real_dataset, device)
+        targets = targets_for_compiled_loss(targets, weights)
         run_step(loss_step, optimizer, obs, targets, args.microbatch, autocast, False)
         if raw_pinned is not None:
             assert pinned_batch is not None
@@ -805,6 +887,7 @@ def main() -> int:
             obs, legal, labels, targets, input_timing = tensors_from_pinned_policy_batch(pinned_batch, device, fetch_ms)
         elif real_dataset is not None:
             obs, legal, labels, targets, input_timing = tensors_from_real_batch(real_dataset, device)
+        targets = targets_for_compiled_loss(targets, weights)
         stat = run_step(
             loss_step,
             optimizer,
@@ -817,7 +900,6 @@ def main() -> int:
         if real_dataset is not None or raw_stream is not None or raw_pinned is not None:
             stat.fetch_decode_ms = input_timing.fetch_decode_ms
             stat.h2d_wall_ms = input_timing.h2d_wall_ms
-            stat.h2d_gpu_ms = input_timing.h2d_gpu_ms
         stats.append(stat)
         if raw_pinned is not None:
             assert pinned_batch is not None
@@ -829,8 +911,28 @@ def main() -> int:
                 val_obs, _val_legal, _val_labels, val_targets, _val_input_timing = tensors_from_policy_batch(
                     val_batch, device, val_fetch_ms
                 )
+                val_targets = targets_for_compiled_loss(val_targets, weights)
                 step_eval.append(evaluate_batch(model, val_obs, val_targets, weights, autocast))
             eval_stats.append({"step": i + 1, "metrics": summarize_eval(step_eval)})
+        if (
+            args.checkpoint_out is not None
+            and args.checkpoint_every_steps > 0
+            and (i + 1) % args.checkpoint_every_steps == 0
+        ):
+            global_step = (0 if resume_state is None else resume_state.global_step) + i + 1
+            samples_seen = (0 if resume_state is None else resume_state.samples_seen) + (i + 1) * args.batch
+            save_training_checkpoint(
+                args.checkpoint_out,
+                model=model,
+                optimizer=optimizer,
+                model_config=model_config,
+                optimizer_config=optimizer_config,
+                runtime_config=runtime_config,
+                loss_weights=weights,
+                manifest_path=args.manifest if raw_stream is None else raw_stream.manifest_path,
+                global_step=global_step,
+                samples_seen=samples_seen,
+            )
         if args.profile:
             torch.cuda.nvtx.range_pop()
     torch.cuda.synchronize()
@@ -845,6 +947,7 @@ def main() -> int:
             val_obs, _val_legal, _val_labels, val_targets, _val_input_timing = tensors_from_policy_batch(
                 val_batch, device, val_fetch_ms
             )
+            val_targets = targets_for_compiled_loss(val_targets, weights)
             final_eval.append(evaluate_batch(model, val_obs, val_targets, weights, autocast))
         final_validation = summarize_eval(final_eval)
     raw_progress: BuildProgress | None = None
@@ -886,7 +989,7 @@ def main() -> int:
     if args.checkpoint_out is not None:
         global_step = (0 if resume_state is None else resume_state.global_step) + args.steps
         samples_seen = (0 if resume_state is None else resume_state.samples_seen) + args.steps * args.batch
-        save_checkpoint(
+        save_training_checkpoint(
             args.checkpoint_out,
             model=model,
             optimizer=optimizer,

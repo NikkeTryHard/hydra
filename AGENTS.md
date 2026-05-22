@@ -208,6 +208,7 @@ Useful invariants for runtime/data changes:
 - Train CLI/YAML/preflight/shards/sidecars: read `docs/TRAINING_RUNBOOK.md` before editing.
 - RNG/seeding changes: read `research/design/SEEDING.md`; preserve deterministic replay/eval behavior.
 - Performance work: use auto benchmark first, then read/update `research/infrastructure/ENGINE_BENCHMARKS.md` if results become durable claims.
+- Do not use `find`/broad glob discovery under `/home/cachybtw/Downloads/dataset_bundle/tenhou-houou-mjai-2025` or other raw dataset folders. They contain many replay files; broad enumeration can eat RAM and stall tools. Use exact known path directly in train/audit commands.
 - Infrastructure/checkpoint/container work: read `research/infrastructure/INFRASTRUCTURE.md` and `docker/train/README.md` as applicable.
 - Before trusting replay/shard/sidecar data with suspicious low sample count/high skip count, audit with `mjai_audit`; use failure inventory or focused loader tests for specific bad replays.
 - If `advanced_loss.exit` or `advanced_loss.delta_q` is positive, matching sidecar path is required; validation promotion must hydrate labels when gates require them.
@@ -219,7 +220,7 @@ Useful invariants for runtime/data changes:
 ### CUDA profiling quick start
 
 - Evidence first. Do not optimize BC CUDA from kernel names alone; attribute by Hydra stage/source first.
-- Fixed shard baseline: prefer `output/bc-feed-bench-shards-100k/bc_shards_manifest.json`; `device: cuda:0`; `batch_size: 2048`; `microbatch_size: 1024`; `precision_mode: bf16_autocast`; `bc_head_profile: full`; push validation/checkpoint cadence out; use `max_train_steps` 30 for timing, shorter only for profiler probes.
+- Preferred Python BC baseline: raw MJAI dataset folder through pinned PyO3 stream, not prebuilt BC shards. Use `/home/cachybtw/Downloads/dataset_bundle/tenhou-houou-mjai-2025`; `--raw-mjai-transport pinned_pyo3`; `batch=2048`; `microbatch=1024`; `compile_default`; CUDA BF16 autocast. BC-shard timing is experimental/diagnostic only, not primary baseline.
 - Normal timing: run train once without Nsight, then `extract_timing_metrics --step-log <out>/bc/step_log.jsonl --skip-initial-rows 2 --format json`. Compare H2D, forward, loss, backward, optimizer, metric readback.
 - NVTX Nsight: set `HYDRA_NVTX=1`; if NVTX ranges missing, expose Pixi NVTX lib: `LD_LIBRARY_PATH=.pixi/envs/default/lib/python3.12/site-packages/nvidia/nvtx/lib:$LD_LIBRARY_PATH`.
 - Useful reports: `nsys stats --report nvtx_kern_sum:base ... --timeunit=us`, `nsys stats --report cuda_api_gpu_sum:base ... --timeunit=us`, and `nsys export --type sqlite`.
@@ -231,23 +232,27 @@ Useful invariants for runtime/data changes:
 
 ### Local throughput baseline
 
-- Use no-config auto benchmark; do not hand-write YAML for baseline runs.
-- Full compare:
+- Preferred baseline uses raw MJAI dataset folder with pinned PyO3 stream. Do not hand-write YAML.
+- Do not `find`/glob inside dataset folder. Pass exact path directly.
+- Python pinned raw-stream baseline:
 ```bash
-pixi run cargo run --quiet --package hydra-train --features training,cuda-graph --bin train -- \
-  --benchmark-baseline --bench-source both \
-  --data-dir /home/cachybtw/Downloads/dataset_bundle/tenhou-houou-mjai-2025 \
-  --output-dir /home/cachybtw/tmp/hydra-auto-bench --device cuda:0
+pixi run -e py-train python-bc-train -- \
+  --raw-mjai-data-dir /home/cachybtw/Downloads/dataset_bundle/tenhou-houou-mjai-2025 \
+  --raw-mjai-transport pinned_pyo3 \
+  --raw-mjai-worker-threads 20 \
+  --raw-mjai-prefetch-batches 2 \
+  --raw-mjai-queue-bound 8 \
+  --raw-mjai-max-games 5000 \
+  --variant compile_default \
+  --batch 2048 \
+  --microbatch 1024 \
+  --warmup 10 \
+  --steps 200 \
+  --out /home/cachybtw/tmp/hydra-py-pinned-baseline/result.json \
+  --quiet
 ```
-- Existing shards only:
-```bash
-pixi run cargo run --quiet --package hydra-train --features training,cuda-graph --bin train -- \
-  --benchmark-baseline --bench-source bc-shards \
-  --bc-shards-manifest <bc_shards_manifest.json> \
-  --output-dir /home/cachybtw/tmp/hydra-auto-bench-shards --device cuda:0
-```
-- Defaults: `max_games=5000`, build threads `20`, train threads `8`, batch `2048`, microbatch `256`, CUDA BF16 AMP, TF32 via PyTorch `setFloat32Precision` API.
-- 2026-05-21 refs on RTX 5070: shard build `~118k samples/s`; BC-shard train `~6.65k median / ~6.7k p95 samples/s`; raw MJAI train `~6.2k median`. Treat driver/thermal/codegen drift as noise unless repeated.
+- 2026-05-22 RTX 5070 Python pinned PyO3 refs (`compile_default`, `batch=2048`, `microbatch=1024`, `warmup=10`, `steps=200`): GPU train `~41.7k samples/s`; end-to-end `~41.6k samples/s`; mean step `~49.1ms`; fetch/decode `~0.002ms`; H2D wall `~0.118ms`; compile `~1.69s`; 817 loaded games, 2 skipped. Treat driver/thermal/codegen drift as noise unless repeated.
+- BC-shard runs are experimental/diagnostic only. They are useful for shard reader/materialization checks, not preferred training speed baseline.
 Hydra binaries quick use:
 
 - Cargo features are compile-time capability gates. Use `training` for LibTorch/Burn train/model binaries; `cuda-graph` implies `training` and checks CUDA pinned/prealloc/probe code; `data-tools` is lightweight data-conversion tooling. Omit `--features` only for bins with `Features=none`.
