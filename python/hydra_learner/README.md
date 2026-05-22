@@ -10,7 +10,9 @@ Supported now:
 - default-off advanced labels already present in shard path: `oracle_critic`, `safety_residual`
 - BF16 autocast on CUDA
 - `torch.compile` fullgraph clean for BC loss step
-- data-only checkpoint save/load with model + optimizer + RNG + config metadata
+- resumable data-only checkpoint save/load with model + optimizer + RNG + config metadata
+- balanced JSONL lifecycle/step logs under `output_dir/logs`
+- TensorBoard event files under `output_dir/tensorboard`
 
 Not supported in Python default yet:
 
@@ -68,6 +70,67 @@ Python backbone profile is checkpoint-stable and accepts only `conv2d_local3`: C
 Compile variants do not change model math, topology, checkpoint architecture, input/action shapes, residual profile, or losses; they only change TorchInductor strategy. Canonical production Python BC uses `compile_max_autotune`; use `compile_default` only for smoke/preflight/short debug.
 
 If YAML omits `bc_shards_manifest_path`, Rust launcher streams raw MJAI from `data_dir`. Default transport is pinned PyO3; stdout remains fallback.
+## Run artifacts and resume
+
+Rust launcher creates stable artifact dirs for every Python BC run:
+
+```text
+<output_dir>/python_learner_result.json
+<output_dir>/logs/events.jsonl
+<output_dir>/logs/train_steps.jsonl
+<output_dir>/logs/stdout.log          # background mode only
+<output_dir>/logs/stderr.log          # background mode only
+<output_dir>/logs/tensorboard.log     # auto TensorBoard output
+<output_dir>/checkpoints/latest.pt
+<output_dir>/checkpoints/step_<global_step>.pt  # only with --python-keep-step-checkpoints
+<output_dir>/tensorboard/events.out.tfevents.*
+```
+
+`events.jsonl` is lifecycle/resume/validation/checkpoint log. `train_steps.jsonl`
+is balanced step telemetry, written every `--python-log-every-steps` and final
+step; avoid `1` on CUDA unless debugging sync/log overhead.
+
+Resume with config `resume_checkpoint: <output_dir>/checkpoints/latest.pt` or
+CLI `--python-resume <checkpoint>`. Checkpoint load validates schema, model,
+optimizer, runtime, loss weights, manifest/source contract, and RNG metadata.
+
+Periodic checkpoint controls:
+
+```bash
+--python-checkpoint-every-steps 200 \
+--python-keep-step-checkpoints
+```
+
+Default periodic output refreshes `checkpoints/latest.pt`; keep-step mode also
+retains immutable `step_<global_step>.pt` files. Direct CLI `--python-checkpoint-out`
+keeps legacy single-file checkpoint path and is mutually exclusive with
+checkpoint-dir/keep-step mode.
+
+TensorBoard:
+
+```bash
+--python-launch-tensorboard \
+--python-tensorboard-host 127.0.0.1 \
+--python-tensorboard-port 6006
+```
+
+Launcher picks first free port at or above requested port, passes selected
+URL into Python metrics, starts TensorBoard detached, and writes its output to
+`logs/tensorboard.log`.
+
+Background mode:
+
+```bash
+--python-background
+```
+
+Rust detaches learner, writes `train.pid`, redirects stdout/stderr logs, and
+prints output/log/checkpoint/TensorBoard URL plus watch command:
+
+```bash
+tail -f <output_dir>/logs/train_steps.jsonl
+```
+
 
 Direct Python accepts exactly one input:
 

@@ -30,7 +30,7 @@ File uses status vocabulary from `research/design/HYDRA_RECONCILIATION.md`.
 - `hydra-core` = real first-party runtime/encoder/simulator crate.
 - Live encoder/model contract = `192x34`; old `85x34` view = baseline-prefix only.
 - Fixed runtime action space = 46 actions with two-phase riichi and kan handling.
-- BC shard training default is Python/PyTorch through Rust launcher. Rust owns replay parsing, shard building, manifest validation, CLI/config orchestration, and legacy Rust/Burn reference path. Python owns BC model/loss/optimizer/BF16/`torch.compile`/checkpoint-resume. Plain BC shard path supports full base heads/losses plus default-off `safety_residual` and `oracle_critic` labels when present.
+- BC shard/raw-MJAI training default is Python/PyTorch through Rust launcher. Rust owns replay parsing, shard building, manifest validation, CLI/config orchestration, and legacy Rust/Burn reference path. Python owns BC model/loss/optimizer/BF16/`torch.compile`/checkpoint-resume. Plain BC supports full base heads/losses plus default-off `safety_residual` and `oracle_critic` labels when present. Python run UX writes balanced JSONL logs, TensorBoard event files, periodic `latest.pt` checkpoints, optional step checkpoints, background pid/stdout/stderr logs, and resumable metadata-validated checkpoints.
 - Stronger public-teacher belief-semantics tranche shipped in current training baseline.
 - Current Hand-EV realism upgrade shipped in live baseline surface.
 - Replay-derived `safety_residual` shipped as narrow supervised lane.
@@ -39,7 +39,7 @@ File uses status vocabulary from `research/design/HYDRA_RECONCILIATION.md`.
 
 - BC shards are compact-only v3 on disk. No dense/v2 storage path is supported. Workflow: build shards, then train via Python BC learner from `--bc-shards-manifest` or YAML `bc_shards_manifest_path`; or omit shard manifest and stream raw MJAI from YAML `data_dir`. Shard builder writes replay-fact baseline observation records, omits advanced/search/Hand-EV dense tails, and dense v2 shards hard-error with rebuild-from-replay message. Python reader expands compact records to unchanged `192x34` training tensors and full base labels.
 - Legacy Rust/Burn BC shard CUDA path remains explicit fallback/debug path (`bc_backend: rust_burn` / `--bc-backend rust-burn`). It has reusable pinned H2D staging, preallocated GPU tensors, CPU f32 policy-target materialization, and child-process CUDA graph compute-capture probe. Production CUDA graph replay remains blocked by Burn `GradientsParams` optimizer contract; runtime labels say `cuda_graph_replay=production_off_probe_only`.
-- Python BC CUDA uses `py-train` env with PyTorch `2.11.0+cu128`; root/default Rust/Burn env remains torch/libtorch `2.9.0`. Raw-MJAI input defaults to pinned PyO3 transport with stdout fallback. ExIt/DeltaQ/belief/mixture/opponent-hand-type are not supported in Python default yet; use legacy Rust/Burn path for those advanced modes or debugging.
+- Python BC CUDA uses `py-train` env with PyTorch `2.11.0+cu128` plus TensorBoard. Raw-MJAI input defaults to pinned PyO3 transport with stdout fallback. ExIt/DeltaQ/belief/mixture/opponent-hand-type are not supported in Python default yet; use legacy Rust/Burn path for those advanced modes or debugging.
 
 ### Implemented but not default-on
 
@@ -52,6 +52,7 @@ File uses status vocabulary from `research/design/HYDRA_RECONCILIATION.md`.
 - `burn-cuda-probe` is explicit feature-gated, operator-selected BC-shard FP32 probe only. It never runs unless built with feature `burn-cuda-probe` and selected with `--experimental-backend burn-cuda`. LibTorch remains default/production backend. Not current throughput lane; no more Burn native CUDA throughput work.
 - `experimental_backbone_profile` exists for BC throughput ablation only. It is YAML/benchmark-CLI gated, default absent, and preserves `192x34` input plus all BC full/policy head tensor contracts. Park as research infra only unless explicitly built/used for throughput experiments; do not treat as throughput fix or strength claim.
 - Python `compile_max_autotune` is canonical for production Python BC. It does not change model math/topology, checkpoint architecture, input/action shapes, residual profile, or losses versus `compile_default`; it only changes TorchInductor compile strategy. Use `compile_default` only for smoke/preflight/short debug when compile/autotune overhead dominates.
+- Python BC logging/checkpoint UX is shipped: `logs/events.jsonl`, `logs/train_steps.jsonl`, `checkpoints/latest.pt`, optional `checkpoints/step_<global_step>.pt`, TensorBoard event files, auto TensorBoard launch with upward port scan, and `background` detached mode. `max_train_steps` is Python run length today; `num_epochs` remains Rust/Burn full-loop authority.
 
 ### Implemented but staged
 

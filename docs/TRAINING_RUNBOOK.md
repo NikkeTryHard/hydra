@@ -44,8 +44,8 @@ Choose:
 | Field | Meaning |
 |---|---|
 | `data_dir` | replay root, loose file, or archive path |
-| `output_dir` | checkpoints, logs, reports, caches |
-| `num_epochs` | BC epoch count |
+| `output_dir` | Python BC writes result, logs, checkpoints, TensorBoard events, and background pid here |
+| `num_epochs` | Rust/Burn epoch count; Python BC uses `max_train_steps` as run length |
 | `batch_size` | logical batch before microbatch/accum |
 | `microbatch_size` | explicit train microbatch override |
 | `validation_microbatch_size` | explicit validation microbatch override |
@@ -67,6 +67,14 @@ Choose:
 | `python_variant` | Python BC TorchInductor strategy only; default/canonical `compile_max_autotune`; use `compile_default` only for smoke/preflight/short debug |
 | `validation_gates` | optional best-checkpoint gate; off by default |
 | `python_raw_mjai_transport` | raw-MJAI input transport when `bc_shards_manifest_path` absent; default `pinned_pyo3`, fallback `stdout` |
+| `tensorboard` | Python BC writes TensorBoard event files under `output_dir/tensorboard` |
+| `launch_tensorboard` | Rust launcher starts TensorBoard detached and reports URL; scans port upward if busy |
+| `tensorboard_host` / `tensorboard_port` | TensorBoard bind host and preferred port |
+| `background` | Detach Python BC learner; write `train.pid`, stdout/stderr logs, watch command |
+| `log_every_n_steps` | Balanced Python step JSONL/TensorBoard cadence; avoid `1` on CUDA unless debugging |
+| `checkpoint_every_n_steps` | Refresh `checkpoints/latest.pt`; final step also saves |
+| `keep_step_checkpoints` | Also retain immutable `checkpoints/step_<global_step>.pt` files |
+| `max_train_steps` | Python BC training length today; if unset, launcher smoke default is `30` steps |
 
 Minimal raw-MJAI BC train, default Python/PyTorch backend:
 
@@ -100,6 +108,63 @@ bc_shards_manifest_path: /data/bc_shards_manifest.json
 ```
 
 If `bc_shards_manifest_path` is absent, Python learner receives `data_dir` and streams raw MJAI. Default transport is pinned PyO3 (`python_raw_mjai_transport: pinned_pyo3`); `stdout` remains fallback. Rust raw-MJAI helper runs in Pixi `default` env; Python training runs in Pixi `py-train`.
+Python BC writes operator artifacts under `output_dir`:
+
+```text
+logs/events.jsonl       lifecycle, resume, validation, checkpoint events
+logs/train_steps.jsonl  balanced step telemetry, cadence `log_every_n_steps`
+logs/tensorboard.log    TensorBoard process output when launched
+logs/stdout.log         background learner stdout
+logs/stderr.log         background learner stderr
+train.pid               background learner pid
+checkpoints/latest.pt   resumable data-only checkpoint
+tensorboard/            TensorBoard event files
+python_learner_result.json
+```
+
+Resume with `resume_checkpoint: <output_dir>/checkpoints/latest.pt`. Python
+checkpoint load validates schema, model/runtime/optimizer/loss contracts,
+manifest/source identity, and RNG metadata. Present-but-mismatched metadata is
+hard error.
+
+For long Python BC runs, set explicit `max_train_steps`. If unset, launcher uses
+30 steps. `num_epochs` remains Rust/Burn full-loop authority today; Python epoch
+scheduling is not active yet.
+
+Python BC UX knobs:
+
+```yaml
+log_every_n_steps: 50
+validate_every_n_steps: 200
+checkpoint_every_n_steps: 200
+keep_step_checkpoints: false
+tensorboard: true
+launch_tensorboard: true
+tensorboard_host: 127.0.0.1
+tensorboard_port: 6006
+background: true
+max_train_steps: 1000
+```
+
+Launcher picks first available TensorBoard port at or above `tensorboard_port`.
+If `background: true`, CLI returns after spawn and prints:
+
+```bash
+tail -f <output_dir>/logs/train_steps.jsonl
+```
+
+Direct Python/CLI equivalents:
+
+```bash
+--python-log-every-steps 50 \
+--python-checkpoint-every-steps 200 \
+--python-keep-step-checkpoints \
+--python-launch-tensorboard \
+--python-tensorboard-host 127.0.0.1 \
+--python-tensorboard-port 6006 \
+--python-background
+```
+
 
 Legacy Rust/Burn BC path:
 

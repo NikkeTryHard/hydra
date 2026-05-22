@@ -115,7 +115,7 @@ Run preflight benchmark:
 pixi run cargo run -p hydra-train --no-default-features --features training --bin train -- --preflight --pf-candidate-tuples 1024:2:1:1 --pf-warmup-steps 10 --pf-measure-steps 100 --pf-repetitions 1 --pf-output md
 ```
 
-Run default BC shard training through Rust launcher. Rust validates CLI/manifest contracts, then launches Python/PyTorch BC learner in Pixi `py-train`:
+Run default BC shard training through Rust launcher. Rust validates CLI/manifest contracts, then launches Python/PyTorch BC learner in Pixi `py-train`. Output includes `logs/`, `checkpoints/latest.pt`, TensorBoard events, and `python_learner_result.json`:
 
 ```bash
 pixi run cargo run --quiet --package hydra-train --features training --bin train -- \
@@ -125,7 +125,10 @@ pixi run cargo run --quiet --package hydra-train --features training --bin train
   --python-variant compile_max_autotune \
   --python-warmup 1 \
   --python-steps 3 \
-  --python-compile-fullgraph-check
+  --python-compile-fullgraph-check \
+  --python-checkpoint-every-steps 200 \
+  --python-log-every-steps 50 \
+  --python-launch-tensorboard
 ```
 
 Run config-backed training:
@@ -141,6 +144,10 @@ Notes:
 - Default plain-BC backend is Python/PyTorch. Rust owns replay parsing, shard building, manifest validation, and orchestration; Python owns BC model/loss/optimizer/compile/checkpoint.
 - Use `bc_backend: rust_burn` or CLI `--bc-backend rust-burn` only for legacy Rust/Burn debugging or advanced labels not supported by Python default yet: ExIt, DeltaQ, belief, mixture, opponent hand type.
 - `device: cpu` works for CPU Rust paths. Default Python BC expects CUDA for throughput.
+- Python BC run artifacts: `logs/events.jsonl`, `logs/train_steps.jsonl`, `checkpoints/latest.pt`, `tensorboard/events.out.tfevents.*`, `python_learner_result.json`.
+- Resume Python BC with `resume_checkpoint: <output_dir>/checkpoints/latest.pt` in YAML or `--python-resume <checkpoint>` in direct CLI mode.
+- `--python-background` detaches learner, writes `train.pid`, redirects stdout/stderr to `logs/`, and prints `tail -f <output_dir>/logs/train_steps.jsonl`.
+- `--python-launch-tensorboard` starts TensorBoard on first free port at or above `--python-tensorboard-port` and reports URL.
 - CUDA graph support is explicit and compile-checked with:
 
 ```bash

@@ -42,7 +42,7 @@ Hydra = open-source Riichi Mahjong AI. Target LuckyJ-level strength and reproduc
 - BC loader-runtime authority stays config-derived; matching preflight cache does not override checkpoint/runtime contract.
 - BC CUDA LibTorch runs default to BF16 AMP when `precision_mode` omitted; explicit `fp32` stays FP32; CPU omission stays FP32; RL/DeltaQ BF16 hard-gated.
 - CUDA graph feature ships pinned staging/preallocated tensors/probes; production graph replay remains off/probe-only until Burn optimizer gradient contract permits it.
-- Plain BC default backend is Python/PyTorch. It trains compact BC shards from `bc_shards_manifest_path` or streams raw MJAI from `data_dir`; raw transport defaults to pinned PyO3 with stdout fallback.
+- Plain BC default backend is Python/PyTorch. It trains compact BC shards from `bc_shards_manifest_path` or streams raw MJAI from `data_dir`; raw transport defaults to pinned PyO3 with stdout fallback. Python run UX owns `logs/events.jsonl`, `logs/train_steps.jsonl`, TensorBoard event files, `checkpoints/latest.pt`, optional step checkpoints, background `train.pid`, and metadata-validated resume.
 
 ## Crate ownership
 
@@ -136,7 +136,7 @@ Removed duplicate/noisy aliases (`check-all-targets`, `build-dist`, `test-releas
 ## Burn dependency decisions
 
 - Burn stack is patched locally in `third_party/burn`: `burn`, `burn-autodiff`, `burn-backend`, `burn-tch`, `burn-flex`, `burn-ndarray`, `burn-optim` at `0.21.0`.
-- Current default plain-BC backend is Python/PyTorch through Rust launcher (`py-train`, torch `2.11.0+cu128`). It supports compact BC shards and raw MJAI (`pinned_pyo3` default, `stdout` fallback). Probe env `py-train-torch212-cu126` pins torch `2.12.0+cu126` + torchvision `0.27.0+cu126` for CUDA 12.6 machines; local RTX 5070 `sm_120` cannot execute cu126 wheels, so throughput must be measured on target hardware. Rust/Burn remains legacy/reference path for advanced modes and debugging; keep Burn stack patched for compatibility.
+- Current default plain-BC backend is Python/PyTorch through Rust launcher (`py-train`, torch `2.11.0+cu128`, TensorBoard `2.20`). It supports compact BC shards and raw MJAI (`pinned_pyo3` default, `stdout` fallback), periodic `latest.pt` checkpoints, optional immutable step checkpoints, balanced JSONL logs, TensorBoard event files/auto-launch, and detached background mode. Probe env `py-train-torch212-cu126` pins torch `2.12.0+cu126` + torchvision `0.27.0+cu126` for CUDA 12.6 machines; local RTX 5070 `sm_120` cannot execute cu126 wheels, so throughput must be measured on target hardware. Rust/Burn remains legacy/reference path for advanced modes and debugging; keep Burn stack patched for compatibility.
 - keep optimizer `.bin` contract unless full resume parity proof passes.
 - Keep Burn Adam for legacy Rust/Burn path. Python BC uses AdamW in its data-only checkpoint contract. AdamW/AMSGrad/Adan remain Rust/Burn fresh-run experiments only; Muon requires parameter groups and is unsafe for global Hydra params; LBFGS does not fit streaming BC/RL. None fixes CUDA graph replay because Burn `GradientsParams` + module mapping remains blocker.
 - For profiling, keep Hydra timings + NVTX + Nsight Systems/Compute.
@@ -159,9 +159,9 @@ Removed duplicate/noisy aliases (`check-all-targets`, `build-dist`, `test-releas
 - BF16/AMP is explicit. Use `torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16)` only where intended. Optimizer/master/checkpoint scalar state stays FP32 unless exact resume/parity tests prove another contract.
 - `torch.compile` regions must be pure tensor code: no file I/O, logging, config parsing, Python side effects, data-dependent Python branches, or dynamic object churn. Use compile diagnostics and fail tests on unexpected graph breaks/recompiles.
 - Randomness is explicit and recorded: seed Python, NumPy, PyTorch CPU/CUDA as applicable; record seed, deterministic flags, PyTorch/CUDA/cuDNN versions, device, precision, compile mode, and shard manifest digest.
-- Checkpoints are versioned data-only contracts: save model/optimizer/scheduler/scaler/RNG/config/runtime metadata as state-dict-like primitives with schema version and manifest digest. Never pickle modules, dataloaders, closures, compiled functions, or Python config objects as production checkpoints.
+- Checkpoints are versioned data-only contracts: save model/optimizer/scheduler/scaler/RNG/config/runtime metadata as state-dict-like primitives with schema version and manifest/source digest. Never pickle modules, dataloaders, closures, compiled functions, or Python config objects as production checkpoints. Python BC `checkpoints/latest.pt` is resumable default; optional `step_<global_step>.pt` files are retention artifacts.
 - Production checkpoint load uses safe loading (`weights_only=True` where possible) and validates schema/version/runtime/shape/dtype before accepting. Unknown or partial checkpoint metadata hard-errors.
-- Metrics are structured records, not ad-hoc prints. Emit JSONL/typed metrics with step, samples, batch/microbatch, losses, LR, grad norm/overflow, throughput, CUDA memory, compile counters, sync points, and stage timings.
+- Metrics are structured records, not ad-hoc prints. Python BC emits `logs/events.jsonl`, balanced `logs/train_steps.jsonl`, and TensorBoard scalar events under `tensorboard/`; cadence stays `log_every_n_steps`, not every CUDA step unless debugging.
 - Tests use pytest with real tensors/files/process boundaries. No mocks for model, optimizer, dataloader, checkpoint, compile, or CUDA behavior. Use tiny real datasets and `tmp_path`; monkeypatch only env/path isolation.
 - Tensor assertions use `torch.testing.assert_close` or exact equality with explicit shape/dtype/device checks and dtype-appropriate tolerances. BF16 gets separate tolerances; never claim FP32 parity unless measured.
 - CUDA/BF16/compile claims require CUDA-marked tests or exact benchmark/profiler run on that path. CPU tests do not prove CUDA behavior.
@@ -230,6 +230,7 @@ Useful invariants for runtime/data changes:
 - Default training/perf runs use `device: cuda:0` (or `HYDRA_TRAIN_DEVICE=cuda:0`) when GPU exists. CPU train is super slow; use CPU only for explicit CPU-debug/compat checks. GPU accelerates model forward/backward/optimizer/H2D; raw replay, BC-shard decode, sample collation, and materialization still run on CPU workers.
 
 - Preferred Python BC production training/perf shape on this machine: raw MJAI through pinned PyO3, `batch=2048`, `microbatch=1024`, `--python-variant compile_max_autotune`, default `python_residual_profile: mish_se`, `device cuda:0`. `compile_max_autotune` is canonical for long same-shape production runs because it changes TorchInductor kernel choice only, not model math. Use `compile_default` only for smoke/short debug where compile latency dominates. Treat sub-1% candidate differences as noise; choose smallest candidate within noise margin unless repeated long runs prove material gain.
+- Python BC config UX: `max_train_steps` is run length today; `num_epochs` remains Rust/Burn epoch-loop authority. `launch_tensorboard` starts TensorBoard and scans ports upward from `tensorboard_port`; `background` detaches learner, writes `train.pid`, redirects stdout/stderr to `logs/`, and prints `tail -f <output_dir>/logs/train_steps.jsonl`.
 
 ### CUDA profiling quick start
 
