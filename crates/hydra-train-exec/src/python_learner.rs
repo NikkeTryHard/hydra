@@ -3,8 +3,10 @@
 //! Rust owns CLI/config and process boundary validation. Python owns BC training.
 
 use std::fs;
+use std::fs::File;
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus};
+use std::process::{Command, ExitStatus, Stdio};
 
 use hydra_train_runtime::config::{PythonLearnerCliOptions, PythonLearnerInput};
 use serde::Deserialize;
@@ -42,6 +44,14 @@ pub struct PythonLearnerReport {
     pub global_step: u64,
     /// Optional checkpoint path emitted by Python.
     pub checkpoint_path: Option<PathBuf>,
+    /// Training log directory.
+    pub log_dir: PathBuf,
+    /// TensorBoard-compatible scalar directory, when enabled.
+    pub tensorboard_dir: Option<PathBuf>,
+    /// TensorBoard URL to open, when auto-launch requested.
+    pub tensorboard_url: Option<String>,
+    /// Background learner process id, when detached.
+    pub pid: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -60,6 +70,13 @@ struct PythonLearnerSummaryJson {
 pub trait PythonLearnerRunner {
     /// Runs a fully built command and returns its exit status.
     fn run(&self, command: &PythonLearnerCommand) -> Result<ExitStatus, String>;
+    /// Spawns a command detached from the terminal and returns its process id.
+    fn spawn_background(
+        &self,
+        command: &PythonLearnerCommand,
+        stdout: File,
+        stderr: File,
+    ) -> Result<u32, String>;
 }
 
 /// OS-backed Python learner process runner.
@@ -72,6 +89,24 @@ impl PythonLearnerRunner for OsPythonLearnerRunner {
             .command()
             .status()
             .map_err(|err| format!("failed to spawn Python learner through pixi: {err}"))
+    }
+
+    fn spawn_background(
+        &self,
+        command: &PythonLearnerCommand,
+        stdout: File,
+        stderr: File,
+    ) -> Result<u32, String> {
+        let child = command
+            .command()
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(stdout))
+            .stderr(Stdio::from(stderr))
+            .spawn()
+            .map_err(|err| {
+                format!("failed to spawn background Python learner through pixi: {err}")
+            })?;
+        Ok(child.id())
     }
 }
 
@@ -103,6 +138,10 @@ pub fn build_python_learner_command(options: &PythonLearnerCliOptions) -> Python
         options.oracle_critic_weight.to_string(),
         "--w-safety-residual".to_string(),
         options.safety_residual_weight.to_string(),
+        "--lr".to_string(),
+        options.learning_rate.to_string(),
+        "--weight-decay".to_string(),
+        options.weight_decay.to_string(),
     ];
     match &options.input {
         PythonLearnerInput::BcShards { manifest } => {
@@ -153,11 +192,113 @@ pub fn build_python_learner_command(options: &PythonLearnerCliOptions) -> Python
         args.push("--checkpoint-every-steps".to_string());
         args.push(options.checkpoint_every_steps.to_string());
     }
+    if options.checkpoint_out.is_none() {
+        args.push("--checkpoint-dir".to_string());
+        args.push(options.output_dir.join("checkpoints").display().to_string());
+    }
+    args.push("--log-dir".to_string());
+    args.push(options.output_dir.join("logs").display().to_string());
+    args.push("--log-every-steps".to_string());
+    args.push(options.log_every_steps.to_string());
+    if options.keep_step_checkpoints && options.checkpoint_out.is_none() {
+        args.push("--keep-step-checkpoints".to_string());
+    }
+    if options.tensorboard {
+        args.push("--tensorboard-dir".to_string());
+        args.push(options.output_dir.join("tensorboard").display().to_string());
+        args.push("--tensorboard-url".to_string());
+        args.push(tensorboard_url(options, options.tensorboard_port));
+    }
     PythonLearnerCommand {
         program: "pixi".to_string(),
         args,
         result_path,
     }
+}
+
+fn tensorboard_url(options: &PythonLearnerCliOptions, port: u16) -> String {
+    format!("http://{}:{port}/", options.tensorboard_host)
+}
+
+fn first_available_port(host: &str, preferred_port: u16) -> Result<u16, String> {
+    for port in preferred_port..=u16::MAX {
+        if TcpListener::bind((host, port)).is_ok() {
+            return Ok(port);
+        }
+    }
+    Err(format!(
+        "no available TensorBoard port on {host} at or above {preferred_port}"
+    ))
+}
+
+fn tensorboard_port(options: &PythonLearnerCliOptions) -> Result<u16, String> {
+    if options.tensorboard {
+        first_available_port(&options.tensorboard_host, options.tensorboard_port)
+    } else {
+        Ok(options.tensorboard_port)
+    }
+}
+
+fn build_python_learner_command_with_tensorboard_port(
+    options: &PythonLearnerCliOptions,
+    selected_tensorboard_port: u16,
+) -> PythonLearnerCommand {
+    let mut command = build_python_learner_command(options);
+    if options.tensorboard {
+        for window in command.args.windows(2) {
+            if window[0] == "--tensorboard-url" {
+                let old = window[1].clone();
+                let new = tensorboard_url(options, selected_tensorboard_port);
+                for arg in &mut command.args {
+                    if *arg == old {
+                        *arg = new;
+                        break;
+                    }
+                }
+                break;
+            }
+        }
+    }
+    command
+}
+
+fn launch_tensorboard(options: &PythonLearnerCliOptions, selected_port: u16) -> Result<(), String> {
+    if !options.tensorboard || !options.launch_tensorboard {
+        return Ok(());
+    }
+    let log_dir = options.output_dir.join("logs");
+    fs::create_dir_all(&log_dir).map_err(|err| {
+        format!(
+            "failed to create TensorBoard log dir {}: {err}",
+            log_dir.display()
+        )
+    })?;
+    let stdout = File::create(log_dir.join("tensorboard.log"))
+        .map_err(|err| format!("failed to create TensorBoard log file: {err}"))?;
+    let stderr = stdout
+        .try_clone()
+        .map_err(|err| format!("failed to clone TensorBoard log file handle: {err}"))?;
+    let logdir = options.output_dir.join("tensorboard").display().to_string();
+    let port = selected_port.to_string();
+    Command::new("pixi")
+        .args([
+            "run",
+            "-e",
+            "py-train",
+            "tensorboard",
+            "--logdir",
+            &logdir,
+            "--host",
+            &options.tensorboard_host,
+            "--port",
+            &port,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
+        .spawn()
+        .map_err(|err| format!("failed to launch TensorBoard through pixi: {err}"))?;
+    Ok(())
 }
 
 /// Runs the Python learner after validating Rust-owned launch contracts.
@@ -193,7 +334,51 @@ pub fn run_python_learner_with_runner(
             options.output_dir.display()
         )
     })?;
-    let command = build_python_learner_command(options);
+    fs::create_dir_all(options.output_dir.join("checkpoints"))
+        .map_err(|err| format!("failed to create Python BC checkpoint dir: {err}"))?;
+    fs::create_dir_all(options.output_dir.join("logs"))
+        .map_err(|err| format!("failed to create Python BC log dir: {err}"))?;
+    if options.tensorboard {
+        fs::create_dir_all(options.output_dir.join("tensorboard"))
+            .map_err(|err| format!("failed to create Python BC tensorboard dir: {err}"))?;
+    }
+    let selected_tensorboard_port = tensorboard_port(options)?;
+    launch_tensorboard(options, selected_tensorboard_port)?;
+    let command =
+        build_python_learner_command_with_tensorboard_port(options, selected_tensorboard_port);
+    if options.background {
+        let stdout_path = options.output_dir.join("logs/stdout.log");
+        let stderr_path = options.output_dir.join("logs/stderr.log");
+        let stdout = File::create(&stdout_path).map_err(|err| {
+            format!(
+                "failed to create background stdout log {}: {err}",
+                stdout_path.display()
+            )
+        })?;
+        let stderr = File::create(&stderr_path).map_err(|err| {
+            format!(
+                "failed to create background stderr log {}: {err}",
+                stderr_path.display()
+            )
+        })?;
+        let pid = runner.spawn_background(&command, stdout, stderr)?;
+        fs::write(options.output_dir.join("train.pid"), format!("{pid}\n"))
+            .map_err(|err| format!("failed to write train.pid: {err}"))?;
+        return Ok(PythonLearnerReport {
+            result_path: command.result_path,
+            samples_per_second: 0.0,
+            global_step: 0,
+            checkpoint_path: Some(options.output_dir.join("checkpoints/latest.pt")),
+            log_dir: options.output_dir.join("logs"),
+            tensorboard_dir: options
+                .tensorboard
+                .then(|| options.output_dir.join("tensorboard")),
+            tensorboard_url: options
+                .tensorboard
+                .then(|| tensorboard_url(options, selected_tensorboard_port)),
+            pid: Some(pid),
+        });
+    }
     let status = runner.run(&command)?;
     if !status.success() {
         return Err(format!(
@@ -229,6 +414,10 @@ pub fn parse_python_learner_report(path: &Path) -> Result<PythonLearnerReport, S
         samples_per_second: parsed.summary.samples_per_s,
         global_step: parsed.global_step,
         checkpoint_path: parsed.checkpoint_path,
+        log_dir: path.parent().unwrap_or_else(|| Path::new("")).join("logs"),
+        tensorboard_dir: path.parent().map(|parent| parent.join("tensorboard")),
+        tensorboard_url: None,
+        pid: None,
     })
 }
 
@@ -268,6 +457,15 @@ mod tests {
         fn run(&self, _command: &PythonLearnerCommand) -> Result<ExitStatus, String> {
             Ok(self.status)
         }
+
+        fn spawn_background(
+            &self,
+            _command: &PythonLearnerCommand,
+            _stdout: File,
+            _stderr: File,
+        ) -> Result<u32, String> {
+            Ok(12345)
+        }
     }
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -295,6 +493,15 @@ mod tests {
             checkpoint_out: Some(root.join("ckpt.pt")),
             resume: Some(root.join("resume.pt")),
             checkpoint_every_steps: 7,
+            log_every_steps: 2,
+            keep_step_checkpoints: true,
+            tensorboard: true,
+            launch_tensorboard: false,
+            tensorboard_host: "127.0.0.1".to_string(),
+            tensorboard_port: 6006,
+            background: false,
+            learning_rate: 1.0e-4,
+            weight_decay: 2.0e-5,
             compile_fullgraph_check: true,
             oracle_critic_weight: 0.25,
             safety_residual_weight: 0.5,
@@ -355,6 +562,35 @@ mod tests {
                 .windows(2)
                 .any(|w| w == ["--resume", "/tmp/hydra py launcher/resume.pt"])
         );
+        assert!(!command.args.contains(&"--checkpoint-dir".to_string()));
+        assert!(
+            command
+                .args
+                .windows(2)
+                .any(|w| w == ["--log-dir", "/tmp/hydra py launcher/out/logs"])
+        );
+        assert!(
+            command
+                .args
+                .windows(2)
+                .any(|w| w == ["--log-every-steps", "2"])
+        );
+        assert!(
+            !command
+                .args
+                .contains(&"--keep-step-checkpoints".to_string())
+        );
+        assert!(command.args.windows(2).any(|w| w
+            == [
+                "--tensorboard-dir",
+                "/tmp/hydra py launcher/out/tensorboard"
+            ]));
+        assert!(
+            command
+                .args
+                .windows(2)
+                .any(|w| w == ["--tensorboard-url", "http://127.0.0.1:6006/"])
+        );
         assert!(
             command
                 .args
@@ -411,6 +647,25 @@ mod tests {
     }
 
     #[test]
+    fn command_passes_checkpoint_dir_when_checkpoint_out_absent() {
+        let root = PathBuf::from("/tmp/hydra dir checkpoint launcher");
+        let mut opts = options(&root);
+        opts.checkpoint_out = None;
+        opts.keep_step_checkpoints = true;
+        let command = build_python_learner_command(&opts);
+        assert!(command.args.windows(2).any(|w| w
+            == [
+                "--checkpoint-dir",
+                "/tmp/hydra dir checkpoint launcher/out/checkpoints"
+            ]));
+        assert!(
+            command
+                .args
+                .contains(&"--keep-step-checkpoints".to_string())
+        );
+    }
+
+    #[test]
     fn missing_manifest_hard_errors_before_spawn() {
         let root = temp_dir("missing-manifest");
         let opts = options(&root);
@@ -464,5 +719,25 @@ mod tests {
         assert_eq!(report.global_step, 9);
         assert_eq!(report.checkpoint_path, Some(PathBuf::from("ckpt.pt")));
         let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn tensorboard_port_enumerates_when_preferred_is_busy() {
+        let root = temp_dir("tensorboard-port");
+        let listener =
+            std::net::TcpListener::bind(("127.0.0.1", 0)).expect("test port bind should work");
+        let busy_port = listener
+            .local_addr()
+            .expect("local addr should exist")
+            .port();
+        let mut opts = options(&root);
+        opts.tensorboard_port = busy_port;
+
+        let selected = tensorboard_port(&opts).expect("next port should be selected");
+
+        assert!(selected > busy_port);
+        assert_eq!(
+            tensorboard_url(&opts, selected),
+            format!("http://127.0.0.1:{selected}/")
+        );
     }
 }

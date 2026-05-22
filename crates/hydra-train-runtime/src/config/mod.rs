@@ -92,6 +92,16 @@ pub struct TrainConfig {
     #[serde(default = "default_checkpoint_every_n_steps")]
     pub checkpoint_every_n_steps: usize,
     #[serde(default)]
+    pub keep_step_checkpoints: bool,
+    #[serde(default)]
+    pub launch_tensorboard: bool,
+    #[serde(default = "default_tensorboard_host")]
+    pub tensorboard_host: String,
+    #[serde(default = "default_tensorboard_port")]
+    pub tensorboard_port: u16,
+    #[serde(default)]
+    pub background: bool,
+    #[serde(default)]
     pub max_train_steps: Option<usize>,
     #[serde(default)]
     pub max_validation_batches: Option<usize>,
@@ -249,6 +259,11 @@ impl TrainConfig {
             log_every_n_steps: default_log_every_n_steps(),
             validate_every_n_steps: default_validate_every_n_steps(),
             checkpoint_every_n_steps: default_checkpoint_every_n_steps(),
+            keep_step_checkpoints: false,
+            launch_tensorboard: false,
+            tensorboard_host: default_tensorboard_host(),
+            tensorboard_port: default_tensorboard_port(),
+            background: false,
             max_train_steps: None,
             max_validation_batches: None,
             max_validation_samples: default_max_validation_samples(),
@@ -439,6 +454,15 @@ pub struct PythonLearnerCliOptions {
     pub checkpoint_out: Option<PathBuf>,
     pub resume: Option<PathBuf>,
     pub checkpoint_every_steps: usize,
+    pub log_every_steps: usize,
+    pub keep_step_checkpoints: bool,
+    pub tensorboard: bool,
+    pub launch_tensorboard: bool,
+    pub tensorboard_host: String,
+    pub tensorboard_port: u16,
+    pub background: bool,
+    pub learning_rate: f64,
+    pub weight_decay: f64,
     pub compile_fullgraph_check: bool,
     pub oracle_critic_weight: f64,
     pub safety_residual_weight: f64,
@@ -665,6 +689,14 @@ pub fn default_buffer_samples() -> usize {
 
 pub fn default_tensorboard() -> bool {
     true
+}
+
+pub fn default_tensorboard_host() -> String {
+    "127.0.0.1".to_string()
+}
+
+pub fn default_tensorboard_port() -> u16 {
+    6006
 }
 
 pub fn default_archive_queue_bound() -> usize {

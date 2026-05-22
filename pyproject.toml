@@ -48,6 +48,7 @@ hydra-learner = { path = ".", editable = true }
 [tool.pixi.feature.dev.pypi-dependencies]
 numpy = "==1.26.4"
 torch = "==2.9.0"
+tensorboard = ">=2.20,<3"
 
 [tool.pixi.feature.py-train.pypi-options]
 index-url = "https://download.pytorch.org/whl/cu128"
@@ -65,6 +66,7 @@ pyrefly = ">=1,<2"
 pytest = ">=8,<9"
 ruff = ">=0.11,<0.14"
 torch = "==2.11.0+cu128"
+tensorboard = ">=2.20,<3"
 
 [tool.pixi.feature.py-train-torch212-cu126.pypi-options]
 index-url = "https://download.pytorch.org/whl/cu126"
@@ -82,6 +84,7 @@ pyrefly = ">=1,<2"
 pytest = ">=8,<9"
 ruff = ">=0.11,<0.14"
 torch = "==2.12.0+cu126"
+tensorboard = ">=2.20,<3"
 torchvision = "==0.27.0+cu126"
 
 [tool.pixi.feature.py-train-torch212-nightly-cu128.pypi-options]
@@ -100,6 +103,7 @@ pyrefly = ">=1,<2"
 pytest = ">=8,<9"
 ruff = ">=0.11,<0.14"
 torch = "==2.12.0.dev20260329+cu128"
+tensorboard = ">=2.20,<3"
 torchvision = "==0.26.0.dev20260329+cu128"
 
 

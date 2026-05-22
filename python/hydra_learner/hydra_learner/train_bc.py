@@ -6,18 +6,24 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sys
 import time
 from collections.abc import Callable
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast, override
+from typing import IO, cast, override
 
 import torch
 import torch.cuda.profiler as cuda_profiler
 import torch.nn as nn
 
+try:
+    from torch.utils.tensorboard import SummaryWriter
+except (ImportError, ModuleNotFoundError):
+    SummaryWriter = None
 from hydra_learner.checkpoint import (
     ModelConfig,
     OptimizerConfig,
@@ -57,7 +63,9 @@ from hydra_learner.raw_mjai_stream import (
     RAW_MJAI_TRANSPORT_STDOUT,
     BuildProgress,
     PinnedPolicyBatch,
+    RawMjaiBridgeStats,
     RawMjaiDirectStream,
+    RawMjaiPinnedQueueStats,
     RawMjaiPinnedStream,
     add_raw_mjai_args,
     build_progress_json,
@@ -517,6 +525,247 @@ def slice_targets(targets: BaseTargets, start: int, end: int) -> BaseTargets:
     )
 
 
+class ScalarEventWriter:
+    def __init__(self, path: Path | None) -> None:
+        self._writer: SummaryWriter | None = None
+        self._file: IO[str] | None = None
+        if path is None:
+            return
+        path.mkdir(parents=True, exist_ok=True)
+        if SummaryWriter is not None:
+            self._writer = SummaryWriter(log_dir=str(path))
+        else:
+            self._file = (path / "scalars.jsonl").open("a", encoding="utf-8")
+
+    def close(self) -> None:
+        if self._writer is not None:
+            self._writer.close()
+        if self._file is not None:
+            self._file.close()
+
+    def add_scalar(self, tag: str, value: float, step: int) -> None:
+        if self._writer is not None:
+            self._writer.add_scalar(tag, value, step)
+            return
+        if self._file is None:
+            return
+        record = {"wall_time": time.time(), "step": step, "tag": tag, "value": value}
+        self._file.write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
+
+    def flush(self) -> None:
+        if self._writer is not None:
+            self._writer.flush()
+        if self._file is not None:
+            self._file.flush()
+
+    @property
+    def enabled(self) -> bool:
+        return self._writer is not None or self._file is not None
+
+
+def _finite_number(value: object) -> float | None:
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+    if isinstance(value, int | float):
+        out = float(value)
+        return out if math.isfinite(out) else None
+    return None
+
+
+def add_scalars(
+    writer: ScalarEventWriter, prefix: str, metrics: dict[str, object] | dict[str, float], step: int
+) -> None:
+    for key, value in metrics.items():
+        number = _finite_number(value)
+        if number is not None:
+            writer.add_scalar(f"{prefix}/{key}", number, step)
+
+
+def log_step_scalars(
+    writer: ScalarEventWriter, stat: StepStats, *, batch: int, samples_seen: int, global_step: int
+) -> None:
+    metrics: dict[str, object] = {
+        "loss": stat.loss,
+        "step_ms": stat.step_ms,
+        "fwd_loss_ms": stat.fwd_loss_ms,
+        "backward_ms": stat.backward_ms,
+        "optimizer_ms": stat.optimizer_ms,
+        "train_gpu_ms": stat.train_gpu_ms,
+        "fetch_decode_ms": stat.fetch_decode_ms,
+        "h2d_wall_ms": stat.h2d_wall_ms,
+        "samples_seen": samples_seen,
+        "global_step": global_step,
+    }
+    if stat.step_ms > 0.0 and math.isfinite(stat.step_ms):
+        metrics["samples_per_s"] = batch * 1000.0 / stat.step_ms
+    if math.isfinite(stat.fetch_decode_ms) and math.isfinite(stat.h2d_wall_ms):
+        input_pipeline_ms = stat.fetch_decode_ms + stat.h2d_wall_ms
+        metrics["input_pipeline_wall_ms"] = input_pipeline_ms
+        if math.isfinite(stat.train_gpu_ms):
+            total_wall_ms = input_pipeline_ms + stat.train_gpu_ms
+            metrics["total_wall_ms"] = total_wall_ms
+            if total_wall_ms > 0.0:
+                metrics["end_to_end_samples_per_s"] = batch * 1000.0 / total_wall_ms
+    add_scalars(writer, "train", metrics, global_step)
+
+
+def log_validation_scalars(
+    writer: ScalarEventWriter, metrics: dict[str, float], global_step: int, *, final: bool
+) -> None:
+    add_scalars(writer, "final_validation" if final else "validation", metrics, global_step)
+
+
+def _progress_scalars(progress: BuildProgress | None) -> dict[str, object]:
+    if progress is None:
+        return {}
+    return {
+        "progress/complete": progress.complete,
+        "progress/build_seconds": progress.build_seconds,
+        "progress/loaded_games": progress.loaded_games,
+        "progress/skipped_games": progress.skipped_games,
+        "progress/samples": progress.samples,
+        "progress/batches": progress.batches,
+        "progress/max_games_reached": progress.max_games_reached,
+        "progress/max_samples_reached": progress.max_samples_reached,
+    }
+
+
+def _bridge_scalars(stats: RawMjaiBridgeStats | None) -> dict[str, object]:
+    if stats is None:
+        return {}
+    return {
+        "bridge/open_count": stats.open_count,
+        "bridge/open_scan_plan_ms": stats.open_scan_plan_ms,
+        "bridge/last_next_fill_ms": stats.last_next_fill_ms,
+        "bridge/last_queue_wait_ms": stats.last_queue_wait_ms,
+        "bridge/last_bytes_filled": stats.last_bytes_filled,
+        "bridge/last_games_consumed": stats.last_games_consumed,
+    }
+
+
+def _queue_scalars(stats: RawMjaiPinnedQueueStats | None) -> dict[str, object]:
+    if stats is None:
+        return {}
+    return {
+        "queue/ready_wait_ms_total": stats.ready_wait_ms_total,
+        "queue/ready_wait_count": stats.ready_wait_count,
+        "queue/mean_ready_wait_ms": stats.mean_ready_wait_ms,
+        "queue/producer_fill_ms_total": stats.producer_fill_ms_total,
+        "queue/produced_batches": stats.produced_batches,
+        "queue/mean_producer_fill_ms": stats.mean_producer_fill_ms,
+        "queue/producer_free_wait_ms_total": stats.producer_free_wait_ms_total,
+        "queue/producer_free_wait_count": stats.producer_free_wait_count,
+        "queue/mean_producer_free_wait_ms": stats.mean_producer_free_wait_ms,
+        "queue/ready_queue_size": stats.ready_queue_size,
+        "queue/free_queue_size": stats.free_queue_size,
+    }
+
+
+def raw_mjai_scalar_snapshot(
+    raw_stream: RawMjaiDirectStream | None, raw_pinned: RawMjaiPinnedStream | None
+) -> dict[str, object]:
+    if raw_stream is None and raw_pinned is None:
+        return {}
+    if raw_stream is not None:
+        progress = raw_stream.progress()
+        bridge_stats = None
+        queue_stats = None
+    else:
+        assert raw_pinned is not None
+        progress = raw_pinned.progress()
+        bridge_stats = raw_pinned.bridge_stats()
+        queue_stats = raw_pinned.queue_stats()
+    return _progress_scalars(progress) | _bridge_scalars(bridge_stats) | _queue_scalars(queue_stats)
+
+
+def log_final_scalars(writer: ScalarEventWriter, result: dict[str, object], global_step: int) -> None:
+    summary = result.get("summary")
+    if isinstance(summary, dict):
+        add_scalars(writer, "summary", summary, global_step)
+    memory = result.get("memory")
+    if isinstance(memory, dict):
+        add_scalars(writer, "memory", memory, global_step)
+    add_scalars(
+        writer,
+        "run",
+        {
+            "compile_s": result.get("compile_s"),
+            "global_step": result.get("global_step"),
+            "samples_seen": result.get("samples_seen"),
+            "raw_mjai_training": result.get("raw_mjai_training"),
+            "raw_mjai_pinned_pyo3": result.get("raw_mjai_pinned_pyo3"),
+        },
+        global_step,
+    )
+    raw_progress = result.get("raw_mjai_progress")
+    if isinstance(raw_progress, dict):
+        add_scalars(writer, "raw_mjai", {f"progress/{k}": v for k, v in raw_progress.items()}, global_step)
+    bridge_stats = result.get("raw_mjai_bridge_stats")
+    if isinstance(bridge_stats, dict):
+        add_scalars(writer, "raw_mjai", {f"bridge/{k}": v for k, v in bridge_stats.items()}, global_step)
+    queue_stats = result.get("raw_mjai_queue_stats")
+    if isinstance(queue_stats, dict):
+        add_scalars(writer, "raw_mjai", {f"queue/{k}": v for k, v in queue_stats.items()}, global_step)
+
+
+class JsonlLogger:
+    def __init__(self, path: Path | None) -> None:
+        self._file = None if path is None else path.open("a", encoding="utf-8")
+
+    def close(self) -> None:
+        if self._file is not None:
+            self._file.close()
+
+    def write(self, event: str, payload: dict[str, object] | None = None) -> None:
+        if self._file is None:
+            return
+        record: dict[str, object] = {
+            "ts": datetime.now(UTC).isoformat(),
+            "event": event,
+        }
+        if payload is not None:
+            record.update(payload)
+        self._file.write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
+        self._file.flush()
+
+
+def atomic_save_training_checkpoint(
+    path: Path,
+    model: HydraPolicyNet,
+    optimizer: torch.optim.Optimizer,
+    model_config: ModelConfig,
+    optimizer_config: OptimizerConfig,
+    runtime_config: RuntimeConfig,
+    loss_weights: LossWeights,
+    manifest_path: Path | None,
+    global_step: int,
+    samples_seen: int,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+    save_training_checkpoint(
+        tmp_path,
+        model=model,
+        optimizer=optimizer,
+        model_config=model_config,
+        optimizer_config=optimizer_config,
+        runtime_config=runtime_config,
+        loss_weights=loss_weights,
+        manifest_path=manifest_path,
+        global_step=global_step,
+        samples_seen=samples_seen,
+    )
+    tmp_path.replace(path)
+
+
+def checkpoint_paths(args: argparse.Namespace, global_step: int) -> tuple[Path | None, Path | None]:
+    if args.checkpoint_dir is None:
+        return args.checkpoint_out, None
+    latest = args.checkpoint_dir / "latest.pt"
+    step_path = args.checkpoint_dir / f"step_{global_step}.pt" if args.keep_step_checkpoints else None
+    return latest, step_path
+
+
 def torch_env() -> dict[str, object]:
     env: dict[str, object] = {
         "torch_version": torch.__version__,
@@ -604,8 +853,14 @@ def json_config(args: argparse.Namespace, effective_raw_mjai_max_samples: int | 
         "w_safety_residual": args.w_safety_residual,
         "compile_fullgraph_check": args.compile_fullgraph_check,
         "checkpoint_out": str(args.checkpoint_out) if args.checkpoint_out else None,
+        "checkpoint_dir": str(args.checkpoint_dir) if args.checkpoint_dir else None,
+        "keep_step_checkpoints": args.keep_step_checkpoints,
         "resume": str(args.resume) if args.resume else None,
         "checkpoint_every_steps": args.checkpoint_every_steps,
+        "log_dir": str(args.log_dir) if args.log_dir else None,
+        "log_every_steps": args.log_every_steps,
+        "tensorboard_dir": str(args.tensorboard_dir) if args.tensorboard_dir else None,
+        "tensorboard_url": args.tensorboard_url,
         "validation_steps": args.validation_steps,
         "validation_every": args.validation_every,
         "raw_mjai": raw_mjai_config_from_args(args),
@@ -667,8 +922,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--adamw-foreach", choices=ADAMW_FLAG_MODES, default="auto")
     parser.add_argument("--adamw-fused", choices=ADAMW_FLAG_MODES, default="auto")
     parser.add_argument("--checkpoint-out", type=Path)
+    parser.add_argument("--checkpoint-dir", type=Path)
+    parser.add_argument("--keep-step-checkpoints", action="store_true")
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--checkpoint-every-steps", type=int, default=0)
+    parser.add_argument("--log-dir", type=Path)
+    parser.add_argument("--log-every-steps", type=int, default=50)
+    parser.add_argument("--tensorboard-dir", type=Path)
+    parser.add_argument("--tensorboard-url")
     parser.add_argument("--validation-steps", type=int, default=0)
     parser.add_argument("--validation-every", type=int, default=0)
     parser.add_argument(
@@ -686,12 +947,17 @@ def validate_args(args: argparse.Namespace) -> None:
     non_negative_ints = (
         ("warmup", args.warmup),
         ("checkpoint_every_steps", args.checkpoint_every_steps),
+        ("log_every_steps", args.log_every_steps),
         ("validation_steps", args.validation_steps),
         ("validation_every", args.validation_every),
     )
     for name, value in non_negative_ints:
         if value < 0:
             raise ValueError(f"--{name.replace('_', '-')} must be >= 0")
+    if args.checkpoint_out is not None and args.checkpoint_dir is not None:
+        raise ValueError("--checkpoint-out and --checkpoint-dir cannot be combined")
+    if args.keep_step_checkpoints and args.checkpoint_dir is None:
+        raise ValueError("--keep-step-checkpoints requires --checkpoint-dir")
     if args.microbatch > args.batch:
         raise ValueError("--microbatch must be <= --batch")
     if args.actions != ACTION_SPACE:
@@ -711,6 +977,16 @@ def main() -> int:
     args = parse_args()
     validate_args(args)
     validate_raw_mjai_source_args(args)
+    if args.log_dir is not None:
+        args.log_dir.mkdir(parents=True, exist_ok=True)
+    if args.checkpoint_dir is not None:
+        args.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    if args.tensorboard_dir is not None:
+        args.tensorboard_dir.mkdir(parents=True, exist_ok=True)
+    events = JsonlLogger(None if args.log_dir is None else args.log_dir / "events.jsonl")
+    train_log = JsonlLogger(None if args.log_dir is None else args.log_dir / "train_steps.jsonl")
+    scalar_writer = ScalarEventWriter(args.tensorboard_dir)
+    events.write("run_start", {"config": json_config(args)})
     manifest_summary = None
     real_dataset = None
     raw_stream = None
@@ -772,6 +1048,10 @@ def main() -> int:
 
     if not torch.cuda.is_available():
         result = {"variant": args.variant, "env": torch_env(), "error": "CUDA unavailable"}
+        events.write("run_error", result)
+        events.close()
+        train_log.close()
+        scalar_writer.close()
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(json.dumps(result, indent=2) + "\n")
         if not args.quiet:
@@ -842,17 +1122,34 @@ def main() -> int:
             expected_loss_weights=weights,
             expected_manifest_path=args.manifest if raw_stream is None else raw_stream.manifest_path,
         )
+        events.write(
+            "resume_loaded",
+            {
+                "checkpoint_path": str(args.resume),
+                "global_step": resume_state.global_step,
+                "samples_seen": resume_state.samples_seen,
+            },
+        )
+        scalar_writer.add_scalar("checkpoint/resumed", 1.0, resume_state.global_step)
+        scalar_writer.add_scalar("checkpoint/resumed_step", float(resume_state.global_step), resume_state.global_step)
+        scalar_writer.add_scalar(
+            "checkpoint/resumed_samples_seen",
+            float(resume_state.samples_seen),
+            resume_state.global_step,
+        )
 
+    global_step = 0
     compile_error = None
     compile_s = 0.0
     if args.variant.startswith("compile_"):
+        events.write("compile_start", {"variant": args.variant})
         mode = None
         if args.variant == "compile_reduce_overhead":
             mode = "reduce-overhead"
         elif args.variant == "compile_max_autotune":
             mode = "max-autotune"
+        t0 = time.perf_counter()
         try:
-            t0 = time.perf_counter()
             loss_step = cast("nn.Module", torch.compile(loss_step, mode=mode, fullgraph=args.compile_fullgraph_check))
             setattr(loss_step, "_hydra_compiled", True)
             targets = targets_for_compiled_loss(targets, weights)
@@ -862,8 +1159,13 @@ def main() -> int:
                 assert raw_first_batch is not None
                 raw_pinned.mark_inflight(raw_first_batch)
             compile_s = time.perf_counter() - t0
+            events.write("compile_complete", {"compile_s": compile_s})
+            scalar_writer.add_scalar("runtime/compile_s", compile_s, 0)
         except Exception as exc:
             compile_error = f"{type(exc).__name__}: {exc}"
+            error_compile_s = time.perf_counter() - t0
+            events.write("compile_error", {"error": compile_error, "compile_s": error_compile_s})
+            scalar_writer.add_scalar("runtime/compile_error", 1.0, 0)
 
     env = torch_env()
     if compile_error is not None:
@@ -874,6 +1176,10 @@ def main() -> int:
             "compile_s": compile_s,
             "fullgraph_check": args.compile_fullgraph_check,
         }
+        events.write("run_error", result)
+        events.close()
+        train_log.close()
+        scalar_writer.close()
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(json.dumps(result, indent=2) + "\n")
         if not args.quiet:
@@ -927,6 +1233,8 @@ def main() -> int:
             with_stack=False,
         )
 
+    events.write("warmup_complete", {"warmup_steps": args.warmup})
+    scalar_writer.add_scalar("runtime/warmup_steps", float(args.warmup), 0)
     stats: list[StepStats] = []
     with profiler_ctx as torch_profiler:
         for i in range(args.steps):
@@ -958,6 +1266,36 @@ def main() -> int:
                 stat.fetch_decode_ms = input_timing.fetch_decode_ms
                 stat.h2d_wall_ms = input_timing.h2d_wall_ms
             stats.append(stat)
+            global_step = (0 if resume_state is None else resume_state.global_step) + i + 1
+            samples_seen = (0 if resume_state is None else resume_state.samples_seen) + (i + 1) * args.batch
+            if args.log_every_steps > 0 and ((i + 1) % args.log_every_steps == 0 or i + 1 == args.steps):
+                train_log.write(
+                    "train_step",
+                    {
+                        "step": i + 1,
+                        "global_step": global_step,
+                        "samples_seen": samples_seen,
+                        "batch": args.batch,
+                        "loss": stat.loss,
+                        "step_ms": stat.step_ms,
+                        "fwd_loss_ms": stat.fwd_loss_ms,
+                        "backward_ms": stat.backward_ms,
+                        "optimizer_ms": stat.optimizer_ms,
+                        "train_gpu_ms": stat.train_gpu_ms,
+                        "fetch_decode_ms": stat.fetch_decode_ms,
+                        "h2d_wall_ms": stat.h2d_wall_ms,
+                    }
+                    | raw_mjai_scalar_snapshot(raw_stream, raw_pinned),
+                )
+                log_step_scalars(
+                    scalar_writer,
+                    stat,
+                    batch=args.batch,
+                    samples_seen=samples_seen,
+                    global_step=global_step,
+                )
+                add_scalars(scalar_writer, "raw_mjai", raw_mjai_scalar_snapshot(raw_stream, raw_pinned), global_step)
+                scalar_writer.flush()
             if raw_pinned is not None:
                 assert pinned_batch is not None
                 raw_pinned.mark_inflight(pinned_batch)
@@ -970,26 +1308,43 @@ def main() -> int:
                     )
                     val_targets = targets_for_compiled_loss(val_targets, weights)
                     step_eval.append(evaluate_batch(model, val_obs, val_targets, weights, autocast))
-                eval_stats.append({"step": i + 1, "metrics": summarize_eval(step_eval)})
+                metrics = summarize_eval(step_eval)
+                eval_stats.append({"step": i + 1, "metrics": metrics})
+                events.write("validation", {"step": i + 1, "global_step": global_step, "metrics": metrics})
+                log_validation_scalars(scalar_writer, metrics, global_step, final=False)
+                scalar_writer.flush()
+            latest_checkpoint, step_checkpoint = checkpoint_paths(args, global_step)
             if (
-                args.checkpoint_out is not None
+                latest_checkpoint is not None
                 and args.checkpoint_every_steps > 0
                 and (i + 1) % args.checkpoint_every_steps == 0
             ):
-                global_step = (0 if resume_state is None else resume_state.global_step) + i + 1
-                samples_seen = (0 if resume_state is None else resume_state.samples_seen) + (i + 1) * args.batch
-                save_training_checkpoint(
-                    args.checkpoint_out,
-                    model=model,
-                    optimizer=optimizer,
-                    model_config=model_config,
-                    optimizer_config=optimizer_config,
-                    runtime_config=runtime_config,
-                    loss_weights=weights,
-                    manifest_path=args.manifest if raw_stream is None else raw_stream.manifest_path,
-                    global_step=global_step,
-                    samples_seen=samples_seen,
+                for checkpoint_path in (latest_checkpoint, step_checkpoint):
+                    if checkpoint_path is None:
+                        continue
+                    atomic_save_training_checkpoint(
+                        checkpoint_path,
+                        model=model,
+                        optimizer=optimizer,
+                        model_config=model_config,
+                        optimizer_config=optimizer_config,
+                        runtime_config=runtime_config,
+                        loss_weights=weights,
+                        manifest_path=args.manifest if raw_stream is None else raw_stream.manifest_path,
+                        global_step=global_step,
+                        samples_seen=samples_seen,
+                    )
+                events.write(
+                    "checkpoint_saved",
+                    {
+                        "path": str(latest_checkpoint),
+                        "step_path": None if step_checkpoint is None else str(step_checkpoint),
+                        "global_step": global_step,
+                        "samples_seen": samples_seen,
+                    },
                 )
+                scalar_writer.add_scalar("checkpoint/saved", 1.0, global_step)
+                scalar_writer.add_scalar("checkpoint/samples_seen", float(samples_seen), global_step)
             if torch_profiler is not None:
                 torch_profiler.step()
             if args.profile:
@@ -1009,6 +1364,7 @@ def main() -> int:
             val_targets = targets_for_compiled_loss(val_targets, weights)
             final_eval.append(evaluate_batch(model, val_obs, val_targets, weights, autocast))
         final_validation = summarize_eval(final_eval)
+        log_validation_scalars(scalar_writer, final_validation, global_step, final=True)
     raw_progress: BuildProgress | None = None
     if raw_stream is not None:
         raw_progress = raw_stream.progress()
@@ -1045,28 +1401,52 @@ def main() -> int:
         "global_step": (0 if resume_state is None else resume_state.global_step) + args.steps,
         "samples_seen": (0 if resume_state is None else resume_state.samples_seen) + args.steps * args.batch,
     }
-    if args.checkpoint_out is not None:
-        global_step = (0 if resume_state is None else resume_state.global_step) + args.steps
-        samples_seen = (0 if resume_state is None else resume_state.samples_seen) + args.steps * args.batch
-        save_training_checkpoint(
-            args.checkpoint_out,
-            model=model,
-            optimizer=optimizer,
-            model_config=model_config,
-            optimizer_config=optimizer_config,
-            runtime_config=runtime_config,
-            loss_weights=weights,
-            manifest_path=args.manifest if raw_stream is None else raw_stream.manifest_path,
-            global_step=global_step,
-            samples_seen=samples_seen,
+    global_step = (0 if resume_state is None else resume_state.global_step) + args.steps
+    samples_seen = (0 if resume_state is None else resume_state.samples_seen) + args.steps * args.batch
+    latest_checkpoint, step_checkpoint = checkpoint_paths(args, global_step)
+    if latest_checkpoint is not None:
+        for checkpoint_path in (latest_checkpoint, step_checkpoint):
+            if checkpoint_path is None:
+                continue
+            atomic_save_training_checkpoint(
+                checkpoint_path,
+                model=model,
+                optimizer=optimizer,
+                model_config=model_config,
+                optimizer_config=optimizer_config,
+                runtime_config=runtime_config,
+                loss_weights=weights,
+                manifest_path=args.manifest if raw_stream is None else raw_stream.manifest_path,
+                global_step=global_step,
+                samples_seen=samples_seen,
+            )
+        result["checkpoint_path"] = str(latest_checkpoint)
+        events.write(
+            "checkpoint_saved",
+            {
+                "path": str(latest_checkpoint),
+                "step_path": None if step_checkpoint is None else str(step_checkpoint),
+                "global_step": global_step,
+                "samples_seen": samples_seen,
+            },
         )
-        result["checkpoint_path"] = str(args.checkpoint_out)
+        scalar_writer.add_scalar("checkpoint/saved", 1.0, global_step)
+        scalar_writer.add_scalar("checkpoint/samples_seen", float(samples_seen), global_step)
     if validation_stream is not None:
         validation_stream.close()
     if raw_stream is not None:
         raw_stream.close()
     if raw_pinned is not None:
         raw_pinned.close()
+    log_final_scalars(scalar_writer, result, global_step)
+    scalar_writer.flush()
+    events.write(
+        "run_complete",
+        {"global_step": result["global_step"], "samples_seen": result["samples_seen"], "result_path": str(args.out)},
+    )
+    events.close()
+    train_log.close()
+    scalar_writer.close()
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(result, indent=2) + "\n")
     if not args.quiet:

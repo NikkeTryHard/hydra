@@ -13,7 +13,8 @@ data_dir: path/to/mjai
 # Run output root. Checkpoints, logs, reports, step_log.jsonl, metrics live here.
 output_dir: path/to/output/hydra-bc
 
-# Epoch count for full train loops. For smoke/debug, use max_train_steps below.
+# Python BC currently uses max_train_steps as run length; num_epochs is retained
+# for Rust/Burn full-epoch loops and future Python epoch scheduling.
 num_epochs: 1
 
 # Logical batch before gradient accumulation.
@@ -21,7 +22,7 @@ num_epochs: 1
 batch_size: 2048
 microbatch_size: 1024
 
-# Validation microbatch can be smaller if validation OOMs.
+# Rust/Burn validation microbatch override. Python BC currently uses batch/microbatch.
 validation_microbatch_size: 1024
 
 # CUDA recommended for Python BC. CPU works for explicit compat/debug but is slow.
@@ -58,26 +59,41 @@ seed: 0
 # Optional resume checkpoint base/path. Leave null for fresh run.
 resume_checkpoint: null
 
-# Checkpoint/log cadence. For full runs, increase max_train_steps or remove it.
+# Checkpoint/log cadence. Python BC writes balanced JSONL logs, not progress bars:
+#   output_dir/logs/events.jsonl       lifecycle, resume, validation, checkpoint events
+#   output_dir/logs/train_steps.jsonl  every log_every_n_steps plus final step
+#   output_dir/checkpoints/latest.pt   resumable checkpoint, refreshed every checkpoint_every_n_steps and final
+#   output_dir/tensorboard/            TensorBoard event files when tensorboard is true
+# Python BC needs max_train_steps today; null means Rust launcher default smoke length.
 log_every_n_steps: 50
 validate_every_n_steps: 200
 checkpoint_every_n_steps: 200
+keep_step_checkpoints: false   # true also keeps immutable checkpoints/step_<global_step>.pt
 validation_every_n_epochs: 1
 max_train_steps: 1000
 max_validation_batches: null
 max_validation_samples: 8192
 max_skip_logs_per_source: 32
 
-# Legacy Rust/Burn loader buffers. Kept here so config readers see intended defaults.
-# Python raw-MJAI uses its own stream/queue flags through launcher.
-buffer_games: 50000
-buffer_samples: 32768
-archive_queue_bound: 128
-num_threads: null
-
+# TensorBoard/event UX. launch_tensorboard starts a background TensorBoard process.
+# If tensorboard_port is busy, Hydra scans upward and reports the selected URL.
 tensorboard: true
+launch_tensorboard: false
+tensorboard_host: 127.0.0.1
+tensorboard_port: 6006
 
-# BC optimizer knobs. Python BC uses AdamW data-only checkpoint contract.
+# Detach Python BC learner from the terminal. Writes train.pid plus stdout/stderr logs,
+# and the CLI prints the output folder, log path, checkpoint path, watch command, and TensorBoard URL.
+background: false
+
+# Rust/Burn loader buffers. Python raw-MJAI uses launcher-owned stream defaults.
+# buffer_games: 50000
+# buffer_samples: 32768
+# archive_queue_bound: 128
+# num_threads: null
+
+# BC optimizer knobs. Python BC maps learning_rate, weight_decay, and warmup_steps.
+# min_learning_rate and grad_clip_norm are Rust/Burn-only today.
 bc:
   learning_rate: 0.00025
   min_learning_rate: 0.000001
@@ -85,8 +101,8 @@ bc:
   grad_clip_norm: 1.0
   warmup_steps: 1000
 
-# Head profile. full is normal BC baseline. policy_only is probe/experiment only.
-bc_head_profile: full
+# Rust/Burn shard experiment only. Keep full for normal runs.
+# bc_head_profile: full
 
 # Python residual profile is checkpoint-stable architecture contract.
 # mish_se = canonical SE-ResNet: Mish + GroupNorm + SE, 10 blocks, 256 hidden.
@@ -101,19 +117,16 @@ python_residual_profile: mish_se
 # Use compile_default only for smoke/preflight/short debug.
 python_variant: compile_max_autotune
 
-# Experimental backbone ablation. Keep null for canonical training.
-# Example shape if intentionally probing:
+# Rust/Burn experimental backbone ablation. Omitted for canonical Python training.
 # experimental_backbone_profile:
 #   activation: relu          # mish | silu | relu
 #   se_every_n: 999           # 1 = every block; high value = no SE for current learner
 #   norm: first_only          # both | first_only
 #   num_blocks: 6
 #   hidden_channels: 256
-experimental_backbone_profile: null
 
-# Optional supervised advanced labels.
-# Leave null for plain BC. Positive weights require labels/contracts.
-# Python default does not support ExIt/DeltaQ/belief/mixture/opponent-hand-type yet; use legacy Rust/Burn for those.
+# Optional supervised advanced labels. safety_residual can run on Python; ExIt/DeltaQ/
+# belief/mixture/opponent-hand-type require rust_burn and matching sidecars.
 advanced_loss: null
 # advanced_loss:
 #   safety_residual: 0.0
@@ -123,7 +136,7 @@ advanced_loss: null
 #   opponent_hand_type: null
 #   delta_q: null
 
-# Sidecar indexes. Required when corresponding advanced loss weight is positive.
+# Rust/Burn sidecar indexes. Leave null for plain Python BC.
 exit_sidecar_path: null
 delta_q_sidecar_path: null
 
@@ -151,5 +164,5 @@ rl: null
 # Source filters are replay identity filters. Empty = accept all.
 source_filters: {}
 
-# Nsight advisory metadata, not profiler launcher. Usually null.
-nsight_trace: null
+# Manual Nsight advisory metadata only; does not launch profiling.
+# nsight_trace: null

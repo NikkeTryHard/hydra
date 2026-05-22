@@ -472,6 +472,13 @@ where
     let mut python_oracle_critic_weight = 0.0f64;
     let mut python_safety_residual_weight = 0.0f64;
     let mut python_residual_profile = PythonResidualProfileConfig::default();
+    let mut python_log_every_steps = super::default_log_every_n_steps();
+    let mut python_keep_step_checkpoints = false;
+    let mut python_tensorboard = true;
+    let mut python_launch_tensorboard = false;
+    let mut python_tensorboard_host = super::default_tensorboard_host();
+    let mut python_tensorboard_port = super::default_tensorboard_port();
+    let mut python_background = false;
     let mut bc_backend = None;
     while let Some(arg) = pending_arg.take().or_else(|| args.next()) {
         let normalized = normalize_long_flag(&arg);
@@ -546,6 +553,28 @@ where
                     true,
                 )?;
             }
+            "--python-log-every-steps" => {
+                python_log_every_steps =
+                    parse_usize_flag_allowing_zero("--python-log-every-steps", args.next(), true)?;
+            }
+            "--python-keep-step-checkpoints" => python_keep_step_checkpoints = true,
+            "--python-no-tensorboard" => python_tensorboard = false,
+            "--python-launch-tensorboard" => python_launch_tensorboard = true,
+            "--python-tensorboard-host" => {
+                python_tensorboard_host = args
+                    .next()
+                    .ok_or_else(|| "missing value for --python-tensorboard-host".to_string())?;
+            }
+            "--python-tensorboard-port" => {
+                let value = parse_usize_flag_allowing_zero(
+                    "--python-tensorboard-port",
+                    args.next(),
+                    false,
+                )?;
+                python_tensorboard_port = u16::try_from(value)
+                    .map_err(|_| "--python-tensorboard-port must be <= 65535".to_string())?;
+            }
+            "--python-background" => python_background = true,
             "--python-compile-fullgraph-check" => python_compile_fullgraph_check = true,
             "--python-w-oracle-critic" => {
                 python_oracle_critic_weight =
@@ -1091,6 +1120,15 @@ where
             checkpoint_out: python_checkpoint_out.clone(),
             resume: python_resume.clone(),
             checkpoint_every_steps: python_checkpoint_every_steps,
+            log_every_steps: python_log_every_steps,
+            keep_step_checkpoints: python_keep_step_checkpoints,
+            tensorboard: python_tensorboard,
+            launch_tensorboard: python_launch_tensorboard,
+            tensorboard_host: python_tensorboard_host.clone(),
+            tensorboard_port: python_tensorboard_port,
+            background: python_background,
+            learning_rate: super::default_bc_learning_rate(),
+            weight_decay: f64::from(super::default_bc_weight_decay()),
             compile_fullgraph_check: python_compile_fullgraph_check,
             oracle_critic_weight: python_oracle_critic_weight,
             safety_residual_weight: python_safety_residual_weight,
@@ -1100,6 +1138,13 @@ where
             || python_checkpoint_out.is_some()
             || python_resume.is_some()
             || python_checkpoint_every_steps != 0
+            || python_log_every_steps != super::default_log_every_n_steps()
+            || python_keep_step_checkpoints
+            || !python_tensorboard
+            || python_launch_tensorboard
+            || python_tensorboard_host != super::default_tensorboard_host()
+            || python_tensorboard_port != super::default_tensorboard_port()
+            || python_background
             || python_compile_fullgraph_check
             || python_variant != PythonLearnerVariant::default()
             || python_warmup_steps != 10

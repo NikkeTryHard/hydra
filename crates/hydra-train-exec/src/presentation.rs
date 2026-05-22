@@ -40,11 +40,7 @@ pub struct BcHyperparamSummaryInput {
 /// Builds an indicatif progress bar using the training CLI defaults.
 pub fn make_bar(len: u64, template: &str) -> Result<ProgressBar, String> {
     let pb = ProgressBar::new(len);
-    if std::env::var_os("HYDRA_BENCHMARK_QUIET").is_some() {
-        pb.set_draw_target(ProgressDrawTarget::hidden());
-    } else {
-        pb.set_draw_target(ProgressDrawTarget::stdout());
-    }
+    pb.set_draw_target(ProgressDrawTarget::hidden());
     let style = ProgressStyle::with_template(template)
         .map_err(|err| format!("failed to build progress style: {err}"))?
         .progress_chars("=> ");
@@ -55,11 +51,7 @@ pub fn make_bar(len: u64, template: &str) -> Result<ProgressBar, String> {
 /// Builds an indicatif spinner using the training CLI defaults.
 pub fn make_spinner(template: &str) -> Result<ProgressBar, String> {
     let pb = ProgressBar::new_spinner();
-    if std::env::var_os("HYDRA_BENCHMARK_QUIET").is_some() {
-        pb.set_draw_target(ProgressDrawTarget::hidden());
-    } else {
-        pb.set_draw_target(ProgressDrawTarget::stdout());
-    }
+    pb.set_draw_target(ProgressDrawTarget::hidden());
     let style = ProgressStyle::with_template(template)
         .map_err(|err| format!("failed to build spinner style: {err}"))?
         .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ");

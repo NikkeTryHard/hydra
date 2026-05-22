@@ -60,17 +60,38 @@ fn run() -> Result<(), String> {
     if let Some(python_learner) = cli.python_learner.as_ref() {
         hydra_train_exec::gpu_config::apply_gpu_performance_flags(&python_learner.device);
         let report = hydra_train_exec::python_learner::run_python_learner(python_learner)?;
-        println!(
-            "Python learner complete: samples/s={:.2} global_step={} result={} checkpoint={}",
-            report.samples_per_second,
-            report.global_step,
-            report.result_path.display(),
-            report
-                .checkpoint_path
-                .as_ref()
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|| "none".to_string())
-        );
+        if let Some(pid) = report.pid {
+            println!(
+                "Python learner running in background: pid={} output={} logs={} checkpoint={} tensorboard={}",
+                pid,
+                python_learner.output_dir.display(),
+                report.log_dir.display(),
+                report
+                    .checkpoint_path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "none".to_string()),
+                report.tensorboard_url.as_deref().unwrap_or("disabled")
+            );
+            println!(
+                "watch logs: tail -f {}",
+                report.log_dir.join("train_steps.jsonl").display()
+            );
+        } else {
+            println!(
+                "Python learner complete: samples/s={:.2} global_step={} result={} checkpoint={} logs={} tensorboard={}",
+                report.samples_per_second,
+                report.global_step,
+                report.result_path.display(),
+                report
+                    .checkpoint_path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "none".to_string()),
+                report.log_dir.display(),
+                report.tensorboard_url.as_deref().unwrap_or("disabled")
+            );
+        }
         return Ok(());
     }
     let config_path = cli.config_path.as_deref().ok_or_else(|| {
@@ -84,17 +105,38 @@ fn run() -> Result<(), String> {
         let python_learner = python_options_from_config(&config)?;
         hydra_train_exec::gpu_config::apply_gpu_performance_flags(&python_learner.device);
         let report = hydra_train_exec::python_learner::run_python_learner(&python_learner)?;
-        println!(
-            "Python BC learner complete: samples/s={:.2} global_step={} result={} checkpoint={}",
-            report.samples_per_second,
-            report.global_step,
-            report.result_path.display(),
-            report
-                .checkpoint_path
-                .as_ref()
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|| "none".to_string())
-        );
+        if let Some(pid) = report.pid {
+            println!(
+                "Python BC learner running in background: pid={} output={} logs={} checkpoint={} tensorboard={}",
+                pid,
+                python_learner.output_dir.display(),
+                report.log_dir.display(),
+                report
+                    .checkpoint_path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "none".to_string()),
+                report.tensorboard_url.as_deref().unwrap_or("disabled")
+            );
+            println!(
+                "watch logs: tail -f {}",
+                report.log_dir.join("train_steps.jsonl").display()
+            );
+        } else {
+            println!(
+                "Python BC learner complete: samples/s={:.2} global_step={} result={} checkpoint={} logs={} tensorboard={}",
+                report.samples_per_second,
+                report.global_step,
+                report.result_path.display(),
+                report
+                    .checkpoint_path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "none".to_string()),
+                report.log_dir.display(),
+                report.tensorboard_url.as_deref().unwrap_or("disabled")
+            );
+        }
         return Ok(());
     }
     hydra_train_exec::gpu_config::apply_gpu_performance_flags(&config.device);
@@ -181,11 +223,20 @@ fn python_options_from_config(
         microbatch_size: config.microbatch_size.unwrap_or(1024),
         variant: config.python_variant,
         residual_profile: config.python_residual_profile,
-        warmup_steps: 10,
+        warmup_steps: config.bc.warmup_steps,
         steps: config.max_train_steps.unwrap_or(30),
         checkpoint_out: None,
         resume: config.resume_checkpoint.clone(),
         checkpoint_every_steps: config.checkpoint_every_n_steps,
+        log_every_steps: config.log_every_n_steps,
+        keep_step_checkpoints: config.keep_step_checkpoints,
+        tensorboard: config.tensorboard,
+        launch_tensorboard: config.launch_tensorboard,
+        tensorboard_host: config.tensorboard_host.clone(),
+        tensorboard_port: config.tensorboard_port,
+        background: config.background,
+        learning_rate: config.bc.learning_rate,
+        weight_decay: f64::from(config.bc.weight_decay),
         compile_fullgraph_check: false,
         oracle_critic_weight: 0.0,
         safety_residual_weight: advanced
