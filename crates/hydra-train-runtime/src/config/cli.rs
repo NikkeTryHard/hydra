@@ -462,7 +462,7 @@ where
     let mut python_learner_enabled = false;
     let mut python_output_dir = None;
     let mut python_device = default_device();
-    let mut python_variant = PythonLearnerVariant::EagerBf16;
+    let mut python_variant = PythonLearnerVariant::default();
     let mut python_warmup_steps = 10usize;
     let mut python_steps = 30usize;
     let mut python_checkpoint_out = None;
@@ -1101,7 +1101,7 @@ where
             || python_resume.is_some()
             || python_checkpoint_every_steps != 0
             || python_compile_fullgraph_check
-            || python_variant != PythonLearnerVariant::EagerBf16
+            || python_variant != PythonLearnerVariant::default()
             || python_warmup_steps != 10
             || python_steps != 30
             || python_oracle_critic_weight != 0.0

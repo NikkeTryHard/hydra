@@ -51,13 +51,13 @@ cd hydra
 
 ### 4. Let Pixi install the environment
 
-first Pixi command downloads pinned tools and Python packages. This can be large because PyTorch/libtorch is included.
+First Pixi command downloads pinned tools and Python packages. This can be large because PyTorch/libtorch is included.
 
 ```bash
 pixi run torch-check
 ```
 
-Expected output includes PyTorch `2.9.0` and whether CUDA is visible.
+Expected output includes default-env PyTorch version, CUDA visibility, and libtorch path. Production Python BC runs through separate `py-train` env with torch `2.11.0+cu128`.
 
 ### 5. Compile
 
@@ -119,10 +119,10 @@ Run default BC shard training through Rust launcher. Rust validates CLI/manifest
 
 ```bash
 pixi run cargo run --quiet --package hydra-train --features training --bin train -- \
-  --bc-shards-manifest output/bc-feed-bench-shards-100k/bc_shards_manifest.json \
-  --output-dir /home/cachybtw/tmp/hydra-py-default-bc-smoke \
+  --bc-shards-manifest path/to/bc_shards_manifest.json \
+  --output-dir path/to/output-dir \
   --device cuda:0 \
-  --python-variant compile_default \
+  --python-variant compile_max_autotune \
   --python-warmup 1 \
   --python-steps 3 \
   --python-compile-fullgraph-check
@@ -137,7 +137,8 @@ pixi run cargo run -p hydra-train --no-default-features --features training --bi
 Notes:
 
 - Config examples and operator details live in [`docs/TRAINING_RUNBOOK.md`](docs/TRAINING_RUNBOOK.md).
-- For plain BC with `bc_shards_manifest_path`, default backend is Python/PyTorch. Rust still owns replay parsing, shard building, manifest validation, and orchestration; Python owns BC model/loss/optimizer/compile/checkpoint.
+- Plain BC with `bc_shards_manifest_path` trains compact shards. Without shard manifest, YAML `data_dir` streams raw MJAI through Python raw-MJAI input; default transport is pinned PyO3 with stdout fallback.
+- Default plain-BC backend is Python/PyTorch. Rust owns replay parsing, shard building, manifest validation, and orchestration; Python owns BC model/loss/optimizer/compile/checkpoint.
 - Use `bc_backend: rust_burn` or CLI `--bc-backend rust-burn` only for legacy Rust/Burn debugging or advanced labels not supported by Python default yet: ExIt, DeltaQ, belief, mixture, opponent hand type.
 - `device: cpu` works for CPU Rust paths. Default Python BC expects CUDA for throughput.
 - CUDA graph support is explicit and compile-checked with:
@@ -150,18 +151,22 @@ pixi run check-cuda-graph
 
 | Command | What it does |
 |---|---|
-| `pixi run torch-check` | Print pinned PyTorch version, CUDA availability, and libtorch path |
+| `pixi run torch-check` | Print default-env PyTorch version, CUDA availability, and libtorch path |
 | `pixi run check-lib` | Fast compile check for workspace libraries |
 | `pixi run check` | Default compile check for no-heavy workspace targets |
 | `pixi run build` | Fast default workspace build |
+| `pixi run build-release` / `pixi run build-fast` | Release workspace build |
 | `pixi run test-lib` | Fast workspace library tests |
 | `pixi run test-fast` | Fast workspace test targets without benches/examples |
-| `pixi run test` | Default workspace tests through nextest |
-| `pixi run lint` | Formatting, clippy, and project lint checks |
-| `pixi run check-training` | Compile explicit CPU LibTorch training path |
+| `pixi run test` | Default workspace tests through nextest + Python tests |
+| `pixi run lint` | Rust lint, Python lint, and Python typecheck |
+| `pixi run quality` | Format check + lint + tests |
+| `pixi run check-training` | Compile training CLI path |
 | `pixi run check-cuda-graph` | Compile explicit CUDA graph path |
-| `pixi run build-dist` | Fat-LTO final artifact build |
-
+| `pixi run python-bc-train -- ...` | Run stable Python BC learner (`py-train`, torch `2.11.0+cu128`) |
+| `pixi run python-bc-train-cu126 -- ...` | Run torch `2.12.0+cu126` target-machine probe |
+| `pixi run python-bc-train-nightly -- ...` | Run torch `2.12` nightly cu128 local probe |
+| `pixi run torch-check-cu126` / `pixi run torch-check-nightly` | Print probe-env Torch versions |
 Use Pixi-owned Cargo for focused Rust commands:
 
 ```bash
@@ -177,12 +182,13 @@ Avoid direct system `cargo` for normal Hydra work. It can pick host PyTorch/libt
 |---|---|
 | `crates/hydra-engine` | Riichi rules engine |
 | `crates/hydra-runtime-types` | Shared action/tile/runtime types |
-| `crates/hydra-encoder` | Observation encoders |
 | `crates/hydra-core` | Public runtime facade, simulator, action/tile API, seeding |
-| `crates/hydra-replay-loader` | MJAI replay loading and sample conversion |
-| `crates/hydra-bc-shards` | Behavior-cloning shard format |
-| `crates/hydra-model` | Burn neural model components |
-| `crates/hydra-train-*` | Training config, algorithms, execution, and user binaries |
+| `crates/hydra-encoder`, `crates/hydra-safety`, `crates/hydra-belief-search` | Encoder, safety, belief/search impl crates |
+| `crates/hydra-data-core`, `crates/hydra-replay-loader`, `crates/hydra-replay-sidecar`, `crates/hydra-sample-cache` | Sample DTOs, replay loading, sidecars, parsed cache |
+| `crates/hydra-bc-shards`, `crates/hydra-raw-mjai-ffi` | BC shard format and raw-MJAI pinned PyO3 bridge |
+| `crates/hydra-model`, `crates/hydra-train-algo`, `crates/hydra-train-types` | Model/loss/coordination types |
+| `crates/hydra-train-runtime`, `crates/hydra-train-exec`, `crates/hydra-train` | Training config/contracts, execution, user binaries |
+| `python/hydra_learner` | Default Python/PyTorch BC learner |
 | `docs/` | Current user/operator docs |
 | `research/` | Research notes, design docs, evidence archive |
 | `docker/train/` | Container/Kaggle/operator packaging docs |

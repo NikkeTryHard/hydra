@@ -34,13 +34,15 @@ Hydra = open-source Riichi Mahjong AI. Target LuckyJ-level strength and reproduc
 - Old `85x34` = historical baseline-prefix channels `0..84`, not live full encoder.
 - Action space = fixed 46 actions.
 - Legal action mask shape = `[bool; 46]`.
-- Riichi and kan use two-phase handling.
+- Riichi is two-phase. Kan uses compact bridge action `42`: normal phase maps to `Ankan`, other phases to `Daiminkan`; inbound kan variants collapse to `42`.
 - Tile kinds = `0..33`; aka/red fives remain distinct in 136-format/action surfaces where required.
+- Hydra compact action facade is 4-player; `hydra-engine` sanma/Kita support is engine-level and not represented in 46-action bridge.
 - Suit augmentation = exactly 6 numbered-suit permutations; honors unchanged.
 - BC selected-runtime authority: fresh run config-derived; epoch-boundary resume may reuse matching selected-runtime tuple; partial-epoch resume requires identical runtime.
 - BC loader-runtime authority stays config-derived; matching preflight cache does not override checkpoint/runtime contract.
 - BC CUDA LibTorch runs default to BF16 AMP when `precision_mode` omitted; explicit `fp32` stays FP32; CPU omission stays FP32; RL/DeltaQ BF16 hard-gated.
 - CUDA graph feature ships pinned staging/preallocated tensors/probes; production graph replay remains off/probe-only until Burn optimizer gradient contract permits it.
+- Plain BC default backend is Python/PyTorch. It trains compact BC shards from `bc_shards_manifest_path` or streams raw MJAI from `data_dir`; raw transport defaults to pinned PyO3 with stdout fallback.
 
 ## Crate ownership
 
@@ -108,12 +110,24 @@ pixi run test-python-cuda  # only when task touches CUDA/compile path
 ```
 
 Python gates are mandatory for Python changes. Tool deps/config live in `pyproject.toml`; do not add parallel Python tool config files unless tool requires it.
+Pixi task surface stays small. Default env owns top-level tasks; probe envs (`py-train`, `py-train-torch212-cu126`, `py-train-torch212-nightly-cu128`) intentionally expose no duplicate task names. Use top-level aliases:
+
+```bash
+pixi run python-bc-train          # stable py-train torch 2.11 cu128
+pixi run python-bc-train-cu126    # torch 2.12 cu126 target-machine probe
+pixi run python-bc-train-nightly  # torch 2.12 nightly cu128 local probe
+pixi run torch-check
+pixi run torch-check-cu126
+pixi run torch-check-nightly
+```
+
+Removed duplicate/noisy aliases (`check-all-targets`, `build-dist`, `test-release`, `timings-*`, `nextest-list*`, direct `rustc-wrapper`) unless needed again by real operator workflow.
 
 ## Pixi/libtorch/tooling contract
 
 - Single default Pixi env covers CPU/GPU. Hydra config selects `device: cpu` or `device: cuda:0`.
 - Current Burn LibTorch stack uses `burn-tch 0.21` -> `tch 0.22` -> `torch-sys 0.22`; requires exact PyTorch/libtorch `2.9.0`.
-- Required env/linker settings live in `pixi.toml`: `LIBTORCH_USE_PYTORCH`, `PROTOC`, `LD_LIBRARY_PATH`, `CUDA_HOME`, `CUDA_PATH`, `RUSTC_WRAPPER`, `SCCACHE_DIR`, Pixi clang/mold, conda sysroot `libc_nonshared.a`.
+- Required env/linker settings live in `pyproject.toml` Pixi activation: `LIBTORCH_USE_PYTORCH`, `PROTOC`, `LD_LIBRARY_PATH`, `CUDA_HOME`, `CUDA_PATH`, `RUSTC_WRAPPER`, `SCCACHE_DIR`, Pixi clang/mold, conda sysroot `libc_nonshared.a`.
 - Do not hardcode `/usr/bin/clang`, `/usr/bin/mold`, user-local tool paths, or local CUDA paths unless Pixi link failure is proven and documented.
 - `.cargo/config.toml` is local-only/gitignored.
 - `Cargo.lock` stays committed.
@@ -122,7 +136,7 @@ Python gates are mandatory for Python changes. Tool deps/config live in `pyproje
 ## Burn dependency decisions
 
 - Burn stack is patched locally in `third_party/burn`: `burn`, `burn-autodiff`, `burn-backend`, `burn-tch`, `burn-flex`, `burn-ndarray`, `burn-optim` at `0.21.0`.
-- Current default BC training backend is Python/PyTorch through Rust launcher (`py-train`, torch `2.11.0+cu128`). Rust/Burn remains legacy/reference path for advanced modes and debugging; keep Burn stack patched for compatibility.
+- Current default plain-BC backend is Python/PyTorch through Rust launcher (`py-train`, torch `2.11.0+cu128`). It supports compact BC shards and raw MJAI (`pinned_pyo3` default, `stdout` fallback). Probe env `py-train-torch212-cu126` pins torch `2.12.0+cu126` + torchvision `0.27.0+cu126` for CUDA 12.6 machines; local RTX 5070 `sm_120` cannot execute cu126 wheels, so throughput must be measured on target hardware. Rust/Burn remains legacy/reference path for advanced modes and debugging; keep Burn stack patched for compatibility.
 - keep optimizer `.bin` contract unless full resume parity proof passes.
 - Keep Burn Adam for legacy Rust/Burn path. Python BC uses AdamW in its data-only checkpoint contract. AdamW/AMSGrad/Adan remain Rust/Burn fresh-run experiments only; Muon requires parameter groups and is unsafe for global Hydra params; LBFGS does not fit streaming BC/RL. None fixes CUDA graph replay because Burn `GradientsParams` + module mapping remains blocker.
 - For profiling, keep Hydra timings + NVTX + Nsight Systems/Compute.
@@ -130,7 +144,7 @@ Python gates are mandatory for Python changes. Tool deps/config live in `pyproje
 
 ## Python/PyTorch backend rules
 
-- Python is default plain BC shard training backend. Rust remains source of truth for replay/shards/runtime contracts, action count, legal mask width, encoder shape, CLI orchestration, and checkpoint/runtime metadata validation.
+- Python is default plain BC training backend for compact shards and raw MJAI. Rust remains source of truth for replay/shards/raw stream/runtime contracts, action count, legal mask width, encoder shape, CLI orchestration, and checkpoint/runtime metadata validation.
 - Use Python for BC model/loss/optimizer/AMP/`torch.compile`/profiler/checkpoint. Keep Rust data/orchestration contracts narrow and explicit. ExIt/DeltaQ/belief/mixture/opponent-hand-type are not supported in Python default yet; use legacy Rust/Burn only for those advanced modes or debugging.
 - Ruff format/check, Pyrefly, and pytest are required gates for Python code. Do not defer tool setup; Python tech debt compounds quickly.
 - Ruff is only formatter/import sorter/linter unless project policy changes. Do not add Black/isort/Flake8 stacks beside Ruff.
@@ -215,20 +229,17 @@ Useful invariants for runtime/data changes:
 
 - Default training/perf runs use `device: cuda:0` (or `HYDRA_TRAIN_DEVICE=cuda:0`) when GPU exists. CPU train is super slow; use CPU only for explicit CPU-debug/compat checks. GPU accelerates model forward/backward/optimizer/H2D; raw replay, BC-shard decode, sample collation, and materialization still run on CPU workers.
 
-- Python BC default on this machine: `batch=1024`, `microbatch=1024`, `--python-variant compile_default`, `device cuda:0`. Preflight may show nearby shapes (`1152`, `1216`) slightly higher; treat sub-1% differences as noise. From now on choose smallest candidate within noise margin instead of raw max, unless repeated long runs prove material gain.
+- Preferred Python BC production training/perf shape on this machine: raw MJAI through pinned PyO3, `batch=2048`, `microbatch=1024`, `--python-variant compile_max_autotune`, default `python_residual_profile: mish_se`, `device cuda:0`. `compile_max_autotune` is canonical for long same-shape production runs because it changes TorchInductor kernel choice only, not model math. Use `compile_default` only for smoke/short debug where compile latency dominates. Treat sub-1% candidate differences as noise; choose smallest candidate within noise margin unless repeated long runs prove material gain.
 
 ### CUDA profiling quick start
 
 - Evidence first. Do not optimize BC CUDA from kernel names alone; attribute by Hydra stage/source first.
-- Preferred Python BC baseline: raw MJAI dataset folder through pinned PyO3 stream, not prebuilt BC shards. Use `/home/cachybtw/Downloads/dataset_bundle/tenhou-houou-mjai-2025`; `--raw-mjai-transport pinned_pyo3`; `batch=2048`; `microbatch=1024`; `compile_default`; CUDA BF16 autocast. BC-shard timing is experimental/diagnostic only, not primary baseline.
-- Normal timing: run train once without Nsight, then `extract_timing_metrics --step-log <out>/bc/step_log.jsonl --skip-initial-rows 2 --format json`. Compare H2D, forward, loss, backward, optimizer, metric readback.
-- NVTX Nsight: set `HYDRA_NVTX=1`; if NVTX ranges missing, expose Pixi NVTX lib: `LD_LIBRARY_PATH=.pixi/envs/default/lib/python3.12/site-packages/nvidia/nvtx/lib:$LD_LIBRARY_PATH`.
-- Useful reports: `nsys stats --report nvtx_kern_sum:base ... --timeunit=us`, `nsys stats --report cuda_api_gpu_sum:base ... --timeunit=us`, and `nsys export --type sqlite`.
-- PyTorch profiler shim: build with `--features torch-profiler`; gate by env `HYDRA_TORCH_PROFILER=<trace.json>`, `HYDRA_TORCH_PROFILER_START_STEP=N`, `HYDRA_TORCH_PROFILER_STOP_STEP=N`, optional `HYDRA_TORCH_PROFILER_MODE=kineto|nvtx`. Off by default; use only for focused probes.
-- Nsight on `compile_default` can time out before capture starts because `cudaProfiler.start()` happens after TorchInductor compile/warmup. For compile profiling, avoid full-process capture; use `--cuda-profiler-range --profile-coarse`, low `--steps`, pre-warmed shapes when possible, and `--capture-range=cudaProfilerApi --capture-range-end=stop --wait=primary`. If it still stalls, profile `eager_bf16` for kernel taxonomy and use non-Nsight JSON timing for compiled throughput.
-- Keep Nsight captures tiny: `warmup=1`, `steps=1..2`, fixed `batch=2048`, `microbatch=1024`, `blocks=10`, exact raw MJAI data path, output under `/home/cachybtw/tmp`; immediately export to SQLite and query top kernels/memcpy/NVTX instead of opening large reports.
-- Current raw-MJAI Python bottleneck evidence: input/H2D ~5ms per 2048 batch; backbone GPU compute dominates. Eager Nsight top buckets were activation/elementwise (~37ms/1318 calls), layout transforms (~13ms/384 calls), conv fprop/dgrad/internal gradients (~25ms), strict GroupNorm (~5ms), H2D ~4ms. Batch scaling to 4096/8192 raised sampled util but reduced throughput; do not assume bigger batch fixes occupancy.
-- Last measured backward attribution: Mish/SE/autograd elementwise largest, then backbone conv backward, GroupNorm backward, then layout transforms. `policy_only` did not reduce backward; heads/loss were not owner. Next lane from that evidence: backbone backward design/fusion, not optimizer.
+- Preferred Python BC baseline: raw MJAI dataset folder through pinned PyO3 stream, not prebuilt BC shards. Use `/home/cachybtw/Downloads/dataset_bundle/tenhou-houou-mjai-2025`; `--raw-mjai-transport pinned_pyo3`; `batch=2048`; `microbatch=1024`; `compile_max_autotune`; default `mish_se`; CUDA BF16 autocast. BC-shard timing is experimental/diagnostic only, not primary baseline.
+- Normal timing: run Python BC once without profiler. Read JSON summary fields: `mean_step_ms`, `samples_per_s`, `mean_fwd_loss_ms`, `mean_backward_ms`, `mean_optimizer_ms`, `mean_fetch_decode_ms`, `mean_h2d_wall_ms`. Compare data/H2D/forward+loss/backward/optimizer before any kernel-level claim.
+- Preferred focused profiler for Python BC: use built-in scheduled `torch.profiler`, not Nsight. Keep real workload shape (`raw_mjai pinned_pyo3`, `batch=2048`, `microbatch=1024`, `warmup=10`, `steps=200`) and capture one steady measured step, e.g. `--torch-profiler-trace /home/cachybtw/tmp/hydra-profile/trace.json --torch-profiler-start-step 100 --torch-profiler-stop-step 101`. This preserves compile/warmup/queue behavior and avoids Nsight full-process slowdown.
+- Parse profiler trace by GPU category/name buckets. Attribute to Hydra stage with JSON timing first; then use kernels to split dominant stage (conv fprop/dgrad/wgrad, Mish+GroupNorm, GroupNorm, memcpy, optimizer, loss/head). Do not optimize from raw kernel names alone.
+- Nsight is fallback only for CUDA API/NVTX questions that `torch.profiler` cannot answer. Avoid full-process `nsys` on `compile_default`: it can time out before capture and perturb workload. If forced, use `--capture-range=cudaProfilerApi --capture-range-end=stop --wait=primary`, no sampling, tiny active range, then export/query reports immediately.
+- Current raw-MJAI Python bottleneck evidence (2026-05-22, RTX 5070, `compile_default`, `batch=2048`, `microbatch=1024`, 200 steps, one steady-step torch trace): baseline `~40.3k samples/s`, `~50.9ms/step`; fetch/decode `~0.002ms`, H2D `~0.10ms`; forward+loss `~15.0ms`, backward `~34.7ms`, optimizer `~0.75ms`. `compile_max_autotune` with same `mish_se` measured `~42.7k samples/s`, `~47.9ms/step` and is canonical for production training. Steady-step GPU buckets: fused Mish+GroupNorm `~13.9ms`, conv weight-grad `~9.5ms`, conv data-grad `~8.1ms`, conv forward `~8.1ms`, GroupNorm `~4.9ms`, H2D memcpy `~1.1ms`, optimizer `~0.4ms`, loss/head `~0.05ms`. Biggest owner: backbone backward/activation-normalization, not data/H2D/optimizer/heads.
 
 ### Local throughput baseline
 
@@ -243,7 +254,7 @@ pixi run -e py-train python-bc-train -- \
   --raw-mjai-prefetch-batches 2 \
   --raw-mjai-queue-bound 8 \
   --raw-mjai-max-games 5000 \
-  --variant compile_default \
+  --variant compile_max_autotune \
   --batch 2048 \
   --microbatch 1024 \
   --warmup 10 \
@@ -251,7 +262,9 @@ pixi run -e py-train python-bc-train -- \
   --out /home/cachybtw/tmp/hydra-py-pinned-baseline/result.json \
   --quiet
 ```
-- 2026-05-22 RTX 5070 Python pinned PyO3 refs (`compile_default`, `batch=2048`, `microbatch=1024`, `warmup=10`, `steps=200`): GPU train `~41.7k samples/s`; end-to-end `~41.6k samples/s`; mean step `~49.1ms`; fetch/decode `~0.002ms`; H2D wall `~0.118ms`; compile `~1.69s`; 817 loaded games, 2 skipped. Treat driver/thermal/codegen drift as noise unless repeated.
+- 2026-05-22 RTX 5070 Python pinned PyO3 refs (`compile_max_autotune`, `mish_se`, `batch=2048`, `microbatch=1024`, `warmup=10`, `steps=200`): GPU train `~42.7k samples/s`; end-to-end `~42.6k samples/s`; mean step `~47.9ms`; fetch/decode `~0.003ms`; H2D wall `~0.12ms`; compile/autotune overhead varies by cache/run and is larger than `compile_default`. Treat driver/thermal/codegen drift as noise unless repeated.
+- Torch 2.12 cu126 probe env: `pixi run -e py-train-torch212-cu126 python-bc-train -- ...` or `pixi run -e py-train-torch212-cu126 torch-check`. Exact pins: `torch==2.12.0+cu126`, `torchvision==0.27.0+cu126`, index `https://download.pytorch.org/whl/cu126`. Local RTX 5070 cannot benchmark it because cu126 wheels support up to `sm_90`, not `sm_120`; benchmark on CUDA 12.6 target machine with same raw-MJAI command.
+- Torch 2.12 nightly cu128 local probe env: `py-train-torch212-nightly-cu128`, pins `torch==2.12.0.dev20260329+cu128`, `torchvision==0.26.0.dev20260329+cu128`. Measured on RTX 5070 same raw-MJAI run: `~43.9k samples/s`, `~46.6ms/step`; `TORCHINDUCTOR_MAX_AUTOTUNE_DEFER_LAYOUT_FREEZING=1` slightly best and avoids huge compile cost in this run (`~1.7s` vs `~50.7s`). Nightly is probe-only, not production default.
 - BC-shard runs are experimental/diagnostic only. They are useful for shard reader/materialization checks, not preferred training speed baseline.
 Hydra binaries quick use:
 

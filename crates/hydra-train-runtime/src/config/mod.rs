@@ -372,9 +372,9 @@ impl BcBackend {
 pub enum PythonLearnerVariant {
     EagerFp32,
     EagerBf16,
-    #[default]
     CompileDefault,
     CompileReduceOverhead,
+    #[default]
     CompileMaxAutotune,
 }
 

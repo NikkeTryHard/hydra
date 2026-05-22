@@ -58,7 +58,7 @@ fn python_variants_serde_and_string_contract_match() {
     ];
     assert_eq!(
         PythonLearnerVariant::default(),
-        PythonLearnerVariant::CompileDefault
+        PythonLearnerVariant::CompileMaxAutotune
     );
     for (text, variant) in cases {
         let parsed: PythonLearnerVariant =
@@ -358,6 +358,22 @@ fn parse_args_accepts_bc_shards_manifest_as_python_default() {
         std::path::PathBuf::from("output/shards/manifest.json")
     );
     assert_eq!(python.variant, PythonLearnerVariant::CompileDefault);
+}
+
+#[test]
+fn parse_args_bc_shards_manifest_defaults_to_production_python_variant() {
+    let cli = parse_args(vec![
+        "train".to_string(),
+        "--bc-shards-manifest".to_string(),
+        "output/shards/manifest.json".to_string(),
+        "--output-dir".to_string(),
+        "out/python".to_string(),
+    ])
+    .expect("bc shard manifest should default to python learner");
+    let python = cli
+        .python_learner
+        .expect("python options should be present");
+    assert_eq!(python.variant, PythonLearnerVariant::CompileMaxAutotune);
 }
 
 #[test]

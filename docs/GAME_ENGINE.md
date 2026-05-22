@@ -98,9 +98,9 @@ Hydra uses fixed 46-action output space. Every decision point maps to one action
 | 44 | Ryuukyoku | Abortive draw declaration (kyuushu kyuuhai, etc.) |
 | 45 | Pass | Decline call opportunity |
 
-### Two-Phase Actions
-
-Riichi + kan use two-phase selection. Model first outputs phase-1 action (37 for riichi, 42 for kan). Then game engine presents legal tile choices and model picks specific tile to discard (riichi) or specific kan to declare. Keeps action space compact at 46 while supporting full combinatorial range.
+### Two-Phase / Compact Actions
+Riichi uses two-phase selection: model declares action 37, then phase-select mask limits follow-up to legal discard actions. Kan is compact in current bridge: Hydra action 42 maps to `Ankan` in `ActionPhase::Normal`, otherwise `Daiminkan`; inbound riichienv `Daiminkan | Ankan | Kakan` collapse to 42. Specific kan tile/type choice stays rules-engine/context concern, not extra Hydra action IDs.
+Hydra compact action facade is 4-player. `riichienv-core`/`hydra-engine` supports sanma/Kita, but `hydra-core::action` does not represent `ActionType::Kita`; conversion skips/errors instead of assigning 46-action ID.
 
 ### HydraAction
 
@@ -114,7 +114,7 @@ It validates range 0-45 on construction via `HydraAction::new(id) -> Option<Self
 
 ### Legal Action Mask
 
-`build_legal_action_mask` takes current riichienv game state, returns `[bool; 46]`. Each slot = `true` if action legal now. Training pipeline uses this mask to zero illegal actions before softmax, so model never selects impossible move.
+`build_legal_mask(legal_actions: &[Action], phase: ActionPhase) -> [bool; 46]` converts current riichienv legal actions into Hydra compact mask. Each slot = `true` if action legal now. Phase-select states restrict follow-up to discard actions. Training pipeline uses this mask to zero illegal actions before softmax.
 
 ## Observation Encoder (`hydra-encoder::encoder`, via `hydra_core::encoder`)
 
@@ -239,9 +239,11 @@ pub struct BatchConfig {
     pub num_games: usize,
     pub base_seed: Option<u64>,
     pub num_threads: Option<usize>,  // None = rayon default (num CPUs)
-    pub game_mode: u8,               // 0 = hanchan, 1 = east only
+    pub game_mode: u8,               // 0 = hanchan, 1 = east only, 2 = single round
 }
 ```
+
+`hydra-core::BatchConfig` documents 4-player modes `0..2`. `hydra-engine::GameStateVariant` routes `game_mode >= 3` to 3-player engine modes: `3 = single`, `4 = east`, `5 = half`. Hydra compact 46-action bridge remains 4-player; sanma/Kita is engine-level surface.
 
 Each game derives seed as `base_seed + game_index`. Two runs with same `BatchConfig` produce identical results regardless of thread scheduling.
 
@@ -253,9 +255,6 @@ Each game derives seed as `base_seed + game_index`. Two runs with same `BatchCon
 
 `run_batch_simple` is free fn using rayon global thread pool instead of dedicated one. Easiest entry point for scripts + benchmarks that need no custom pool config.
 
-### Planned: Pre-Allocated Game Pools
-
-Current each game in batch allocates fresh `GameState`. Future opt: pool pre-allocated game states and recycle between batches, removing per-game allocation overhead during high-throughput self-play.
 
 ## Seeding (`hydra-core::seeding`)
 

@@ -9,7 +9,7 @@ import math
 import sys
 import time
 from collections.abc import Callable
-from contextlib import nullcontext
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import cast, override
@@ -68,6 +68,7 @@ from hydra_learner.raw_mjai_stream import (
 from hydra_learner.shards import BcShardDataset, ManifestSummary, PolicyBatch, validate_manifest
 
 VARIANTS = ("eager_fp32", "eager_bf16", "compile_default", "compile_reduce_overhead", "compile_max_autotune")
+PYTHON_VARIANT_DEFAULT = "compile_max_autotune"
 LOSS_MODES = ("policy_only", "full_base")
 COMPILED_LOSS_MODES = ("policy_only", "full_base")
 ADAMW_FLAG_MODES = ("auto", "on", "off")
@@ -586,6 +587,9 @@ def json_config(args: argparse.Namespace, effective_raw_mjai_max_samples: int | 
         "steps": args.steps,
         "profile": args.profile,
         "profile_coarse": args.profile_coarse,
+        "torch_profiler_trace": str(args.torch_profiler_trace) if args.torch_profiler_trace else None,
+        "torch_profiler_start_step": args.torch_profiler_start_step,
+        "torch_profiler_stop_step": args.torch_profiler_stop_step,
         "manifest": str(args.manifest) if args.manifest else None,
         "check_shard_files": args.check_shard_files,
         "lr": args.lr,
@@ -612,7 +616,7 @@ def json_config(args: argparse.Namespace, effective_raw_mjai_max_samples: int | 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--variant", choices=VARIANTS, default="eager_bf16")
+    parser.add_argument("--variant", choices=VARIANTS, default=PYTHON_VARIANT_DEFAULT)
     parser.add_argument("--loss-mode", choices=LOSS_MODES, default="full_base")
     parser.add_argument("--batch", type=int, default=2048)
     parser.add_argument("--microbatch", type=int, default=1024)
@@ -628,6 +632,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--profile", action="store_true", help="emit NVTX ranges around measured steps")
     parser.add_argument(
         "--profile-coarse", action="store_true", help="measure whole-step time only to reduce profiler overhead"
+    )
+    parser.add_argument(
+        "--torch-profiler-trace",
+        type=Path,
+        help="write a Chrome trace for a scheduled measured-step window",
+    )
+    parser.add_argument(
+        "--torch-profiler-start-step",
+        type=int,
+        default=0,
+        help="0-based measured step where torch profiler capture starts",
+    )
+    parser.add_argument(
+        "--torch-profiler-stop-step",
+        type=int,
+        default=1,
+        help="0-based measured step where torch profiler capture stops, exclusive",
     )
     parser.add_argument("--manifest", type=Path, help="train from a Hydra BC shard manifest instead of synthetic data")
     add_raw_mjai_args(parser)
@@ -675,6 +696,15 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--microbatch must be <= --batch")
     if args.actions != ACTION_SPACE:
         raise ValueError(f"--actions must equal Hydra action space {ACTION_SPACE}")
+    if args.torch_profiler_start_step < 0:
+        raise ValueError("--torch-profiler-start-step must be >= 0")
+    if args.torch_profiler_stop_step < 1:
+        raise ValueError("--torch-profiler-stop-step must be >= 1")
+    if args.torch_profiler_trace is not None:
+        if args.torch_profiler_start_step >= args.torch_profiler_stop_step:
+            raise ValueError("--torch-profiler-start-step must be < --torch-profiler-stop-step")
+        if args.torch_profiler_stop_step > args.steps:
+            raise ValueError("--torch-profiler-stop-step must be <= --steps")
 
 
 def main() -> int:
@@ -873,68 +903,97 @@ def main() -> int:
     if args.cuda_profiler_range:
         cuda_profiler.start()
 
-    stats: list[StepStats] = []
-    for i in range(args.steps):
-        if args.profile:
-            torch.cuda.nvtx.range_push(f"hydra_bc_step_{i}")
-        input_timing = InputTiming()
-        pinned_batch: PinnedPolicyBatch | None = None
-        if raw_stream is not None:
-            batch, fetch_ms = raw_stream.next_batch()
-            obs, legal, labels, targets, input_timing = tensors_from_policy_batch(batch, device, fetch_ms)
-        elif raw_pinned is not None:
-            pinned_batch, fetch_ms = raw_pinned.next_batch()
-            obs, legal, labels, targets, input_timing = tensors_from_pinned_policy_batch(pinned_batch, device, fetch_ms)
-        elif real_dataset is not None:
-            obs, legal, labels, targets, input_timing = tensors_from_real_batch(real_dataset, device)
-        targets = targets_for_compiled_loss(targets, weights)
-        stat = run_step(
-            loss_step,
-            optimizer,
-            obs,
-            targets,
-            args.microbatch,
-            autocast,
-            timed=not args.profile_coarse,
+    profiler_ctx: AbstractContextManager[torch.profiler.profile | None]
+    if args.torch_profiler_trace is None:
+        profiler_ctx = nullcontext(None)
+    else:
+        args.torch_profiler_trace.parent.mkdir(parents=True, exist_ok=True)
+        active_steps = args.torch_profiler_stop_step - args.torch_profiler_start_step
+
+        def write_trace(prof: torch.profiler.profile) -> None:
+            prof.export_chrome_trace(str(args.torch_profiler_trace))
+
+        profiler_ctx = torch.profiler.profile(
+            activities=(torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA),
+            schedule=torch.profiler.schedule(
+                wait=args.torch_profiler_start_step,
+                warmup=0,
+                active=active_steps,
+                repeat=1,
+            ),
+            on_trace_ready=write_trace,
+            record_shapes=False,
+            profile_memory=False,
+            with_stack=False,
         )
-        if real_dataset is not None or raw_stream is not None or raw_pinned is not None:
-            stat.fetch_decode_ms = input_timing.fetch_decode_ms
-            stat.h2d_wall_ms = input_timing.h2d_wall_ms
-        stats.append(stat)
-        if raw_pinned is not None:
-            assert pinned_batch is not None
-            raw_pinned.mark_inflight(pinned_batch)
-        if validation_stream is not None and args.validation_every > 0 and (i + 1) % args.validation_every == 0:
-            step_eval = []
-            for _ in range(args.validation_steps):
-                val_batch, val_fetch_ms = validation_stream.next_batch()
-                val_obs, _val_legal, _val_labels, val_targets, _val_input_timing = tensors_from_policy_batch(
-                    val_batch, device, val_fetch_ms
+
+    stats: list[StepStats] = []
+    with profiler_ctx as torch_profiler:
+        for i in range(args.steps):
+            if args.profile:
+                torch.cuda.nvtx.range_push(f"hydra_bc_step_{i}")
+            input_timing = InputTiming()
+            pinned_batch: PinnedPolicyBatch | None = None
+            if raw_stream is not None:
+                batch, fetch_ms = raw_stream.next_batch()
+                obs, legal, labels, targets, input_timing = tensors_from_policy_batch(batch, device, fetch_ms)
+            elif raw_pinned is not None:
+                pinned_batch, fetch_ms = raw_pinned.next_batch()
+                obs, legal, labels, targets, input_timing = tensors_from_pinned_policy_batch(
+                    pinned_batch, device, fetch_ms
                 )
-                val_targets = targets_for_compiled_loss(val_targets, weights)
-                step_eval.append(evaluate_batch(model, val_obs, val_targets, weights, autocast))
-            eval_stats.append({"step": i + 1, "metrics": summarize_eval(step_eval)})
-        if (
-            args.checkpoint_out is not None
-            and args.checkpoint_every_steps > 0
-            and (i + 1) % args.checkpoint_every_steps == 0
-        ):
-            global_step = (0 if resume_state is None else resume_state.global_step) + i + 1
-            samples_seen = (0 if resume_state is None else resume_state.samples_seen) + (i + 1) * args.batch
-            save_training_checkpoint(
-                args.checkpoint_out,
-                model=model,
-                optimizer=optimizer,
-                model_config=model_config,
-                optimizer_config=optimizer_config,
-                runtime_config=runtime_config,
-                loss_weights=weights,
-                manifest_path=args.manifest if raw_stream is None else raw_stream.manifest_path,
-                global_step=global_step,
-                samples_seen=samples_seen,
+            elif real_dataset is not None:
+                obs, legal, labels, targets, input_timing = tensors_from_real_batch(real_dataset, device)
+            targets = targets_for_compiled_loss(targets, weights)
+            stat = run_step(
+                loss_step,
+                optimizer,
+                obs,
+                targets,
+                args.microbatch,
+                autocast,
+                timed=not args.profile_coarse,
             )
-        if args.profile:
-            torch.cuda.nvtx.range_pop()
+            if real_dataset is not None or raw_stream is not None or raw_pinned is not None:
+                stat.fetch_decode_ms = input_timing.fetch_decode_ms
+                stat.h2d_wall_ms = input_timing.h2d_wall_ms
+            stats.append(stat)
+            if raw_pinned is not None:
+                assert pinned_batch is not None
+                raw_pinned.mark_inflight(pinned_batch)
+            if validation_stream is not None and args.validation_every > 0 and (i + 1) % args.validation_every == 0:
+                step_eval = []
+                for _ in range(args.validation_steps):
+                    val_batch, val_fetch_ms = validation_stream.next_batch()
+                    val_obs, _val_legal, _val_labels, val_targets, _val_input_timing = tensors_from_policy_batch(
+                        val_batch, device, val_fetch_ms
+                    )
+                    val_targets = targets_for_compiled_loss(val_targets, weights)
+                    step_eval.append(evaluate_batch(model, val_obs, val_targets, weights, autocast))
+                eval_stats.append({"step": i + 1, "metrics": summarize_eval(step_eval)})
+            if (
+                args.checkpoint_out is not None
+                and args.checkpoint_every_steps > 0
+                and (i + 1) % args.checkpoint_every_steps == 0
+            ):
+                global_step = (0 if resume_state is None else resume_state.global_step) + i + 1
+                samples_seen = (0 if resume_state is None else resume_state.samples_seen) + (i + 1) * args.batch
+                save_training_checkpoint(
+                    args.checkpoint_out,
+                    model=model,
+                    optimizer=optimizer,
+                    model_config=model_config,
+                    optimizer_config=optimizer_config,
+                    runtime_config=runtime_config,
+                    loss_weights=weights,
+                    manifest_path=args.manifest if raw_stream is None else raw_stream.manifest_path,
+                    global_step=global_step,
+                    samples_seen=samples_seen,
+                )
+            if torch_profiler is not None:
+                torch_profiler.step()
+            if args.profile:
+                torch.cuda.nvtx.range_pop()
     torch.cuda.synchronize()
     if args.cuda_profiler_range:
         cuda_profiler.stop()

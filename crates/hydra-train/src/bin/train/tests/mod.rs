@@ -653,7 +653,7 @@ num_epochs: 3
     assert!(cfg.advanced_loss.is_none());
     assert_eq!(
         cfg.python_variant,
-        hydra_train_runtime::config::PythonLearnerVariant::CompileDefault
+        hydra_train_runtime::config::PythonLearnerVariant::CompileMaxAutotune
     );
     fs::remove_file(base).ok();
 }

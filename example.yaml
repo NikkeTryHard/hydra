@@ -1,0 +1,155 @@
+# Hydra training config example.
+# Copy to your run dir, edit paths, then run:
+#   pixi run cargo run --quiet --package hydra-train --features training --bin train -- example.yaml
+#
+# Default plain-BC backend is Python/PyTorch through Rust launcher.
+# If bc_shards_manifest_path is absent, Rust streams raw MJAI from data_dir into Python.
+# Raw-MJAI default transport is pinned_pyo3; stdout is slower/debug fallback.
+# For repeated runs, build compact BC shards and set bc_shards_manifest_path.
+
+# Raw replay root/file/archive. Used directly when bc_shards_manifest_path is absent.
+data_dir: path/to/mjai
+
+# Run output root. Checkpoints, logs, reports, step_log.jsonl, metrics live here.
+output_dir: path/to/output/hydra-bc
+
+# Epoch count for full train loops. For smoke/debug, use max_train_steps below.
+num_epochs: 1
+
+# Logical batch before gradient accumulation.
+# Local preferred raw-MJAI CUDA shape: batch_size 2048, microbatch_size 1024.
+batch_size: 2048
+microbatch_size: 1024
+
+# Validation microbatch can be smaller if validation OOMs.
+validation_microbatch_size: 1024
+
+# CUDA recommended for Python BC. CPU works for explicit compat/debug but is slow.
+device: cuda:0
+
+# Omit precision_mode on BC CUDA to get BF16 AMP by default.
+# Set fp32 only for debug/repro FP32. RL/DeltaQ hard-error on BF16.
+# precision_mode: fp32
+
+# Default plain-BC backend. Use rust_burn only for legacy/debug or advanced labels
+# not supported by Python default: ExIt, DeltaQ, belief, mixture, opponent hand type.
+bc_backend: python
+
+# Raw-MJAI transport when bc_shards_manifest_path is absent.
+# pinned_pyo3 needs hydra-raw-mjai-ffi built; stdout is fallback/debug.
+python_raw_mjai_transport: pinned_pyo3
+
+# Optional: train from prebuilt compact BC shards instead of raw MJAI.
+# When set, data_dir is retained as config contract but samples come from manifest.
+# bc_shards_manifest_path: path/to/bc_shards_manifest.json
+
+# Shard host-batch queue depth. Only matters with bc_shards_manifest_path.
+shard_prefetch_depth: 2
+
+# Deterministic train/validation split for raw replay/shard build contracts.
+train_fraction: 0.9
+
+# Suit augmentation: exactly 6 numbered-suit permutations; honors unchanged.
+augment: true
+
+# Repro seed. Keep explicit in real experiments.
+seed: 0
+
+# Optional resume checkpoint base/path. Leave null for fresh run.
+resume_checkpoint: null
+
+# Checkpoint/log cadence. For full runs, increase max_train_steps or remove it.
+log_every_n_steps: 50
+validate_every_n_steps: 200
+checkpoint_every_n_steps: 200
+validation_every_n_epochs: 1
+max_train_steps: 1000
+max_validation_batches: null
+max_validation_samples: 8192
+max_skip_logs_per_source: 32
+
+# Legacy Rust/Burn loader buffers. Kept here so config readers see intended defaults.
+# Python raw-MJAI uses its own stream/queue flags through launcher.
+buffer_games: 50000
+buffer_samples: 32768
+archive_queue_bound: 128
+num_threads: null
+
+tensorboard: true
+
+# BC optimizer knobs. Python BC uses AdamW data-only checkpoint contract.
+bc:
+  learning_rate: 0.00025
+  min_learning_rate: 0.000001
+  weight_decay: 0.00001
+  grad_clip_norm: 1.0
+  warmup_steps: 1000
+
+# Head profile. full is normal BC baseline. policy_only is probe/experiment only.
+bc_head_profile: full
+
+# Python residual profile is checkpoint-stable architecture contract.
+# mish_se = canonical SE-ResNet: Mish + GroupNorm + SE, 10 blocks, 256 hidden.
+# No-SE/ReLU variants are ablation only; do not promote from throughput alone.
+python_residual_profile: mish_se
+
+# Python backbone profile currently accepts conv2d_local3 only.
+# The CLI default is already conv2d_local3; field omitted because TrainConfig does
+# not expose a YAML key for normal backbone selection.
+
+# TorchInductor strategy. Canonical production Python BC uses compile_max_autotune.
+# Use compile_default only for smoke/preflight/short debug.
+python_variant: compile_max_autotune
+
+# Experimental backbone ablation. Keep null for canonical training.
+# Example shape if intentionally probing:
+# experimental_backbone_profile:
+#   activation: relu          # mish | silu | relu
+#   se_every_n: 999           # 1 = every block; high value = no SE for current learner
+#   norm: first_only          # both | first_only
+#   num_blocks: 6
+#   hidden_channels: 256
+experimental_backbone_profile: null
+
+# Optional supervised advanced labels.
+# Leave null for plain BC. Positive weights require labels/contracts.
+# Python default does not support ExIt/DeltaQ/belief/mixture/opponent-hand-type yet; use legacy Rust/Burn for those.
+advanced_loss: null
+# advanced_loss:
+#   safety_residual: 0.0
+#   exit: null
+#   belief_fields: null
+#   mixture_weight: null
+#   opponent_hand_type: null
+#   delta_q: null
+
+# Sidecar indexes. Required when corresponding advanced loss weight is positive.
+exit_sidecar_path: null
+delta_q_sidecar_path: null
+
+# Best-checkpoint validation gates. Off by default; affects best_model only, not latest resume checkpoint.
+validation_gates:
+  enabled: false
+  min_validation_samples: 1024
+  max_policy_loss_regression: 0.0
+  min_policy_agreement_delta: null
+  fail_training_on_gate_failure: false
+  require_sidecar_coverage_when_weighted: true
+
+# RL/self-play config. null = plain BC.
+# Enabling RL changes runtime/precision rules; read docs/TRAINING_RUNBOOK.md first.
+rl: null
+# rl:
+#   games_per_batch: 4
+#   temperature: 1.0
+#   phase: drda_ach_self_play
+#   learning_rate: null
+#   exit_weight: null
+#   aux_weight: null
+#   microbatch_size: null
+
+# Source filters are replay identity filters. Empty = accept all.
+source_filters: {}
+
+# Nsight advisory metadata, not profiler launcher. Usually null.
+nsight_trace: null

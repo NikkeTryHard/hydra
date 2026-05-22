@@ -1,10 +1,11 @@
 # Hydra PyTorch BC learner
 
-Default BC shard training path. Rust owns replay parsing, BC shard build, manifest validation, CLI orchestration, and legacy Rust/Burn reference path. Python owns BC model/loss/optimizer/AMP/`torch.compile`/checkpoint.
+Default plain-BC training backend. Rust owns replay parsing, raw-MJAI stream, BC shard build, manifest validation, CLI orchestration, and legacy Rust/Burn reference path. Python owns BC model/loss/optimizer/AMP/`torch.compile`/checkpoint.
 
 Supported now:
 
-- real compact BC shard ingest from `--manifest <bc_shards_manifest.json>`
+- compact BC shard ingest from `--manifest <bc_shards_manifest.json>`
+- raw-MJAI ingest from `--raw-mjai-data-dir <dir>`; default transport `pinned_pyo3`, fallback `stdout`
 - full base heads/losses: policy, value, GRP, tenpai, opponent next discard, danger, score PDF/CDF
 - default-off advanced labels already present in shard path: `oracle_critic`, `safety_residual`
 - BF16 autocast on CUDA
@@ -42,10 +43,10 @@ Default Rust/Burn env remains root/default Pixi env with torch/libtorch `2.9.0` 
 
 ```bash
 pixi run cargo run --quiet --package hydra-train --features training --bin train -- \
-  --bc-shards-manifest output/bc-feed-bench-shards-100k/bc_shards_manifest.json \
-  --output-dir /home/cachybtw/tmp/hydra-py-default-bc-smoke \
+  --bc-shards-manifest path/to/bc_shards_manifest.json \
+  --output-dir path/to/output-dir \
   --device cuda:0 \
-  --python-variant compile_default \
+  --python-variant compile_max_autotune \
   --python-warmup 1 \
   --python-steps 3 \
   --python-compile-fullgraph-check \
@@ -58,22 +59,27 @@ This shells out to:
 pixi run -e py-train python scripts/hydra_pytorch_oracle.py ...
 ```
 
-script path keeps `oracle` for compatibility; user-facing config/CLI path is Python BC learner.
-
-`--experimental-python-learner` remains accepted as deprecated alias. Prefer default `--bc-shards-manifest` route or explicit `--bc-backend python`.
+Script path keeps `oracle` for compatibility; user-facing config/CLI path is Python BC learner. `--experimental-python-learner` remains accepted as deprecated alias. Prefer default `--bc-shards-manifest` route, raw-MJAI YAML without `bc_shards_manifest_path`, or explicit `--bc-backend python`.
 
 Residual profiles are checkpoint-stable architecture strings. Default `mish_se` is canonical SE-ResNet: Mish + GroupNorm + SE, 10 blocks, 256 hidden. Opt-ins: `silu_se`, `relu_se`, `mish_no_se`, `relu_no_se`, `relu_no_norm_no_se`. No-SE profiles are speed/ablation only. 5k equal-step raw-MJAI validation: `mish_no_se` had faster train loop but slightly worse validation than `mish_se`; keep opt-in, do not promote. Checkpoint resume requires exact profile match.
 
 Python backbone profile is checkpoint-stable and accepts only `conv2d_local3`: Conv2d over singleton height with local-3 tile kernels. `token_linear_local3` was probed and deleted: slower in repeated raw-MJAI timing, higher architecture risk, no concrete profiler reason to keep.
 
-Compile variants do not change model math, topology, checkpoint architecture, input/action shapes, residual profile, or losses; they only change TorchInductor compile strategy. Default remains `compile_default` for smoke/preflight/short runs. `compile_max_autotune` is recommended for long same-architecture Python BC training. 200-step raw-MJAI run (`batch=2048`, `microbatch=1024`, `mish_se`, 10 blocks, warmup 10) measured `+8.7%` train throughput and `+7.7%` end-to-end throughput excluding compile versus `compile_default`. Compile/autotune overhead means short runs may be slower including compile; measured 200-step run remained below break-even when compile time was included. Inductor/autotune warnings during compile are diagnostic text, not training failure, unless process returns non-zero or writes `compile_error`. Do not promote Inductor env knobs: same-architecture `conv2d_local3`/`mish_se`/10-block/256-hidden `compile_max_autotune` probes rejected `warn_mix_layout`, `layout_optimization`, `max_autotune_pointwise`, `coordinate_descent_tuning`, and `max-autotune-no-cudagraphs`; e2e was `-0.07%` to `-1.30%`. Next same-architecture lane is fused GroupNorm+Mish(+SE), custom Triton or equivalent fusion.
+Compile variants do not change model math, topology, checkpoint architecture, input/action shapes, residual profile, or losses; they only change TorchInductor strategy. Canonical production Python BC uses `compile_max_autotune`; use `compile_default` only for smoke/preflight/short debug.
 
-If YAML omits `bc_shards_manifest_path`, Rust launcher streams raw MJAI from `data_dir`; shard manifests still use `--manifest`.
+If YAML omits `bc_shards_manifest_path`, Rust launcher streams raw MJAI from `data_dir`. Default transport is pinned PyO3; stdout remains fallback.
 
-## Direct Python task
+Direct Python accepts exactly one input:
 
 ```bash
-pixi run python-bc-train -- --manifest output/bc-feed-bench-shards-100k/bc_shards_manifest.json --variant compile_default --warmup 1 --steps 3 --out /home/cachybtw/tmp/hydra_py_direct.json
+pixi run python-bc-train -- --manifest path/to/bc_shards_manifest.json --variant compile_max_autotune --warmup 1 --steps 3 --out path/to/result.json
+pixi run python-bc-train -- --raw-mjai-data-dir path/to/mjai --raw-mjai-transport pinned_pyo3 --variant compile_max_autotune --warmup 1 --steps 3 --out path/to/result.json
+```
+
+Pinned PyO3 lookup: `HYDRA_RAW_MJAI_PINNED_LIB`, then `target/release/libhydra_raw_mjai_ffi.so`, then `target/debug/libhydra_raw_mjai_ffi.so`. Build missing lib with:
+
+```bash
+pixi run cargo build -p hydra-raw-mjai-ffi --release --quiet
 ```
 
 Script name `scripts/hydra_pytorch_oracle.py` remains compatibility name.

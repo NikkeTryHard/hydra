@@ -64,8 +64,9 @@ Choose:
 | `bc_backend` | BC shard train backend; default `python`; set `rust_burn` only for legacy/debug or advanced labels Python lacks |
 | `shard_prefetch_depth` | shard host-batch queue depth; default `2`, valid `1..64` |
 | `python_residual_profile` | Python BC residual profile; default `mish_se`; `mish_no_se` is opt-in throughput ablation with strength risk |
-| `python_variant` | Python BC TorchInductor strategy only; default `compile_default`; use `compile_max_autotune` for long same-architecture Python BC after break-even |
+| `python_variant` | Python BC TorchInductor strategy only; default/canonical `compile_max_autotune`; use `compile_default` only for smoke/preflight/short debug |
 | `validation_gates` | optional best-checkpoint gate; off by default |
+| `python_raw_mjai_transport` | raw-MJAI input transport when `bc_shards_manifest_path` absent; default `pinned_pyo3`, fallback `stdout` |
 
 Minimal raw-MJAI BC train, default Python/PyTorch backend:
 
@@ -98,7 +99,7 @@ bc_shards_manifest_path: /data/bc_shards_manifest.json
 # bc_backend: python            # default
 ```
 
-If `bc_shards_manifest_path` is absent, Python learner receives `data_dir` and streams raw MJAI through Rust `raw_mjai_stream` helper. helper runs in Pixi `default` Rust/libtorch env; Python training runs in Pixi `py-train`.
+If `bc_shards_manifest_path` is absent, Python learner receives `data_dir` and streams raw MJAI. Default transport is pinned PyO3 (`python_raw_mjai_transport: pinned_pyo3`); `stdout` remains fallback. Rust raw-MJAI helper runs in Pixi `default` env; Python training runs in Pixi `py-train`.
 
 Legacy Rust/Burn BC path:
 
@@ -145,13 +146,74 @@ Python learner backbone profile is part of checkpoint metadata. Valid value now 
 --backbone-profile conv2d_local3
 ```
 
-Python compile variants do not change model math, topology, checkpoint architecture, input shape, action shape, residual profile, or losses; they only change TorchInductor compile strategy. Default remains `compile_default` for smoke/preflight/short runs. `compile_max_autotune` is recommended for long same-architecture Python BC training: 200-step raw-MJAI run (`mish_se`, 10 blocks, `batch=2048`, `microbatch=1024`, warmup 10) measured `+8.7%` train throughput and `+7.7%` end-to-end throughput excluding compile (`38974 -> 42370` train samples/s, `35264 -> 37972` e2e samples/s, step `52.55ms -> 48.34ms`). Compile/autotune overhead means short runs may be slower including compile; measured 200-step run was still below break-even when compile time was included. Inductor/autotune warning text during compile is diagnostic unless run exits non-zero or result JSON has `compile_error`. Do not add Inductor env knobs to defaults: fixed raw-MJAI `conv2d_local3`/`mish_se`/10-block/256-hidden `compile_max_autotune` probes rejected `warn_mix_layout`, `layout_optimization`, `max_autotune_pointwise`, `coordinate_descent_tuning`, and `max-autotune-no-cudagraphs`; e2e was `-0.07%` to `-1.30%`. Next same-architecture lane is fused GroupNorm+Mish(+SE), custom Triton or equivalent fusion.
+Python compile variants do not change model math, topology, checkpoint architecture, input shape, action shape, residual profile, or losses; they only change TorchInductor strategy. Default production Python BC is `compile_max_autotune` for long same-architecture runs. Use `compile_default` for smoke/preflight/short debug when compile/autotune overhead dominates.
 
-Python raw-MJAI pinned-readinto probe rejected. `torch.empty(..., pin_memory=True)` exposes writable NumPy/buffer storage, and direct subprocess `readinto()` into fixed field tensors works with current frame headers. H2D improved from `~5.3ms` GPU to `~1.15ms`, but batch read/decode regressed to `~20.4ms` because field reads into pinned memory through stdout/pipe are slow versus current single payload read + zero-copy NumPy views. Do not add Python stdout pinned readinto path. Next input lane: PyO3/shared-memory bridge that lets Rust fill reusable pinned host buffers directly, then Python launches async H2D.
+Raw-MJAI transport knobs:
+
+```yaml
+python_raw_mjai_transport: pinned_pyo3   # default; stdout fallback exists
+```
+
+Direct Python flags:
+
+```bash
+--raw-mjai-data-dir path/to/mjai --raw-mjai-transport pinned_pyo3 --raw-mjai-pinned-ffi target/release/libhydra_raw_mjai_ffi.so
+```
+
+Pinned PyO3 lookup: `HYDRA_RAW_MJAI_PINNED_LIB`, then `target/release/libhydra_raw_mjai_ffi.so`, then `target/debug/libhydra_raw_mjai_ffi.so`. If missing, build:
+
+```bash
+pixi run cargo build -p hydra-raw-mjai-ffi --release --quiet
+```
+
+Use `--raw-mjai-transport stdout` only for compat/debug fallback.
 
 ```bash
 --python-variant compile_max_autotune
 ```
+
+Torch 2.12 CUDA 12.6 probe env:
+
+```bash
+pixi run -e py-train-torch212-cu126 torch-check
+pixi run -e py-train-torch212-cu126 python-bc-train -- \
+  --raw-mjai-data-dir /path/to/mjai \
+  --raw-mjai-transport pinned_pyo3 \
+  --raw-mjai-worker-threads 20 \
+  --raw-mjai-prefetch-batches 2 \
+  --raw-mjai-queue-bound 8 \
+  --variant compile_max_autotune \
+  --batch 2048 \
+  --microbatch 1024 \
+  --warmup 10 \
+  --steps 200 \
+  --out /path/to/result.json \
+  --quiet
+```
+
+Pins: `torch==2.12.0+cu126`, `torchvision==0.27.0+cu126`, PyTorch cu126 index. Use only on CUDA 12.6 target hardware. Local RTX 5070 `sm_120` cannot execute cu126 wheel kernels; local benchmark must stay on cu128/cu130-capable wheel.
+
+Torch 2.12 nightly CUDA 12.8 local probe env:
+
+```bash
+TORCHINDUCTOR_MAX_AUTOTUNE_DEFER_LAYOUT_FREEZING=1 \
+  pixi run -e py-train-torch212-nightly-cu128 python-bc-train -- \
+  --raw-mjai-data-dir /home/cachybtw/Downloads/dataset_bundle/tenhou-houou-mjai-2025 \
+  --raw-mjai-transport pinned_pyo3 \
+  --raw-mjai-worker-threads 20 \
+  --raw-mjai-prefetch-batches 2 \
+  --raw-mjai-queue-bound 8 \
+  --raw-mjai-max-games 5000 \
+  --variant compile_max_autotune \
+  --batch 2048 \
+  --microbatch 1024 \
+  --warmup 10 \
+  --steps 200 \
+  --out /home/cachybtw/tmp/hydra-torch212-nightly-cu128/result.json \
+  --quiet
+```
+
+Pins: `torch==2.12.0.dev20260329+cu128`, `torchvision==0.26.0.dev20260329+cu128`. 2026-05-22 RTX 5070 result: `~43.96k samples/s`, `~46.59ms/step`, compile `~1.71s` with layout-defer env. Probe-only; do not production-pin nightly without repeat + validation evidence.
 Experimental backbone profile. Default absent = canonical learner: 24 blocks, 256 hidden, Mish, SE every block, two GroupNorms per block. Research infra only: final op-count ablation did not show material throughput gain. Do not use for default training, throughput-win claims, or strength claims without separate evidence.
 
 ```yaml
@@ -372,20 +434,18 @@ pixi run cargo run -p hydra-train --bin build_bc_shards --no-default-features --
 
 ### BC shard benchmark protocol
 
-Required serial baseline before code change: same semantic config as after run. Example paths from original plan only; do not assume they exist.
+Required baseline before code change: same semantic config as after run. Use placeholder paths; do not bake local artifact dirs into docs.
 
 ```bash
-rm -rf /home/cachybtw/tmp/hydra-bc-shard-baseline-2019
+rm -rf path/to/baseline-out
 /usr/bin/time -v \
   pixi run cargo run -p hydra-train --bin build_bc_shards --no-default-features --features training --quiet -- \
-    --input /home/cachybtw/Downloads/dataset_bundle/majsoul-jade-mjai-2019 \
-    --output-dir /home/cachybtw/tmp/hydra-bc-shard-baseline-2019 \
+    --input path/to/replays \
+    --output-dir path/to/baseline-out \
     --manifest-name manifest.json \
     --shard-samples 10000 \
     --train-fraction 0.9 \
-    --split train \
-  2> /home/cachybtw/tmp/hydra-bc-shard-baseline-2019.time.txt \
-  | tee /home/cachybtw/tmp/hydra-bc-shard-baseline-2019.stdout.txt
+    --split train
 ```
 
 Record baseline:
@@ -416,11 +476,11 @@ Use `schema_version: 0` or `captured_by: shell`; do not confuse with code report
 After impl: same input/config, new output dir, plus parallel/resume/report flags.
 
 ```bash
-rm -rf /home/cachybtw/tmp/hydra-bc-shard-after-2019
+rm -rf path/to/after-out
 /usr/bin/time -v \
   pixi run cargo run -p hydra-train --bin build_bc_shards --no-default-features --features training --quiet -- \
-    --input /home/cachybtw/Downloads/dataset_bundle/majsoul-jade-mjai-2019 \
-    --output-dir /home/cachybtw/tmp/hydra-bc-shard-after-2019 \
+    --input path/to/replays \
+    --output-dir path/to/after-out \
     --manifest-name manifest.json \
     --shard-samples 10000 \
     --train-fraction 0.9 \
@@ -430,9 +490,7 @@ rm -rf /home/cachybtw/tmp/hydra-bc-shard-after-2019
     --resume \
     --chunk-games 10000 \
     --report-name bc_shard_build_report.json \
-    --progress-jsonl bc_shard_build_progress.jsonl \
-  2> /home/cachybtw/tmp/hydra-bc-shard-after-2019.time.txt \
-  | tee /home/cachybtw/tmp/hydra-bc-shard-after-2019.stdout.txt
+    --progress-jsonl bc_shard_build_progress.jsonl
 ```
 
 Compare semantic manifest fields, not `created_at`:
@@ -693,7 +751,7 @@ Probe knobs:
 - `HYDRA_CUDA_GRAPH_PROBE_REPLAYS=N`; default `16`, max `1024`.
 - `HYDRA_CUDA_GRAPH_PROBE_POST_REPLAY_PARITY=0`; disables post-replay parity rerun.
 
-Recent shard slice was CUDA-graph transport/probe signal, not BF16 evidence: `1981.9 samples/s`, wall `4.63s`; prior plain shard mean `1888.9 samples/s`; about `+4.9%` in one run. Single-run signal only. Main bottleneck still model compute + unfused Burn Adam.
+Recent shard slice was CUDA-graph transport/probe signal, not BF16 evidence. Single-run shard signals are not promotion evidence. Main bottleneck remains model compute + unfused Burn Adam.
 
 Nsight/NVTX capture: `HYDRA_NVTX=1` needs Pixi NVTX library visible or `nsys stats --report nvtx_kern_sum:base` may report no NVTX data:
 
