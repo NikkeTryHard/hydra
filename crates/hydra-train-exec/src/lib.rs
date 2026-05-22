@@ -89,6 +89,8 @@ pub mod probe_summary;
 pub mod probe_transport;
 /// Progress DTOs and scalar accumulation helpers shared by train execution.
 pub mod progress;
+/// Experimental Python learner process launcher.
+pub mod python_learner;
 /// Resume state contracts and helpers.
 pub mod resume;
 /// RL training-loop execution helpers.

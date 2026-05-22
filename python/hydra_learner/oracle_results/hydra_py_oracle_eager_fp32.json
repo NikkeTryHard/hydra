@@ -1,0 +1,222 @@
+{
+  "variant": "eager_fp32",
+  "env": {
+    "torch_version": "2.13.0.dev20260521+cu130",
+    "torch_cuda": "13.0",
+    "cuda_available": true,
+    "device_name": "NVIDIA GeForce RTX 5070",
+    "device_capability": [
+      12,
+      0
+    ],
+    "optimizer": "AdamW"
+  },
+  "config": {
+    "variant": "eager_fp32",
+    "batch": 2048,
+    "microbatch": 1024,
+    "hidden": 256,
+    "blocks": 12,
+    "bottleneck": 64,
+    "actions": 46,
+    "warmup": 10,
+    "steps": 30,
+    "profile": false,
+    "out": "/home/cachybtw/tmp/hydra_py_oracle_eager_fp32.json"
+  },
+  "compile_s": 0.0,
+  "summary": {
+    "steps": 30.0,
+    "mean_step_ms": 162.64315897623698,
+    "samples_per_s": 12591.983658527093,
+    "mean_fwd_loss_ms": 49.38282877604167,
+    "mean_backward_ms": 112.01690190633138,
+    "mean_optimizer_ms": 0.9400533417860667
+  },
+  "memory": {
+    "max_allocated_bytes": 3404783104,
+    "max_reserved_bytes": 3649044480
+  },
+  "step_stats": [
+    {
+      "step_ms": 167.3826904296875,
+      "fwd_loss_ms": 51.46956825256348,
+      "backward_ms": 114.60643005371094,
+      "optimizer_ms": 0.9787840247154236
+    },
+    {
+      "step_ms": 163.81805419921875,
+      "fwd_loss_ms": 50.2291202545166,
+      "backward_ms": 112.37199783325195,
+      "optimizer_ms": 0.8927680253982544
+    },
+    {
+      "step_ms": 164.07437133789062,
+      "fwd_loss_ms": 51.104896545410156,
+      "backward_ms": 111.68701171875,
+      "optimizer_ms": 1.0088319778442383
+    },
+    {
+      "step_ms": 162.9005126953125,
+      "fwd_loss_ms": 49.92192077636719,
+      "backward_ms": 111.58223724365234,
+      "optimizer_ms": 1.0905280113220215
+    },
+    {
+      "step_ms": 162.53138732910156,
+      "fwd_loss_ms": 49.72556686401367,
+      "backward_ms": 111.47916793823242,
+      "optimizer_ms": 0.9468799829483032
+    },
+    {
+      "step_ms": 161.31581115722656,
+      "fwd_loss_ms": 48.72451210021973,
+      "backward_ms": 111.32665252685547,
+      "optimizer_ms": 0.9125440120697021
+    },
+    {
+      "step_ms": 160.17117309570312,
+      "fwd_loss_ms": 48.70342445373535,
+      "backward_ms": 110.2646713256836,
+      "optimizer_ms": 0.9423040151596069
+    },
+    {
+      "step_ms": 159.94326782226562,
+      "fwd_loss_ms": 48.636030197143555,
+      "backward_ms": 110.12255859375,
+      "optimizer_ms": 0.9473919868469238
+    },
+    {
+      "step_ms": 159.73146057128906,
+      "fwd_loss_ms": 48.565025329589844,
+      "backward_ms": 109.93599700927734,
+      "optimizer_ms": 1.0170880556106567
+    },
+    {
+      "step_ms": 160.0597686767578,
+      "fwd_loss_ms": 48.70854377746582,
+      "backward_ms": 110.2305908203125,
+      "optimizer_ms": 0.9047999978065491
+    },
+    {
+      "step_ms": 159.81578063964844,
+      "fwd_loss_ms": 48.89900779724121,
+      "backward_ms": 109.79484939575195,
+      "optimizer_ms": 0.8927680253982544
+    },
+    {
+      "step_ms": 159.60316467285156,
+      "fwd_loss_ms": 48.7105598449707,
+      "backward_ms": 109.78278350830078,
+      "optimizer_ms": 0.8375999927520752
+    },
+    {
+      "step_ms": 159.25453186035156,
+      "fwd_loss_ms": 48.54457473754883,
+      "backward_ms": 109.39984130859375,
+      "optimizer_ms": 1.0216000080108643
+    },
+    {
+      "step_ms": 160.1444549560547,
+      "fwd_loss_ms": 48.459136962890625,
+      "backward_ms": 110.52380752563477,
+      "optimizer_ms": 0.9607999920845032
+    },
+    {
+      "step_ms": 159.97705078125,
+      "fwd_loss_ms": 48.37084770202637,
+      "backward_ms": 110.44121551513672,
+      "optimizer_ms": 0.953216016292572
+    },
+    {
+      "step_ms": 160.3387908935547,
+      "fwd_loss_ms": 48.60576057434082,
+      "backward_ms": 110.57145690917969,
+      "optimizer_ms": 0.9403520226478577
+    },
+    {
+      "step_ms": 160.27194213867188,
+      "fwd_loss_ms": 48.380958557128906,
+      "backward_ms": 110.68550491333008,
+      "optimizer_ms": 0.8989760279655457
+    },
+    {
+      "step_ms": 160.20742797851562,
+      "fwd_loss_ms": 48.09343910217285,
+      "backward_ms": 111.0117416381836,
+      "optimizer_ms": 0.9062719941139221
+    },
+    {
+      "step_ms": 159.64976501464844,
+      "fwd_loss_ms": 48.28057670593262,
+      "backward_ms": 110.29884719848633,
+      "optimizer_ms": 0.8848320245742798
+    },
+    {
+      "step_ms": 160.1087646484375,
+      "fwd_loss_ms": 48.27353477478027,
+      "backward_ms": 110.75436782836914,
+      "optimizer_ms": 0.9111040234565735
+    },
+    {
+      "step_ms": 159.376220703125,
+      "fwd_loss_ms": 48.469919204711914,
+      "backward_ms": 109.81283187866211,
+      "optimizer_ms": 0.7347519993782043
+    },
+    {
+      "step_ms": 162.30252075195312,
+      "fwd_loss_ms": 49.249088287353516,
+      "backward_ms": 111.94351959228516,
+      "optimizer_ms": 0.9138879776000977
+    },
+    {
+      "step_ms": 165.56771850585938,
+      "fwd_loss_ms": 49.35548782348633,
+      "backward_ms": 114.93539428710938,
+      "optimizer_ms": 0.9815040230751038
+    },
+    {
+      "step_ms": 165.99830627441406,
+      "fwd_loss_ms": 50.66041564941406,
+      "backward_ms": 113.87279891967773,
+      "optimizer_ms": 1.01363205909729
+    },
+    {
+      "step_ms": 165.67689514160156,
+      "fwd_loss_ms": 50.065025329589844,
+      "backward_ms": 114.36092758178711,
+      "optimizer_ms": 0.9630720019340515
+    },
+    {
+      "step_ms": 165.9396209716797,
+      "fwd_loss_ms": 50.41372871398926,
+      "backward_ms": 114.0126724243164,
+      "optimizer_ms": 0.9835519790649414
+    },
+    {
+      "step_ms": 165.61337280273438,
+      "fwd_loss_ms": 49.69593620300293,
+      "backward_ms": 114.77231979370117,
+      "optimizer_ms": 0.8542400002479553
+    },
+    {
+      "step_ms": 169.91030883789062,
+      "fwd_loss_ms": 51.51513671875,
+      "backward_ms": 116.97622299194336,
+      "optimizer_ms": 0.9671679735183716
+    },
+    {
+      "step_ms": 169.71142578125,
+      "fwd_loss_ms": 51.2521915435791,
+      "backward_ms": 116.9213752746582,
+      "optimizer_ms": 0.9439679980278015
+    },
+    {
+      "step_ms": 167.89820861816406,
+      "fwd_loss_ms": 50.40092849731445,
+      "backward_ms": 116.02726364135742,
+      "optimizer_ms": 0.9963840246200562
+    }
+  ]
+}

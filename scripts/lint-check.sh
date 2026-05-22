@@ -6,13 +6,14 @@ cd "$ROOT_DIR"
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/lint-check.sh [--fast|--exhaustive|--cuda-graph] [--install-hook] [--anti-game-only]
+Usage: scripts/lint-check.sh [--fast|--exhaustive|--cuda-graph] [--install-hook] [--anti-game-only] [--rust-only]
 
 Hydra quality gates:
-  --fast            default; caveman-compress hook + anti-game scan + rustfmt + clippy no-default-features
-  --exhaustive      caveman-compress hook + anti-game scan + rustfmt + CUDA/libtorch prep + clippy all-features
-  --cuda-graph      caveman-compress hook + anti-game scan + rustfmt + CUDA/libtorch prep + focused cuda-graph clippy
-  --anti-game-only  run cheap anti-game scan only; no fmt, clippy, CUDA/libtorch prep, or hook install side effects
+  --fast            default; caveman-compress hook + anti-game scan + Python gate + rustfmt + clippy no-default-features
+  --exhaustive      caveman-compress hook + anti-game scan + Python gate + CUDA/libtorch prep + rustfmt + clippy all-features
+  --cuda-graph      caveman-compress hook + anti-game scan + Python gate + CUDA/libtorch prep + focused cuda-graph clippy
+  --anti-game-only  run cheap anti-game scan only; no fmt, clippy, CUDA/libtorch prep, Python gate, or hook install side effects
+  --rust-only       skip Python Ruff/Pyrefly/pytest; for direct Rust-only Pixi subtask only
   --install-hook    install pre-commit hook; hook runs fast mode by default
   --help            show this help
 
@@ -28,6 +29,7 @@ USAGE
 INSTALL_HOOK=0
 ANTI_GAME_ONLY="${HYDRA_LINT_ANTI_GAME_ONLY:-0}"
 MODE=fast
+RUST_ONLY=0
 VERBOSE="${HYDRA_LINT_VERBOSE:-0}"
 if [[ "${HYDRA_LINT_EXHAUSTIVE:-0}" == "1" ]]; then
   MODE=exhaustive
@@ -42,6 +44,7 @@ while [[ $# -gt 0 ]]; do
     --cuda-graph) MODE=cuda-graph ;;
     --install-hook) INSTALL_HOOK=1 ;;
     --anti-game-only) ANTI_GAME_ONLY=1 ;;
+    --rust-only) RUST_ONLY=1 ;;
     -h|--help) usage; exit 0 ;;
     *) printf 'error: unknown arg: %s\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
@@ -255,6 +258,13 @@ HOOK
   printf '[hydra lint] installed %s\n' "$hook"
 }
 
+run_python_gate() {
+  run_step 'checking Python format' pixi run -e py-train ruff format --check python scripts/hydra_pytorch_oracle.py
+  run_step 'checking Python lint' pixi run -e py-train ruff check python scripts/hydra_pytorch_oracle.py
+  run_step 'checking Python types' pixi run -e py-train pyrefly check
+  run_step 'checking Python tests' pixi run -e py-train scripts/pytest-quiet.sh python/hydra_learner
+}
+
 if [[ "$INSTALL_HOOK" == "1" && "$ANTI_GAME_ONLY" != "1" ]]; then
   install_hook
 fi
@@ -270,6 +280,9 @@ if [[ "$ANTI_GAME_ONLY" == "1" ]]; then
 fi
 
 need_cmd cargo
+if [[ "$RUST_ONLY" != "1" ]]; then
+  run_python_gate
+fi
 run_rustfmt_check
 
 case "$MODE" in

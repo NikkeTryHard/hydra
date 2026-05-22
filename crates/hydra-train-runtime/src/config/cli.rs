@@ -3,10 +3,11 @@ use std::path::PathBuf;
 use crate::preflight::{PreflightBenchTuple, PreflightConfig, ProbeKind};
 
 use super::{
-    BenchmarkBaselineCliOptions, BenchmarkBaselineSource, ExperimentalTrainBackend,
-    PreflightCliOptions, PreflightProfile, ProbeBatchChildRequest, ProbeChildRequest,
-    ProbeCliRequest, ProbeSingleChildRequest, TrainCli, default_device,
-    default_preflight_config_for_profile,
+    BcBackend, BenchmarkBaselineCliOptions, BenchmarkBaselineSource,
+    ExperimentalBackboneProfileConfig, ExperimentalTrainBackend, PreflightCliOptions,
+    PreflightProfile, ProbeBatchChildRequest, ProbeChildRequest, ProbeCliRequest,
+    ProbeSingleChildRequest, PythonLearnerCliOptions, PythonLearnerVariant, TrainCli,
+    default_device, default_preflight_config_for_profile,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +49,83 @@ fn parse_experimental_backend(value: &str) -> Result<ExperimentalTrainBackend, S
             "unsupported --experimental-backend value '{value}'; expected libtorch or burn-cuda"
         )),
     }
+}
+
+fn parse_bc_backend(value: &str) -> Result<BcBackend, String> {
+    match value {
+        "python" | "pytorch" => Ok(BcBackend::Python),
+        "rust-burn" | "rust_burn" | "rust" | "burn" => Ok(BcBackend::RustBurn),
+        _ => Err(format!(
+            "unsupported --bc-backend value '{value}'; expected python or rust-burn"
+        )),
+    }
+}
+
+fn parse_python_variant(value: &str) -> Result<PythonLearnerVariant, String> {
+    match value {
+        "eager_fp32" => Ok(PythonLearnerVariant::EagerFp32),
+        "eager_bf16" => Ok(PythonLearnerVariant::EagerBf16),
+        "compile_default" => Ok(PythonLearnerVariant::CompileDefault),
+        "compile_reduce_overhead" => Ok(PythonLearnerVariant::CompileReduceOverhead),
+        "compile_max_autotune" => Ok(PythonLearnerVariant::CompileMaxAutotune),
+        _ => Err(format!(
+            "unsupported --python-variant value '{value}'; expected eager_fp32, eager_bf16, compile_default, compile_reduce_overhead, or compile_max_autotune"
+        )),
+    }
+}
+
+fn parse_experimental_backbone_profile(
+    value: &str,
+) -> Result<ExperimentalBackboneProfileConfig, String> {
+    let mut profile = ExperimentalBackboneProfileConfig {
+        activation: super::BackboneActivationConfig::Mish,
+        se_every_n: super::default_backbone_se_every_n(),
+        norm: super::BackboneNormConfig::Both,
+        num_blocks: None,
+        hidden_channels: None,
+    };
+    for part in value.split(',') {
+        let (key, raw) = part.split_once('=').ok_or_else(|| {
+            format!("invalid --experimental-backbone-profile segment '{part}'; expected key=value")
+        })?;
+        match key {
+            "activation" => {
+                profile.activation = match raw {
+                    "mish" => super::BackboneActivationConfig::Mish,
+                    "silu" => super::BackboneActivationConfig::Silu,
+                    "relu" => super::BackboneActivationConfig::Relu,
+                    _ => return Err(format!("unsupported backbone activation '{raw}'")),
+                };
+            }
+            "se_every_n" | "se-every-n" => {
+                profile.se_every_n =
+                    parse_usize_flag_allowing_zero("se_every_n", Some(raw.to_string()), false)?;
+            }
+            "norm" => {
+                profile.norm = match raw {
+                    "both" => super::BackboneNormConfig::Both,
+                    "first_only" | "first-only" => super::BackboneNormConfig::FirstOnly,
+                    _ => return Err(format!("unsupported backbone norm '{raw}'")),
+                };
+            }
+            "blocks" | "num_blocks" | "num-blocks" => {
+                profile.num_blocks = Some(parse_usize_flag_allowing_zero(
+                    "num_blocks",
+                    Some(raw.to_string()),
+                    false,
+                )?);
+            }
+            "hidden" | "hidden_channels" | "hidden-channels" => {
+                profile.hidden_channels = Some(parse_usize_flag_allowing_zero(
+                    "hidden_channels",
+                    Some(raw.to_string()),
+                    false,
+                )?);
+            }
+            _ => return Err(format!("unsupported backbone profile key '{key}'")),
+        }
+    }
+    Ok(profile)
 }
 
 fn parse_preflight_profile(value: &str) -> Result<PreflightProfile, String> {
@@ -267,7 +345,7 @@ fn parse_preflight_bench_candidate_tuples(raw: &str) -> Result<Vec<PreflightBenc
 
 pub fn usage(program: &str) -> String {
     format!(
-        "Usage:\n  {program} <config.yaml>\n  {program} --benchmark-baseline --bench-source <mjai|bc-shards|both> (--data-dir <dir>|--bc-shards-manifest <path>) [--output-dir <dir>] [--device <cpu|cuda[:N]>] [--bench-max-games <N>] [--bench-steps <N>]\n  {program} --preflight [--device <cpu|cuda[:N]>] [--output-dir <dir>] [--pf-candidate-tuples <batch:ring:threads:prefetch,...>] [--pf-warmup-steps <N>] [--pf-measure-steps <N>] [--pf-repetitions <N>] [--pf-output md]\n  {program} --list-devices\n  {program} <config.yaml> --delta-q-promotion [--delta-q-baseline-checkpoint <path>]\n  {program} <config.yaml> --probe-kind <train|validation|rl_games|rl_microbatch> --probe-candidate-microbatch <N> [--probe-warmup-steps <N>] [--probe-measure-steps <N>]\n"
+        "Usage:\n  {program} <config.yaml>\n  {program} --experimental-python-learner --bc-shards-manifest <path> --output-dir <dir> [--device <cpu|cuda[:N]>] [--python-variant <eager_fp32|eager_bf16|compile_default|compile_reduce_overhead|compile_max_autotune>] [--python-warmup <N>] [--python-steps <N>] [--python-compile-fullgraph-check]\n  {program} --benchmark-baseline --bench-source <mjai|bc-shards|both> (--data-dir <dir>|--bc-shards-manifest <path>) [--output-dir <dir>] [--device <cpu|cuda[:N]>] [--bench-max-games <N>] [--bench-steps <N>]\n  {program} --preflight [--device <cpu|cuda[:N]>] [--output-dir <dir>] [--pf-candidate-tuples <batch:ring:threads:prefetch,...>] [--pf-warmup-steps <N>] [--pf-measure-steps <N>] [--pf-repetitions <N>] [--pf-output md]\n  {program} --list-devices\n  {program} <config.yaml> --delta-q-promotion [--delta-q-baseline-checkpoint <path>]\n  {program} <config.yaml> --probe-kind <train|validation|rl_games|rl_microbatch> --probe-candidate-microbatch <N> [--probe-warmup-steps <N>] [--probe-measure-steps <N>]\n"
     )
 }
 
@@ -320,6 +398,8 @@ where
             probe_only: None,
             probe_child: None,
             experimental_backend: ExperimentalTrainBackend::LibTorch,
+            python_learner: None,
+            bc_backend: BcBackend::RustBurn,
         });
     }
     let mut config_path = None;
@@ -364,6 +444,20 @@ where
     let mut benchmark_shard_samples = 100_000usize;
     let mut benchmark_train_fraction = 0.9f32;
     let mut experimental_backend = ExperimentalTrainBackend::LibTorch;
+    let mut benchmark_backbone_profile = None;
+    let mut python_learner_enabled = false;
+    let mut python_output_dir = None;
+    let mut python_device = default_device();
+    let mut python_variant = PythonLearnerVariant::EagerBf16;
+    let mut python_warmup_steps = 10usize;
+    let mut python_steps = 30usize;
+    let mut python_checkpoint_out = None;
+    let mut python_resume = None;
+    let mut python_checkpoint_every_steps = 0usize;
+    let mut python_compile_fullgraph_check = false;
+    let mut python_oracle_critic_weight = 0.0f64;
+    let mut python_safety_residual_weight = 0.0f64;
+    let mut bc_backend = None;
     while let Some(arg) = pending_arg.take().or_else(|| args.next()) {
         let normalized = normalize_long_flag(&arg);
         if !arg.starts_with('-') {
@@ -390,10 +484,61 @@ where
                 ));
             }
             "--bc-shards-manifest" => {
-                benchmark_bc_shards_manifest =
-                    Some(PathBuf::from(args.next().ok_or_else(|| {
-                        "missing value for --bc-shards-manifest".to_string()
-                    })?));
+                let value = PathBuf::from(
+                    args.next()
+                        .ok_or_else(|| "missing value for --bc-shards-manifest".to_string())?,
+                );
+                benchmark_bc_shards_manifest = Some(value);
+            }
+            "--experimental-python-learner" => python_learner_enabled = true,
+            "--bc-backend" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --bc-backend".to_string())?;
+                bc_backend = Some(parse_bc_backend(&value)?);
+            }
+            "--legacy-rust-bc" => bc_backend = Some(BcBackend::RustBurn),
+            "--python-variant" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --python-variant".to_string())?;
+                python_variant = parse_python_variant(&value)?;
+            }
+            "--python-warmup" => {
+                python_warmup_steps =
+                    parse_usize_flag_allowing_zero("--python-warmup", args.next(), true)?;
+            }
+            "--python-steps" => {
+                python_steps =
+                    parse_usize_flag_allowing_zero("--python-steps", args.next(), false)?;
+            }
+            "--python-checkpoint-out" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --python-checkpoint-out".to_string())?;
+                python_checkpoint_out = Some(PathBuf::from(value));
+            }
+            "--python-resume" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --python-resume".to_string())?;
+                python_resume = Some(PathBuf::from(value));
+            }
+            "--python-checkpoint-every-steps" => {
+                python_checkpoint_every_steps = parse_usize_flag_allowing_zero(
+                    "--python-checkpoint-every-steps",
+                    args.next(),
+                    true,
+                )?;
+            }
+            "--python-compile-fullgraph-check" => python_compile_fullgraph_check = true,
+            "--python-w-oracle-critic" => {
+                python_oracle_critic_weight =
+                    parse_f64_flag("--python-w-oracle-critic", args.next())?;
+            }
+            "--python-w-safety-residual" => {
+                python_safety_residual_weight =
+                    parse_f64_flag("--python-w-safety-residual", args.next())?;
             }
             "--bench-source" => {
                 benchmark_source = parse_benchmark_source(
@@ -407,6 +552,12 @@ where
                     .next()
                     .ok_or_else(|| "missing value for --experimental-backend".to_string())?;
                 experimental_backend = parse_experimental_backend(&value)?;
+            }
+            "--experimental-backbone-profile" => {
+                let value = args.next().ok_or_else(|| {
+                    "missing value for --experimental-backbone-profile".to_string()
+                })?;
+                benchmark_backbone_profile = Some(parse_experimental_backbone_profile(&value)?);
             }
             "--preflight" => preflight_enabled = true,
             "--preflight-mode" => {
@@ -457,7 +608,11 @@ where
                 let value = args
                     .next()
                     .ok_or_else(|| "missing value for --output-dir".to_string())?;
-                if preflight_enabled || !benchmark_enabled {
+                if python_learner_enabled
+                    || (benchmark_bc_shards_manifest.is_some() && !benchmark_enabled)
+                {
+                    python_output_dir = Some(PathBuf::from(value));
+                } else if preflight_enabled || !benchmark_enabled {
                     preflight_flag_seen = true;
                     preflight_output_dir = PathBuf::from(value);
                 } else {
@@ -468,7 +623,11 @@ where
                 let value = args
                     .next()
                     .ok_or_else(|| "missing value for --device".to_string())?;
-                if preflight_enabled || !benchmark_enabled {
+                if python_learner_enabled
+                    || (benchmark_bc_shards_manifest.is_some() && !benchmark_enabled)
+                {
+                    python_device = value;
+                } else if preflight_enabled || !benchmark_enabled {
                     preflight_flag_seen = true;
                     preflight_device = value;
                 } else {
@@ -867,9 +1026,59 @@ where
         }
     }
 
+    let bc_backend = bc_backend.unwrap_or_else(|| {
+        if benchmark_bc_shards_manifest.is_some() && !benchmark_enabled {
+            BcBackend::Python
+        } else {
+            BcBackend::RustBurn
+        }
+    });
+    let route_python_bc = python_learner_enabled || bc_backend == BcBackend::Python;
+
     if preflight_flag_seen && !preflight_enabled {
         return Err("--pf-* flags require --preflight".to_string());
     }
+    let python_learner = if route_python_bc {
+        if config_path.is_some() {
+            return Err("Python BC learner mode does not accept a config path".to_string());
+        }
+        let bc_shards_manifest = benchmark_bc_shards_manifest
+            .clone()
+            .ok_or_else(|| "Python BC learner requires --bc-shards-manifest <path>".to_string())?;
+        let output_dir = python_output_dir
+            .clone()
+            .unwrap_or_else(|| preflight_output_dir.clone());
+        Some(PythonLearnerCliOptions {
+            bc_shards_manifest,
+            output_dir,
+            device: python_device.clone(),
+            variant: python_variant,
+            warmup_steps: python_warmup_steps,
+            steps: python_steps,
+            checkpoint_out: python_checkpoint_out.clone(),
+            resume: python_resume.clone(),
+            checkpoint_every_steps: python_checkpoint_every_steps,
+            compile_fullgraph_check: python_compile_fullgraph_check,
+            oracle_critic_weight: python_oracle_critic_weight,
+            safety_residual_weight: python_safety_residual_weight,
+        })
+    } else {
+        if python_output_dir.is_some()
+            || python_checkpoint_out.is_some()
+            || python_resume.is_some()
+            || python_checkpoint_every_steps != 0
+            || python_compile_fullgraph_check
+            || python_variant != PythonLearnerVariant::EagerBf16
+            || python_warmup_steps != 10
+            || python_steps != 30
+            || python_oracle_critic_weight != 0.0
+            || python_safety_residual_weight != 0.0
+        {
+            return Err("--python-* flags require Python BC backend".to_string());
+        }
+        None
+    };
+
     let preflight = if preflight_enabled {
         if config_path.is_some() {
             return Err(
@@ -950,9 +1159,12 @@ where
             shard_samples: benchmark_shard_samples,
             train_fraction: benchmark_train_fraction,
             experimental_backend,
+            experimental_backbone_profile: benchmark_backbone_profile.clone(),
         })
     } else {
-        if benchmark_data_dir.is_some() || benchmark_bc_shards_manifest.is_some() {
+        if (benchmark_data_dir.is_some() || benchmark_bc_shards_manifest.is_some())
+            && python_learner.is_none()
+        {
             return Err(
                 "--data-dir/--bc-shards-manifest requires --benchmark-baseline".to_string(),
             );
@@ -961,7 +1173,8 @@ where
     };
 
     if preflight.is_some()
-        && (probe_kind.is_some()
+        && (python_learner.is_some()
+            || probe_kind.is_some()
             || probe_result_path.is_some()
             || probe_results_path.is_some()
             || probe_attempts.is_some()
@@ -974,7 +1187,8 @@ where
         ));
     }
     if benchmark_baseline.is_some()
-        && (probe_kind.is_some()
+        && (python_learner.is_some()
+            || probe_kind.is_some()
             || probe_result_path.is_some()
             || probe_results_path.is_some()
             || probe_attempts.is_some()
@@ -1038,6 +1252,8 @@ where
             probe_only: None,
             probe_child: None,
             experimental_backend,
+            python_learner,
+            bc_backend,
         }),
         (Some(kind), Some(candidate_microbatch), None, None, None) => Ok(TrainCli {
             config_path: Some(config_path.ok_or_else(|| usage(&program))?),
@@ -1054,6 +1270,8 @@ where
             }),
             probe_child: None,
             experimental_backend,
+            python_learner: None,
+            bc_backend: BcBackend::RustBurn,
         }),
         (Some(kind), Some(candidate_microbatch), Some(result_path), None, None) => Ok(TrainCli {
             config_path: Some(config_path.ok_or_else(|| usage(&program))?),
@@ -1076,6 +1294,8 @@ where
                 discovery_index_path: probe_discovery_index_path.clone(),
             })),
             experimental_backend,
+            python_learner: None,
+            bc_backend: BcBackend::RustBurn,
         }),
         (Some(kind), Some(candidate_microbatch), None, Some(results_path), Some(attempts)) => {
             Ok(TrainCli {
@@ -1100,6 +1320,8 @@ where
                     discovery_index_path: probe_discovery_index_path,
                 })),
                 experimental_backend,
+                python_learner: None,
+                bc_backend: BcBackend::RustBurn,
             })
         }
         _ => Err(format!(

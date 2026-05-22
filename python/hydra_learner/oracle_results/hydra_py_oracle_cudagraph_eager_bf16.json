@@ -1,0 +1,15 @@
+{
+  "variant": "cudagraph_eager_bf16",
+  "env": {
+    "torch_version": "2.13.0.dev20260521+cu130",
+    "torch_cuda": "13.0",
+    "cuda_available": true,
+    "device_name": "NVIDIA GeForce RTX 5070",
+    "device_capability": [
+      12,
+      0
+    ],
+    "optimizer": "AdamW"
+  },
+  "cudagraph_error": "AcceleratorError: CUDA error: operation failed due to a previous error during capture\nSearch for `cudaErrorStreamCaptureInvalidated' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.\nFor more detailed error information, run with CUDA_LOG_FILE=stderr\n"
+}

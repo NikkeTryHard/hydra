@@ -17,6 +17,8 @@ fn cli() -> TrainCli {
         probe_only: None,
         probe_child: None,
         experimental_backend: hydra_train_runtime::config::ExperimentalTrainBackend::LibTorch,
+        python_learner: None,
+        bc_backend: hydra_train_runtime::config::BcBackend::RustBurn,
     }
 }
 
@@ -40,6 +42,7 @@ fn config() -> TrainConfig {
         exit_sidecar_path: None,
         delta_q_sidecar_path: None,
         bc_shards_manifest_path: None,
+        bc_backend: Default::default(),
         shard_prefetch_depth: None,
         train_fraction: 0.9,
         source_filters: hydra_data_core::SourceFilterConfig::default(),
@@ -48,6 +51,7 @@ fn config() -> TrainConfig {
         seed: 0,
         advanced_loss: None,
         bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
+        experimental_backbone_profile: None,
         validation_gates: ValidationGateConfig::default(),
         rl: None,
         bc: BcHyperparamConfig::default(),

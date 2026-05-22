@@ -86,6 +86,7 @@ fn benchmark_train_config(
         checkpoint_every_n_steps: 1_000_000,
         max_train_steps: Some(options.max_train_steps),
         max_validation_samples: Some(1),
+        experimental_backbone_profile: options.experimental_backbone_profile.clone(),
         ..TrainConfig::default_preflight_bench()
     }
 }
@@ -208,7 +209,7 @@ fn run_burn_cuda_probe(
     }
 
     let train_cfg = trainer_config_from_train_config(config);
-    let mut model = Some(HydraModelConfig::learner().init::<BurnCudaTrainBackend>(&device));
+    let mut model = Some(train_cfg.model_config.init::<BurnCudaTrainBackend>(&device));
     let mut optimizer = train_cfg.optimizer_config().init();
     let loss_fn =
         HydraLoss::<BurnCudaTrainBackend>::new(build_loss_config(config.advanced_loss.as_ref())?);
@@ -498,6 +499,7 @@ pub fn handle_preflight_mode(preflight: PreflightCliOptions) -> Result<(), Strin
     validate_preflight_config(preflight_config)?;
     let config = TrainConfig {
         bc_shards_manifest_path: None,
+        bc_backend: Default::default(),
         output_dir: preflight.output_dir.clone(),
         device: preflight.device.clone(),
         ..TrainConfig::default_preflight_bench()

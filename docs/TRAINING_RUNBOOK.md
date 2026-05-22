@@ -24,10 +24,10 @@ Modes:
 
 | Mode | Invoke | Use |
 |---|---|---|
-| normal train | `train config.yaml` | BC/RL per YAML |
+| normal BC shard train | `train --bc-shards-manifest <manifest> --output-dir <dir> --device cuda:0 ...` or `train config.yaml` with `bc_shards_manifest_path` | default Python/PyTorch BC learner via Rust launcher |
+| normal Rust/Burn train | `train config.yaml` with `bc_backend: rust_burn` or CLI `--bc-backend rust-burn` | legacy/reference BC path; required for ExIt/DeltaQ/belief/mixture/opponent-hand-type until Python supports them |
 | preflight | `train --preflight --pf-candidate-tuples ... --pf-output md` | benchmark exact runtime tuples against synthetic/in-memory work; no config, manifest, dataset, cache, choice, or YAML write |
 | probe-only | `train config.yaml --probe-kind <train|validation|rl_games|rl_microbatch> --probe-candidate-microbatch <N> ...` | bounded candidate check, no full train |
-| DeltaQ promotion | `train config.yaml --delta-q-promotion --delta-q-baseline-checkpoint <path>` | candidate-vs-baseline gated eval |
 
 Internal child probe path exists. Not op entrypoint.
 
@@ -61,6 +61,7 @@ Choose:
 | `exit_sidecar_path` | optional ExIt sidecar index |
 | `delta_q_sidecar_path` | optional DeltaQ sidecar index |
 | `bc_shards_manifest_path` | prebuilt BC shard manifest input |
+| `bc_backend` | BC shard train backend; default `python`; set `rust_burn` only for legacy/debug or advanced labels Python lacks |
 | `shard_prefetch_depth` | shard host-batch queue depth; default `2`, valid `1..64` |
 | `validation_gates` | optional best-checkpoint gate; off by default |
 
@@ -80,6 +81,24 @@ bc:
   warmup_steps: 1000
 ```
 
+Minimal BC shard train, default Python/PyTorch backend:
+
+```yaml
+data_dir: /data                 # still retained as config contract; shard path supplies samples
+output_dir: /output
+num_epochs: 1
+batch_size: 2048
+device: cuda:0
+bc_shards_manifest_path: /data/bc_shards_manifest.json
+# bc_backend: python            # default
+```
+
+Legacy Rust/Burn BC path:
+
+```yaml
+bc_backend: rust_burn
+```
+
 Useful BC adds:
 
 ```yaml
@@ -97,6 +116,20 @@ BC head profile. Default `full` is canonical BC baseline. `policy_only` is expli
 bc_head_profile: full        # default
 # bc_head_profile: policy_only
 ```
+
+Experimental backbone profile. Default absent = canonical learner: 24 blocks, 256 hidden, Mish, SE every block, two GroupNorms per block. Research infra only: final op-count ablation did not show material throughput gain. Do not use for default training, throughput-win claims, or strength claims without separate evidence.
+
+```yaml
+experimental_backbone_profile:
+  activation: relu          # mish | silu | relu
+  se_every_n: 999           # 1 = every block; high value = none for current learner
+  norm: first_only          # both | first_only
+  num_blocks: 6             # optional architecture tradeoff
+  hidden_channels: 256      # optional architecture tradeoff
+```
+
+Final fixed-shard ablation: reducing blocks 12 -> 6 did not improve throughput; best observed gain was ~1%, below material threshold.
+
 
 Explicit CUDA FP32 override:
 
@@ -130,7 +163,7 @@ Current RL phase enum:
 - `drda_ach_self_play`
 - `exit_pondering`
 
-Status: BC path is stable baseline. `bf16_autocast` runs BC CUDA AMP forward as effective `bf16_amp`; loss/backward/optimizer/checkpoint/validation stay FP32. RL and DeltaQ promotion hard-error on BF16.
+Status: plain BC shard path defaults to Python/PyTorch through Rust launcher. Rust owns replay parsing, shard building, manifest validation, and CLI/config orchestration. Python owns BC model/loss/optimizer/BF16/`torch.compile`/checkpoint. ExIt/DeltaQ/belief/mixture/opponent-hand-type are not supported by Python default yet; use `bc_backend: rust_burn` only for those advanced modes or debugging.
 
 ## Preflight benchmark + YAML authority
 
@@ -627,6 +660,13 @@ Probe knobs:
 
 Recent shard slice was CUDA-graph transport/probe signal, not BF16 evidence: `1981.9 samples/s`, wall `4.63s`; prior plain shard mean `1888.9 samples/s`; about `+4.9%` in one run. Single-run signal only. Main bottleneck still model compute + unfused Burn Adam.
 
+Nsight/NVTX capture: `HYDRA_NVTX=1` needs Pixi NVTX library visible or `nsys stats --report nvtx_kern_sum:base` may report no NVTX data:
+
+```bash
+LD_LIBRARY_PATH=.pixi/envs/default/lib/python3.12/site-packages/nvidia/nvtx/lib:$LD_LIBRARY_PATH
+```
+
+Do not make source-attribution claims from Nsight reports until `nvtx_kern_sum` shows Hydra ranges.
 ## Runtime advisories
 
 Hydra emits advisories to console and `bc/step_log.jsonl` as `runtime_advisories`. They mean valid-but-underoptimized unless paired with hard error.

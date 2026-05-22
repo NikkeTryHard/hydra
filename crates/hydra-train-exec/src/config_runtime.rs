@@ -135,7 +135,11 @@ pub fn validate_config(config: &TrainConfig) -> Result<(), String> {
 
 /// Builds the Burn BC trainer config from YAML/runtime scalar config.
 pub fn trainer_config_from_train_config(config: &TrainConfig) -> BCTrainerConfig {
-    BCTrainerConfig::new(HydraModelConfig::learner())
+    let model_config = match &config.experimental_backbone_profile {
+        Some(profile) => profile.apply_to_model_shape(HydraModelConfig::learner()),
+        None => HydraModelConfig::learner(),
+    };
+    BCTrainerConfig::new(model_config)
         .with_batch_size(config.batch_size)
         .with_lr(config.bc.learning_rate)
         .with_min_learning_rate(config.bc.min_learning_rate)
@@ -161,4 +165,39 @@ pub fn rl_config_from_train_config(rl: &RlTrainConfig) -> RlConfig {
     }
     cfg.microbatch_size = Some(rl.microbatch_size.unwrap_or(DEFAULT_RL_MICROBATCH_SIZE));
     cfg
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hydra_train_runtime::config::ExperimentalBackboneProfileConfig;
+    use hydra_train_types::config::{BackboneActivationConfig, BackboneNormConfig};
+
+    #[test]
+    fn trainer_config_applies_experimental_backbone_profile() {
+        let mut config = TrainConfig::default_preflight_bench();
+        config.batch_size = 128;
+        config.experimental_backbone_profile = Some(ExperimentalBackboneProfileConfig {
+            activation: BackboneActivationConfig::Relu,
+            se_every_n: 4,
+            norm: BackboneNormConfig::FirstOnly,
+            num_blocks: Some(12),
+            hidden_channels: Some(128),
+        });
+
+        let trainer = trainer_config_from_train_config(&config);
+
+        assert_eq!(trainer.batch_size, 128);
+        assert_eq!(
+            trainer.model_config.backbone_activation,
+            BackboneActivationConfig::Relu
+        );
+        assert_eq!(trainer.model_config.backbone_se_every_n, 4);
+        assert_eq!(
+            trainer.model_config.backbone_norm,
+            BackboneNormConfig::FirstOnly
+        );
+        assert_eq!(trainer.model_config.num_blocks, 12);
+        assert_eq!(trainer.model_config.hidden_channels, 128);
+    }
 }

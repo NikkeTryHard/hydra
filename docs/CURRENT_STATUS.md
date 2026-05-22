@@ -30,16 +30,17 @@ File uses status vocabulary from `research/design/HYDRA_RECONCILIATION.md`.
 - `hydra-core` = real first-party runtime/encoder/simulator crate.
 - Live encoder/model contract = `192x34`; old `85x34` view = baseline-prefix only.
 - Fixed runtime action space = 46 actions with two-phase riichi and kan handling.
-- BC training normal runtime is YAML-derived. Preflight is now markdown benchmark over exact candidate tuples; it produces evidence rows only and does not configure normal training.
+- BC shard training default is Python/PyTorch through Rust launcher. Rust owns replay parsing, shard building, manifest validation, CLI/config orchestration, and legacy Rust/Burn reference path. Python owns BC model/loss/optimizer/BF16/`torch.compile`/checkpoint-resume. Plain BC shard path supports full base heads/losses plus default-off `safety_residual` and `oracle_critic` labels when present.
 - Stronger public-teacher belief-semantics tranche shipped in current training baseline.
 - Current Hand-EV realism upgrade shipped in live baseline surface.
 - Replay-derived `safety_residual` shipped as narrow supervised lane.
 - ExIt has end-to-end carrier across live self-play lane and replay/sample sidecar-first lane.
 - Rare-action train/validation metrics shipped as observability only; no policy behavior change.
 
-- BC shards are compact-only v3 on disk. No dense/v2 storage path is supported. Workflow is build shards, optionally run manifestless markdown preflight for runtime-shape evidence, edit YAML by hand if desired, then train from `bc_shards_manifest_path`. Shard builder writes replay-fact baseline observation records, omits advanced/search/Hand-EV dense tails, and dense v2 shards hard-error with rebuild-from-replay message. Reader expands compact records back to unchanged `192x34` training tensors with advanced channels absent/zero for replay BC shards.
-- BC shard CUDA path has reusable pinned H2D staging, preallocated GPU tensors, CPU f32 policy-target materialization, and child-process CUDA graph compute-capture probe. Production CUDA graph replay remains blocked by Burn `GradientsParams` optimizer contract; runtime labels say `cuda_graph_replay=production_off_probe_only`.
-- BC CUDA LibTorch training defaults to BF16 AMP when `precision_mode` is omitted. Explicit `precision_mode: fp32` keeps CUDA BC FP32; CPU omission stays FP32. BF16 AMP wraps BC forward only; loss/backward/optimizer/checkpoints/validation remain FP32. RL and DeltaQ promotion hard-error on BF16.
+- BC shards are compact-only v3 on disk. No dense/v2 storage path is supported. Workflow is build shards, then train via default Python BC learner from `--bc-shards-manifest` or YAML `bc_shards_manifest_path`. Shard builder writes replay-fact baseline observation records, omits advanced/search/Hand-EV dense tails, and dense v2 shards hard-error with rebuild-from-replay message. Python reader expands compact records to unchanged `192x34` training tensors and full base labels.
+- Legacy Rust/Burn BC shard CUDA path remains explicit fallback/debug path (`bc_backend: rust_burn` / `--bc-backend rust-burn`). It has reusable pinned H2D staging, preallocated GPU tensors, CPU f32 policy-target materialization, and child-process CUDA graph compute-capture probe. Production CUDA graph replay remains blocked by Burn `GradientsParams` optimizer contract; runtime labels say `cuda_graph_replay=production_off_probe_only`.
+- Python BC CUDA uses `py-train` env with PyTorch `2.11.0+cu128`; root/default Rust/Burn env remains torch/libtorch `2.9.0`. ExIt/DeltaQ/belief/mixture/opponent-hand-type are not supported in Python default yet; use legacy Rust/Burn path for those advanced modes or debugging.
+
 ### Implemented but not default-on
 
 - Narrow DeltaQ supervision lane impl in code, promotion-gated through arena-confirmation path.
@@ -48,7 +49,8 @@ File uses status vocabulary from `research/design/HYDRA_RECONCILIATION.md`.
 
 ### Experimental / parked
 
-- `burn-cuda-probe` is explicit feature-gated, operator-selected BC-shard FP32 probe only. It never runs unless built with feature `burn-cuda-probe` and selected with `--experimental-backend burn-cuda`. LibTorch remains default/production backend. Current proof: Burn-CUDA FP32 BC is functional with real microbatch gradient accumulation, but measured `~238.7 samples/s` versus LibTorch FP32 `~5801 samples/s` on same shard/batch/microbatch config. Not current throughput lane; no Nsight/kernel-count work until same-order throughput.
+- `burn-cuda-probe` is explicit feature-gated, operator-selected BC-shard FP32 probe only. It never runs unless built with feature `burn-cuda-probe` and selected with `--experimental-backend burn-cuda`. LibTorch remains default/production backend. Current proof: Burn-CUDA FP32 BC is functional with real microbatch gradient accumulation; fusion-enabled retry measured `~250.85 samples/s` on bc-shards batch `2048`, microbatch `256`, `30` steps, finite loss and no allocator crash, versus LibTorch FP32 `~5801 samples/s`. Not current throughput lane; no more Burn native CUDA throughput work.
+- `experimental_backbone_profile` exists for BC throughput ablation only. It is YAML/benchmark-CLI gated, default absent, and preserves `192x34` input plus all BC full/policy head tensor contracts. Final op-count ablation on fixed 100k BC shards did **not** scale with block count: default `~6692 samples/s`; ReLU/no-SE/first-norm 12 blocks `~6726`; 6 blocks `~6646`; 4 blocks `~6759`; 6 blocks/128 hidden `~6713`. Best gain `~1.0%`, below material threshold. Park as research infra only unless explicitly built/used for throughput experiments; do not treat as throughput fix or strength claim.
 ### Implemented but staged
 
 - `mixture_weight` promotion remains staged.

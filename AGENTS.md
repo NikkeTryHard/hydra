@@ -78,7 +78,7 @@ Boundary rules:
 
 Use Pixi from repo root. Do not use system Cargo for normal work; Pixi pins Rust, libtorch/PyTorch, clang/mold, sccache, protobuf, and linker env.
 
-Core gates: read `pixi.toml`
+Core gates: read `pyproject.toml` (`tool.pixi`, Ruff, Pyrefly, pytest); legacy `pixi.toml` intentionally removed.
 
 Compatibility aliases: `build-fast` -> `build-release`; `nextest` -> `test`.
 
@@ -97,6 +97,18 @@ pixi run scripts/nextest-quiet.sh run -p <crate> <ignored-test> --features <feat
 
 Prefer faster nextest over cargo test. When invoking nextest directly, use `scripts/nextest-quiet.sh` through Pixi instead of `cargo nextest` to store full output in `target/nextest-quiet-output.log` and print only failure context.
 
+Python fast loops (new PyTorch backend):
+
+```bash
+pixi run fmt-python-check
+pixi run lint-python
+pixi run typecheck-python
+pixi run test-python
+pixi run test-python-cuda  # only when task touches CUDA/compile path
+```
+
+Python gates are mandatory for Python changes. Tool deps/config live in `pyproject.toml`; do not add parallel Python tool config files unless tool requires it.
+
 ## Pixi/libtorch/tooling contract
 
 - Single default Pixi env covers CPU/GPU. Hydra config selects `device: cpu` or `device: cuda:0`.
@@ -110,11 +122,36 @@ Prefer faster nextest over cargo test. When invoking nextest directly, use `scri
 ## Burn dependency decisions
 
 - Burn stack is patched locally in `third_party/burn`: `burn`, `burn-autodiff`, `burn-backend`, `burn-tch`, `burn-flex`, `burn-ndarray`, `burn-optim` at `0.21.0`.
-- Current training backend is LibTorch/tch
+- Current default BC training backend is Python/PyTorch through Rust launcher (`py-train`, torch `2.11.0+cu128`). Rust/Burn remains legacy/reference path for advanced modes and debugging; keep Burn stack patched for compatibility.
 - keep optimizer `.bin` contract unless full resume parity proof passes.
-- Keep Burn Adam as production optimizer. AdamW/AMSGrad/Adan are fresh-run experiments only; Muon requires parameter groups and is unsafe for global Hydra params; LBFGS does not fit streaming BC/RL. None fixes CUDA graph replay because Burn `GradientsParams` + module mapping remains blocker.
+- Keep Burn Adam for legacy Rust/Burn path. Python BC uses AdamW in its data-only checkpoint contract. AdamW/AMSGrad/Adan remain Rust/Burn fresh-run experiments only; Muon requires parameter groups and is unsafe for global Hydra params; LBFGS does not fit streaming BC/RL. None fixes CUDA graph replay because Burn `GradientsParams` + module mapping remains blocker.
 - For profiling, keep Hydra timings + NVTX + Nsight Systems/Compute.
 
+
+## Python/PyTorch backend rules
+
+- Python is default plain BC shard training backend. Rust remains source of truth for replay/shards/runtime contracts, action count, legal mask width, encoder shape, CLI orchestration, and checkpoint/runtime metadata validation.
+- Use Python for BC model/loss/optimizer/AMP/`torch.compile`/profiler/checkpoint. Keep Rust data/orchestration contracts narrow and explicit. ExIt/DeltaQ/belief/mixture/opponent-hand-type are not supported in Python default yet; use legacy Rust/Burn only for those advanced modes or debugging.
+- Ruff format/check, Pyrefly, and pytest are required gates for Python code. Do not defer tool setup; Python tech debt compounds quickly.
+- Ruff is only formatter/import sorter/linter unless project policy changes. Do not add Black/isort/Flake8 stacks beside Ruff.
+- Pyrefly is authoritative Python type checker. New Python files must pass Pyrefly. If another checker is run, treat disagreement as review input, not reason for broad suppressions.
+- All public Python functions, methods, dataclasses, configs, dataset/batch objects, model/loss boundaries, optimizer factories, checkpoint readers/writers, and Rust/Python boundary code require explicit parameter and return annotations.
+- No implicit `Any`, bare containers, or untyped `Callable` in checked code. `Any`, `cast`, `# type: ignore`, `# pyrefly: ignore`, and Ruff `noqa` require exact diagnostic code plus short local reason.
+- Do not globally silence missing imports or missing stubs. Add narrow package-scoped stub/allowlist with owner and removal plan when dependency types are incomplete.
+- Tensor annotations are not tensor contracts. Validate shape, dtype, device, layout/contiguity, finite values, batch dimension, `192x34` encoder shape, and 46-wide action/legal-mask surfaces at process/file/FFI/data/model/loss/checkpoint boundaries.
+- Boundary validation should be cheap and deliberate. Do not run Pydantic or expensive Python validation inside per-batch/per-microbatch hot loops; validate once, convert to typed runtime objects, then run hot code allocation-aware.
+- Device movement is explicit. No hidden `.to(device)` deep in helpers; caller owns placement. function that moves tensors says so in its API/name and tests assert resulting device.
+- No hidden synchronization in training hot paths: `.item()`, `.tolist()`, `.cpu()`, `.numpy()`, tensor `print`, and broad `torch.cuda.synchronize()` are forbidden except at named metric, validation, checkpoint, debug, or profiling boundaries with measured sync cost.
+- BF16/AMP is explicit. Use `torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16)` only where intended. Optimizer/master/checkpoint scalar state stays FP32 unless exact resume/parity tests prove another contract.
+- `torch.compile` regions must be pure tensor code: no file I/O, logging, config parsing, Python side effects, data-dependent Python branches, or dynamic object churn. Use compile diagnostics and fail tests on unexpected graph breaks/recompiles.
+- Randomness is explicit and recorded: seed Python, NumPy, PyTorch CPU/CUDA as applicable; record seed, deterministic flags, PyTorch/CUDA/cuDNN versions, device, precision, compile mode, and shard manifest digest.
+- Checkpoints are versioned data-only contracts: save model/optimizer/scheduler/scaler/RNG/config/runtime metadata as state-dict-like primitives with schema version and manifest digest. Never pickle modules, dataloaders, closures, compiled functions, or Python config objects as production checkpoints.
+- Production checkpoint load uses safe loading (`weights_only=True` where possible) and validates schema/version/runtime/shape/dtype before accepting. Unknown or partial checkpoint metadata hard-errors.
+- Metrics are structured records, not ad-hoc prints. Emit JSONL/typed metrics with step, samples, batch/microbatch, losses, LR, grad norm/overflow, throughput, CUDA memory, compile counters, sync points, and stage timings.
+- Tests use pytest with real tensors/files/process boundaries. No mocks for model, optimizer, dataloader, checkpoint, compile, or CUDA behavior. Use tiny real datasets and `tmp_path`; monkeypatch only env/path isolation.
+- Tensor assertions use `torch.testing.assert_close` or exact equality with explicit shape/dtype/device checks and dtype-appropriate tolerances. BF16 gets separate tolerances; never claim FP32 parity unless measured.
+- CUDA/BF16/compile claims require CUDA-marked tests or exact benchmark/profiler run on that path. CPU tests do not prove CUDA behavior.
+- Profiling evidence needs warmup, fixed inputs, named Hydra stages, and before/after comparison. Kernel names alone are not enough; tie decisions to data/H2D/forward/loss/backward/optimizer/metrics stages.
 ## Licensing and source boundaries
 
 - `Mortal-Policy/` is AGPL. Never copy, adapt, derive, port line-by-line, link, or translate code from it. Black-box behavior/compatibility ideas only.

@@ -162,6 +162,12 @@ pub fn validate_config(config: &TrainConfig) -> Result<(), String> {
             );
         }
     }
+    if let Some(profile) = config.experimental_backbone_profile.as_ref() {
+        profile
+            .apply_to_model_shape(hydra_train_types::config::ModelShapeConfig::learner())
+            .validate()
+            .map_err(|err| format!("experimental_backbone_profile invalid: {err}"))?;
+    }
     if let Some(rl) = config.rl.as_ref() {
         validate_rl_config(rl)?;
     }

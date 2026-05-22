@@ -115,7 +115,20 @@ Run preflight benchmark:
 pixi run cargo run -p hydra-train --no-default-features --features training --bin train -- --preflight --pf-candidate-tuples 1024:2:1:1 --pf-warmup-steps 10 --pf-measure-steps 100 --pf-repetitions 1 --pf-output md
 ```
 
-Run training with config:
+Run default BC shard training through Rust launcher. Rust validates CLI/manifest contracts, then launches Python/PyTorch BC learner in Pixi `py-train`:
+
+```bash
+pixi run cargo run --quiet --package hydra-train --features training --bin train -- \
+  --bc-shards-manifest output/bc-feed-bench-shards-100k/bc_shards_manifest.json \
+  --output-dir /home/cachybtw/tmp/hydra-py-default-bc-smoke \
+  --device cuda:0 \
+  --python-variant compile_default \
+  --python-warmup 1 \
+  --python-steps 3 \
+  --python-compile-fullgraph-check
+```
+
+Run config-backed training:
 
 ```bash
 pixi run cargo run -p hydra-train --no-default-features --features training --bin train -- path/to/config.yaml
@@ -124,7 +137,9 @@ pixi run cargo run -p hydra-train --no-default-features --features training --bi
 Notes:
 
 - Config examples and operator details live in [`docs/TRAINING_RUNBOOK.md`](docs/TRAINING_RUNBOOK.md).
-- `device: cpu` works for CPU runs. `device: cuda:0` needs working NVIDIA/CUDA/PyTorch stack visible through Pixi.
+- For plain BC with `bc_shards_manifest_path`, default backend is Python/PyTorch. Rust still owns replay parsing, shard building, manifest validation, and orchestration; Python owns BC model/loss/optimizer/compile/checkpoint.
+- Use `bc_backend: rust_burn` or CLI `--bc-backend rust-burn` only for legacy Rust/Burn debugging or advanced labels not supported by Python default yet: ExIt, DeltaQ, belief, mixture, opponent hand type.
+- `device: cpu` works for CPU Rust paths. Default Python BC expects CUDA for throughput.
 - CUDA graph support is explicit and compile-checked with:
 
 ```bash

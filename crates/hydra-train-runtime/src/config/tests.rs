@@ -110,6 +110,49 @@ fn parse_args_accepts_experimental_burn_cuda_backend() {
 }
 
 #[test]
+fn parse_args_accepts_experimental_backbone_profile() {
+    let cli = parse_args(vec![
+        "train".to_string(),
+        "--benchmark-baseline".to_string(),
+        "--bench-source".to_string(),
+        "bc-shards".to_string(),
+        "--bc-shards-manifest".to_string(),
+        "shards/manifest.json".to_string(),
+        "--experimental-backbone-profile".to_string(),
+        "activation=relu,se_every_n=4,norm=first_only,blocks=12,hidden=128".to_string(),
+    ])
+    .expect("experimental backbone profile should parse");
+
+    let profile = cli
+        .benchmark_baseline
+        .expect("benchmark options should be present")
+        .experimental_backbone_profile
+        .expect("profile should be present");
+    assert_eq!(profile.activation, BackboneActivationConfig::Relu);
+    assert_eq!(profile.se_every_n, 4);
+    assert_eq!(profile.norm, BackboneNormConfig::FirstOnly);
+    assert_eq!(profile.num_blocks, Some(12));
+    assert_eq!(profile.hidden_channels, Some(128));
+}
+
+#[test]
+fn parse_args_rejects_invalid_experimental_backbone_profile() {
+    let err = parse_args(vec![
+        "train".to_string(),
+        "--benchmark-baseline".to_string(),
+        "--bench-source".to_string(),
+        "bc-shards".to_string(),
+        "--bc-shards-manifest".to_string(),
+        "shards/manifest.json".to_string(),
+        "--experimental-backbone-profile".to_string(),
+        "activation=gelu".to_string(),
+    ])
+    .expect_err("invalid backbone profile should fail");
+
+    assert!(err.contains("unsupported backbone activation"));
+}
+
+#[test]
 fn parse_args_rejects_benchmark_config_path() {
     let err = parse_args(vec![
         "train".to_string(),
@@ -178,4 +221,92 @@ fn parse_args_rejects_benchmark_bc_shards_without_manifest() {
     ])
     .expect_err("bc shard benchmark needs manifest");
     assert!(err.contains("--bench-source bc-shards requires --bc-shards-manifest <path>"));
+}
+
+#[test]
+fn parse_args_accepts_explicit_python_learner_alias() {
+    let cli = parse_args(vec![
+        "train".to_string(),
+        "--experimental-python-learner".to_string(),
+        "--bc-shards-manifest".to_string(),
+        "output/shards/manifest.json".to_string(),
+        "--output-dir".to_string(),
+        "out/python".to_string(),
+        "--device".to_string(),
+        "cuda:0".to_string(),
+        "--python-variant".to_string(),
+        "compile_default".to_string(),
+        "--python-warmup".to_string(),
+        "1".to_string(),
+        "--python-steps".to_string(),
+        "3".to_string(),
+        "--python-compile-fullgraph-check".to_string(),
+    ])
+    .expect("explicit python learner mode should parse");
+    let python = cli
+        .python_learner
+        .expect("python options should be present");
+    assert_eq!(
+        python.bc_shards_manifest,
+        std::path::PathBuf::from("output/shards/manifest.json")
+    );
+    assert_eq!(python.output_dir, std::path::PathBuf::from("out/python"));
+    assert_eq!(python.device, "cuda:0");
+    assert_eq!(python.variant, PythonLearnerVariant::CompileDefault);
+    assert_eq!(python.warmup_steps, 1);
+    assert_eq!(python.steps, 3);
+    assert!(python.compile_fullgraph_check);
+    assert!(cli.config_path.is_none());
+    assert!(cli.benchmark_baseline.is_none());
+    assert_eq!(cli.bc_backend, BcBackend::Python);
+}
+
+#[test]
+fn parse_args_accepts_bc_shards_manifest_as_python_default() {
+    let cli = parse_args(vec![
+        "train".to_string(),
+        "--bc-shards-manifest".to_string(),
+        "output/shards/manifest.json".to_string(),
+        "--output-dir".to_string(),
+        "out/python".to_string(),
+        "--python-variant".to_string(),
+        "compile_default".to_string(),
+    ])
+    .expect("bc shard manifest should default to python learner");
+    let python = cli
+        .python_learner
+        .expect("python options should be present");
+    assert_eq!(cli.bc_backend, BcBackend::Python);
+    assert_eq!(
+        python.bc_shards_manifest,
+        std::path::PathBuf::from("output/shards/manifest.json")
+    );
+    assert_eq!(python.variant, PythonLearnerVariant::CompileDefault);
+}
+
+#[test]
+fn parse_args_explicit_rust_legacy_backend_uses_old_path() {
+    let cli = parse_args(vec![
+        "train".to_string(),
+        "--bc-shards-manifest".to_string(),
+        "output/shards/manifest.json".to_string(),
+        "--bc-backend".to_string(),
+        "rust-burn".to_string(),
+    ])
+    .expect("explicit rust backend should parse");
+    assert_eq!(cli.bc_backend, BcBackend::RustBurn);
+    assert!(cli.python_learner.is_none());
+    assert!(cli.benchmark_baseline.is_none());
+}
+
+#[test]
+fn parse_args_rejects_python_learner_without_manifest() {
+    let err = parse_args(vec![
+        "train".to_string(),
+        "--experimental-python-learner".to_string(),
+        "--output-dir".to_string(),
+        "out/python".to_string(),
+    ])
+    .expect_err("python learner requires manifest");
+    assert!(err.contains("requires --bc-shards-manifest"));
 }

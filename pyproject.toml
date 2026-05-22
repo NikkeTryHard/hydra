@@ -1,0 +1,249 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hydra-learner"
+version = "0.0.0"
+description = "PyTorch BC learner lane for Hydra."
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "hatchling>=1.27,<2",
+    "pyrefly>=1,<2",
+    "pytest>=8,<9",
+    "ruff>=0.11,<0.14",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["python/hydra_learner/hydra_learner"]
+
+[tool.pixi.workspace]
+name = "hydra"
+channels = ["https://prefix.dev/conda-forge"]
+platforms = ["linux-64"]
+requires-pixi = ">=0.49"
+
+[tool.pixi.dependencies]
+python = ">=3.12,<3.13"
+
+[tool.pixi.feature.dev.dependencies]
+rust = ">=1.95,<1.96"
+cargo-nextest = ">=0.9.133,<0.10"
+clang = "*"
+cmake = "*"
+ninja = "*"
+pkg-config = "*"
+protobuf = "*"
+git = "*"
+zstd = "*"
+mold = "*"
+sccache = ">=0.15.0,<0.16"
+
+[tool.pixi.pypi-dependencies]
+hydra-learner = { path = ".", editable = true }
+
+[tool.pixi.feature.dev.pypi-dependencies]
+numpy = "==1.26.4"
+torch = "==2.9.0"
+
+[tool.pixi.feature.py-train.pypi-options]
+index-url = "https://download.pytorch.org/whl/cu128"
+extra-index-urls = ["https://pypi.org/simple"]
+index-strategy = "unsafe-best-match"
+
+[tool.pixi.feature.py-train.dependencies]
+python = ">=3.12,<3.13"
+
+[tool.pixi.feature.py-train.pypi-dependencies]
+hydra-learner = { path = ".", editable = true }
+hatchling = ">=1.27,<2"
+numpy = "==1.26.4"
+pyrefly = ">=1,<2"
+pytest = ">=8,<9"
+ruff = ">=0.11,<0.14"
+torch = "==2.11.0+cu128"
+
+[tool.pixi.feature.py-train.tasks]
+fmt-python = { cmd = "ruff format python scripts/hydra_pytorch_oracle.py", description = "Format Python learner code" }
+fmt-python-check = { cmd = "ruff format --check python scripts/hydra_pytorch_oracle.py", description = "Check Python learner formatting" }
+lint-python = { cmd = "ruff check python scripts/hydra_pytorch_oracle.py", description = "Lint Python learner code" }
+lint-python-fix = { cmd = "ruff check --fix python scripts/hydra_pytorch_oracle.py", description = "Auto-fix Python learner lint violations" }
+typecheck-python = { cmd = "pyrefly check", description = "Type-check Python learner code with Pyrefly" }
+test-python = { cmd = "scripts/pytest-quiet.sh python/hydra_learner", description = "Run Python learner tests" }
+test-python-cuda = { cmd = "scripts/pytest-quiet.sh python/hydra_learner -m 'cuda or compile'", description = "Run Python CUDA/compile tests" }
+python-bc-train = { cmd = "python scripts/hydra_pytorch_oracle.py", description = "Run Python/PyTorch BC learner; pass args after --" }
+
+[tool.pixi.feature.py-train-212-nightly-probe.pypi-options]
+index-url = "https://download.pytorch.org/whl/nightly/cu128"
+extra-index-urls = ["https://pypi.org/simple"]
+index-strategy = "unsafe-best-match"
+prerelease-mode = "allow"
+
+[tool.pixi.feature.py-train-212-nightly-probe.dependencies]
+python = ">=3.12,<3.13"
+
+[tool.pixi.feature.py-train-212-nightly-probe.pypi-dependencies]
+hydra-learner = { path = ".", editable = true }
+hatchling = ">=1.27,<2"
+numpy = "==1.26.4"
+pyrefly = ">=1,<2"
+pytest = ">=8,<9"
+ruff = ">=0.11,<0.14"
+torch = "==2.12.0.dev20260408+cu128"
+
+[tool.pixi.feature.py-train-212-nightly-probe.tasks]
+fmt-python = { cmd = "ruff format python scripts/hydra_pytorch_oracle.py", description = "Format Python learner code" }
+fmt-python-check = { cmd = "ruff format --check python scripts/hydra_pytorch_oracle.py", description = "Check Python learner formatting" }
+lint-python = { cmd = "ruff check python scripts/hydra_pytorch_oracle.py", description = "Lint Python learner code" }
+lint-python-fix = { cmd = "ruff check --fix python scripts/hydra_pytorch_oracle.py", description = "Auto-fix Python learner lint violations" }
+typecheck-python = { cmd = "pyrefly check", description = "Type-check Python learner code with Pyrefly" }
+test-python = { cmd = "scripts/pytest-quiet.sh python/hydra_learner", description = "Run Python learner tests" }
+test-python-cuda = { cmd = "scripts/pytest-quiet.sh python/hydra_learner -m 'cuda or compile'", description = "Run Python CUDA/compile tests" }
+
+
+[tool.pixi.activation]
+env = { LIBTORCH_USE_PYTORCH = "1", PROTOC = "$CONDA_PREFIX/lib/python3.12/site-packages/torch/bin/protoc", LD_LIBRARY_PATH = "$CONDA_PREFIX/lib/python3.12/site-packages/torch/lib:$CONDA_PREFIX/lib:$LD_LIBRARY_PATH", CUDA_HOME = "$CONDA_PREFIX", CUDA_PATH = "/opt/cuda", RUSTC_WRAPPER = "$PIXI_PROJECT_ROOT/scripts/rustc-wrapper.sh", SCCACHE_DIR = "$PIXI_PROJECT_ROOT/.pixi/sccache" }
+
+[tool.pixi.target.linux-64.activation.env]
+CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER = "$CONDA_PREFIX/bin/clang"
+CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "-C link-arg=-fuse-ld=$CONDA_PREFIX/bin/mold -C link-arg=$CONDA_PREFIX/x86_64-conda-linux-gnu/sysroot/usr/lib64/libc_nonshared.a"
+
+[tool.pixi.environments]
+default = { features = ["dev"], solve-group = "default" }
+py-train = { features = ["py-train"], solve-group = "py-train", no-default-feature = true }
+py-train-212-nightly-probe = { features = ["py-train-212-nightly-probe"], solve-group = "py-train-212-nightly-probe", no-default-feature = true }
+
+[tool.pixi.tasks]
+fmt = [{ task = "fmt-rust" }, { task = "fmt-python" }]
+fmt-check = [{ task = "fmt-rust-check" }, { task = "fmt-python-check" }]
+check = { cmd = "cargo check --workspace --all-targets --no-default-features --quiet", description = "Default no-heavy all-target Rust check" }
+check-lib = { cmd = "cargo check --workspace --lib --no-default-features --quiet", description = "Fast workspace Rust lib check" }
+check-all-targets = { cmd = "cargo check --workspace --all-targets --no-default-features --quiet", description = "No-heavy all-target Rust check" }
+build = { cmd = "cargo build --workspace --no-default-features --quiet", description = "Fast default Rust workspace build" }
+build-release = { cmd = "cargo build --workspace --no-default-features --release --quiet", description = "Fast release Rust workspace build" }
+build-dist = { cmd = "cargo build --workspace --profile prod --quiet", description = "Fat-LTO final Rust artifact build" }
+test = [{ task = "test-rust" }, { task = "test-python" }]
+test-lib = { cmd = "scripts/nextest-quiet.sh run --workspace --lib --no-default-features --cargo-profile dev --cargo-quiet --no-fail-fast", description = "Fast workspace Rust lib unit tests" }
+test-fast = { cmd = "scripts/nextest-quiet.sh run --workspace --tests --no-default-features --cargo-profile dev --cargo-quiet --no-fail-fast", description = "Fast Rust workspace tests without benches/examples" }
+test-release = { cmd = "scripts/nextest-quiet.sh run --workspace --all-targets --no-default-features --release --cargo-quiet --no-fail-fast", description = "Release-profile Rust tests without heavy defaults" }
+test-exhaustive = { cmd = "scripts/nextest-quiet.sh run --workspace --all-targets --all-features --cargo-profile dev --cargo-quiet --no-fail-fast", description = "Explicit all-feature Rust test gate" }
+lint = [{ task = "lint-rust" }, { task = "lint-python" }, { task = "typecheck-python" }]
+lint-exhaustive = { cmd = "scripts/lint-check.sh --exhaustive", description = "Explicit all-feature/CUDA Rust lint plus Python gate" }
+lint-cuda-graph = { cmd = "scripts/lint-check.sh --cuda-graph", description = "Focused CUDA graph Rust lint plus Python gate" }
+quality = [{ task = "fmt-check" }, { task = "lint" }, { task = "test" }]
+bench-core = { cmd = "cargo bench -p hydra-core --no-default-features --features benchmarks", description = "Run hydra-core benches" }
+bench-engine = { cmd = "cargo bench -p hydra-engine --no-default-features --features benchmarks", description = "Run hydra-engine benches" }
+check-training = { cmd = "cargo check -p hydra-train --no-default-features --features training --bin train --quiet", description = "Check explicit CPU LibTorch training path" }
+check-data-tools = { cmd = "cargo check -p hydra-train --no-default-features --features data-tools --bin build_parsed_sample_cache --quiet", description = "Check hydra-train parsed sample cache builder" }
+check-cuda-graph = { cmd = "cargo check -p hydra-train --no-default-features --features cuda-graph --bin train --quiet", description = "Check explicit CUDA graph path" }
+check-training-cuda = { cmd = "pixi run check-cuda-graph", description = "Check serious CUDA shard training path with pinned/prealloc transport" }
+train-cuda-shards = { cmd = "cargo run --release -p hydra-train --bin train --no-default-features --features cuda-graph --", description = "Run CUDA BC shard training with pinned/prealloc transport; pass config path after --" }
+bench-train = { cmd = "cargo bench -p hydra-train --no-default-features --features training", description = "Run hydra-train training benches" }
+timings-check = { cmd = "cargo check --workspace --all-targets --no-default-features --timings --quiet", description = "Timing report for fast default check" }
+timings-nextest-list = { cmd = "scripts/nextest-quiet.sh list --workspace --all-targets --no-default-features --cargo-profile dev --timings --cargo-quiet", description = "Timing report for test discovery" }
+timings-build-fast = { cmd = "cargo build --workspace --no-default-features --timings --quiet", description = "Timing report for default no-heavy build" }
+timings-full = { cmd = "cargo build --workspace --all-features --timings --quiet", description = "Timing report for full heavy path" }
+build-fast = { cmd = "pixi -q run build-release", description = "Compatibility alias for fast release workspace build" }
+nextest = { cmd = "pixi -q run test-rust", description = "Compatibility alias for default no-heavy all-target Rust tests" }
+nextest-list = { cmd = "scripts/nextest-quiet.sh list --workspace --all-targets --no-default-features --cargo-profile dev --cargo-quiet", description = "Discover default no-heavy all-target Rust tests" }
+nextest-list-all-features = { cmd = "scripts/nextest-quiet.sh list --workspace --all-targets --all-features --cargo-profile dev --cargo-quiet", description = "Discover all-feature Rust workspace tests" }
+nextest-list-exhaustive = { cmd = "pixi -q run nextest-list-all-features", description = "Compatibility alias for all-feature test discovery" }
+rustc-wrapper = { cmd = "scripts/rustc-wrapper.sh", description = "Run rustc through the repo sccache wrapper; accepts rustc args" }
+torch-check = { cmd = "python -c \"import torch, os; print(torch.__version__); print(torch.cuda.is_available()); print(os.path.join(os.path.dirname(torch.__file__), 'lib'))\"", description = "Print PyTorch version, CUDA availability, and libtorch path" }
+clean = { cmd = "cargo clean", description = "Delete Cargo build artifacts" }
+fmt-rust = { cmd = "cargo fmt --all", description = "Format Rust workspace" }
+fmt-rust-check = { cmd = "cargo fmt --all -- --check", description = "Check Rust formatting" }
+fmt-python = { cmd = "ruff format python scripts/hydra_pytorch_oracle.py", description = "Format Python learner code" }
+fmt-python-check = { cmd = "ruff format --check python scripts/hydra_pytorch_oracle.py", description = "Check Python learner formatting" }
+lint-rust = { cmd = "scripts/lint-check.sh --fast --rust-only", description = "Fast Rust lint gate" }
+lint-python = { cmd = "ruff check python scripts/hydra_pytorch_oracle.py", description = "Lint Python learner code" }
+lint-python-fix = { cmd = "ruff check --fix python scripts/hydra_pytorch_oracle.py", description = "Auto-fix Python learner lint violations" }
+typecheck-python = { cmd = "pyrefly check", description = "Type-check Python learner code with Pyrefly" }
+test-rust = { cmd = "scripts/nextest-quiet.sh run --workspace --all-targets --no-default-features --cargo-profile dev --cargo-quiet --no-fail-fast", description = "Default no-heavy all-target Rust tests" }
+test-python = { cmd = "scripts/pytest-quiet.sh python/hydra_learner", description = "Run Python learner tests" }
+test-python-cuda = { cmd = "scripts/pytest-quiet.sh python/hydra_learner -m 'cuda or compile'", description = "Run Python CUDA/compile tests" }
+python-bc-train = { cmd = "pixi run -e py-train python-bc-train", description = "Run Python/PyTorch BC learner through py-train; pass args after --" }
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+src = ["python/hydra_learner", "scripts"]
+extend-exclude = ["third_party", "target", "output", "Mortal-Policy", "scripts/generate_*.py"]
+
+[tool.ruff.lint]
+select = [
+    "A",
+    "ANN",
+    "ARG",
+    "B",
+    "C4",
+    "E",
+    "F",
+    "FA",
+    "I",
+    "N",
+    "PERF",
+    "PIE",
+    "PLC",
+    "PLE",
+    "PLW",
+    "PTH",
+    "PYI",
+    "RET",
+    "RUF",
+    "SIM",
+    "T10",
+    "T20",
+    "TC",
+    "UP",
+    "W",
+]
+ignore = [
+    "ANN401",
+    "B010",
+    "BLE001",
+    "E402",
+    "B023",
+    "T201",
+    "TC003",
+    "TC006",
+    "FBT001",
+    "FBT002",
+    "N812",
+    "PLR0912",
+    "PLR0915",
+    "PLR2004",
+    "PLR0402",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/*.py" = ["T201"]
+
+[tool.pyrefly]
+project-includes = ["python/hydra_learner", "scripts/hydra_pytorch_oracle.py"]
+project-excludes = ["scripts/generate_*.py"]
+search-path = ["python/hydra_learner"]
+python-version = "3.12"
+python-platform = "linux"
+preset = "strict"
+check-unannotated-defs = true
+infer-return-types = "checked"
+min-severity = "warn"
+tensor-shapes = true
+
+[tool.pytest.ini_options]
+addopts = [
+    "--strict-config",
+    "--strict-markers",
+    "--color=yes",
+]
+filterwarnings = ["error"]
+pythonpath = ["python/hydra_learner"]
+xfail_strict = true
+markers = [
+    "cuda: requires CUDA-capable PyTorch runtime",
+    "compile: exercises torch.compile path",
+]

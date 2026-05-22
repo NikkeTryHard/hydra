@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 
 use crate::preflight::{PreflightConfig, ProbeKind};
 pub use hydra_data_core::SourceFilterConfig;
+use hydra_train_types::config::ModelShapeConfig;
+pub use hydra_train_types::config::{BackboneActivationConfig, BackboneNormConfig};
 use hydra_train_types::phase::TrainingPhase as PipelineTrainingPhase;
 
 pub use super::config_runtime::{
@@ -34,6 +36,8 @@ pub struct TrainConfig {
     #[serde(default)]
     pub bc_shards_manifest_path: Option<PathBuf>,
     #[serde(default)]
+    pub bc_backend: BcBackendConfig,
+    #[serde(default)]
     pub shard_prefetch_depth: Option<usize>,
     #[serde(default = "default_train_fraction")]
     pub train_fraction: f32,
@@ -48,6 +52,8 @@ pub struct TrainConfig {
     pub advanced_loss: Option<AdvancedLossConfig>,
     #[serde(default)]
     pub bc_head_profile: BcHeadProfile,
+    #[serde(default)]
+    pub experimental_backbone_profile: Option<ExperimentalBackboneProfileConfig>,
     #[serde(default)]
     pub validation_gates: ValidationGateConfig,
     pub rl: Option<RlTrainConfig>,
@@ -93,6 +99,36 @@ pub enum BcHeadProfile {
     #[default]
     Full,
     PolicyOnly,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ExperimentalBackboneProfileConfig {
+    #[serde(default)]
+    pub activation: BackboneActivationConfig,
+    #[serde(default = "default_backbone_se_every_n")]
+    pub se_every_n: usize,
+    #[serde(default)]
+    pub norm: BackboneNormConfig,
+    #[serde(default)]
+    pub num_blocks: Option<usize>,
+    #[serde(default)]
+    pub hidden_channels: Option<usize>,
+}
+
+impl ExperimentalBackboneProfileConfig {
+    pub fn apply_to_model_shape(&self, mut model: ModelShapeConfig) -> ModelShapeConfig {
+        model.backbone_activation = self.activation;
+        model.backbone_se_every_n = self.se_every_n;
+        model.backbone_norm = self.norm;
+        if let Some(num_blocks) = self.num_blocks {
+            model.num_blocks = num_blocks;
+        }
+        if let Some(hidden_channels) = self.hidden_channels {
+            model.hidden_channels = hidden_channels;
+        }
+        model
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -153,6 +189,7 @@ impl TrainConfig {
             exit_sidecar_path: None,
             delta_q_sidecar_path: None,
             bc_shards_manifest_path: None,
+            bc_backend: BcBackendConfig::default(),
             shard_prefetch_depth: Some(default_shard_prefetch_depth()),
             train_fraction: default_train_fraction(),
             source_filters: SourceFilterConfig::default(),
@@ -161,6 +198,7 @@ impl TrainConfig {
             seed: default_seed(),
             advanced_loss: None,
             bc_head_profile: BcHeadProfile::default(),
+            experimental_backbone_profile: None,
             validation_gates: ValidationGateConfig::default(),
             rl: None,
             bc: BcHyperparamConfig::default(),
@@ -280,6 +318,75 @@ pub enum ExperimentalTrainBackend {
     BurnCuda,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BcBackend {
+    Python,
+    RustBurn,
+}
+
+impl BcBackend {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Python => "python",
+            Self::RustBurn => "rust_burn",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PythonLearnerVariant {
+    EagerFp32,
+    EagerBf16,
+    CompileDefault,
+    CompileReduceOverhead,
+    CompileMaxAutotune,
+}
+
+impl PythonLearnerVariant {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::EagerFp32 => "eager_fp32",
+            Self::EagerBf16 => "eager_bf16",
+            Self::CompileDefault => "compile_default",
+            Self::CompileReduceOverhead => "compile_reduce_overhead",
+            Self::CompileMaxAutotune => "compile_max_autotune",
+        }
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BcBackendConfig {
+    #[default]
+    Python,
+    RustBurn,
+}
+
+impl BcBackendConfig {
+    pub const fn as_cli_backend(self) -> BcBackend {
+        match self {
+            Self::Python => BcBackend::Python,
+            Self::RustBurn => BcBackend::RustBurn,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PythonLearnerCliOptions {
+    pub bc_shards_manifest: PathBuf,
+    pub output_dir: PathBuf,
+    pub device: String,
+    pub variant: PythonLearnerVariant,
+    pub warmup_steps: usize,
+    pub steps: usize,
+    pub checkpoint_out: Option<PathBuf>,
+    pub resume: Option<PathBuf>,
+    pub checkpoint_every_steps: usize,
+    pub compile_fullgraph_check: bool,
+    pub oracle_critic_weight: f64,
+    pub safety_residual_weight: f64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct BenchmarkBaselineCliOptions {
     pub data_dir: Option<PathBuf>,
@@ -298,6 +405,7 @@ pub struct BenchmarkBaselineCliOptions {
     pub shard_samples: usize,
     pub train_fraction: f32,
     pub experimental_backend: ExperimentalTrainBackend,
+    pub experimental_backbone_profile: Option<ExperimentalBackboneProfileConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -311,6 +419,8 @@ pub struct TrainCli {
     pub probe_only: Option<ProbeCliRequest>,
     pub probe_child: Option<ProbeChildRequest>,
     pub experimental_backend: ExperimentalTrainBackend,
+    pub python_learner: Option<PythonLearnerCliOptions>,
+    pub bc_backend: BcBackend,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -413,6 +523,10 @@ fn default_validation_gate_max_policy_loss_regression() -> Option<f64> {
 
 fn default_true() -> bool {
     true
+}
+
+pub fn default_backbone_se_every_n() -> usize {
+    1
 }
 pub fn default_batch_size() -> usize {
     2048

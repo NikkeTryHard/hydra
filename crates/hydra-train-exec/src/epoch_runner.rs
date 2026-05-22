@@ -3761,6 +3761,7 @@ where
         let producer_wait_seconds = prefetched.producer_wait_seconds;
         let lr = effective_train_lr(train_cfg, *global_step, total_steps);
         let train_started = Instant::now();
+        #[cfg(feature = "torch-profiler")]
         let next_session_step =
             session_steps_completed(global_step.saturating_add(1), session_start_global_step);
         #[cfg(feature = "torch-profiler")]

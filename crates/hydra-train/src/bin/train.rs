@@ -4,7 +4,7 @@ use std::env;
 use hydra_train_exec::graph_probe::{handle_graph_probe_child, handle_graph_probe_parent};
 use hydra_train_exec::modes::{handle_list_devices_mode, run_train_modes};
 use hydra_train_exec::preflight_runtime::run_probe_child_mode;
-use hydra_train_runtime::config::{parse_args, read_config};
+use hydra_train_runtime::config::{BcBackend, PythonLearnerCliOptions, parse_args, read_config};
 #[cfg(test)]
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -28,6 +28,22 @@ fn run() -> Result<(), String> {
     );
     if cli.list_devices {
         return handle_list_devices_mode();
+    }
+    if let Some(python_learner) = cli.python_learner.as_ref() {
+        hydra_train_exec::gpu_config::apply_gpu_performance_flags(&python_learner.device);
+        let report = hydra_train_exec::python_learner::run_python_learner(python_learner)?;
+        println!(
+            "Python learner complete: samples/s={:.2} global_step={} result={} checkpoint={}",
+            report.samples_per_second,
+            report.global_step,
+            report.result_path.display(),
+            report
+                .checkpoint_path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "none".to_string())
+        );
+        return Ok(());
     }
     if cli.preflight.is_some() || cli.benchmark_baseline.is_some() {
         let device = cli
@@ -58,6 +74,27 @@ fn run() -> Result<(), String> {
         "config path is required unless --list-devices or --preflight is used".to_string()
     })?;
     let config = read_config(config_path)?;
+    if config.bc_shards_manifest_path.is_some()
+        && config.rl.is_none()
+        && !cli.delta_q_promotion
+        && config.bc_backend.as_cli_backend() == BcBackend::Python
+    {
+        let python_learner = python_options_from_config(&config)?;
+        hydra_train_exec::gpu_config::apply_gpu_performance_flags(&python_learner.device);
+        let report = hydra_train_exec::python_learner::run_python_learner(&python_learner)?;
+        println!(
+            "Python BC learner complete: samples/s={:.2} global_step={} result={} checkpoint={}",
+            report.samples_per_second,
+            report.global_step,
+            report.result_path.display(),
+            report
+                .checkpoint_path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "none".to_string())
+        );
+        return Ok(());
+    }
     hydra_train_exec::gpu_config::apply_gpu_performance_flags(&config.device);
     if std::env::var_os("HYDRA_CUDA_GRAPH_PROBE_CHILD").is_some() {
         return handle_graph_probe_child(config_path);
@@ -69,6 +106,54 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
     run_train_modes(cli, config)
+}
+
+fn python_options_from_config(
+    config: &hydra_train_runtime::config::TrainConfig,
+) -> Result<PythonLearnerCliOptions, String> {
+    if config
+        .advanced_loss
+        .as_ref()
+        .and_then(|loss| loss.exit)
+        .is_some_and(|weight| weight > 0.0)
+    {
+        return Err(
+            "Python BC learner does not support advanced_loss.exit yet; set bc_backend: rust_burn for legacy Rust BC"
+                .to_string(),
+        );
+    }
+    if config
+        .advanced_loss
+        .as_ref()
+        .and_then(|loss| loss.delta_q)
+        .is_some_and(|weight| weight > 0.0)
+    {
+        return Err(
+            "Python BC learner does not support advanced_loss.delta_q yet; set bc_backend: rust_burn for legacy Rust BC"
+                .to_string(),
+        );
+    }
+    let advanced = config.advanced_loss.as_ref();
+    Ok(PythonLearnerCliOptions {
+        bc_shards_manifest: config
+            .bc_shards_manifest_path
+            .clone()
+            .ok_or_else(|| "Python BC learner requires bc_shards_manifest_path".to_string())?,
+        output_dir: config.output_dir.clone(),
+        device: config.device.clone(),
+        variant: hydra_train_runtime::config::PythonLearnerVariant::CompileDefault,
+        warmup_steps: 10,
+        steps: config.max_train_steps.unwrap_or(30),
+        checkpoint_out: None,
+        resume: config.resume_checkpoint.clone(),
+        checkpoint_every_steps: config.checkpoint_every_n_steps,
+        compile_fullgraph_check: false,
+        oracle_critic_weight: 0.0,
+        safety_residual_weight: advanced
+            .and_then(|loss| loss.safety_residual)
+            .unwrap_or(0.0)
+            .into(),
+    })
 }
 
 fn main() {

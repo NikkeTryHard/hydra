@@ -50,6 +50,7 @@ cc = "1"
 
 [features]
 default = []
+training = ["libtorch"]
 libtorch = [
     "burn/train",
     "burn/tch",
