@@ -36,7 +36,7 @@ print(torch.cuda.get_device_capability())
 PY
 ```
 
-Default Rust/Burn env remains root/default Pixi env with torch/libtorch `2.9.0` for Burn/tch compatibility. `py-train-212-nightly-probe` is probe-only, not default.
+Default Rust/Burn env remains root/default Pixi env with torch/libtorch `2.9.0` for Burn/tch compatibility. Do not use 2.12/nightly in normal workflow.
 
 ## Normal launch through Rust CLI
 

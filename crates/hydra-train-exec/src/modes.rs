@@ -12,8 +12,9 @@ use burn::tensor::backend::{AutodiffBackend, Backend};
 use colored::Colorize;
 use hydra_model::model::HydraModelConfig;
 use hydra_train_runtime::config::{
-    BenchmarkBaselineCliOptions, BenchmarkBaselineSource, ExperimentalTrainBackend, PrecisionMode,
-    PreflightCliOptions, TrainCli, TrainConfig, display_num_threads,
+    BcBackend, BenchmarkBaselineCliOptions, BenchmarkBaselineSource, ExperimentalTrainBackend,
+    PrecisionMode, PreflightCliOptions, PythonLearnerCliOptions, TrainCli, TrainConfig,
+    display_num_threads,
 };
 use hydra_train_runtime::config_runtime::validate_preflight_config;
 
@@ -37,7 +38,9 @@ use crate::bootstrap::{
 use crate::data_pipeline::TrainValidationLoader;
 use crate::delta_q_promotion::handle_delta_q_promotion_mode as run_delta_q_promotion_mode;
 use crate::epoch_runner::{EpochRunnerContext, EpochRuntimeMut, run_epoch};
-use crate::preflight_runtime::{run_preflight_bench, run_probe_ladder_only};
+use crate::preflight_runtime::{
+    run_preflight_bench, run_probe_ladder_only, run_python_preflight_bench,
+};
 use crate::presentation::{
     BcHyperparamSummaryInput, bc_hyperparam_summary, format_advisory_line,
     format_preflight_bench_markdown_table, format_preflight_selection_line,
@@ -492,6 +495,50 @@ pub fn handle_benchmark_baseline_mode(options: BenchmarkBaselineCliOptions) -> R
     Ok(())
 }
 
+fn python_preflight_options(
+    preflight: &PreflightCliOptions,
+) -> Result<PythonLearnerCliOptions, String> {
+    Ok(PythonLearnerCliOptions {
+        bc_shards_manifest: preflight.bc_shards_manifest_path.clone().ok_or_else(|| {
+            "Python BC preflight requires --bc-shards-manifest <path>".to_string()
+        })?,
+        output_dir: preflight.output_dir.clone(),
+        device: preflight.device.clone(),
+        batch_size: 2048,
+        microbatch_size: 1024,
+        variant: preflight.python_variant,
+        warmup_steps: preflight.preflight_config.warmup_steps,
+        steps: preflight.preflight_config.measure_steps,
+        checkpoint_out: None,
+        resume: None,
+        checkpoint_every_steps: 0,
+        compile_fullgraph_check: true,
+        oracle_critic_weight: 0.0,
+        safety_residual_weight: 0.0,
+    })
+}
+
+fn print_python_preflight_recommendation(
+    report: &hydra_train_runtime::preflight::PreflightBenchReport,
+) {
+    let best = report
+        .rows
+        .iter()
+        .filter(|row| row.status == hydra_train_runtime::preflight::PreflightBenchStatus::Pass)
+        .filter_map(|row| row.samples_per_second.map(|rate| (row.batch_size, rate)))
+        .max_by(|left, right| {
+            left.1
+                .partial_cmp(&right.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    if let Some((batch, samples_per_second)) = best {
+        println!(
+            "\nPython BC preflight best: batch={} microbatch={} samples/s={:.2}",
+            batch, batch, samples_per_second
+        );
+    }
+}
+
 /// Runs standalone synthetic benchmark preflight from explicit CLI arguments.
 pub fn handle_preflight_mode(preflight: PreflightCliOptions) -> Result<(), String> {
     let preflight_wall_start = Instant::now();
@@ -509,11 +556,24 @@ pub fn handle_preflight_mode(preflight: PreflightCliOptions) -> Result<(), Strin
     artifacts.create_root_dir()?;
     let device_name = device_label(&config.device);
     print_preflight_banner("Hydra preflight", &config, &device_name);
-    let preflight = run_preflight_bench(&config, preflight_config, &device_name)?;
+    let preflight = if preflight.bc_backend == BcBackend::Python {
+        let base = python_preflight_options(&preflight)?;
+        run_python_preflight_bench(preflight_config, &base, &device_name)?
+    } else {
+        run_preflight_bench(&config, preflight_config, &device_name)?
+    };
     println!(
         "{}",
         format_preflight_bench_markdown_table(&preflight.report)
     );
+    if preflight
+        .report
+        .rows
+        .iter()
+        .any(|row| row.mode == hydra_train_runtime::preflight::PreflightBenchMode::PythonBc)
+    {
+        print_python_preflight_recommendation(&preflight.report);
+    }
     println!(
         "{}",
         format_timed_phase_message(

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import time
 from collections.abc import Callable
@@ -253,6 +254,7 @@ def run_step(
     fwd_ms = 0.0
     bwd_ms = 0.0
     amp_ctx = torch.autocast(device_type="cuda", dtype=torch.bfloat16) if autocast else nullcontext()
+    last_loss = obs.new_zeros(())
     for start_idx in range(0, logical, microbatch):
         end_idx = min(start_idx + microbatch, logical)
         scale = (end_idx - start_idx) / logical
@@ -271,6 +273,7 @@ def run_step(
         else:
             loss = fwd_loss()
             loss.backward()
+        last_loss = loss.detach()
 
     if timed:
         opt_ms, _ = time_cuda(optimizer.step)
@@ -279,7 +282,10 @@ def run_step(
         opt_ms = 0.0
     step_end.record()
     step_ms = cuda_event_elapsed(step_start, step_end)
-    return StepStats(step_ms=step_ms, fwd_loss_ms=fwd_ms, backward_ms=bwd_ms, optimizer_ms=opt_ms)
+    loss_value = float(last_loss.detach())
+    if not math.isfinite(loss_value):
+        raise RuntimeError(f"non-finite BC loss: {loss_value}")
+    return StepStats(step_ms=step_ms, fwd_loss_ms=fwd_ms, backward_ms=bwd_ms, optimizer_ms=opt_ms, loss=loss_value)
 
 
 def slice_targets(targets: BaseTargets, start: int, end: int) -> BaseTargets:
@@ -345,6 +351,7 @@ def json_config(args: argparse.Namespace) -> dict[str, object]:
         "checkpoint_out": str(args.checkpoint_out) if args.checkpoint_out else None,
         "resume": str(args.resume) if args.resume else None,
         "checkpoint_every_steps": args.checkpoint_every_steps,
+        "quiet": args.quiet,
     }
 
 
@@ -375,6 +382,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint-out", type=Path)
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--checkpoint-every-steps", type=int, default=0)
+    parser.add_argument("--quiet", action="store_true", help="write JSON result without printing it to stdout")
     return parser.parse_args()
 
 
@@ -390,7 +398,8 @@ def main() -> int:
         result = {"variant": args.variant, "env": torch_env(), "error": "CUDA unavailable"}
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(json.dumps(result, indent=2) + "\n")
-        print(json.dumps(result, indent=2))
+        if not args.quiet:
+            print(json.dumps(result, indent=2))
         return 2
 
     torch.manual_seed(0x51A7E)
@@ -461,7 +470,8 @@ def main() -> int:
         }
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(json.dumps(result, indent=2) + "\n")
-        print(json.dumps(result, indent=2))
+        if not args.quiet:
+            print(json.dumps(result, indent=2))
         return 2
 
     torch.cuda.reset_peak_memory_stats()
@@ -529,7 +539,8 @@ def main() -> int:
         result["checkpoint_path"] = str(args.checkpoint_out)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(result, indent=2) + "\n")
-    print(json.dumps(result, indent=2))
+    if not args.quiet:
+        print(json.dumps(result, indent=2))
     return 0
 
 

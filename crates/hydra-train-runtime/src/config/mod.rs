@@ -376,6 +376,8 @@ pub struct PythonLearnerCliOptions {
     pub bc_shards_manifest: PathBuf,
     pub output_dir: PathBuf,
     pub device: String,
+    pub batch_size: usize,
+    pub microbatch_size: usize,
     pub variant: PythonLearnerVariant,
     pub warmup_steps: usize,
     pub steps: usize,
@@ -435,6 +437,9 @@ pub struct PreflightCliOptions {
     pub profile: PreflightProfile,
     pub output_dir: PathBuf,
     pub device: String,
+    pub bc_shards_manifest_path: Option<PathBuf>,
+    pub bc_backend: BcBackend,
+    pub python_variant: PythonLearnerVariant,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]

@@ -213,6 +213,8 @@ Useful invariants for runtime/data changes:
 
 - Default training/perf runs use `device: cuda:0` (or `HYDRA_TRAIN_DEVICE=cuda:0`) when GPU exists. CPU train is super slow; use CPU only for explicit CPU-debug/compat checks. GPU accelerates model forward/backward/optimizer/H2D; raw replay, BC-shard decode, sample collation, and materialization still run on CPU workers.
 
+- Python BC default on this machine: `batch=1024`, `microbatch=1024`, `--python-variant compile_default`, `device cuda:0`. Preflight may show nearby shapes (`1152`, `1216`) slightly higher; treat sub-1% differences as noise. From now on choose smallest candidate within noise margin instead of raw max, unless repeated long runs prove material gain.
+
 ### CUDA profiling quick start
 
 - Evidence first. Do not optimize BC CUDA from kernel names alone; attribute by Hydra stage/source first.

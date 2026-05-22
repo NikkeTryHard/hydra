@@ -723,6 +723,7 @@ impl fmt::Display for PreflightBenchStatus {
 #[serde(rename_all = "snake_case")]
 pub enum PreflightBenchMode {
     LoaderOnly,
+    PythonBc,
     Consume,
 }
 
@@ -730,6 +731,7 @@ impl fmt::Display for PreflightBenchMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::LoaderOnly => "loader_only",
+            Self::PythonBc => "python_bc",
             Self::Consume => "consume",
         })
     }

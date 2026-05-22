@@ -28,6 +28,9 @@ fn preflight_cli_options(config: PreflightConfig) -> PreflightCliOptions {
         profile: hydra_train_runtime::config::PreflightProfile::Default,
         output_dir: PathBuf::from("preflight_bench"),
         device: "cpu".to_string(),
+        bc_shards_manifest_path: None,
+        bc_backend: hydra_train_runtime::config::BcBackend::RustBurn,
+        python_variant: hydra_train_runtime::config::PythonLearnerVariant::EagerBf16,
     }
 }
 

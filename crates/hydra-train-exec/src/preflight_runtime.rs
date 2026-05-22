@@ -19,6 +19,7 @@ use hydra_bc_shards::{
     BcShardSplit as ExtractedBcShardSplit, load_bc_shard_reader as load_extracted_bc_shard_reader,
 };
 use hydra_replay_loader::ReplayTargetProfile;
+use hydra_train_runtime::config::PythonLearnerCliOptions;
 use hydra_train_runtime::head_gates::{HeadActivationConfig, HeadActivationController};
 use hydra_train_runtime::preflight::{
     PreflightBenchMode, PreflightBenchReport, PreflightBenchRow, PreflightBenchStatus,
@@ -1667,6 +1668,86 @@ pub fn run_preflight_bench(
     Ok(PreflightBenchRuntime {
         report: PreflightBenchReport {
             schema_version: 1,
+            rows,
+            total_elapsed_seconds: started.elapsed().as_secs_f64(),
+        },
+    })
+}
+
+/// Runs Python/PyTorch BC learner preflight rows over real BC shards.
+pub fn run_python_preflight_bench(
+    preflight: &PreflightConfig,
+    base: &PythonLearnerCliOptions,
+    device_label: &str,
+) -> Result<PreflightBenchRuntime, String> {
+    let started = Instant::now();
+    let mut rows = Vec::with_capacity(preflight.bench_candidate_tuples.len());
+    for (index, tuple) in preflight.bench_candidate_tuples.iter().copied().enumerate() {
+        let error = if tuple.batch_size == 0 {
+            Some("batch must be greater than 0".to_string())
+        } else if tuple.ring_batches == 0 {
+            Some("ring must be greater than 0".to_string())
+        } else if tuple.loader_threads == 0 {
+            Some("threads must be greater than 0".to_string())
+        } else if tuple.prefetch_batches == 0 {
+            Some("prefetch must be greater than 0".to_string())
+        } else if tuple.ring_batches != 1
+            || tuple.loader_threads != 1
+            || tuple.prefetch_batches != 1
+        {
+            Some("Python BC preflight currently benchmarks batch:1:1:1 tuples only".to_string())
+        } else {
+            None
+        };
+        let (report, row_error) = if let Some(error) = error {
+            (None, Some(error))
+        } else {
+            match crate::python_learner::run_python_learner_benchmark_row(
+                base,
+                tuple.batch_size,
+                tuple.batch_size,
+                preflight.warmup_steps,
+                preflight.measure_steps,
+                &crate::python_learner::OsPythonLearnerRunner,
+            ) {
+                Ok(report) => (Some(report), None),
+                Err(err) => (
+                    None,
+                    Some(format!("Python BC preflight tuple {index} failed: {err}")),
+                ),
+            }
+        };
+        rows.push(PreflightBenchRow {
+            index,
+            status: if row_error.is_some() {
+                PreflightBenchStatus::Error
+            } else {
+                PreflightBenchStatus::Pass
+            },
+            device: device_label.to_string(),
+            mode: PreflightBenchMode::PythonBc,
+            batch_size: tuple.batch_size,
+            ring_batches: tuple.ring_batches,
+            loader_threads: tuple.loader_threads,
+            prefetch_batches: tuple.prefetch_batches,
+            shuffle: PreflightShuffleMode::None,
+            codec: PreflightCodec::None,
+            samples_per_second: report.as_ref().map(|report| report.samples_per_second),
+            mib_per_second: None,
+            p50_batch_ms: None,
+            p95_batch_ms: None,
+            producer_wait_ratio: Some(0.0),
+            consumer_wait_ratio: Some(0.0),
+            disk_wait_ratio: Some(0.0),
+            gpu_input_wait_ratio: Some(0.0),
+            cpu_user_seconds: None,
+            cpu_system_seconds: None,
+            error: row_error,
+        });
+    }
+    Ok(PreflightBenchRuntime {
+        report: PreflightBenchReport {
+            schema_version: 2,
             rows,
             total_elapsed_seconds: started.elapsed().as_secs_f64(),
         },

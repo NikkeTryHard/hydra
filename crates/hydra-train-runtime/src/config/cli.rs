@@ -608,11 +608,14 @@ where
                 let value = args
                     .next()
                     .ok_or_else(|| "missing value for --output-dir".to_string())?;
-                if python_learner_enabled
+                if preflight_enabled {
+                    preflight_flag_seen = true;
+                    preflight_output_dir = PathBuf::from(value);
+                } else if python_learner_enabled
                     || (benchmark_bc_shards_manifest.is_some() && !benchmark_enabled)
                 {
                     python_output_dir = Some(PathBuf::from(value));
-                } else if preflight_enabled || !benchmark_enabled {
+                } else if !benchmark_enabled {
                     preflight_flag_seen = true;
                     preflight_output_dir = PathBuf::from(value);
                 } else {
@@ -623,11 +626,14 @@ where
                 let value = args
                     .next()
                     .ok_or_else(|| "missing value for --device".to_string())?;
-                if python_learner_enabled
+                if preflight_enabled {
+                    preflight_flag_seen = true;
+                    preflight_device = value;
+                } else if python_learner_enabled
                     || (benchmark_bc_shards_manifest.is_some() && !benchmark_enabled)
                 {
                     python_device = value;
-                } else if preflight_enabled || !benchmark_enabled {
+                } else if !benchmark_enabled {
                     preflight_flag_seen = true;
                     preflight_device = value;
                 } else {
@@ -1052,6 +1058,8 @@ where
             bc_shards_manifest,
             output_dir,
             device: python_device.clone(),
+            batch_size: 2048,
+            microbatch_size: 1024,
             variant: python_variant,
             warmup_steps: python_warmup_steps,
             steps: python_steps,
@@ -1104,6 +1112,9 @@ where
             profile: preflight_profile,
             output_dir: preflight_output_dir.clone(),
             device: preflight_device.clone(),
+            bc_shards_manifest_path: benchmark_bc_shards_manifest.clone(),
+            bc_backend,
+            python_variant,
         })
     } else {
         None
@@ -1173,8 +1184,7 @@ where
     };
 
     if preflight.is_some()
-        && (python_learner.is_some()
-            || probe_kind.is_some()
+        && (probe_kind.is_some()
             || probe_result_path.is_some()
             || probe_results_path.is_some()
             || probe_attempts.is_some()

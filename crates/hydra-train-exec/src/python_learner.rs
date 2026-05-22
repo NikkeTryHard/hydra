@@ -88,12 +88,17 @@ pub fn build_python_learner_command(options: &PythonLearnerCliOptions) -> Python
         options.bc_shards_manifest.display().to_string(),
         "--variant".to_string(),
         options.variant.as_str().to_string(),
+        "--batch".to_string(),
+        options.batch_size.to_string(),
+        "--microbatch".to_string(),
+        options.microbatch_size.to_string(),
         "--warmup".to_string(),
         options.warmup_steps.to_string(),
         "--steps".to_string(),
         options.steps.to_string(),
         "--out".to_string(),
         result_path.display().to_string(),
+        "--quiet".to_string(),
         "--w-oracle-critic".to_string(),
         options.oracle_critic_weight.to_string(),
         "--w-safety-residual".to_string(),
@@ -184,6 +189,26 @@ pub fn parse_python_learner_report(path: &Path) -> Result<PythonLearnerReport, S
     })
 }
 
+/// Runs a Python BC learner benchmark for one batch/microbatch candidate.
+pub fn run_python_learner_benchmark_row(
+    base: &PythonLearnerCliOptions,
+    batch_size: usize,
+    microbatch_size: usize,
+    warmup_steps: usize,
+    measure_steps: usize,
+    runner: &impl PythonLearnerRunner,
+) -> Result<PythonLearnerReport, String> {
+    let mut options = base.clone();
+    options.batch_size = batch_size;
+    options.microbatch_size = microbatch_size;
+    options.warmup_steps = warmup_steps;
+    options.steps = measure_steps.max(1);
+    options.checkpoint_out = None;
+    options.resume = None;
+    options.checkpoint_every_steps = 0;
+    run_python_learner_with_runner(&options, runner)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,6 +240,8 @@ mod tests {
             bc_shards_manifest: root.join("manifest.json"),
             output_dir: root.join("out"),
             device: "cuda:0".to_string(),
+            batch_size: 2048,
+            microbatch_size: 1024,
             variant: PythonLearnerVariant::CompileDefault,
             warmup_steps: 1,
             steps: 3,

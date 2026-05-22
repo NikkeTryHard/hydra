@@ -863,6 +863,8 @@ fn schedule_total_steps_extends_from_resume_global_step() {
         resume_checkpoint: None,
         seed: 0,
         advanced_loss: None,
+        bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
+        experimental_backbone_profile: None,
         validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
         rl: None,
         bc: BcHyperparamConfig::default(),
@@ -885,6 +887,127 @@ fn schedule_total_steps_extends_from_resume_global_step() {
     };
     assert_eq!(schedule_total_steps(&cfg, 0), 1000);
     assert_eq!(schedule_total_steps(&cfg, 400), 1400);
+}
+
+fn python_guard_config() -> TrainConfig {
+    TrainConfig {
+        data_dir: PathBuf::from("/tmp/data"),
+        output_dir: PathBuf::from("/tmp/out"),
+        num_epochs: 1,
+        batch_size: 1024,
+        microbatch_size: Some(1024),
+        validation_microbatch_size: Some(1024),
+        exit_sidecar_path: None,
+        delta_q_sidecar_path: None,
+        bc_shards_manifest_path: Some(PathBuf::from("/tmp/shards/manifest.json")),
+        bc_backend: Default::default(),
+        shard_prefetch_depth: None,
+        train_fraction: 0.9,
+        source_filters: hydra_train_runtime::config::SourceFilterConfig::default(),
+        augment: true,
+        resume_checkpoint: None,
+        seed: 0,
+        advanced_loss: None,
+        bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
+        experimental_backbone_profile: None,
+        validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
+        rl: None,
+        bc: BcHyperparamConfig::default(),
+        nsight_trace: None,
+        device: "cuda:0".to_string(),
+        precision_mode: hydra_train_runtime::config::PrecisionMode::Bf16Autocast,
+        buffer_games: 16,
+        buffer_samples: 128,
+        num_threads: None,
+        tensorboard: false,
+        archive_queue_bound: 8,
+        validation_every_n_epochs: 1,
+        max_skip_logs_per_source: 4,
+        log_every_n_steps: 10,
+        validate_every_n_steps: 10,
+        checkpoint_every_n_steps: 10,
+        max_train_steps: Some(3),
+        max_validation_batches: None,
+        max_validation_samples: None,
+    }
+}
+
+#[test]
+fn python_options_from_config_accepts_plain_bc_defaults() {
+    let options = python_options_from_config(&python_guard_config())
+        .expect("plain BC should route to Python");
+    assert_eq!(
+        options.bc_shards_manifest,
+        PathBuf::from("/tmp/shards/manifest.json")
+    );
+    assert_eq!(options.batch_size, 1024);
+    assert_eq!(options.microbatch_size, 1024);
+    assert_eq!(options.steps, 3);
+}
+
+#[test]
+fn python_options_from_config_rejects_unsupported_advanced_modes() {
+    let cases: &[(fn(&mut TrainConfig), &str)] = &[
+        (
+            |config| config.exit_sidecar_path = Some(PathBuf::from("/tmp/exit.jsonl")),
+            "ExIt sidecars",
+        ),
+        (
+            |config| config.delta_q_sidecar_path = Some(PathBuf::from("/tmp/delta-q.jsonl")),
+            "DeltaQ sidecars",
+        ),
+        (
+            |config| {
+                config.advanced_loss = Some(AdvancedLossConfig {
+                    exit: Some(0.1),
+                    ..Default::default()
+                })
+            },
+            "advanced_loss.exit",
+        ),
+        (
+            |config| {
+                config.advanced_loss = Some(AdvancedLossConfig {
+                    delta_q: Some(0.1),
+                    ..Default::default()
+                })
+            },
+            "advanced_loss.delta_q",
+        ),
+        (
+            |config| {
+                config.advanced_loss = Some(AdvancedLossConfig {
+                    belief_fields: Some(0.1),
+                    ..Default::default()
+                })
+            },
+            "advanced_loss.belief_fields",
+        ),
+        (
+            |config| {
+                config.advanced_loss = Some(AdvancedLossConfig {
+                    mixture_weight: Some(0.1),
+                    ..Default::default()
+                })
+            },
+            "advanced_loss.mixture_weight",
+        ),
+        (
+            |config| {
+                config.advanced_loss = Some(AdvancedLossConfig {
+                    opponent_hand_type: Some(0.1),
+                    ..Default::default()
+                })
+            },
+            "advanced_loss.opponent_hand_type",
+        ),
+    ];
+    for (configure, expected) in cases.iter().copied() {
+        let mut config = python_guard_config();
+        configure(&mut config);
+        let err = python_options_from_config(&config).expect_err("unsupported mode should fail");
+        assert!(err.contains(expected), "{err}");
+    }
 }
 
 #[test]
@@ -1364,6 +1487,8 @@ fn validation_microbatch_and_sample_limit_fallbacks_work() {
         resume_checkpoint: None,
         seed: 0,
         advanced_loss: None,
+        bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
+        experimental_backbone_profile: None,
         validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
         rl: None,
         bc: BcHyperparamConfig::default(),
@@ -1420,6 +1545,8 @@ fn validate_config_rejects_zero_validation_microbatch_and_samples() {
         resume_checkpoint: None,
         seed: 0,
         advanced_loss: None,
+        bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
+        experimental_backbone_profile: None,
         validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
         rl: None,
         bc: BcHyperparamConfig::default(),
@@ -1475,6 +1602,8 @@ fn validate_config_accepts_basic_rl_block() {
         resume_checkpoint: None,
         seed: 0,
         advanced_loss: None,
+        bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
+        experimental_backbone_profile: None,
         validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
         rl: Some(hydra_train_runtime::config::RlTrainConfig::default()),
         bc: BcHyperparamConfig::default(),
@@ -1622,6 +1751,8 @@ fn validate_config_rejects_invalid_bc_hyperparameter_ranges() {
         resume_checkpoint: None,
         seed: 0,
         advanced_loss: None,
+        bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
+        experimental_backbone_profile: None,
         validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
         rl: None,
         bc: BcHyperparamConfig {
@@ -1675,6 +1806,8 @@ fn validate_config_requires_sidecar_when_exit_loss_is_enabled() {
             exit: Some(0.1),
             ..Default::default()
         }),
+        bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
+        experimental_backbone_profile: None,
         validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
         rl: None,
         bc: BcHyperparamConfig::default(),
@@ -1722,6 +1855,8 @@ fn validate_config_requires_sidecar_when_delta_q_loss_is_enabled() {
             delta_q: Some(0.1),
             ..Default::default()
         }),
+        bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
+        experimental_backbone_profile: None,
         validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
         rl: None,
         bc: BcHyperparamConfig::default(),

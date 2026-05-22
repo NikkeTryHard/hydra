@@ -29,22 +29,7 @@ fn run() -> Result<(), String> {
     if cli.list_devices {
         return handle_list_devices_mode();
     }
-    if let Some(python_learner) = cli.python_learner.as_ref() {
-        hydra_train_exec::gpu_config::apply_gpu_performance_flags(&python_learner.device);
-        let report = hydra_train_exec::python_learner::run_python_learner(python_learner)?;
-        println!(
-            "Python learner complete: samples/s={:.2} global_step={} result={} checkpoint={}",
-            report.samples_per_second,
-            report.global_step,
-            report.result_path.display(),
-            report
-                .checkpoint_path
-                .as_ref()
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|| "none".to_string())
-        );
-        return Ok(());
-    }
+
     if cli.preflight.is_some() || cli.benchmark_baseline.is_some() {
         let device = cli
             .preflight
@@ -69,6 +54,22 @@ fn run() -> Result<(), String> {
             cli,
             hydra_train_runtime::config::TrainConfig::default_preflight_bench(),
         );
+    }
+    if let Some(python_learner) = cli.python_learner.as_ref() {
+        hydra_train_exec::gpu_config::apply_gpu_performance_flags(&python_learner.device);
+        let report = hydra_train_exec::python_learner::run_python_learner(python_learner)?;
+        println!(
+            "Python learner complete: samples/s={:.2} global_step={} result={} checkpoint={}",
+            report.samples_per_second,
+            report.global_step,
+            report.result_path.display(),
+            report
+                .checkpoint_path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "none".to_string())
+        );
+        return Ok(());
     }
     let config_path = cli.config_path.as_deref().ok_or_else(|| {
         "config path is required unless --list-devices or --preflight is used".to_string()
@@ -111,27 +112,49 @@ fn run() -> Result<(), String> {
 fn python_options_from_config(
     config: &hydra_train_runtime::config::TrainConfig,
 ) -> Result<PythonLearnerCliOptions, String> {
-    if config
-        .advanced_loss
-        .as_ref()
-        .and_then(|loss| loss.exit)
-        .is_some_and(|weight| weight > 0.0)
-    {
+    if config.exit_sidecar_path.is_some() {
         return Err(
-            "Python BC learner does not support advanced_loss.exit yet; set bc_backend: rust_burn for legacy Rust BC"
+            "Python BC learner does not support ExIt sidecars yet; set bc_backend: rust_burn for legacy Rust BC"
                 .to_string(),
         );
     }
-    if config
-        .advanced_loss
-        .as_ref()
-        .and_then(|loss| loss.delta_q)
-        .is_some_and(|weight| weight > 0.0)
-    {
+    if config.delta_q_sidecar_path.is_some() {
         return Err(
-            "Python BC learner does not support advanced_loss.delta_q yet; set bc_backend: rust_burn for legacy Rust BC"
+            "Python BC learner does not support DeltaQ sidecars yet; set bc_backend: rust_burn for legacy Rust BC"
                 .to_string(),
         );
+    }
+    if let Some(loss) = config.advanced_loss.as_ref() {
+        if loss.exit.is_some_and(|weight| weight > 0.0) {
+            return Err(
+                "Python BC learner does not support advanced_loss.exit yet; set bc_backend: rust_burn for legacy Rust BC"
+                    .to_string(),
+            );
+        }
+        if loss.delta_q.is_some_and(|weight| weight > 0.0) {
+            return Err(
+                "Python BC learner does not support advanced_loss.delta_q yet; set bc_backend: rust_burn for legacy Rust BC"
+                    .to_string(),
+            );
+        }
+        if loss.belief_fields.is_some_and(|weight| weight > 0.0) {
+            return Err(
+                "Python BC learner does not support advanced_loss.belief_fields yet; set bc_backend: rust_burn for legacy Rust BC"
+                    .to_string(),
+            );
+        }
+        if loss.mixture_weight.is_some_and(|weight| weight > 0.0) {
+            return Err(
+                "Python BC learner does not support advanced_loss.mixture_weight yet; set bc_backend: rust_burn for legacy Rust BC"
+                    .to_string(),
+            );
+        }
+        if loss.opponent_hand_type.is_some_and(|weight| weight > 0.0) {
+            return Err(
+                "Python BC learner does not support advanced_loss.opponent_hand_type yet; set bc_backend: rust_burn for legacy Rust BC"
+                    .to_string(),
+            );
+        }
     }
     let advanced = config.advanced_loss.as_ref();
     Ok(PythonLearnerCliOptions {
@@ -141,6 +164,8 @@ fn python_options_from_config(
             .ok_or_else(|| "Python BC learner requires bc_shards_manifest_path".to_string())?,
         output_dir: config.output_dir.clone(),
         device: config.device.clone(),
+        batch_size: config.batch_size,
+        microbatch_size: config.microbatch_size.unwrap_or(1024),
         variant: hydra_train_runtime::config::PythonLearnerVariant::CompileDefault,
         warmup_steps: 10,
         steps: config.max_train_steps.unwrap_or(30),
