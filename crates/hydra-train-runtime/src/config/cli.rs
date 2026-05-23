@@ -6,8 +6,10 @@ use super::{
     BcBackend, BenchmarkBaselineCliOptions, BenchmarkBaselineSource,
     ExperimentalBackboneProfileConfig, ExperimentalTrainBackend, PreflightCliOptions,
     PreflightProfile, ProbeBatchChildRequest, ProbeChildRequest, ProbeCliRequest,
-    ProbeSingleChildRequest, PythonLearnerCliOptions, PythonLearnerInput, PythonLearnerVariant,
-    PythonResidualProfileConfig, TrainCli, default_device, default_preflight_config_for_profile,
+    ProbeSingleChildRequest, PythonAdamwFlagConfig, PythonBackboneProfileConfig,
+    PythonConvMemoryFormatConfig, PythonLearnerCliOptions, PythonLearnerInput,
+    PythonLearnerVariant, PythonResidualProfileConfig, TrainCli, default_device,
+    default_preflight_config_for_profile,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,10 +82,11 @@ fn parse_python_residual_profile(value: &str) -> Result<PythonResidualProfileCon
         "silu_se" => Ok(PythonResidualProfileConfig::SiluSe),
         "relu_se" => Ok(PythonResidualProfileConfig::ReluSe),
         "mish_no_se" => Ok(PythonResidualProfileConfig::MishNoSe),
+        "mish_eca" => Ok(PythonResidualProfileConfig::MishEca),
         "relu_no_se" => Ok(PythonResidualProfileConfig::ReluNoSe),
         "relu_no_norm_no_se" => Ok(PythonResidualProfileConfig::ReluNoNormNoSe),
         _ => Err(format!(
-            "unsupported --python-residual-profile value '{value}'; expected mish_se, silu_se, relu_se, mish_no_se, relu_no_se, or relu_no_norm_no_se"
+            "unsupported --python-residual-profile value '{value}'; expected mish_se, silu_se, relu_se, mish_no_se, mish_eca, relu_no_se, or relu_no_norm_no_se"
         )),
     }
 }
@@ -359,7 +362,7 @@ fn parse_preflight_bench_candidate_tuples(raw: &str) -> Result<Vec<PreflightBenc
 
 pub fn usage(program: &str) -> String {
     format!(
-        "Usage:\n  {program} <config.yaml>\n  {program} --experimental-python-learner --bc-shards-manifest <path> --output-dir <dir> [--device <cpu|cuda[:N]>] [--python-variant <eager_fp32|eager_bf16|compile_default|compile_reduce_overhead|compile_max_autotune>] [--python-residual-profile <mish_se|silu_se|relu_se|mish_no_se|relu_no_se|relu_no_norm_no_se>] [--python-warmup <N>] [--python-steps <N>] [--python-compile-fullgraph-check]\n  {program} --benchmark-baseline --bench-source <mjai|bc-shards|both> (--data-dir <dir>|--bc-shards-manifest <path>) [--output-dir <dir>] [--device <cpu|cuda[:N]>] [--bench-max-games <N>] [--bench-steps <N>]\n  {program} --preflight [--device <cpu|cuda[:N]>] [--output-dir <dir>] [--pf-candidate-tuples <batch:ring:threads:prefetch,...>] [--pf-warmup-steps <N>] [--pf-measure-steps <N>] [--pf-repetitions <N>] [--pf-output md]\n  {program} --list-devices\n  {program} <config.yaml> --delta-q-promotion [--delta-q-baseline-checkpoint <path>]\n  {program} <config.yaml> --probe-kind <train|validation|rl_games|rl_microbatch> --probe-candidate-microbatch <N> [--probe-warmup-steps <N>] [--probe-measure-steps <N>]\n"
+        "Usage:\n  {program} <config.yaml>\n  {program} --experimental-python-learner --bc-shards-manifest <path> --output-dir <dir> [--device <cpu|cuda[:N]>] [--python-variant <eager_fp32|eager_bf16|compile_default|compile_reduce_overhead|compile_max_autotune>] [--python-residual-profile <mish_se|silu_se|relu_se|mish_no_se|relu_no_se|relu_no_norm_no_se>] [--python-warmup <N>] [--python-steps <N>] [--lr-schedule <cosine|constant>] [--min-lr <F>] [--lr-warmup-steps <N>] [--schedule-total-steps <N>] [--grad-clip-norm <F>] [--python-compile-fullgraph-check]\n  {program} --benchmark-baseline --bench-source <mjai|bc-shards|both> (--data-dir <dir>|--bc-shards-manifest <path>) [--output-dir <dir>] [--device <cpu|cuda[:N]>] [--bench-max-games <N>] [--bench-steps <N>]\n  {program} --preflight [--device <cpu|cuda[:N]>] [--output-dir <dir>] [--pf-candidate-tuples <batch:ring:threads:prefetch,...>] [--pf-warmup-steps <N>] [--pf-measure-steps <N>] [--pf-repetitions <N>] [--pf-output md]\n  {program} --list-devices\n  {program} <config.yaml> --delta-q-promotion [--delta-q-baseline-checkpoint <path>]\n  {program} <config.yaml> --probe-kind <train|validation|rl_games|rl_microbatch> --probe-candidate-microbatch <N> [--probe-warmup-steps <N>] [--probe-measure-steps <N>]\n"
     )
 }
 
@@ -465,6 +468,11 @@ where
     let mut python_variant = PythonLearnerVariant::default();
     let mut python_warmup_steps = 10usize;
     let mut python_steps = 30usize;
+    let mut python_min_learning_rate = super::default_bc_min_learning_rate();
+    let mut python_lr_warmup_steps = super::default_bc_warmup_steps();
+    let mut python_lr_schedule = "cosine".to_string();
+    let mut python_schedule_total_steps = None;
+    let mut python_grad_clip_norm = f64::from(super::default_bc_grad_clip_norm());
     let mut python_full_epoch = false;
     let mut python_checkpoint_out = None;
     let mut python_resume = None;
@@ -534,6 +542,34 @@ where
             "--python-steps" => {
                 python_steps =
                     parse_usize_flag_allowing_zero("--python-steps", args.next(), false)?;
+            }
+            "--min-lr" | "--python-min-lr" => {
+                python_min_learning_rate = parse_f64_flag(&normalized, args.next())?;
+            }
+            "--lr-warmup-steps" | "--python-lr-warmup-steps" => {
+                python_lr_warmup_steps =
+                    parse_usize_flag_allowing_zero(&normalized, args.next(), true)?;
+            }
+            "--lr-schedule" | "--python-lr-schedule" => {
+                python_lr_schedule = args
+                    .next()
+                    .ok_or_else(|| format!("missing value for {normalized}"))?;
+                if python_lr_schedule != "cosine" && python_lr_schedule != "constant" {
+                    return Err("--lr-schedule must be cosine or constant".to_string());
+                }
+            }
+            "--schedule-total-steps" | "--python-schedule-total-steps" => {
+                python_schedule_total_steps = Some(parse_usize_flag_allowing_zero(
+                    &normalized,
+                    args.next(),
+                    false,
+                )?);
+            }
+            "--grad-clip-norm" | "--python-grad-clip-norm" => {
+                python_grad_clip_norm = parse_f64_flag(&normalized, args.next())?;
+                if python_grad_clip_norm <= 0.0 {
+                    return Err("--grad-clip-norm must be > 0".to_string());
+                }
             }
             "--python-full-epoch" => python_full_epoch = true,
             "--python-checkpoint-out" => {
@@ -1117,6 +1153,8 @@ where
             microbatch_size: 1024,
             variant: python_variant,
             residual_profile: python_residual_profile,
+            conv_memory_format: PythonConvMemoryFormatConfig::default(),
+            backbone_profile: PythonBackboneProfileConfig::default(),
             hidden: 256,
             blocks: 10,
             bottleneck: 64,
@@ -1124,7 +1162,10 @@ where
             steps: Some(python_steps),
             full_epoch: python_full_epoch,
             validation_steps: 0,
+            validation_max_samples: None,
             validation_every: 0,
+            raw_mjai_validation_augment: false,
+            validation_source_mode: "fixed".to_string(),
             checkpoint_out: python_checkpoint_out.clone(),
             resume: python_resume.clone(),
             checkpoint_every_steps: python_checkpoint_every_steps,
@@ -1136,7 +1177,19 @@ where
             tensorboard_port: python_tensorboard_port,
             background: python_background,
             learning_rate: super::default_bc_learning_rate(),
+            min_learning_rate: python_min_learning_rate,
+            lr_warmup_steps: python_lr_warmup_steps,
+            lr_schedule: python_lr_schedule.clone(),
+            schedule_total_steps: python_schedule_total_steps,
+            grad_clip_norm: python_grad_clip_norm,
             weight_decay: f64::from(super::default_bc_weight_decay()),
+            ema_enabled: super::default_ema_enabled(),
+            ema_decay: super::default_ema_decay(),
+            ema_start_step: 0,
+            ema_update_every_steps: super::default_ema_update_every_steps(),
+            ema_device: super::EmaDeviceConfig::Auto,
+            adamw_fused: PythonAdamwFlagConfig::default(),
+            adamw_foreach: PythonAdamwFlagConfig::default(),
             compile_fullgraph_check: python_compile_fullgraph_check,
             oracle_critic_weight: python_oracle_critic_weight,
             safety_residual_weight: python_safety_residual_weight,
@@ -1158,6 +1211,11 @@ where
             || python_warmup_steps != 10
             || python_steps != 30
             || python_full_epoch
+            || python_min_learning_rate != super::default_bc_min_learning_rate()
+            || python_lr_warmup_steps != super::default_bc_warmup_steps()
+            || python_lr_schedule != "cosine"
+            || python_schedule_total_steps.is_some()
+            || python_grad_clip_norm != f64::from(super::default_bc_grad_clip_norm())
             || python_oracle_critic_weight != 0.0
             || python_safety_residual_weight != 0.0
             || python_residual_profile != PythonResidualProfileConfig::default()

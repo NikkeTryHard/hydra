@@ -45,9 +45,14 @@ sccache = ">=0.15.0,<0.16"
 [tool.pixi.pypi-dependencies]
 hydra-learner = { path = ".", editable = true }
 
+[tool.pixi.feature.dev.pypi-options]
+index-url = "https://download.pytorch.org/whl/cu128"
+extra-index-urls = ["https://pypi.org/simple"]
+index-strategy = "unsafe-best-match"
+
 [tool.pixi.feature.dev.pypi-dependencies]
 numpy = "==1.26.4"
-torch = "==2.9.0"
+torch = "==2.11.0+cu128"
 tensorboard = ">=2.20,<3"
 
 [tool.pixi.feature.py-train.pypi-options]
@@ -159,7 +164,7 @@ test-python-cuda = { cmd = "scripts/pytest-quiet.sh python/hydra_learner -m 'cud
 python-bc-train = { cmd = "pixi run -e py-train python scripts/hydra_pytorch_oracle.py", description = "Run stable Python BC learner; pass args after --" }
 python-bc-train-cu126 = { cmd = "pixi run -e py-train-torch212-cu126 python scripts/hydra_pytorch_oracle.py", description = "Run Torch 2.12 cu126 probe; pass args after --" }
 python-bc-train-nightly = { cmd = "pixi run -e py-train-torch212-nightly-cu128 python scripts/hydra_pytorch_oracle.py", description = "Run Torch 2.12 nightly cu128 probe; pass args after --" }
-torch-check = { cmd = "python -c \"import torch, os; print(torch.__version__); print(torch.cuda.is_available()); print(os.path.join(os.path.dirname(torch.__file__), 'lib'))\"", description = "Print default-env PyTorch info" }
+torch-check = { cmd = "python -c \"import torch, os; print(torch.__version__); print(torch.version.cuda); print(torch.cuda.is_available()); print(os.path.join(os.path.dirname(torch.__file__), 'lib'))\"", description = "Print default-env PyTorch info" }
 torch-check-cu126 = { cmd = "pixi run -e py-train-torch212-cu126 python -c \"import torch, torchvision; print(torch.__version__); print(torch.version.cuda); print(torchvision.__version__); print(torch.cuda.is_available())\"", description = "Print Torch 2.12 cu126 probe info" }
 torch-check-nightly = { cmd = "pixi run -e py-train-torch212-nightly-cu128 python -c \"import torch, torchvision; print(torch.__version__); print(torch.version.cuda); print(torchvision.__version__); print(torch.cuda.is_available())\"", description = "Print Torch 2.12 nightly cu128 probe info" }
 

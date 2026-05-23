@@ -35,6 +35,10 @@ use crate::data_pipeline::{
 };
 
 const STREAM_MAGIC: &[u8; 8] = b"HYRMB1\0\0";
+fn raw_mjai_debug_enabled() -> bool {
+    std::env::var_os("HYDRA_RAW_MJAI_PINNED_DEBUG").is_some()
+}
+
 const FRAME_KIND_HEADER: u8 = 1;
 const FRAME_KIND_BATCH: u8 = 2;
 const FRAME_KIND_PROGRESS: u8 = 3;
@@ -461,20 +465,57 @@ fn materialize_persistent_loose_group(
     stop: &AtomicBool,
 ) -> io::Result<()> {
     let pool = make_optional_pool(config.num_threads, "raw MJAI persistent pinned stream")?;
-    let (local_tx, local_rx) =
+    let (job_tx, job_rx) = mpsc::sync_channel::<StreamPlanEntry>(config.queue_bound);
+    let (worker_result_tx, worker_result_rx) =
         mpsc::sync_channel::<io::Result<MaterializedStreamGame>>(config.queue_bound);
-    let expected_count = entries.len();
-    pool.install(|| {
-        entries.into_iter().par_bridge().for_each(|entry| {
-            if stop.load(Ordering::Acquire) {
-                return;
+    let jobs: Vec<StreamPlanEntry> = entries.iter().map(|entry| (*entry).clone()).collect();
+    let producer = thread::Builder::new()
+        .name("raw-mjai-pinned-loose-producer".into())
+        .spawn(move || -> io::Result<()> {
+            for job in jobs {
+                if job_tx.send(job).is_err() {
+                    break;
+                }
             }
-            let result = materialize_stream_job(entry.clone(), config.augment);
-            let _ = send_result_cancelable(&local_tx, stop, Ok(result));
-        });
-    });
-    drop(local_tx);
-    forward_ordered_results(local_rx, expected_count, result_tx, stop)
+            Ok(())
+        })
+        .map_err(|err| {
+            io::Error::other(format!("failed to spawn pinned stream producer: {err}"))
+        })?;
+    let augment = config.augment;
+    let workers = thread::Builder::new()
+        .name("raw-mjai-pinned-loose-workers".into())
+        .spawn(move || {
+            pool.install(|| {
+                job_rx.into_iter().par_bridge().for_each(|entry| {
+                    let started = Instant::now();
+                    let result = materialize_stream_job(entry, augment);
+                    if raw_mjai_debug_enabled() {
+                        eprintln!(
+                            "raw MJAI pinned materialized sequence={} identity={} rows={} elapsed_ms={:.3}",
+                            result.sequence,
+                            result.identity,
+                            result.result.as_ref().map_or(0, |rows| rows.rows),
+                            started.elapsed().as_secs_f64() * 1000.0
+                        );
+                    }
+                    let _ = worker_result_tx.send(Ok(result));
+                });
+            });
+        })
+        .map_err(|err| io::Error::other(format!("failed to spawn pinned stream workers: {err}")))?;
+    for result in worker_result_rx {
+        if send_result_cancelable(result_tx, stop, result).is_err() {
+            break;
+        }
+    }
+    producer
+        .join()
+        .map_err(|_| io::Error::other("pinned stream producer thread panicked"))??;
+    workers
+        .join()
+        .map_err(|_| io::Error::other("pinned stream worker thread panicked"))?;
+    Ok(())
 }
 
 fn materialize_persistent_archive_group(
@@ -532,35 +573,6 @@ fn materialize_persistent_archive_group(
     if !stop.load(Ordering::Acquire) && sent != expected_count {
         return Err(invalid_data(format!(
             "pinned archive stream materialized {sent} games, expected {expected_count}"
-        )));
-    }
-    Ok(())
-}
-
-fn forward_ordered_results(
-    local_rx: mpsc::Receiver<io::Result<MaterializedStreamGame>>,
-    expected_count: usize,
-    result_tx: &SyncSender<io::Result<MaterializedStreamGame>>,
-    stop: &AtomicBool,
-) -> io::Result<()> {
-    let mut next = 0usize;
-    let mut pending = BTreeMap::new();
-    for item in local_rx {
-        let game = item?;
-        pending.insert(game.sequence, game);
-        while let Some(game) = pending.remove(&next) {
-            if send_result_cancelable(result_tx, stop, Ok(game)).is_err() {
-                return Ok(());
-            }
-            next += 1;
-        }
-        if next == expected_count || stop.load(Ordering::Acquire) {
-            break;
-        }
-    }
-    if !stop.load(Ordering::Acquire) && next != expected_count {
-        return Err(invalid_data(format!(
-            "pinned stream materialized {next} games, expected {expected_count}"
         )));
     }
     Ok(())

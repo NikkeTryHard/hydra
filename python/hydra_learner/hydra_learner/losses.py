@@ -28,6 +28,18 @@ class LossWeights:
 
 
 DEFAULT_LOSS_WEIGHTS = LossWeights()
+LOSS_HEADS = (
+    "policy",
+    "value",
+    "score_pdf",
+    "score_cdf",
+    "tenpai",
+    "grp",
+    "oracle_critic",
+    "safety_residual",
+    "opp_next",
+    "danger",
+)
 
 
 @dataclass(frozen=True)
@@ -136,6 +148,82 @@ def _require_tensor(tensor: torch.Tensor | None, name: str) -> torch.Tensor:
     if tensor is None:
         raise ValueError(f"{name} is required when its loss weight is positive")
     return tensor
+
+
+def active_loss_heads(weights: LossWeights | None = None, loss_mode: str = "full_base") -> tuple[str, ...]:
+    if weights is None:
+        weights = DEFAULT_LOSS_WEIGHTS
+    if loss_mode == "policy_only":
+        return ("policy",)
+    heads = ["policy"]
+    if weights.value > 0.0:
+        heads.append("value")
+    if weights.score > 0.0:
+        heads.extend(("score_pdf", "score_cdf"))
+    if weights.tenpai > 0.0:
+        heads.append("tenpai")
+    if weights.grp > 0.0:
+        heads.append("grp")
+    if weights.oracle_critic > 0.0:
+        heads.append("oracle_critic")
+    if weights.safety_residual > 0.0:
+        heads.append("safety_residual")
+    if weights.opp_next > 0.0:
+        heads.append("opp_next")
+    if weights.danger > 0.0:
+        heads.append("danger")
+    return tuple(heads)
+
+
+def loss_breakdown_dict(
+    breakdown: LossBreakdown, weights: LossWeights | None = None, loss_mode: str = "full_base"
+) -> dict[str, float]:
+    return {head: float(getattr(breakdown, head).detach()) for head in active_loss_heads(weights, loss_mode)}
+
+
+def _required_coverage(tensor: torch.Tensor, elements_per_sample: int) -> tuple[str, float]:
+    present = tensor.detach().to(dtype=torch.float32)
+    if elements_per_sample == 1:
+        positive = present.reshape(present.shape[0], -1).any(dim=1)
+    else:
+        positive = present.reshape(present.shape[0], elements_per_sample).sum(dim=1) > 0.0
+    return "present_positive" if bool(positive.any()) else "present_zero", float(
+        positive.to(dtype=torch.float32).mean()
+    )
+
+
+def _optional_mask_coverage(mask: torch.Tensor | None, elements_per_sample: int) -> tuple[str, float]:
+    if mask is None:
+        return "absent", 0.0
+    return _required_coverage(mask, elements_per_sample)
+
+
+def target_coverage_dict(
+    targets: BaseTargets, weights: LossWeights | None = None, loss_mode: str = "full_base"
+) -> dict[str, dict[str, float | str]]:
+    active = set(active_loss_heads(weights, loss_mode))
+    coverage: dict[str, dict[str, float | str]] = {}
+
+    def add(head: str, status: str, fraction: float) -> None:
+        coverage[head] = {"active": head in active, "status": status, "fraction": fraction}
+
+    add("policy", "present_positive", 1.0)
+    add("value", "present_positive", 1.0)
+    add("score_pdf", *_required_coverage(targets.score_pdf_target, targets.score_pdf_target.shape[1]))
+    add("score_cdf", *_required_coverage(targets.score_cdf_target, targets.score_cdf_target.shape[1]))
+    add("tenpai", "present_positive", 1.0)
+    add("grp", *_required_coverage(targets.grp_target, targets.grp_target.shape[1]))
+    add("oracle_critic", *_optional_mask_coverage(targets.oracle_target_mask, 1))
+    safety_width = 1 if targets.safety_mask is None else targets.safety_mask.shape[1]
+    add("safety_residual", *_optional_mask_coverage(targets.safety_mask, safety_width))
+    add(
+        "opp_next",
+        *_required_coverage(
+            targets.opp_next_target, targets.opp_next_target.shape[1] * targets.opp_next_target.shape[2]
+        ),
+    )
+    add("danger", *_required_coverage(targets.danger_mask, targets.danger_mask.shape[1] * targets.danger_mask.shape[2]))
+    return coverage
 
 
 def base_loss(outputs: HydraBaseOutput, targets: BaseTargets, weights: LossWeights | None = None) -> LossBreakdown:

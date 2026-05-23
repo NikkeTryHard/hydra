@@ -125,6 +125,10 @@ pub fn build_python_learner_command(options: &PythonLearnerCliOptions) -> Python
         options.variant.as_str().to_string(),
         "--residual-profile".to_string(),
         options.residual_profile.as_str().to_string(),
+        "--conv-memory-format".to_string(),
+        options.conv_memory_format.as_str().to_string(),
+        "--backbone-profile".to_string(),
+        options.backbone_profile.as_str().to_string(),
         "--hidden".to_string(),
         options.hidden.to_string(),
         "--blocks".to_string(),
@@ -152,9 +156,38 @@ pub fn build_python_learner_command(options: &PythonLearnerCliOptions) -> Python
         options.safety_residual_weight.to_string(),
         "--lr".to_string(),
         options.learning_rate.to_string(),
+        "--min-lr".to_string(),
+        options.min_learning_rate.to_string(),
+        "--lr-warmup-steps".to_string(),
+        options.lr_warmup_steps.to_string(),
+        "--lr-schedule".to_string(),
+        options.lr_schedule.clone(),
+        "--grad-clip-norm".to_string(),
+        options.grad_clip_norm.to_string(),
         "--weight-decay".to_string(),
         options.weight_decay.to_string(),
+        "--adamw-fused".to_string(),
+        options.adamw_fused.as_str().to_string(),
+        "--adamw-foreach".to_string(),
+        options.adamw_foreach.as_str().to_string(),
     ]);
+    if options.ema_enabled {
+        args.extend([
+            "--ema-enabled".to_string(),
+            "--ema-decay".to_string(),
+            options.ema_decay.to_string(),
+            "--ema-start-step".to_string(),
+            options.ema_start_step.to_string(),
+            "--ema-update-every-steps".to_string(),
+            options.ema_update_every_steps.to_string(),
+            "--ema-device".to_string(),
+            options.ema_device.as_str().to_string(),
+        ]);
+    }
+    if let Some(total_steps) = options.schedule_total_steps {
+        args.push("--schedule-total-steps".to_string());
+        args.push(total_steps.to_string());
+    }
     if options.full_epoch {
         args.push("--full-epoch".to_string());
     }
@@ -220,8 +253,17 @@ pub fn build_python_learner_command(options: &PythonLearnerCliOptions) -> Python
     if options.validation_steps != 0 && options.validation_every != 0 {
         args.push("--validation-steps".to_string());
         args.push(options.validation_steps.to_string());
+        if let Some(max_samples) = options.validation_max_samples {
+            args.push("--validation-max-samples".to_string());
+            args.push(max_samples.to_string());
+        }
         args.push("--validation-every".to_string());
         args.push(options.validation_every.to_string());
+        args.push("--validation-source-mode".to_string());
+        args.push(options.validation_source_mode.clone());
+        if options.raw_mjai_validation_augment {
+            args.push("--raw-mjai-validation-augment".to_string());
+        }
     }
     if options.keep_step_checkpoints && options.checkpoint_out.is_none() {
         args.push("--keep-step-checkpoints".to_string());
@@ -523,6 +565,7 @@ pub fn run_python_learner_benchmark_row(
     options.microbatch_size = microbatch_size;
     options.warmup_steps = warmup_steps;
     options.steps = Some(measure_steps.max(1));
+    options.schedule_total_steps = Some(measure_steps.max(1));
     options.checkpoint_out = None;
     options.resume = None;
     options.checkpoint_every_steps = 0;
@@ -575,6 +618,10 @@ mod tests {
             batch_size: 2048,
             microbatch_size: 1024,
             variant: PythonLearnerVariant::CompileDefault,
+            conv_memory_format:
+                hydra_train_runtime::config::PythonConvMemoryFormatConfig::Contiguous,
+            backbone_profile:
+                hydra_train_runtime::config::PythonBackboneProfileConfig::Conv2dLocal3,
             residual_profile: hydra_train_runtime::config::PythonResidualProfileConfig::ReluSe,
             hidden: 256,
             blocks: 10,
@@ -583,7 +630,10 @@ mod tests {
             steps: Some(3),
             full_epoch: false,
             validation_steps: 0,
+            validation_max_samples: None,
             validation_every: 0,
+            raw_mjai_validation_augment: false,
+            validation_source_mode: "fixed".to_string(),
             checkpoint_out: Some(root.join("ckpt.pt")),
             resume: Some(root.join("resume.pt")),
             checkpoint_every_steps: 7,
@@ -595,7 +645,19 @@ mod tests {
             tensorboard_port: 6006,
             background: false,
             learning_rate: 1.0e-4,
+            min_learning_rate: 1.0e-6,
+            lr_warmup_steps: 11,
+            lr_schedule: "cosine".to_string(),
+            schedule_total_steps: Some(99),
+            grad_clip_norm: 1.25,
             weight_decay: 2.0e-5,
+            ema_enabled: true,
+            ema_decay: 0.99,
+            ema_start_step: 5,
+            ema_update_every_steps: 2,
+            ema_device: hydra_train_runtime::config::EmaDeviceConfig::Cuda,
+            adamw_fused: hydra_train_runtime::config::PythonAdamwFlagConfig::On,
+            adamw_foreach: hydra_train_runtime::config::PythonAdamwFlagConfig::Auto,
             compile_fullgraph_check: true,
             oracle_critic_weight: 0.25,
             safety_residual_weight: 0.5,
@@ -633,6 +695,86 @@ mod tests {
                 .args
                 .windows(2)
                 .any(|w| w == ["--residual-profile", "relu_se"])
+        );
+        assert!(
+            command
+                .args
+                .windows(2)
+                .any(|w| w == ["--conv-memory-format", "contiguous"])
+        );
+        assert!(
+            command
+                .args
+                .windows(2)
+                .any(|w| w == ["--backbone-profile", "conv2d_local3"])
+        );
+        assert!(command.args.windows(2).any(|w| w == ["--lr", "0.0001"]));
+        assert!(
+            command
+                .args
+                .windows(2)
+                .any(|w| w == ["--min-lr", "0.000001"])
+        );
+        assert!(
+            command
+                .args
+                .windows(2)
+                .any(|w| w == ["--lr-warmup-steps", "11"])
+        );
+        assert!(
+            command
+                .args
+                .windows(2)
+                .any(|w| w == ["--lr-schedule", "cosine"])
+        );
+        assert!(
+            command
+                .args
+                .windows(2)
+                .any(|w| w == ["--schedule-total-steps", "99"])
+        );
+        assert!(
+            command
+                .args
+                .windows(2)
+                .any(|w| w == ["--grad-clip-norm", "1.25"])
+        );
+        assert!(
+            command
+                .args
+                .windows(2)
+                .any(|w| w == ["--adamw-fused", "on"])
+        );
+        assert!(
+            command
+                .args
+                .windows(2)
+                .any(|w| w == ["--adamw-foreach", "auto"])
+        );
+        assert!(command.args.contains(&"--ema-enabled".to_string()));
+        assert!(
+            command
+                .args
+                .windows(2)
+                .any(|w| w == ["--ema-decay", "0.99"])
+        );
+        assert!(
+            command
+                .args
+                .windows(2)
+                .any(|w| w == ["--ema-start-step", "5"])
+        );
+        assert!(
+            command
+                .args
+                .windows(2)
+                .any(|w| w == ["--ema-update-every-steps", "2"])
+        );
+        assert!(
+            command
+                .args
+                .windows(2)
+                .any(|w| w == ["--ema-device", "cuda"])
         );
         assert!(command.args.windows(2).any(|w| w
             == [
@@ -745,6 +887,53 @@ mod tests {
         );
         assert!(command.args.contains(&"--raw-mjai-augment".to_string()));
         assert!(!command.args.contains(&"--manifest".to_string()));
+        assert!(
+            !command
+                .args
+                .contains(&"--raw-mjai-validation-augment".to_string())
+        );
+    }
+
+    #[test]
+    fn command_passes_validation_source_controls() {
+        let root = PathBuf::from("/tmp/hydra validation launcher");
+        let mut opts = options(&root);
+        opts.validation_steps = 2;
+        opts.validation_max_samples = Some(65_536);
+        opts.validation_every = 5;
+        opts.raw_mjai_validation_augment = true;
+        opts.validation_source_mode = "streaming".to_string();
+        let command = build_python_learner_command(&opts);
+
+        assert!(
+            command
+                .args
+                .windows(2)
+                .any(|w| w == ["--validation-steps", "2"])
+        );
+        assert!(
+            command
+                .args
+                .windows(2)
+                .any(|w| w == ["--validation-max-samples", "65536"])
+        );
+        assert!(
+            command
+                .args
+                .windows(2)
+                .any(|w| w == ["--validation-every", "5"])
+        );
+        assert!(
+            command
+                .args
+                .windows(2)
+                .any(|w| w == ["--validation-source-mode", "streaming"])
+        );
+        assert!(
+            command
+                .args
+                .contains(&"--raw-mjai-validation-augment".to_string())
+        );
     }
 
     #[test]

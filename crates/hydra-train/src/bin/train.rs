@@ -2,12 +2,12 @@ use colored::control as color_control;
 use std::env;
 use std::path::PathBuf;
 
-use hydra_train_exec::graph_probe::{handle_graph_probe_child, handle_graph_probe_parent};
-use hydra_train_exec::modes::{handle_list_devices_mode, run_train_modes};
-use hydra_train_exec::preflight_runtime::run_probe_child_mode;
 use hydra_train_runtime::config::{
     BcBackend, PythonLearnerCliOptions, PythonLearnerInput, parse_args, read_config,
+    validation_sample_limit,
 };
+
+const PYTHON_TIMING_WARMUP_STEPS: usize = 10;
 #[cfg(test)]
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -20,42 +20,19 @@ use hydra_train_exec::resume::{
 #[cfg(test)]
 use hydra_train_runtime::config::{
     AdvancedLossConfig, BcHyperparamConfig, TrainConfig, default_seed, validation_microbatch_size,
-    validation_sample_limit,
 };
 
 fn run() -> Result<(), String> {
     color_control::set_override(true);
     let cli = parse_args(env::args())?;
-    hydra_train_exec::gpu_config::configure_libtorch_cpu_threads(
-        hydra_train_runtime::config::default_num_threads_for_system(),
-    );
-    if cli.list_devices {
-        return handle_list_devices_mode();
-    }
 
+    if cli.list_devices {
+        return Err("--list-devices is not supported by the Python BC launcher".to_string());
+    }
     if cli.preflight.is_some() || cli.benchmark_baseline.is_some() {
-        let device = cli
-            .preflight
-            .as_ref()
-            .map(|preflight| preflight.device.clone())
-            .or_else(|| {
-                cli.benchmark_baseline
-                    .as_ref()
-                    .map(|benchmark| benchmark.device.clone())
-            })
-            .unwrap_or_else(hydra_train_runtime::config::default_device);
-        let _benchmark_quiet = if cli.benchmark_baseline.is_some() {
-            unsafe {
-                std::env::set_var("HYDRA_BENCHMARK_QUIET", "1");
-            }
-            true
-        } else {
-            false
-        };
-        hydra_train_exec::gpu_config::apply_gpu_performance_flags(&device);
-        return run_train_modes(
-            cli,
-            hydra_train_runtime::config::TrainConfig::default_preflight_bench(),
+        return Err(
+            "--preflight and --benchmark-baseline are not supported by the Python BC launcher"
+                .to_string(),
         );
     }
     if let Some(python_learner) = cli.python_learner.as_ref() {
@@ -140,17 +117,13 @@ fn run() -> Result<(), String> {
         }
         return Ok(());
     }
-    hydra_train_exec::gpu_config::apply_gpu_performance_flags(&config.device);
-    if std::env::var_os("HYDRA_CUDA_GRAPH_PROBE_CHILD").is_some() {
-        return handle_graph_probe_child(config_path);
+    if cli.delta_q_promotion {
+        return Err("DeltaQ promotion is not supported by the Python BC launcher".to_string());
     }
-    if std::env::var_os("HYDRA_CUDA_GRAPH_PROBE").is_some() {
-        return handle_graph_probe_parent(config_path);
+    if cli.probe_child.is_some() || cli.probe_only.is_some() {
+        return Err("probe modes are not supported by the Python BC launcher".to_string());
     }
-    if run_probe_child_mode(&config, cli.probe_child.clone())? {
-        return Ok(());
-    }
-    run_train_modes(cli, config)
+    Err("Rust Burn BC training has been removed from hydra-train; set bc_backend: python or use Python BC launcher flags".to_string())
 }
 
 fn python_resume_checkpoint(config: &hydra_train_runtime::config::TrainConfig) -> Option<PathBuf> {
@@ -170,46 +143,31 @@ fn python_options_from_config(
     config: &hydra_train_runtime::config::TrainConfig,
 ) -> Result<PythonLearnerCliOptions, String> {
     if config.exit_sidecar_path.is_some() {
-        return Err(
-            "Python BC learner does not support ExIt sidecars yet; set bc_backend: rust_burn for legacy Rust BC"
-                .to_string(),
-        );
+        return Err("Python BC learner does not support ExIt sidecars".to_string());
     }
     if config.delta_q_sidecar_path.is_some() {
-        return Err(
-            "Python BC learner does not support DeltaQ sidecars yet; set bc_backend: rust_burn for legacy Rust BC"
-                .to_string(),
-        );
+        return Err("Python BC learner does not support DeltaQ sidecars".to_string());
     }
     if let Some(loss) = config.advanced_loss.as_ref() {
         if loss.exit.is_some_and(|weight| weight > 0.0) {
-            return Err(
-                "Python BC learner does not support advanced_loss.exit yet; set bc_backend: rust_burn for legacy Rust BC"
-                    .to_string(),
-            );
+            return Err("Python BC learner does not support advanced_loss.exit".to_string());
         }
         if loss.delta_q.is_some_and(|weight| weight > 0.0) {
-            return Err(
-                "Python BC learner does not support advanced_loss.delta_q yet; set bc_backend: rust_burn for legacy Rust BC"
-                    .to_string(),
-            );
+            return Err("Python BC learner does not support advanced_loss.delta_q".to_string());
         }
         if loss.belief_fields.is_some_and(|weight| weight > 0.0) {
             return Err(
-                "Python BC learner does not support advanced_loss.belief_fields yet; set bc_backend: rust_burn for legacy Rust BC"
-                    .to_string(),
+                "Python BC learner does not support advanced_loss.belief_fields".to_string(),
             );
         }
         if loss.mixture_weight.is_some_and(|weight| weight > 0.0) {
             return Err(
-                "Python BC learner does not support advanced_loss.mixture_weight yet; set bc_backend: rust_burn for legacy Rust BC"
-                    .to_string(),
+                "Python BC learner does not support advanced_loss.mixture_weight".to_string(),
             );
         }
         if loss.opponent_hand_type.is_some_and(|weight| weight > 0.0) {
             return Err(
-                "Python BC learner does not support advanced_loss.opponent_hand_type yet; set bc_backend: rust_burn for legacy Rust BC"
-                    .to_string(),
+                "Python BC learner does not support advanced_loss.opponent_hand_type".to_string(),
             );
         }
     }
@@ -242,17 +200,21 @@ fn python_options_from_config(
         microbatch_size: config.microbatch_size.unwrap_or(1024),
         variant: config.python_variant,
         residual_profile: config.python_residual_profile,
+        conv_memory_format: config.python_conv_memory_format,
+        backbone_profile: config.python_backbone_profile,
         hidden: config.python_model_profile.hidden(),
         blocks: config.python_model_profile.blocks(),
         bottleneck: config.python_model_profile.bottleneck(),
-        warmup_steps: config.bc.warmup_steps,
+        warmup_steps: PYTHON_TIMING_WARMUP_STEPS,
         steps: config.max_train_steps,
         full_epoch: config.full_epoch,
-        validation_steps: config
-            .max_validation_samples
+        validation_steps: validation_sample_limit(config)
             .unwrap_or(0)
             .div_ceil(config.batch_size),
+        validation_max_samples: config.max_validation_samples,
         validation_every: config.validate_every_n_steps,
+        raw_mjai_validation_augment: false,
+        validation_source_mode: "fixed".to_string(),
         checkpoint_out: None,
         resume: python_resume_checkpoint(config),
         checkpoint_every_steps: config.checkpoint_every_n_steps,
@@ -264,7 +226,23 @@ fn python_options_from_config(
         tensorboard_port: config.tensorboard_port,
         background: config.background,
         learning_rate: config.bc.learning_rate,
+        min_learning_rate: config.bc.min_learning_rate,
+        lr_warmup_steps: config.bc.warmup_steps,
+        lr_schedule: if config.full_epoch && config.max_train_steps.is_none() {
+            "constant".to_string()
+        } else {
+            "cosine".to_string()
+        },
+        schedule_total_steps: config.max_train_steps,
+        grad_clip_norm: f64::from(config.bc.grad_clip_norm),
         weight_decay: f64::from(config.bc.weight_decay),
+        ema_enabled: config.ema.enabled,
+        ema_decay: config.ema.decay,
+        ema_start_step: config.ema.start_step,
+        ema_update_every_steps: config.ema.update_every_steps,
+        ema_device: config.ema.device,
+        adamw_fused: config.bc.adamw_fused,
+        adamw_foreach: config.bc.adamw_foreach,
         compile_fullgraph_check: false,
         oracle_critic_weight: 0.0,
         safety_residual_weight: advanced

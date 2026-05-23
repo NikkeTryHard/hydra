@@ -47,6 +47,11 @@ class ModelConfig:
 class OptimizerConfig:
     name: Literal["AdamW"]
     lr: float
+    min_lr: float
+    lr_schedule: Literal["constant", "cosine"] = "cosine"
+    lr_warmup_steps: int = 0
+    schedule_total_steps: int | None = None
+    grad_clip_norm: float | None = None
     weight_decay: float = 0.01
     beta1: float = 0.9
     beta2: float = 0.999
@@ -55,12 +60,33 @@ class OptimizerConfig:
     fused: bool | None = None
 
 
+EmaDevice = Literal["auto", "cuda", "cpu"]
+
+
+@dataclass(frozen=True)
+class EmaConfig:
+    enabled: bool = False
+    decay: float = 0.999
+    start_step: int = 0
+    update_every_steps: int = 1
+    device: EmaDevice = "auto"
+
+
 @dataclass(frozen=True)
 class RuntimeConfig:
     variant: str
     loss_mode: str
     precision_mode: str
     compile_fullgraph_check: bool
+    compile_dry_run_mode: str = "snapshot_restore_first_batch"
+    warmup_mode: str = "non_mutating_replay_first_batch"
+
+
+@dataclass(frozen=True)
+class EmaResumeState:
+    state_dict: dict[str, torch.Tensor]
+    update_count: int
+    last_update_step: int = 0
 
 
 @dataclass(frozen=True)
@@ -68,6 +94,7 @@ class ResumeState:
     global_step: int
     samples_seen: int
     raw_mjai_progress: dict[str, int]
+    ema: EmaResumeState | None = None
 
 
 def manifest_digest(path: Path | None) -> str | None:
@@ -133,6 +160,11 @@ def save_checkpoint(
     global_step: int,
     samples_seen: int,
     raw_mjai_progress: dict[str, int] | None = None,
+    ema_config: EmaConfig | None = None,
+    ema_state: dict[str, torch.Tensor] | None = None,
+    ema_update_count: int = 0,
+    ema_last_update_step: int = 0,
+    weight_source: Literal["raw", "ema"] = "raw",
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     checkpoint = {
@@ -155,6 +187,12 @@ def save_checkpoint(
         "raw_mjai_progress": dict[str, int]() if raw_mjai_progress is None else dict(raw_mjai_progress),
         "compile": asdict(runtime_config),
     }
+    if ema_config is not None:
+        checkpoint["ema_config"] = asdict(ema_config)
+        checkpoint["ema_state"] = {} if ema_state is None else _cpu_ema_state(ema_state)
+        checkpoint["ema_update_count"] = ema_update_count
+        checkpoint["ema_last_update_step"] = ema_last_update_step
+    checkpoint["weight_source"] = weight_source
     torch.save(checkpoint, path)
 
 
@@ -168,6 +206,7 @@ def load_checkpoint(
     expected_runtime_config: RuntimeConfig,
     expected_loss_weights: LossWeights,
     expected_manifest_path: Path | None,
+    expected_ema_config: EmaConfig | None = None,
 ) -> ResumeState:
     checkpoint = _torch_load(path)
     _validate_checkpoint_root(checkpoint)
@@ -183,6 +222,10 @@ def load_checkpoint(
         },
         "manifest",
     )
+    weight_source = checkpoint.get("weight_source", "raw")
+    if weight_source != "raw":
+        raise ValueError(f"checkpoint weight_source must be 'raw' for resume, got {weight_source!r}")
+    ema_resume = _load_ema_resume_state(checkpoint, expected_ema_config, model)
     _load_model_state_strict(model, checkpoint["model_state"])
     optimizer.load_state_dict(checkpoint["optimizer_state"])
     restore_rng_state(checkpoint["rng_state"])
@@ -193,6 +236,7 @@ def load_checkpoint(
         global_step=int(checkpoint["global_step"]),
         samples_seen=int(checkpoint["samples_seen"]),
         raw_mjai_progress={str(key): int(value) for key, value in raw_progress.items()},
+        ema=ema_resume,
     )
 
 
@@ -250,6 +294,48 @@ def _load_model_state_strict(model: nn.Module, state: object) -> None:
         if tensor.dtype != expected.dtype:
             raise ValueError(f"model_state[{key}] dtype mismatch: got {tensor.dtype} expected {expected.dtype}")
     model.load_state_dict(state_dict, strict=True)
+
+
+def _cpu_ema_state(state: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    return {key: tensor.detach().to(device="cpu", dtype=torch.float32) for key, tensor in state.items()}
+
+
+def _load_ema_resume_state(
+    checkpoint: dict[str, Any], expected: EmaConfig | None, model: nn.Module
+) -> EmaResumeState | None:
+    has_ema = "ema_config" in checkpoint or "ema_state" in checkpoint
+    if expected is None:
+        if has_ema:
+            raise ValueError("checkpoint ema_config mismatch: EMA state present but EMA disabled")
+        return None
+    if not has_ema:
+        raise ValueError("checkpoint ema_config mismatch: EMA state missing")
+    _expect_equal(checkpoint.get("ema_config"), asdict(expected), "ema_config")
+    state = checkpoint.get("ema_state")
+    if not isinstance(state, dict):
+        raise ValueError("checkpoint ema_state must be a dict")
+    current = model.state_dict()
+    ema_state = cast("dict[str, torch.Tensor]", state)
+    param_keys = {key for key, tensor in current.items() if tensor.is_floating_point()}
+    if set(ema_state) != param_keys:
+        missing = sorted(param_keys.difference(ema_state))
+        extra = sorted(set(ema_state).difference(param_keys))
+        raise ValueError(f"ema_state keys mismatch: missing={missing} extra={extra}")
+    for key, tensor in ema_state.items():
+        if not isinstance(tensor, torch.Tensor):
+            raise ValueError(f"ema_state[{key}] is not a tensor")
+        expected_tensor = current[key]
+        if tensor.shape != expected_tensor.shape:
+            raise ValueError(
+                f"ema_state[{key}] shape mismatch: got {tuple(tensor.shape)} expected {tuple(expected_tensor.shape)}"
+            )
+        if tensor.dtype != torch.float32:
+            raise ValueError(f"ema_state[{key}] dtype mismatch: got {tensor.dtype} expected torch.float32")
+    return EmaResumeState(
+        state_dict={key: tensor.detach().clone() for key, tensor in ema_state.items()},
+        update_count=int(checkpoint.get("ema_update_count", 0)),
+        last_update_step=int(checkpoint.get("ema_last_update_step", 0)),
+    )
 
 
 def _expect_equal(actual: object, expected: object, name: str) -> None:

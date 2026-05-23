@@ -496,7 +496,6 @@ dependencies = [
  "burn-cuda",
  "burn-dispatch",
  "burn-flex",
- "burn-ir",
  "burn-ndarray",
  "burn-nn",
  "burn-optim",
@@ -936,6 +935,8 @@ dependencies = [
 [[package]]
 name = "burn-tch"
 version = "0.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dfa36b630bd7a790395b4561f7d0e315c0d5e1c557db7dd4cf1b48d5c0d4aff2"
 dependencies = [
  "burn-backend",
  "cc",
@@ -994,9 +995,7 @@ dependencies = [
  "aligned-vec",
  "bon",
  "burn-cubecl",
- "burn-fusion",
  "burn-ir",
- "burn-tch",
  "burn-tensor",
  "bytemuck",
  "cubecl",
@@ -3416,8 +3415,6 @@ dependencies = [
  "hydra-core",
  "hydra-train-types",
  "libloading 0.8.9",
- "tch",
- "torch-sys",
 ]
 
 [[package]]
@@ -3502,7 +3499,6 @@ dependencies = [
 name = "hydra-train"
 version = "0.1.0"
 dependencies = [
- "burn",
  "colored",
  "criterion",
  "ctrlc",
@@ -3519,7 +3515,6 @@ dependencies = [
  "hydra-sample-cache",
  "hydra-search-labels",
  "hydra-selfplay",
- "hydra-train-algo",
  "hydra-train-exec",
  "hydra-train-runtime",
  "hydra-train-types",
@@ -3533,9 +3528,7 @@ dependencies = [
  "serde_yaml",
  "tar",
  "tboard",
- "tch",
  "time",
- "torch-sys",
  "zstd 0.13.3",
 ]
 
@@ -3575,9 +3568,7 @@ dependencies = [
  "serde_yaml",
  "tar",
  "tboard",
- "tch",
  "time",
- "torch-sys",
  "zstd 0.13.3",
 ]
 

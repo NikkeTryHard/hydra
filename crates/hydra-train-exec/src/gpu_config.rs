@@ -1,11 +1,6 @@
 use std::sync::Once;
 
-#[cfg(feature = "cuda-graph")]
-unsafe extern "C" {
-    fn hydra_set_tf32_precision(b: std::ffi::c_int);
-}
-
-static LIBTORCH_CPU_POOL_CONFIG: Once = Once::new();
+static CPU_POOL_ENV_CONFIG: Once = Once::new();
 static CUDA_PERFORMANCE_FLAGS: Once = Once::new();
 
 fn device_requests_cuda(device: &str) -> bool {
@@ -15,30 +10,40 @@ fn device_requests_cuda(device: &str) -> bool {
         .is_some_and(|kind| kind.eq_ignore_ascii_case("cuda"))
 }
 
-/// Global libtorch CPU-pool flags. Must be called before any tensor ops.
-pub fn configure_libtorch_cpu_threads(num_threads: usize) {
-    LIBTORCH_CPU_POOL_CONFIG.call_once(|| {
-        let threads = num_threads.max(1) as i32;
-        tch::set_num_interop_threads(1);
-        tch::set_num_threads(threads);
+/// Process-wide CPU-pool environment defaults for Python launcher children.
+pub fn configure_python_cpu_threads(num_threads: usize) {
+    CPU_POOL_ENV_CONFIG.call_once(|| {
+        let threads = num_threads.max(1).to_string();
+        // SAFETY: this crate calls the configurator during launcher setup, before
+        // spawning worker processes that inherit the environment.
+        unsafe {
+            std::env::set_var("OMP_NUM_THREADS", &threads);
+            std::env::set_var("MKL_NUM_THREADS", &threads);
+        }
     });
 }
 
-/// Global CUDA performance flags. Must be called before any tensor ops.
+/// Backward-compatible name for callers that have not yet been moved to the
+/// Python-specific helper. This no longer calls LibTorch/tch APIs.
+pub fn configure_libtorch_cpu_threads(num_threads: usize) {
+    configure_python_cpu_threads(num_threads);
+}
+
+/// Global CUDA performance environment flags for Python launcher children.
 pub fn apply_gpu_performance_flags(device: &str) {
     if !device_requests_cuda(device) {
         return;
     }
 
     CUDA_PERFORMANCE_FLAGS.call_once(|| {
-        // SAFETY: called inside Once, before any tensor ops or thread spawning.
+        // SAFETY: this crate calls the configurator during launcher setup, before
+        // spawning worker processes that inherit the environment.
         unsafe {
             std::env::set_var("OMP_NUM_THREADS", "1");
             std::env::set_var("MKL_NUM_THREADS", "1");
             // Cap the NVIDIA driver's internal PTX JIT compiler to 2 threads.
-            // Without this, it saturates ALL cores when compiling PTX->SASS
-            // for GPUs that lack precompiled SASS in the libtorch binary
-            // (e.g., Blackwell sm_120). Requires driver R570+ (CUDA 13.1).
+            // Without this, it may saturate cores when Python/PyTorch compiles
+            // PTX for GPUs that lack precompiled SASS in the wheel.
             if std::env::var("CUDA_BINARY_LOADER_THREAD_COUNT").is_err() {
                 std::env::set_var("CUDA_BINARY_LOADER_THREAD_COUNT", "2");
             }
@@ -47,22 +52,6 @@ pub fn apply_gpu_performance_flags(device: &str) {
             }
         }
     });
-
-    if tch::Cuda::is_available() {
-        // Auto-tunes conv algorithms per input shape on first call, caches
-        // the fastest. Safe with fixed tensor shapes (Hydra's case).
-        tch::Cuda::cudnn_set_benchmark(true);
-
-        #[cfg(feature = "cuda-graph")]
-        {
-            // TF32: on Ampere+ GPUs, uses Tensor Cores for FP32 matmul/conv
-            // with 10-bit mantissa. Same exponent range, no overflow risk.
-            // tch-rs doesn't expose globalContext TF32 setters.
-            unsafe {
-                hydra_set_tf32_precision(1);
-            }
-        }
-    }
 }
 
 #[cfg(test)]

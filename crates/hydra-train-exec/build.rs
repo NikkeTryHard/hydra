@@ -10,15 +10,18 @@ struct CudaPaths {
 }
 
 fn main() {
-    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_LIBTORCH");
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_BURN_LIBTORCH_OBSOLETE");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_CUDA_GRAPH");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_BF16_AUTOCAST_PROOF");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_TORCH_PROFILER");
 
     let bf16_autocast_proof_enabled = env::var_os("CARGO_FEATURE_BF16_AUTOCAST_PROOF").is_some();
     let cuda_graph_enabled = env::var_os("CARGO_FEATURE_CUDA_GRAPH").is_some();
-    let libtorch_enabled = env::var_os("CARGO_FEATURE_LIBTORCH").is_some();
+    let libtorch_enabled = env::var_os("CARGO_FEATURE_BURN_LIBTORCH_OBSOLETE").is_some();
     let torch_profiler_enabled = env::var_os("CARGO_FEATURE_TORCH_PROFILER").is_some();
+    if !libtorch_enabled {
+        return;
+    }
     if !cuda_graph_enabled && !bf16_autocast_proof_enabled && !torch_profiler_enabled {
         return;
     }

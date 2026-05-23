@@ -97,6 +97,9 @@ bc:
   weight_decay: 0.00001
   grad_clip_norm: 1.0
   warmup_steps: 1000
+# Python BC: warmup_steps is LR warmup, not compile/timing warmup.
+# LR: linear 0 -> learning_rate over warmup_steps, then cosine to min_learning_rate over run horizon.
+# grad_clip_norm clips accumulated gradients before optimizer step.
 ```
 
 Minimal BC shard train, default Python/PyTorch backend:
@@ -126,13 +129,15 @@ tensorboard/            TensorBoard event files
 python_learner_result.json
 ```
 
-Resume with `resume_checkpoint: <output_dir>/checkpoints/latest.pt`. Python
-checkpoint load validates schema, model/runtime/optimizer/loss contracts,
-manifest/source identity, and RNG metadata. Present-but-mismatched metadata is
-hard error.
+Resume with `resume_checkpoint: <output_dir>/checkpoints/latest.pt`. Python checkpoint load validates schema, model/runtime/optimizer/loss/EMA contracts, manifest/source identity, and RNG metadata. Present-but-mismatched metadata hard error. Step logs/TensorBoard include current `lr`; `grad_norm` logs only when clipping path reports without extra timed-step sync. Checkpoint metadata includes `weight_source: raw|ema`; resume accepts raw authority only, never silently mixes exported EMA weights back into mutable train state.
 
-For long Python BC runs, set `full_epoch: true` with `max_train_steps: null` to consume full raw-MJAI train split once. Use explicit `max_train_steps` only for bounded probes or ablations. If unset and `full_epoch` is false, launcher uses 30 steps. `num_epochs` remains Rust/Burn full-loop authority today; Python epoch
-scheduling is not active yet.
+Python BC diagnostic logs expose train/validation head health, not only total loss. `logs/train_steps.jsonl` has `head_losses` and `target_coverage`; validation events in `logs/events.jsonl` and TensorBoard scalars include per-head losses: `policy`, `value`, `score_pdf`, `score_cdf`, `tenpai`, `grp`, weighted `oracle_critic`, weighted `safety_residual`, `opp_next`, `danger`. With `ema.enabled`, validation logs `metrics.raw.*` and `metrics.ema.*`; TensorBoard uses `validation/raw/*` and `validation/ema/*`. Coverage status is explicit per head: `absent`, `present_zero`, or `present_positive`, plus sample-weighted fraction. Positive optional weights hard-error when labels/masks are absent; all-zero present masks log `present_zero` so `full_base` data-path bugs surface instead of hiding in total loss.
+
+Python BC step/sample accounting: `global_step`, `samples_seen`, JSONL, TensorBoard, and checkpoint step count every optimizer update that mutates weights. `--warmup` is timing/compile warmup only: it replays staged train batch through forward/backward/optimizer, then restores model + optimizer state, so it does not count as training and does not advance corpus position. Torch compile dry-run also snapshot/restores model + optimizer state. If raw-MJAI supplies that dry-run batch, logs expose it as consumed-but-non-mutating: `compile_dry_run=true`, `warmup_mode=non_mutating_replay_first_batch`, `warmup_steps_counted=0`, `samples_consumed_pre_main`, `pre_main_batches_changed_weights=false`. Raw-MJAI progress fields remain separate corpus-consumption counters; use them with `samples_seen` for plateau/corpus-position diagnosis.
+
+For long Python BC runs, shard path is resumable steady-state launch path. Raw-MJAI `full_epoch: true` + `max_train_steps: null` may consume raw train split once, but raw-MJAI resume is blocked for both full-epoch and bounded runs until stream cursor resume exists: checkpoint restores weights/RNG/optimizer, but stream cursor would restart at corpus start and repeat early samples. Use fresh output dir for raw, or build BC shards and resume from `bc_shards_manifest_path`. `num_epochs` remains Rust/Burn full-loop authority today; Python epoch scheduling is not active yet.
+
+Raw-MJAI Python validation default = fixed held-out window. Python pre-materializes `validation_steps` batches once from validation split, no suit augmentation unless direct CLI passes `--raw-mjai-validation-augment`. Rust/YAML respects `max_validation_batches` when set; otherwise it derives ceil batches from `max_validation_samples` and passes requested sample cap to Python. Validation logs expose requested/actual batches, requested/actual samples, and sample cap overrun. Plateau diagnosis should use this fixed, non-augmented validation: flat curve then means model stopped improving on same held-out samples. Direct Python can opt back into moving validation with `--validation-source-mode streaming`; logs label mode explicitly.
 
 Python BC UX knobs:
 
@@ -148,6 +153,19 @@ tensorboard_port: 6006
 background: true
 max_train_steps: 1000
 ```
+
+EMA checkpoint averaging. Default on:
+
+```yaml
+ema:
+  enabled: true
+  decay: 0.999
+  start_step: 0
+  update_every_steps: 1
+  device: auto  # auto | cuda | cpu
+```
+
+When enabled, Python BC keeps FP32 shadow weights, updates after counted optimizer steps only, and skips compile/timing warmup. `ema.device: auto` uses CUDA shadow for CUDA training and CPU shadow for CPU training; `cuda` requires CUDA training and hard-errors otherwise; `cpu` keeps legacy CPU shadow. CUDA EMA costs roughly one FP32 model copy of VRAM (~21 MiB for balanced 12-block) and avoids per-step GPU->CPU shadow copies. Checkpoints serialize EMA tensors CPU-side, then resume validates EMA config including device and restores shadow onto configured runtime device. Validation evaluates raw then EMA weights on same validation source and best checkpoint may save EMA weights if EMA has lower policy NLL. Resume accepts raw `weight_source` only; EMA best exports never become mutable-train resume authority.
 
 Launcher picks first available TensorBoard port at or above `tensorboard_port`.
 If `background: true`, CLI returns after spawn and prints:
@@ -441,14 +459,16 @@ Phase 1 compact-shard proof:
 
 
 CUDA shard no-starvation proof result: serious CUDA BC compact-shard runs should use `pixi run train-cuda-shards -- <config.yaml>` or equivalent explicit feature command `pixi run cargo run --release -p hydra-train --bin train --no-default-features --features cuda-graph -- <config.yaml>`. This enables pinned H2D staging and preallocated device tensors; production graph replay remains off/probe-only. Representative proof with batch 1024, microbatch 256, `shard_prefetch_depth: 2`, and fp32 passed input gates: producer wait 0.0004/0.0004%, H2D 0.602/0.627%, input starvation 0.605/0.627%, compute 98.97%, 2498.21 samples/s. `--features training` alone is semantically valid but does not enable CUDA pinned/prealloc transport and can be limited by pageable H2D materialization.
-Prod workflow:
-1. Audit replay corpus and sidecar inputs.
-2. Build train+validation shards using same train fraction + sidecar provenance intended for training; use `--resume` for long builds.
-3. Validate manifest and inspect split counts/totals/sidecar provenance plus build report skipped/empty/rates.
-4. Run manifestless markdown preflight benchmark with exact `--pf-candidate-tuples` if choosing candidate runtime shapes.
-5. Human edits YAML runtime fields if desired, preserving YAML as authority.
-6. Train from `bc_shards_manifest_path` using same manifest.
-7. Rebuild on dataset/contract change.
+Prod shard-first workflow:
+1. Audit raw corpus:
+`pixi run cargo run --quiet --package hydra-train --features training --bin mjai_audit -- /home/cachybtw/Downloads/dataset_bundle/tenhou-houou-mjai-2025 --threads 20 --failure-examples 20 --failure-inventory-dir /home/cachybtw/dev/hydra/training/2026-05-23-audit-failures`.
+2. Build compact v3 train+validation shards; do not train from raw for multi-day resumable runs:
+`pixi run cargo run --quiet --package hydra-train --features training --bin build_bc_shards -- --input /home/cachybtw/Downloads/dataset_bundle/tenhou-houou-mjai-2025 --output-dir /home/cachybtw/dev/hydra/training/2026-05-23-bc-shards --manifest-name bc_shards_manifest.json --split both --train-fraction 0.9 --num-threads 20 --queue-bound 8 --chunk-games 256 --resume --progress-jsonl /home/cachybtw/dev/hydra/training/2026-05-23-bc-shards/progress.jsonl --report-name report.json`.
+3. Validate manifest:
+`pixi run cargo run --quiet --package hydra-train --features training --bin build_bc_shards -- --validate-manifest /home/cachybtw/dev/hydra/training/2026-05-23-bc-shards/bc_shards_manifest.json`.
+4. Uncomment `bc_shards_manifest_path` in `training/local-rtx5070-raw-mjai-balanced.yaml`, set `resume_latest: true`, keep `data_dir` as source provenance, then train:
+`pixi run cargo run --quiet --package hydra-train --features training --bin train -- training/local-rtx5070-raw-mjai-balanced.yaml`.
+5. Rebuild shards on dataset/contract change.
 
 Shard consume semantics:
 - train reads prebuilt shard rows, not raw replay scan.

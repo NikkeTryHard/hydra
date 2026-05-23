@@ -4,18 +4,20 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import itertools
 import json
 import math
 import os
 import sys
 import time
-from collections.abc import Callable
-from contextlib import AbstractContextManager, nullcontext
+from collections.abc import Callable, Generator
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from numbers import Real
 from pathlib import Path
-from typing import IO, cast, override
+from typing import IO, Literal, cast, override
 
 import torch
 import torch.cuda.profiler as cuda_profiler
@@ -26,6 +28,7 @@ try:
 except (ImportError, ModuleNotFoundError):
     SummaryWriter = None
 from hydra_learner.checkpoint import (
+    EmaConfig,
     ModelConfig,
     OptimizerConfig,
     ResumeState,
@@ -39,11 +42,13 @@ from hydra_learner.losses import (
     base_loss,
     bce_logits_mean,
     danger_focal_bce,
+    loss_breakdown_dict,
     masked_policy_ce_indices,
     opp_next_ce,
     oracle_critic_loss,
     safety_residual_loss,
     soft_ce,
+    target_coverage_dict,
     value_mse,
 )
 from hydra_learner.metrics import EvalStats, StepStats, summarize_eval, summarize_steps
@@ -82,6 +87,181 @@ PYTHON_VARIANT_DEFAULT = "compile_max_autotune"
 LOSS_MODES = ("policy_only", "full_base")
 COMPILED_LOSS_MODES = ("policy_only", "full_base")
 ADAMW_FLAG_MODES = ("auto", "on", "off")
+LR_SCHEDULES = ("constant", "cosine")
+VALIDATION_SOURCE_MODES = ("fixed", "streaming")
+
+
+WARMUP_MODE = "non_mutating_replay_first_batch"
+COMPILE_DRY_RUN_MODE = "snapshot_restore_first_batch"
+
+
+@dataclass(frozen=True)
+class PreMainAccounting:
+    compile_dry_run: bool = False
+    compile_dry_run_changed_weights: bool = False
+    warmup_mode: str = WARMUP_MODE
+    warmup_steps_counted: int = 0
+    warmup_steps_run: int = 0
+    samples_consumed_pre_main: int = 0
+    batches_consumed_pre_main: int = 0
+    pre_main_batches_changed_weights: bool = False
+
+    def as_log_fields(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass
+class StagedTrainBatch:
+    obs: torch.Tensor
+    targets: BaseTargets
+    input_timing: InputTiming
+    pinned_batch: PinnedPolicyBatch | None = None
+
+
+@dataclass(frozen=True)
+class ValidationSourceInfo:
+    mode: str
+    requested_batches: int
+    actual_batches: int
+    requested_samples: int | None
+    actual_samples: int
+    sample_cap_overrun: int
+    full_batches: bool
+    augment: bool
+
+
+CachedValidationBatch = tuple[PolicyBatch, float]
+
+
+class RawMjaiValidationSource:
+    def __init__(
+        self,
+        *,
+        args: argparse.Namespace,
+        events: JsonlLogger,
+    ) -> None:
+        self.mode: str = args.validation_source_mode
+        self._cached: list[CachedValidationBatch] = []
+        self._stream: RawMjaiDirectStream | None = None
+        self._index = 0
+        self.info = ValidationSourceInfo(
+            mode=self.mode,
+            requested_batches=0,
+            actual_batches=0,
+            requested_samples=args.validation_max_samples,
+            actual_samples=0,
+            sample_cap_overrun=0,
+            full_batches=True,
+            augment=args.raw_mjai_validation_augment,
+        )
+        if args.validation_steps <= 0 or not args.raw_mjai_data_dirs:
+            return
+        stream = RawMjaiDirectStream(
+            data_dirs=args.raw_mjai_data_dirs,
+            batch_size=args.batch,
+            prefetch_batches=args.raw_mjai_prefetch_batches,
+            queue_bound=args.raw_mjai_queue_bound,
+            worker_threads=args.raw_mjai_worker_threads,
+            max_games=args.raw_mjai_max_games,
+            max_samples=args.validation_max_samples if self.mode == "fixed" else None,
+            train_fraction=args.raw_mjai_train_fraction,
+            augment=args.raw_mjai_validation_augment,
+            split="validation",
+        )
+        stream.start()
+        if self.mode == "fixed":
+            try:
+                for _ in range(args.validation_steps):
+                    self._cached.append(stream.next_batch())
+            except StopIteration as exc:
+                raise ValueError(
+                    "raw MJAI fixed validation window exhausted before --validation-steps batches"
+                ) from exc
+            finally:
+                stream.close()
+            samples = sum(batch.actions.shape[0] for batch, _fetch_ms in self._cached)
+            batches = len(self._cached)
+            full_batches = all(batch.actions.shape[0] == args.batch for batch, _fetch_ms in self._cached)
+        else:
+            self._stream = stream
+            samples = 0
+            batches = 0
+            full_batches = True
+        overrun = 0 if args.validation_max_samples is None else max(0, samples - args.validation_max_samples)
+        self.info = ValidationSourceInfo(
+            mode=self.mode,
+            requested_batches=args.validation_steps,
+            actual_batches=batches,
+            requested_samples=args.validation_max_samples,
+            actual_samples=samples,
+            sample_cap_overrun=overrun,
+            full_batches=full_batches,
+            augment=args.raw_mjai_validation_augment,
+        )
+        events.write("validation_source", asdict(self.info))
+
+    def next_batch(self) -> CachedValidationBatch:
+        if self.mode == "fixed":
+            if not self._cached:
+                raise StopIteration("fixed validation window is empty")
+            item = self._cached[self._index]
+            self._index = (self._index + 1) % len(self._cached)
+            return item
+        if self._stream is None:
+            raise StopIteration("streaming validation source is not open")
+        return self._stream.next_batch()
+
+    def close(self) -> None:
+        if self._stream is not None:
+            self._stream.close()
+            self._stream = None
+
+
+def collect_validation_batches(source: RawMjaiValidationSource, *, steps: int) -> list[CachedValidationBatch]:
+    return [source.next_batch() for _ in range(steps)]
+
+
+def evaluate_validation_batches(
+    batches: list[CachedValidationBatch],
+    *,
+    model: nn.Module,
+    device: torch.device,
+    weights: LossWeights,
+    autocast: bool,
+) -> dict[str, object]:
+    step_eval: list[EvalStats] = []
+    for val_batch, val_fetch_ms in batches:
+        val_obs, _val_legal, _val_labels, val_targets, _val_input_timing = tensors_from_policy_batch(
+            val_batch, device, val_fetch_ms
+        )
+        val_targets = targets_for_compiled_loss(val_targets, weights)
+        step_eval.append(evaluate_batch(model, val_obs, val_targets, weights, autocast))
+    return summarize_eval(step_eval)
+
+
+def evaluate_validation_source(
+    source: RawMjaiValidationSource,
+    *,
+    steps: int,
+    model: nn.Module,
+    device: torch.device,
+    weights: LossWeights,
+    autocast: bool,
+) -> dict[str, object]:
+    batches = collect_validation_batches(source, steps=steps)
+    return evaluate_validation_batches(
+        batches,
+        model=model,
+        device=device,
+        weights=weights,
+        autocast=autocast,
+    )
+
+
+RAW_MJAI_CURSOR_RESUME_ERROR = (
+    "raw-MJAI resume is unsupported: checkpoint restores weights but raw stream cursor resume is "
+    "unsupported; use fresh output dir or BC shards"
+)
 
 
 def adamw_flag_value(mode: str) -> bool | None:
@@ -94,16 +274,65 @@ def adamw_flag_value(mode: str) -> bool | None:
     raise ValueError(f"unsupported AdamW flag mode {mode!r}")
 
 
+@dataclass(frozen=True)
+class LrSchedulerConfig:
+    base_lr: float
+    min_lr: float
+    warmup_steps: int
+    total_steps: int | None
+    schedule: str
+
+
+class LrScheduler:
+    def __init__(self, config: LrSchedulerConfig) -> None:
+        self.config = config
+
+    def lr_for_step(self, completed_steps: int) -> float:
+        if self.config.schedule == "constant":
+            return self.config.base_lr
+        if self.config.warmup_steps > 0 and completed_steps < self.config.warmup_steps:
+            return self.config.base_lr * (completed_steps / self.config.warmup_steps)
+        if self.config.schedule != "cosine":
+            raise ValueError(f"unsupported LR schedule {self.config.schedule!r}")
+        total_steps = self.config.total_steps
+        if total_steps is None:
+            raise ValueError("--lr-schedule cosine requires --schedule-total-steps or --steps")
+        decay_steps = max(1, total_steps - self.config.warmup_steps)
+        decay_index = min(max(0, completed_steps - self.config.warmup_steps), decay_steps)
+        cosine = 0.5 * (1.0 + math.cos(math.pi * decay_index / decay_steps))
+        return self.config.min_lr + (self.config.base_lr - self.config.min_lr) * cosine
+
+
+def set_optimizer_lr(optimizer: torch.optim.Optimizer, lr: float) -> None:
+    for group in optimizer.param_groups:
+        group["lr"] = lr
+
+
 def build_optimizer_config(args: argparse.Namespace) -> OptimizerConfig:
     return OptimizerConfig(
         name="AdamW",
         lr=args.lr,
+        min_lr=args.min_lr,
+        lr_schedule=args.lr_schedule,
+        lr_warmup_steps=args.lr_warmup_steps,
+        schedule_total_steps=args.schedule_total_steps,
+        grad_clip_norm=args.grad_clip_norm,
         weight_decay=args.weight_decay,
         beta1=args.adam_beta1,
         beta2=args.adam_beta2,
         eps=args.adam_eps,
         foreach=adamw_flag_value(args.adamw_foreach),
         fused=adamw_flag_value(args.adamw_fused),
+    )
+
+
+def build_lr_scheduler_config(args: argparse.Namespace) -> LrSchedulerConfig:
+    return LrSchedulerConfig(
+        base_lr=args.lr,
+        min_lr=args.min_lr,
+        warmup_steps=args.lr_warmup_steps,
+        total_steps=args.schedule_total_steps,
+        schedule=args.lr_schedule,
     )
 
 
@@ -240,6 +469,43 @@ def tensors_from_real_batch(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, BaseTargets, InputTiming]:
     batch = dataset.next_batch()
     return tensors_from_policy_batch(batch, device, dataset.last_fetch_decode_ms)
+
+
+def stage_train_batch(
+    obs: torch.Tensor,
+    targets: BaseTargets,
+    input_timing: InputTiming,
+    weights: LossWeights,
+    pinned_batch: PinnedPolicyBatch | None = None,
+) -> StagedTrainBatch:
+    return StagedTrainBatch(
+        obs=obs,
+        targets=targets_for_compiled_loss(targets, weights),
+        input_timing=input_timing,
+        pinned_batch=pinned_batch,
+    )
+
+
+def next_staged_train_batch(
+    *,
+    real_dataset: BcShardDataset | None,
+    raw_stream: RawMjaiDirectStream | None,
+    raw_pinned: RawMjaiPinnedStream | None,
+    device: torch.device,
+    weights: LossWeights,
+) -> StagedTrainBatch:
+    if raw_stream is not None:
+        batch, fetch_ms = raw_stream.next_batch()
+        obs, _legal, _labels, targets, input_timing = tensors_from_policy_batch(batch, device, fetch_ms)
+        return stage_train_batch(obs, targets, input_timing, weights)
+    if raw_pinned is not None:
+        pinned_batch, fetch_ms = raw_pinned.next_batch()
+        obs, _legal, _labels, targets, input_timing = tensors_from_pinned_policy_batch(pinned_batch, device, fetch_ms)
+        return stage_train_batch(obs, targets, input_timing, weights, pinned_batch)
+    if real_dataset is not None:
+        obs, _legal, _labels, targets, input_timing = tensors_from_real_batch(real_dataset, device)
+        return stage_train_batch(obs, targets, input_timing, weights)
+    raise ValueError("internal data source selection failed")
 
 
 def targets_from_policy_batch(
@@ -419,22 +685,44 @@ def loss_step_args(obs: torch.Tensor, targets: BaseTargets, start: int, end: int
     )
 
 
+def clone_state_for_restore(state: dict[str, object]) -> dict[str, object]:
+    return copy.deepcopy(state)
+
+
+def restore_train_state(
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    *,
+    model_state: dict[str, object],
+    optimizer_state: dict[str, object],
+) -> None:
+    model.load_state_dict(model_state, strict=True)
+    optimizer.load_state_dict(optimizer_state)
+
+
 def run_step(
     loss_step: nn.Module,
+    model: nn.Module,
     optimizer: torch.optim.Optimizer,
     obs: torch.Tensor,
     targets: BaseTargets,
+    weights: LossWeights,
+    loss_mode: str,
     microbatch: int,
     autocast: bool,
     timed: bool,
+    grad_clip_norm: float | None = None,
+    collect_diagnostics: bool = False,
 ) -> StepStats:
     logical = obs.shape[0]
     if getattr(loss_step, "_hydra_compiled", False):
         torch.compiler.cudagraph_mark_step_begin()
     optimizer.zero_grad(set_to_none=True)
-    step_start = torch.cuda.Event(enable_timing=True)
-    step_end = torch.cuda.Event(enable_timing=True)
-    step_start.record()
+    step_start = torch.cuda.Event(enable_timing=True) if obs.device.type == "cuda" else None
+    step_end = torch.cuda.Event(enable_timing=True) if obs.device.type == "cuda" else None
+    step_start_wall = time.perf_counter()
+    if step_start is not None:
+        step_start.record()
     fwd_ms = 0.0
     bwd_ms = 0.0
     amp_ctx = torch.autocast(device_type="cuda", dtype=torch.bfloat16) if autocast else nullcontext()
@@ -464,17 +752,195 @@ def run_step(
             loss.backward()
         logical_loss = logical_loss + loss.detach()
 
+    grad_norm = math.nan
+    if grad_clip_norm is not None and grad_clip_norm > 0.0:
+        grad_norm_tensor = torch.nn.utils.clip_grad_norm_(loss_step.parameters(), grad_clip_norm)
+        grad_norm = float(grad_norm_tensor.detach())
     if timed:
         opt_ms, _ = time_cuda(optimizer.step)
     else:
         optimizer.step()
         opt_ms = 0.0
-    step_end.record()
-    step_ms = cuda_event_elapsed(step_start, step_end)
+    if step_start is not None and step_end is not None:
+        step_end.record()
+        step_ms = cuda_event_elapsed(step_start, step_end)
+    else:
+        step_ms = (time.perf_counter() - step_start_wall) * 1000.0
+    if collect_diagnostics:
+        with torch.inference_mode(), amp_ctx:
+            outputs = model(obs)
+            breakdown = base_loss(outputs, targets, weights)
+        head_losses = loss_breakdown_dict(breakdown, weights, loss_mode)
+        target_coverage = target_coverage_dict(targets, weights, loss_mode)
+    else:
+        head_losses: dict[str, float] = {}
+        target_coverage: dict[str, dict[str, float | str]] = {}
     loss_value = float(logical_loss.detach())
-    stat = StepStats(step_ms=step_ms, fwd_loss_ms=fwd_ms, backward_ms=bwd_ms, optimizer_ms=opt_ms, loss=loss_value)
+    stat = StepStats(
+        step_ms=step_ms,
+        fwd_loss_ms=fwd_ms,
+        backward_ms=bwd_ms,
+        optimizer_ms=opt_ms,
+        loss=loss_value,
+        head_losses=head_losses,
+        target_coverage=target_coverage,
+        grad_norm=grad_norm,
+    )
     stat.train_gpu_ms = step_ms
     return stat
+
+
+def run_non_mutating_train_step(
+    loss_step: nn.Module,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    obs: torch.Tensor,
+    targets: BaseTargets,
+    weights: LossWeights,
+    loss_mode: str,
+    microbatch: int,
+    autocast: bool,
+    timed: bool,
+    grad_clip_norm: float | None = None,
+) -> StepStats:
+    model_state = clone_state_for_restore(model.state_dict())
+    optimizer_state = clone_state_for_restore(optimizer.state_dict())
+    try:
+        return run_step(
+            loss_step, model, optimizer, obs, targets, weights, loss_mode, microbatch, autocast, timed, grad_clip_norm
+        )
+    finally:
+        restore_train_state(model, optimizer, model_state=model_state, optimizer_state=optimizer_state)
+
+
+class EmaTracker:
+    def __init__(self, model: nn.Module, config: EmaConfig, training_device: torch.device) -> None:
+        self.config = config
+        self.device = self._resolve_device(config.device, training_device)
+        model_state = model.state_dict()
+        self.keys = tuple(key for key, tensor in model_state.items() if tensor.is_floating_point())
+        self.state: dict[str, torch.Tensor] = {
+            key: model_state[key].detach().to(device=self.device, dtype=torch.float32).clone() for key in self.keys
+        }
+        self.update_count = 0
+        self.last_update_step = 0
+        self.last_update_ms = math.nan
+
+    @staticmethod
+    def _resolve_device(requested: str, training_device: torch.device) -> torch.device:
+        if requested == "auto":
+            return (
+                torch.device("cuda", training_device.index) if training_device.type == "cuda" else torch.device("cpu")
+            )
+        if requested == "cuda":
+            if training_device.type != "cuda":
+                raise ValueError("--ema-device cuda requires CUDA training device")
+            return torch.device("cuda", training_device.index)
+        if requested == "cpu":
+            return torch.device("cpu")
+        raise ValueError(f"unsupported EMA device {requested!r}")
+
+    @property
+    def device_name(self) -> str:
+        return self.device.type if self.device.index is None else f"{self.device.type}:{self.device.index}"
+
+    def load_state(self, state: dict[str, torch.Tensor], update_count: int, last_update_step: int = 0) -> None:
+        if set(state) != set(self.state):
+            missing = sorted(set(self.state).difference(state))
+            extra = sorted(set(state).difference(self.state))
+            raise ValueError(f"EMA state keys mismatch: missing={missing} extra={extra}")
+        self.state = {key: state[key].detach().to(device=self.device, dtype=torch.float32).clone() for key in self.keys}
+        self.update_count = update_count
+        self.last_update_step = last_update_step
+
+    def maybe_update(self, model: nn.Module, global_step: int) -> None:
+        if global_step < self.config.start_step or global_step % self.config.update_every_steps != 0:
+            return
+        started = time.perf_counter()
+        decay = self.config.decay
+        one_minus_decay = 1.0 - decay
+        model_state = model.state_dict()
+        for key in self.keys:
+            source = model_state[key].detach().to(device=self.device, dtype=torch.float32)
+            self.state[key].mul_(decay).add_(source, alpha=one_minus_decay)
+        self.update_count += 1
+        self.last_update_step = global_step
+        self.last_update_ms = (time.perf_counter() - started) * 1000.0
+
+    def metrics(self) -> dict[str, object]:
+        return {
+            "ema/enabled": True,
+            "ema/device": self.device_name,
+            "ema/device_code": 1 if self.device.type == "cuda" else 0,
+            "ema/update_count": self.update_count,
+            "ema/active": self.update_count > 0,
+            "ema/last_update_step": self.last_update_step,
+            "ema/last_update_ms": self.last_update_ms,
+        }
+
+
+@contextmanager
+def ema_weights(model: nn.Module, tracker: EmaTracker | None) -> Generator[None, None, None]:
+    if tracker is None:
+        yield
+        return
+    backup = {key: value.detach().clone() for key, value in model.state_dict().items() if key in tracker.state}
+    try:
+        target_state = {
+            key: tensor.to(device=backup[key].device, dtype=backup[key].dtype) for key, tensor in tracker.state.items()
+        }
+        model.load_state_dict(target_state, strict=False)
+        yield
+    finally:
+        model.load_state_dict(backup, strict=False)
+
+
+def build_ema_config(args: argparse.Namespace) -> EmaConfig | None:
+    if not args.ema_enabled:
+        return None
+    return EmaConfig(
+        enabled=True,
+        decay=args.ema_decay,
+        start_step=args.ema_start_step,
+        update_every_steps=args.ema_update_every_steps,
+        device=args.ema_device,
+    )
+
+
+def prefixed_metrics(prefix: str, metrics: dict[str, object]) -> dict[str, object]:
+    return {f"{prefix}/{key}": value for key, value in metrics.items()}
+
+
+def evaluate_raw_and_ema(
+    source: RawMjaiValidationSource,
+    *,
+    steps: int,
+    model: HydraPolicyNet,
+    device: torch.device,
+    weights: LossWeights,
+    autocast: bool,
+    ema_tracker: EmaTracker | None,
+) -> tuple[dict[str, object], dict[str, object] | None]:
+    batches = collect_validation_batches(source, steps=steps)
+    raw_metrics = evaluate_validation_batches(
+        batches,
+        model=model,
+        device=device,
+        weights=weights,
+        autocast=autocast,
+    )
+    if ema_tracker is None or ema_tracker.update_count == 0:
+        return raw_metrics, None
+    with ema_weights(model, ema_tracker):
+        ema_metrics = evaluate_validation_batches(
+            batches,
+            model=model,
+            device=device,
+            weights=weights,
+            autocast=autocast,
+        )
+
+    return raw_metrics, ema_metrics
 
 
 def evaluate_batch(
@@ -522,12 +988,16 @@ def evaluate_batch(
         opp_next=float(breakdown.opp_next.detach()),
         score_pdf=float(breakdown.score_pdf.detach()),
         score_cdf=float(breakdown.score_cdf.detach()),
+        oracle_critic=float(breakdown.oracle_critic.detach()),
+        safety_residual=float(breakdown.safety_residual.detach()),
+        target_coverage=target_coverage_dict(targets, weights, "full_base"),
         policy_accuracy=float(accuracy.detach()),
         policy_top3_accuracy=float(top3_accuracy.detach()),
         policy_top5_accuracy=float(top5_accuracy.detach()),
         policy_nll=float((-target_probs.log()).mean().detach()),
         policy_confidence=float(confidence.mean().detach()),
         policy_ece=float(ece.detach()),
+        samples=obs.shape[0],
     )
 
 
@@ -611,6 +1081,8 @@ def log_step_scalars(
 ) -> None:
     metrics: dict[str, object] = {
         "loss": stat.loss,
+        "head_losses": stat.head_losses,
+        "target_coverage": stat.target_coverage,
         "step_ms": stat.step_ms,
         "fwd_loss_ms": stat.fwd_loss_ms,
         "backward_ms": stat.backward_ms,
@@ -620,7 +1092,18 @@ def log_step_scalars(
         "h2d_wall_ms": stat.h2d_wall_ms,
         "samples_seen": samples_seen,
         "global_step": global_step,
+        "lr": stat.lr,
+        "grad_norm": stat.grad_norm,
     }
+    for head, loss in stat.head_losses.items():
+        metrics[f"loss/{head}"] = loss
+    for head, coverage in stat.target_coverage.items():
+        metrics[f"coverage/{head}/fraction"] = coverage["fraction"]
+        metrics[f"coverage/{head}/active"] = 1.0 if coverage["active"] else 0.0
+        status = coverage["status"]
+        metrics[f"coverage/{head}/status_code"] = float(
+            ("absent", "present_zero", "present_positive").index(str(status))
+        )
     if stat.step_ms > 0.0 and math.isfinite(stat.step_ms):
         metrics["samples_per_s"] = batch * 1000.0 / stat.step_ms
     if math.isfinite(stat.fetch_decode_ms) and math.isfinite(stat.h2d_wall_ms):
@@ -635,23 +1118,31 @@ def log_step_scalars(
 
 
 def log_validation_scalars(
-    writer: ScalarEventWriter, metrics: dict[str, float], global_step: int, *, final: bool
+    writer: ScalarEventWriter, metrics: dict[str, object], global_step: int, *, final: bool
 ) -> None:
     add_scalars(writer, "final_validation" if final else "validation", metrics, global_step)
 
 
-# Raw-MJAI progress counters are stream-local. Add resume offsets before logging so TensorBoard
-# stays monotonic across stop/resume/config restarts.
+def raw_mjai_cursor_resume_supported() -> bool:
+    return False
+
+
+# Raw-MJAI stream counters are local to the currently opened stream. Resume-total
+# counters are labelled separately because no raw cursor has been applied.
 def _progress_scalars(progress: BuildProgress | None, offsets: RawMjaiResumeOffsets) -> dict[str, object]:
     if progress is None:
         return {}
     return {
         "progress/complete": progress.complete,
         "progress/build_seconds": progress.build_seconds,
-        "progress/loaded_games": progress.loaded_games + offsets.loaded_games,
-        "progress/skipped_games": progress.skipped_games + offsets.skipped_games,
-        "progress/samples": progress.samples + offsets.samples,
-        "progress/batches": progress.batches + offsets.batches,
+        "progress/stream_local_loaded_games": progress.loaded_games,
+        "progress/stream_local_skipped_games": progress.skipped_games,
+        "progress/stream_local_samples": progress.samples,
+        "progress/stream_local_batches": progress.batches,
+        "progress/resume_total_loaded_games": progress.loaded_games + offsets.loaded_games,
+        "progress/resume_total_skipped_games": progress.skipped_games + offsets.skipped_games,
+        "progress/resume_total_samples": progress.samples + offsets.samples,
+        "progress/resume_total_batches": progress.batches + offsets.batches,
         "progress/max_games_reached": progress.max_games_reached,
         "progress/max_samples_reached": progress.max_samples_reached,
     }
@@ -700,6 +1191,12 @@ def raw_mjai_progress_dict(progress: BuildProgress | None) -> dict[str, int] | N
         return None
     data = build_progress_json(progress)
     return {key: value for key, value in data.items() if isinstance(value, int)}
+
+
+def raw_mjai_progress_sections(
+    progress: BuildProgress | None, offsets: RawMjaiResumeOffsets
+) -> tuple[dict[str, object] | None, dict[str, object] | None]:
+    return json_raw_mjai_progress(progress), json_raw_mjai_progress(apply_progress_offsets(progress, offsets))
 
 
 def _bridge_scalars(stats: RawMjaiBridgeStats | None) -> dict[str, object]:
@@ -768,12 +1265,24 @@ def log_final_scalars(writer: ScalarEventWriter, result: dict[str, object], glob
             "samples_seen": result.get("samples_seen"),
             "raw_mjai_training": result.get("raw_mjai_training"),
             "raw_mjai_pinned_pyo3": result.get("raw_mjai_pinned_pyo3"),
+            "compile_dry_run": result.get("compile_dry_run"),
+            "warmup_steps_counted": result.get("warmup_steps_counted"),
+            "samples_consumed_pre_main": result.get("samples_consumed_pre_main"),
+            "pre_main_batches_changed_weights": result.get("pre_main_batches_changed_weights"),
         },
         global_step,
     )
     raw_progress = result.get("raw_mjai_progress")
     if isinstance(raw_progress, dict):
-        add_scalars(writer, "raw_mjai", {f"progress/{k}": v for k, v in raw_progress.items()}, global_step)
+        add_scalars(writer, "raw_mjai", {f"progress/stream_local_{k}": v for k, v in raw_progress.items()}, global_step)
+    raw_total_progress = result.get("raw_mjai_resume_total_progress")
+    if isinstance(raw_total_progress, dict):
+        add_scalars(
+            writer,
+            "raw_mjai",
+            {f"progress/resume_total_{k}": v for k, v in raw_total_progress.items()},
+            global_step,
+        )
     bridge_stats = result.get("raw_mjai_bridge_stats")
     if isinstance(bridge_stats, dict):
         add_scalars(writer, "raw_mjai", {f"bridge/{k}": v for k, v in bridge_stats.items()}, global_step)
@@ -815,6 +1324,9 @@ def atomic_save_training_checkpoint(
     global_step: int,
     samples_seen: int,
     raw_mjai_progress: dict[str, int] | None = None,
+    ema_tracker: EmaTracker | None = None,
+    ema_config: EmaConfig | None = None,
+    weight_source: Literal["raw", "ema"] = "raw",
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(f"{path.name}.tmp.{os.getpid()}")
@@ -830,6 +1342,9 @@ def atomic_save_training_checkpoint(
         global_step=global_step,
         samples_seen=samples_seen,
         raw_mjai_progress=raw_mjai_progress,
+        ema_tracker=ema_tracker,
+        ema_config=ema_config,
+        weight_source=weight_source,
     )
     tmp_path.replace(path)
 
@@ -898,6 +1413,9 @@ def save_training_checkpoint(
     global_step: int,
     samples_seen: int,
     raw_mjai_progress: dict[str, int] | None = None,
+    ema_tracker: EmaTracker | None = None,
+    ema_config: EmaConfig | None = None,
+    weight_source: Literal["raw", "ema"] = "raw",
 ) -> None:
     save_checkpoint(
         path,
@@ -911,6 +1429,11 @@ def save_training_checkpoint(
         global_step=global_step,
         samples_seen=samples_seen,
         raw_mjai_progress=raw_mjai_progress,
+        ema_config=ema_config,
+        ema_state=None if ema_tracker is None else ema_tracker.state,
+        ema_update_count=0 if ema_tracker is None else ema_tracker.update_count,
+        ema_last_update_step=0 if ema_tracker is None else ema_tracker.last_update_step,
+        weight_source=weight_source,
     )
 
 
@@ -937,6 +1460,11 @@ def json_config(args: argparse.Namespace, effective_raw_mjai_max_samples: int | 
         "manifest": str(args.manifest) if args.manifest else None,
         "check_shard_files": args.check_shard_files,
         "lr": args.lr,
+        "min_lr": args.min_lr,
+        "lr_schedule": args.lr_schedule,
+        "lr_warmup_steps": args.lr_warmup_steps,
+        "schedule_total_steps": args.schedule_total_steps,
+        "grad_clip_norm": args.grad_clip_norm,
         "weight_decay": args.weight_decay,
         "adam_beta1": args.adam_beta1,
         "adam_beta2": args.adam_beta2,
@@ -957,7 +1485,18 @@ def json_config(args: argparse.Namespace, effective_raw_mjai_max_samples: int | 
         "tensorboard_dir": str(args.tensorboard_dir) if args.tensorboard_dir else None,
         "tensorboard_url": args.tensorboard_url,
         "validation_steps": args.validation_steps,
+        "validation_max_samples": args.validation_max_samples,
         "validation_every": args.validation_every,
+        "validation_source_mode": args.validation_source_mode,
+        "ema": None
+        if not args.ema_enabled
+        else {
+            "enabled": True,
+            "decay": args.ema_decay,
+            "start_step": args.ema_start_step,
+            "update_every_steps": args.ema_update_every_steps,
+            "device": args.ema_device,
+        },
         "raw_mjai": raw_mjai_config_from_args(args),
         "effective_raw_mjai_max_samples": effective_raw_mjai_max_samples,
         "quiet": args.quiet,
@@ -1009,7 +1548,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--w-safety-residual", type=float, default=0.0)
     parser.add_argument("--compile-fullgraph-check", action="store_true")
     parser.add_argument("--out", type=Path, default=Path("/home/cachybtw/tmp/hydra_py_bc_result.json"))
-    parser.add_argument("--lr", type=float, default=3.0e-4)
+    parser.add_argument("--lr", type=float, default=2.5e-4)
+    parser.add_argument("--min-lr", type=float, default=1.0e-6)
+    parser.add_argument("--lr-warmup-steps", type=int, default=1000)
+    parser.add_argument("--lr-schedule", choices=LR_SCHEDULES, default="cosine")
+    parser.add_argument("--schedule-total-steps", type=int)
+    parser.add_argument("--grad-clip-norm", type=float)
     parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("--adam-beta1", type=float, default=0.9)
     parser.add_argument("--adam-beta2", type=float, default=0.999)
@@ -1027,7 +1571,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tensorboard-url")
     parser.add_argument("--full-epoch", action="store_true")
     parser.add_argument("--validation-steps", type=int, default=0)
+    parser.add_argument("--validation-max-samples", type=int)
     parser.add_argument("--validation-every", type=int, default=0)
+    parser.add_argument("--validation-source-mode", choices=VALIDATION_SOURCE_MODES, default="fixed")
+    parser.add_argument("--ema-enabled", action="store_true")
+    parser.add_argument("--ema-decay", type=float, default=0.999)
+    parser.add_argument("--ema-start-step", type=int, default=0)
+    parser.add_argument("--ema-update-every-steps", type=int, default=1)
+    parser.add_argument("--ema-device", choices=("auto", "cuda", "cpu"), default="auto")
     parser.add_argument(
         "--cuda-profiler-range", action="store_true", help="start CUDA profiler only around measured steps"
     )
@@ -1048,10 +1599,34 @@ def validate_args(args: argparse.Namespace) -> None:
         ("log_every_steps", args.log_every_steps),
         ("validation_steps", args.validation_steps),
         ("validation_every", args.validation_every),
+        ("validation_max_samples", args.validation_max_samples if args.validation_max_samples is not None else 0),
+        ("lr_warmup_steps", args.lr_warmup_steps),
+        ("ema_start_step", args.ema_start_step),
     )
     for name, value in non_negative_ints:
         if value < 0:
             raise ValueError(f"--{name.replace('_', '-')} must be >= 0")
+    if args.schedule_total_steps is not None and args.schedule_total_steps < 1:
+        raise ValueError("--schedule-total-steps must be >= 1")
+    if args.lr <= 0.0:
+        raise ValueError("--lr must be > 0")
+    if args.min_lr < 0.0:
+        raise ValueError("--min-lr must be >= 0")
+    if args.min_lr > args.lr:
+        raise ValueError("--min-lr must be <= --lr")
+    if args.grad_clip_norm is not None and args.grad_clip_norm <= 0.0:
+        raise ValueError("--grad-clip-norm must be > 0")
+    if not (0.0 <= args.ema_decay < 1.0):
+        raise ValueError("--ema-decay must be in [0, 1)")
+    if args.ema_update_every_steps < 1:
+        raise ValueError("--ema-update-every-steps must be >= 1")
+    if (
+        args.lr_schedule == "cosine"
+        and args.schedule_total_steps is None
+        and args.steps is None
+        and args.manifest is None
+    ):
+        raise ValueError("--lr-schedule cosine requires --schedule-total-steps, --steps, or --manifest")
     if args.checkpoint_out is not None and args.checkpoint_dir is not None:
         raise ValueError("--checkpoint-out and --checkpoint-dir cannot be combined")
     if args.keep_step_checkpoints and args.checkpoint_dir is None:
@@ -1073,6 +1648,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--full-epoch is only supported with raw MJAI input")
     if args.full_epoch and args.raw_mjai_max_samples is not None:
         raise ValueError("--full-epoch cannot be combined with --raw-mjai-max-samples")
+    if args.resume is not None and args.raw_mjai_data_dirs and not raw_mjai_cursor_resume_supported():
+        raise ValueError(RAW_MJAI_CURSOR_RESUME_ERROR)
 
 
 def main() -> int:
@@ -1093,14 +1670,29 @@ def main() -> int:
     real_dataset = None
     raw_stream = None
     raw_pinned = None
-    raw_first_batch: PinnedPolicyBatch | None = None
+    staged_initial_batch: StagedTrainBatch | None = None
     raw_train_max_samples = args.raw_mjai_max_samples
-    if args.raw_mjai_data_dirs and raw_train_max_samples is None and not args.full_epoch:
-        raw_train_batches = 1 + args.warmup + args.steps
+    if args.raw_mjai_data_dirs and raw_train_max_samples is None and not args.full_epoch and args.steps is not None:
+        raw_train_batches = args.steps + 1
         raw_train_max_samples = raw_train_batches * args.batch
+
+    events.write(
+        "input_setup_start",
+        {
+            "manifest": str(args.manifest) if args.manifest is not None else None,
+            "raw_mjai_transport": args.raw_mjai_transport if args.raw_mjai_data_dirs else None,
+            "raw_mjai_data_dir_count": len(args.raw_mjai_data_dirs or ()),
+            "raw_mjai_max_games": args.raw_mjai_max_games,
+            "raw_mjai_max_samples": raw_train_max_samples,
+            "raw_mjai_prefetch_batches": args.raw_mjai_prefetch_batches,
+            "raw_mjai_queue_bound": args.raw_mjai_queue_bound,
+            "raw_mjai_worker_threads": args.raw_mjai_worker_threads,
+        },
+    )
     if args.manifest is not None:
         manifest_summary = validate_manifest(args.manifest, check_files=args.check_shard_files)
         real_dataset = BcShardDataset(args.manifest, batch_size=args.batch, split="train")
+        events.write("input_setup_complete", {"kind": "bc_shards"})
     elif args.raw_mjai_data_dirs:
         if args.raw_mjai_transport == RAW_MJAI_TRANSPORT_STDOUT:
             raw_stream = RawMjaiDirectStream(
@@ -1116,6 +1708,7 @@ def main() -> int:
                 split=args.raw_mjai_split,
             )
             raw_stream.start()
+            events.write("input_setup_complete", {"kind": "raw_mjai_stdout"})
         elif args.raw_mjai_transport == RAW_MJAI_TRANSPORT_PINNED_PYO3:
             raw_pinned = RawMjaiPinnedStream(
                 data_dirs=args.raw_mjai_data_dirs,
@@ -1130,23 +1723,20 @@ def main() -> int:
                 library_path=args.raw_mjai_pinned_ffi or default_raw_mjai_pinned_library_path(),
                 ring_size=args.raw_mjai_prefetch_batches,
             )
+            events.write("input_setup_complete", {"kind": "raw_mjai_pinned_pyo3"})
         else:
             raise ValueError(f"unsupported raw MJAI transport {args.raw_mjai_transport!r}")
-    validation_stream = None
-    if args.validation_steps > 0 and args.raw_mjai_data_dirs:
-        validation_stream = RawMjaiDirectStream(
-            data_dirs=args.raw_mjai_data_dirs,
-            batch_size=args.batch,
-            prefetch_batches=args.raw_mjai_prefetch_batches,
-            queue_bound=args.raw_mjai_queue_bound,
-            worker_threads=args.raw_mjai_worker_threads,
-            max_games=args.raw_mjai_max_games,
-            max_samples=None,
-            train_fraction=args.raw_mjai_train_fraction,
-            augment=args.raw_mjai_augment,
-            split="validation",
-        )
-        validation_stream.start()
+    validation_source = RawMjaiValidationSource(args=args, events=events)
+    events.write("validation_setup_complete", {"actual_batches": validation_source.info.actual_batches})
+
+    if args.schedule_total_steps is None:
+        if args.steps is not None:
+            args.schedule_total_steps = args.steps
+        elif manifest_summary is not None:
+            args.schedule_total_steps = max(1, math.ceil(manifest_summary.train_samples / args.batch))
+    if args.lr_schedule == "cosine" and args.schedule_total_steps is None:
+        raise ValueError("--lr-schedule cosine requires --schedule-total-steps when run horizon is unbounded")
+    events.write("torch_setup_start", {})
 
     if not torch.cuda.is_available():
         result = {"variant": args.variant, "env": torch_env(), "error": "CUDA unavailable"}
@@ -1174,23 +1764,27 @@ def main() -> int:
         args.backbone_profile,
         args.conv_memory_format,
     ).to(device)
+    events.write(
+        "model_setup_complete",
+        {
+            "hidden": args.hidden,
+            "blocks": args.blocks,
+            "bottleneck": args.bottleneck,
+            "residual_profile": args.residual_profile,
+            "conv_memory_format": args.conv_memory_format,
+        },
+    )
     optimizer_config = build_optimizer_config(args)
     optimizer = build_optimizer(model, optimizer_config)
+    lr_scheduler = LrScheduler(build_lr_scheduler_config(args))
     if real_dataset is None and raw_stream is None and raw_pinned is None:
         obs, legal, labels = make_synthetic_batch(args.batch, args.actions, device)
         targets = synthetic_targets(obs, legal, labels)
-    elif raw_stream is not None:
-        first_batch, first_fetch_ms = raw_stream.next_batch()
-        obs, legal, labels, targets, _input_timing = tensors_from_policy_batch(first_batch, device, first_fetch_ms)
-    elif raw_pinned is not None:
-        raw_first_batch, first_fetch_ms = raw_pinned.next_batch()
-        obs, legal, labels, targets, _input_timing = tensors_from_pinned_policy_batch(
-            raw_first_batch, device, first_fetch_ms
-        )
-    elif real_dataset is not None:
-        obs, legal, labels, targets, _input_timing = tensors_from_real_batch(real_dataset, device)
+        input_timing = InputTiming()
     else:
-        raise ValueError("internal data source selection failed")
+        obs = legal = labels = None
+        targets = None
+        input_timing = InputTiming()
     autocast = args.variant != "eager_fp32"
     weights = LossWeights(oracle_critic=args.w_oracle_critic, safety_residual=args.w_safety_residual)
     if args.loss_mode not in COMPILED_LOSS_MODES:
@@ -1211,7 +1805,11 @@ def main() -> int:
         loss_mode=args.loss_mode,
         precision_mode=precision_mode,
         compile_fullgraph_check=args.compile_fullgraph_check,
+        compile_dry_run_mode=COMPILE_DRY_RUN_MODE,
+        warmup_mode=WARMUP_MODE,
     )
+    ema_config = build_ema_config(args)
+    ema_tracker = None if ema_config is None else EmaTracker(model, ema_config, device)
     resume_state = None
     if args.resume is not None:
         resume_state = load_checkpoint(
@@ -1223,7 +1821,16 @@ def main() -> int:
             expected_runtime_config=runtime_config,
             expected_loss_weights=weights,
             expected_manifest_path=args.manifest if raw_stream is None else raw_stream.manifest_path,
+            expected_ema_config=ema_config,
         )
+        if ema_tracker is not None:
+            if resume_state.ema is None:
+                raise ValueError("checkpoint EMA state missing after EMA resume validation")
+            ema_tracker.load_state(
+                resume_state.ema.state_dict,
+                resume_state.ema.update_count,
+                resume_state.ema.last_update_step,
+            )
         events.write(
             "resume_loaded",
             {
@@ -1241,13 +1848,48 @@ def main() -> int:
         )
         scalar_writer.add_scalar("run/resume_global_step", float(resume_state.global_step), resume_state.global_step)
 
-    global_step = 0
+    global_step = 0 if resume_state is None else resume_state.global_step
     samples_seen = 0 if resume_state is None else resume_state.samples_seen
     raw_mjai_offsets = RawMjaiResumeOffsets.from_resume(resume_state, args.batch)
+
     compile_error = None
     compile_s = 0.0
+    events.write("first_batch_fetch_start", {})
+    if real_dataset is not None or raw_stream is not None or raw_pinned is not None:
+        staged_initial_batch = next_staged_train_batch(
+            real_dataset=real_dataset,
+            raw_stream=raw_stream,
+            raw_pinned=raw_pinned,
+            device=device,
+            weights=weights,
+        )
+        obs = staged_initial_batch.obs
+        targets = staged_initial_batch.targets
+        input_timing = staged_initial_batch.input_timing
+        events.write(
+            "first_batch_fetch_complete",
+            {
+                "fetch_decode_ms": input_timing.fetch_decode_ms,
+                "h2d_wall_ms": input_timing.h2d_wall_ms,
+                "rows": int(obs.shape[0]),
+            },
+        )
+    else:
+        assert obs is not None and targets is not None
+        targets = targets_for_compiled_loss(targets, weights)
+        events.write("first_batch_fetch_complete", {"kind": "synthetic", "rows": int(obs.shape[0])})
+    pre_main = PreMainAccounting(
+        compile_dry_run=args.variant.startswith("compile_"),
+        warmup_steps_run=args.warmup,
+        samples_consumed_pre_main=(obs.shape[0] if staged_initial_batch is not None else 0),
+        batches_consumed_pre_main=(1 if staged_initial_batch is not None else 0),
+    )
+    staged_initial_pinned_marked = False
     if args.variant.startswith("compile_"):
-        events.write("compile_start", {"variant": args.variant})
+        events.write(
+            "compile_start",
+            {"variant": args.variant, "compile_dry_run": True, "compile_dry_run_mode": COMPILE_DRY_RUN_MODE},
+        )
         mode = None
         if args.variant == "compile_reduce_overhead":
             mode = "reduce-overhead"
@@ -1257,20 +1899,33 @@ def main() -> int:
         try:
             loss_step = cast("nn.Module", torch.compile(loss_step, mode=mode, fullgraph=args.compile_fullgraph_check))
             setattr(loss_step, "_hydra_compiled", True)
-            targets = targets_for_compiled_loss(targets, weights)
-            run_step(loss_step, optimizer, obs, targets, args.microbatch, autocast, False)
+            set_optimizer_lr(optimizer, lr_scheduler.lr_for_step(global_step))
+            run_non_mutating_train_step(
+                loss_step,
+                model,
+                optimizer,
+                obs,
+                targets,
+                weights,
+                args.loss_mode,
+                args.microbatch,
+                autocast,
+                False,
+                args.grad_clip_norm,
+            )
             torch.cuda.synchronize()
-            if raw_pinned is not None:
-                assert raw_first_batch is not None
-                raw_pinned.mark_inflight(raw_first_batch)
+            if raw_pinned is not None and staged_initial_batch is not None:
+                assert staged_initial_batch.pinned_batch is not None
+                raw_pinned.mark_inflight(staged_initial_batch.pinned_batch)
+                staged_initial_pinned_marked = True
             compile_s = time.perf_counter() - t0
-            events.write("compile_complete", {"compile_s": compile_s})
-            scalar_writer.add_scalar("runtime/compile_s", compile_s, 0)
+            events.write("compile_complete", {"compile_s": compile_s} | pre_main.as_log_fields())
+            scalar_writer.add_scalar("runtime/compile_s", compile_s, global_step)
         except Exception as exc:
             compile_error = f"{type(exc).__name__}: {exc}"
             error_compile_s = time.perf_counter() - t0
             events.write("compile_error", {"error": compile_error, "compile_s": error_compile_s})
-            scalar_writer.add_scalar("runtime/compile_error", 1.0, 0)
+            scalar_writer.add_scalar("runtime/compile_error", 1.0, global_step)
 
     env = torch_env()
     if compile_error is not None:
@@ -1293,23 +1948,23 @@ def main() -> int:
 
     torch.cuda.reset_peak_memory_stats()
     eval_stats: list[dict[str, object]] = []
+    events.write("warmup_start", {"warmup_steps": args.warmup})
+    if args.warmup > 0:
+        set_optimizer_lr(optimizer, lr_scheduler.lr_for_step(global_step))
     for _ in range(args.warmup):
-        pinned_batch: PinnedPolicyBatch | None = None
-        if raw_stream is not None:
-            batch, fetch_ms = raw_stream.next_batch()
-            obs, legal, labels, targets, _input_timing = tensors_from_policy_batch(batch, device, fetch_ms)
-        elif raw_pinned is not None:
-            pinned_batch, fetch_ms = raw_pinned.next_batch()
-            obs, legal, labels, targets, _input_timing = tensors_from_pinned_policy_batch(
-                pinned_batch, device, fetch_ms
-            )
-        elif real_dataset is not None:
-            obs, legal, labels, targets, _input_timing = tensors_from_real_batch(real_dataset, device)
-        targets = targets_for_compiled_loss(targets, weights)
-        run_step(loss_step, optimizer, obs, targets, args.microbatch, autocast, False)
-        if raw_pinned is not None:
-            assert pinned_batch is not None
-            raw_pinned.mark_inflight(pinned_batch)
+        run_non_mutating_train_step(
+            loss_step,
+            model,
+            optimizer,
+            obs,
+            targets,
+            weights,
+            args.loss_mode,
+            args.microbatch,
+            autocast,
+            False,
+            args.grad_clip_norm,
+        )
     torch.cuda.synchronize()
     if args.cuda_profiler_range:
         cuda_profiler.start()
@@ -1338,8 +1993,12 @@ def main() -> int:
             with_stack=False,
         )
 
-    events.write("warmup_complete", {"warmup_steps": args.warmup})
-    scalar_writer.add_scalar("runtime/warmup_steps", float(args.warmup), 0)
+    events.write("warmup_complete", {"warmup_steps": args.warmup} | pre_main.as_log_fields())
+    scalar_writer.add_scalar("runtime/warmup_steps", float(args.warmup), global_step)
+    scalar_writer.add_scalar("runtime/warmup_steps_counted", 0.0, global_step)
+    scalar_writer.add_scalar(
+        "runtime/samples_consumed_pre_main", float(pre_main.samples_consumed_pre_main), global_step
+    )
     stats: list[StepStats] = []
     best_policy_nll = math.inf
     best_policy_nll_step = 0
@@ -1352,47 +2011,104 @@ def main() -> int:
                 break
             if args.profile:
                 torch.cuda.nvtx.range_push(f"hydra_bc_step_{i}")
-            input_timing = InputTiming()
             pinned_batch: PinnedPolicyBatch | None = None
-            if raw_stream is not None:
-                try:
-                    batch, fetch_ms = raw_stream.next_batch()
-                except StopIteration:
-                    if args.full_epoch:
-                        break
-                    raise
-                obs, legal, labels, targets, input_timing = tensors_from_policy_batch(batch, device, fetch_ms)
-            elif raw_pinned is not None:
-                try:
-                    pinned_batch, fetch_ms = raw_pinned.next_batch()
-                except StopIteration:
-                    if args.full_epoch:
-                        break
-                    raise
-                obs, legal, labels, targets, input_timing = tensors_from_pinned_policy_batch(
-                    pinned_batch, device, fetch_ms
-                )
-            elif real_dataset is not None:
-                obs, legal, labels, targets, input_timing = tensors_from_real_batch(real_dataset, device)
-            targets = targets_for_compiled_loss(targets, weights)
+            pinned_batch_already_marked = False
+            if staged_initial_batch is not None:
+                staged = staged_initial_batch
+                staged_initial_batch = None
+                obs = staged.obs
+                targets = staged.targets
+                input_timing = staged.input_timing
+                pinned_batch = staged.pinned_batch
+                pinned_batch_already_marked = staged_initial_pinned_marked
+            else:
+                input_timing = InputTiming()
+                if raw_stream is not None:
+                    try:
+                        staged = next_staged_train_batch(
+                            real_dataset=real_dataset,
+                            raw_stream=raw_stream,
+                            raw_pinned=raw_pinned,
+                            device=device,
+                            weights=weights,
+                        )
+                    except StopIteration:
+                        if args.full_epoch:
+                            break
+                        raise
+                    obs = staged.obs
+                    targets = staged.targets
+                    input_timing = staged.input_timing
+                elif raw_pinned is not None:
+                    try:
+                        staged = next_staged_train_batch(
+                            real_dataset=real_dataset,
+                            raw_stream=raw_stream,
+                            raw_pinned=raw_pinned,
+                            device=device,
+                            weights=weights,
+                        )
+                    except StopIteration:
+                        if args.full_epoch:
+                            break
+                        raise
+                    obs = staged.obs
+                    targets = staged.targets
+                    input_timing = staged.input_timing
+                    pinned_batch = staged.pinned_batch
+                elif real_dataset is not None:
+                    staged = next_staged_train_batch(
+                        real_dataset=real_dataset,
+                        raw_stream=raw_stream,
+                        raw_pinned=raw_pinned,
+                        device=device,
+                        weights=weights,
+                    )
+                    obs = staged.obs
+                    targets = staged.targets
+                    input_timing = staged.input_timing
+            lr = lr_scheduler.lr_for_step(global_step)
+            set_optimizer_lr(optimizer, lr)
+            will_log = args.log_every_steps > 0 and (
+                (global_step + 1) % args.log_every_steps == 0 or (args.steps is not None and i + 1 == args.steps)
+            )
             stat = run_step(
                 loss_step,
+                model,
                 optimizer,
                 obs,
                 targets,
+                weights,
+                args.loss_mode,
                 args.microbatch,
                 autocast,
                 timed=not args.profile_coarse,
+                grad_clip_norm=args.grad_clip_norm,
+                collect_diagnostics=will_log,
             )
+            stat.lr = lr
             if real_dataset is not None or raw_stream is not None or raw_pinned is not None:
                 stat.fetch_decode_ms = input_timing.fetch_decode_ms
                 stat.h2d_wall_ms = input_timing.h2d_wall_ms
             stats.append(stat)
-            global_step = (0 if resume_state is None else resume_state.global_step) + i + 1
-            samples_seen = (0 if resume_state is None else resume_state.samples_seen) + (i + 1) * args.batch
-            if args.log_every_steps > 0 and (
-                global_step % args.log_every_steps == 0 or (args.steps is not None and i + 1 == args.steps)
-            ):
+            global_step += 1
+            samples_seen += obs.shape[0]
+            if ema_tracker is not None:
+                ema_tracker.maybe_update(model, global_step)
+            ema_metrics = (
+                {
+                    "ema/enabled": False,
+                    "ema/device": "off",
+                    "ema/device_code": -1,
+                    "ema/update_count": 0,
+                    "ema/active": False,
+                    "ema/last_update_step": 0,
+                    "ema/last_update_ms": math.nan,
+                }
+                if ema_tracker is None
+                else ema_tracker.metrics()
+            )
+            if will_log:
                 train_log.write(
                     "train_step",
                     {
@@ -1401,6 +2117,8 @@ def main() -> int:
                         "samples_seen": samples_seen,
                         "batch": args.batch,
                         "loss": stat.loss,
+                        "head_losses": stat.head_losses,
+                        "target_coverage": stat.target_coverage,
                         "step_ms": stat.step_ms,
                         "fwd_loss_ms": stat.fwd_loss_ms,
                         "backward_ms": stat.backward_ms,
@@ -1408,7 +2126,15 @@ def main() -> int:
                         "train_gpu_ms": stat.train_gpu_ms,
                         "fetch_decode_ms": stat.fetch_decode_ms,
                         "h2d_wall_ms": stat.h2d_wall_ms,
+                        "lr": stat.lr,
+                        "grad_norm": stat.grad_norm,
+                        "compile_dry_run": pre_main.compile_dry_run,
+                        "warmup_mode": pre_main.warmup_mode,
+                        "warmup_steps_counted": pre_main.warmup_steps_counted,
+                        "samples_consumed_pre_main": pre_main.samples_consumed_pre_main,
+                        "pre_main_batches_changed_weights": pre_main.pre_main_batches_changed_weights,
                     }
+                    | ema_metrics
                     | raw_mjai_scalar_snapshot(raw_stream, raw_pinned, raw_mjai_offsets),
                 )
                 log_step_scalars(
@@ -1424,43 +2150,86 @@ def main() -> int:
                     raw_mjai_scalar_snapshot(raw_stream, raw_pinned, raw_mjai_offsets),
                     global_step,
                 )
+                add_scalars(
+                    scalar_writer,
+                    "ema",
+                    {key.removeprefix("ema/"): value for key, value in ema_metrics.items()},
+                    global_step,
+                )
                 scalar_writer.flush()
-            if raw_pinned is not None:
+            if raw_pinned is not None and not pinned_batch_already_marked:
                 assert pinned_batch is not None
                 raw_pinned.mark_inflight(pinned_batch)
-            if validation_stream is not None and args.validation_every > 0 and global_step % args.validation_every == 0:
-                step_eval = []
-                for _ in range(args.validation_steps):
-                    val_batch, val_fetch_ms = validation_stream.next_batch()
-                    val_obs, _val_legal, _val_labels, val_targets, _val_input_timing = tensors_from_policy_batch(
-                        val_batch, device, val_fetch_ms
-                    )
-                    val_targets = targets_for_compiled_loss(val_targets, weights)
-                    step_eval.append(evaluate_batch(model, val_obs, val_targets, weights, autocast))
-                metrics = summarize_eval(step_eval)
-                eval_stats.append({"step": i + 1, "metrics": metrics})
-                events.write("validation", {"step": i + 1, "global_step": global_step, "metrics": metrics})
-                log_validation_scalars(scalar_writer, metrics, global_step, final=False)
+            if (
+                validation_source.info.actual_batches > 0
+                and args.validation_every > 0
+                and global_step % args.validation_every == 0
+            ):
+                metrics, ema_metrics = evaluate_raw_and_ema(
+                    validation_source,
+                    steps=args.validation_steps,
+                    model=model,
+                    device=device,
+                    weights=weights,
+                    autocast=autocast,
+                    ema_tracker=ema_tracker,
+                )
+                event_metrics = {"raw": metrics}
+                scalar_metrics = prefixed_metrics("raw", metrics)
+                if ema_metrics is not None:
+                    event_metrics["ema"] = ema_metrics
+                    scalar_metrics |= prefixed_metrics("ema", ema_metrics)
+                eval_stats.append({"step": i + 1, "metrics": event_metrics})
+                events.write(
+                    "validation",
+                    {
+                        "step": i + 1,
+                        "global_step": global_step,
+                        "source": asdict(validation_source.info),
+                        "metrics": event_metrics,
+                    },
+                )
+                log_validation_scalars(scalar_writer, scalar_metrics, global_step, final=False)
                 scalar_writer.flush()
-                policy_nll = metrics["policy_nll"]
+                raw_policy_nll_value = metrics["policy_nll"]
+                if not isinstance(raw_policy_nll_value, Real):
+                    raise TypeError("validation policy_nll metric must be numeric")
+                best_metrics = metrics
+                best_weight_source: Literal["raw", "ema"] = "raw"
+                if ema_metrics is not None:
+                    ema_policy_nll_value = ema_metrics["policy_nll"]
+                    if not isinstance(ema_policy_nll_value, Real):
+                        raise TypeError("EMA validation policy_nll metric must be numeric")
+                    if float(ema_policy_nll_value) < float(raw_policy_nll_value):
+                        best_metrics = ema_metrics
+                        best_weight_source = "ema"
+                best_policy_nll_value = best_metrics["policy_nll"]
+                if not isinstance(best_policy_nll_value, Real):
+                    raise TypeError("best validation policy_nll metric must be numeric")
+                policy_nll = float(best_policy_nll_value)
                 if policy_nll < best_policy_nll:
                     best_policy_nll = policy_nll
                     best_policy_nll_step = global_step
                     best_path = best_checkpoint_path(args)
                     if best_path is not None:
-                        atomic_save_training_checkpoint(
-                            best_path,
-                            model=model,
-                            optimizer=optimizer,
-                            model_config=model_config,
-                            optimizer_config=optimizer_config,
-                            runtime_config=runtime_config,
-                            loss_weights=weights,
-                            manifest_path=args.manifest if raw_stream is None else raw_stream.manifest_path,
-                            global_step=global_step,
-                            samples_seen=samples_seen,
-                            raw_mjai_progress=checkpoint_raw_progress(raw_stream, raw_pinned, raw_mjai_offsets),
-                        )
+                        weight_ctx = ema_weights(model, ema_tracker) if best_weight_source == "ema" else nullcontext()
+                        with weight_ctx:
+                            atomic_save_training_checkpoint(
+                                best_path,
+                                model=model,
+                                optimizer=optimizer,
+                                model_config=model_config,
+                                optimizer_config=optimizer_config,
+                                runtime_config=runtime_config,
+                                loss_weights=weights,
+                                manifest_path=args.manifest if raw_stream is None else raw_stream.manifest_path,
+                                global_step=global_step,
+                                samples_seen=samples_seen,
+                                raw_mjai_progress=checkpoint_raw_progress(raw_stream, raw_pinned, raw_mjai_offsets),
+                                ema_tracker=ema_tracker,
+                                ema_config=ema_config,
+                                weight_source=best_weight_source,
+                            )
                         events.write(
                             "best_checkpoint_saved",
                             {
@@ -1469,6 +2238,7 @@ def main() -> int:
                                 "metric_value": best_policy_nll,
                                 "global_step": global_step,
                                 "samples_seen": samples_seen,
+                                "weight_source": best_weight_source,
                             },
                         )
                         scalar_writer.add_scalar("checkpoint/best_policy_nll", best_policy_nll, global_step)
@@ -1503,6 +2273,8 @@ def main() -> int:
                                 raw_mjai_offsets,
                             )
                         ),
+                        ema_tracker=ema_tracker,
+                        ema_config=ema_config,
                     )
                 events.write(
                     "checkpoint_saved",
@@ -1524,22 +2296,28 @@ def main() -> int:
         cuda_profiler.stop()
 
     final_validation = None
-    if validation_stream is not None:
-        final_eval = []
-        for _ in range(args.validation_steps):
-            val_batch, val_fetch_ms = validation_stream.next_batch()
-            val_obs, _val_legal, _val_labels, val_targets, _val_input_timing = tensors_from_policy_batch(
-                val_batch, device, val_fetch_ms
-            )
-            val_targets = targets_for_compiled_loss(val_targets, weights)
-            final_eval.append(evaluate_batch(model, val_obs, val_targets, weights, autocast))
-        final_validation = summarize_eval(final_eval)
-        log_validation_scalars(scalar_writer, final_validation, global_step, final=True)
+    if validation_source.info.actual_batches > 0:
+        raw_final_validation, ema_final_validation = evaluate_raw_and_ema(
+            validation_source,
+            steps=args.validation_steps,
+            model=model,
+            device=device,
+            weights=weights,
+            autocast=autocast,
+            ema_tracker=ema_tracker,
+        )
+        final_validation = {"raw": raw_final_validation}
+        final_scalar_metrics = prefixed_metrics("raw", raw_final_validation)
+        if ema_final_validation is not None:
+            final_validation["ema"] = ema_final_validation
+            final_scalar_metrics |= prefixed_metrics("ema", ema_final_validation)
+        log_validation_scalars(scalar_writer, final_scalar_metrics, global_step, final=True)
     raw_progress: BuildProgress | None = None
     if raw_stream is not None:
         raw_progress = raw_stream.progress()
     elif raw_pinned is not None:
         raw_progress = raw_pinned.progress()
+    raw_stream_local_progress, raw_resume_total_progress = raw_mjai_progress_sections(raw_progress, raw_mjai_offsets)
 
     final_global_step = global_step
     final_samples_seen = samples_seen
@@ -1553,8 +2331,18 @@ def main() -> int:
             else (raw_pinned.manifest_summary if raw_pinned is not None else manifest_summary)
         ),
         "compile_s": compile_s,
+        "compile_dry_run": pre_main.compile_dry_run,
+        "warmup_mode": pre_main.warmup_mode,
+        "warmup_steps_counted": pre_main.warmup_steps_counted,
+        "samples_consumed_pre_main": pre_main.samples_consumed_pre_main,
+        "pre_main_batches_changed_weights": pre_main.pre_main_batches_changed_weights,
         "summary": summarize_steps(stats, args.batch),
-        "validation": {"every": args.validation_every, "history": eval_stats, "final": final_validation},
+        "validation": {
+            "every": args.validation_every,
+            "source": asdict(validation_source.info),
+            "history": eval_stats,
+            "final": final_validation,
+        },
         "memory": {
             "max_allocated_bytes": torch.cuda.max_memory_allocated(),
             "max_reserved_bytes": torch.cuda.max_memory_reserved(),
@@ -1564,7 +2352,8 @@ def main() -> int:
         "raw_mjai_training": raw_stream is not None or raw_pinned is not None,
         "raw_mjai_pinned_pyo3": raw_pinned is not None,
         "raw_mjai_transport": args.raw_mjai_transport,
-        "raw_mjai_progress": json_raw_mjai_progress(apply_progress_offsets(raw_progress, raw_mjai_offsets)),
+        "raw_mjai_progress": raw_stream_local_progress,
+        "raw_mjai_resume_total_progress": raw_resume_total_progress,
         "raw_mjai_bridge_stats": None if raw_pinned is None else asdict(raw_pinned.bridge_stats()),
         "raw_mjai_queue_stats": None if raw_pinned is None else asdict(raw_pinned.queue_stats()),
         "checkpoint_path": None,
@@ -1572,6 +2361,13 @@ def main() -> int:
         "resumed_samples_seen": None if resume_state is None else resume_state.samples_seen,
         "global_step": final_global_step,
         "samples_seen": final_samples_seen,
+        "ema": {
+            "enabled": ema_tracker is not None,
+            "device": None if ema_tracker is None else ema_tracker.device_name,
+            "update_count": 0 if ema_tracker is None else ema_tracker.update_count,
+            "last_update_step": 0 if ema_tracker is None else ema_tracker.last_update_step,
+            "last_update_ms": math.nan if ema_tracker is None else ema_tracker.last_update_ms,
+        },
     }
     global_step = final_global_step
     samples_seen = final_samples_seen
@@ -1592,6 +2388,8 @@ def main() -> int:
                 global_step=global_step,
                 samples_seen=samples_seen,
                 raw_mjai_progress=raw_mjai_progress_dict(apply_progress_offsets(raw_progress, raw_mjai_offsets)),
+                ema_tracker=ema_tracker,
+                ema_config=ema_config,
             )
         result["checkpoint_path"] = str(latest_checkpoint)
         events.write(
@@ -1605,8 +2403,7 @@ def main() -> int:
         )
         scalar_writer.add_scalar("checkpoint/saved", 1.0, global_step)
         scalar_writer.add_scalar("checkpoint/samples_seen", float(samples_seen), global_step)
-    if validation_stream is not None:
-        validation_stream.close()
+    validation_source.close()
     if raw_stream is not None:
         raw_stream.close()
     if raw_pinned is not None:

@@ -692,7 +692,7 @@ impl<B: Backend> HydraModel<B> {
             } else {
                 zero_linear_head(batch, HYDRA_ACTION_SPACE, &device)
             };
-        drop(_advanced_scope);
+        let _ = _advanced_scope;
 
         HydraOutput {
             policy_logits: base.policy_logits,
@@ -795,7 +795,7 @@ impl<B: Backend> HydraModel<B> {
             } else {
                 None
             };
-        drop(_advanced_scope);
+        let _ = _advanced_scope;
 
         HydraTrainOutput {
             policy_logits: base.policy_logits,

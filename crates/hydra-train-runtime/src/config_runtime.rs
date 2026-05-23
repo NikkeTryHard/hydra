@@ -112,6 +112,14 @@ pub fn validate_config(config: &TrainConfig) -> Result<(), String> {
             );
         }
     }
+    if config.ema.enabled {
+        if !(0.0..1.0).contains(&config.ema.decay) {
+            return Err("ema.decay must be in [0, 1)".to_string());
+        }
+        if config.ema.update_every_steps == 0 {
+            return Err("ema.update_every_steps must be greater than 0".to_string());
+        }
+    }
     if let Some(microbatch_size) = config.microbatch_size
         && microbatch_size == 0
     {

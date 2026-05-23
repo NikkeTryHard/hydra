@@ -26,8 +26,6 @@ hydra-replay-sidecar = { path = "../hydra-replay-sidecar" }
 hydra-search-labels = { path = "../hydra-search-labels", default-features = false }
 hydra-selfplay = { path = "../hydra-selfplay", default-features = false }
 burn = { version = "0.21", default-features = false, features = ["std"] }
-tch = { version = "0.22", optional = true }
-torch-sys = { version = "0.22", optional = true }
 colored = "3"
 indicatif = "0.17"
 serde = { version = "1.0", features = ["derive"] }
@@ -50,19 +48,13 @@ cc = "1"
 
 [features]
 default = []
-training = ["libtorch"]
-libtorch = [
-    "burn/train",
-    "burn/tch",
-    "dep:tch",
-    "dep:torch-sys",
-    "hydra-model/libtorch",
-    "hydra-search-labels/model-eval",
-]
-burn-cuda = ["burn/train", "burn/cuda", "hydra-model/burn-cuda"]
-cuda-graph = ["libtorch"]
-bf16-autocast-proof = ["libtorch", "burn/bf16-autocast-proof"]
-torch-profiler = ["libtorch"]
+training = []
+libtorch = []
+burn-libtorch-obsolete = []
+burn-cuda = ["burn-libtorch-obsolete"]
+cuda-graph = ["burn-libtorch-obsolete"]
+bf16-autocast-proof = ["burn-libtorch-obsolete"]
+torch-profiler = []
 bootstrap-exec-in-progress = []
 rl-runner-exec-in-progress = []
 test-nvtx-recorder = []

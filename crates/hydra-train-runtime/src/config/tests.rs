@@ -24,6 +24,7 @@ fn python_residual_profiles_serde_and_string_contract_match() {
         ("silu_se", PythonResidualProfileConfig::SiluSe),
         ("relu_se", PythonResidualProfileConfig::ReluSe),
         ("mish_no_se", PythonResidualProfileConfig::MishNoSe),
+        ("mish_eca", PythonResidualProfileConfig::MishEca),
         ("relu_no_se", PythonResidualProfileConfig::ReluNoSe),
         (
             "relu_no_norm_no_se",
@@ -36,6 +37,35 @@ fn python_residual_profiles_serde_and_string_contract_match() {
     );
     for (text, profile) in cases {
         let parsed: PythonResidualProfileConfig =
+            serde_yaml::from_str(text).expect("profile should deserialize");
+        assert_eq!(parsed, profile);
+        assert_eq!(profile.as_str(), text);
+    }
+}
+
+#[test]
+fn python_backbone_profiles_serde_and_string_contract_match() {
+    let cases = [
+        ("conv2d_local3", PythonBackboneProfileConfig::Conv2dLocal3),
+        (
+            "tileformer_bias",
+            PythonBackboneProfileConfig::TileformerBias,
+        ),
+        (
+            "convnext_tile_k7",
+            PythonBackboneProfileConfig::ConvnextTileK7,
+        ),
+        (
+            "global_pool_bias",
+            PythonBackboneProfileConfig::GlobalPoolBias,
+        ),
+    ];
+    assert_eq!(
+        PythonBackboneProfileConfig::default(),
+        PythonBackboneProfileConfig::Conv2dLocal3
+    );
+    for (text, profile) in cases {
+        let parsed: PythonBackboneProfileConfig =
             serde_yaml::from_str(text).expect("profile should deserialize");
         assert_eq!(parsed, profile);
         assert_eq!(profile.as_str(), text);
@@ -85,6 +115,68 @@ fn python_raw_mjai_transport_serde_and_default_match() {
         assert_eq!(parsed, transport);
         assert_eq!(transport.as_str(), text);
     }
+}
+
+#[test]
+fn ema_config_defaults_on_and_validates() {
+    let config: TrainConfig = serde_yaml::from_str(
+        r#"
+data_dir: data
+output_dir: out
+num_epochs: 1
+ema:
+  enabled: true
+  decay: 0.99
+  start_step: 5
+  update_every_steps: 2
+  device: cuda
+"#,
+    )
+    .expect("EMA config should parse");
+    assert!(config.ema.enabled);
+    assert_eq!(config.ema.decay, 0.99);
+    assert_eq!(config.ema.start_step, 5);
+    assert_eq!(config.ema.update_every_steps, 2);
+    assert_eq!(config.ema.device, EmaDeviceConfig::Cuda);
+    let default_config: TrainConfig = serde_yaml::from_str(
+        r#"
+data_dir: data
+output_dir: out
+num_epochs: 1
+"#,
+    )
+    .expect("default config should parse");
+    assert!(default_config.ema.enabled);
+    assert_eq!(default_config.ema.device, EmaDeviceConfig::Auto);
+
+    let cpu: EmaDeviceConfig = serde_yaml::from_str("cpu").expect("EMA device should deserialize");
+    assert_eq!(cpu.as_str(), "cpu");
+}
+
+#[test]
+fn repository_example_config_parses_with_ema_device_default_on() {
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|path| path.parent())
+        .expect("crate should live under crates/")
+        .to_path_buf();
+    let config = read_config(&repo_root.join("example.yaml")).expect("example config should parse");
+    assert!(config.ema.enabled);
+    assert_eq!(config.ema.device, EmaDeviceConfig::Auto);
+}
+
+#[test]
+fn ema_config_validation_rejects_invalid_values() {
+    let mut config = TrainConfig::default_preflight_bench();
+    config.num_epochs = 1;
+    config.ema.enabled = true;
+    config.ema.decay = 1.0;
+    let err = validate_config(&config).expect_err("invalid EMA decay should fail");
+    assert!(err.contains("ema.decay"));
+    config.ema.decay = 0.9;
+    config.ema.update_every_steps = 0;
+    let err = validate_config(&config).expect_err("invalid EMA cadence should fail");
+    assert!(err.contains("ema.update_every_steps"));
 }
 
 #[test]
@@ -416,8 +508,20 @@ fn repository_example_config_matches_train_config_contract() {
         config.python_model_profile,
         PythonModelProfileConfig::Balanced
     );
+    assert_eq!(
+        config.python_backbone_profile,
+        PythonBackboneProfileConfig::Conv2dLocal3
+    );
+    assert_eq!(
+        config.python_residual_profile,
+        PythonResidualProfileConfig::MishSe
+    );
     assert_eq!(config.batch_size, 3072);
-    assert!(config.resume_latest);
+    assert!(!config.resume_latest);
+    assert!(config.ema.enabled);
+    assert_eq!(config.ema.decay, 0.999);
+    assert_eq!(config.ema.update_every_steps, 1);
+    assert_eq!(config.bc.grad_clip_norm, 1.0);
 }
 
 #[test]

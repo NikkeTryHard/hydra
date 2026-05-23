@@ -8,6 +8,7 @@ import pytest
 import torch
 
 from hydra_learner.checkpoint import (
+    EmaConfig,
     ModelConfig,
     OptimizerConfig,
     RuntimeConfig,
@@ -17,7 +18,15 @@ from hydra_learner.checkpoint import (
     save_checkpoint,
 )
 from hydra_learner.losses import LossWeights
-from hydra_learner.model import RESIDUAL_PROFILE_MISH_NO_SE, RESIDUAL_PROFILE_RELU_SE, HydraPolicyNet
+from hydra_learner.model import (
+    BACKBONE_PROFILE_CONVNEXT_TILE_K7,
+    BACKBONE_PROFILE_GLOBAL_POOL_BIAS,
+    BACKBONE_PROFILE_TILEFORMER_BIAS,
+    RESIDUAL_PROFILE_MISH_ECA,
+    RESIDUAL_PROFILE_MISH_NO_SE,
+    RESIDUAL_PROFILE_RELU_SE,
+    HydraPolicyNet,
+)
 
 
 def test_save_load_restores_model_params_exactly(tmp_path: Path) -> None:
@@ -51,6 +60,120 @@ def test_save_load_restores_model_params_exactly(tmp_path: Path) -> None:
     assert state.samples_seen == 14
     for key, value in model.state_dict().items():
         torch.testing.assert_close(loaded_model.state_dict()[key], value, rtol=0.0, atol=0.0)
+
+
+def test_save_load_restores_ema_state_exactly(tmp_path: Path) -> None:
+    model, optimizer = _model_optimizer()
+    ckpt = tmp_path / "ckpt.pt"
+    manifest = _write_manifest(tmp_path, b"manifest-a")
+    ema_config = EmaConfig(enabled=True, decay=0.9, start_step=1, update_every_steps=2, device="cpu")
+    ema_state = {
+        key: tensor.detach().to(dtype=torch.float32).add(1.0)
+        for key, tensor in model.state_dict().items()
+        if tensor.is_floating_point()
+    }
+    save_checkpoint(
+        ckpt,
+        model=model,
+        optimizer=optimizer,
+        model_config=_model_config(),
+        optimizer_config=_optimizer_config(),
+        runtime_config=_runtime_config(),
+        loss_weights=LossWeights(),
+        manifest_path=manifest,
+        global_step=7,
+        samples_seen=14,
+        ema_config=ema_config,
+        ema_state=ema_state,
+        ema_update_count=3,
+        ema_last_update_step=5,
+    )
+    loaded_model, loaded_optimizer = _model_optimizer()
+    state = load_checkpoint(
+        ckpt,
+        model=loaded_model,
+        optimizer=loaded_optimizer,
+        expected_model_config=_model_config(),
+        expected_optimizer_config=_optimizer_config(),
+        expected_runtime_config=_runtime_config(),
+        expected_loss_weights=LossWeights(),
+        expected_manifest_path=manifest,
+        expected_ema_config=ema_config,
+    )
+    assert state.ema is not None
+    assert state.ema.update_count == 3
+    assert state.ema.last_update_step == 5
+    for key, value in ema_state.items():
+        torch.testing.assert_close(state.ema.state_dict[key], value, rtol=0.0, atol=0.0)
+
+
+def test_ema_config_mismatch_hard_errors(tmp_path: Path) -> None:
+    model, optimizer = _model_optimizer()
+    ckpt = tmp_path / "ckpt.pt"
+    manifest = _write_manifest(tmp_path, b"manifest-a")
+    ema_config = EmaConfig(enabled=True, decay=0.9, start_step=0, update_every_steps=1, device="auto")
+    ema_state = {
+        key: tensor.detach().to(dtype=torch.float32).clone()
+        for key, tensor in model.state_dict().items()
+        if tensor.is_floating_point()
+    }
+    save_checkpoint(
+        ckpt,
+        model=model,
+        optimizer=optimizer,
+        model_config=_model_config(),
+        optimizer_config=_optimizer_config(),
+        runtime_config=_runtime_config(),
+        loss_weights=LossWeights(),
+        manifest_path=manifest,
+        global_step=1,
+        samples_seen=2,
+        ema_config=ema_config,
+        ema_state=ema_state,
+    )
+    with pytest.raises(ValueError, match="ema_config"):
+        load_checkpoint(
+            ckpt,
+            model=model,
+            optimizer=optimizer,
+            expected_model_config=_model_config(),
+            expected_optimizer_config=_optimizer_config(),
+            expected_runtime_config=_runtime_config(),
+            expected_loss_weights=LossWeights(),
+            expected_manifest_path=manifest,
+            expected_ema_config=EmaConfig(enabled=True, decay=0.9, start_step=0, update_every_steps=1, device="cpu"),
+        )
+
+
+def test_checkpoint_serializes_ema_state_on_cpu(tmp_path: Path) -> None:
+    model, optimizer = _model_optimizer()
+    ckpt = tmp_path / "ckpt.pt"
+    manifest = _write_manifest(tmp_path, b"manifest-a")
+    ema_config = EmaConfig(enabled=True, device="auto")
+    ema_state = {
+        key: tensor.detach().to(dtype=torch.float32).clone()
+        for key, tensor in model.state_dict().items()
+        if tensor.is_floating_point()
+    }
+    if torch.cuda.is_available():
+        ema_state = {key: tensor.to(device="cuda") for key, tensor in ema_state.items()}
+    save_checkpoint(
+        ckpt,
+        model=model,
+        optimizer=optimizer,
+        model_config=_model_config(),
+        optimizer_config=_optimizer_config(),
+        runtime_config=_runtime_config(),
+        loss_weights=LossWeights(),
+        manifest_path=manifest,
+        global_step=1,
+        samples_seen=2,
+        ema_config=ema_config,
+        ema_state=ema_state,
+    )
+    checkpoint = torch.load(ckpt, map_location="cpu", weights_only=True)
+    assert all(tensor.device.type == "cpu" for tensor in checkpoint["ema_state"].values())
+    assert all(tensor.dtype == torch.float32 for tensor in checkpoint["ema_state"].values())
 
 
 def test_optimizer_resume_matches_uninterrupted_two_steps(tmp_path: Path) -> None:
@@ -248,6 +371,150 @@ def test_residual_profile_mismatch_hard_errors(tmp_path: Path, profile: str) -> 
         )
 
 
+def test_tileformer_bias_checkpoint_config_roundtrip(tmp_path: Path) -> None:
+    model = HydraPolicyNet(hidden=24, blocks=1, bottleneck=4, backbone_profile=BACKBONE_PROFILE_TILEFORMER_BIAS)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1.0e-3)
+    manifest = _write_manifest(tmp_path, b"manifest-a")
+    model_config = ModelConfig(hidden=24, blocks=1, bottleneck=4, backbone_profile=BACKBONE_PROFILE_TILEFORMER_BIAS)
+    ckpt = tmp_path / "ckpt.pt"
+    save_checkpoint(
+        ckpt,
+        model=model,
+        optimizer=optimizer,
+        model_config=model_config,
+        optimizer_config=_optimizer_config(),
+        runtime_config=_runtime_config(),
+        loss_weights=LossWeights(),
+        manifest_path=manifest,
+        global_step=2,
+        samples_seen=4,
+    )
+    loaded = HydraPolicyNet(hidden=24, blocks=1, bottleneck=4, backbone_profile=BACKBONE_PROFILE_TILEFORMER_BIAS)
+    loaded_optimizer = torch.optim.AdamW(loaded.parameters(), lr=1.0e-3)
+    state = load_checkpoint(
+        ckpt,
+        model=loaded,
+        optimizer=loaded_optimizer,
+        expected_model_config=model_config,
+        expected_optimizer_config=_optimizer_config(),
+        expected_runtime_config=_runtime_config(),
+        expected_loss_weights=LossWeights(),
+        expected_manifest_path=manifest,
+    )
+    assert state.global_step == 2
+    assert state.samples_seen == 4
+    assert loaded.backbone_profile == BACKBONE_PROFILE_TILEFORMER_BIAS
+
+
+@pytest.mark.parametrize("backbone_profile", [BACKBONE_PROFILE_CONVNEXT_TILE_K7, BACKBONE_PROFILE_GLOBAL_POOL_BIAS])
+def test_resnet_family_backbone_checkpoint_config_roundtrip(tmp_path: Path, backbone_profile: str) -> None:
+    model = HydraPolicyNet(hidden=16, blocks=1, bottleneck=4, backbone_profile=backbone_profile)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1.0e-3)
+    manifest = _write_manifest(tmp_path, b"manifest-a")
+    model_config = ModelConfig(hidden=16, blocks=1, bottleneck=4, backbone_profile=backbone_profile)
+    ckpt = tmp_path / "ckpt.pt"
+    save_checkpoint(
+        ckpt,
+        model=model,
+        optimizer=optimizer,
+        model_config=model_config,
+        optimizer_config=_optimizer_config(),
+        runtime_config=_runtime_config(),
+        loss_weights=LossWeights(),
+        manifest_path=manifest,
+        global_step=2,
+        samples_seen=4,
+    )
+    loaded = HydraPolicyNet(hidden=16, blocks=1, bottleneck=4, backbone_profile=backbone_profile)
+    loaded_optimizer = torch.optim.AdamW(loaded.parameters(), lr=1.0e-3)
+    state = load_checkpoint(
+        ckpt,
+        model=loaded,
+        optimizer=loaded_optimizer,
+        expected_model_config=model_config,
+        expected_optimizer_config=_optimizer_config(),
+        expected_runtime_config=_runtime_config(),
+        expected_loss_weights=LossWeights(),
+        expected_manifest_path=manifest,
+    )
+    assert state.global_step == 2
+    assert state.samples_seen == 4
+    assert loaded.backbone_profile == backbone_profile
+
+
+def test_mish_eca_checkpoint_config_roundtrip(tmp_path: Path) -> None:
+    model = HydraPolicyNet(hidden=16, blocks=1, bottleneck=4, residual_profile=RESIDUAL_PROFILE_MISH_ECA)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1.0e-3)
+    manifest = _write_manifest(tmp_path, b"manifest-a")
+    model_config = ModelConfig(hidden=16, blocks=1, bottleneck=4, residual_profile=RESIDUAL_PROFILE_MISH_ECA)
+    ckpt = tmp_path / "ckpt.pt"
+    save_checkpoint(
+        ckpt,
+        model=model,
+        optimizer=optimizer,
+        model_config=model_config,
+        optimizer_config=_optimizer_config(),
+        runtime_config=_runtime_config(),
+        loss_weights=LossWeights(),
+        manifest_path=manifest,
+        global_step=3,
+        samples_seen=6,
+    )
+    loaded = HydraPolicyNet(hidden=16, blocks=1, bottleneck=4, residual_profile=RESIDUAL_PROFILE_MISH_ECA)
+    loaded_optimizer = torch.optim.AdamW(loaded.parameters(), lr=1.0e-3)
+    state = load_checkpoint(
+        ckpt,
+        model=loaded,
+        optimizer=loaded_optimizer,
+        expected_model_config=model_config,
+        expected_optimizer_config=_optimizer_config(),
+        expected_runtime_config=_runtime_config(),
+        expected_loss_weights=LossWeights(),
+        expected_manifest_path=manifest,
+    )
+    assert state.global_step == 3
+    assert state.samples_seen == 6
+    assert loaded.residual_profile == RESIDUAL_PROFILE_MISH_ECA
+
+
+def test_runtime_accounting_semantics_mismatch_hard_errors(tmp_path: Path) -> None:
+    model, optimizer = _model_optimizer()
+    manifest = _write_manifest(tmp_path, b"manifest-a")
+    ckpt = tmp_path / "ckpt.pt"
+    save_checkpoint(
+        ckpt,
+        model=model,
+        optimizer=optimizer,
+        model_config=_model_config(),
+        optimizer_config=_optimizer_config(),
+        runtime_config=_runtime_config(),
+        loss_weights=LossWeights(),
+        manifest_path=manifest,
+        global_step=0,
+        samples_seen=0,
+    )
+    incompatible = RuntimeConfig(
+        variant="eager_bf16",
+        loss_mode="full_base",
+        precision_mode="bf16_autocast",
+        compile_fullgraph_check=False,
+        compile_dry_run_mode="counted_training_step",
+        warmup_mode="counted_training_steps",
+    )
+
+    with pytest.raises(ValueError, match="compile"):
+        load_checkpoint(
+            ckpt,
+            model=model,
+            optimizer=optimizer,
+            expected_model_config=_model_config(),
+            expected_optimizer_config=_optimizer_config(),
+            expected_runtime_config=incompatible,
+            expected_loss_weights=LossWeights(),
+            expected_manifest_path=manifest,
+        )
+
+
 def test_checkpoint_contains_state_dict_not_compiled_object(tmp_path: Path) -> None:
     model, optimizer = _model_optimizer()
     manifest = _write_manifest(tmp_path, b"manifest-a")
@@ -294,7 +561,7 @@ def _model_config() -> ModelConfig:
 
 
 def _optimizer_config() -> OptimizerConfig:
-    return OptimizerConfig(name="AdamW", lr=1.0e-3)
+    return OptimizerConfig(name="AdamW", lr=1.0e-3, min_lr=1.0e-6)
 
 
 def _runtime_config() -> RuntimeConfig:

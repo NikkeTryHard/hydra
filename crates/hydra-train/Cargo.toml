@@ -60,14 +60,12 @@ hydra-replay-sidecar = { path = "../hydra-replay-sidecar" }
 hydra-replay-loader = { path = "../hydra-replay-loader" }
 hydra-sample-cache = { path = "../hydra-sample-cache" }
 hydra-bc-shards = { path = "../hydra-bc-shards" }
-hydra-train-algo = { path = "../hydra-train-algo" }
 hydra-model = { path = "../hydra-model", default-features = false, optional = true }
 hydra-train-types = { path = "../hydra-train-types" }
 hydra-train-runtime = { path = "../hydra-train-runtime" }
 hydra-train-exec = { path = "../hydra-train-exec", default-features = false, optional = true }
 hydra-selfplay = { path = "../hydra-selfplay", default-features = false, optional = true }
 hydra-search-labels = { path = "../hydra-search-labels", default-features = false, optional = true }
-burn = { version = "0.21", default-features = false, features = ["std"], optional = true }
 serde = { version = "1.0", features = ["derive"] }
 dashmap = "6.1.0"
 flate2 = { version = "1.1.9", features = ["zlib-rs"], default-features = false }
@@ -84,11 +82,8 @@ tar = "0.4"
 zstd = "0.13"
 ctrlc = "3.4"
 time = { version = "0.3", features = ["formatting"] }
-tch = { version = "0.22", optional = true }
-torch-sys = { version = "0.22", optional = true }
 
 [dev-dependencies]
-burn = { version = "0.21", default-features = false, features = ["std", "ndarray"] }
 rand = "0.9"
 rand_chacha = "0.9"
 criterion = { version = "0.5", features = ["html_reports"] }
@@ -97,24 +92,10 @@ hydra-train-runtime = { path = "../hydra-train-runtime" }
 [features]
 default = []
 data-tools = []
-training = [
-    "dep:hydra-train-exec",
-    "dep:hydra-selfplay",
-    "dep:hydra-search-labels",
-    "dep:hydra-model",
-    "dep:burn",
-    "burn/train",
-    "burn/tch",
-    "dep:tch",
-    "dep:torch-sys",
-    "hydra-train-exec/libtorch",
-    "hydra-search-labels/model-eval",
-]
-# Parked experimental BC-shard FP32 native Burn CUDA probe. LibTorch stays default/production;
-# this code runs only when built with this feature and selected by --experimental-backend burn-cuda.
-burn-cuda-probe = ["training", "burn/cuda", "burn/fusion", "hydra-train-exec/burn-cuda", "hydra-model/burn-cuda"]
-cuda-graph = ["training", "hydra-train-exec/cuda-graph"]
-torch-profiler = ["training", "hydra-train-exec/torch-profiler"]
+training = ["dep:hydra-train-exec", "hydra-train-exec/training"]
+burn-cuda-probe = ["training"]
+cuda-graph = ["training"]
+torch-profiler = ["training"]
 test-nvtx-recorder = ["hydra-train-exec/test-nvtx-recorder"]
 
 

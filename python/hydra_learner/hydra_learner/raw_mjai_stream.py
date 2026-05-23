@@ -1005,6 +1005,7 @@ def raw_mjai_config_from_args(args: argparse.Namespace) -> dict[str, Any] | None
         "max_samples": args.raw_mjai_max_samples,
         "train_fraction": args.raw_mjai_train_fraction,
         "augment": args.raw_mjai_augment,
+        "validation_augment": args.raw_mjai_validation_augment,
         "split": args.raw_mjai_split,
         "transport": args.raw_mjai_transport,
         "pinned_ffi": None if args.raw_mjai_pinned_ffi is None else str(args.raw_mjai_pinned_ffi),
@@ -1020,6 +1021,7 @@ def add_raw_mjai_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--raw-mjai-max-samples", type=int)
     parser.add_argument("--raw-mjai-train-fraction", type=float, default=0.9)
     parser.add_argument("--raw-mjai-augment", action="store_true")
+    parser.add_argument("--raw-mjai-validation-augment", action="store_true")
     parser.add_argument("--raw-mjai-split", choices=("train", "validation"), default="train")
     parser.add_argument("--raw-mjai-transport", choices=RAW_MJAI_TRANSPORTS, default=RAW_MJAI_TRANSPORT_PINNED_PYO3)
     parser.add_argument("--raw-mjai-pinned-ffi", type=Path, help="override libhydra_raw_mjai_ffi.so path")

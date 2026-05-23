@@ -866,14 +866,17 @@ fn schedule_total_steps_extends_from_resume_global_step() {
         source_filters: hydra_train_runtime::config::SourceFilterConfig::default(),
         augment: true,
         resume_checkpoint: None,
+        resume_latest: false,
         seed: 0,
         advanced_loss: None,
         python_residual_profile: Default::default(),
         python_variant: Default::default(),
+        python_model_profile: Default::default(),
         bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
         experimental_backbone_profile: None,
         python_raw_mjai_transport: Default::default(),
         validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
+        ema: hydra_train_runtime::config::EmaConfig::default(),
         rl: None,
         bc: BcHyperparamConfig::default(),
         nsight_trace: None,
@@ -888,7 +891,13 @@ fn schedule_total_steps_extends_from_resume_global_step() {
         log_every_n_steps: 25,
         validate_every_n_steps: 200,
         checkpoint_every_n_steps: 200,
+        keep_step_checkpoints: false,
+        launch_tensorboard: false,
+        tensorboard_host: "127.0.0.1".to_string(),
+        tensorboard_port: 6006,
+        background: false,
         max_train_steps: Some(1000),
+        full_epoch: false,
         max_validation_batches: None,
         max_validation_samples: Some(8192),
         precision_mode: hydra_train_runtime::config::PrecisionMode::Fp32,
@@ -915,14 +924,17 @@ fn python_guard_config() -> TrainConfig {
         source_filters: hydra_train_runtime::config::SourceFilterConfig::default(),
         augment: true,
         resume_checkpoint: None,
+        resume_latest: false,
         seed: 0,
         advanced_loss: None,
         python_residual_profile: Default::default(),
         python_variant: Default::default(),
+        python_model_profile: Default::default(),
         bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
         experimental_backbone_profile: None,
         python_raw_mjai_transport: Default::default(),
         validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
+        ema: hydra_train_runtime::config::EmaConfig::default(),
         rl: None,
         bc: BcHyperparamConfig::default(),
         nsight_trace: None,
@@ -938,7 +950,13 @@ fn python_guard_config() -> TrainConfig {
         log_every_n_steps: 10,
         validate_every_n_steps: 10,
         checkpoint_every_n_steps: 10,
+        keep_step_checkpoints: false,
+        launch_tensorboard: false,
+        tensorboard_host: "127.0.0.1".to_string(),
+        tensorboard_port: 6006,
+        background: false,
         max_train_steps: Some(3),
+        full_epoch: false,
         max_validation_batches: None,
         max_validation_samples: None,
     }
@@ -954,8 +972,16 @@ fn python_options_from_config_accepts_plain_bc_defaults() {
     );
     assert_eq!(options.batch_size, 1024);
     assert_eq!(options.microbatch_size, 1024);
-    assert_eq!(options.steps, 3);
+    assert_eq!(options.steps, Some(3));
+    assert_eq!(options.warmup_steps, PYTHON_TIMING_WARMUP_STEPS);
     assert_eq!(options.residual_profile, Default::default());
+    assert!(!options.raw_mjai_validation_augment);
+    assert_eq!(options.validation_source_mode, "fixed");
+    assert_eq!(options.lr_schedule, "cosine");
+    assert_eq!(options.schedule_total_steps, Some(3));
+    assert_eq!(options.validation_steps, 0);
+    assert_eq!(options.validation_max_samples, None);
+    assert_eq!(options.ema_device, Default::default());
 }
 
 #[test]
@@ -974,6 +1000,7 @@ fn python_options_from_config_uses_raw_mjai_when_manifest_absent() {
             assert_eq!(data_dirs, vec![PathBuf::from("/tmp/data")]);
             assert_eq!(train_fraction, 0.9);
             assert!(augment);
+            assert!(!options.raw_mjai_validation_augment);
             assert_eq!(
                 transport,
                 hydra_train_runtime::config::PythonRawMjaiTransportConfig::PinnedPyo3
@@ -983,6 +1010,32 @@ fn python_options_from_config_uses_raw_mjai_when_manifest_absent() {
             panic!("expected raw MJAI input")
         }
     }
+
+    config.max_validation_samples = Some(65_536);
+    let options = python_options_from_config(&config).expect("plain BC should route to Python");
+    assert_eq!(options.validation_steps, 64);
+    assert_eq!(options.validation_max_samples, Some(65_536));
+
+    config.max_validation_samples = None;
+    config.max_validation_batches = Some(7);
+    let options = python_options_from_config(&config).expect("plain BC should route to Python");
+    assert_eq!(options.validation_steps, 7);
+    assert_eq!(options.validation_max_samples, None);
+}
+
+#[test]
+fn python_options_full_epoch_without_step_budget_uses_constant_schedule() {
+    let mut config = python_guard_config();
+    config.bc_shards_manifest_path = None;
+    config.max_train_steps = None;
+    config.full_epoch = true;
+
+    let options =
+        python_options_from_config(&config).expect("full-epoch raw MJAI should route to Python");
+
+    assert_eq!(options.steps, None);
+    assert_eq!(options.lr_schedule, "constant");
+    assert_eq!(options.schedule_total_steps, None);
 }
 
 #[test]
@@ -1034,6 +1087,11 @@ num_epochs: 1
 bc_backend: python
 python_variant: compile_max_autotune
 max_train_steps: 7
+bc:
+  learning_rate: 0.0004
+  min_learning_rate: 0.000001
+  warmup_steps: 3
+  grad_clip_norm: 0.75
 "#;
     let path = write_temp_file("python_variant", "yaml", yaml);
     let config = read_config(&path).expect("config should parse python variant");
@@ -1042,7 +1100,13 @@ max_train_steps: 7
         options.variant,
         hydra_train_runtime::config::PythonLearnerVariant::CompileMaxAutotune
     );
-    assert_eq!(options.steps, 7);
+    assert_eq!(options.steps, Some(7));
+    assert_eq!(options.learning_rate, 0.0004);
+    assert_eq!(options.min_learning_rate, 0.000001);
+    assert_eq!(options.lr_warmup_steps, 3);
+    assert_eq!(options.lr_schedule, "cosine");
+    assert_eq!(options.schedule_total_steps, Some(7));
+    assert_eq!(options.grad_clip_norm, 0.75);
     fs::remove_file(path).ok();
 }
 
@@ -1587,14 +1651,17 @@ fn validation_microbatch_and_sample_limit_fallbacks_work() {
         source_filters: hydra_train_runtime::config::SourceFilterConfig::default(),
         augment: true,
         resume_checkpoint: None,
+        resume_latest: false,
         seed: 0,
         advanced_loss: None,
         python_residual_profile: Default::default(),
         python_variant: Default::default(),
+        python_model_profile: Default::default(),
         bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
         experimental_backbone_profile: None,
         python_raw_mjai_transport: Default::default(),
         validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
+        ema: hydra_train_runtime::config::EmaConfig::default(),
         rl: None,
         bc: BcHyperparamConfig::default(),
         nsight_trace: None,
@@ -1609,7 +1676,13 @@ fn validation_microbatch_and_sample_limit_fallbacks_work() {
         log_every_n_steps: 10,
         validate_every_n_steps: 10,
         checkpoint_every_n_steps: 10,
+        keep_step_checkpoints: false,
+        launch_tensorboard: false,
+        tensorboard_host: "127.0.0.1".to_string(),
+        tensorboard_port: 6006,
+        background: false,
         max_train_steps: None,
+        full_epoch: false,
         max_validation_batches: Some(32),
         max_validation_samples: None,
         precision_mode: hydra_train_runtime::config::PrecisionMode::Fp32,
@@ -1628,6 +1701,21 @@ fn validation_microbatch_and_sample_limit_fallbacks_work() {
 
     assert_eq!(validation_microbatch_size(&cfg), 32);
     assert_eq!(validation_sample_limit(&cfg), Some(1500));
+
+    let mut python_config = cfg.clone();
+    python_config.batch_size = 256;
+    python_config.max_validation_samples = Some(1500);
+    let options =
+        python_options_from_config(&python_config).expect("plain BC should route to Python");
+    assert_eq!(options.validation_steps, 6);
+    assert_eq!(options.validation_max_samples, Some(1500));
+
+    python_config.max_validation_samples = None;
+    python_config.max_validation_batches = Some(3);
+    let options =
+        python_options_from_config(&python_config).expect("plain BC should route to Python");
+    assert_eq!(options.validation_steps, 1);
+    assert_eq!(options.validation_max_samples, None);
 }
 
 #[test]
@@ -1649,14 +1737,17 @@ fn validate_config_rejects_zero_validation_microbatch_and_samples() {
         source_filters: hydra_train_runtime::config::SourceFilterConfig::default(),
         augment: true,
         resume_checkpoint: None,
+        resume_latest: false,
         seed: 0,
         advanced_loss: None,
         python_residual_profile: Default::default(),
         python_variant: Default::default(),
+        python_model_profile: Default::default(),
         bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
         experimental_backbone_profile: None,
         python_raw_mjai_transport: Default::default(),
         validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
+        ema: hydra_train_runtime::config::EmaConfig::default(),
         rl: None,
         bc: BcHyperparamConfig::default(),
         nsight_trace: None,
@@ -1671,7 +1762,13 @@ fn validate_config_rejects_zero_validation_microbatch_and_samples() {
         log_every_n_steps: 10,
         validate_every_n_steps: 10,
         checkpoint_every_n_steps: 10,
+        keep_step_checkpoints: false,
+        launch_tensorboard: false,
+        tensorboard_host: "127.0.0.1".to_string(),
+        tensorboard_port: 6006,
+        background: false,
         max_train_steps: None,
+        full_epoch: false,
         max_validation_batches: None,
         max_validation_samples: Some(0),
         precision_mode: hydra_train_runtime::config::PrecisionMode::Fp32,
@@ -1710,14 +1807,17 @@ fn validate_config_accepts_basic_rl_block() {
         source_filters: hydra_train_runtime::config::SourceFilterConfig::default(),
         augment: true,
         resume_checkpoint: None,
+        resume_latest: false,
         seed: 0,
         advanced_loss: None,
         python_residual_profile: Default::default(),
         python_variant: Default::default(),
+        python_model_profile: Default::default(),
         bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
         experimental_backbone_profile: None,
         python_raw_mjai_transport: Default::default(),
         validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
+        ema: hydra_train_runtime::config::EmaConfig::default(),
         rl: Some(hydra_train_runtime::config::RlTrainConfig::default()),
         bc: BcHyperparamConfig::default(),
         nsight_trace: None,
@@ -1732,7 +1832,13 @@ fn validate_config_accepts_basic_rl_block() {
         log_every_n_steps: 10,
         validate_every_n_steps: 10,
         checkpoint_every_n_steps: 10,
+        keep_step_checkpoints: false,
+        launch_tensorboard: false,
+        tensorboard_host: "127.0.0.1".to_string(),
+        tensorboard_port: 6006,
+        background: false,
         max_train_steps: Some(4),
+        full_epoch: false,
         max_validation_batches: None,
         max_validation_samples: Some(64),
         precision_mode: hydra_train_runtime::config::PrecisionMode::Fp32,
@@ -1863,14 +1969,17 @@ fn validate_config_rejects_invalid_bc_hyperparameter_ranges() {
         source_filters: hydra_train_runtime::config::SourceFilterConfig::default(),
         augment: true,
         resume_checkpoint: None,
+        resume_latest: false,
         seed: 0,
         advanced_loss: None,
         python_residual_profile: Default::default(),
         python_variant: Default::default(),
+        python_model_profile: Default::default(),
         bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
         experimental_backbone_profile: None,
         python_raw_mjai_transport: Default::default(),
         validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
+        ema: hydra_train_runtime::config::EmaConfig::default(),
         rl: None,
         bc: BcHyperparamConfig {
             learning_rate: 1e-4,
@@ -1891,7 +2000,13 @@ fn validate_config_rejects_invalid_bc_hyperparameter_ranges() {
         log_every_n_steps: 10,
         validate_every_n_steps: 10,
         checkpoint_every_n_steps: 10,
+        keep_step_checkpoints: false,
+        launch_tensorboard: false,
+        tensorboard_host: "127.0.0.1".to_string(),
+        tensorboard_port: 6006,
+        background: false,
         max_train_steps: None,
+        full_epoch: false,
         max_validation_batches: None,
         max_validation_samples: None,
         precision_mode: hydra_train_runtime::config::PrecisionMode::Fp32,
@@ -1919,6 +2034,7 @@ fn validate_config_requires_sidecar_when_exit_loss_is_enabled() {
         source_filters: hydra_train_runtime::config::SourceFilterConfig::default(),
         augment: true,
         resume_checkpoint: None,
+        resume_latest: false,
         seed: 0,
         advanced_loss: Some(AdvancedLossConfig {
             exit: Some(0.1),
@@ -1926,10 +2042,12 @@ fn validate_config_requires_sidecar_when_exit_loss_is_enabled() {
         }),
         python_residual_profile: Default::default(),
         python_variant: Default::default(),
+        python_model_profile: Default::default(),
         bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
         experimental_backbone_profile: None,
         python_raw_mjai_transport: Default::default(),
         validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
+        ema: hydra_train_runtime::config::EmaConfig::default(),
         rl: None,
         bc: BcHyperparamConfig::default(),
         nsight_trace: None,
@@ -1944,7 +2062,13 @@ fn validate_config_requires_sidecar_when_exit_loss_is_enabled() {
         log_every_n_steps: 10,
         validate_every_n_steps: 10,
         checkpoint_every_n_steps: 10,
+        keep_step_checkpoints: false,
+        launch_tensorboard: false,
+        tensorboard_host: "127.0.0.1".to_string(),
+        tensorboard_port: 6006,
+        background: false,
         max_train_steps: None,
+        full_epoch: false,
         max_validation_batches: None,
         max_validation_samples: None,
         precision_mode: hydra_train_runtime::config::PrecisionMode::Fp32,
@@ -1972,6 +2096,7 @@ fn validate_config_requires_sidecar_when_delta_q_loss_is_enabled() {
         source_filters: hydra_train_runtime::config::SourceFilterConfig::default(),
         augment: true,
         resume_checkpoint: None,
+        resume_latest: false,
         seed: 0,
         advanced_loss: Some(AdvancedLossConfig {
             delta_q: Some(0.1),
@@ -1979,10 +2104,12 @@ fn validate_config_requires_sidecar_when_delta_q_loss_is_enabled() {
         }),
         python_residual_profile: Default::default(),
         python_variant: Default::default(),
+        python_model_profile: Default::default(),
         bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
         experimental_backbone_profile: None,
         python_raw_mjai_transport: Default::default(),
         validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
+        ema: hydra_train_runtime::config::EmaConfig::default(),
         rl: None,
         bc: BcHyperparamConfig::default(),
         nsight_trace: None,
@@ -1997,7 +2124,13 @@ fn validate_config_requires_sidecar_when_delta_q_loss_is_enabled() {
         log_every_n_steps: 10,
         validate_every_n_steps: 10,
         checkpoint_every_n_steps: 10,
+        keep_step_checkpoints: false,
+        launch_tensorboard: false,
+        tensorboard_host: "127.0.0.1".to_string(),
+        tensorboard_port: 6006,
+        background: false,
         max_train_steps: None,
+        full_epoch: false,
         max_validation_batches: None,
         max_validation_samples: None,
         precision_mode: hydra_train_runtime::config::PrecisionMode::Fp32,

@@ -13,9 +13,13 @@ class StepStats:
     backward_ms: float
     optimizer_ms: float
     loss: float
+    head_losses: dict[str, float]
+    target_coverage: dict[str, dict[str, float | str]]
     fetch_decode_ms: float = math.nan
     h2d_wall_ms: float = math.nan
     train_gpu_ms: float = math.nan
+    lr: float = math.nan
+    grad_norm: float = math.nan
 
 
 @dataclass
@@ -29,36 +33,78 @@ class EvalStats:
     opp_next: float
     score_pdf: float
     score_cdf: float
+    oracle_critic: float
+    safety_residual: float
+    target_coverage: dict[str, dict[str, float | str]]
     policy_accuracy: float
     policy_top3_accuracy: float
     policy_top5_accuracy: float
     policy_nll: float
     policy_confidence: float
     policy_ece: float
+    samples: int
 
 
-def summarize_eval(stats: list[EvalStats]) -> dict[str, float]:
-    def avg(values: list[float]) -> float:
-        return sum(values) / len(values) if values else math.nan
+def summarize_eval(stats: list[EvalStats]) -> dict[str, object]:
+    total_samples = sum(s.samples for s in stats)
 
-    return {
+    def weighted(values: list[tuple[float, int]]) -> float:
+        if total_samples == 0:
+            return math.nan
+        return sum(value * samples for value, samples in values) / total_samples
+
+    def weighted_coverage(head: str) -> float:
+        values: list[tuple[float, int]] = []
+        for stat in stats:
+            coverage = stat.target_coverage.get(head)
+            if coverage is None:
+                continue
+            fraction = coverage.get("fraction")
+            if isinstance(fraction, float):
+                values.append((fraction, stat.samples))
+        return weighted(values)
+
+    def coverage_status(head: str) -> str:
+        statuses = {str(stat.target_coverage[head]["status"]) for stat in stats if head in stat.target_coverage}
+        if "present_positive" in statuses:
+            return "present_positive"
+        if "present_zero" in statuses:
+            return "present_zero"
+        return "absent"
+
+    metrics: dict[str, object]
+    metrics = {
         "batches": float(len(stats)),
-        "loss": avg([s.loss for s in stats]),
-        "policy": avg([s.policy for s in stats]),
-        "value": avg([s.value for s in stats]),
-        "grp": avg([s.grp for s in stats]),
-        "tenpai": avg([s.tenpai for s in stats]),
-        "danger": avg([s.danger for s in stats]),
-        "opp_next": avg([s.opp_next for s in stats]),
-        "score_pdf": avg([s.score_pdf for s in stats]),
-        "score_cdf": avg([s.score_cdf for s in stats]),
-        "policy_accuracy": avg([s.policy_accuracy for s in stats]),
-        "policy_top3_accuracy": avg([s.policy_top3_accuracy for s in stats]),
-        "policy_top5_accuracy": avg([s.policy_top5_accuracy for s in stats]),
-        "policy_nll": avg([s.policy_nll for s in stats]),
-        "policy_confidence": avg([s.policy_confidence for s in stats]),
-        "policy_ece": avg([s.policy_ece for s in stats]),
+        "samples": float(total_samples),
+        "loss": weighted([(s.loss, s.samples) for s in stats]),
+        "policy": weighted([(s.policy, s.samples) for s in stats]),
+        "value": weighted([(s.value, s.samples) for s in stats]),
+        "grp": weighted([(s.grp, s.samples) for s in stats]),
+        "tenpai": weighted([(s.tenpai, s.samples) for s in stats]),
+        "danger": weighted([(s.danger, s.samples) for s in stats]),
+        "opp_next": weighted([(s.opp_next, s.samples) for s in stats]),
+        "score_pdf": weighted([(s.score_pdf, s.samples) for s in stats]),
+        "score_cdf": weighted([(s.score_cdf, s.samples) for s in stats]),
+        "oracle_critic": weighted([(s.oracle_critic, s.samples) for s in stats]),
+        "safety_residual": weighted([(s.safety_residual, s.samples) for s in stats]),
+        "policy_accuracy": weighted([(s.policy_accuracy, s.samples) for s in stats]),
+        "policy_top3_accuracy": weighted([(s.policy_top3_accuracy, s.samples) for s in stats]),
+        "policy_top5_accuracy": weighted([(s.policy_top5_accuracy, s.samples) for s in stats]),
+        "policy_nll": weighted([(s.policy_nll, s.samples) for s in stats]),
+        "policy_confidence": weighted([(s.policy_confidence, s.samples) for s in stats]),
+        "policy_ece": weighted([(s.policy_ece, s.samples) for s in stats]),
     }
+    if stats:
+        metrics |= {f"coverage/{head}/fraction": weighted_coverage(head) for head in stats[0].target_coverage}
+        metrics |= {
+            f"coverage/{head}/status_code": float(
+                ("absent", "present_zero", "present_positive").index(coverage_status(head))
+            )
+            for head in stats[0].target_coverage
+        }
+        for head in stats[0].target_coverage:
+            metrics[f"coverage/{head}/status"] = coverage_status(head)
+    return metrics
 
 
 def summarize_steps(stats: list[StepStats], batch: int) -> dict[str, float]:

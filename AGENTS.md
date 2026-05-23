@@ -159,9 +159,9 @@ Removed duplicate/noisy aliases (`check-all-targets`, `build-dist`, `test-releas
 - BF16/AMP is explicit. Use `torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16)` only where intended. Optimizer/master/checkpoint scalar state stays FP32 unless exact resume/parity tests prove another contract.
 - `torch.compile` regions must be pure tensor code: no file I/O, logging, config parsing, Python side effects, data-dependent Python branches, or dynamic object churn. Use compile diagnostics and fail tests on unexpected graph breaks/recompiles.
 - Randomness is explicit and recorded: seed Python, NumPy, PyTorch CPU/CUDA as applicable; record seed, deterministic flags, PyTorch/CUDA/cuDNN versions, device, precision, compile mode, and shard manifest digest.
-- Checkpoints are versioned data-only contracts: save model/optimizer/scheduler/scaler/RNG/config/runtime metadata as state-dict-like primitives with schema version and manifest/source digest. Never pickle modules, dataloaders, closures, compiled functions, or Python config objects as production checkpoints. Python BC `checkpoints/latest.pt` is resumable default; optional `step_<global_step>.pt` files are retention artifacts.
+- Checkpoints are versioned data-only contracts: save model/optimizer/scheduler/scaler/RNG/config/runtime metadata as state-dict-like primitives with schema version and manifest/source digest. Never pickle modules, dataloaders, closures, compiled functions, or Python config objects as production checkpoints. Python BC `checkpoints/latest.pt` is resumable default for shard runs; raw-MJAI resume is fail-closed until stream cursor resume exists. Optional `step_<global_step>.pt` files are retention artifacts.
 - Production checkpoint load uses safe loading (`weights_only=True` where possible) and validates schema/version/runtime/shape/dtype before accepting. Unknown or partial checkpoint metadata hard-errors.
-- Metrics are structured records, not ad-hoc prints. Python BC emits `logs/events.jsonl`, balanced `logs/train_steps.jsonl`, and TensorBoard scalar events under `tensorboard/`; cadence stays `log_every_n_steps`, not every CUDA step unless debugging.
+- Metrics are structured records, not ad-hoc prints. Python BC emits `logs/events.jsonl`, balanced `logs/train_steps.jsonl`, and TensorBoard scalar events under `tensorboard/`; cadence stays `log_every_n_steps`, not every CUDA step unless debugging. Validation source logs must expose requested/actual batches, requested/actual samples, and sample-cap overrun.
 - Tests use pytest with real tensors/files/process boundaries. No mocks for model, optimizer, dataloader, checkpoint, compile, or CUDA behavior. Use tiny real datasets and `tmp_path`; monkeypatch only env/path isolation.
 - Tensor assertions use `torch.testing.assert_close` or exact equality with explicit shape/dtype/device checks and dtype-appropriate tolerances. BF16 gets separate tolerances; never claim FP32 parity unless measured.
 - CUDA/BF16/compile claims require CUDA-marked tests or exact benchmark/profiler run on that path. CPU tests do not prove CUDA behavior.
@@ -222,51 +222,54 @@ Useful invariants for runtime/data changes:
 - Train CLI/YAML/preflight/shards/sidecars: read `docs/TRAINING_RUNBOOK.md` before editing.
 - RNG/seeding changes: read `research/design/SEEDING.md`; preserve deterministic replay/eval behavior.
 - Performance work: use auto benchmark first, then read/update `research/infrastructure/ENGINE_BENCHMARKS.md` if results become durable claims.
-- Do not use `find`/broad glob discovery under `/home/cachybtw/Downloads/dataset_bundle/tenhou-houou-mjai-2025` or other raw dataset folders. They contain many replay files; broad enumeration can eat RAM and stall tools. Use exact known path directly in train/audit commands.
+- Raw dataset root is `/home/cachybtw/Downloads/dataset_bundle/`; known corpus example: `/home/cachybtw/Downloads/dataset_bundle/tenhou-houou-mjai-2025`. Do not use `find`, broad globbing, or directory enumeration under dataset folders: bundle has about 200k `mjai.json.zst` files and broad discovery can eat RAM/stall tools. Use exact known paths directly in train/audit/shard commands.
 - Infrastructure/checkpoint/container work: read `research/infrastructure/INFRASTRUCTURE.md` and `docker/train/README.md` as applicable.
 - Before trusting replay/shard/sidecar data with suspicious low sample count/high skip count, audit with `mjai_audit`; use failure inventory or focused loader tests for specific bad replays.
 - If `advanced_loss.exit` or `advanced_loss.delta_q` is positive, matching sidecar path is required; validation promotion must hydrate labels when gates require them.
 
 - Default training/perf runs use `device: cuda:0` (or `HYDRA_TRAIN_DEVICE=cuda:0`) when GPU exists. CPU train is super slow; use CPU only for explicit CPU-debug/compat checks. GPU accelerates model forward/backward/optimizer/H2D; raw replay, BC-shard decode, sample collation, and materialization still run on CPU workers.
 
-- Preferred Python BC production training/perf shape on this machine: raw MJAI through pinned PyO3, `batch=2048`, `microbatch=1024`, `--python-variant compile_max_autotune`, default `python_residual_profile: mish_se`, `device cuda:0`. `compile_max_autotune` is canonical for long same-shape production runs because it changes TorchInductor kernel choice only, not model math. Use `compile_default` only for smoke/short debug where compile latency dominates. Treat sub-1% candidate differences as noise; choose smallest candidate within noise margin unless repeated long runs prove material gain.
-- Python BC config UX: `max_train_steps` is run length today; `num_epochs` remains Rust/Burn epoch-loop authority. `launch_tensorboard` starts TensorBoard and scans ports upward from `tensorboard_port`; `background` detaches learner, writes `train.pid`, redirects stdout/stderr to `logs/`, and prints `tail -f <output_dir>/logs/train_steps.jsonl`.
+- `example.yaml` is local BC launch SSOT and must stay latest/true when training code/config semantics change. Update `example.yaml` with code changes that affect launch, resume, validation, model/profile/runtime, checkpoint, or data path behavior. Update local YAML files under `training/` only when preparing or running that specific training launch; do not let local YAML become second source of truth.
+- Production multi-day Python BC launch is shard-first: audit raw corpus, build+validate compact v3 shards with `--split both --train-fraction 0.9 --resume --progress-jsonl`, then train with `bc_shards_manifest_path` and `resume_latest: true`. Keep raw `data_dir` as source provenance.
+- Raw-MJAI full-epoch/bounded runs are fresh-output only. Python rejects any `--resume` with raw-MJAI input while `raw_mjai_cursor_resume_supported() == false`; checkpoint restore without cursor would repeat corpus prefix. Use BC shards for resumable long runs.
+- Python BC LR schedule uses global completed optimizer step. Resumed shard/bounded cosine run at global step N must use same LR as uninterrupted step N; compile/timing warmup uses current global step and remains non-mutating. Unbounded raw full-epoch keeps constant LR.
+- Current launch shape on this machine: `python_model_profile: balanced`, `python_residual_profile: mish_se`, `python_variant: compile_max_autotune`, `batch_size: 3072`, `microbatch_size: 1024`, `validation_microbatch_size: 1024`, `device: cuda:0`, EMA disabled. Treat sub-1% candidate differences as noise; choose smallest candidate within noise margin unless repeated long runs prove material gain.
+- Python BC config UX: `max_train_steps` is run length today; `num_epochs` remains Rust/Burn epoch-loop authority. `max_validation_batches` hard-caps validation batches when set; otherwise `max_validation_samples` derives ceil batches and Python logs requested vs actual samples/overrun. `launch_tensorboard` starts TensorBoard and scans ports upward from `tensorboard_port`; `background` detaches learner, writes `train.pid`, redirects stdout/stderr to `logs/`, and prints `tail -f <output_dir>/logs/train_steps.jsonl`.
 
 ### CUDA profiling quick start
 
 - Evidence first. Do not optimize BC CUDA from kernel names alone; attribute by Hydra stage/source first.
-- Preferred Python BC baseline: raw MJAI dataset folder through pinned PyO3 stream, not prebuilt BC shards. Use `/home/cachybtw/Downloads/dataset_bundle/tenhou-houou-mjai-2025`; `--raw-mjai-transport pinned_pyo3`; `batch=2048`; `microbatch=1024`; `compile_max_autotune`; default `mish_se`; CUDA BF16 autocast. BC-shard timing is experimental/diagnostic only, not primary baseline.
+- Preferred production launch uses compact BC shards. Raw MJAI pinned PyO3 remains useful for corpus audit/build source and focused ingestion/perf diagnosis, not resumable multi-day training.
 - Normal timing: run Python BC once without profiler. Read JSON summary fields: `mean_step_ms`, `samples_per_s`, `mean_fwd_loss_ms`, `mean_backward_ms`, `mean_optimizer_ms`, `mean_fetch_decode_ms`, `mean_h2d_wall_ms`. Compare data/H2D/forward+loss/backward/optimizer before any kernel-level claim.
 - Preferred focused profiler for Python BC: use built-in scheduled `torch.profiler`, not Nsight. Keep real workload shape (`raw_mjai pinned_pyo3`, `batch=2048`, `microbatch=1024`, `warmup=10`, `steps=200`) and capture one steady measured step, e.g. `--torch-profiler-trace /home/cachybtw/tmp/hydra-profile/trace.json --torch-profiler-start-step 100 --torch-profiler-stop-step 101`. This preserves compile/warmup/queue behavior and avoids Nsight full-process slowdown.
 - Parse profiler trace by GPU category/name buckets. Attribute to Hydra stage with JSON timing first; then use kernels to split dominant stage (conv fprop/dgrad/wgrad, Mish+GroupNorm, GroupNorm, memcpy, optimizer, loss/head). Do not optimize from raw kernel names alone.
 - Nsight is fallback only for CUDA API/NVTX questions that `torch.profiler` cannot answer. Avoid full-process `nsys` on `compile_default`: it can time out before capture and perturb workload. If forced, use `--capture-range=cudaProfilerApi --capture-range-end=stop --wait=primary`, no sampling, tiny active range, then export/query reports immediately.
 - Current raw-MJAI Python bottleneck evidence (2026-05-22, RTX 5070, `compile_default`, `batch=2048`, `microbatch=1024`, 200 steps, one steady-step torch trace): baseline `~40.3k samples/s`, `~50.9ms/step`; fetch/decode `~0.002ms`, H2D `~0.10ms`; forward+loss `~15.0ms`, backward `~34.7ms`, optimizer `~0.75ms`. `compile_max_autotune` with same `mish_se` measured `~42.7k samples/s`, `~47.9ms/step` and is canonical for production training. Steady-step GPU buckets: fused Mish+GroupNorm `~13.9ms`, conv weight-grad `~9.5ms`, conv data-grad `~8.1ms`, conv forward `~8.1ms`, GroupNorm `~4.9ms`, H2D memcpy `~1.1ms`, optimizer `~0.4ms`, loss/head `~0.05ms`. Biggest owner: backbone backward/activation-normalization, not data/H2D/optimizer/heads.
 
-### Local throughput baseline
+### Local launch and throughput baseline
 
-- Preferred baseline uses raw MJAI dataset folder with pinned PyO3 stream. Do not hand-write YAML.
-- Do not `find`/glob inside dataset folder. Pass exact path directly.
-- Python pinned raw-stream baseline:
+- `example.yaml` is SSOT for local launch. Do not hand-write parallel YAML. Update it whenever code changes alter launch semantics; update local `training/*.yaml` only for actual training run.
+- Dataset root is `/home/cachybtw/Downloads/dataset_bundle/`; e.g. `/home/cachybtw/Downloads/dataset_bundle/tenhou-houou-mjai-2025`. It contains about 200k `mjai.json.zst` files. Do not use `find`/glob/listing there; pass exact paths directly.
+- Shard-first pre-run:
 ```bash
-pixi run -e py-train python-bc-train -- \
-  --raw-mjai-data-dir /home/cachybtw/Downloads/dataset_bundle/tenhou-houou-mjai-2025 \
-  --raw-mjai-transport pinned_pyo3 \
-  --raw-mjai-worker-threads 20 \
-  --raw-mjai-prefetch-batches 2 \
-  --raw-mjai-queue-bound 8 \
-  --raw-mjai-max-games 5000 \
-  --variant compile_max_autotune \
-  --batch 2048 \
-  --microbatch 1024 \
-  --warmup 10 \
-  --steps 200 \
-  --out /home/cachybtw/tmp/hydra-py-pinned-baseline/result.json \
-  --quiet
+pixi run cargo run --quiet --package hydra-train --features training --bin mjai_audit -- \
+  /home/cachybtw/Downloads/dataset_bundle/tenhou-houou-mjai-2025 \
+  --threads 20 --failure-examples 20 \
+  --failure-inventory-dir /home/cachybtw/dev/hydra/training/2026-05-23-audit-failures
+pixi run cargo run --quiet --package hydra-train --features training --bin build_bc_shards -- \
+  --input /home/cachybtw/Downloads/dataset_bundle/tenhou-houou-mjai-2025 \
+  --output-dir /home/cachybtw/dev/hydra/training/2026-05-23-bc-shards \
+  --manifest-name bc_shards_manifest.json --split both --train-fraction 0.9 \
+  --num-threads 20 --queue-bound 8 --chunk-games 256 --resume \
+  --progress-jsonl /home/cachybtw/dev/hydra/training/2026-05-23-bc-shards/progress.jsonl \
+  --report-name report.json
+pixi run cargo run --quiet --package hydra-train --features training --bin build_bc_shards -- \
+  --validate-manifest /home/cachybtw/dev/hydra/training/2026-05-23-bc-shards/bc_shards_manifest.json
 ```
-- 2026-05-22 RTX 5070 Python pinned PyO3 refs (`compile_max_autotune`, `mish_se`, `batch=2048`, `microbatch=1024`, `warmup=10`, `steps=200`): GPU train `~42.7k samples/s`; end-to-end `~42.6k samples/s`; mean step `~47.9ms`; fetch/decode `~0.003ms`; H2D wall `~0.12ms`; compile/autotune overhead varies by cache/run and is larger than `compile_default`. Treat driver/thermal/codegen drift as noise unless repeated.
-- Torch 2.12 cu126 probe env: `pixi run -e py-train-torch212-cu126 python-bc-train -- ...` or `pixi run -e py-train-torch212-cu126 torch-check`. Exact pins: `torch==2.12.0+cu126`, `torchvision==0.27.0+cu126`, index `https://download.pytorch.org/whl/cu126`. Local RTX 5070 cannot benchmark it because cu126 wheels support up to `sm_90`, not `sm_120`; benchmark on CUDA 12.6 target machine with same raw-MJAI command.
-- Torch 2.12 nightly cu128 local probe env: `py-train-torch212-nightly-cu128`, pins `torch==2.12.0.dev20260329+cu128`, `torchvision==0.26.0.dev20260329+cu128`. Measured on RTX 5070 same raw-MJAI run: `~43.9k samples/s`, `~46.6ms/step`; `TORCHINDUCTOR_MAX_AUTOTUNE_DEFER_LAYOUT_FREEZING=1` slightly best and avoids huge compile cost in this run (`~1.7s` vs `~50.7s`). Nightly is probe-only, not production default.
-- BC-shard runs are experimental/diagnostic only. They are useful for shard reader/materialization checks, not preferred training speed baseline.
+- Train: uncomment `bc_shards_manifest_path` in `example.yaml`, set `resume_latest: true`, then run `pixi run cargo run --quiet --package hydra-train --features training --bin train -- example.yaml`.
+- Raw pinned PyO3 2026-05-22 reference (`compile_max_autotune`, `mish_se`, `batch=2048`, `microbatch=1024`, `warmup=10`, `steps=200`): `~42.7k samples/s`, `~47.9ms/step`; diagnostic only for ingestion/model timing, not resumable launch baseline.
+- Torch 2.12 cu126 probe env: `pixi run -e py-train-torch212-cu126 python-bc-train -- ...` or `pixi run -e py-train-torch212-cu126 torch-check`. Exact pins: `torch==2.12.0+cu126`, `torchvision==0.27.0+cu126`, index `https://download.pytorch.org/whl/cu126`. Local RTX 5070 cannot benchmark it because cu126 wheels support up to `sm_90`, not `sm_120`; benchmark on CUDA 12.6 target machine with same shard-first config.
+- Torch 2.12 nightly cu128 local probe env: `py-train-torch212-nightly-cu128`, pins `torch==2.12.0.dev20260329+cu128`, `torchvision==0.26.0.dev20260329+cu128`. Measured raw-MJAI probe on RTX 5070: `~43.9k samples/s`, `~46.6ms/step`; `TORCHINDUCTOR_MAX_AUTOTUNE_DEFER_LAYOUT_FREEZING=1` slightly best and avoids huge compile cost in that run. Nightly is probe-only, not production default.
 Hydra binaries quick use:
 
 - Cargo features are compile-time capability gates. Use `training` for LibTorch/Burn train/model binaries; `cuda-graph` implies `training` and checks CUDA pinned/prealloc/probe code; `data-tools` is lightweight data-conversion tooling. Omit `--features` only for bins with `Features=none`.

@@ -63,11 +63,17 @@ pub struct TrainConfig {
     #[serde(default)]
     pub python_model_profile: PythonModelProfileConfig,
     #[serde(default)]
+    pub python_backbone_profile: PythonBackboneProfileConfig,
+    #[serde(default)]
+    pub python_conv_memory_format: PythonConvMemoryFormatConfig,
+    #[serde(default)]
     pub experimental_backbone_profile: Option<ExperimentalBackboneProfileConfig>,
     #[serde(default)]
     pub python_raw_mjai_transport: PythonRawMjaiTransportConfig,
     #[serde(default)]
     pub validation_gates: ValidationGateConfig,
+    #[serde(default)]
+    pub ema: EmaConfig,
     pub rl: Option<RlTrainConfig>,
     #[serde(default)]
     pub bc: BcHyperparamConfig,
@@ -133,6 +139,27 @@ pub enum PythonModelProfileConfig {
     Balanced,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PythonBackboneProfileConfig {
+    #[default]
+    Conv2dLocal3,
+    TileformerBias,
+    ConvnextTileK7,
+    GlobalPoolBias,
+}
+
+impl PythonBackboneProfileConfig {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Conv2dLocal3 => "conv2d_local3",
+            Self::TileformerBias => "tileformer_bias",
+            Self::ConvnextTileK7 => "convnext_tile_k7",
+            Self::GlobalPoolBias => "global_pool_bias",
+        }
+    }
+}
+
 impl PythonModelProfileConfig {
     pub const fn hidden(self) -> usize {
         match self {
@@ -164,6 +191,7 @@ pub enum PythonResidualProfileConfig {
     SiluSe,
     ReluSe,
     MishNoSe,
+    MishEca,
     ReluNoSe,
     ReluNoNormNoSe,
 }
@@ -175,6 +203,7 @@ impl PythonResidualProfileConfig {
             Self::SiluSe => "silu_se",
             Self::ReluSe => "relu_se",
             Self::MishNoSe => "mish_no_se",
+            Self::MishEca => "mish_eca",
             Self::ReluNoSe => "relu_no_se",
             Self::ReluNoNormNoSe => "relu_no_norm_no_se",
         }
@@ -283,9 +312,12 @@ impl TrainConfig {
             python_residual_profile: PythonResidualProfileConfig::default(),
             python_variant: PythonLearnerVariant::default(),
             python_model_profile: PythonModelProfileConfig::default(),
+            python_backbone_profile: PythonBackboneProfileConfig::default(),
+            python_conv_memory_format: PythonConvMemoryFormatConfig::default(),
             experimental_backbone_profile: None,
             python_raw_mjai_transport: PythonRawMjaiTransportConfig::default(),
             validation_gates: ValidationGateConfig::default(),
+            ema: EmaConfig::default(),
             rl: None,
             bc: BcHyperparamConfig::default(),
             nsight_trace: None,
@@ -467,6 +499,42 @@ impl PythonRawMjaiTransportConfig {
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
+pub enum PythonConvMemoryFormatConfig {
+    #[default]
+    Contiguous,
+    ChannelsLast,
+}
+
+impl PythonConvMemoryFormatConfig {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Contiguous => "contiguous",
+            Self::ChannelsLast => "channels_last",
+        }
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PythonAdamwFlagConfig {
+    #[default]
+    Auto,
+    On,
+    Off,
+}
+
+impl PythonAdamwFlagConfig {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::On => "on",
+            Self::Off => "off",
+        }
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
 pub enum BcBackendConfig {
     #[default]
     Python,
@@ -492,6 +560,8 @@ pub struct PythonLearnerCliOptions {
     pub microbatch_size: usize,
     pub variant: PythonLearnerVariant,
     pub residual_profile: PythonResidualProfileConfig,
+    pub conv_memory_format: PythonConvMemoryFormatConfig,
+    pub backbone_profile: PythonBackboneProfileConfig,
     pub hidden: usize,
     pub blocks: usize,
     pub bottleneck: usize,
@@ -499,7 +569,10 @@ pub struct PythonLearnerCliOptions {
     pub steps: Option<usize>,
     pub full_epoch: bool,
     pub validation_steps: usize,
+    pub validation_max_samples: Option<usize>,
     pub validation_every: usize,
+    pub raw_mjai_validation_augment: bool,
+    pub validation_source_mode: String,
     pub checkpoint_out: Option<PathBuf>,
     pub resume: Option<PathBuf>,
     pub checkpoint_every_steps: usize,
@@ -511,7 +584,19 @@ pub struct PythonLearnerCliOptions {
     pub tensorboard_port: u16,
     pub background: bool,
     pub learning_rate: f64,
+    pub min_learning_rate: f64,
+    pub lr_warmup_steps: usize,
+    pub lr_schedule: String,
+    pub schedule_total_steps: Option<usize>,
+    pub grad_clip_norm: f64,
     pub weight_decay: f64,
+    pub ema_enabled: bool,
+    pub ema_decay: f64,
+    pub ema_start_step: usize,
+    pub ema_update_every_steps: usize,
+    pub ema_device: EmaDeviceConfig,
+    pub adamw_fused: PythonAdamwFlagConfig,
+    pub adamw_foreach: PythonAdamwFlagConfig,
     pub compile_fullgraph_check: bool,
     pub oracle_critic_weight: f64,
     pub safety_residual_weight: f64,
@@ -598,6 +683,10 @@ pub struct BcHyperparamConfig {
     pub grad_clip_norm: f32,
     #[serde(default = "default_bc_warmup_steps")]
     pub warmup_steps: usize,
+    #[serde(default)]
+    pub adamw_fused: PythonAdamwFlagConfig,
+    #[serde(default)]
+    pub adamw_foreach: PythonAdamwFlagConfig,
 }
 
 impl Default for BcHyperparamConfig {
@@ -608,6 +697,8 @@ impl Default for BcHyperparamConfig {
             weight_decay: default_bc_weight_decay(),
             grad_clip_norm: default_bc_grad_clip_norm(),
             warmup_steps: default_bc_warmup_steps(),
+            adamw_fused: PythonAdamwFlagConfig::default(),
+            adamw_foreach: PythonAdamwFlagConfig::default(),
         }
     }
 }
@@ -659,6 +750,65 @@ impl Default for ValidationGateConfig {
             require_sidecar_coverage_when_weighted: true,
         }
     }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum EmaDeviceConfig {
+    #[default]
+    Auto,
+    Cuda,
+    Cpu,
+}
+
+impl EmaDeviceConfig {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Cuda => "cuda",
+            Self::Cpu => "cpu",
+        }
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EmaConfig {
+    #[serde(default = "default_ema_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_ema_decay")]
+    pub decay: f64,
+    #[serde(default)]
+    pub start_step: usize,
+    #[serde(default = "default_ema_update_every_steps")]
+    pub update_every_steps: usize,
+    #[serde(default)]
+    pub device: EmaDeviceConfig,
+}
+
+impl Default for EmaConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_ema_enabled(),
+            decay: default_ema_decay(),
+            start_step: 0,
+            update_every_steps: default_ema_update_every_steps(),
+            device: EmaDeviceConfig::Auto,
+        }
+    }
+}
+
+pub const fn default_ema_enabled() -> bool {
+    true
+}
+
+pub fn default_ema_decay() -> f64 {
+    0.999
+}
+
+pub fn default_ema_update_every_steps() -> usize {
+    1
 }
 
 fn default_validation_gate_min_samples() -> Option<usize> {

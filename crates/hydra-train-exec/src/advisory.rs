@@ -114,12 +114,6 @@ impl<'a> AdvisoryEvent<'a> {
     }
 }
 
-#[cfg(feature = "libtorch")]
-fn cuda_device_count() -> i64 {
-    tch::Cuda::device_count()
-}
-
-#[cfg(not(feature = "libtorch"))]
 fn cuda_device_count() -> i64 {
     0
 }
@@ -410,7 +404,7 @@ pub fn interval_runtime_advisories(input: IntervalTimingInput) -> Vec<RuntimeAdv
         advisories.push(RuntimeAdvisory::warning(
             "optimizer_step_dominates_cuda_interval",
             format!(
-                "optimizer_step used {:.1}% of interval wall time ({:.3}s over {} steps); Burn Adam is unfused/per-parameter on tch, so fused optimizer or graph-safe optimizer capture is the likely next optimization lane",
+                "optimizer_step used {:.1}% of interval wall time ({:.3}s over {} steps); the optimizer dominates this interval, so fused optimizer or graph-safe optimizer capture is the likely next optimization lane",
                 pct(input.optimizer_step_seconds) * 100.0,
                 input.optimizer_step_seconds,
                 input.steps,

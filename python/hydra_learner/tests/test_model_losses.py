@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from hydra_learner.losses import (
     BaseTargets,
     LossWeights,
+    active_loss_heads,
     base_loss,
     danger_focal_bce,
     masked_policy_ce,
@@ -17,14 +18,20 @@ from hydra_learner.losses import (
     opp_next_ce,
     oracle_critic_loss,
     safety_residual_loss,
+    target_coverage_dict,
     value_mse,
 )
 from hydra_learner.model import (
     ACTION_SPACE,
     BACKBONE_PROFILE_CONV2D_LOCAL3,
+    BACKBONE_PROFILE_CONVNEXT_TILE_K7,
+    BACKBONE_PROFILE_GLOBAL_POOL_BIAS,
+    BACKBONE_PROFILE_TILEFORMER_BIAS,
     BACKBONE_PROFILES,
     GRP_CLASSES,
     OPPONENTS,
+    RESIDUAL_PROFILE_DEFAULT,
+    RESIDUAL_PROFILE_MISH_ECA,
     RESIDUAL_PROFILE_RELU_NO_NORM_NO_SE,
     RESIDUAL_PROFILES,
     SCORE_BINS,
@@ -35,6 +42,8 @@ from hydra_learner.model import (
 from hydra_learner.shards import BcShardReader
 from hydra_learner.train_bc import (
     HydraCompiledLossStep,
+    LrScheduler,
+    LrSchedulerConfig,
     loss_step_args,
     run_step,
     targets_for_compiled_loss,
@@ -70,6 +79,56 @@ def test_model_outputs_base_head_shapes_and_finite() -> None:
         assert bool(torch.isfinite(tensor).all())
 
 
+@pytest.mark.parametrize("backbone_profile", [BACKBONE_PROFILE_CONVNEXT_TILE_K7, BACKBONE_PROFILE_GLOBAL_POOL_BIAS])
+def test_resnet_family_backbone_profiles_keep_output_contract_and_finite(backbone_profile: str) -> None:
+    model = HydraPolicyNet(hidden=16, blocks=1, bottleneck=4, backbone_profile=backbone_profile)
+    out = model(torch.randn(2, 192, 34))
+    assert out.policy_logits.shape == (2, ACTION_SPACE)
+    assert out.opp_next_discard.shape == (2, OPPONENTS, TILE_WIDTH)
+    assert out.danger.shape == (2, OPPONENTS, TILE_WIDTH)
+    assert all(bool(torch.isfinite(tensor).all()) for tensor in (out.policy_logits, out.opp_next_discard, out.danger))
+
+
+def test_tileformer_bias_outputs_base_head_shapes_and_finite() -> None:
+    model = HydraPolicyNet(hidden=24, blocks=1, bottleneck=4, backbone_profile=BACKBONE_PROFILE_TILEFORMER_BIAS)
+    out = model(torch.randn(2, 192, 34))
+    assert out.policy_logits.shape == (2, ACTION_SPACE)
+    assert out.value.shape == (2, 1)
+    assert out.score_pdf.shape == (2, SCORE_BINS)
+    assert out.score_cdf.shape == (2, SCORE_BINS)
+    assert out.opp_tenpai.shape == (2, OPPONENTS)
+    assert out.grp.shape == (2, GRP_CLASSES)
+    assert out.oracle_critic.shape == (2, 4)
+    assert out.safety_residual.shape == (2, ACTION_SPACE)
+    assert out.opp_next_discard.shape == (2, OPPONENTS, TILE_WIDTH)
+    assert out.danger.shape == (2, OPPONENTS, TILE_WIDTH)
+    assert all(
+        bool(torch.isfinite(tensor).all())
+        for tensor in (
+            out.policy_logits,
+            out.value,
+            out.score_pdf,
+            out.score_cdf,
+            out.opp_tenpai,
+            out.grp,
+            out.oracle_critic,
+            out.safety_residual,
+            out.opp_next_discard,
+            out.danger,
+        )
+    )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
+def test_tileformer_bias_forward_works_on_cuda() -> None:
+    model = HydraPolicyNet(hidden=24, blocks=1, bottleneck=4, backbone_profile=BACKBONE_PROFILE_TILEFORMER_BIAS).to(
+        "cuda"
+    )
+    out = model(torch.randn(2, 192, 34, device="cuda"))
+    assert out.policy_logits.shape == (2, ACTION_SPACE)
+    assert out.policy_logits.device.type == "cuda"
+
+
 def test_singleton_height_conv2d_matches_tile_axis_conv1d() -> None:
     obs = torch.randn(2, 3, 34)
     weight = torch.randn(5, 3, 3)
@@ -78,8 +137,11 @@ def test_singleton_height_conv2d_matches_tile_axis_conv1d() -> None:
     torch.testing.assert_close(actual, expected)
 
 
+_CONV2D_RESIDUAL_BACKBONE_PROFILES = (BACKBONE_PROFILE_CONV2D_LOCAL3, BACKBONE_PROFILE_GLOBAL_POOL_BIAS)
+
+
 @pytest.mark.parametrize("profile", RESIDUAL_PROFILES)
-@pytest.mark.parametrize("backbone_profile", BACKBONE_PROFILES)
+@pytest.mark.parametrize("backbone_profile", _CONV2D_RESIDUAL_BACKBONE_PROFILES)
 def test_residual_profiles_keep_output_contract_and_expected_parameters(profile: str, backbone_profile: str) -> None:
     model = HydraPolicyNet(
         hidden=16, blocks=1, bottleneck=4, residual_profile=profile, backbone_profile=backbone_profile
@@ -89,14 +151,37 @@ def test_residual_profiles_keep_output_contract_and_expected_parameters(profile:
     assert out.opp_next_discard.shape == (2, OPPONENTS, TILE_WIDTH)
     assert out.danger.shape == (2, OPPONENTS, TILE_WIDTH)
     state_keys = model.state_dict().keys()
-    if profile.endswith("no_se"):
+    if profile == RESIDUAL_PROFILE_MISH_ECA:
+        assert any("eca_conv" in key for key in state_keys)
+        assert not any("se_fc" in key for key in state_keys)
+    elif profile.endswith("no_se"):
         assert not any("se_fc" in key for key in state_keys)
     else:
         assert any("se_fc" in key for key in state_keys)
+        assert not any("eca_conv" in key for key in state_keys)
     if profile == RESIDUAL_PROFILE_RELU_NO_NORM_NO_SE:
         assert not any("norm" in key for key in state_keys)
     else:
         assert any("norm" in key for key in state_keys)
+    assert not any("eca_conv" in key for key in state_keys) or profile == RESIDUAL_PROFILE_MISH_ECA
+    assert all(bool(torch.isfinite(tensor).all()) for tensor in (out.policy_logits, out.opp_next_discard, out.danger))
+
+
+def test_profile_validation_includes_ablation_names() -> None:
+    assert BACKBONE_PROFILE_CONVNEXT_TILE_K7 in BACKBONE_PROFILES
+    assert BACKBONE_PROFILE_GLOBAL_POOL_BIAS in BACKBONE_PROFILES
+    assert RESIDUAL_PROFILE_MISH_ECA in RESIDUAL_PROFILES
+
+
+def test_mish_eca_residual_profile_keeps_output_contract_and_uses_eca() -> None:
+    model = HydraPolicyNet(hidden=16, blocks=1, bottleneck=4, residual_profile=RESIDUAL_PROFILE_MISH_ECA)
+    out = model(torch.randn(2, 192, 34))
+    state_keys = model.state_dict().keys()
+    assert out.policy_logits.shape == (2, ACTION_SPACE)
+    assert out.opp_next_discard.shape == (2, OPPONENTS, TILE_WIDTH)
+    assert out.danger.shape == (2, OPPONENTS, TILE_WIDTH)
+    assert any("eca_conv" in key for key in state_keys)
+    assert not any("se_fc" in key for key in state_keys)
     assert all(bool(torch.isfinite(tensor).all()) for tensor in (out.policy_logits, out.opp_next_discard, out.danger))
 
 
@@ -118,9 +203,10 @@ def test_invalid_backbone_profile_hard_errors() -> None:
         HydraPolicyNet(hidden=16, blocks=1, bottleneck=4, backbone_profile="bad_profile")
 
 
-def test_default_backbone_profile_is_conv2d_local3() -> None:
+def test_default_profiles_are_conv2d_local3_mish_se() -> None:
     model = HydraPolicyNet(hidden=16, blocks=1, bottleneck=4)
     assert model.backbone_profile == BACKBONE_PROFILE_CONV2D_LOCAL3
+    assert model.residual_profile == RESIDUAL_PROFILE_DEFAULT
 
 
 def test_invalid_residual_profile_hard_errors() -> None:
@@ -299,6 +385,18 @@ def test_compiled_loss_step_matches_base_loss() -> None:
     torch.testing.assert_close(actual, expected)
 
 
+def test_tileformer_bias_full_base_loss_optimizer_step() -> None:
+    batch = 2
+    model = HydraPolicyNet(hidden=24, blocks=1, bottleneck=4, backbone_profile=BACKBONE_PROFILE_TILEFORMER_BIAS)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1.0e-3)
+    targets = _cpu_action_targets()
+    obs = torch.randn(batch, 192, 34)
+    loss = base_loss(model(obs), targets, LossWeights()).total
+    assert bool(torch.isfinite(loss))
+    loss.backward()
+    optimizer.step()
+
+
 def test_compiled_loss_targets_allocate_optional_fallbacks_once() -> None:
     targets = _tiny_targets()
     prepared = targets_for_compiled_loss(targets, LossWeights())
@@ -311,6 +409,28 @@ def test_compiled_loss_targets_allocate_optional_fallbacks_once() -> None:
     first_safety = prepared.safety_target
     sliced = loss_step_args(torch.zeros(1, 192, 34), prepared, 0, 1)
     assert sliced[-2].data_ptr() == first_safety.data_ptr()
+
+
+def test_active_loss_heads_policy_only_is_explicit() -> None:
+    assert active_loss_heads(LossWeights(), "policy_only") == ("policy",)
+
+
+def test_optional_positive_weight_missing_label_hard_errors() -> None:
+    with pytest.raises(ValueError, match="oracle targets"):
+        targets_for_compiled_loss(_tiny_targets(), LossWeights(oracle_critic=0.1))
+
+
+def test_target_coverage_distinguishes_absent_zero_and_nonzero_optional_masks() -> None:
+    absent = target_coverage_dict(_tiny_targets(), LossWeights(safety_residual=0.1))
+    assert absent["safety_residual"] == {"active": True, "status": "absent", "fraction": 0.0}
+
+    zero_mask = _tiny_targets_with_optional(safety_mask=torch.zeros(1, 3))
+    zero = target_coverage_dict(zero_mask, LossWeights(safety_residual=0.1))
+    assert zero["safety_residual"] == {"active": True, "status": "present_zero", "fraction": 0.0}
+
+    nonzero_mask = _tiny_targets_with_optional(safety_mask=torch.tensor([[0.0, 1.0, 0.0]]))
+    nonzero = target_coverage_dict(nonzero_mask, LossWeights(safety_residual=0.1))
+    assert nonzero["safety_residual"] == {"active": True, "status": "present_positive", "fraction": 1.0}
 
 
 def _cuda_event_factory(*_args: object, **_kwargs: object) -> object:
@@ -345,12 +465,69 @@ def test_run_step_rejects_nonfinite_first_microbatch_before_optimizer_step(monke
 
     monkeypatch.setattr(torch.cuda, "Event", _cuda_event_factory)
     loss = _Loss()
+    model = HydraPolicyNet(hidden=16, blocks=1, bottleneck=4)
     optimizer = torch.optim.SGD(loss.parameters(), lr=1.0)
     targets = targets_for_compiled_loss(_two_row_targets(), LossWeights())
     before = loss.param.detach().clone()
     with pytest.raises(RuntimeError, match="non-finite BC loss"):
-        run_step(loss, optimizer, torch.zeros(2, 192, 34), targets, 1, False, False)
+        run_step(loss, model, optimizer, torch.zeros(2, 192, 34), targets, LossWeights(), "full_base", 1, False, False)
     torch.testing.assert_close(loss.param.detach(), before)
+
+
+def test_lr_scheduler_cosine_warmup_and_floor() -> None:
+    scheduler = LrScheduler(
+        LrSchedulerConfig(base_lr=1.0, min_lr=0.1, warmup_steps=2, total_steps=6, schedule="cosine")
+    )
+
+    assert scheduler.lr_for_step(0) == 0.0
+    assert scheduler.lr_for_step(2) == 1.0
+    assert scheduler.lr_for_step(6) == pytest.approx(0.1)
+
+
+def test_lr_scheduler_constant_stays_base_lr() -> None:
+    scheduler = LrScheduler(
+        LrSchedulerConfig(base_lr=0.25, min_lr=0.01, warmup_steps=3, total_steps=8, schedule="constant")
+    )
+
+    assert scheduler.lr_for_step(0) == 0.25
+    assert scheduler.lr_for_step(8) == 0.25
+
+
+def test_run_step_clips_gradients_and_reports_norm(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Loss(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.param = torch.nn.Parameter(torch.tensor(10.0))
+
+        @override
+        def forward(self, *_args: torch.Tensor) -> torch.Tensor:
+            return self.param * self.param
+
+    monkeypatch.setattr(torch.cuda, "Event", _cuda_event_factory)
+    loss = _Loss()
+    model = HydraPolicyNet(hidden=16, blocks=1, bottleneck=4)
+    optimizer = torch.optim.SGD(loss.parameters(), lr=1.0)
+    targets = targets_for_compiled_loss(_cpu_action_targets(), LossWeights())
+
+    stat = run_step(
+        loss,
+        model,
+        optimizer,
+        torch.zeros(2, 192, 34),
+        targets,
+        LossWeights(),
+        "full_base",
+        2,
+        False,
+        False,
+        grad_clip_norm=0.5,
+        collect_diagnostics=True,
+    )
+
+    assert stat.grad_norm > 0.5
+    assert "policy" in stat.head_losses
+    assert stat.target_coverage["policy"]["status"] == "present_positive"
+    torch.testing.assert_close(loss.param.detach(), torch.tensor(9.5))
 
 
 def _tiny_outputs(
@@ -390,6 +567,47 @@ def _tiny_targets(
         opp_next_target=torch.tensor([[[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]]]),
         score_pdf_target=score_pdf if score_pdf is not None else torch.tensor([[1.0, 0.0, 0.0]]),
         score_cdf_target=score_cdf if score_cdf is not None else torch.zeros(1, 2),
+    )
+
+
+def _tiny_targets_with_optional(safety_mask: torch.Tensor) -> BaseTargets:
+    targets = _tiny_targets()
+    return BaseTargets(
+        policy_target=targets.policy_target,
+        legal_mask=targets.legal_mask,
+        value_target=targets.value_target,
+        grp_target=targets.grp_target,
+        tenpai_target=targets.tenpai_target,
+        danger_target=targets.danger_target,
+        danger_mask=targets.danger_mask,
+        opp_next_target=targets.opp_next_target,
+        score_pdf_target=targets.score_pdf_target,
+        score_cdf_target=targets.score_cdf_target,
+        safety_target=torch.zeros_like(safety_mask),
+        safety_mask=safety_mask,
+    )
+
+
+def _cpu_action_targets() -> BaseTargets:
+    batch = 2
+    actions = ACTION_SPACE
+    grp = torch.zeros(batch, GRP_CLASSES)
+    grp[:, 0] = 1.0
+    score_pdf = torch.zeros(batch, SCORE_BINS)
+    score_pdf[:, 0] = 1.0
+    opp_next = torch.zeros(batch, OPPONENTS, TILE_WIDTH)
+    opp_next[:, :, 0] = 1.0
+    return BaseTargets(
+        policy_target=torch.arange(batch, dtype=torch.int64),
+        legal_mask=torch.ones(batch, actions, dtype=torch.bool),
+        value_target=torch.zeros(batch),
+        grp_target=grp,
+        tenpai_target=torch.zeros(batch, OPPONENTS),
+        danger_target=torch.zeros(batch, OPPONENTS, TILE_WIDTH),
+        danger_mask=torch.ones(batch, OPPONENTS, TILE_WIDTH),
+        opp_next_target=opp_next,
+        score_pdf_target=score_pdf,
+        score_cdf_target=torch.zeros(batch, SCORE_BINS),
     )
 
 

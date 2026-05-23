@@ -1,30 +1,45 @@
 # Hydra balanced Python BC training config example.
-# Copy to your run dir, edit paths, then run:
-#   pixi run cargo run --quiet --package hydra-train --features training --bin train -- example.yaml
+# Copy to a run config, edit paths, then run:
+#   pixi run cargo run --quiet --package hydra-train --features training --bin train -- <config.yaml>
 
-# Fallback single raw-MJAI root/file/archive. Required by config contract.
+# Fallback raw-MJAI root/file/archive. Required by config contract.
 data_dir: path/to/mjai
+# Shard-first launch: build+validate compact v3 shards, then uncomment manifest.
+# Raw full-epoch path remains fresh-output only because raw stream cursor resume is unsupported.
+# bc_shards_manifest_path: path/to/bc_shards_manifest.json
+
 
 # Explicit raw-MJAI dataset roots. If set, Hydra uses exactly these entries for raw-MJAI training.
-# Put every dataset folder you want consumed here; do not rely on a parent bundle scan for sibling datasets.
-raw_mjai_data_dirs:
-  - path/to/dataset-folder-a
-  - path/to/dataset-folder-b
+# Leave commented for the single `data_dir` source above.
+# raw_mjai_data_dirs:
+#   - /path/to/dataset-folder-a
+#   - /path/to/dataset-folder-b
 
 # Run output root.
 output_dir: path/to/output/hydra-bc
+
 
 # Full raw-MJAI epoch is the stopping condition.
 num_epochs: 1
 full_epoch: true
 max_train_steps: null
 
-# Balanced ActorNet from Hydra design: 256 hidden, 12 SE-ResNet blocks, bottleneck 64 (~5.34M params).
+# Balanced default: 256 hidden, 12 SE-ResNet blocks, bottleneck 64 (~5.34M params).
+# 2026-05-23 raw-MJAI 800-step A/B, 8 validation batches:
+# - default conv2d_local3+mish_se: policy_nll 1.0413, ~37.0k samples/s.
+# - conv2d_local3+mish_eca: policy_nll 1.0240, ~35.6k samples/s; promising low-risk candidate.
+# - convnext_tile_k7+mish_se: policy_nll 0.9656, ~22.8k samples/s; strongest early candidate, much slower.
+# - global_pool_bias+mish_se: compile path hit NaN; do not use until debugged.
+# Keep production default unchanged until longer equal-sample validation confirms strength.
 python_model_profile: balanced
+python_backbone_profile: conv2d_local3
 python_residual_profile: mish_se
 python_variant: compile_max_autotune
+# A/B: fused AdamW improved throughput ~2.5%; channels_last did not help this 1x34 conv shape.
+# Keep conv layout contiguous unless a future benchmark proves otherwise.
+python_conv_memory_format: contiguous
 
-# Local preferred raw-MJAI CUDA shape for balanced model.
+# Example raw-MJAI CUDA shape for balanced model.
 batch_size: 3072
 microbatch_size: 1024
 validation_microbatch_size: 1024
@@ -39,9 +54,10 @@ augment: true
 seed: 0
 source_filters: {}
 
-# Auto-resume output_dir/checkpoints/latest.pt when present; explicit path only for manual recovery.
+# Raw-MJAI resume is fail-closed: checkpoint restores weights, but raw cursor cannot resume.
+# Keep false while using raw input; shard manifest runs may safely set true.
 resume_checkpoint: null
-resume_latest: true
+resume_latest: false
 
 # Balanced observability. Larger validation reduces false plateau reads.
 log_every_n_steps: 50
@@ -51,6 +67,9 @@ keep_step_checkpoints: true
 validation_every_n_epochs: 1
 max_validation_batches: null
 max_validation_samples: 65536
+# Python raw-MJAI validation uses a fixed, non-augmented held-out window by default.
+# Train `augment: true` does not apply to validation unless launcher policy changes.
+
 max_skip_logs_per_source: 32
 
 tensorboard: true
@@ -70,7 +89,16 @@ bc:
   weight_decay: 0.00001
   grad_clip_norm: 1.0
   warmup_steps: 1000
+  adamw_fused: on
+  adamw_foreach: auto
 
+# EMA checkpoint averaging. On by default for raw-vs-averaged validation/export.
+ema:
+  enabled: true
+  decay: 0.999
+  start_step: 0
+  update_every_steps: 1
+  device: auto  # auto: CUDA train keeps FP32 EMA on CUDA; CPU train keeps CPU shadow.
 advanced_loss: null
 exit_sidecar_path: null
 delta_q_sidecar_path: null
