@@ -4,7 +4,7 @@ Crate-local map for backend-agnostic behavior-cloning shard host format.
 
 ## Owns
 
-- BC shard manifest/header constants and validators.
+- Compact v3 BC shard manifest/header constants and validators.
 - Host batch/scratch DTOs.
 - BC shard reader/writer helpers.
 - Split manifest/build totals descriptors.
@@ -25,7 +25,7 @@ Crate-local map for backend-agnostic behavior-cloning shard host format.
 | Observation storage | replay-fact baseline obs only; reader rebuilds `192x34` f32 with advanced/search/Hand-EV channels absent/zero |
 | Legal/action masks | 46-action Hydra space; masks packed on disk, expanded on read |
 | Optional labels | gated by explicit flags; unsupported bits hard-error |
-| Validators | manifest/header/descriptor byte contract validators must reject drift |
+| Validators | manifest/header/descriptor byte/count contracts validate counts and byte lengths before allocation; drift hard-errors |
 
 ## Read next
 

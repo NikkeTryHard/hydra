@@ -1,4 +1,4 @@
-//! Continuous distillation: LearnerNet -> ActorNet (IMPALA-style).
+//! Continuous distillation between Rust/Burn learner and actor model snapshots.
 
 use crate::losses::masked_logits;
 use burn::prelude::*;

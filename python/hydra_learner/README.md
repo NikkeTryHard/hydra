@@ -1,6 +1,6 @@
 # Hydra PyTorch BC learner
 
-Default plain-BC training backend. Rust owns replay parsing, raw-MJAI stream, BC shard build, manifest validation, CLI orchestration, and legacy Rust/Burn reference path. Python owns BC model/loss/optimizer/AMP/`torch.compile`/checkpoint.
+Default plain-BC training backend. Rust owns replay parsing, raw-MJAI stream, BC shard build, manifest validation, launcher glue, legacy Rust/Burn reference path, and Python config conversion in `hydra-train-runtime::config::python`. Python owner is `hydra_learner.cli`; train loop/modules live under `hydra_learner`. `train_bc.py` and `scripts/hydra_pytorch_oracle.py` are compatibility entrypoints only.
 
 Supported now:
 
@@ -10,7 +10,7 @@ Supported now:
 - default-off advanced labels already present in shard path: `oracle_critic`, `safety_residual`
 - BF16 autocast on CUDA
 - `torch.compile` fullgraph clean for BC loss step
-- resumable data-only checkpoint save/load with model + optimizer + RNG + config metadata
+- resumable data-only checkpoint save/load for shard runs with model + optimizer + RNG + config metadata
 - balanced JSONL lifecycle/step logs under `output_dir/logs`
 - TensorBoard event files under `output_dir/tensorboard`
 
@@ -22,7 +22,7 @@ Not supported in Python default yet:
 - mixture weights
 - opponent hand type
 
-Use legacy Rust/Burn BC path only for those advanced modes or debugging.
+Use legacy Rust/Burn BC path only for feature-gated advanced modes or debugging.
 
 ## Environment
 
@@ -61,7 +61,7 @@ This shells out to:
 pixi run -e py-train python scripts/hydra_pytorch_oracle.py ...
 ```
 
-Script path keeps `oracle` for compatibility; user-facing config/CLI path is Python BC learner. `--experimental-python-learner` remains accepted as deprecated alias. Prefer default `--bc-shards-manifest` route, raw-MJAI YAML without `bc_shards_manifest_path`, or explicit `--bc-backend python`.
+`hydra_learner.cli` owns user-facing Python CLI/config. `hydra_learner.train_bc` and script path `scripts/hydra_pytorch_oracle.py` remain compatibility entrypoints; `--experimental-python-learner` remains accepted as deprecated Rust alias. Prefer default `--bc-shards-manifest` route, raw-MJAI YAML without `bc_shards_manifest_path`, or explicit `--bc-backend python`.
 
 Residual profiles are checkpoint-stable architecture strings. Default `mish_se` is canonical SE-ResNet: Mish + GroupNorm + SE, 10 blocks, 256 hidden. Opt-ins: `silu_se`, `relu_se`, `mish_no_se`, `relu_no_se`, `relu_no_norm_no_se`. No-SE profiles are speed/ablation only. 5k equal-step raw-MJAI validation: `mish_no_se` had faster train loop but slightly worse validation than `mish_se`; keep opt-in, do not promote. Checkpoint resume requires exact profile match.
 
@@ -69,7 +69,7 @@ Python backbone profile is checkpoint-stable and accepts only `conv2d_local3`: C
 
 Compile variants do not change model math, topology, checkpoint architecture, input/action shapes, residual profile, or losses; they only change TorchInductor strategy. Canonical production Python BC uses `compile_max_autotune`; use `compile_default` only for smoke/preflight/short debug.
 
-If YAML omits `bc_shards_manifest_path`, Rust launcher streams raw MJAI from `raw_mjai_data_dirs` when set, otherwise from `data_dir`. Default transport is pinned PyO3; stdout remains fallback.
+If YAML omits `bc_shards_manifest_path`, Rust launcher streams raw MJAI from `raw_mjai_data_dirs` when set, otherwise from `data_dir`. Default bridge crate is `hydra-raw-mjai-pyo3` pinned PyO3; stdout remains fallback. Raw-MJAI output must be fresh; resume is fail-closed until stream cursor resume exists.
 ## Run artifacts and resume
 
 Rust launcher creates stable artifact dirs for every Python BC run:
@@ -90,9 +90,7 @@ Rust launcher creates stable artifact dirs for every Python BC run:
 is balanced step telemetry, written every `--python-log-every-steps` and final
 step; avoid `1` on CUDA unless debugging sync/log overhead.
 
-Resume with config `resume_checkpoint: <output_dir>/checkpoints/latest.pt` or
-CLI `--python-resume <checkpoint>`. Checkpoint load validates schema, model,
-optimizer, runtime, loss weights, manifest/source contract, and RNG metadata.
+Resume shard runs with config `resume_checkpoint: <output_dir>/checkpoints/latest.pt` or CLI `--python-resume <checkpoint>`. Checkpoint load validates schema, model, optimizer, runtime, loss weights, manifest/source contract, and RNG metadata. Raw-MJAI resume is rejected before launch.
 
 Periodic checkpoint controls:
 
@@ -139,10 +137,10 @@ pixi run python-bc-train -- --manifest path/to/bc_shards_manifest.json --variant
 pixi run python-bc-train -- --raw-mjai-data-dir path/to/mjai --raw-mjai-transport pinned_pyo3 --variant compile_max_autotune --warmup 1 --steps 3 --out path/to/result.json
 ```
 
-Pinned PyO3 lookup: `HYDRA_RAW_MJAI_PINNED_LIB`, then `target/release/libhydra_raw_mjai_ffi.so`, then `target/debug/libhydra_raw_mjai_ffi.so`. Build missing lib with:
+Pinned PyO3 lookup: `HYDRA_RAW_MJAI_PYO3_LIB`, then `target/release/libhydra_raw_mjai_pyo3.so`, then `target/debug/libhydra_raw_mjai_pyo3.so`. Build missing lib with:
 
 ```bash
-pixi run cargo build -p hydra-raw-mjai-ffi --release --quiet
+pixi run cargo build -p hydra-raw-mjai-pyo3 --release --quiet
 ```
 
-Script name `scripts/hydra_pytorch_oracle.py` remains compatibility name.
+Compatibility entrypoints: `python -m hydra_learner.train_bc`, `scripts/hydra_pytorch_oracle.py`. New Python CLI docs/code should point at `hydra_learner.cli`.

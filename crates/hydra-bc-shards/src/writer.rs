@@ -349,7 +349,9 @@ pub fn encode_sample_records(
         return Err(invalid_data("BC shard compact record-size helper mismatch"));
     }
     let record_size = record_size as usize;
-    let mut records = vec![0u8; samples.len().saturating_mul(record_size)];
+    let record_len = crate::manifest::checked_encoded_record_len(samples.len(), checked)
+        .map_err(invalid_data)?;
+    let mut records = vec![0u8; record_len];
     for (sample, dst) in samples.iter().zip(records.chunks_exact_mut(record_size)) {
         write_sample_record(&mut &mut *dst, sample, flags)?;
     }

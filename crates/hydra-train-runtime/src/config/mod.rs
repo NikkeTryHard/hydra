@@ -15,7 +15,11 @@ pub use super::config_runtime::{
 };
 
 mod cli;
+pub mod python;
 pub use cli::{parse_args, usage, version};
+pub use python::{
+    PYTHON_TIMING_WARMUP_STEPS, python_options_from_config, python_resume_checkpoint,
+};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]

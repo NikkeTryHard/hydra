@@ -1,16 +1,18 @@
 # hydra-train-exec
 
-Crate-local map for training execution composition migrated out of train binaries.
+Crate-local map for training execution composition migrated out of train binaries. Owns Python process/raw-MJAI/shard execution.
 
 ## Owns
 
+- Python process launch/probe execution helpers.
+- Raw-MJAI streaming execution, including Rust-launcher resume fail-closed checks.
 - BC fixed-shape train/probe execution helpers.
 - Bootstrap, modes, orchestration, epoch/RL runners.
 - Heavy preflight benchmark/probe/validation execution.
 - Data pipeline and Burn-facing sample adapters.
 - GPU/libtorch/CUDA-graph/NVTX/pinned-transfer adapters where feature-gated.
 - Artifacts, resume state, progress accumulation, presentation helpers.
-- BC shard build execution helpers.
+- BC shard build/read execution helpers.
 - BC shard build reports: compact bytes/sample plus dense-observation-equivalent savings metric (report-only).
 
 ## Does not own

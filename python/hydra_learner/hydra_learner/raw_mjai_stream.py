@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import ctypes
 import importlib.util
 import json
 import os
@@ -48,65 +47,6 @@ FIELD_SCORE_CDF = 13
 RAW_MJAI_TRANSPORT_PINNED_PYO3 = "pinned_pyo3"
 RAW_MJAI_TRANSPORT_STDOUT = "stdout"
 RAW_MJAI_TRANSPORTS = (RAW_MJAI_TRANSPORT_PINNED_PYO3, RAW_MJAI_TRANSPORT_STDOUT)
-
-
-class _HydraRawMjaiConfig(ctypes.Structure):
-    _fields_: ClassVar[Any] = (
-        ("input_utf8", ctypes.c_char_p),
-        ("split", ctypes.c_uint32),
-        ("train_fraction", ctypes.c_float),
-        ("batch_size", ctypes.c_size_t),
-        ("max_games", ctypes.c_size_t),
-        ("max_samples", ctypes.c_size_t),
-        ("num_threads", ctypes.c_size_t),
-        ("queue_bound", ctypes.c_size_t),
-        ("augment", ctypes.c_bool),
-    )
-
-
-class _HydraRawMjaiBatchView(ctypes.Structure):
-    _fields_: ClassVar[Any] = (
-        ("obs_f32", ctypes.c_void_p),
-        ("actions_i64", ctypes.c_void_p),
-        ("legal_u8", ctypes.c_void_p),
-        ("value_f32", ctypes.c_void_p),
-        ("grp_f32", ctypes.c_void_p),
-        ("oracle_f32", ctypes.c_void_p),
-        ("oracle_mask_f32", ctypes.c_void_p),
-        ("tenpai_f32", ctypes.c_void_p),
-        ("opp_next_f32", ctypes.c_void_p),
-        ("danger_f32", ctypes.c_void_p),
-        ("danger_mask_f32", ctypes.c_void_p),
-        ("score_pdf_f32", ctypes.c_void_p),
-        ("score_cdf_f32", ctypes.c_void_p),
-        ("capacity_rows", ctypes.c_size_t),
-    )
-
-
-class _HydraRawMjaiTotals(ctypes.Structure):
-    _fields_: ClassVar[Any] = (
-        ("loaded_games", ctypes.c_uint64),
-        ("skipped_games", ctypes.c_uint64),
-        ("samples", ctypes.c_uint64),
-        ("batches", ctypes.c_uint64),
-        ("max_games_reached", ctypes.c_bool),
-        ("max_samples_reached", ctypes.c_bool),
-    )
-
-
-class _HydraRawMjaiError(ctypes.Structure):
-    _fields_: ClassVar[Any] = (("code", ctypes.c_int32), ("message_utf8", ctypes.c_void_p))
-
-
-class _HydraRawMjaiStats(ctypes.Structure):
-    _fields_: ClassVar[Any] = (
-        ("open_count", ctypes.c_uint64),
-        ("open_scan_plan_ms", ctypes.c_double),
-        ("last_next_fill_ms", ctypes.c_double),
-        ("last_queue_wait_ms", ctypes.c_double),
-        ("last_bytes_filled", ctypes.c_uint64),
-        ("last_games_consumed", ctypes.c_uint64),
-    )
 
 
 @dataclass(frozen=True)
@@ -208,6 +148,7 @@ class RawMjaiPinnedResult:
 
 
 def _pinned_result_from_object(result: Any) -> RawMjaiPinnedResult:
+    stats = _bridge_stats_from_object(result.stats)
     return RawMjaiPinnedResult(
         rows=int(result.rows),
         loaded_games=int(result.loaded_games),
@@ -216,7 +157,7 @@ def _pinned_result_from_object(result: Any) -> RawMjaiPinnedResult:
         batches=int(result.batches),
         max_games_reached=bool(result.max_games_reached),
         max_samples_reached=bool(result.max_samples_reached),
-        stats=_bridge_stats_from_object(result.stats),
+        stats=stats,
     )
 
 
@@ -332,19 +273,28 @@ class RawMjaiDirectStream:
         )
 
     def start(self) -> None:
+        cmd = build_raw_mjai_stream_command(
+            data_dirs=self.data_dirs,
+            batch_size=self.batch_size,
+            max_games=self.max_games,
+            max_samples=self.max_samples,
+            queue_bound=self.queue_bound,
+            worker_threads=self.worker_threads,
+            train_fraction=self.train_fraction,
+            augment=self.augment,
+            split=self.split,
+        )
+        print(
+            "raw_mjai_direct_start "
+            f"dirs={len(self.data_dirs)} batch={self.batch_size} prefetch={self.prefetch_batches} "
+            f"queue_bound={self.queue_bound} workers={self.worker_threads} max_games={self.max_games} "
+            f"max_samples={self.max_samples} split={self.split}",
+            file=sys.stderr,
+            flush=True,
+        )
         self._started = time.perf_counter()
         self._process = subprocess.Popen(
-            build_raw_mjai_stream_command(
-                data_dirs=self.data_dirs,
-                batch_size=self.batch_size,
-                max_games=self.max_games,
-                max_samples=self.max_samples,
-                queue_bound=self.queue_bound,
-                worker_threads=self.worker_threads,
-                train_fraction=self.train_fraction,
-                augment=self.augment,
-                split=self.split,
-            ),
+            cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
@@ -352,13 +302,23 @@ class RawMjaiDirectStream:
             target=self._run_reader, name="hydra-raw-mjai-direct-reader", daemon=True
         )
         self._reader_thread.start()
+        print(
+            f"raw_mjai_direct_started pid={self._process.pid if self._process else None}", file=sys.stderr, flush=True
+        )
 
     def next_batch(self) -> tuple[PolicyBatch, float]:
+        started = time.perf_counter()
         item = self._queue.get()
         if item is None:
             raise StopIteration("raw MJAI stream exhausted")
         if isinstance(item, BaseException):
             raise item
+        wait_ms = (time.perf_counter() - started) * 1000.0
+        print(
+            f"raw_mjai_direct_next wait_ms={wait_ms:.3f} rows={item[0].actions.shape[0]} fetch_ms={item[1]:.3f}",
+            file=sys.stderr,
+            flush=True,
+        )
         return item
 
     def progress(self) -> BuildProgress:
@@ -408,6 +368,11 @@ class RawMjaiDirectStream:
             if process.stderr is not None:
                 stderr = process.stderr.read()
             status = process.wait()
+            print(
+                f"raw_mjai_direct_exit status={status} stderr_bytes={len(stderr)}",
+                file=sys.stderr,
+                flush=True,
+            )
             if status != 0:
                 msg = stderr.decode("utf-8", errors="replace").strip()
                 self._queue.put(RuntimeError(f"raw MJAI stream failed with status {status}: {msg}"))
@@ -458,30 +423,30 @@ class RawMjaiDirectStream:
             )
 
 
-def default_raw_mjai_pinned_library_path() -> Path:
-    env_path = os.environ.get("HYDRA_RAW_MJAI_PINNED_LIB")
+def default_raw_mjai_pyo3_library_path() -> Path:
+    env_path = os.environ.get("HYDRA_RAW_MJAI_PYO3_LIB")
     if env_path:
         return Path(env_path)
     repo_root = Path(__file__).resolve().parents[3]
-    release_path = repo_root / "target" / "release" / "libhydra_raw_mjai_ffi.so"
+    release_path = repo_root / "target" / "release" / "libhydra_raw_mjai_pyo3.so"
     if release_path.exists():
         return release_path
-    return repo_root / "target" / "debug" / "libhydra_raw_mjai_ffi.so"
+    return repo_root / "target" / "debug" / "libhydra_raw_mjai_pyo3.so"
 
 
 def _load_raw_mjai_module(path: Path) -> Any:
     if not path.exists():
         raise ImportError(
             "raw MJAI pinned PyO3 extension is required for raw-MJAI Python training but was not found at "
-            f"{path}. Build it with `pixi run cargo build -p hydra-raw-mjai-ffi --release --quiet`, "
-            "set HYDRA_RAW_MJAI_PINNED_LIB, pass --raw-mjai-pinned-ffi, or select "
+            f"{path}. Build it with `pixi run cargo build -p hydra-raw-mjai-pyo3 --release --quiet`, "
+            "set HYDRA_RAW_MJAI_PYO3_LIB, pass --raw-mjai-pyo3-lib, or select "
             "--raw-mjai-transport stdout for the subprocess fallback."
         )
-    spec = importlib.util.spec_from_file_location("hydra_raw_mjai", path)
+    spec = importlib.util.spec_from_file_location("hydra_raw_mjai_pyo3", path)
     if spec is None or spec.loader is None:
         raise ImportError(f"failed to load raw MJAI extension from {path}")
     module = importlib.util.module_from_spec(spec)
-    sys.modules["hydra_raw_mjai"] = module
+    sys.modules["hydra_raw_mjai_pyo3"] = module
     spec.loader.exec_module(module)
     return module
 
@@ -517,6 +482,12 @@ class RawMjaiPinnedStream:
         if stream_cls is None:
             module = cast(Any, _load_raw_mjai_module(library_path))
             stream_cls = module.RawMjaiStream
+        print(
+            "raw_mjai_pinned_load "
+            f"library={library_path} stream_cls={getattr(stream_cls, '__name__', type(stream_cls).__name__)}",
+            file=sys.stderr,
+            flush=True,
+        )
         self.data_dirs = tuple(data_dirs)
         self._close_timeout_s = close_timeout_s
         self.batch_size = batch_size
@@ -533,6 +504,15 @@ class RawMjaiPinnedStream:
             augment=augment,
             split=split,
         )
+        initial_stats = _bridge_stats_from_object(self._stream.stats())
+        print(
+            "raw_mjai_pinned_open "
+            f"dirs={len(self.data_dirs)} batch={batch_size} ring={ring_size} workers={worker_threads} "
+            f"queue_bound={queue_bound} max_games={max_games} max_samples={max_samples} "
+            f"split={split} open_scan_plan_ms={initial_stats.open_scan_plan_ms:.3f}",
+            file=sys.stderr,
+            flush=True,
+        )
         self._ring = [_allocate_pinned_policy_batch(batch_size, pin_memory=True) for _ in range(ring_size)]
         for batch in self._ring:
             _validate_pinned_policy_batch(batch)
@@ -544,7 +524,7 @@ class RawMjaiPinnedStream:
         self._stop = threading.Event()
         self._debug = os.environ.get("HYDRA_RAW_MJAI_PINNED_DEBUG") == "1"
         self._progress = BuildProgress(manifest_path=None, complete=False, build_seconds=0.0)
-        self._stats = _bridge_stats_from_object(self._stream.stats())
+        self._stats = initial_stats
         self._queue_stats = RawMjaiPinnedQueueStats()
         self._producer_thread: threading.Thread | None = threading.Thread(
             target=self._producer_main,
@@ -586,8 +566,24 @@ class RawMjaiPinnedStream:
         if item is None:
             raise StopIteration("raw MJAI pinned stream exhausted")
         if isinstance(item, BaseException):
+            print(
+                "raw_mjai_pinned_next_error "
+                f"wait_ms={fetch_ms:.3f} error={type(item).__name__}: {item} stats={self._queue_stats}",
+                file=sys.stderr,
+                flush=True,
+            )
             raise item
         self._stats = item.result.stats
+        print(
+            "raw_mjai_pinned_next "
+            f"wait_ms={fetch_ms:.3f} rows={item.result.rows} loaded_games={item.result.loaded_games} "
+            f"skipped_games={item.result.skipped_games} samples={item.result.samples} batches={item.result.batches} "
+            f"fill_ms={item.fill_ms:.3f} bridge_fill_ms={item.result.stats.last_next_fill_ms:.3f} "
+            f"queue_wait_ms={item.result.stats.last_queue_wait_ms:.3f} "
+            f"games_consumed={item.result.stats.last_games_consumed}",
+            file=sys.stderr,
+            flush=True,
+        )
         self._progress = BuildProgress(
             manifest_path=None,
             complete=False,
@@ -675,6 +671,17 @@ class RawMjaiPinnedStream:
                 )
                 fill_ms = (time.perf_counter() - fill_started) * 1000.0
                 self._debug_log(f"producer filled slot={slot} rows={result.rows} fill_ms={fill_ms:.3f}")
+                print(
+                    "raw_mjai_pinned_producer_fill "
+                    f"slot={slot} rows={result.rows} fill_ms={fill_ms:.3f} "
+                    f"loaded_games={result.loaded_games} skipped_games={result.skipped_games} "
+                    f"samples={result.samples} batches={result.batches} "
+                    f"bridge_fill_ms={result.stats.last_next_fill_ms:.3f} "
+                    f"queue_wait_ms={result.stats.last_queue_wait_ms:.3f} "
+                    f"games_consumed={result.stats.last_games_consumed}",
+                    file=sys.stderr,
+                    flush=True,
+                )
                 self._stats = result.stats
                 self._queue_stats = RawMjaiPinnedQueueStats(
                     ready_wait_ms_total=self._queue_stats.ready_wait_ms_total,
@@ -772,28 +779,6 @@ def _slice_pinned_policy_batch(batch: PinnedPolicyBatch, rows: int) -> PinnedPol
     )
 
 
-def _batch_view(batch: PinnedPolicyBatch) -> _HydraRawMjaiBatchView:
-    _validate_pinned_tensor(batch.obs, (batch.rows, 192, 34), torch.float32, "obs")
-    _validate_pinned_tensor(batch.actions, (batch.rows,), torch.int64, "actions")
-    _validate_pinned_tensor(batch.legal_mask, (batch.rows, ACTION_SPACE), torch.bool, "legal_mask")
-    return _HydraRawMjaiBatchView(
-        obs_f32=batch.obs.data_ptr(),
-        actions_i64=batch.actions.data_ptr(),
-        legal_u8=batch.legal_mask.data_ptr(),
-        value_f32=batch.value_target.data_ptr(),
-        grp_f32=batch.grp_target.data_ptr(),
-        oracle_f32=batch.oracle_target.data_ptr(),
-        oracle_mask_f32=batch.oracle_target_mask.data_ptr(),
-        tenpai_f32=batch.tenpai.data_ptr(),
-        opp_next_f32=batch.opp_next.data_ptr(),
-        danger_f32=batch.danger.data_ptr(),
-        danger_mask_f32=batch.danger_mask.data_ptr(),
-        score_pdf_f32=batch.score_pdf.data_ptr(),
-        score_cdf_f32=batch.score_cdf.data_ptr(),
-        capacity_rows=batch.rows,
-    )
-
-
 def _base_data_ptr(tensor: torch.Tensor) -> int:
     base = tensor
     while isinstance(base._base, torch.Tensor):
@@ -824,13 +809,6 @@ def _validate_pinned_policy_batch(batch: PinnedPolicyBatch) -> None:
     _validate_pinned_tensor(batch.danger_mask, (batch.rows, 102), torch.float32, "danger_mask")
     _validate_pinned_tensor(batch.score_pdf, (batch.rows, 64), torch.float32, "score_pdf")
     _validate_pinned_tensor(batch.score_cdf, (batch.rows, 64), torch.float32, "score_cdf")
-
-
-def _ffi_error_message(err: _HydraRawMjaiError) -> str:
-    if err.message_utf8 is None:
-        return "unknown error"
-    value = ctypes.cast(err.message_utf8, ctypes.c_char_p).value
-    return "unknown error" if value is None else value.decode("utf-8", errors="replace")
 
 
 def _read_exact(stream: Any, size: int) -> bytearray:
@@ -1008,7 +986,7 @@ def raw_mjai_config_from_args(args: argparse.Namespace) -> dict[str, Any] | None
         "validation_augment": args.raw_mjai_validation_augment,
         "split": args.raw_mjai_split,
         "transport": args.raw_mjai_transport,
-        "pinned_ffi": None if args.raw_mjai_pinned_ffi is None else str(args.raw_mjai_pinned_ffi),
+        "pyo3_lib": None if args.raw_mjai_pyo3_lib is None else str(args.raw_mjai_pyo3_lib),
     }
 
 
@@ -1024,7 +1002,7 @@ def add_raw_mjai_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--raw-mjai-validation-augment", action="store_true")
     parser.add_argument("--raw-mjai-split", choices=("train", "validation"), default="train")
     parser.add_argument("--raw-mjai-transport", choices=RAW_MJAI_TRANSPORTS, default=RAW_MJAI_TRANSPORT_PINNED_PYO3)
-    parser.add_argument("--raw-mjai-pinned-ffi", type=Path, help="override libhydra_raw_mjai_ffi.so path")
+    parser.add_argument("--raw-mjai-pyo3-lib", type=Path, help="override libhydra_raw_mjai_pyo3.so path")
 
 
 def validate_raw_mjai_source_args(args: argparse.Namespace) -> None:
@@ -1040,12 +1018,12 @@ def validate_raw_mjai_source_args(args: argparse.Namespace) -> None:
         raise ValueError("--raw-mjai-train-fraction must be > 0")
 
     if has_raw and args.raw_mjai_transport == RAW_MJAI_TRANSPORT_PINNED_PYO3:
-        library_path = args.raw_mjai_pinned_ffi or default_raw_mjai_pinned_library_path()
+        library_path = args.raw_mjai_pyo3_lib or default_raw_mjai_pyo3_library_path()
         if not library_path.exists():
             raise ValueError(
                 "raw MJAI pinned PyO3 transport selected but extension is missing at "
-                f"{library_path}; build `pixi run cargo build -p hydra-raw-mjai-ffi --release --quiet`, "
-                "set HYDRA_RAW_MJAI_PINNED_LIB, pass --raw-mjai-pinned-ffi, or select --raw-mjai-transport stdout"
+                f"{library_path}; build `pixi run cargo build -p hydra-raw-mjai-pyo3 --release --quiet`, "
+                "set HYDRA_RAW_MJAI_PYO3_LIB, pass --raw-mjai-pyo3-lib, or select --raw-mjai-transport stdout"
             )
 
 
@@ -1058,7 +1036,7 @@ __all__: Sequence[str] = (
     "RawMjaiPinnedStream",
     "add_raw_mjai_args",
     "build_raw_mjai_stream_command",
-    "default_raw_mjai_pinned_library_path",
+    "default_raw_mjai_pyo3_library_path",
     "raw_mjai_config_from_args",
     "validate_raw_mjai_source_args",
 )

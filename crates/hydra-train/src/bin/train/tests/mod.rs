@@ -1,13 +1,18 @@
 use super::*;
+#[cfg(feature = "burn-libtorch-obsolete")]
 use burn::backend::libtorch::LibTorchDevice;
+#[cfg(feature = "burn-libtorch-obsolete")]
 use burn::prelude::*;
+#[cfg(feature = "burn-libtorch-obsolete")]
 use hydra_train_algo::bc::policy_agreement_counts;
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(feature = "burn-libtorch-obsolete")]
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
 use hydra_train_exec::artifacts::BcArtifactPaths;
+#[cfg(feature = "burn-libtorch-obsolete")]
 use hydra_train_exec::config_runtime::train_device;
 use hydra_train_exec::presentation::{format_progress_message, phase_label};
 use hydra_train_exec::resume::{
@@ -749,15 +754,18 @@ fn write_temp_file(label: &str, extension: &str, contents: &str) -> PathBuf {
     path
 }
 
+#[cfg(feature = "burn-libtorch-obsolete")]
 fn train_device_env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+#[cfg(feature = "burn-libtorch-obsolete")]
 struct TrainDeviceEnvGuard {
     _lock: MutexGuard<'static, ()>,
 }
 
+#[cfg(feature = "burn-libtorch-obsolete")]
 impl TrainDeviceEnvGuard {
     fn reset() -> Self {
         let lock = train_device_env_lock()
@@ -770,6 +778,7 @@ impl TrainDeviceEnvGuard {
     }
 }
 
+#[cfg(feature = "burn-libtorch-obsolete")]
 impl Drop for TrainDeviceEnvGuard {
     fn drop(&mut self) {
         unsafe {
@@ -872,6 +881,8 @@ fn schedule_total_steps_extends_from_resume_global_step() {
         python_residual_profile: Default::default(),
         python_variant: Default::default(),
         python_model_profile: Default::default(),
+        python_backbone_profile: Default::default(),
+        python_conv_memory_format: Default::default(),
         bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
         experimental_backbone_profile: None,
         python_raw_mjai_transport: Default::default(),
@@ -904,275 +915,6 @@ fn schedule_total_steps_extends_from_resume_global_step() {
     };
     assert_eq!(schedule_total_steps(&cfg, 0), 1000);
     assert_eq!(schedule_total_steps(&cfg, 400), 1400);
-}
-
-fn python_guard_config() -> TrainConfig {
-    TrainConfig {
-        data_dir: PathBuf::from("/tmp/data"),
-        raw_mjai_data_dirs: Vec::new(),
-        output_dir: PathBuf::from("/tmp/out"),
-        num_epochs: 1,
-        batch_size: 1024,
-        microbatch_size: Some(1024),
-        validation_microbatch_size: Some(1024),
-        exit_sidecar_path: None,
-        delta_q_sidecar_path: None,
-        bc_shards_manifest_path: Some(PathBuf::from("/tmp/shards/manifest.json")),
-        bc_backend: Default::default(),
-        shard_prefetch_depth: None,
-        train_fraction: 0.9,
-        source_filters: hydra_train_runtime::config::SourceFilterConfig::default(),
-        augment: true,
-        resume_checkpoint: None,
-        resume_latest: false,
-        seed: 0,
-        advanced_loss: None,
-        python_residual_profile: Default::default(),
-        python_variant: Default::default(),
-        python_model_profile: Default::default(),
-        bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
-        experimental_backbone_profile: None,
-        python_raw_mjai_transport: Default::default(),
-        validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
-        ema: hydra_train_runtime::config::EmaConfig::default(),
-        rl: None,
-        bc: BcHyperparamConfig::default(),
-        nsight_trace: None,
-        device: "cuda:0".to_string(),
-        precision_mode: hydra_train_runtime::config::PrecisionMode::Bf16Autocast,
-        buffer_games: 16,
-        buffer_samples: 128,
-        num_threads: None,
-        tensorboard: false,
-        archive_queue_bound: 8,
-        validation_every_n_epochs: 1,
-        max_skip_logs_per_source: 4,
-        log_every_n_steps: 10,
-        validate_every_n_steps: 10,
-        checkpoint_every_n_steps: 10,
-        keep_step_checkpoints: false,
-        launch_tensorboard: false,
-        tensorboard_host: "127.0.0.1".to_string(),
-        tensorboard_port: 6006,
-        background: false,
-        max_train_steps: Some(3),
-        full_epoch: false,
-        max_validation_batches: None,
-        max_validation_samples: None,
-    }
-}
-
-#[test]
-fn python_options_from_config_accepts_plain_bc_defaults() {
-    let options = python_options_from_config(&python_guard_config())
-        .expect("plain BC should route to Python");
-    assert_eq!(
-        options.bc_shards_manifest,
-        PathBuf::from("/tmp/shards/manifest.json")
-    );
-    assert_eq!(options.batch_size, 1024);
-    assert_eq!(options.microbatch_size, 1024);
-    assert_eq!(options.steps, Some(3));
-    assert_eq!(options.warmup_steps, PYTHON_TIMING_WARMUP_STEPS);
-    assert_eq!(options.residual_profile, Default::default());
-    assert!(!options.raw_mjai_validation_augment);
-    assert_eq!(options.validation_source_mode, "fixed");
-    assert_eq!(options.lr_schedule, "cosine");
-    assert_eq!(options.schedule_total_steps, Some(3));
-    assert_eq!(options.validation_steps, 0);
-    assert_eq!(options.validation_max_samples, None);
-    assert_eq!(options.ema_device, Default::default());
-}
-
-#[test]
-fn python_options_from_config_uses_raw_mjai_when_manifest_absent() {
-    let mut config = python_guard_config();
-    config.bc_shards_manifest_path = None;
-    let options = python_options_from_config(&config).expect("plain BC should route to Python");
-    match options.input {
-        hydra_train_runtime::config::PythonLearnerInput::RawMjai {
-            data_dirs,
-            train_fraction,
-            augment,
-            transport,
-            ..
-        } => {
-            assert_eq!(data_dirs, vec![PathBuf::from("/tmp/data")]);
-            assert_eq!(train_fraction, 0.9);
-            assert!(augment);
-            assert!(!options.raw_mjai_validation_augment);
-            assert_eq!(
-                transport,
-                hydra_train_runtime::config::PythonRawMjaiTransportConfig::PinnedPyo3
-            );
-        }
-        hydra_train_runtime::config::PythonLearnerInput::BcShards { .. } => {
-            panic!("expected raw MJAI input")
-        }
-    }
-
-    config.max_validation_samples = Some(65_536);
-    let options = python_options_from_config(&config).expect("plain BC should route to Python");
-    assert_eq!(options.validation_steps, 64);
-    assert_eq!(options.validation_max_samples, Some(65_536));
-
-    config.max_validation_samples = None;
-    config.max_validation_batches = Some(7);
-    let options = python_options_from_config(&config).expect("plain BC should route to Python");
-    assert_eq!(options.validation_steps, 7);
-    assert_eq!(options.validation_max_samples, None);
-}
-
-#[test]
-fn python_options_full_epoch_without_step_budget_uses_constant_schedule() {
-    let mut config = python_guard_config();
-    config.bc_shards_manifest_path = None;
-    config.max_train_steps = None;
-    config.full_epoch = true;
-
-    let options =
-        python_options_from_config(&config).expect("full-epoch raw MJAI should route to Python");
-
-    assert_eq!(options.steps, None);
-    assert_eq!(options.lr_schedule, "constant");
-    assert_eq!(options.schedule_total_steps, None);
-}
-
-#[test]
-fn python_options_from_config_uses_explicit_raw_mjai_dirs() {
-    let mut config = python_guard_config();
-    config.bc_shards_manifest_path = None;
-    config.raw_mjai_data_dirs = vec![PathBuf::from("/data/a"), PathBuf::from("/data/b")];
-
-    let options = python_options_from_config(&config).expect("plain BC should route to Python");
-
-    match options.input {
-        hydra_train_runtime::config::PythonLearnerInput::RawMjai { data_dirs, .. } => {
-            assert_eq!(data_dirs, config.raw_mjai_data_dirs);
-        }
-        hydra_train_runtime::config::PythonLearnerInput::BcShards { .. } => {
-            panic!("expected raw MJAI input")
-        }
-    }
-}
-
-#[test]
-fn python_options_from_config_preserves_residual_profile() {
-    let mut config = python_guard_config();
-    config.python_residual_profile =
-        hydra_train_runtime::config::PythonResidualProfileConfig::ReluNoSe;
-    let options = python_options_from_config(&config).expect("plain BC should route to Python");
-    assert_eq!(
-        options.residual_profile,
-        hydra_train_runtime::config::PythonResidualProfileConfig::ReluNoSe
-    );
-}
-
-#[test]
-fn python_options_from_config_preserves_compile_variant() {
-    let mut config = python_guard_config();
-    config.python_variant = hydra_train_runtime::config::PythonLearnerVariant::CompileMaxAutotune;
-    let options = python_options_from_config(&config).expect("plain BC should route to Python");
-    assert_eq!(
-        options.variant,
-        hydra_train_runtime::config::PythonLearnerVariant::CompileMaxAutotune
-    );
-}
-
-#[test]
-fn yaml_compile_max_autotune_reaches_python_launcher_options() {
-    let yaml = r#"data_dir: /tmp/data
-output_dir: /tmp/out
-num_epochs: 1
-bc_backend: python
-python_variant: compile_max_autotune
-max_train_steps: 7
-bc:
-  learning_rate: 0.0004
-  min_learning_rate: 0.000001
-  warmup_steps: 3
-  grad_clip_norm: 0.75
-"#;
-    let path = write_temp_file("python_variant", "yaml", yaml);
-    let config = read_config(&path).expect("config should parse python variant");
-    let options = python_options_from_config(&config).expect("plain BC should route to Python");
-    assert_eq!(
-        options.variant,
-        hydra_train_runtime::config::PythonLearnerVariant::CompileMaxAutotune
-    );
-    assert_eq!(options.steps, Some(7));
-    assert_eq!(options.learning_rate, 0.0004);
-    assert_eq!(options.min_learning_rate, 0.000001);
-    assert_eq!(options.lr_warmup_steps, 3);
-    assert_eq!(options.lr_schedule, "cosine");
-    assert_eq!(options.schedule_total_steps, Some(7));
-    assert_eq!(options.grad_clip_norm, 0.75);
-    fs::remove_file(path).ok();
-}
-
-#[test]
-fn python_options_from_config_rejects_unsupported_advanced_modes() {
-    let cases: &[(fn(&mut TrainConfig), &str)] = &[
-        (
-            |config| config.exit_sidecar_path = Some(PathBuf::from("/tmp/exit.jsonl")),
-            "ExIt sidecars",
-        ),
-        (
-            |config| config.delta_q_sidecar_path = Some(PathBuf::from("/tmp/delta-q.jsonl")),
-            "DeltaQ sidecars",
-        ),
-        (
-            |config| {
-                config.advanced_loss = Some(AdvancedLossConfig {
-                    exit: Some(0.1),
-                    ..Default::default()
-                })
-            },
-            "advanced_loss.exit",
-        ),
-        (
-            |config| {
-                config.advanced_loss = Some(AdvancedLossConfig {
-                    delta_q: Some(0.1),
-                    ..Default::default()
-                })
-            },
-            "advanced_loss.delta_q",
-        ),
-        (
-            |config| {
-                config.advanced_loss = Some(AdvancedLossConfig {
-                    belief_fields: Some(0.1),
-                    ..Default::default()
-                })
-            },
-            "advanced_loss.belief_fields",
-        ),
-        (
-            |config| {
-                config.advanced_loss = Some(AdvancedLossConfig {
-                    mixture_weight: Some(0.1),
-                    ..Default::default()
-                })
-            },
-            "advanced_loss.mixture_weight",
-        ),
-        (
-            |config| {
-                config.advanced_loss = Some(AdvancedLossConfig {
-                    opponent_hand_type: Some(0.1),
-                    ..Default::default()
-                })
-            },
-            "advanced_loss.opponent_hand_type",
-        ),
-    ];
-    for (configure, expected) in cases.iter().copied() {
-        let mut config = python_guard_config();
-        configure(&mut config);
-        let err = python_options_from_config(&config).expect_err("unsupported mode should fail");
-        assert!(err.contains(expected), "{err}");
-    }
 }
 
 #[test]
@@ -1657,6 +1399,8 @@ fn validation_microbatch_and_sample_limit_fallbacks_work() {
         python_residual_profile: Default::default(),
         python_variant: Default::default(),
         python_model_profile: Default::default(),
+        python_backbone_profile: Default::default(),
+        python_conv_memory_format: Default::default(),
         bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
         experimental_backbone_profile: None,
         python_raw_mjai_transport: Default::default(),
@@ -1743,6 +1487,8 @@ fn validate_config_rejects_zero_validation_microbatch_and_samples() {
         python_residual_profile: Default::default(),
         python_variant: Default::default(),
         python_model_profile: Default::default(),
+        python_backbone_profile: Default::default(),
+        python_conv_memory_format: Default::default(),
         bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
         experimental_backbone_profile: None,
         python_raw_mjai_transport: Default::default(),
@@ -1813,6 +1559,8 @@ fn validate_config_accepts_basic_rl_block() {
         python_residual_profile: Default::default(),
         python_variant: Default::default(),
         python_model_profile: Default::default(),
+        python_backbone_profile: Default::default(),
+        python_conv_memory_format: Default::default(),
         bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
         experimental_backbone_profile: None,
         python_raw_mjai_transport: Default::default(),
@@ -1975,6 +1723,8 @@ fn validate_config_rejects_invalid_bc_hyperparameter_ranges() {
         python_residual_profile: Default::default(),
         python_variant: Default::default(),
         python_model_profile: Default::default(),
+        python_backbone_profile: Default::default(),
+        python_conv_memory_format: Default::default(),
         bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
         experimental_backbone_profile: None,
         python_raw_mjai_transport: Default::default(),
@@ -1987,6 +1737,8 @@ fn validate_config_rejects_invalid_bc_hyperparameter_ranges() {
             weight_decay: 1e-5,
             grad_clip_norm: 1.0,
             warmup_steps: 100,
+            adamw_fused: Default::default(),
+            adamw_foreach: Default::default(),
         },
         nsight_trace: None,
         device: "cpu".to_string(),
@@ -2043,6 +1795,8 @@ fn validate_config_requires_sidecar_when_exit_loss_is_enabled() {
         python_residual_profile: Default::default(),
         python_variant: Default::default(),
         python_model_profile: Default::default(),
+        python_backbone_profile: Default::default(),
+        python_conv_memory_format: Default::default(),
         bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
         experimental_backbone_profile: None,
         python_raw_mjai_transport: Default::default(),
@@ -2105,6 +1859,8 @@ fn validate_config_requires_sidecar_when_delta_q_loss_is_enabled() {
         python_residual_profile: Default::default(),
         python_variant: Default::default(),
         python_model_profile: Default::default(),
+        python_backbone_profile: Default::default(),
+        python_conv_memory_format: Default::default(),
         bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
         experimental_backbone_profile: None,
         python_raw_mjai_transport: Default::default(),
@@ -2139,6 +1895,7 @@ fn validate_config_requires_sidecar_when_delta_q_loss_is_enabled() {
     assert!(err.contains("delta_q_sidecar_path"));
 }
 
+#[cfg(feature = "burn-libtorch-obsolete")]
 #[test]
 fn train_device_prefers_env_override_then_config() {
     let _guard = TrainDeviceEnvGuard::reset();
@@ -2168,6 +1925,7 @@ fn train_device_prefers_env_override_then_config() {
     );
 }
 
+#[cfg(feature = "burn-libtorch-obsolete")]
 #[test]
 fn train_device_rejects_invalid_env_value() {
     let _guard = TrainDeviceEnvGuard::reset();
@@ -2178,6 +1936,7 @@ fn train_device_rejects_invalid_env_value() {
     assert!(err.contains("unsupported HYDRA_TRAIN_DEVICE"));
 }
 
+#[cfg(feature = "burn-libtorch-obsolete")]
 #[test]
 fn validation_agreement_is_sample_weighted_across_chunks() {
     let device: <burn::backend::ndarray::NdArray<f32> as burn::tensor::backend::BackendTypes>::Device = Default::default();

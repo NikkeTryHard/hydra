@@ -3418,7 +3418,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "hydra-raw-mjai-ffi"
+name = "hydra-raw-mjai-pyo3"
 version = "0.1.0"
 dependencies = [
  "hydra-core",

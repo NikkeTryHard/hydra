@@ -1,13 +1,10 @@
 use colored::control as color_control;
 use std::env;
-use std::path::PathBuf;
 
-use hydra_train_runtime::config::{
-    BcBackend, PythonLearnerCliOptions, PythonLearnerInput, parse_args, read_config,
-    validation_sample_limit,
-};
+#[cfg(test)]
+use hydra_train_runtime::config::validation_sample_limit;
+use hydra_train_runtime::config::{BcBackend, parse_args, python_options_from_config, read_config};
 
-const PYTHON_TIMING_WARMUP_STEPS: usize = 10;
 #[cfg(test)]
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -124,132 +121,6 @@ fn run() -> Result<(), String> {
         return Err("probe modes are not supported by the Python BC launcher".to_string());
     }
     Err("Rust Burn BC training has been removed from hydra-train; set bc_backend: python or use Python BC launcher flags".to_string())
-}
-
-fn python_resume_checkpoint(config: &hydra_train_runtime::config::TrainConfig) -> Option<PathBuf> {
-    if let Some(path) = &config.resume_checkpoint {
-        return Some(path.clone());
-    }
-    if config.resume_latest {
-        let latest = config.output_dir.join("checkpoints/latest.pt");
-        if latest.is_file() {
-            return Some(latest);
-        }
-    }
-    None
-}
-
-fn python_options_from_config(
-    config: &hydra_train_runtime::config::TrainConfig,
-) -> Result<PythonLearnerCliOptions, String> {
-    if config.exit_sidecar_path.is_some() {
-        return Err("Python BC learner does not support ExIt sidecars".to_string());
-    }
-    if config.delta_q_sidecar_path.is_some() {
-        return Err("Python BC learner does not support DeltaQ sidecars".to_string());
-    }
-    if let Some(loss) = config.advanced_loss.as_ref() {
-        if loss.exit.is_some_and(|weight| weight > 0.0) {
-            return Err("Python BC learner does not support advanced_loss.exit".to_string());
-        }
-        if loss.delta_q.is_some_and(|weight| weight > 0.0) {
-            return Err("Python BC learner does not support advanced_loss.delta_q".to_string());
-        }
-        if loss.belief_fields.is_some_and(|weight| weight > 0.0) {
-            return Err(
-                "Python BC learner does not support advanced_loss.belief_fields".to_string(),
-            );
-        }
-        if loss.mixture_weight.is_some_and(|weight| weight > 0.0) {
-            return Err(
-                "Python BC learner does not support advanced_loss.mixture_weight".to_string(),
-            );
-        }
-        if loss.opponent_hand_type.is_some_and(|weight| weight > 0.0) {
-            return Err(
-                "Python BC learner does not support advanced_loss.opponent_hand_type".to_string(),
-            );
-        }
-    }
-
-    let advanced = config.advanced_loss.as_ref();
-    Ok(PythonLearnerCliOptions {
-        bc_shards_manifest: config
-            .bc_shards_manifest_path
-            .clone()
-            .unwrap_or_else(|| config.data_dir.clone()),
-        input: if let Some(manifest) = config.bc_shards_manifest_path.clone() {
-            PythonLearnerInput::BcShards { manifest }
-        } else {
-            PythonLearnerInput::RawMjai {
-                data_dirs: if config.raw_mjai_data_dirs.is_empty() {
-                    vec![config.data_dir.clone()]
-                } else {
-                    config.raw_mjai_data_dirs.clone()
-                },
-                max_games: None,
-                max_samples: None,
-                train_fraction: config.train_fraction,
-                augment: config.augment,
-                transport: config.python_raw_mjai_transport,
-            }
-        },
-        output_dir: config.output_dir.clone(),
-        device: config.device.clone(),
-        batch_size: config.batch_size,
-        microbatch_size: config.microbatch_size.unwrap_or(1024),
-        variant: config.python_variant,
-        residual_profile: config.python_residual_profile,
-        conv_memory_format: config.python_conv_memory_format,
-        backbone_profile: config.python_backbone_profile,
-        hidden: config.python_model_profile.hidden(),
-        blocks: config.python_model_profile.blocks(),
-        bottleneck: config.python_model_profile.bottleneck(),
-        warmup_steps: PYTHON_TIMING_WARMUP_STEPS,
-        steps: config.max_train_steps,
-        full_epoch: config.full_epoch,
-        validation_steps: validation_sample_limit(config)
-            .unwrap_or(0)
-            .div_ceil(config.batch_size),
-        validation_max_samples: config.max_validation_samples,
-        validation_every: config.validate_every_n_steps,
-        raw_mjai_validation_augment: false,
-        validation_source_mode: "fixed".to_string(),
-        checkpoint_out: None,
-        resume: python_resume_checkpoint(config),
-        checkpoint_every_steps: config.checkpoint_every_n_steps,
-        log_every_steps: config.log_every_n_steps,
-        keep_step_checkpoints: config.keep_step_checkpoints,
-        tensorboard: config.tensorboard,
-        launch_tensorboard: config.launch_tensorboard,
-        tensorboard_host: config.tensorboard_host.clone(),
-        tensorboard_port: config.tensorboard_port,
-        background: config.background,
-        learning_rate: config.bc.learning_rate,
-        min_learning_rate: config.bc.min_learning_rate,
-        lr_warmup_steps: config.bc.warmup_steps,
-        lr_schedule: if config.full_epoch && config.max_train_steps.is_none() {
-            "constant".to_string()
-        } else {
-            "cosine".to_string()
-        },
-        schedule_total_steps: config.max_train_steps,
-        grad_clip_norm: f64::from(config.bc.grad_clip_norm),
-        weight_decay: f64::from(config.bc.weight_decay),
-        ema_enabled: config.ema.enabled,
-        ema_decay: config.ema.decay,
-        ema_start_step: config.ema.start_step,
-        ema_update_every_steps: config.ema.update_every_steps,
-        ema_device: config.ema.device,
-        adamw_fused: config.bc.adamw_fused,
-        adamw_foreach: config.bc.adamw_foreach,
-        compile_fullgraph_check: false,
-        oracle_critic_weight: 0.0,
-        safety_residual_weight: advanced
-            .and_then(|loss| loss.safety_residual)
-            .unwrap_or(0.0)
-            .into(),
-    })
 }
 
 fn main() {

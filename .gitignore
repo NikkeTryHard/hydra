@@ -36,6 +36,7 @@ dist/
 .cbmignore
 /local/
 /training/
+/riichi-dev/
 
 # Generated Kaggle runtime payloads are intentionally local-only.
 /notebooks/offline-bundle/*.bin

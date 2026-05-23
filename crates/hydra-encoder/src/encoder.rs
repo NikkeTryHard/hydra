@@ -120,51 +120,6 @@ const CH_HAND_EV_MASK: usize = CH_HAND_EV_UKEIRE + NUM_TILES; // 191
 /// Number of players at the table.
 const NUM_PLAYERS: usize = 4;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ChannelRange {
-    start: usize,
-    end: usize,
-}
-
-const BASELINE_LAYOUT: [ChannelRange; 9] = [
-    ChannelRange {
-        start: CH_HAND,
-        end: CH_HAND + 4,
-    },
-    ChannelRange {
-        start: CH_OPEN_MELD,
-        end: CH_OPEN_MELD + 4,
-    },
-    ChannelRange {
-        start: CH_DRAWN,
-        end: CH_DRAWN + 1,
-    },
-    ChannelRange {
-        start: CH_SHANTEN_MASK,
-        end: CH_SHANTEN_MASK + 2,
-    },
-    ChannelRange {
-        start: CH_DISCARDS,
-        end: CH_DISCARDS + 12,
-    },
-    ChannelRange {
-        start: CH_MELDS,
-        end: CH_MELDS + 12,
-    },
-    ChannelRange {
-        start: CH_DORA,
-        end: CH_AKA + 3,
-    },
-    ChannelRange {
-        start: CH_META,
-        end: CH_META + 19,
-    },
-    ChannelRange {
-        start: CH_SAFETY,
-        end: BASELINE_CHANNELS,
-    },
-];
-
 /// Fixed-shape Group C search/belief context planes.
 #[derive(Debug, Clone)]
 pub struct SearchFeaturePlanes {
@@ -1070,15 +1025,6 @@ impl ObservationEncoder {
         safety: &SafetyInfo,
         shanten_batch: &BatchShantenResult,
     ) {
-        #[cfg(debug_assertions)]
-        {
-            let mut cursor = 0;
-            for range in BASELINE_LAYOUT {
-                debug_assert_eq!(range.start, cursor);
-                cursor = range.end;
-            }
-            debug_assert_eq!(cursor, BASELINE_CHANNELS);
-        }
         self.encode_hand(hand);
         self.encode_open_meld_hand(open_meld_counts);
         self.encode_drawn_tile(drawn_tile);

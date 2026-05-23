@@ -1,6 +1,6 @@
 # hydra-train-runtime
 
-Crate-local map for training runtime contracts. Owns CLI/config/preflight/probe/status shape, not heavy execution.
+Crate-local map for training runtime contracts. Owns CLI/config/preflight/probe/status shape and Python launch config conversion, not heavy execution.
 
 ## Owns
 
@@ -10,6 +10,7 @@ Crate-local map for training runtime contracts. Owns CLI/config/preflight/probe/
 - Preflight benchmark request/report contracts.
 - Progress/schedule/status/validation DTOs.
 - YAML/CLI-facing runtime shape consumed by execution layer; YAML remains runtime authority for normal training.
+- Python launch config conversion consumed by execution layer.
 
 ## Does not own
 

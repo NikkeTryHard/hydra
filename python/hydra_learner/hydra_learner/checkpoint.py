@@ -212,7 +212,11 @@ def load_checkpoint(
     _validate_checkpoint_root(checkpoint)
     _expect_equal(checkpoint["model_config"], asdict(expected_model_config), "model_config")
     _expect_equal(checkpoint["loss_weights"], asdict(expected_loss_weights), "loss_weights")
-    _expect_equal(checkpoint["optimizer_config"], asdict(expected_optimizer_config), "optimizer_config")
+    _expect_equal(
+        _checkpoint_optimizer_config_for_resume(checkpoint["optimizer_config"], expected_optimizer_config),
+        asdict(expected_optimizer_config),
+        "optimizer_config",
+    )
     _expect_equal(checkpoint["compile"], asdict(expected_runtime_config), "compile")
     _expect_equal(
         checkpoint["manifest"],
@@ -336,6 +340,17 @@ def _load_ema_resume_state(
         update_count=int(checkpoint.get("ema_update_count", 0)),
         last_update_step=int(checkpoint.get("ema_last_update_step", 0)),
     )
+
+
+def _checkpoint_optimizer_config_for_resume(actual: object, expected: OptimizerConfig) -> object:
+    if not isinstance(actual, dict):
+        return actual
+    normalized = dict(actual)
+    expected_dict = asdict(expected)
+    for key in ("foreach", "fused"):
+        if normalized.get(key) is None and expected_dict.get(key) is not None:
+            normalized[key] = expected_dict[key]
+    return normalized
 
 
 def _expect_equal(actual: object, expected: object, name: str) -> None:

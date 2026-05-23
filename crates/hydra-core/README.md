@@ -1,6 +1,6 @@
 # hydra-core
 
-Crate-local landing page. Runtime manual lives in [`docs/GAME_ENGINE.md`](../../docs/GAME_ENGINE.md). Shape/compat quick table lives in [`docs/COMPATIBILITY_SURFACE.md`](../../docs/COMPATIBILITY_SURFACE.md).
+Crate-local landing page. Runtime manual lives in [`docs/GAME_ENGINE.md`](../../docs/GAME_ENGINE.md). Shape/compat quick table lives in [`docs/COMPATIBILITY_SURFACE.md`](../../docs/COMPATIBILITY_SURFACE.md). Bridge profile `bc_minimal` means baseline-prefix train bridge only: no search/belief/Hand-EV extras.
 
 ## Owns
 
@@ -15,7 +15,7 @@ Crate-local landing page. Runtime manual lives in [`docs/GAME_ENGINE.md`](../../
 ## Does not own
 
 - Mahjong rules, scoring, legal action generation internals: `crates/hydra-engine` owns vendored engine behavior.
-- Model architecture, losses, runtime selection, BC/RL orchestration: `crates/hydra-train` owns.
+- Model architecture: `crates/hydra-model` owns; training algorithms/loss math: `crates/hydra-train-algo` plus Python default path own; runtime/exec/bin orchestration: train runtime/exec/bin crates own.
 - Research doctrine / promoted-vs-staged decisions: `research/design/HYDRA_RECONCILIATION.md` + `research/design/HYDRA_FINAL.md` own.
 
 ## Critical invariants
@@ -24,6 +24,7 @@ Crate-local landing page. Runtime manual lives in [`docs/GAME_ENGINE.md`](../../
 |---|---|
 | Encoder shape | `192 x 34` floats, row-major |
 | Baseline prefix | channels `0..84`; historical `85 x 34`, not full live encoder |
+| Bridge profile `bc_minimal` | baseline-prefix train bridge only; emits no search/belief/Hand-EV planes |
 | Group C | channels `85..149`; search/belief context + masks + reserve |
 | Group D | channels `150..191`; Hand-EV context + mask |
 | Action space | 46 actions, Mortal-compatible indexing |

@@ -3,8 +3,8 @@
 Compact op entrypoint. Owns: train CLI modes, YAML shape, preflight authority, BC shards, replay sidecars, DeltaQ promotion gates, precision/CUDA shard notes.
 
 Truth owners:
-- CLI/router: `crates/hydra-train/src/bin/train.rs`
-- YAML contract: `crates/hydra-train-runtime/src/config.rs`
+- train-bin glue: `crates/hydra-train/src/bin/train.rs`
+- YAML contract: `crates/hydra-train-runtime/src/config.rs`; Python option conversion: `crates/hydra-train-runtime/src/config/python.rs`
 - shard contract: `crates/hydra-bc-shards/src/lib.rs`
 - shard builder CLI: `crates/hydra-train/src/bin/build_bc_shards.rs`; impl: `crates/hydra-train-exec/src/bc_shard_builder.rs`
 - sidecar shared flags: `crates/hydra-train/src/bin/common/replay_sidecar_common.rs`
@@ -14,7 +14,7 @@ Truth owners:
 
 ## Train CLI modes
 
-Binary shape:
+Binary shape (`hydra-train` bin stays glue; contracts live in `hydra-train-runtime`, execution in `hydra-train-exec`):
 
 ```bash
 cargo run -p hydra-train --bin train -- <config.yaml> [flags]
@@ -25,7 +25,7 @@ Modes:
 | Mode | Invoke | Use |
 |---|---|---|
 | normal BC shard train | `train --bc-shards-manifest <manifest> --output-dir <dir> --device cuda:0 ...` or `train config.yaml` with `bc_shards_manifest_path` | default Python/PyTorch BC learner via Rust launcher |
-| normal Rust/Burn train | `train config.yaml` with `bc_backend: rust_burn` or CLI `--bc-backend rust-burn` | legacy/reference BC path; required for ExIt/DeltaQ/belief/mixture/opponent-hand-type until Python supports them |
+| legacy Rust/Burn debug/advanced | `train config.yaml` with `bc_backend: rust_burn` or CLI `--bc-backend rust-burn` | feature-gated path; required only for ExIt/DeltaQ/belief/mixture/opponent-hand-type until Python supports them |
 | preflight | `train --preflight --pf-candidate-tuples ... --pf-output md` | benchmark exact runtime tuples against synthetic/in-memory work; no config, manifest, dataset, cache, choice, or YAML write |
 | probe-only | `train config.yaml --probe-kind <train|validation|rl_games|rl_microbatch> --probe-candidate-microbatch <N> ...` | bounded candidate check, no full train |
 
@@ -62,7 +62,7 @@ Choose:
 | `exit_sidecar_path` | optional ExIt sidecar index |
 | `delta_q_sidecar_path` | optional DeltaQ sidecar index |
 | `bc_shards_manifest_path` | prebuilt BC shard manifest input |
-| `bc_backend` | BC shard train backend; default `python`; set `rust_burn` only for legacy/debug or advanced labels Python lacks |
+| `bc_backend` | BC shard train backend; default `python`; set `rust_burn` only for feature-gated legacy/debug or advanced labels Python lacks |
 | `shard_prefetch_depth` | shard host-batch queue depth; default `2`, valid `1..64` |
 | `python_residual_profile` | Python BC residual profile; default `mish_se`; `mish_no_se` is opt-in throughput ablation with strength risk |
 | `python_variant` | Python BC TorchInductor strategy only; default/canonical `compile_max_autotune`; use `compile_default` only for smoke/preflight/short debug |
@@ -114,7 +114,7 @@ bc_shards_manifest_path: /data/bc_shards_manifest.json
 # bc_backend: python            # default
 ```
 
-If `bc_shards_manifest_path` is absent, Python learner streams raw MJAI from `raw_mjai_data_dirs` when set, otherwise from `data_dir`. `raw_mjai_data_dirs` is explicit: list each folder/file/archive to include; Hydra does not expand parent bundle into sibling datasets for you. Default transport is pinned PyO3 (`python_raw_mjai_transport: pinned_pyo3`); `stdout` remains fallback. Rust raw-MJAI helper runs in Pixi `default` env; Python training runs in Pixi `py-train`.
+If `bc_shards_manifest_path` is absent, Python learner streams raw MJAI from `raw_mjai_data_dirs` when set, otherwise from `data_dir`. `raw_mjai_data_dirs` is explicit: list each folder/file/archive to include; Hydra does not expand parent bundle into sibling datasets for you. Default bridge crate is `hydra-raw-mjai-pyo3` (`python_raw_mjai_transport: pinned_pyo3`); `stdout` remains fallback. Rust raw-MJAI helper runs in Pixi `default` env; Python training runs in Pixi `py-train`.
 Python BC writes operator artifacts under `output_dir`:
 
 ```text
@@ -129,13 +129,13 @@ tensorboard/            TensorBoard event files
 python_learner_result.json
 ```
 
-Resume with `resume_checkpoint: <output_dir>/checkpoints/latest.pt`. Python checkpoint load validates schema, model/runtime/optimizer/loss/EMA contracts, manifest/source identity, and RNG metadata. Present-but-mismatched metadata hard error. Step logs/TensorBoard include current `lr`; `grad_norm` logs only when clipping path reports without extra timed-step sync. Checkpoint metadata includes `weight_source: raw|ema`; resume accepts raw authority only, never silently mixes exported EMA weights back into mutable train state.
+Resume with `resume_checkpoint: <output_dir>/checkpoints/latest.pt` only for shard-backed runs. Python checkpoint load validates schema, model/runtime/optimizer/loss/EMA contracts, manifest/source identity, and RNG metadata. Raw-MJAI config resume fails closed in Rust launcher/config conversion (`resume_checkpoint`, `resume_latest`, or occupied `checkpoints/latest.pt`) because stream cursor resume does not exist. Present-but-mismatched metadata hard error. Step logs/TensorBoard include current `lr`; `grad_norm` logs only when clipping path reports without extra timed-step sync. Checkpoint metadata includes `weight_source: raw|ema`; resume accepts raw authority only, never silently mixes exported EMA weights back into mutable train state.
 
 Python BC diagnostic logs expose train/validation head health, not only total loss. `logs/train_steps.jsonl` has `head_losses` and `target_coverage`; validation events in `logs/events.jsonl` and TensorBoard scalars include per-head losses: `policy`, `value`, `score_pdf`, `score_cdf`, `tenpai`, `grp`, weighted `oracle_critic`, weighted `safety_residual`, `opp_next`, `danger`. With `ema.enabled`, validation logs `metrics.raw.*` and `metrics.ema.*`; TensorBoard uses `validation/raw/*` and `validation/ema/*`. Coverage status is explicit per head: `absent`, `present_zero`, or `present_positive`, plus sample-weighted fraction. Positive optional weights hard-error when labels/masks are absent; all-zero present masks log `present_zero` so `full_base` data-path bugs surface instead of hiding in total loss.
 
 Python BC step/sample accounting: `global_step`, `samples_seen`, JSONL, TensorBoard, and checkpoint step count every optimizer update that mutates weights. `--warmup` is timing/compile warmup only: it replays staged train batch through forward/backward/optimizer, then restores model + optimizer state, so it does not count as training and does not advance corpus position. Torch compile dry-run also snapshot/restores model + optimizer state. If raw-MJAI supplies that dry-run batch, logs expose it as consumed-but-non-mutating: `compile_dry_run=true`, `warmup_mode=non_mutating_replay_first_batch`, `warmup_steps_counted=0`, `samples_consumed_pre_main`, `pre_main_batches_changed_weights=false`. Raw-MJAI progress fields remain separate corpus-consumption counters; use them with `samples_seen` for plateau/corpus-position diagnosis.
 
-For long Python BC runs, shard path is resumable steady-state launch path. Raw-MJAI `full_epoch: true` + `max_train_steps: null` may consume raw train split once, but raw-MJAI resume is blocked for both full-epoch and bounded runs until stream cursor resume exists: checkpoint restores weights/RNG/optimizer, but stream cursor would restart at corpus start and repeat early samples. Use fresh output dir for raw, or build BC shards and resume from `bc_shards_manifest_path`. `num_epochs` remains Rust/Burn full-loop authority today; Python epoch scheduling is not active yet.
+For long Python BC runs, shard path is only resumable steady-state launch path. Raw-MJAI `full_epoch: true` + `max_train_steps: null` may consume raw train split once, but raw-MJAI output dirs must be fresh for both full-epoch and bounded runs until stream cursor resume exists: checkpoint restores weights/RNG/optimizer, but stream cursor would restart at corpus start and repeat early samples. Use fresh output dir for raw, or build BC shards and resume from `bc_shards_manifest_path`. `num_epochs` remains Rust/Burn full-loop authority today; Python epoch scheduling is not active yet.
 
 Raw-MJAI Python validation default = fixed held-out window. Python pre-materializes `validation_steps` batches once from validation split, no suit augmentation unless direct CLI passes `--raw-mjai-validation-augment`. Rust/YAML respects `max_validation_batches` when set; otherwise it derives ceil batches from `max_validation_samples` and passes requested sample cap to Python. Validation logs expose requested/actual batches, requested/actual samples, and sample cap overrun. Plateau diagnosis should use this fixed, non-augmented validation: flat curve then means model stopped improving on same held-out samples. Direct Python can opt back into moving validation with `--validation-source-mode streaming`; logs label mode explicitly.
 
@@ -187,7 +187,7 @@ Direct Python/CLI equivalents:
 ```
 
 
-Legacy Rust/Burn BC path:
+Feature-gated legacy/debug Rust/Burn BC path:
 
 ```yaml
 bc_backend: rust_burn
@@ -244,13 +244,13 @@ python_raw_mjai_transport: pinned_pyo3   # default; stdout fallback exists
 Direct Python flags:
 
 ```bash
---raw-mjai-data-dir path/to/mjai --raw-mjai-transport pinned_pyo3 --raw-mjai-pinned-ffi target/release/libhydra_raw_mjai_ffi.so
+--raw-mjai-data-dir path/to/mjai --raw-mjai-transport pinned_pyo3 --raw-mjai-pyo3-lib target/release/libhydra_raw_mjai_pyo3.so
 ```
 
-Pinned PyO3 lookup: `HYDRA_RAW_MJAI_PINNED_LIB`, then `target/release/libhydra_raw_mjai_ffi.so`, then `target/debug/libhydra_raw_mjai_ffi.so`. If missing, build:
+Pinned PyO3 lookup: `HYDRA_RAW_MJAI_PYO3_LIB`, then `target/release/libhydra_raw_mjai_pyo3.so`, then `target/debug/libhydra_raw_mjai_pyo3.so`. If missing, build:
 
 ```bash
-pixi run cargo build -p hydra-raw-mjai-ffi --release --quiet
+pixi run cargo build -p hydra-raw-mjai-pyo3 --release --quiet
 ```
 
 Use `--raw-mjai-transport stdout` only for compat/debug fallback.
@@ -347,7 +347,7 @@ Current RL phase enum:
 - `drda_ach_self_play`
 - `exit_pondering`
 
-Status: plain BC shard path defaults to Python/PyTorch through Rust launcher. Rust owns replay parsing, shard building, manifest validation, and CLI/config orchestration. Python owns BC model/loss/optimizer/BF16/`torch.compile`/checkpoint. ExIt/DeltaQ/belief/mixture/opponent-hand-type are not supported by Python default yet; use `bc_backend: rust_burn` only for those advanced modes or debugging.
+Status: plain BC shard path defaults to Python/PyTorch through Rust launcher. Rust owns replay parsing, shard building, manifest validation, launcher glue, and CLI/config conversion via `hydra-train-runtime::config::python`. Python owner is `hydra_learner.cli`; train loop/modules live under `hydra_learner`; `train_bc.py` is compatibility entrypoint only. Python owns BC model/loss/optimizer/BF16/`torch.compile`/checkpoint. ExIt/DeltaQ/belief/mixture/opponent-hand-type are not supported by Python default yet; use `bc_backend: rust_burn` only for feature-gated legacy/debug or those advanced modes.
 
 ## Preflight benchmark + YAML authority
 
@@ -462,7 +462,7 @@ CUDA shard no-starvation proof result: serious CUDA BC compact-shard runs should
 Prod shard-first workflow:
 1. Audit raw corpus:
 `pixi run cargo run --quiet --package hydra-train --features training --bin mjai_audit -- /home/cachybtw/Downloads/dataset_bundle/tenhou-houou-mjai-2025 --threads 20 --failure-examples 20 --failure-inventory-dir /home/cachybtw/dev/hydra/training/2026-05-23-audit-failures`.
-2. Build compact v3 train+validation shards; do not train from raw for multi-day resumable runs:
+2. Build compact v3 train+validation shards; do not train from raw for multi-day/resumable runs. Raw-MJAI training must use fresh output dir:
 `pixi run cargo run --quiet --package hydra-train --features training --bin build_bc_shards -- --input /home/cachybtw/Downloads/dataset_bundle/tenhou-houou-mjai-2025 --output-dir /home/cachybtw/dev/hydra/training/2026-05-23-bc-shards --manifest-name bc_shards_manifest.json --split both --train-fraction 0.9 --num-threads 20 --queue-bound 8 --chunk-games 256 --resume --progress-jsonl /home/cachybtw/dev/hydra/training/2026-05-23-bc-shards/progress.jsonl --report-name report.json`.
 3. Validate manifest:
 `pixi run cargo run --quiet --package hydra-train --features training --bin build_bc_shards -- --validate-manifest /home/cachybtw/dev/hydra/training/2026-05-23-bc-shards/bc_shards_manifest.json`.

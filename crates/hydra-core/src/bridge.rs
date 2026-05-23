@@ -37,6 +37,11 @@ const NUM_OPPONENTS: usize = 3;
 const NUM_MIXTURE_COMPONENTS: usize = 4;
 const NUM_BELIEF_ZONES: usize = 4;
 
+/// Bridge encoding feature switches.
+///
+/// `bc_minimal` is the replay/plain-BC baseline profile: it skips Hand-EV
+/// planes, but still permits search planes when explicit runtime context is
+/// supplied. With an empty `SearchContext`, search planes are cleared.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BridgeEncodeProfile {
     pub include_search_features: bool,
@@ -51,6 +56,7 @@ impl BridgeEncodeProfile {
         }
     }
 
+    /// Replay/plain-BC baseline: no Hand-EV; search planes only from explicit runtime context.
     pub const fn bc_minimal() -> Self {
         Self {
             include_search_features: true,

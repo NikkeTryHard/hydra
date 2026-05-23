@@ -1,7 +1,9 @@
-//! Neural model components for Hydra.
+//! Burn neural model components for Hydra's legacy/reference Rust path.
 //!
-//! This crate owns the pure Burn model building blocks used by `hydra-train`.
-
+//! Default plain BC model/loss/checkpoint ownership lives in Python/PyTorch.
+//! This crate remains the Burn implementation used for Rust fallback/debug and
+//! advanced lanes such as ExIt, DeltaQ, belief, mixture, opponent hand-type,
+//! safety, oracle, and search-as-feature experiments.
 #![deny(clippy::dbg_macro, clippy::manual_assert)]
 
 /// Automatic mixed precision compatibility helpers.

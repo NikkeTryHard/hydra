@@ -245,7 +245,9 @@ impl BcShardHostScratch {
         }
     }
 
-    /// Swap the filled buffers out of this scratch into an owned [`BcShardHostBatch`].
+    /// Extracts a one-shot batch by moving scratch buffers out and losing their retained capacity.
+    ///
+    /// Hot recycled paths must use [`Self::swap_batch`] so per-batch allocations keep amortized capacity.
     pub fn take_batch(&mut self) -> BcShardHostBatch {
         BcShardHostBatch {
             batch_size: self.batch_size,

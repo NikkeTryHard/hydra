@@ -623,28 +623,16 @@ fn bench_model_cpu_bridge(c: &mut Criterion) {
             black_box(out)
         });
     });
-    group.bench_function("policy_and_value_cpu", |b| {
+    group.bench_function("fill_batch_policy_value_cpu", |b| {
         b.iter(|| {
-            let out = model.policy_and_value_cpu(&obs, &device);
-            black_box(out)
+            model.fill_batch_policy_value_cpu(&batch_obs, &device, &mut flat_buf, &mut outputs_buf);
+            black_box(outputs_buf.len())
         });
     });
-    group.bench_function("batch_policy_value_cpu_reuse", |b| {
+    group.bench_function("fill_batch_value_cpu", |b| {
         b.iter(|| {
-            let out = model.batch_policy_value_cpu_reuse(
-                &batch_obs,
-                &device,
-                &mut flat_buf,
-                &mut outputs_buf,
-            );
-            black_box(out.len())
-        });
-    });
-    group.bench_function("batch_value_cpu_reuse", |b| {
-        b.iter(|| {
-            let out =
-                model.batch_value_cpu_reuse(&batch_obs, &device, &mut flat_buf, &mut values_buf);
-            black_box(out.len())
+            model.fill_batch_value_cpu(&batch_obs, &device, &mut flat_buf, &mut values_buf);
+            black_box(values_buf.len())
         });
     });
     group.finish();
@@ -900,22 +888,16 @@ fn bench_model_cpu_bridge_tiny(c: &mut Criterion) {
             black_box(out)
         });
     });
-    group.bench_function("batch_policy_value_cpu_reuse", |b| {
+    group.bench_function("fill_batch_policy_value_cpu", |b| {
         b.iter(|| {
-            let out = model.batch_policy_value_cpu_reuse(
-                &batch_obs,
-                &device,
-                &mut flat_buf,
-                &mut outputs_buf,
-            );
-            black_box(out.len())
+            model.fill_batch_policy_value_cpu(&batch_obs, &device, &mut flat_buf, &mut outputs_buf);
+            black_box(outputs_buf.len())
         });
     });
-    group.bench_function("batch_value_cpu_reuse", |b| {
+    group.bench_function("fill_batch_value_cpu", |b| {
         b.iter(|| {
-            let out =
-                model.batch_value_cpu_reuse(&batch_obs, &device, &mut flat_buf, &mut values_buf);
-            black_box(out.len())
+            model.fill_batch_value_cpu(&batch_obs, &device, &mut flat_buf, &mut values_buf);
+            black_box(values_buf.len())
         });
     });
     group.finish();

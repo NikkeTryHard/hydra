@@ -519,6 +519,14 @@ pub fn run_python_learner_with_runner(
     parse_python_learner_report(&command.result_path)
 }
 
+/// Converts config to Python learner options and runs the launcher through the default runner.
+pub fn run_python_learner_from_config(
+    config: &hydra_train_runtime::config::TrainConfig,
+) -> Result<PythonLearnerReport, String> {
+    let options = hydra_train_runtime::config::python_options_from_config(config)?;
+    run_python_learner(&options)
+}
+
 /// Parses the minimal JSON fields reported to Rust users.
 pub fn parse_python_learner_report(path: &Path) -> Result<PythonLearnerReport, String> {
     let text = fs::read_to_string(path).map_err(|err| {

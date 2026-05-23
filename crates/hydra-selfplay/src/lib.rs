@@ -1167,7 +1167,7 @@ pub fn generate_self_play_batch_source<B: Backend>(
 
         let exit_cfg = live_exit_cfg.clone();
         let exit_fn = make_live_exit_fn(exit_cfg, |obs: &[f32; OBS_SIZE]| {
-            model.policy_and_value_cpu(obs, device)
+            model.policy_value_cpu(obs, device)
         });
 
         let trajectory =

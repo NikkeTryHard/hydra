@@ -39,6 +39,10 @@ fn raw_mjai_debug_enabled() -> bool {
     std::env::var_os("HYDRA_RAW_MJAI_PINNED_DEBUG").is_some()
 }
 
+fn should_log_raw_skip(err: &io::Error) -> bool {
+    compact_error_message(err) != "replay-desync"
+}
+
 const FRAME_KIND_HEADER: u8 = 1;
 const FRAME_KIND_BATCH: u8 = 2;
 const FRAME_KIND_PROGRESS: u8 = 3;
@@ -370,11 +374,13 @@ impl RawMjaiPinnedStream {
                     }
                     Err(err) => {
                         self.totals.skipped_games += 1;
-                        eprintln!(
-                            "raw MJAI pinned stream skipped {}: {}",
-                            game.identity,
-                            compact_error_message(&err)
-                        );
+                        if should_log_raw_skip(&err) {
+                            eprintln!(
+                                "raw MJAI pinned stream skipped {}: {}",
+                                game.identity,
+                                compact_error_message(&err)
+                            );
+                        }
                         continue;
                     }
                 }
@@ -1163,11 +1169,13 @@ fn collect_pinned_results(
                 }
                 Err(err) => {
                     totals.skipped_games += 1;
-                    eprintln!(
-                        "raw MJAI pinned stream skipped {}: {}",
-                        game.identity,
-                        compact_error_message(&err)
-                    );
+                    if should_log_raw_skip(&err) {
+                        eprintln!(
+                            "raw MJAI pinned stream skipped {}: {}",
+                            game.identity,
+                            compact_error_message(&err)
+                        );
+                    }
                 }
             }
             next += 1;
@@ -1447,11 +1455,13 @@ fn collect_stream_results<W: Write>(
                 }
                 Err(err) => {
                     totals.skipped_games += 1;
-                    eprintln!(
-                        "raw MJAI stream skipped {}: {}",
-                        game.identity,
-                        compact_error_message(&err)
-                    );
+                    if should_log_raw_skip(&err) {
+                        eprintln!(
+                            "raw MJAI stream skipped {}: {}",
+                            game.identity,
+                            compact_error_message(&err)
+                        );
+                    }
                     stream.write_progress(totals)?;
                 }
             }

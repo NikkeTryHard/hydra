@@ -1,6 +1,11 @@
 # hydra-model
 
-Crate-local map for pure Burn neural model components.
+Crate-local map for Burn neural model components used by legacy/reference Rust path.
+
+Default plain BC model/loss/checkpoint ownership lives in Python/PyTorch. This
+crate remains for Rust/Burn fallback and debug runs plus advanced lanes not yet
+owned by Python default path: ExIt, DeltaQ, belief fields, mixture weights,
+opponent hand type, safety residual, oracle critic, and search-as-feature.
 
 ## Owns
 

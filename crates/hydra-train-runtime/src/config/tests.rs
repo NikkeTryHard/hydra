@@ -540,3 +540,299 @@ num_epochs: 1
         vec![PathBuf::from("/dataset/a"), PathBuf::from("/dataset/b")]
     );
 }
+
+fn python_guard_config() -> TrainConfig {
+    TrainConfig {
+        data_dir: PathBuf::from("/tmp/data"),
+        raw_mjai_data_dirs: Vec::new(),
+        output_dir: PathBuf::from("/tmp/out"),
+        num_epochs: 1,
+        batch_size: 1024,
+        microbatch_size: Some(1024),
+        validation_microbatch_size: Some(1024),
+        exit_sidecar_path: None,
+        delta_q_sidecar_path: None,
+        bc_shards_manifest_path: Some(PathBuf::from("/tmp/shards/manifest.json")),
+        bc_backend: Default::default(),
+        shard_prefetch_depth: None,
+        train_fraction: 0.9,
+        source_filters: SourceFilterConfig::default(),
+        augment: true,
+        resume_checkpoint: None,
+        resume_latest: false,
+        seed: 0,
+        advanced_loss: None,
+        python_residual_profile: Default::default(),
+        python_variant: Default::default(),
+        python_model_profile: Default::default(),
+        python_backbone_profile: Default::default(),
+        python_conv_memory_format: Default::default(),
+        bc_head_profile: BcHeadProfile::default(),
+        experimental_backbone_profile: None,
+        python_raw_mjai_transport: Default::default(),
+        validation_gates: ValidationGateConfig::default(),
+        ema: EmaConfig::default(),
+        rl: None,
+        bc: BcHyperparamConfig::default(),
+        nsight_trace: None,
+        device: "cuda:0".to_string(),
+        precision_mode: PrecisionMode::Bf16Autocast,
+        buffer_games: 16,
+        buffer_samples: 128,
+        num_threads: None,
+        tensorboard: false,
+        archive_queue_bound: 8,
+        validation_every_n_epochs: 1,
+        max_skip_logs_per_source: 4,
+        log_every_n_steps: 10,
+        validate_every_n_steps: 10,
+        checkpoint_every_n_steps: 10,
+        keep_step_checkpoints: false,
+        launch_tensorboard: false,
+        tensorboard_host: "127.0.0.1".to_string(),
+        tensorboard_port: 6006,
+        background: false,
+        max_train_steps: Some(3),
+        full_epoch: false,
+        max_validation_batches: None,
+        max_validation_samples: None,
+    }
+}
+
+fn unique_temp_dir(label: &str) -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("time went backwards")
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "hydra_train_runtime_{label}_{}_{}",
+        std::process::id(),
+        nanos
+    ))
+}
+
+#[test]
+fn python_options_from_config_accepts_plain_bc_defaults() {
+    let options = python_options_from_config(&python_guard_config())
+        .expect("plain BC should route to Python");
+    assert_eq!(
+        options.bc_shards_manifest,
+        PathBuf::from("/tmp/shards/manifest.json")
+    );
+    assert_eq!(options.batch_size, 1024);
+    assert_eq!(options.microbatch_size, 1024);
+    assert_eq!(options.steps, Some(3));
+    assert_eq!(options.warmup_steps, PYTHON_TIMING_WARMUP_STEPS);
+    assert_eq!(options.residual_profile, Default::default());
+    assert!(!options.raw_mjai_validation_augment);
+    assert_eq!(options.validation_source_mode, "fixed");
+    assert_eq!(options.lr_schedule, "cosine");
+    assert_eq!(options.schedule_total_steps, Some(3));
+    assert_eq!(options.validation_steps, 0);
+    assert_eq!(options.validation_max_samples, None);
+    assert_eq!(options.ema_device, Default::default());
+}
+
+#[test]
+fn python_resume_checkpoint_raw_mjai_fails_closed_for_explicit_resume() {
+    let mut config = python_guard_config();
+    config.bc_shards_manifest_path = None;
+    config.resume_checkpoint = Some(PathBuf::from("/tmp/out/checkpoints/latest.pt"));
+
+    let err = python_options_from_config(&config).expect_err("raw MJAI resume must fail closed");
+    assert!(err.contains("Raw-MJAI"), "{err}");
+    assert!(err.contains("resume_checkpoint"), "{err}");
+}
+
+#[test]
+fn python_resume_checkpoint_raw_mjai_fails_closed_for_resume_latest() {
+    let mut config = python_guard_config();
+    config.bc_shards_manifest_path = None;
+    config.resume_latest = true;
+
+    let err =
+        python_options_from_config(&config).expect_err("raw MJAI latest resume must fail closed");
+    assert!(err.contains("Raw-MJAI"), "{err}");
+    assert!(err.contains("resume_latest"), "{err}");
+}
+
+#[test]
+fn python_resume_checkpoint_raw_mjai_fails_closed_for_occupied_latest() {
+    let root = unique_temp_dir("raw-mjai-occupied");
+    let checkpoint_dir = root.join("checkpoints");
+    std::fs::create_dir_all(&checkpoint_dir).expect("checkpoint dir should be created");
+    std::fs::write(checkpoint_dir.join("latest.pt"), b"checkpoint")
+        .expect("latest checkpoint should write");
+    let mut config = python_guard_config();
+    config.bc_shards_manifest_path = None;
+    config.output_dir = root;
+    config.resume_latest = false;
+
+    let err =
+        python_options_from_config(&config).expect_err("occupied raw MJAI latest must fail closed");
+    assert!(err.contains("Raw-MJAI"), "{err}");
+    assert!(err.contains("occupied"), "{err}");
+}
+
+#[test]
+fn python_resume_checkpoint_bc_shards_uses_latest_when_requested() {
+    let root = unique_temp_dir("bc-shards-latest");
+    let checkpoint_dir = root.join("checkpoints");
+    std::fs::create_dir_all(&checkpoint_dir).expect("checkpoint dir should be created");
+    let latest = checkpoint_dir.join("latest.pt");
+    std::fs::write(&latest, b"checkpoint").expect("latest checkpoint should write");
+    let mut config = python_guard_config();
+    config.output_dir = root;
+    config.resume_latest = true;
+
+    let options =
+        python_options_from_config(&config).expect("BC shards should support latest resume");
+    assert_eq!(options.resume, Some(latest));
+}
+
+#[test]
+fn python_options_from_config_uses_raw_mjai_when_manifest_absent() {
+    let mut config = python_guard_config();
+    config.bc_shards_manifest_path = None;
+    let options = python_options_from_config(&config).expect("plain BC should route to Python");
+    match options.input {
+        PythonLearnerInput::RawMjai {
+            data_dirs,
+            train_fraction,
+            augment,
+            transport,
+            ..
+        } => {
+            assert_eq!(data_dirs, vec![PathBuf::from("/tmp/data")]);
+            assert_eq!(train_fraction, 0.9);
+            assert!(augment);
+            assert!(!options.raw_mjai_validation_augment);
+            assert_eq!(transport, PythonRawMjaiTransportConfig::PinnedPyo3);
+        }
+        PythonLearnerInput::BcShards { .. } => panic!("expected raw MJAI input"),
+    }
+
+    config.max_validation_samples = Some(65_536);
+    let options = python_options_from_config(&config).expect("plain BC should route to Python");
+    assert_eq!(options.validation_steps, 64);
+    assert_eq!(options.validation_max_samples, Some(65_536));
+
+    config.max_validation_samples = None;
+    config.max_validation_batches = Some(7);
+    let options = python_options_from_config(&config).expect("plain BC should route to Python");
+    assert_eq!(options.validation_steps, 7);
+    assert_eq!(options.validation_max_samples, None);
+}
+
+#[test]
+fn python_options_full_epoch_without_step_budget_uses_constant_schedule() {
+    let mut config = python_guard_config();
+    config.bc_shards_manifest_path = None;
+    config.max_train_steps = None;
+    config.full_epoch = true;
+
+    let options =
+        python_options_from_config(&config).expect("full-epoch raw MJAI should route to Python");
+
+    assert_eq!(options.steps, None);
+    assert_eq!(options.lr_schedule, "constant");
+    assert_eq!(options.schedule_total_steps, None);
+}
+
+#[test]
+fn python_options_from_config_uses_explicit_raw_mjai_dirs() {
+    let mut config = python_guard_config();
+    config.bc_shards_manifest_path = None;
+    config.raw_mjai_data_dirs = vec![PathBuf::from("/data/a"), PathBuf::from("/data/b")];
+
+    let options = python_options_from_config(&config).expect("plain BC should route to Python");
+
+    match options.input {
+        PythonLearnerInput::RawMjai { data_dirs, .. } => {
+            assert_eq!(data_dirs, config.raw_mjai_data_dirs);
+        }
+        PythonLearnerInput::BcShards { .. } => panic!("expected raw MJAI input"),
+    }
+}
+
+#[test]
+fn python_options_from_config_preserves_profiles_and_variant() {
+    let mut config = python_guard_config();
+    config.python_residual_profile = PythonResidualProfileConfig::ReluNoSe;
+    config.python_variant = PythonLearnerVariant::CompileMaxAutotune;
+
+    let options = python_options_from_config(&config).expect("plain BC should route to Python");
+
+    assert_eq!(
+        options.residual_profile,
+        PythonResidualProfileConfig::ReluNoSe
+    );
+    assert_eq!(options.variant, PythonLearnerVariant::CompileMaxAutotune);
+}
+
+type PythonGuardCase = (fn(&mut TrainConfig), &'static str);
+
+#[test]
+fn python_options_from_config_rejects_unsupported_advanced_modes() {
+    let cases: &[PythonGuardCase] = &[
+        (
+            |config| config.exit_sidecar_path = Some(PathBuf::from("/tmp/exit.jsonl")),
+            "ExIt sidecars",
+        ),
+        (
+            |config| config.delta_q_sidecar_path = Some(PathBuf::from("/tmp/delta-q.jsonl")),
+            "DeltaQ sidecars",
+        ),
+        (
+            |config| {
+                config.advanced_loss = Some(AdvancedLossConfig {
+                    exit: Some(0.1),
+                    ..Default::default()
+                })
+            },
+            "advanced_loss.exit",
+        ),
+        (
+            |config| {
+                config.advanced_loss = Some(AdvancedLossConfig {
+                    delta_q: Some(0.1),
+                    ..Default::default()
+                })
+            },
+            "advanced_loss.delta_q",
+        ),
+        (
+            |config| {
+                config.advanced_loss = Some(AdvancedLossConfig {
+                    belief_fields: Some(0.1),
+                    ..Default::default()
+                })
+            },
+            "advanced_loss.belief_fields",
+        ),
+        (
+            |config| {
+                config.advanced_loss = Some(AdvancedLossConfig {
+                    mixture_weight: Some(0.1),
+                    ..Default::default()
+                })
+            },
+            "advanced_loss.mixture_weight",
+        ),
+        (
+            |config| {
+                config.advanced_loss = Some(AdvancedLossConfig {
+                    opponent_hand_type: Some(0.1),
+                    ..Default::default()
+                })
+            },
+            "advanced_loss.opponent_hand_type",
+        ),
+    ];
+    for (configure, expected) in cases.iter().copied() {
+        let mut config = python_guard_config();
+        configure(&mut config);
+        let err = python_options_from_config(&config).expect_err("unsupported mode should fail");
+        assert!(err.contains(expected), "{err}");
+    }
+}

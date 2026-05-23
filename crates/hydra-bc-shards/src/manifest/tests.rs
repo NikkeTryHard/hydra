@@ -75,6 +75,45 @@ fn bc_shard_manifest_geometry_uses_frozen_runtime_abi() {
 }
 
 #[test]
+fn bc_shard_manifest_contract_snapshot_pins_abi_values() {
+    assert_eq!(BC_SHARD_MAGIC, *b"HYBCS3\0\0");
+    assert_eq!(BC_DENSE_SHARD_MAGIC, *b"HYBCS2\0\0");
+    assert_eq!(
+        DENSE_REBUILD_MESSAGE,
+        "dense BC shards are obsolete; rebuild from replay"
+    );
+    assert_eq!(BC_SHARD_VERSION, 3);
+    assert_eq!(BC_SHARD_MANIFEST_VERSION, 3);
+    assert_eq!(BC_SHARD_LAYOUT_VERSION, 1);
+    assert_eq!(BC_SHARD_HEADER_SIZE, 80);
+    assert_eq!(STORAGE_LAYOUT_COMPACT, "compact");
+    assert_eq!(TILE_COUNT, 34);
+    assert_eq!(OPPONENT_COUNT, 3);
+    assert_eq!(PLAYER_COUNT, 4);
+    assert_eq!(SPATIAL_TARGET_SIZE, 102);
+    assert_eq!(PACKED_ACTION_MASK_BYTES, 6);
+    assert_eq!(FLAG_SAFETY_RESIDUAL, 1);
+    assert_eq!(FLAG_EXIT, 2);
+    assert_eq!(FLAG_DELTA_Q, 4);
+    assert_eq!(FLAG_BELIEF_FIELDS, 8);
+    assert_eq!(FLAG_MIXTURE_WEIGHTS, 16);
+    assert_eq!(BC_BASE_RECORD_SIZE, 1_734);
+    assert_eq!(BC_RECORD_SIZE_WITH_ALL_OPTIONALS, 4_496);
+    assert_eq!(BcShardSplit::Train.split_id(), 0);
+    assert_eq!(BcShardSplit::Validation.split_id(), 1);
+}
+
+#[test]
+fn checked_record_bytes_rejects_overflow() {
+    let err = checked_record_bytes(u64::MAX, BC_BASE_RECORD_SIZE)
+        .expect_err("record bytes must overflow");
+    assert!(
+        err.contains("record byte count overflow"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn bc_shard_manifest_rejects_num_channel_mismatch() {
     let mut manifest = base_manifest();
     manifest.num_channels = NUM_CHANNELS - 1;

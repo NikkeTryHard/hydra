@@ -16,7 +16,22 @@ const MODEL_SCOPE_HEADS_VALUE: &str = "model_heads_value";
 const MODEL_SCOPE_HEADS_LINEAR_BASE: &str = "model_heads_linear_base";
 const MODEL_SCOPE_HEADS_SPATIAL_BASE: &str = "model_heads_spatial_base";
 const MODEL_SCOPE_HEADS_ADVANCED: &str = "model_heads_advanced";
+const POLICY_HEAD_START: usize = 0;
+const VALUE_HEAD_START: usize = POLICY_HEAD_START + HYDRA_ACTION_SPACE;
+const VALUE_HEAD_WIDTH: usize = 1;
+const SCORE_PDF_HEAD_START: usize = VALUE_HEAD_START + VALUE_HEAD_WIDTH;
+const SCORE_HEAD_WIDTH: usize = 64;
+const SCORE_CDF_HEAD_START: usize = SCORE_PDF_HEAD_START + SCORE_HEAD_WIDTH;
+const OPP_TENPAI_HEAD_START: usize = SCORE_CDF_HEAD_START + SCORE_HEAD_WIDTH;
+const OPP_TENPAI_HEAD_WIDTH: usize = 3;
+const GRP_HEAD_START: usize = OPP_TENPAI_HEAD_START + OPP_TENPAI_HEAD_WIDTH;
+const GRP_HEAD_WIDTH: usize = 24;
+const BASE_LINEAR_HEAD_WIDTH: usize = GRP_HEAD_START + GRP_HEAD_WIDTH;
 
+/// Full-shape Burn forward output used by runtime/reference paths.
+///
+/// Inactive advanced heads are represented by zero tensors so callers retain a
+/// stable tensor shape contract.
 pub struct HydraOutput<B: Backend> {
     pub policy_logits: Tensor<B, 2>,
     pub value: Tensor<B, 2>,
@@ -34,6 +49,10 @@ pub struct HydraOutput<B: Backend> {
     pub safety_residual: Tensor<B, 2>,
 }
 
+/// Train-only Burn forward output.
+///
+/// Inactive advanced heads are omitted with `None` to avoid materializing
+/// unused tensors during warmup/partial-head training.
 pub struct HydraTrainOutput<B: Backend> {
     pub policy_logits: Tensor<B, 2>,
     pub value: Tensor<B, 2>,
@@ -59,9 +78,6 @@ struct BaseLinearHeadOutput<B: Backend> {
     opp_tenpai: Tensor<B, 2>,
     grp: Tensor<B, 2>,
 }
-
-pub type ActorNet<B> = HydraModel<B>;
-pub type LearnerNet<B> = HydraModel<B>;
 
 /// Advanced auxiliary heads whose warmup mode detaches them from the shared backbone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -348,14 +364,6 @@ impl<B: Backend> HydraModel<B> {
             .expect("value extraction failed")[0]
     }
 
-    pub fn policy_and_value_cpu(
-        &self,
-        obs: &[f32; OBS_SIZE],
-        device: &<B as burn::tensor::backend::BackendTypes>::Device,
-    ) -> ([f32; HYDRA_ACTION_SPACE], f32) {
-        self.policy_value_cpu(obs, device)
-    }
-
     /// Batch inference using a caller-provided flat buffer to avoid
     /// per-call allocation. The buffer is cleared and reused each call.
     pub fn fill_batch_policy_value_cpu(
@@ -402,17 +410,6 @@ impl<B: Backend> HydraModel<B> {
         }
     }
 
-    pub fn batch_policy_value_cpu_reuse(
-        &self,
-        observations: &[[f32; OBS_SIZE]],
-        device: &<B as burn::tensor::backend::BackendTypes>::Device,
-        flat_buf: &mut Vec<f32>,
-        outputs: &mut Vec<([f32; HYDRA_ACTION_SPACE], f32)>,
-    ) -> Vec<([f32; HYDRA_ACTION_SPACE], f32)> {
-        self.fill_batch_policy_value_cpu(observations, device, flat_buf, outputs);
-        std::mem::take(outputs)
-    }
-
     pub fn fill_batch_value_cpu(
         &self,
         observations: &[[f32; OBS_SIZE]],
@@ -442,17 +439,6 @@ impl<B: Backend> HydraModel<B> {
             .expect("batch value extraction failed");
         values_out.clear();
         values_out.extend_from_slice(values);
-    }
-
-    pub fn batch_value_cpu_reuse(
-        &self,
-        observations: &[[f32; OBS_SIZE]],
-        device: &<B as burn::tensor::backend::BackendTypes>::Device,
-        flat_buf: &mut Vec<f32>,
-        values_out: &mut Vec<f32>,
-    ) -> Vec<f32> {
-        self.fill_batch_value_cpu(observations, device, flat_buf, values_out);
-        std::mem::take(values_out)
     }
 
     /// Runs a batch of observations through the full model and returns
@@ -606,12 +592,24 @@ impl<B: Backend> HydraModel<B> {
         );
         let packed = module::linear(pooled, packed_weight, Some(packed_bias));
         let batch = packed.dims()[0];
-        let policy_logits = packed.clone().slice([0..batch, 0..46]);
-        let value = packed.clone().slice([0..batch, 46..47]).tanh();
-        let score_pdf = packed.clone().slice([0..batch, 47..111]);
-        let score_cdf = packed.clone().slice([0..batch, 111..175]);
-        let opp_tenpai = packed.clone().slice([0..batch, 175..178]);
-        let grp = packed.slice([0..batch, 178..202]);
+        debug_assert_eq!(packed.dims()[1], BASE_LINEAR_HEAD_WIDTH);
+        let policy_logits = packed
+            .clone()
+            .slice([0..batch, POLICY_HEAD_START..VALUE_HEAD_START]);
+        let value = packed
+            .clone()
+            .slice([0..batch, VALUE_HEAD_START..SCORE_PDF_HEAD_START])
+            .tanh();
+        let score_pdf = packed
+            .clone()
+            .slice([0..batch, SCORE_PDF_HEAD_START..SCORE_CDF_HEAD_START]);
+        let score_cdf = packed
+            .clone()
+            .slice([0..batch, SCORE_CDF_HEAD_START..OPP_TENPAI_HEAD_START]);
+        let opp_tenpai = packed
+            .clone()
+            .slice([0..batch, OPP_TENPAI_HEAD_START..GRP_HEAD_START]);
+        let grp = packed.slice([0..batch, GRP_HEAD_START..BASE_LINEAR_HEAD_WIDTH]);
         BaseLinearHeadOutput {
             policy_logits,
             value,

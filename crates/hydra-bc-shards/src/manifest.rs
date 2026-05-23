@@ -175,6 +175,19 @@ pub fn checked_compact_record_size(flags: u32) -> Result<u32, String> {
     Ok(size)
 }
 
+/// Returns total record payload bytes, rejecting overflow before allocation or I/O.
+pub fn checked_record_bytes(sample_count: u64, record_size: u32) -> Result<u64, String> {
+    sample_count
+        .checked_mul(u64::from(record_size))
+        .ok_or_else(|| "BC shard record byte count overflow".to_string())
+}
+
+/// Returns encoded record buffer length for an in-memory sample slice.
+pub fn checked_encoded_record_len(sample_count: usize, record_size: u32) -> Result<usize, String> {
+    let byte_count = checked_record_bytes(sample_count as u64, record_size)?;
+    usize::try_from(byte_count).map_err(|_| "BC shard record byte count overflow".to_string())
+}
+
 /// BC shard data split.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -567,12 +580,7 @@ pub fn validate_bc_shard_split_manifest_contract(
             ));
         }
         let expected_byte_len = (BC_SHARD_HEADER_SIZE as u64)
-            .checked_add(
-                shard
-                    .sample_count
-                    .checked_mul(u64::from(shard.record_size))
-                    .ok_or_else(|| "BC shard descriptor byte_len overflow".to_string())?,
-            )
+            .checked_add(checked_record_bytes(shard.sample_count, shard.record_size)?)
             .ok_or_else(|| "BC shard descriptor byte_len overflow".to_string())?;
         if shard.byte_len != expected_byte_len {
             return Err(format!(

@@ -11,15 +11,7 @@ fn encoder_geometry_abi_constants_are_frozen() {
 }
 
 #[test]
-fn baseline_layout_metadata_covers_exact_85_prefix() {
-    assert_eq!(BASELINE_LAYOUT[0].start, 0);
-    let mut cursor = 0;
-    for range in BASELINE_LAYOUT {
-        assert_eq!(range.start, cursor);
-        assert!(range.end > range.start);
-        cursor = range.end;
-    }
-    assert_eq!(cursor, BASELINE_CHANNELS);
+fn baseline_prefix_ends_where_search_channels_begin() {
     assert_eq!(BASELINE_CHANNELS * NUM_TILES, CH_SEARCH * NUM_TILES);
 }
 

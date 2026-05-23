@@ -18,8 +18,9 @@ pub use manifest::{
     OPTIONAL_ACTION_MASK_BYTES, ORACLE_FLOAT32_BYTES, ORACLE_MASK_BYTES, PACKED_ACTION_MASK_BYTES,
     PACKED_LEGAL_MASK_BYTES, PACKED_SPATIAL_MASK_BYTES, PLAYER_COUNT, SPATIAL_TARGET_SIZE,
     STORAGE_LAYOUT_COMPACT, TENPAI_BYTES, TILE_COUNT, TILE34_BITSET_BYTES, TILE34_COUNT_BYTES,
-    checked_compact_record_size, validate_bc_shard_manifest_contract,
-    validate_bc_shard_split_manifest_contract, validate_feature_flags,
+    checked_compact_record_size, checked_encoded_record_len, checked_record_bytes,
+    validate_bc_shard_manifest_contract, validate_bc_shard_split_manifest_contract,
+    validate_feature_flags,
 };
 pub use reader::{BcShardReader, load_bc_shard_reader, read_bc_shard_manifest};
 pub use writer::{

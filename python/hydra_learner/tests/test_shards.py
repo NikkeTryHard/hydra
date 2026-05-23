@@ -10,13 +10,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from hydra_learner.raw_mjai_stream import (
-    RawMjaiBridgeStats,
-    RawMjaiPinnedStream,
-    build_raw_mjai_stream_command,
-    decode_batch,
-)
-from hydra_learner.shards import (
+from hydra_learner.raw_mjai import RawMjaiBridgeStats, RawMjaiPinnedStream
+from hydra_learner.raw_mjai_codec import decode_batch
+from hydra_learner.raw_mjai_direct import build_raw_mjai_stream_command
+from hydra_learner.shard_contracts import (
     ACTION_SPACE,
     BC_BASE_RECORD_SIZE,
     BC_RECORD_SIZE_WITH_ALL_OPTIONALS,
@@ -30,9 +27,9 @@ from hydra_learner.shards import (
     OBS_SIZE,
     SCORE_BIN_MIN,
     TILE_WIDTH,
-    BcShardReader,
-    validate_manifest,
 )
+from hydra_learner.shard_manifest import validate_manifest
+from hydra_learner.shard_reader import BcShardReader
 
 
 def _empty_obs_facts() -> bytearray:
@@ -164,8 +161,8 @@ def test_raw_mjai_stream_command_uses_default_rust_env() -> None:
     assert "--augment" in cmd
 
 
-def test_raw_mjai_pinned_ffi_requires_explicit_library(tmp_path: Path) -> None:
-    missing = tmp_path / "libhydra_raw_mjai_ffi.so"
+def test_raw_mjai_pinned_pyo3_requires_explicit_library(tmp_path: Path) -> None:
+    missing = tmp_path / "libhydra_raw_mjai_pyo3.so"
     with pytest.raises(ImportError):
         RawMjaiPinnedStream(
             data_dirs=[Path("/data/mjai")],

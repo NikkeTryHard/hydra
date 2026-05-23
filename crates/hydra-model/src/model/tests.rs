@@ -18,7 +18,7 @@ fn tiny_actor_config() -> HydraModelConfig {
         .with_se_bottleneck(1)
 }
 
-fn tiny_learner_config() -> HydraModelConfig {
+fn tiny_reference_config() -> HydraModelConfig {
     HydraModelConfig::new(2)
         .with_input_channels(NUM_CHANNELS)
         .with_hidden_channels(4)
@@ -44,7 +44,7 @@ fn assert_output_shapes(out: &HydraOutput<B>, batch: usize) {
 }
 
 #[test]
-fn actor_net_all_output_shapes() {
+fn hydra_model_all_output_shapes() {
     let device = Default::default();
     let model = tiny_actor_config().init::<B>(&device);
     let x = Tensor::<B, 3>::zeros([1, NUM_CHANNELS, 34], &device);
@@ -53,9 +53,9 @@ fn actor_net_all_output_shapes() {
 }
 
 #[test]
-fn learner_net_all_output_shapes() {
+fn learner_profile_all_output_shapes() {
     let device = Default::default();
-    let model = tiny_learner_config().init::<B>(&device);
+    let model = tiny_reference_config().init::<B>(&device);
     let x = Tensor::<B, 3>::zeros([1, NUM_CHANNELS, 34], &device);
     let out = model.forward(x);
     assert_output_shapes(&out, 1);
@@ -64,7 +64,7 @@ fn learner_net_all_output_shapes() {
 #[test]
 fn experimental_backbone_profile_preserves_full_output_contract() {
     let device = Default::default();
-    let model = tiny_learner_config()
+    let model = tiny_reference_config()
         .with_backbone_activation(BackboneActivationConfig::Relu)
         .with_backbone_se_every_n(4)
         .with_backbone_norm(BackboneNormConfig::FirstOnly)
@@ -110,19 +110,6 @@ fn init_validates_shape_before_building_model() {
         .with_hidden_channels(5)
         .with_num_groups(4)
         .init::<B>(&device);
-}
-
-#[test]
-fn policy_and_value_cpu_matches_policy_value_cpu() {
-    let device = Default::default();
-    let model = tiny_actor_config().init::<B>(&device);
-    let obs = [0.125f32; OBS_SIZE];
-
-    let direct = model.policy_value_cpu(&obs, &device);
-    let via_helper = model.policy_and_value_cpu(&obs, &device);
-
-    assert_eq!(direct.0, via_helper.0);
-    assert!((direct.1 - via_helper.1).abs() < 1e-6);
 }
 
 #[test]
@@ -176,7 +163,7 @@ fn batch_policy_value_cpu_matches_single_sample_path() {
 }
 
 #[test]
-fn batch_policy_value_cpu_reuse_matches_non_reuse_path() {
+fn fill_batch_policy_value_cpu_matches_non_reuse_path() {
     let device = Default::default();
     let model = tiny_actor_config().init::<B>(&device);
     let obs_a = [0.1f32; OBS_SIZE];
@@ -187,8 +174,8 @@ fn batch_policy_value_cpu_reuse_matches_non_reuse_path() {
     let expected = model.batch_policy_value_cpu(&observations, &device);
     let mut flat_buf = vec![42.0f32; 17];
     let mut outputs_buf = Vec::new();
-    let reused =
-        model.batch_policy_value_cpu_reuse(&observations, &device, &mut flat_buf, &mut outputs_buf);
+    model.fill_batch_policy_value_cpu(&observations, &device, &mut flat_buf, &mut outputs_buf);
+    let reused = &outputs_buf;
 
     assert_eq!(reused.len(), expected.len());
     for ((reuse_logits, reuse_value), (expected_logits, expected_value)) in
@@ -202,7 +189,7 @@ fn batch_policy_value_cpu_reuse_matches_non_reuse_path() {
 }
 
 #[test]
-fn batch_value_cpu_reuse_matches_policy_value_values_on_dirty_buffer() {
+fn fill_batch_value_cpu_matches_policy_value_values_on_dirty_buffer() {
     let device = Default::default();
     let model = tiny_actor_config().init::<B>(&device);
     let observations = [
@@ -214,8 +201,8 @@ fn batch_value_cpu_reuse_matches_policy_value_values_on_dirty_buffer() {
     let expected = model.batch_policy_value_cpu(&observations, &device);
     let mut flat_buf = vec![13.0f32; 29];
     let mut values_buf = Vec::new();
-    let values =
-        model.batch_value_cpu_reuse(&observations, &device, &mut flat_buf, &mut values_buf);
+    model.fill_batch_value_cpu(&observations, &device, &mut flat_buf, &mut values_buf);
+    let values = &values_buf;
 
     assert_eq!(values.len(), expected.len());
     for (value, (_, expected_value)) in values.iter().zip(expected.iter()) {
@@ -224,25 +211,24 @@ fn batch_value_cpu_reuse_matches_policy_value_values_on_dirty_buffer() {
 }
 
 #[test]
-fn reuse_return_api_moves_output_buffer_without_cloning() {
+fn fill_return_api_preserves_output_buffer_capacity() {
     let device = Default::default();
     let model = tiny_actor_config().init::<B>(&device);
     let observations = [[0.05f32; OBS_SIZE]];
     let mut flat_buf = Vec::new();
     let mut outputs_buf = Vec::with_capacity(4);
 
-    let outputs =
-        model.batch_policy_value_cpu_reuse(&observations, &device, &mut flat_buf, &mut outputs_buf);
+    model.fill_batch_policy_value_cpu(&observations, &device, &mut flat_buf, &mut outputs_buf);
 
-    assert_eq!(outputs.len(), observations.len());
-    assert_eq!(outputs_buf.capacity(), 0);
-    assert!(outputs[0].0.iter().all(|value| value.is_finite()));
-    assert!(outputs[0].1.is_finite());
+    assert_eq!(outputs_buf.len(), observations.len());
+    assert!(outputs_buf.capacity() >= 4);
+    assert!(outputs_buf[0].0.iter().all(|value| value.is_finite()));
+    assert!(outputs_buf[0].1.is_finite());
 }
 
 #[test]
 #[cfg(feature = "libtorch-tests")]
-fn batch_value_cpu_reuse_supports_libtorch_bf16_backend() {
+fn fill_batch_value_cpu_supports_libtorch_bf16_backend() {
     type Bf16Backend = LibTorch<bf16>;
 
     let tiny_model_config = HydraModelConfig::new(1)
@@ -257,13 +243,12 @@ fn batch_value_cpu_reuse_supports_libtorch_bf16_backend() {
     let mut flat_buf = vec![7.0f32; 11];
     let mut values_buf = Vec::new();
 
-    let values =
-        model.batch_value_cpu_reuse(&observations, &device, &mut flat_buf, &mut values_buf);
-    assert_eq!(values.len(), observations.len());
-    assert!(values.iter().all(|value| value.is_finite()));
+    model.fill_batch_value_cpu(&observations, &device, &mut flat_buf, &mut values_buf);
+    assert_eq!(values_buf.len(), observations.len());
+    assert!(values_buf.iter().all(|value| value.is_finite()));
 
     let outputs = model.batch_policy_value_cpu(&observations, &device);
-    for (value, (_, expected_value)) in values.iter().zip(outputs.iter()) {
+    for (value, (_, expected_value)) in values_buf.iter().zip(outputs.iter()) {
         assert!((value - expected_value).abs() < 1e-4);
     }
 }

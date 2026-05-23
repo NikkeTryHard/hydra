@@ -5,8 +5,8 @@
 //! forward policies.
 
 pub use hydra_model::model::{
-    ActorNet, HydraForwardPolicy, HydraModel, HydraModelConfig, HydraModelInit, HydraOutput,
-    HydraTrainOutput, LearnerNet, ModelAdvancedHead,
+    HydraForwardPolicy, HydraModel, HydraModelConfig, HydraModelInit, HydraOutput,
+    HydraTrainOutput, ModelAdvancedHead,
 };
 
 use hydra_train_types::{head_gates::AdvancedHead, losses::HydraLossConfig};

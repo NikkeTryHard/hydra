@@ -11,32 +11,30 @@ import numpy as np
 import pytest
 import torch
 
+import hydra_learner.hydra_logging as hydra_logging
 import hydra_learner.train_bc as train_bc
+import hydra_learner.validation as validation
 from hydra_learner.losses import LossWeights
 from hydra_learner.metrics import EvalStats, StepStats, summarize_eval
 from hydra_learner.model import HydraPolicyNet
-from hydra_learner.raw_mjai_stream import BuildProgress, RawMjaiBridgeStats, RawMjaiPinnedQueueStats
-from hydra_learner.shards import PolicyBatch
+from hydra_learner.raw_mjai import BuildProgress, RawMjaiBridgeStats, RawMjaiPinnedQueueStats
+from hydra_learner.shard_contracts import PolicyBatch
 
 if TYPE_CHECKING:
     from _pytest.monkeypatch import MonkeyPatch
-from hydra_learner.train_bc import (
-    PYTHON_VARIANT_DEFAULT,
-    RAW_MJAI_CURSOR_RESUME_ERROR,
+from hydra_learner.checkpointing import RawMjaiResumeOffsets
+from hydra_learner.cli import parse_args, validate_args
+from hydra_learner.constants import PYTHON_VARIANT_DEFAULT
+from hydra_learner.hydra_logging import (
     JsonlLogger,
-    RawMjaiResumeOffsets,
-    RawMjaiValidationSource,
     ScalarEventWriter,
     add_scalars,
-    build_ema_config,
-    ema_weights,
-    evaluate_raw_and_ema,
     log_step_scalars,
     log_validation_scalars,
-    parse_args,
     raw_mjai_scalar_snapshot,
-    validate_args,
 )
+from hydra_learner.optim import build_ema_config, ema_weights
+from hydra_learner.validation import RawMjaiValidationSource, evaluate_raw_and_ema
 
 
 def test_parse_args_defaults_to_compile_max_autotune() -> None:
@@ -113,7 +111,7 @@ def _policy_batch(rows: int, fill: float) -> PolicyBatch:
         grp_target=np.zeros((rows, 24), dtype=np.float32),
         oracle_target=np.zeros((rows, 4), dtype=np.float32),
         oracle_target_mask=np.zeros(rows, dtype=np.float32),
-        tenpai=np.zeros(rows, dtype=np.float32),
+        tenpai=np.zeros((rows, 3), dtype=np.float32),
         opp_next=np.zeros((rows, 102), dtype=np.float32),
         danger=np.zeros((rows, 102), dtype=np.float32),
         danger_mask=np.ones((rows, 102), dtype=np.float32),
@@ -151,7 +149,7 @@ class _ValidationStreamFixture:
 
 def test_scalar_helpers_emit_production_metrics(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     path = tmp_path / "tensorboard"
-    monkeypatch.setattr(train_bc, "SummaryWriter", None)
+    monkeypatch.setattr(hydra_logging, "SummaryWriter", None)
     writer = ScalarEventWriter(path)
     stat = StepStats(
         step_ms=10.0,
@@ -306,7 +304,7 @@ def test_validation_metrics_weight_by_samples() -> None:
 
 def test_raw_train_augment_does_not_imply_validation_augment(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     _ValidationStreamFixture.instances = []
-    monkeypatch.setattr(train_bc, "RawMjaiDirectStream", _ValidationStreamFixture)
+    monkeypatch.setattr(validation, "RawMjaiDirectStream", _ValidationStreamFixture)
     args = _valid_args(
         raw_mjai_data_dirs=[tmp_path / "raw"],
         raw_mjai_prefetch_batches=2,
@@ -322,6 +320,7 @@ def test_raw_train_augment_does_not_imply_validation_augment(tmp_path: Path, mon
     logger = JsonlLogger(tmp_path / "events.jsonl")
 
     source = RawMjaiValidationSource(args=args, events=logger)
+    source.next_batch()
     logger.close()
 
     assert _ValidationStreamFixture.instances[0].kwargs["augment"] is False
@@ -331,7 +330,7 @@ def test_raw_train_augment_does_not_imply_validation_augment(tmp_path: Path, mon
 
 def test_fixed_validation_reuses_same_window(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     _ValidationStreamFixture.instances = []
-    monkeypatch.setattr(train_bc, "RawMjaiDirectStream", _ValidationStreamFixture)
+    monkeypatch.setattr(validation, "RawMjaiDirectStream", _ValidationStreamFixture)
     args = _valid_args(
         raw_mjai_data_dirs=[tmp_path / "raw"],
         raw_mjai_prefetch_batches=2,
@@ -367,7 +366,7 @@ def test_fixed_validation_reuses_same_window(tmp_path: Path, monkeypatch: Monkey
 
 def test_streaming_validation_source_is_logged(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     _ValidationStreamFixture.instances = []
-    monkeypatch.setattr(train_bc, "RawMjaiDirectStream", _ValidationStreamFixture)
+    monkeypatch.setattr(validation, "RawMjaiDirectStream", _ValidationStreamFixture)
     args = _valid_args(
         raw_mjai_data_dirs=[tmp_path / "raw"],
         raw_mjai_prefetch_batches=2,
@@ -388,16 +387,20 @@ def test_streaming_validation_source_is_logged(tmp_path: Path, monkeypatch: Monk
     source.close()
 
     records = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
-    assert len(records) == 1
-    assert records[0]["event"] == "validation_source"
-    assert records[0]["mode"] == "streaming"
-    assert records[0]["requested_batches"] == 2
-    assert records[0]["actual_batches"] == 0
-    assert records[0]["requested_samples"] is None
-    assert records[0]["actual_samples"] == 0
-    assert records[0]["sample_cap_overrun"] == 0
-    assert records[0]["full_batches"] is True
-    assert records[0]["augment"] is True
+    assert [record["event"] for record in records] == [
+        "validation_source_stream_start",
+        "validation_source_stream_started",
+        "validation_source",
+    ]
+    source_record = records[-1]
+    assert source_record["mode"] == "streaming"
+    assert source_record["requested_batches"] == 2
+    assert source_record["actual_batches"] == 0
+    assert source_record["requested_samples"] is None
+    assert source_record["actual_samples"] == 0
+    assert source_record["sample_cap_overrun"] == 0
+    assert source_record["full_batches"] is True
+    assert source_record["augment"] is True
 
 
 def test_validation_source_disabled_without_raw_dirs(tmp_path: Path) -> None:
@@ -406,7 +409,15 @@ def test_validation_source_disabled_without_raw_dirs(tmp_path: Path) -> None:
     logger.close()
 
     assert source.info.actual_batches == 0
-    assert not (tmp_path / "events.jsonl").read_text(encoding="utf-8")
+    records = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert records == [
+        {
+            "event": "validation_source_skipped",
+            "validation_steps": 2,
+            "has_raw_mjai": False,
+            "ts": records[0]["ts"],
+        }
+    ]
 
 
 class _FakePinnedRaw:
@@ -605,7 +616,7 @@ def test_validation_returns_raw_and_ema_metrics_separately(monkeypatch: MonkeyPa
 
     for value in ema.state.values():
         value.add_(100.0)
-    monkeypatch.setattr(train_bc, "evaluate_validation_batches", fake_eval)
+    monkeypatch.setattr(validation, "evaluate_validation_batches", fake_eval)
 
     raw, averaged = evaluate_raw_and_ema(
         cast("RawMjaiValidationSource", _DummyValidationSource()),
@@ -647,7 +658,7 @@ def test_evaluate_raw_and_ema_uses_same_validation_batches(monkeypatch: MonkeyPa
         seen.append([float(batch.obs[0, 0, 0]) for batch, _fetch_ms in validation_batches])
         return {"policy_nll": 1.0, "policy_accuracy": 0.25}
 
-    monkeypatch.setattr(train_bc, "evaluate_validation_batches", fake_eval)
+    monkeypatch.setattr(validation, "evaluate_validation_batches", fake_eval)
 
     raw, averaged = evaluate_raw_and_ema(
         cast("RawMjaiValidationSource", Source()),
@@ -829,7 +840,7 @@ def _valid_args(**overrides: Any) -> argparse.Namespace:
     return argparse.Namespace(**values)
 
 
-def test_raw_full_epoch_resume_without_cursor_hard_errors(tmp_path: Path) -> None:
+def test_raw_full_epoch_resume_without_cursor_is_allowed(tmp_path: Path) -> None:
     args = _valid_args(
         full_epoch=True,
         resume=tmp_path / "checkpoints" / "latest.pt",
@@ -837,20 +848,16 @@ def test_raw_full_epoch_resume_without_cursor_hard_errors(tmp_path: Path) -> Non
         steps=None,
     )
 
-    with pytest.raises(ValueError, match="checkpoint restores weights but raw stream cursor resume is unsupported"):
-        validate_args(args)
-
-    assert RAW_MJAI_CURSOR_RESUME_ERROR.endswith("use fresh output dir or BC shards")
+    validate_args(args)
 
 
-def test_bounded_raw_resume_without_cursor_hard_errors(tmp_path: Path) -> None:
+def test_bounded_raw_resume_without_cursor_is_allowed(tmp_path: Path) -> None:
     args = _valid_args(
         resume=tmp_path / "checkpoints" / "latest.pt",
         raw_mjai_data_dirs=[tmp_path / "raw"],
     )
 
-    with pytest.raises(ValueError, match="checkpoint restores weights but raw stream cursor resume is unsupported"):
-        validate_args(args)
+    validate_args(args)
 
 
 def test_shard_resume_args_unaffected(tmp_path: Path) -> None:
@@ -864,7 +871,7 @@ def test_shard_resume_args_unaffected(tmp_path: Path) -> None:
 
 def test_validation_sample_cap_overrun_is_logged(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     _ValidationStreamFixture.instances = []
-    monkeypatch.setattr(train_bc, "RawMjaiDirectStream", _ValidationStreamFixture)
+    monkeypatch.setattr(validation, "RawMjaiDirectStream", _ValidationStreamFixture)
     args = _valid_args(
         batch=4,
         raw_mjai_data_dirs=[tmp_path / "raw"],
@@ -887,8 +894,10 @@ def test_validation_sample_cap_overrun_is_logged(tmp_path: Path, monkeypatch: Mo
     source.close()
 
     records = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
-    assert records[0]["requested_samples"] == 6
-    assert records[0]["actual_samples"] == 8
-    assert records[0]["sample_cap_overrun"] == 2
-    assert records[0]["requested_batches"] == 2
-    assert records[0]["actual_batches"] == 2
+    source_record = records[-1]
+    assert source_record["event"] == "validation_source_deferred"
+    assert source_record["requested_samples"] == 6
+    assert source_record["actual_samples"] == 0
+    assert source_record["sample_cap_overrun"] == 0
+    assert source_record["requested_batches"] == 2
+    assert source_record["actual_batches"] == 2

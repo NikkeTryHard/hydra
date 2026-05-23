@@ -7,6 +7,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from hydra_learner.batches import targets_for_compiled_loss, targets_from_policy_batch
 from hydra_learner.losses import (
     BaseTargets,
     LossWeights,
@@ -39,16 +40,9 @@ from hydra_learner.model import (
     HydraBaseOutput,
     HydraPolicyNet,
 )
-from hydra_learner.shards import BcShardReader
-from hydra_learner.train_bc import (
-    HydraCompiledLossStep,
-    LrScheduler,
-    LrSchedulerConfig,
-    loss_step_args,
-    run_step,
-    targets_for_compiled_loss,
-    targets_from_policy_batch,
-)
+from hydra_learner.optim import LrScheduler, LrSchedulerConfig
+from hydra_learner.shard_reader import BcShardReader
+from hydra_learner.step import HydraCompiledLossStep, loss_step_args, run_step
 
 
 def test_model_outputs_base_head_shapes_and_finite() -> None:

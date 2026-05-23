@@ -218,6 +218,37 @@ def test_optimizer_resume_matches_uninterrupted_two_steps(tmp_path: Path) -> Non
         torch.testing.assert_close(reloaded.state_dict()[key], value, rtol=1.0e-6, atol=1.0e-7)
 
 
+def test_optimizer_none_foreach_fused_resume_matches_explicit_expected(tmp_path: Path) -> None:
+    model, optimizer = _model_optimizer()
+    ckpt = tmp_path / "ckpt.pt"
+    manifest = _write_manifest(tmp_path, b"manifest-a")
+    save_checkpoint(
+        ckpt,
+        model=model,
+        optimizer=optimizer,
+        model_config=_model_config(),
+        optimizer_config=_optimizer_config(),
+        runtime_config=_runtime_config(),
+        loss_weights=LossWeights(),
+        manifest_path=manifest,
+        global_step=7,
+        samples_seen=14,
+    )
+    expected = OptimizerConfig(name="AdamW", lr=1.0e-3, min_lr=1.0e-6, foreach=False, fused=True)
+    state = load_checkpoint(
+        ckpt,
+        model=model,
+        optimizer=optimizer,
+        expected_model_config=_model_config(),
+        expected_optimizer_config=expected,
+        expected_runtime_config=_runtime_config(),
+        expected_loss_weights=LossWeights(),
+        expected_manifest_path=manifest,
+    )
+
+    assert state.global_step == 7
+
+
 def test_rng_restore_reproduces_next_random_values(tmp_path: Path) -> None:
     model, optimizer = _model_optimizer()
     manifest = _write_manifest(tmp_path, b"manifest-a")

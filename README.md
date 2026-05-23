@@ -101,7 +101,7 @@ pixi run lint
 
 ## Running Hydra
 
-Hydra's user-facing training binary is `train`. It is behind explicit `training` feature because it pulls in Burn, LibTorch, and heavier training dependencies.
+Hydra's user-facing training binary is `train`. It is glue behind explicit `training` feature: parse/env-dispatch/delegate only. CLI/config conversion lives in `hydra-train-runtime::config` + `hydra-train-runtime::config::python`; execution lives in `hydra-train-exec`.
 
 Compile training binary:
 
@@ -140,12 +140,12 @@ pixi run cargo run -p hydra-train --no-default-features --features training --bi
 Notes:
 
 - Config examples and operator details live in [`docs/TRAINING_RUNBOOK.md`](docs/TRAINING_RUNBOOK.md).
-- Plain BC with `bc_shards_manifest_path` trains compact shards. Without shard manifest, YAML `raw_mjai_data_dirs` streams explicit raw-MJAI roots when set; otherwise `data_dir` streams one raw-MJAI input. Default transport is pinned PyO3 with stdout fallback.
-- Default plain-BC backend is Python/PyTorch. Rust owns replay parsing, shard building, manifest validation, and orchestration; Python owns BC model/loss/optimizer/compile/checkpoint.
-- Use `bc_backend: rust_burn` or CLI `--bc-backend rust-burn` only for legacy Rust/Burn debugging or advanced labels not supported by Python default yet: ExIt, DeltaQ, belief, mixture, opponent hand type.
+- Plain BC with `bc_shards_manifest_path` trains/resumes compact shards. Without shard manifest, YAML `raw_mjai_data_dirs` streams explicit raw-MJAI roots when set; otherwise `data_dir` streams one raw-MJAI input. Raw-MJAI output dirs must be fresh; resume is fail-closed until stream cursor resume exists. Default bridge is `hydra-raw-mjai-pyo3` pinned PyO3, with stdout fallback.
+- Default plain-BC backend is Python/PyTorch. Rust owns replay parsing, shard building, manifest validation, launcher glue, and config conversion via `hydra-train-runtime::config::python`. Python owner is `hydra_learner.cli`; train loop/modules live under `hydra_learner`, while `train_bc.py` and `scripts/hydra_pytorch_oracle.py` are compatibility entrypoints only.
+- Use `bc_backend: rust_burn` or CLI `--bc-backend rust-burn` only for feature-gated legacy/debug or advanced labels not supported by Python default yet: ExIt, DeltaQ, belief, mixture, opponent hand type.
 - `device: cpu` works for CPU Rust paths. Default Python BC expects CUDA for throughput.
 - Python BC run artifacts: `logs/events.jsonl`, `logs/train_steps.jsonl`, `checkpoints/latest.pt`, `tensorboard/events.out.tfevents.*`, `python_learner_result.json`.
-- Resume Python BC with `resume_checkpoint: <output_dir>/checkpoints/latest.pt` in YAML or `--python-resume <checkpoint>` in direct CLI mode.
+- Resume Python BC only on shard-backed runs with `resume_checkpoint: <output_dir>/checkpoints/latest.pt`, `resume_latest: true`, or direct `--python-resume <checkpoint>`.
 - `--python-background` detaches learner, writes `train.pid`, redirects stdout/stderr to `logs/`, and prints `tail -f <output_dir>/logs/train_steps.jsonl`.
 - `--python-launch-tensorboard` starts TensorBoard on first free port at or above `--python-tensorboard-port` and reports URL.
 - CUDA graph support is explicit and compile-checked with:
@@ -192,9 +192,9 @@ Avoid direct system `cargo` for normal Hydra work. It can pick host PyTorch/libt
 | `crates/hydra-core` | Public runtime facade, simulator, action/tile API, seeding |
 | `crates/hydra-encoder`, `crates/hydra-safety`, `crates/hydra-belief-search` | Encoder, safety, belief/search impl crates |
 | `crates/hydra-data-core`, `crates/hydra-replay-loader`, `crates/hydra-replay-sidecar`, `crates/hydra-sample-cache` | Sample DTOs, replay loading, sidecars, parsed cache |
-| `crates/hydra-bc-shards`, `crates/hydra-raw-mjai-ffi` | BC shard format and raw-MJAI pinned PyO3 bridge |
+| `crates/hydra-bc-shards`, `crates/hydra-raw-mjai-pyo3` | BC shard format and raw-MJAI pinned PyO3 bridge |
 | `crates/hydra-model`, `crates/hydra-train-algo`, `crates/hydra-train-types` | Model/loss/coordination types |
-| `crates/hydra-train-runtime`, `crates/hydra-train-exec`, `crates/hydra-train` | Training config/contracts, execution, user binaries |
+| `crates/hydra-train-runtime`, `crates/hydra-train-exec`, `crates/hydra-train` | Training config/contracts including Python option conversion, execution, train-bin glue |
 | `python/hydra_learner` | Default Python/PyTorch BC learner |
 | `docs/` | Current user/operator docs |
 | `research/` | Research notes, design docs, evidence archive |

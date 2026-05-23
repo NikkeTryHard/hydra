@@ -19,7 +19,7 @@ members = [
     "crates/hydra-search-labels",
     "crates/hydra-train-runtime",
     "crates/hydra-train-exec",
-    "crates/hydra-raw-mjai-ffi",
+    "crates/hydra-raw-mjai-pyo3",
     "crates/hydra-train",
 ]
 

@@ -1,11 +1,16 @@
 # hydra-train-algo
 
-Crate-local map for pure training algorithms shared by Hydra training crates.
+Crate-local map for pure Rust/Burn training algorithms shared by Hydra training crates.
+
+Python/PyTorch owns default plain BC losses and optimizer path. This crate
+remains Rust/Burn reference/fallback owner for optional ExIt BC helpers,
+RL/self-play algorithms, distillation, DRDA, GAE, and advanced-head tensor
+losses.
 
 ## Owns
 
 - ACH helpers.
-- BC algorithm/loss helpers.
+- Rust/Burn BC and ExIt helper losses; not default Python BC owner.
 - Distillation helpers.
 - DRDA helpers.
 - GAE helpers.

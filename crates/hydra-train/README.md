@@ -9,12 +9,12 @@ Operator docs:
 
 ## Owns
 
-`hydra-train` is now user-facing binary package plus marker library.
+`hydra-train` is user-facing binary package plus marker library; it stays glue over runtime/exec crates.
 
 Owns:
 - training/data CLI entrypoints listed below
 - env dispatch / process exit boundary in `src/bin/train.rs`
-- tiny binary-specific glue where CLI shape requires it
+- tiny binary-specific glue where CLI shape requires it; Python/raw/shard execution delegates to `hydra-train-exec`
 
 Does not own:
 - CLI/config/preflight/probe/status contracts: `hydra-train-runtime`
@@ -49,7 +49,7 @@ Cargo target truth comes from Cargo metadata: explicit `[[bin]]` entries plus au
 
 | Binary | Purpose |
 |---|---|
-| `train` | main entrypoint: normal train, markdown preflight benchmark, probe-only, DeltaQ promotion |
+| `train` | main glue entrypoint: normal train, markdown preflight benchmark, probe-only, DeltaQ promotion |
 | `mjai_audit` | replay corpus/archive audit, failure buckets, optional failure inventories |
 | `build_bc_shards` | build BC shard datasets/manifests from replay corpora |
 | `build_replay_exit_sidecar` | build replay-side ExIt sidecars |

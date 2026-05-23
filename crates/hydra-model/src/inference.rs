@@ -1,4 +1,4 @@
-//! Inference server: fast path (network + SaF) and slow path (pondered AFBS).
+//! Legacy/reference Rust/Burn inference server: network + SaF plus pondered AFBS.
 
 use burn::prelude::*;
 use hydra_core::action::{AGARI, HYDRA_ACTION_SPACE};
@@ -6,7 +6,7 @@ use hydra_core::afbs::{PonderCache, PonderResult, TrustLevel};
 use hydra_core::encoder::{NUM_CHANNELS, NUM_TILES};
 use std::sync::Arc;
 
-use crate::model::ActorNet;
+use crate::model::HydraModel;
 use crate::saf::{SafConfig, SafMlp, apply_saf_logit, saf_tensor_from_observation};
 
 pub const OBS_FLAT_SIZE: usize = NUM_CHANNELS * NUM_TILES;
@@ -37,7 +37,7 @@ impl InferenceConfig {
 }
 
 pub struct InferenceServer<B: Backend> {
-    pub actor: ActorNet<B>,
+    pub actor: HydraModel<B>,
     pub ponder_cache: Arc<PonderCache>,
     pub saf_mlp: SafMlp<B>,
     pub config: InferenceConfig,
@@ -47,7 +47,7 @@ pub struct InferenceServer<B: Backend> {
 
 impl<B: Backend> InferenceServer<B> {
     pub fn new(
-        actor: ActorNet<B>,
+        actor: HydraModel<B>,
         ponder_cache: Arc<PonderCache>,
         saf_mlp: SafMlp<B>,
         saf_alpha: f32,
@@ -65,7 +65,7 @@ impl<B: Backend> InferenceServer<B> {
     }
 
     pub fn from_configs(
-        actor: ActorNet<B>,
+        actor: HydraModel<B>,
         saf_config: &SafConfig,
         config: InferenceConfig,
         device: <B as burn::tensor::backend::BackendTypes>::Device,
