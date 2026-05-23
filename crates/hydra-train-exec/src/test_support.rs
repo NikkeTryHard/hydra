@@ -9,6 +9,7 @@ use hydra_train_runtime::config::{
 pub(crate) fn dummy_train_config() -> TrainConfig {
     TrainConfig {
         data_dir: std::env::temp_dir().join("hydra-test-data"),
+        raw_mjai_data_dirs: Vec::new(),
         output_dir: std::env::temp_dir().join("hydra-test-out"),
         num_epochs: 1,
         batch_size: 256,
@@ -23,6 +24,7 @@ pub(crate) fn dummy_train_config() -> TrainConfig {
         source_filters: hydra_train_runtime::config::SourceFilterConfig::default(),
         augment: true,
         resume_checkpoint: None,
+        resume_latest: true,
         seed: 0,
         advanced_loss: None,
         python_residual_profile: Default::default(),

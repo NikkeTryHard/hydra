@@ -35,6 +35,7 @@ dist/
 .codebase-memory/
 .cbmignore
 /local/
+/training/
 
 # Generated Kaggle runtime payloads are intentionally local-only.
 /notebooks/offline-bundle/*.bin
@@ -43,3 +44,4 @@ dist/
 
 # Local machine preflight configs
 /local-unsafe-preflight-*.yaml
+/training/archived-runs/

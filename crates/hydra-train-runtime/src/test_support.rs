@@ -12,6 +12,7 @@ use crate::config::{BcHyperparamConfig, TrainConfig, ValidationGateConfig};
 pub(crate) fn dummy_train_config() -> TrainConfig {
     TrainConfig {
         data_dir: std::env::temp_dir().join("hydra-test-data"),
+        raw_mjai_data_dirs: Vec::new(),
         output_dir: std::env::temp_dir().join("hydra-test-out"),
         num_epochs: 1,
         batch_size: 256,
@@ -26,10 +27,12 @@ pub(crate) fn dummy_train_config() -> TrainConfig {
         source_filters: crate::config::SourceFilterConfig::default(),
         augment: true,
         resume_checkpoint: None,
+        resume_latest: true,
         seed: 0,
         advanced_loss: None,
         python_residual_profile: Default::default(),
         python_variant: Default::default(),
+        python_model_profile: Default::default(),
         bc_head_profile: crate::config::BcHeadProfile::default(),
         experimental_backbone_profile: None,
         python_raw_mjai_transport: Default::default(),
@@ -54,6 +57,7 @@ pub(crate) fn dummy_train_config() -> TrainConfig {
         tensorboard_port: 6006,
         background: false,
         max_train_steps: None,
+        full_epoch: false,
         max_validation_batches: None,
         max_validation_samples: None,
         precision_mode: crate::config::PrecisionMode::Fp32,

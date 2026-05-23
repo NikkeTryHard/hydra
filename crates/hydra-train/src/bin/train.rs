@@ -1,5 +1,6 @@
 use colored::control as color_control;
 use std::env;
+use std::path::PathBuf;
 
 use hydra_train_exec::graph_probe::{handle_graph_probe_child, handle_graph_probe_parent};
 use hydra_train_exec::modes::{handle_list_devices_mode, run_train_modes};
@@ -152,6 +153,19 @@ fn run() -> Result<(), String> {
     run_train_modes(cli, config)
 }
 
+fn python_resume_checkpoint(config: &hydra_train_runtime::config::TrainConfig) -> Option<PathBuf> {
+    if let Some(path) = &config.resume_checkpoint {
+        return Some(path.clone());
+    }
+    if config.resume_latest {
+        let latest = config.output_dir.join("checkpoints/latest.pt");
+        if latest.is_file() {
+            return Some(latest);
+        }
+    }
+    None
+}
+
 fn python_options_from_config(
     config: &hydra_train_runtime::config::TrainConfig,
 ) -> Result<PythonLearnerCliOptions, String> {
@@ -199,6 +213,7 @@ fn python_options_from_config(
             );
         }
     }
+
     let advanced = config.advanced_loss.as_ref();
     Ok(PythonLearnerCliOptions {
         bc_shards_manifest: config
@@ -209,7 +224,11 @@ fn python_options_from_config(
             PythonLearnerInput::BcShards { manifest }
         } else {
             PythonLearnerInput::RawMjai {
-                data_dir: config.data_dir.clone(),
+                data_dirs: if config.raw_mjai_data_dirs.is_empty() {
+                    vec![config.data_dir.clone()]
+                } else {
+                    config.raw_mjai_data_dirs.clone()
+                },
                 max_games: None,
                 max_samples: None,
                 train_fraction: config.train_fraction,
@@ -223,10 +242,19 @@ fn python_options_from_config(
         microbatch_size: config.microbatch_size.unwrap_or(1024),
         variant: config.python_variant,
         residual_profile: config.python_residual_profile,
+        hidden: config.python_model_profile.hidden(),
+        blocks: config.python_model_profile.blocks(),
+        bottleneck: config.python_model_profile.bottleneck(),
         warmup_steps: config.bc.warmup_steps,
-        steps: config.max_train_steps.unwrap_or(30),
+        steps: config.max_train_steps,
+        full_epoch: config.full_epoch,
+        validation_steps: config
+            .max_validation_samples
+            .unwrap_or(0)
+            .div_ceil(config.batch_size),
+        validation_every: config.validate_every_n_steps,
         checkpoint_out: None,
-        resume: config.resume_checkpoint.clone(),
+        resume: python_resume_checkpoint(config),
         checkpoint_every_steps: config.checkpoint_every_n_steps,
         log_every_steps: config.log_every_n_steps,
         keep_step_checkpoints: config.keep_step_checkpoints,

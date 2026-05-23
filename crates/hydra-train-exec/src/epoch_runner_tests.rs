@@ -62,6 +62,7 @@ fn batch_stats(sample_count: usize, total_loss: f64, policy_agreement: f64) -> B
 fn dummy_config() -> TrainConfig {
     TrainConfig {
         data_dir: PathBuf::from("/data"),
+        raw_mjai_data_dirs: Vec::new(),
         output_dir: PathBuf::from("/output"),
         num_epochs: 5,
         batch_size: 16,
@@ -76,6 +77,7 @@ fn dummy_config() -> TrainConfig {
         source_filters: hydra_train_runtime::config::SourceFilterConfig::default(),
         augment: true,
         resume_checkpoint: None,
+        resume_latest: true,
         seed: 0,
         advanced_loss: None,
         python_residual_profile: Default::default(),

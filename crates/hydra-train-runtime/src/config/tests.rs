@@ -1,4 +1,5 @@
 use super::*;
+use std::path::PathBuf;
 
 #[test]
 fn parse_pf_repetitions_aliases_required_successes() {
@@ -326,7 +327,7 @@ fn parse_args_accepts_explicit_python_learner_alias() {
     assert_eq!(python.device, "cuda:0");
     assert_eq!(python.variant, PythonLearnerVariant::CompileDefault);
     assert_eq!(python.warmup_steps, 1);
-    assert_eq!(python.steps, 3);
+    assert_eq!(python.steps, Some(3));
     assert!(python.compile_fullgraph_check);
     assert_eq!(
         python.residual_profile,
@@ -401,4 +402,37 @@ fn parse_args_rejects_python_learner_without_manifest() {
     ])
     .expect_err("python learner requires manifest");
     assert!(err.contains("requires --bc-shards-manifest"));
+}
+
+#[test]
+fn repository_example_config_matches_train_config_contract() {
+    let text =
+        std::fs::read_to_string("../../example.yaml").expect("example config should be readable");
+    let config: TrainConfig = serde_yaml::from_str(&text).expect("example config should parse");
+
+    assert!(config.full_epoch);
+    assert_eq!(config.max_train_steps, None);
+    assert_eq!(
+        config.python_model_profile,
+        PythonModelProfileConfig::Balanced
+    );
+    assert_eq!(config.batch_size, 3072);
+    assert!(config.resume_latest);
+}
+
+#[test]
+fn config_accepts_explicit_raw_mjai_data_dirs() {
+    let text = r#"data_dir: /fallback
+raw_mjai_data_dirs:
+  - /dataset/a
+  - /dataset/b
+output_dir: /out
+num_epochs: 1
+"#;
+    let config: TrainConfig = serde_yaml::from_str(text).expect("config should parse");
+
+    assert_eq!(
+        config.raw_mjai_data_dirs,
+        vec![PathBuf::from("/dataset/a"), PathBuf::from("/dataset/b")]
+    );
 }

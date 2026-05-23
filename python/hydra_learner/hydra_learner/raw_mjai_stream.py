@@ -272,7 +272,7 @@ class RawMjaiDirectStream:
     def __init__(
         self,
         *,
-        data_dir: Path,
+        data_dirs: Sequence[Path],
         batch_size: int,
         prefetch_batches: int,
         queue_bound: int,
@@ -291,7 +291,9 @@ class RawMjaiDirectStream:
             raise ValueError("raw MJAI queue bound must be > 0")
         if worker_threads <= 0:
             raise ValueError("raw MJAI worker threads must be > 0")
-        self.data_dir = data_dir
+        self.data_dirs = tuple(data_dirs)
+        if not self.data_dirs:
+            raise ValueError("raw MJAI direct stream requires at least one data dir")
         self.batch_size = batch_size
         self.prefetch_batches = prefetch_batches
         self.queue_bound = queue_bound
@@ -312,7 +314,7 @@ class RawMjaiDirectStream:
 
     @property
     def manifest_path(self) -> Path:
-        return self.data_dir
+        return self.data_dirs[0]
 
     @property
     def manifest_summary(self) -> ManifestSummary | None:
@@ -321,7 +323,7 @@ class RawMjaiDirectStream:
         if samples == 0:
             return None
         return ManifestSummary(
-            path=self.data_dir,
+            path=self.data_dirs[0],
             train_samples=samples,
             validation_samples=0,
             shard_count=0,
@@ -333,7 +335,7 @@ class RawMjaiDirectStream:
         self._started = time.perf_counter()
         self._process = subprocess.Popen(
             build_raw_mjai_stream_command(
-                data_dir=self.data_dir,
+                data_dirs=self.data_dirs,
                 batch_size=self.batch_size,
                 max_games=self.max_games,
                 max_samples=self.max_samples,
@@ -494,7 +496,7 @@ class RawMjaiPinnedStream:
     def __init__(
         self,
         *,
-        data_dir: Path,
+        data_dirs: Sequence[Path],
         batch_size: int,
         queue_bound: int,
         worker_threads: int,
@@ -515,11 +517,13 @@ class RawMjaiPinnedStream:
         if stream_cls is None:
             module = cast(Any, _load_raw_mjai_module(library_path))
             stream_cls = module.RawMjaiStream
-        self.data_dir = data_dir
+        self.data_dirs = tuple(data_dirs)
         self._close_timeout_s = close_timeout_s
         self.batch_size = batch_size
+        if not self.data_dirs:
+            raise ValueError("raw MJAI pinned stream requires at least one data dir")
         self._stream = stream_cls(
-            str(data_dir),
+            [str(path) for path in self.data_dirs],
             batch_size=batch_size,
             train_fraction=train_fraction,
             worker_threads=worker_threads,
@@ -551,14 +555,14 @@ class RawMjaiPinnedStream:
 
     @property
     def manifest_path(self) -> Path:
-        return self.data_dir
+        return self.data_dirs[0]
 
     @property
     def manifest_summary(self) -> ManifestSummary | None:
         if self._progress.samples == 0:
             return None
         return ManifestSummary(
-            path=self.data_dir,
+            path=self.data_dirs[0],
             train_samples=self._progress.samples,
             validation_samples=0,
             shard_count=0,
@@ -937,7 +941,7 @@ def _required(
 
 def build_raw_mjai_stream_command(
     *,
-    data_dir: Path,
+    data_dirs: Sequence[Path],
     batch_size: int,
     max_games: int | None,
     max_samples: int | None,
@@ -962,19 +966,23 @@ def build_raw_mjai_stream_command(
         "--bin",
         "raw_mjai_stream",
         "--",
-        "--input",
-        str(data_dir),
-        "--batch-size",
-        str(batch_size),
-        "--queue-bound",
-        str(queue_bound),
-        "--num-threads",
-        str(worker_threads),
-        "--train-fraction",
-        str(train_fraction),
-        "--split",
-        split,
     ]
+    for data_dir in data_dirs:
+        cmd.extend(["--input", str(data_dir)])
+    cmd.extend(
+        [
+            "--batch-size",
+            str(batch_size),
+            "--queue-bound",
+            str(queue_bound),
+            "--num-threads",
+            str(worker_threads),
+            "--train-fraction",
+            str(train_fraction),
+            "--split",
+            split,
+        ]
+    )
     if max_games is not None:
         cmd.extend(["--max-games", str(max_games)])
     if max_samples is not None:
@@ -985,11 +993,11 @@ def build_raw_mjai_stream_command(
 
 
 def raw_mjai_config_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
-    data_dir = getattr(args, "raw_mjai_data_dir", None)
-    if data_dir is None:
+    data_dirs = getattr(args, "raw_mjai_data_dirs", None)
+    if not data_dirs:
         return None
     return {
-        "data_dir": str(data_dir),
+        "data_dirs": [str(path) for path in data_dirs],
         "prefetch_batches": args.raw_mjai_prefetch_batches,
         "queue_bound": args.raw_mjai_queue_bound,
         "worker_threads": args.raw_mjai_worker_threads,
@@ -1004,7 +1012,7 @@ def raw_mjai_config_from_args(args: argparse.Namespace) -> dict[str, Any] | None
 
 
 def add_raw_mjai_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--raw-mjai-data-dir", type=Path)
+    parser.add_argument("--raw-mjai-data-dir", type=Path, action="append", dest="raw_mjai_data_dirs")
     parser.add_argument("--raw-mjai-prefetch-batches", type=int, default=2)
     parser.add_argument("--raw-mjai-queue-bound", type=int, default=8)
     parser.add_argument("--raw-mjai-worker-threads", type=int, default=20)
@@ -1019,11 +1027,13 @@ def add_raw_mjai_args(parser: argparse.ArgumentParser) -> None:
 
 def validate_raw_mjai_source_args(args: argparse.Namespace) -> None:
     has_manifest = args.manifest is not None
-    has_raw = args.raw_mjai_data_dir is not None
+    has_raw = bool(args.raw_mjai_data_dirs)
     if has_manifest == has_raw:
         raise ValueError("provide exactly one of --manifest or --raw-mjai-data-dir")
-    if has_raw and not args.raw_mjai_data_dir.exists():
-        raise ValueError(f"raw MJAI data dir does not exist: {args.raw_mjai_data_dir}")
+    if has_raw:
+        for data_dir in args.raw_mjai_data_dirs:
+            if not data_dir.exists():
+                raise ValueError(f"raw MJAI data dir does not exist: {data_dir}")
     if has_raw and args.raw_mjai_train_fraction <= 0.0:
         raise ValueError("--raw-mjai-train-fraction must be > 0")
 

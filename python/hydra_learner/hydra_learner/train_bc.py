@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import math
 import os
@@ -27,6 +28,7 @@ except (ImportError, ModuleNotFoundError):
 from hydra_learner.checkpoint import (
     ModelConfig,
     OptimizerConfig,
+    ResumeState,
     RuntimeConfig,
     load_checkpoint,
     save_checkpoint,
@@ -488,7 +490,25 @@ def evaluate_batch(
         breakdown = base_loss(outputs, targets, weights)
         masked_logits = outputs.policy_logits.masked_fill(~targets.legal_mask.to(dtype=torch.bool), -1.0e9)
         pred = masked_logits.argmax(dim=1)
-        accuracy = (pred == targets.policy_target.to(dtype=torch.int64)).to(dtype=torch.float32).mean()
+        target = targets.policy_target.to(dtype=torch.int64)
+        accuracy = (pred == target).to(dtype=torch.float32).mean()
+        topk = masked_logits.topk(k=min(5, masked_logits.shape[1]), dim=1).indices
+        top3_accuracy = (topk[:, : min(3, topk.shape[1])] == target[:, None]).any(dim=1).to(dtype=torch.float32).mean()
+        top5_accuracy = (topk == target[:, None]).any(dim=1).to(dtype=torch.float32).mean()
+        probs = torch.softmax(masked_logits, dim=1)
+        target_probs = probs.gather(1, target[:, None]).squeeze(1).clamp_min(1.0e-12)
+        confidence = probs.max(dim=1).values
+        correct = (pred == target).to(dtype=torch.float32)
+        ece = obs.new_zeros(())
+        for bucket in range(10):
+            lower = bucket / 10.0
+            upper = (bucket + 1) / 10.0
+            if bucket == 9:
+                mask = (confidence >= lower) & (confidence <= upper)
+            else:
+                mask = (confidence >= lower) & (confidence < upper)
+            if mask.any():
+                ece = ece + mask.to(dtype=torch.float32).mean() * (confidence[mask].mean() - correct[mask].mean()).abs()
     total = float(breakdown.total.detach())
     if not math.isfinite(total):
         raise RuntimeError(f"non-finite validation BC loss: {total}")
@@ -503,6 +523,11 @@ def evaluate_batch(
         score_pdf=float(breakdown.score_pdf.detach()),
         score_cdf=float(breakdown.score_cdf.detach()),
         policy_accuracy=float(accuracy.detach()),
+        policy_top3_accuracy=float(top3_accuracy.detach()),
+        policy_top5_accuracy=float(top5_accuracy.detach()),
+        policy_nll=float((-target_probs.log()).mean().detach()),
+        policy_confidence=float(confidence.mean().detach()),
+        policy_ece=float(ece.detach()),
     )
 
 
@@ -615,19 +640,66 @@ def log_validation_scalars(
     add_scalars(writer, "final_validation" if final else "validation", metrics, global_step)
 
 
-def _progress_scalars(progress: BuildProgress | None) -> dict[str, object]:
+# Raw-MJAI progress counters are stream-local. Add resume offsets before logging so TensorBoard
+# stays monotonic across stop/resume/config restarts.
+def _progress_scalars(progress: BuildProgress | None, offsets: RawMjaiResumeOffsets) -> dict[str, object]:
     if progress is None:
         return {}
     return {
         "progress/complete": progress.complete,
         "progress/build_seconds": progress.build_seconds,
-        "progress/loaded_games": progress.loaded_games,
-        "progress/skipped_games": progress.skipped_games,
-        "progress/samples": progress.samples,
-        "progress/batches": progress.batches,
+        "progress/loaded_games": progress.loaded_games + offsets.loaded_games,
+        "progress/skipped_games": progress.skipped_games + offsets.skipped_games,
+        "progress/samples": progress.samples + offsets.samples,
+        "progress/batches": progress.batches + offsets.batches,
         "progress/max_games_reached": progress.max_games_reached,
         "progress/max_samples_reached": progress.max_samples_reached,
     }
+
+
+@dataclass(frozen=True)
+class RawMjaiResumeOffsets:
+    loaded_games: int = 0
+    skipped_games: int = 0
+    samples: int = 0
+    batches: int = 0
+
+    @classmethod
+    def from_resume(cls, resume_state: ResumeState | None, batch: int) -> RawMjaiResumeOffsets:
+        if resume_state is None:
+            return cls()
+        progress = resume_state.raw_mjai_progress
+        if progress:
+            return cls(
+                loaded_games=progress.get("loaded_games", 0),
+                skipped_games=progress.get("skipped_games", 0),
+                samples=progress.get("samples", resume_state.samples_seen),
+                batches=progress.get("batches", resume_state.samples_seen // batch),
+            )
+        return cls(samples=resume_state.samples_seen, batches=resume_state.samples_seen // batch)
+
+
+def apply_progress_offsets(progress: BuildProgress | None, offsets: RawMjaiResumeOffsets) -> BuildProgress | None:
+    if progress is None:
+        return None
+    return BuildProgress(
+        manifest_path=progress.manifest_path,
+        complete=progress.complete,
+        build_seconds=progress.build_seconds,
+        loaded_games=progress.loaded_games + offsets.loaded_games,
+        skipped_games=progress.skipped_games + offsets.skipped_games,
+        samples=progress.samples + offsets.samples,
+        batches=progress.batches + offsets.batches,
+        max_games_reached=progress.max_games_reached,
+        max_samples_reached=progress.max_samples_reached,
+    )
+
+
+def raw_mjai_progress_dict(progress: BuildProgress | None) -> dict[str, int] | None:
+    if progress is None:
+        return None
+    data = build_progress_json(progress)
+    return {key: value for key, value in data.items() if isinstance(value, int)}
 
 
 def _bridge_scalars(stats: RawMjaiBridgeStats | None) -> dict[str, object]:
@@ -662,7 +734,9 @@ def _queue_scalars(stats: RawMjaiPinnedQueueStats | None) -> dict[str, object]:
 
 
 def raw_mjai_scalar_snapshot(
-    raw_stream: RawMjaiDirectStream | None, raw_pinned: RawMjaiPinnedStream | None
+    raw_stream: RawMjaiDirectStream | None,
+    raw_pinned: RawMjaiPinnedStream | None,
+    offsets: RawMjaiResumeOffsets,
 ) -> dict[str, object]:
     if raw_stream is None and raw_pinned is None:
         return {}
@@ -675,7 +749,7 @@ def raw_mjai_scalar_snapshot(
         progress = raw_pinned.progress()
         bridge_stats = raw_pinned.bridge_stats()
         queue_stats = raw_pinned.queue_stats()
-    return _progress_scalars(progress) | _bridge_scalars(bridge_stats) | _queue_scalars(queue_stats)
+    return _progress_scalars(progress, offsets) | _bridge_scalars(bridge_stats) | _queue_scalars(queue_stats)
 
 
 def log_final_scalars(writer: ScalarEventWriter, result: dict[str, object], global_step: int) -> None:
@@ -740,6 +814,7 @@ def atomic_save_training_checkpoint(
     manifest_path: Path | None,
     global_step: int,
     samples_seen: int,
+    raw_mjai_progress: dict[str, int] | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(f"{path.name}.tmp.{os.getpid()}")
@@ -754,6 +829,7 @@ def atomic_save_training_checkpoint(
         manifest_path=manifest_path,
         global_step=global_step,
         samples_seen=samples_seen,
+        raw_mjai_progress=raw_mjai_progress,
     )
     tmp_path.replace(path)
 
@@ -764,6 +840,23 @@ def checkpoint_paths(args: argparse.Namespace, global_step: int) -> tuple[Path |
     latest = args.checkpoint_dir / "latest.pt"
     step_path = args.checkpoint_dir / f"step_{global_step}.pt" if args.keep_step_checkpoints else None
     return latest, step_path
+
+
+def best_checkpoint_path(args: argparse.Namespace) -> Path | None:
+    if args.checkpoint_dir is None:
+        return None
+    return args.checkpoint_dir / "best.pt"
+
+
+def checkpoint_raw_progress(
+    raw_stream: RawMjaiDirectStream | None,
+    raw_pinned: RawMjaiPinnedStream | None,
+    offsets: RawMjaiResumeOffsets,
+) -> dict[str, int] | None:
+    progress = (
+        raw_stream.progress() if raw_stream is not None else raw_pinned.progress() if raw_pinned is not None else None
+    )
+    return raw_mjai_progress_dict(apply_progress_offsets(progress, offsets))
 
 
 def torch_env() -> dict[str, object]:
@@ -804,6 +897,7 @@ def save_training_checkpoint(
     manifest_path: Path | None,
     global_step: int,
     samples_seen: int,
+    raw_mjai_progress: dict[str, int] | None = None,
 ) -> None:
     save_checkpoint(
         path,
@@ -816,6 +910,7 @@ def save_training_checkpoint(
         manifest_path=manifest_path,
         global_step=global_step,
         samples_seen=samples_seen,
+        raw_mjai_progress=raw_mjai_progress,
     )
 
 
@@ -883,7 +978,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--backbone-profile", choices=BACKBONE_PROFILES, default=BACKBONE_PROFILE_DEFAULT)
     parser.add_argument("--conv-memory-format", choices=CONV_MEMORY_FORMATS, default=CONV_MEMORY_FORMAT_DEFAULT)
     parser.add_argument("--warmup", type=int, default=10)
-    parser.add_argument("--steps", type=int, default=30)
+    parser.add_argument("--steps", type=int)
     parser.add_argument("--profile", action="store_true", help="emit NVTX ranges around measured steps")
     parser.add_argument(
         "--profile-coarse", action="store_true", help="measure whole-step time only to reduce profiler overhead"
@@ -930,6 +1025,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-every-steps", type=int, default=50)
     parser.add_argument("--tensorboard-dir", type=Path)
     parser.add_argument("--tensorboard-url")
+    parser.add_argument("--full-epoch", action="store_true")
     parser.add_argument("--validation-steps", type=int, default=0)
     parser.add_argument("--validation-every", type=int, default=0)
     parser.add_argument(
@@ -940,10 +1036,12 @@ def parse_args() -> argparse.Namespace:
 
 
 def validate_args(args: argparse.Namespace) -> None:
-    positive_ints = (("batch", args.batch), ("microbatch", args.microbatch), ("steps", args.steps))
+    positive_ints = (("batch", args.batch), ("microbatch", args.microbatch))
     for name, value in positive_ints:
         if value < 1:
             raise ValueError(f"--{name.replace('_', '-')} must be >= 1")
+    if args.steps is not None and args.steps < 1:
+        raise ValueError("--steps must be >= 1")
     non_negative_ints = (
         ("warmup", args.warmup),
         ("checkpoint_every_steps", args.checkpoint_every_steps),
@@ -971,6 +1069,10 @@ def validate_args(args: argparse.Namespace) -> None:
             raise ValueError("--torch-profiler-start-step must be < --torch-profiler-stop-step")
         if args.torch_profiler_stop_step > args.steps:
             raise ValueError("--torch-profiler-stop-step must be <= --steps")
+    if args.full_epoch and args.manifest is not None:
+        raise ValueError("--full-epoch is only supported with raw MJAI input")
+    if args.full_epoch and args.raw_mjai_max_samples is not None:
+        raise ValueError("--full-epoch cannot be combined with --raw-mjai-max-samples")
 
 
 def main() -> int:
@@ -993,16 +1095,16 @@ def main() -> int:
     raw_pinned = None
     raw_first_batch: PinnedPolicyBatch | None = None
     raw_train_max_samples = args.raw_mjai_max_samples
-    if args.raw_mjai_data_dir is not None and raw_train_max_samples is None:
+    if args.raw_mjai_data_dirs and raw_train_max_samples is None and not args.full_epoch:
         raw_train_batches = 1 + args.warmup + args.steps
         raw_train_max_samples = raw_train_batches * args.batch
     if args.manifest is not None:
         manifest_summary = validate_manifest(args.manifest, check_files=args.check_shard_files)
         real_dataset = BcShardDataset(args.manifest, batch_size=args.batch, split="train")
-    elif args.raw_mjai_data_dir is not None:
+    elif args.raw_mjai_data_dirs:
         if args.raw_mjai_transport == RAW_MJAI_TRANSPORT_STDOUT:
             raw_stream = RawMjaiDirectStream(
-                data_dir=args.raw_mjai_data_dir,
+                data_dirs=args.raw_mjai_data_dirs,
                 batch_size=args.batch,
                 prefetch_batches=args.raw_mjai_prefetch_batches,
                 queue_bound=args.raw_mjai_queue_bound,
@@ -1016,7 +1118,7 @@ def main() -> int:
             raw_stream.start()
         elif args.raw_mjai_transport == RAW_MJAI_TRANSPORT_PINNED_PYO3:
             raw_pinned = RawMjaiPinnedStream(
-                data_dir=args.raw_mjai_data_dir,
+                data_dirs=args.raw_mjai_data_dirs,
                 batch_size=args.batch,
                 queue_bound=args.raw_mjai_queue_bound,
                 worker_threads=args.raw_mjai_worker_threads,
@@ -1031,9 +1133,9 @@ def main() -> int:
         else:
             raise ValueError(f"unsupported raw MJAI transport {args.raw_mjai_transport!r}")
     validation_stream = None
-    if args.validation_steps > 0 and args.raw_mjai_data_dir is not None:
+    if args.validation_steps > 0 and args.raw_mjai_data_dirs:
         validation_stream = RawMjaiDirectStream(
-            data_dir=args.raw_mjai_data_dir,
+            data_dirs=args.raw_mjai_data_dirs,
             batch_size=args.batch,
             prefetch_batches=args.raw_mjai_prefetch_batches,
             queue_bound=args.raw_mjai_queue_bound,
@@ -1137,8 +1239,11 @@ def main() -> int:
             float(resume_state.samples_seen),
             resume_state.global_step,
         )
+        scalar_writer.add_scalar("run/resume_global_step", float(resume_state.global_step), resume_state.global_step)
 
     global_step = 0
+    samples_seen = 0 if resume_state is None else resume_state.samples_seen
+    raw_mjai_offsets = RawMjaiResumeOffsets.from_resume(resume_state, args.batch)
     compile_error = None
     compile_s = 0.0
     if args.variant.startswith("compile_"):
@@ -1236,17 +1341,34 @@ def main() -> int:
     events.write("warmup_complete", {"warmup_steps": args.warmup})
     scalar_writer.add_scalar("runtime/warmup_steps", float(args.warmup), 0)
     stats: list[StepStats] = []
+    best_policy_nll = math.inf
+    best_policy_nll_step = 0
+    step_range = itertools.count() if args.steps is None else range(args.steps)
     with profiler_ctx as torch_profiler:
-        for i in range(args.steps):
+        for i in step_range:
+            if args.full_epoch and i > 0 and raw_pinned is not None and raw_pinned.progress().complete:
+                break
+            if args.full_epoch and i > 0 and raw_stream is not None and raw_stream.progress().complete:
+                break
             if args.profile:
                 torch.cuda.nvtx.range_push(f"hydra_bc_step_{i}")
             input_timing = InputTiming()
             pinned_batch: PinnedPolicyBatch | None = None
             if raw_stream is not None:
-                batch, fetch_ms = raw_stream.next_batch()
+                try:
+                    batch, fetch_ms = raw_stream.next_batch()
+                except StopIteration:
+                    if args.full_epoch:
+                        break
+                    raise
                 obs, legal, labels, targets, input_timing = tensors_from_policy_batch(batch, device, fetch_ms)
             elif raw_pinned is not None:
-                pinned_batch, fetch_ms = raw_pinned.next_batch()
+                try:
+                    pinned_batch, fetch_ms = raw_pinned.next_batch()
+                except StopIteration:
+                    if args.full_epoch:
+                        break
+                    raise
                 obs, legal, labels, targets, input_timing = tensors_from_pinned_policy_batch(
                     pinned_batch, device, fetch_ms
                 )
@@ -1268,7 +1390,9 @@ def main() -> int:
             stats.append(stat)
             global_step = (0 if resume_state is None else resume_state.global_step) + i + 1
             samples_seen = (0 if resume_state is None else resume_state.samples_seen) + (i + 1) * args.batch
-            if args.log_every_steps > 0 and ((i + 1) % args.log_every_steps == 0 or i + 1 == args.steps):
+            if args.log_every_steps > 0 and (
+                global_step % args.log_every_steps == 0 or (args.steps is not None and i + 1 == args.steps)
+            ):
                 train_log.write(
                     "train_step",
                     {
@@ -1285,7 +1409,7 @@ def main() -> int:
                         "fetch_decode_ms": stat.fetch_decode_ms,
                         "h2d_wall_ms": stat.h2d_wall_ms,
                     }
-                    | raw_mjai_scalar_snapshot(raw_stream, raw_pinned),
+                    | raw_mjai_scalar_snapshot(raw_stream, raw_pinned, raw_mjai_offsets),
                 )
                 log_step_scalars(
                     scalar_writer,
@@ -1294,12 +1418,17 @@ def main() -> int:
                     samples_seen=samples_seen,
                     global_step=global_step,
                 )
-                add_scalars(scalar_writer, "raw_mjai", raw_mjai_scalar_snapshot(raw_stream, raw_pinned), global_step)
+                add_scalars(
+                    scalar_writer,
+                    "raw_mjai",
+                    raw_mjai_scalar_snapshot(raw_stream, raw_pinned, raw_mjai_offsets),
+                    global_step,
+                )
                 scalar_writer.flush()
             if raw_pinned is not None:
                 assert pinned_batch is not None
                 raw_pinned.mark_inflight(pinned_batch)
-            if validation_stream is not None and args.validation_every > 0 and (i + 1) % args.validation_every == 0:
+            if validation_stream is not None and args.validation_every > 0 and global_step % args.validation_every == 0:
                 step_eval = []
                 for _ in range(args.validation_steps):
                     val_batch, val_fetch_ms = validation_stream.next_batch()
@@ -1313,11 +1442,42 @@ def main() -> int:
                 events.write("validation", {"step": i + 1, "global_step": global_step, "metrics": metrics})
                 log_validation_scalars(scalar_writer, metrics, global_step, final=False)
                 scalar_writer.flush()
+                policy_nll = metrics["policy_nll"]
+                if policy_nll < best_policy_nll:
+                    best_policy_nll = policy_nll
+                    best_policy_nll_step = global_step
+                    best_path = best_checkpoint_path(args)
+                    if best_path is not None:
+                        atomic_save_training_checkpoint(
+                            best_path,
+                            model=model,
+                            optimizer=optimizer,
+                            model_config=model_config,
+                            optimizer_config=optimizer_config,
+                            runtime_config=runtime_config,
+                            loss_weights=weights,
+                            manifest_path=args.manifest if raw_stream is None else raw_stream.manifest_path,
+                            global_step=global_step,
+                            samples_seen=samples_seen,
+                            raw_mjai_progress=checkpoint_raw_progress(raw_stream, raw_pinned, raw_mjai_offsets),
+                        )
+                        events.write(
+                            "best_checkpoint_saved",
+                            {
+                                "path": str(best_path),
+                                "metric": "policy_nll",
+                                "metric_value": best_policy_nll,
+                                "global_step": global_step,
+                                "samples_seen": samples_seen,
+                            },
+                        )
+                        scalar_writer.add_scalar("checkpoint/best_policy_nll", best_policy_nll, global_step)
+                        scalar_writer.add_scalar("checkpoint/best_step", float(best_policy_nll_step), global_step)
             latest_checkpoint, step_checkpoint = checkpoint_paths(args, global_step)
             if (
                 latest_checkpoint is not None
                 and args.checkpoint_every_steps > 0
-                and (i + 1) % args.checkpoint_every_steps == 0
+                and global_step % args.checkpoint_every_steps == 0
             ):
                 for checkpoint_path in (latest_checkpoint, step_checkpoint):
                     if checkpoint_path is None:
@@ -1333,6 +1493,16 @@ def main() -> int:
                         manifest_path=args.manifest if raw_stream is None else raw_stream.manifest_path,
                         global_step=global_step,
                         samples_seen=samples_seen,
+                        raw_mjai_progress=raw_mjai_progress_dict(
+                            apply_progress_offsets(
+                                raw_stream.progress()
+                                if raw_stream is not None
+                                else raw_pinned.progress()
+                                if raw_pinned is not None
+                                else None,
+                                raw_mjai_offsets,
+                            )
+                        ),
                     )
                 events.write(
                     "checkpoint_saved",
@@ -1371,6 +1541,8 @@ def main() -> int:
     elif raw_pinned is not None:
         raw_progress = raw_pinned.progress()
 
+    final_global_step = global_step
+    final_samples_seen = samples_seen
     result = {
         "variant": args.variant,
         "env": env,
@@ -1392,17 +1564,17 @@ def main() -> int:
         "raw_mjai_training": raw_stream is not None or raw_pinned is not None,
         "raw_mjai_pinned_pyo3": raw_pinned is not None,
         "raw_mjai_transport": args.raw_mjai_transport,
-        "raw_mjai_progress": json_raw_mjai_progress(raw_progress),
+        "raw_mjai_progress": json_raw_mjai_progress(apply_progress_offsets(raw_progress, raw_mjai_offsets)),
         "raw_mjai_bridge_stats": None if raw_pinned is None else asdict(raw_pinned.bridge_stats()),
         "raw_mjai_queue_stats": None if raw_pinned is None else asdict(raw_pinned.queue_stats()),
         "checkpoint_path": None,
         "resumed_step": None if resume_state is None else resume_state.global_step,
         "resumed_samples_seen": None if resume_state is None else resume_state.samples_seen,
-        "global_step": (0 if resume_state is None else resume_state.global_step) + args.steps,
-        "samples_seen": (0 if resume_state is None else resume_state.samples_seen) + args.steps * args.batch,
+        "global_step": final_global_step,
+        "samples_seen": final_samples_seen,
     }
-    global_step = (0 if resume_state is None else resume_state.global_step) + args.steps
-    samples_seen = (0 if resume_state is None else resume_state.samples_seen) + args.steps * args.batch
+    global_step = final_global_step
+    samples_seen = final_samples_seen
     latest_checkpoint, step_checkpoint = checkpoint_paths(args, global_step)
     if latest_checkpoint is not None:
         for checkpoint_path in (latest_checkpoint, step_checkpoint):
@@ -1419,6 +1591,7 @@ def main() -> int:
                 manifest_path=args.manifest if raw_stream is None else raw_stream.manifest_path,
                 global_step=global_step,
                 samples_seen=samples_seen,
+                raw_mjai_progress=raw_mjai_progress_dict(apply_progress_offsets(raw_progress, raw_mjai_offsets)),
             )
         result["checkpoint_path"] = str(latest_checkpoint)
         events.write(

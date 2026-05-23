@@ -35,10 +35,13 @@ fn run() -> io::Result<()> {
 
 fn parse_args(args: impl IntoIterator<Item = String>) -> io::Result<RawMjaiBatchStreamConfig> {
     let mut config = RawMjaiBatchStreamConfig::default();
+    config.inputs.clear();
     let mut iter = args.into_iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
-            "--input" => config.input = PathBuf::from(next_value(&mut iter, "--input")?),
+            "--input" => config
+                .inputs
+                .push(PathBuf::from(next_value(&mut iter, "--input")?)),
             "--batch-size" => {
                 config.batch_size =
                     parse_usize(&next_value(&mut iter, "--batch-size")?, "--batch-size")?
@@ -87,6 +90,9 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> io::Result<RawMjaiBatch
             }
         }
     }
+    if config.inputs.is_empty() {
+        config.inputs.push(PathBuf::from("."));
+    }
     Ok(config)
 }
 
@@ -130,6 +136,6 @@ fn parse_split(value: &str) -> io::Result<RawMjaiStreamSplit> {
 
 fn print_help() {
     println!(
-        "Usage: raw_mjai_stream --input PATH [--batch-size N] [--max-games N] [--max-samples N] [--num-threads N] [--queue-bound N] [--train-fraction F] [--split train|validation] [--augment]"
+        "Usage: raw_mjai_stream --input PATH [--input PATH ...] [--batch-size N] [--max-games N] [--max-samples N] [--num-threads N] [--queue-bound N] [--train-fraction F] [--split train|validation] [--augment]"
     );
 }

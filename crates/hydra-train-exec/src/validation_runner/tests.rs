@@ -55,6 +55,7 @@ fn dummy_config() -> hydra_train_runtime::config::TrainConfig {
         source_filters: hydra_data_core::SourceFilterConfig::default(),
         augment: false,
         resume_checkpoint: None,
+        resume_latest: true,
         seed: 0,
         advanced_loss: None,
         python_residual_profile: Default::default(),

@@ -4,6 +4,7 @@
 
 use std::fs;
 use std::fs::File;
+use std::io::Write;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
@@ -13,6 +14,7 @@ use serde::Deserialize;
 
 const PYTHON_LEARNER_SCRIPT: &str = "scripts/hydra_pytorch_oracle.py";
 const PYTHON_LEARNER_RESULT: &str = "python_learner_result.json";
+const TENSORBOARD_PID_FILE: &str = "tensorboard.pid";
 
 /// Built command for launching the Python BC learner through Pixi.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,14 +125,24 @@ pub fn build_python_learner_command(options: &PythonLearnerCliOptions) -> Python
         options.variant.as_str().to_string(),
         "--residual-profile".to_string(),
         options.residual_profile.as_str().to_string(),
+        "--hidden".to_string(),
+        options.hidden.to_string(),
+        "--blocks".to_string(),
+        options.blocks.to_string(),
+        "--bottleneck".to_string(),
+        options.bottleneck.to_string(),
         "--batch".to_string(),
         options.batch_size.to_string(),
         "--microbatch".to_string(),
         options.microbatch_size.to_string(),
         "--warmup".to_string(),
         options.warmup_steps.to_string(),
-        "--steps".to_string(),
-        options.steps.to_string(),
+    ];
+    if let Some(steps) = options.steps {
+        args.push("--steps".to_string());
+        args.push(steps.to_string());
+    }
+    args.extend([
         "--out".to_string(),
         result_path.display().to_string(),
         "--quiet".to_string(),
@@ -142,22 +154,27 @@ pub fn build_python_learner_command(options: &PythonLearnerCliOptions) -> Python
         options.learning_rate.to_string(),
         "--weight-decay".to_string(),
         options.weight_decay.to_string(),
-    ];
+    ]);
+    if options.full_epoch {
+        args.push("--full-epoch".to_string());
+    }
     match &options.input {
         PythonLearnerInput::BcShards { manifest } => {
             args.push("--manifest".to_string());
             args.push(manifest.display().to_string());
         }
         PythonLearnerInput::RawMjai {
-            data_dir,
+            data_dirs,
             max_games,
             max_samples,
             train_fraction,
             augment,
             transport,
         } => {
-            args.push("--raw-mjai-data-dir".to_string());
-            args.push(data_dir.display().to_string());
+            for data_dir in data_dirs {
+                args.push("--raw-mjai-data-dir".to_string());
+                args.push(data_dir.display().to_string());
+            }
             args.push("--raw-mjai-worker-threads".to_string());
             args.push("20".to_string());
             args.push("--raw-mjai-train-fraction".to_string());
@@ -200,6 +217,12 @@ pub fn build_python_learner_command(options: &PythonLearnerCliOptions) -> Python
     args.push(options.output_dir.join("logs").display().to_string());
     args.push("--log-every-steps".to_string());
     args.push(options.log_every_steps.to_string());
+    if options.validation_steps != 0 && options.validation_every != 0 {
+        args.push("--validation-steps".to_string());
+        args.push(options.validation_steps.to_string());
+        args.push("--validation-every".to_string());
+        args.push(options.validation_every.to_string());
+    }
     if options.keep_step_checkpoints && options.checkpoint_out.is_none() {
         args.push("--keep-step-checkpoints".to_string());
     }
@@ -220,7 +243,7 @@ fn tensorboard_url(options: &PythonLearnerCliOptions, port: u16) -> String {
     format!("http://{}:{port}/", options.tensorboard_host)
 }
 
-fn first_available_port(host: &str, preferred_port: u16) -> Result<u16, String> {
+fn first_free_port(host: &str, preferred_port: u16) -> Result<u16, String> {
     for port in preferred_port..=u16::MAX {
         if TcpListener::bind((host, port)).is_ok() {
             return Ok(port);
@@ -229,14 +252,6 @@ fn first_available_port(host: &str, preferred_port: u16) -> Result<u16, String> 
     Err(format!(
         "no available TensorBoard port on {host} at or above {preferred_port}"
     ))
-}
-
-fn tensorboard_port(options: &PythonLearnerCliOptions) -> Result<u16, String> {
-    if options.tensorboard {
-        first_available_port(&options.tensorboard_host, options.tensorboard_port)
-    } else {
-        Ok(options.tensorboard_port)
-    }
 }
 
 fn build_python_learner_command_with_tensorboard_port(
@@ -262,43 +277,81 @@ fn build_python_learner_command_with_tensorboard_port(
     command
 }
 
-fn launch_tensorboard(options: &PythonLearnerCliOptions, selected_port: u16) -> Result<(), String> {
+fn write_tensorboard_pid_file(
+    options: &PythonLearnerCliOptions,
+    selected_port: u16,
+) -> Result<(), String> {
     if !options.tensorboard || !options.launch_tensorboard {
         return Ok(());
     }
-    let log_dir = options.output_dir.join("logs");
-    fs::create_dir_all(&log_dir).map_err(|err| {
+    let pid_path = options.output_dir.join(TENSORBOARD_PID_FILE);
+    let mut pid_file = File::create(&pid_path).map_err(|err| {
         format!(
-            "failed to create TensorBoard log dir {}: {err}",
-            log_dir.display()
+            "failed to create TensorBoard pid file {}: {err}",
+            pid_path.display()
         )
     })?;
-    let stdout = File::create(log_dir.join("tensorboard.log"))
-        .map_err(|err| format!("failed to create TensorBoard log file: {err}"))?;
-    let stderr = stdout
-        .try_clone()
-        .map_err(|err| format!("failed to clone TensorBoard log file handle: {err}"))?;
-    let logdir = options.output_dir.join("tensorboard").display().to_string();
-    let port = selected_port.to_string();
-    Command::new("pixi")
-        .args([
-            "run",
-            "-e",
-            "py-train",
-            "tensorboard",
-            "--logdir",
-            &logdir,
-            "--host",
-            &options.tensorboard_host,
-            "--port",
-            &port,
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr))
-        .spawn()
-        .map_err(|err| format!("failed to launch TensorBoard through pixi: {err}"))?;
+    writeln!(pid_file, "supervised:{selected_port}").map_err(|err| {
+        format!(
+            "failed to write TensorBoard pid file {}: {err}",
+            pid_path.display()
+        )
+    })?;
     Ok(())
+}
+
+fn supervised_background_command(
+    command: &PythonLearnerCommand,
+    options: &PythonLearnerCliOptions,
+    selected_port: u16,
+) -> PythonLearnerCommand {
+    let mut args = vec![
+        "scripts/python_train_supervisor.py".to_string(),
+        "--tensorboard-pid-file".to_string(),
+        options
+            .output_dir
+            .join(TENSORBOARD_PID_FILE)
+            .display()
+            .to_string(),
+        "--tensorboard-logdir".to_string(),
+        options.output_dir.join("tensorboard").display().to_string(),
+        "--tensorboard-host".to_string(),
+        options.tensorboard_host.clone(),
+        "--tensorboard-port".to_string(),
+        selected_port.to_string(),
+        "--tensorboard-log".to_string(),
+        options
+            .output_dir
+            .join("logs/tensorboard.log")
+            .display()
+            .to_string(),
+        "--".to_string(),
+        command.program.clone(),
+    ];
+    args.extend(command.args.clone());
+    PythonLearnerCommand {
+        program: "python".to_string(),
+        args,
+        result_path: command.result_path.clone(),
+    }
+}
+
+fn tensorboard_port(options: &PythonLearnerCliOptions) -> Result<u16, String> {
+    if options.tensorboard && options.launch_tensorboard {
+        let pid_path = options.output_dir.join(TENSORBOARD_PID_FILE);
+        if pid_path.is_file()
+            && let Ok(contents) = fs::read_to_string(&pid_path)
+            && let Ok(pid) = contents.trim().parse::<u32>()
+            && process_is_running(pid)
+        {
+            return Ok(options.tensorboard_port);
+        }
+    }
+    first_free_port(&options.tensorboard_host, options.tensorboard_port)
+}
+
+fn process_is_running(pid: u32) -> bool {
+    Path::new("/proc").join(pid.to_string()).exists()
 }
 
 /// Runs the Python learner after validating Rust-owned launch contracts.
@@ -320,11 +373,20 @@ pub fn run_python_learner_with_runner(
                 manifest.display()
             ));
         }
-        PythonLearnerInput::RawMjai { data_dir, .. } if !data_dir.exists() => {
-            return Err(format!(
-                "Python BC learner raw MJAI data dir does not exist: {}",
-                data_dir.display()
-            ));
+        PythonLearnerInput::RawMjai { data_dirs, .. } => {
+            if data_dirs.is_empty() {
+                return Err(
+                    "Python BC learner raw MJAI input requires at least one data dir".to_string(),
+                );
+            }
+            for data_dir in data_dirs {
+                if !data_dir.exists() {
+                    return Err(format!(
+                        "Python BC learner raw MJAI data dir does not exist: {}",
+                        data_dir.display()
+                    ));
+                }
+            }
         }
         _ => {}
     }
@@ -343,10 +405,17 @@ pub fn run_python_learner_with_runner(
             .map_err(|err| format!("failed to create Python BC tensorboard dir: {err}"))?;
     }
     let selected_tensorboard_port = tensorboard_port(options)?;
-    launch_tensorboard(options, selected_tensorboard_port)?;
+    if !options.background {
+        write_tensorboard_pid_file(options, selected_tensorboard_port)?;
+    }
     let command =
         build_python_learner_command_with_tensorboard_port(options, selected_tensorboard_port);
     if options.background {
+        let command = if options.tensorboard && options.launch_tensorboard {
+            supervised_background_command(&command, options, selected_tensorboard_port)
+        } else {
+            command
+        };
         let stdout_path = options.output_dir.join("logs/stdout.log");
         let stderr_path = options.output_dir.join("logs/stderr.log");
         let stdout = File::create(&stdout_path).map_err(|err| {
@@ -378,6 +447,25 @@ pub fn run_python_learner_with_runner(
                 .then(|| tensorboard_url(options, selected_tensorboard_port)),
             pid: Some(pid),
         });
+    }
+    if options.tensorboard && options.launch_tensorboard {
+        let _ = Command::new("pixi")
+            .args([
+                "run",
+                "-e",
+                "py-train",
+                "tensorboard",
+                "--logdir",
+                &options.output_dir.join("tensorboard").display().to_string(),
+                "--host",
+                &options.tensorboard_host,
+                "--port",
+                &selected_tensorboard_port.to_string(),
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
     }
     let status = runner.run(&command)?;
     if !status.success() {
@@ -434,7 +522,7 @@ pub fn run_python_learner_benchmark_row(
     options.batch_size = batch_size;
     options.microbatch_size = microbatch_size;
     options.warmup_steps = warmup_steps;
-    options.steps = measure_steps.max(1);
+    options.steps = Some(measure_steps.max(1));
     options.checkpoint_out = None;
     options.resume = None;
     options.checkpoint_every_steps = 0;
@@ -488,8 +576,14 @@ mod tests {
             microbatch_size: 1024,
             variant: PythonLearnerVariant::CompileDefault,
             residual_profile: hydra_train_runtime::config::PythonResidualProfileConfig::ReluSe,
+            hidden: 256,
+            blocks: 10,
+            bottleneck: 64,
             warmup_steps: 1,
-            steps: 3,
+            steps: Some(3),
+            full_epoch: false,
+            validation_steps: 0,
+            validation_every: 0,
             checkpoint_out: Some(root.join("ckpt.pt")),
             resume: Some(root.join("resume.pt")),
             checkpoint_every_steps: 7,
@@ -604,7 +698,7 @@ mod tests {
         let root = PathBuf::from("/tmp/hydra raw launcher");
         let mut opts = options(&root);
         opts.input = PythonLearnerInput::RawMjai {
-            data_dir: root.join("mjai"),
+            data_dirs: vec![root.join("mjai"), root.join("mjai-2")],
             max_games: Some(5),
             max_samples: Some(4096),
             train_fraction: 0.8,
@@ -612,11 +706,18 @@ mod tests {
             transport: hydra_train_runtime::config::PythonRawMjaiTransportConfig::PinnedPyo3,
         };
         let command = build_python_learner_command(&opts);
-        assert!(
-            command
-                .args
-                .windows(2)
-                .any(|w| w == ["--raw-mjai-data-dir", "/tmp/hydra raw launcher/mjai"])
+        let raw_dirs: Vec<&str> = command
+            .args
+            .windows(2)
+            .filter(|w| w[0] == "--raw-mjai-data-dir")
+            .map(|w| w[1].as_str())
+            .collect();
+        assert_eq!(
+            raw_dirs,
+            [
+                "/tmp/hydra raw launcher/mjai",
+                "/tmp/hydra raw launcher/mjai-2"
+            ]
         );
         assert!(
             command

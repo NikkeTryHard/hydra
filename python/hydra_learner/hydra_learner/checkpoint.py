@@ -67,6 +67,7 @@ class RuntimeConfig:
 class ResumeState:
     global_step: int
     samples_seen: int
+    raw_mjai_progress: dict[str, int]
 
 
 def manifest_digest(path: Path | None) -> str | None:
@@ -131,6 +132,7 @@ def save_checkpoint(
     manifest_path: Path | None,
     global_step: int,
     samples_seen: int,
+    raw_mjai_progress: dict[str, int] | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     checkpoint = {
@@ -150,6 +152,7 @@ def save_checkpoint(
         },
         "global_step": global_step,
         "samples_seen": samples_seen,
+        "raw_mjai_progress": dict[str, int]() if raw_mjai_progress is None else dict(raw_mjai_progress),
         "compile": asdict(runtime_config),
     }
     torch.save(checkpoint, path)
@@ -183,7 +186,14 @@ def load_checkpoint(
     _load_model_state_strict(model, checkpoint["model_state"])
     optimizer.load_state_dict(checkpoint["optimizer_state"])
     restore_rng_state(checkpoint["rng_state"])
-    return ResumeState(global_step=int(checkpoint["global_step"]), samples_seen=int(checkpoint["samples_seen"]))
+    raw_progress = checkpoint.get("raw_mjai_progress", {})
+    if not isinstance(raw_progress, dict):
+        raise ValueError("checkpoint raw_mjai_progress must be a dict")
+    return ResumeState(
+        global_step=int(checkpoint["global_step"]),
+        samples_seen=int(checkpoint["samples_seen"]),
+        raw_mjai_progress={str(key): int(value) for key, value in raw_progress.items()},
+    )
 
 
 def _torch_load(path: Path) -> dict[str, Any]:

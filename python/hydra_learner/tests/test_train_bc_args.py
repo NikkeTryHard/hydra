@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from _pytest.monkeypatch import MonkeyPatch
 from hydra_learner.train_bc import (
     PYTHON_VARIANT_DEFAULT,
+    RawMjaiResumeOffsets,
     ScalarEventWriter,
     add_scalars,
     log_step_scalars,
@@ -84,8 +85,8 @@ def test_scalar_helpers_emit_production_metrics(tmp_path: Path, monkeypatch: Mon
     log_step_scalars(writer, stat, batch=32, samples_seen=128, global_step=4)
     metrics = summarize_eval(
         [
-            EvalStats(1.0, 0.5, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8),
-            EvalStats(3.0, 1.5, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0),
+            EvalStats(1.0, 0.5, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.6, 0.85, 0.05),
+            EvalStats(3.0, 1.5, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 0.8, 0.9, 0.4, 0.7, 0.1),
         ]
     )
     log_validation_scalars(writer, metrics, 4, final=False)
@@ -99,6 +100,8 @@ def test_scalar_helpers_emit_production_metrics(tmp_path: Path, monkeypatch: Mon
     assert tags["train/end_to_end_samples_per_s"] == 2000.0
     assert tags["validation/loss"] == 2.0
     assert tags["validation/policy_accuracy"] == 0.9
+    assert tags["validation/policy_top3_accuracy"] == 0.8500000000000001
+    assert tags["validation/policy_ece"] == 0.07500000000000001
     assert tags["skip/flag"] == 1.0
     assert "skip/nan" not in tags
     assert "skip/text" not in tags
@@ -147,10 +150,11 @@ class _FakePinnedRaw:
 
 
 def test_raw_mjai_scalar_snapshot_includes_progress_bridge_and_queue() -> None:
-    snapshot = raw_mjai_scalar_snapshot(None, _FakePinnedRaw())  # type: ignore[arg-type]
+    snapshot = raw_mjai_scalar_snapshot(None, _FakePinnedRaw(), RawMjaiResumeOffsets(samples=128, batches=4))  # type: ignore[arg-type]
 
     assert snapshot["progress/complete"] is True
-    assert snapshot["progress/samples"] == 64
+    assert snapshot["progress/samples"] == 192
+    assert snapshot["progress/batches"] == 6
     assert snapshot["bridge/last_next_fill_ms"] == 2.5
     assert snapshot["queue/mean_ready_wait_ms"] == 2.0
     assert snapshot["queue/mean_producer_fill_ms"] == 2.0

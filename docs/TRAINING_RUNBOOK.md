@@ -44,6 +44,7 @@ Choose:
 | Field | Meaning |
 |---|---|
 | `data_dir` | replay root, loose file, or archive path |
+| `raw_mjai_data_dirs` | optional explicit raw-MJAI roots; when set, Python raw-MJAI uses exactly these entries instead of `data_dir` |
 | `output_dir` | Python BC writes result, logs, checkpoints, TensorBoard events, and background pid here |
 | `num_epochs` | Rust/Burn epoch count; Python BC uses `max_train_steps` as run length |
 | `batch_size` | logical batch before microbatch/accum |
@@ -80,6 +81,9 @@ Minimal raw-MJAI BC train, default Python/PyTorch backend:
 
 ```yaml
 data_dir: /data/mjai              # raw replay root/file/archive; used directly when no BC shard manifest is set
+# raw_mjai_data_dirs:            # optional exact multiple roots; overrides data_dir for raw MJAI
+#   - /data/mjai-a
+#   - /data/mjai-b
 output_dir: /output
 num_epochs: 1
 batch_size: 2048
@@ -107,7 +111,7 @@ bc_shards_manifest_path: /data/bc_shards_manifest.json
 # bc_backend: python            # default
 ```
 
-If `bc_shards_manifest_path` is absent, Python learner receives `data_dir` and streams raw MJAI. Default transport is pinned PyO3 (`python_raw_mjai_transport: pinned_pyo3`); `stdout` remains fallback. Rust raw-MJAI helper runs in Pixi `default` env; Python training runs in Pixi `py-train`.
+If `bc_shards_manifest_path` is absent, Python learner streams raw MJAI from `raw_mjai_data_dirs` when set, otherwise from `data_dir`. `raw_mjai_data_dirs` is explicit: list each folder/file/archive to include; Hydra does not expand parent bundle into sibling datasets for you. Default transport is pinned PyO3 (`python_raw_mjai_transport: pinned_pyo3`); `stdout` remains fallback. Rust raw-MJAI helper runs in Pixi `default` env; Python training runs in Pixi `py-train`.
 Python BC writes operator artifacts under `output_dir`:
 
 ```text
@@ -127,8 +131,7 @@ checkpoint load validates schema, model/runtime/optimizer/loss contracts,
 manifest/source identity, and RNG metadata. Present-but-mismatched metadata is
 hard error.
 
-For long Python BC runs, set explicit `max_train_steps`. If unset, launcher uses
-30 steps. `num_epochs` remains Rust/Burn full-loop authority today; Python epoch
+For long Python BC runs, set `full_epoch: true` with `max_train_steps: null` to consume full raw-MJAI train split once. Use explicit `max_train_steps` only for bounded probes or ablations. If unset and `full_epoch` is false, launcher uses 30 steps. `num_epochs` remains Rust/Burn full-loop authority today; Python epoch
 scheduling is not active yet.
 
 Python BC UX knobs:
@@ -217,6 +220,7 @@ Raw-MJAI transport knobs:
 
 ```yaml
 python_raw_mjai_transport: pinned_pyo3   # default; stdout fallback exists
+# `pinned_pyo3` supports loose replay files and tar/tar.zst archives; keep `stdout` only as fallback/debug.
 ```
 
 Direct Python flags:

@@ -92,6 +92,7 @@ fn synthetic_phase_report(loss: Option<f64>, exit_weight: Option<f32>) -> PhaseT
 fn dummy_rl_config(output_dir: PathBuf) -> TrainConfig {
     TrainConfig {
         data_dir: output_dir.join("data"),
+        raw_mjai_data_dirs: Vec::new(),
         output_dir,
         num_epochs: 1,
         batch_size: 256,
@@ -106,6 +107,7 @@ fn dummy_rl_config(output_dir: PathBuf) -> TrainConfig {
         source_filters: SourceFilterConfig::default(),
         augment: false,
         resume_checkpoint: None,
+        resume_latest: true,
         seed: 7,
         advanced_loss: None,
         python_residual_profile: Default::default(),

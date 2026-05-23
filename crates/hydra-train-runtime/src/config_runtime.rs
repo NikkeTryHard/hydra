@@ -79,6 +79,11 @@ pub fn validate_config(config: &TrainConfig) -> Result<(), String> {
     {
         return Err("max_validation_samples must be greater than 0 when set".to_string());
     }
+    if config.bc_shards_manifest_path.is_some() && !config.raw_mjai_data_dirs.is_empty() {
+        return Err(
+            "raw_mjai_data_dirs cannot be combined with bc_shards_manifest_path".to_string(),
+        );
+    }
     if config.validation_gates.enabled {
         if config.validation_gates.min_validation_samples == Some(0) {
             return Err(

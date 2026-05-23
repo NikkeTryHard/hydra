@@ -91,6 +91,7 @@ fn dummy_train_config(output_dir: PathBuf, data_dir: PathBuf) -> TrainConfig {
         source_filters: SourceFilterConfig::default(),
         augment: true,
         resume_checkpoint: None,
+        resume_latest: true,
         seed: 0,
         advanced_loss: None,
         python_residual_profile: Default::default(),

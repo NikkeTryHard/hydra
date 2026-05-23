@@ -299,7 +299,7 @@ fn rust_config_from_ffi(cfg: &HydraRawMjaiConfig) -> Result<RawMjaiBatchStreamCo
         }
     };
     Ok(RawMjaiBatchStreamConfig {
-        input: PathBuf::from(input),
+        inputs: vec![PathBuf::from(input)],
         split,
         train_fraction: cfg.train_fraction,
         batch_size: cfg.batch_size,
@@ -390,10 +390,10 @@ impl PyRawMjaiStream {
         clippy::too_many_arguments,
         reason = "PyO3 constructor mirrors Python keyword API for explicit stream config"
     )]
-    #[pyo3(signature = (data_dir, batch_size=2048, train_fraction=0.9, worker_threads=20, queue_bound=8, max_games=None, max_samples=None, augment=false, split="train"))]
+    #[pyo3(signature = (data_dirs, batch_size=2048, train_fraction=0.9, worker_threads=20, queue_bound=8, max_games=None, max_samples=None, augment=false, split="train"))]
     fn new(
         py: Python<'_>,
-        data_dir: &str,
+        data_dirs: RawMjaiPyInputs,
         batch_size: usize,
         train_fraction: f32,
         worker_threads: usize,
@@ -405,7 +405,7 @@ impl PyRawMjaiStream {
     ) -> PyResult<Self> {
         let split = parse_py_split(split)?;
         let config = RawMjaiBatchStreamConfig {
-            input: PathBuf::from(data_dir),
+            inputs: data_dirs.paths,
             split,
             train_fraction,
             batch_size,
@@ -497,6 +497,30 @@ impl PyRawMjaiStream {
             py.detach(|| mem::drop(stream));
         }
         Ok(())
+    }
+}
+
+struct RawMjaiPyInputs {
+    paths: Vec<PathBuf>,
+}
+
+impl<'a, 'py> FromPyObject<'a, 'py> for RawMjaiPyInputs {
+    type Error = PyErr;
+    fn extract(obj: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
+        if let Ok(path) = obj.extract::<String>() {
+            return Ok(Self {
+                paths: vec![PathBuf::from(path)],
+            });
+        }
+        let values = obj.extract::<Vec<String>>()?;
+        if values.is_empty() {
+            return Err(PyValueError::new_err(
+                "raw MJAI data_dirs must not be empty",
+            ));
+        }
+        Ok(Self {
+            paths: values.into_iter().map(PathBuf::from).collect(),
+        })
     }
 }
 

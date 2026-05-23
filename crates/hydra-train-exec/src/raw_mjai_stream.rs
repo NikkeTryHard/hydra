@@ -57,8 +57,8 @@ pub enum RawMjaiStreamSplit {
 /// Configuration for streaming raw MJAI batches directly to stdout.
 #[derive(Debug, Clone)]
 pub struct RawMjaiBatchStreamConfig {
-    /// Input loose file, directory, or archive path.
-    pub input: PathBuf,
+    /// Explicit input loose files, directories, or archive paths.
+    pub inputs: Vec<PathBuf>,
     /// Train or validation split to stream.
     pub split: RawMjaiStreamSplit,
     /// Train/validation split fraction.
@@ -82,7 +82,7 @@ pub struct RawMjaiBatchStreamConfig {
 impl Default for RawMjaiBatchStreamConfig {
     fn default() -> Self {
         Self {
-            input: PathBuf::from("."),
+            inputs: vec![PathBuf::from(".")],
             split: RawMjaiStreamSplit::Train,
             train_fraction: 0.9,
             batch_size: 2048,
@@ -188,7 +188,7 @@ pub fn fill_raw_mjai_pinned_one_batch(
     validate_pinned_view(&dst)?;
     let source_manifest = match &config.source_manifest {
         Some(manifest) => manifest.clone(),
-        None => scan_data_sources(&config.input)?,
+        None => scan_raw_mjai_inputs(&config.inputs)?,
     };
     let (entries, max_games_reached) = build_stream_plan(&source_manifest, config)?;
     let mut totals = RawMjaiBatchStreamTotals {
@@ -258,18 +258,14 @@ impl RawMjaiPinnedStream {
         let opened = Instant::now();
         let source_manifest = match &config.source_manifest {
             Some(manifest) => manifest.clone(),
-            None => scan_data_sources(&config.input)?,
+            None => scan_raw_mjai_inputs(&config.inputs)?,
         };
         let (entries, max_games_reached) = build_stream_plan(&source_manifest, &config)?;
-        let entries: Vec<StreamPlanEntry> = entries
-            .into_iter()
-            .filter(|entry| matches!(entry.source, StreamPlanSource::LooseFile { .. }))
-            .collect();
-        let (result_rx, producer, workers, stop) =
-            spawn_persistent_loose_workers(&entries, &config)?;
+        let expected_count = entries.len();
+        let (result_rx, producer, workers, stop) = spawn_persistent_workers(entries, &config)?;
         Ok(Self {
             config,
-            expected_count: entries.len(),
+            expected_count,
             result_rx,
             producer: Some(producer),
             workers: Some(workers),
@@ -403,70 +399,171 @@ impl Drop for RawMjaiPinnedStream {
     }
 }
 
-type PersistentLooseWorkers = (
+type PersistentWorkers = (
     mpsc::Receiver<io::Result<MaterializedStreamGame>>,
     JoinHandle<io::Result<()>>,
     JoinHandle<()>,
     Arc<AtomicBool>,
 );
 
-fn spawn_persistent_loose_workers(
-    entries: &[StreamPlanEntry],
+fn spawn_persistent_workers(
+    entries: Vec<StreamPlanEntry>,
     config: &RawMjaiBatchStreamConfig,
-) -> io::Result<PersistentLooseWorkers> {
-    let pool = make_optional_pool(config.num_threads, "raw MJAI persistent pinned stream")?;
-    let (job_tx, job_rx) = mpsc::sync_channel::<StreamPlanEntry>(config.queue_bound);
+) -> io::Result<PersistentWorkers> {
     let (result_tx, result_rx) =
         mpsc::sync_channel::<io::Result<MaterializedStreamGame>>(config.queue_bound);
     let stop = Arc::new(AtomicBool::new(false));
-    let jobs = entries.to_vec();
-    let producer_stop = Arc::clone(&stop);
     let producer = thread::Builder::new()
         .name("raw-mjai-pinned-persistent-producer".into())
-        .spawn(move || -> io::Result<()> {
-            for job in jobs {
-                if send_job_cancelable(&job_tx, &producer_stop, job).is_err() {
-                    break;
-                }
-            }
-            Ok(())
-        })
+        .spawn(|| Ok(()))
         .map_err(|err| io::Error::other(format!("failed to spawn pinned producer: {err}")))?;
-    let augment = config.augment;
     let worker_stop = Arc::clone(&stop);
+    let config = config.clone();
     let workers = thread::Builder::new()
         .name("raw-mjai-pinned-persistent-workers".into())
         .spawn(move || {
-            pool.install(|| {
-                job_rx.into_iter().par_bridge().for_each(|job| {
-                    if worker_stop.load(Ordering::Acquire) {
-                        return;
-                    }
-                    let result = materialize_stream_job(job, augment);
-                    let _ = send_result_cancelable(&result_tx, &worker_stop, Ok(result));
-                });
-            });
+            for group in group_stream_entries_preserving_order(&entries) {
+                if worker_stop.load(Ordering::Acquire) {
+                    break;
+                }
+                let group_result = match group {
+                    StreamPlanGroup::Loose(group_entries) => materialize_persistent_loose_group(
+                        group_entries,
+                        &config,
+                        &result_tx,
+                        &worker_stop,
+                    ),
+                    StreamPlanGroup::Archive {
+                        archive_path,
+                        entries,
+                    } => materialize_persistent_archive_group(
+                        &archive_path,
+                        entries,
+                        &config,
+                        &result_tx,
+                        &worker_stop,
+                    ),
+                };
+                if let Err(err) = group_result {
+                    let _ = send_result_cancelable(&result_tx, &worker_stop, Err(err));
+                    break;
+                }
+            }
         })
         .map_err(|err| io::Error::other(format!("failed to spawn pinned workers: {err}")))?;
     Ok((result_rx, producer, workers, stop))
 }
 
-fn send_job_cancelable(
-    tx: &SyncSender<StreamPlanEntry>,
+fn materialize_persistent_loose_group(
+    entries: Vec<&StreamPlanEntry>,
+    config: &RawMjaiBatchStreamConfig,
+    result_tx: &SyncSender<io::Result<MaterializedStreamGame>>,
     stop: &AtomicBool,
-    mut job: StreamPlanEntry,
-) -> Result<(), ()> {
-    while !stop.load(Ordering::Acquire) {
-        match tx.try_send(job) {
-            Ok(()) => return Ok(()),
-            Err(TrySendError::Full(returned)) => {
-                job = returned;
-                thread::sleep(Duration::from_millis(1));
+) -> io::Result<()> {
+    let pool = make_optional_pool(config.num_threads, "raw MJAI persistent pinned stream")?;
+    let (local_tx, local_rx) =
+        mpsc::sync_channel::<io::Result<MaterializedStreamGame>>(config.queue_bound);
+    let expected_count = entries.len();
+    pool.install(|| {
+        entries.into_iter().par_bridge().for_each(|entry| {
+            if stop.load(Ordering::Acquire) {
+                return;
             }
-            Err(TrySendError::Disconnected(_)) => return Err(()),
+            let result = materialize_stream_job(entry.clone(), config.augment);
+            let _ = send_result_cancelable(&local_tx, stop, Ok(result));
+        });
+    });
+    drop(local_tx);
+    forward_ordered_results(local_rx, expected_count, result_tx, stop)
+}
+
+fn materialize_persistent_archive_group(
+    archive_path: &Path,
+    entries: Vec<&StreamPlanEntry>,
+    config: &RawMjaiBatchStreamConfig,
+    result_tx: &SyncSender<io::Result<MaterializedStreamGame>>,
+    stop: &AtomicBool,
+) -> io::Result<()> {
+    let wanted: BTreeMap<PathBuf, StreamPlanEntry> = entries
+        .iter()
+        .map(|entry| match &entry.source {
+            StreamPlanSource::ArchiveEntry { entry_path, .. } => {
+                (entry_path.clone(), (*entry).clone())
+            }
+            StreamPlanSource::LooseFile { .. } => unreachable!("archive group contains loose file"),
+        })
+        .collect();
+    let file = File::open(archive_path)?;
+    let reader = archive_reader(archive_path, file)?;
+    let mut archive = tar::Archive::new(reader);
+    let mut sent = 0usize;
+    let expected_count = wanted.len();
+    for entry_result in archive.entries()? {
+        if stop.load(Ordering::Acquire) {
+            break;
+        }
+        let mut entry = entry_result?;
+        let entry_path = entry.path()?.into_owned();
+        let Some(plan) = wanted.get(&entry_path) else {
+            continue;
+        };
+        let mut data = Vec::with_capacity(entry.size() as usize);
+        entry.read_to_end(&mut data)?;
+        if send_result_cancelable(
+            result_tx,
+            stop,
+            Ok(materialize_archive_stream_job(
+                ArchiveStreamJob {
+                    plan: plan.clone(),
+                    data,
+                },
+                config.augment,
+            )),
+        )
+        .is_err()
+        {
+            break;
+        }
+        sent += 1;
+        if sent == expected_count {
+            break;
         }
     }
-    Err(())
+    if !stop.load(Ordering::Acquire) && sent != expected_count {
+        return Err(invalid_data(format!(
+            "pinned archive stream materialized {sent} games, expected {expected_count}"
+        )));
+    }
+    Ok(())
+}
+
+fn forward_ordered_results(
+    local_rx: mpsc::Receiver<io::Result<MaterializedStreamGame>>,
+    expected_count: usize,
+    result_tx: &SyncSender<io::Result<MaterializedStreamGame>>,
+    stop: &AtomicBool,
+) -> io::Result<()> {
+    let mut next = 0usize;
+    let mut pending = BTreeMap::new();
+    for item in local_rx {
+        let game = item?;
+        pending.insert(game.sequence, game);
+        while let Some(game) = pending.remove(&next) {
+            if send_result_cancelable(result_tx, stop, Ok(game)).is_err() {
+                return Ok(());
+            }
+            next += 1;
+        }
+        if next == expected_count || stop.load(Ordering::Acquire) {
+            break;
+        }
+    }
+    if !stop.load(Ordering::Acquire) && next != expected_count {
+        return Err(invalid_data(format!(
+            "pinned stream materialized {next} games, expected {expected_count}"
+        )));
+    }
+    Ok(())
 }
 
 fn send_result_cancelable(
@@ -515,7 +612,7 @@ pub fn stream_raw_mjai_batches<W: Write>(
     }
     let source_manifest = match &config.source_manifest {
         Some(manifest) => manifest.clone(),
-        None => scan_data_sources(&config.input)?,
+        None => scan_raw_mjai_inputs(&config.inputs)?,
     };
     let (entries, max_games_reached) = build_stream_plan(&source_manifest, config)?;
     let mut stream = BatchStreamWriter::new(writer, config.batch_size)?;
@@ -526,6 +623,32 @@ pub fn stream_raw_mjai_batches<W: Write>(
     materialize_stream_in_order(&entries, config, &mut stream, &mut totals)?;
     stream.finish(&mut totals)?;
     Ok(totals)
+}
+
+fn scan_raw_mjai_inputs(inputs: &[PathBuf]) -> io::Result<DataManifest> {
+    if inputs.is_empty() {
+        return Err(invalid_data("raw MJAI stream requires at least one input"));
+    }
+    let mut sources = Vec::new();
+    let mut total_games = 0usize;
+    let mut train_count = 0usize;
+    let mut val_count = 0usize;
+    let mut counts_exact = true;
+    for input in inputs {
+        let manifest = scan_data_sources(input)?;
+        sources.extend(manifest.sources);
+        total_games += manifest.total_games;
+        train_count += manifest.train_count;
+        val_count += manifest.val_count;
+        counts_exact &= manifest.counts_exact;
+    }
+    Ok(DataManifest {
+        sources,
+        total_games,
+        train_count,
+        val_count,
+        counts_exact,
+    })
 }
 
 fn build_stream_plan(
@@ -1719,5 +1842,56 @@ fn archive_reader(path: &Path, file: File) -> io::Result<Box<dyn Read + Send>> {
         })?))
     } else {
         Ok(Box::new(file))
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn persistent_stream_counts_archive_entries() {
+        let root = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join("tmp")
+            .join(format!(
+                "hydra-raw-mjai-stream-test-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("test clock should be after unix epoch")
+                    .as_nanos()
+            ));
+        std::fs::create_dir_all(&root).expect("test root should be creatable");
+        let archive_path = root.join("bundle.tar");
+        let file = File::create(&archive_path).expect("archive fixture should be creatable");
+        let mut builder = tar::Builder::new(file);
+        for name in ["a.json", "b.json"] {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(2);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, name, std::io::Cursor::new(b"{}"))
+                .expect("archive entry should be writable");
+        }
+        builder.finish().expect("archive fixture should finish");
+        let manifest = DataManifest {
+            sources: vec![DataSource::Archive(archive_path)],
+            total_games: 2,
+            train_count: 2,
+            val_count: 0,
+            counts_exact: true,
+        };
+        let config = RawMjaiBatchStreamConfig {
+            inputs: vec![PathBuf::from("unused")],
+            batch_size: 1,
+            queue_bound: 1,
+            train_fraction: 1.0,
+            source_manifest: Some(manifest),
+            ..RawMjaiBatchStreamConfig::default()
+        };
+
+        let stream = RawMjaiPinnedStream::open(config).expect("archive stream should open");
+
+        assert_eq!(stream.expected_count, 2);
     }
 }

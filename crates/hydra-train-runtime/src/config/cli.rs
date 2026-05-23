@@ -465,6 +465,7 @@ where
     let mut python_variant = PythonLearnerVariant::default();
     let mut python_warmup_steps = 10usize;
     let mut python_steps = 30usize;
+    let mut python_full_epoch = false;
     let mut python_checkpoint_out = None;
     let mut python_resume = None;
     let mut python_checkpoint_every_steps = 0usize;
@@ -534,6 +535,7 @@ where
                 python_steps =
                     parse_usize_flag_allowing_zero("--python-steps", args.next(), false)?;
             }
+            "--python-full-epoch" => python_full_epoch = true,
             "--python-checkpoint-out" => {
                 let value = args
                     .next()
@@ -1115,8 +1117,14 @@ where
             microbatch_size: 1024,
             variant: python_variant,
             residual_profile: python_residual_profile,
+            hidden: 256,
+            blocks: 10,
+            bottleneck: 64,
             warmup_steps: python_warmup_steps,
-            steps: python_steps,
+            steps: Some(python_steps),
+            full_epoch: python_full_epoch,
+            validation_steps: 0,
+            validation_every: 0,
             checkpoint_out: python_checkpoint_out.clone(),
             resume: python_resume.clone(),
             checkpoint_every_steps: python_checkpoint_every_steps,
@@ -1149,6 +1157,7 @@ where
             || python_variant != PythonLearnerVariant::default()
             || python_warmup_steps != 10
             || python_steps != 30
+            || python_full_epoch
             || python_oracle_critic_weight != 0.0
             || python_safety_residual_weight != 0.0
             || python_residual_profile != PythonResidualProfileConfig::default()

@@ -30,6 +30,11 @@ class EvalStats:
     score_pdf: float
     score_cdf: float
     policy_accuracy: float
+    policy_top3_accuracy: float
+    policy_top5_accuracy: float
+    policy_nll: float
+    policy_confidence: float
+    policy_ece: float
 
 
 def summarize_eval(stats: list[EvalStats]) -> dict[str, float]:
@@ -48,6 +53,11 @@ def summarize_eval(stats: list[EvalStats]) -> dict[str, float]:
         "score_pdf": avg([s.score_pdf for s in stats]),
         "score_cdf": avg([s.score_cdf for s in stats]),
         "policy_accuracy": avg([s.policy_accuracy for s in stats]),
+        "policy_top3_accuracy": avg([s.policy_top3_accuracy for s in stats]),
+        "policy_top5_accuracy": avg([s.policy_top5_accuracy for s in stats]),
+        "policy_nll": avg([s.policy_nll for s in stats]),
+        "policy_confidence": avg([s.policy_confidence for s in stats]),
+        "policy_ece": avg([s.policy_ece for s in stats]),
     }
 
 

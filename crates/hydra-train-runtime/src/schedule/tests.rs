@@ -5,6 +5,7 @@ use std::path::PathBuf;
 fn dummy_config() -> TrainConfig {
     TrainConfig {
         data_dir: PathBuf::from("/data"),
+        raw_mjai_data_dirs: Vec::new(),
         output_dir: PathBuf::from("/output"),
         num_epochs: 3,
         batch_size: 256,
@@ -19,10 +20,12 @@ fn dummy_config() -> TrainConfig {
         source_filters: crate::config::SourceFilterConfig::default(),
         augment: true,
         resume_checkpoint: None,
+        resume_latest: true,
         seed: 0,
         advanced_loss: None,
         python_residual_profile: Default::default(),
         python_variant: Default::default(),
+        python_model_profile: Default::default(),
         bc_head_profile: crate::config::BcHeadProfile::Full,
         experimental_backbone_profile: None,
         python_raw_mjai_transport: Default::default(),
@@ -47,6 +50,7 @@ fn dummy_config() -> TrainConfig {
         tensorboard_port: 6006,
         background: false,
         max_train_steps: None,
+        full_epoch: false,
         max_validation_batches: None,
         max_validation_samples: None,
         precision_mode: crate::config::PrecisionMode::Fp32,

@@ -21,6 +21,8 @@ pub use cli::{parse_args, usage, version};
 #[serde(deny_unknown_fields)]
 pub struct TrainConfig {
     pub data_dir: PathBuf,
+    #[serde(default)]
+    pub raw_mjai_data_dirs: Vec<PathBuf>,
     pub output_dir: PathBuf,
     pub num_epochs: usize,
     #[serde(default = "default_batch_size")]
@@ -46,6 +48,8 @@ pub struct TrainConfig {
     #[serde(default = "default_augment")]
     pub augment: bool,
     pub resume_checkpoint: Option<PathBuf>,
+    #[serde(default = "default_resume_latest")]
+    pub resume_latest: bool,
     #[serde(default = "default_seed")]
     pub seed: u64,
     #[serde(default)]
@@ -56,6 +60,8 @@ pub struct TrainConfig {
     pub python_residual_profile: PythonResidualProfileConfig,
     #[serde(default)]
     pub python_variant: PythonLearnerVariant,
+    #[serde(default)]
+    pub python_model_profile: PythonModelProfileConfig,
     #[serde(default)]
     pub experimental_backbone_profile: Option<ExperimentalBackboneProfileConfig>,
     #[serde(default)]
@@ -104,6 +110,8 @@ pub struct TrainConfig {
     #[serde(default)]
     pub max_train_steps: Option<usize>,
     #[serde(default)]
+    pub full_epoch: bool,
+    #[serde(default)]
     pub max_validation_batches: Option<usize>,
     #[serde(default = "default_max_validation_samples")]
     pub max_validation_samples: Option<usize>,
@@ -115,6 +123,37 @@ pub enum BcHeadProfile {
     #[default]
     Full,
     PolicyOnly,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PythonModelProfileConfig {
+    #[default]
+    Default,
+    Balanced,
+}
+
+impl PythonModelProfileConfig {
+    pub const fn hidden(self) -> usize {
+        match self {
+            Self::Default => 256,
+            Self::Balanced => 256,
+        }
+    }
+
+    pub const fn blocks(self) -> usize {
+        match self {
+            Self::Default => 10,
+            Self::Balanced => 12,
+        }
+    }
+
+    pub const fn bottleneck(self) -> usize {
+        match self {
+            Self::Default => 64,
+            Self::Balanced => 64,
+        }
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -222,6 +261,7 @@ impl TrainConfig {
     pub fn default_preflight_bench() -> Self {
         Self {
             data_dir: PathBuf::new(),
+            raw_mjai_data_dirs: Vec::new(),
             output_dir: PathBuf::from("preflight_bench"),
             num_epochs: 0,
             batch_size: default_batch_size(),
@@ -236,11 +276,13 @@ impl TrainConfig {
             source_filters: SourceFilterConfig::default(),
             augment: default_augment(),
             resume_checkpoint: None,
+            resume_latest: default_resume_latest(),
             seed: default_seed(),
             advanced_loss: None,
             bc_head_profile: BcHeadProfile::default(),
             python_residual_profile: PythonResidualProfileConfig::default(),
             python_variant: PythonLearnerVariant::default(),
+            python_model_profile: PythonModelProfileConfig::default(),
             experimental_backbone_profile: None,
             python_raw_mjai_transport: PythonRawMjaiTransportConfig::default(),
             validation_gates: ValidationGateConfig::default(),
@@ -265,6 +307,7 @@ impl TrainConfig {
             tensorboard_port: default_tensorboard_port(),
             background: false,
             max_train_steps: None,
+            full_epoch: false,
             max_validation_batches: None,
             max_validation_samples: default_max_validation_samples(),
         }
@@ -449,8 +492,14 @@ pub struct PythonLearnerCliOptions {
     pub microbatch_size: usize,
     pub variant: PythonLearnerVariant,
     pub residual_profile: PythonResidualProfileConfig,
+    pub hidden: usize,
+    pub blocks: usize,
+    pub bottleneck: usize,
     pub warmup_steps: usize,
-    pub steps: usize,
+    pub steps: Option<usize>,
+    pub full_epoch: bool,
+    pub validation_steps: usize,
+    pub validation_every: usize,
     pub checkpoint_out: Option<PathBuf>,
     pub resume: Option<PathBuf>,
     pub checkpoint_every_steps: usize,
@@ -474,7 +523,7 @@ pub enum PythonLearnerInput {
         manifest: PathBuf,
     },
     RawMjai {
-        data_dir: PathBuf,
+        data_dirs: Vec<PathBuf>,
         max_games: Option<usize>,
         max_samples: Option<usize>,
         train_fraction: f32,
@@ -668,6 +717,10 @@ pub fn default_train_fraction() -> f32 {
 }
 
 pub fn default_augment() -> bool {
+    true
+}
+
+pub const fn default_resume_latest() -> bool {
     true
 }
 

@@ -140,7 +140,7 @@ pixi run cargo run -p hydra-train --no-default-features --features training --bi
 Notes:
 
 - Config examples and operator details live in [`docs/TRAINING_RUNBOOK.md`](docs/TRAINING_RUNBOOK.md).
-- Plain BC with `bc_shards_manifest_path` trains compact shards. Without shard manifest, YAML `data_dir` streams raw MJAI through Python raw-MJAI input; default transport is pinned PyO3 with stdout fallback.
+- Plain BC with `bc_shards_manifest_path` trains compact shards. Without shard manifest, YAML `raw_mjai_data_dirs` streams explicit raw-MJAI roots when set; otherwise `data_dir` streams one raw-MJAI input. Default transport is pinned PyO3 with stdout fallback.
 - Default plain-BC backend is Python/PyTorch. Rust owns replay parsing, shard building, manifest validation, and orchestration; Python owns BC model/loss/optimizer/compile/checkpoint.
 - Use `bc_backend: rust_burn` or CLI `--bc-backend rust-burn` only for legacy Rust/Burn debugging or advanced labels not supported by Python default yet: ExIt, DeltaQ, belief, mixture, opponent hand type.
 - `device: cpu` works for CPU Rust paths. Default Python BC expects CUDA for throughput.

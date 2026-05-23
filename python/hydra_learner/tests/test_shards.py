@@ -147,7 +147,7 @@ def test_raw_mjai_decode_truncated_metadata_raises_value_error() -> None:
 
 def test_raw_mjai_stream_command_uses_default_rust_env() -> None:
     cmd = build_raw_mjai_stream_command(
-        data_dir=Path("/data/mjai"),
+        data_dirs=[Path("/data/mjai"), Path("/data/mjai-2")],
         batch_size=2048,
         max_games=5,
         max_samples=4096,
@@ -157,7 +157,7 @@ def test_raw_mjai_stream_command_uses_default_rust_env() -> None:
         augment=True,
     )
     assert cmd[:5] == ["pixi", "run", "-e", "default", "cargo"]
-    assert _flag_value(cmd, "--input") == "/data/mjai"
+    assert [cmd[index + 1] for index, arg in enumerate(cmd) if arg == "--input"] == ["/data/mjai", "/data/mjai-2"]
     assert _flag_value(cmd, "--batch-size") == "2048"
     assert _flag_value(cmd, "--max-games") == "5"
     assert _flag_value(cmd, "--max-samples") == "4096"
@@ -168,7 +168,7 @@ def test_raw_mjai_pinned_ffi_requires_explicit_library(tmp_path: Path) -> None:
     missing = tmp_path / "libhydra_raw_mjai_ffi.so"
     with pytest.raises(ImportError):
         RawMjaiPinnedStream(
-            data_dir=Path("/data/mjai"),
+            data_dirs=[Path("/data/mjai")],
             batch_size=2048,
             queue_bound=8,
             worker_threads=20,
@@ -201,10 +201,11 @@ class _FakeRawMjaiStream:
     block_next = False
     release = threading.Event()
 
-    def __init__(self, *_args: object, **_kwargs: object) -> None:
+    def __init__(self, data_dirs: object, *_args: object, **_kwargs: object) -> None:
         type(self).next_calls = 0
         type(self).close_calls = 0
         type(self).release.clear()
+        self.data_dirs = data_dirs
 
     def next_into(self, *ptrs: object) -> _FakeRawMjaiNext:
         type(self).next_calls += 1
@@ -238,7 +239,7 @@ def _clear_raw_mjai_stream_override() -> Generator[None]:
 def _fake_pinned_stream(tmp_path: Path, *, ring_size: int = 2, close_timeout_s: float = 30.0) -> RawMjaiPinnedStream:
     RawMjaiPinnedStream._set_stream_override_for_tests(_FakeRawMjaiStream)
     return RawMjaiPinnedStream(
-        data_dir=Path("/data/mjai"),
+        data_dirs=[Path("/data/mjai")],
         batch_size=2,
         queue_bound=1,
         worker_threads=1,

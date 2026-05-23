@@ -851,6 +851,7 @@ fn session_step_budget_is_relative_to_resume_point() {
 fn schedule_total_steps_extends_from_resume_global_step() {
     let cfg = TrainConfig {
         data_dir: PathBuf::from("/tmp/data"),
+        raw_mjai_data_dirs: Vec::new(),
         output_dir: PathBuf::from("/tmp/out"),
         num_epochs: 1,
         batch_size: 256,
@@ -899,6 +900,7 @@ fn schedule_total_steps_extends_from_resume_global_step() {
 fn python_guard_config() -> TrainConfig {
     TrainConfig {
         data_dir: PathBuf::from("/tmp/data"),
+        raw_mjai_data_dirs: Vec::new(),
         output_dir: PathBuf::from("/tmp/out"),
         num_epochs: 1,
         batch_size: 1024,
@@ -963,19 +965,37 @@ fn python_options_from_config_uses_raw_mjai_when_manifest_absent() {
     let options = python_options_from_config(&config).expect("plain BC should route to Python");
     match options.input {
         hydra_train_runtime::config::PythonLearnerInput::RawMjai {
-            data_dir,
+            data_dirs,
             train_fraction,
             augment,
             transport,
             ..
         } => {
-            assert_eq!(data_dir, PathBuf::from("/tmp/data"));
+            assert_eq!(data_dirs, vec![PathBuf::from("/tmp/data")]);
             assert_eq!(train_fraction, 0.9);
             assert!(augment);
             assert_eq!(
                 transport,
                 hydra_train_runtime::config::PythonRawMjaiTransportConfig::PinnedPyo3
             );
+        }
+        hydra_train_runtime::config::PythonLearnerInput::BcShards { .. } => {
+            panic!("expected raw MJAI input")
+        }
+    }
+}
+
+#[test]
+fn python_options_from_config_uses_explicit_raw_mjai_dirs() {
+    let mut config = python_guard_config();
+    config.bc_shards_manifest_path = None;
+    config.raw_mjai_data_dirs = vec![PathBuf::from("/data/a"), PathBuf::from("/data/b")];
+
+    let options = python_options_from_config(&config).expect("plain BC should route to Python");
+
+    match options.input {
+        hydra_train_runtime::config::PythonLearnerInput::RawMjai { data_dirs, .. } => {
+            assert_eq!(data_dirs, config.raw_mjai_data_dirs);
         }
         hydra_train_runtime::config::PythonLearnerInput::BcShards { .. } => {
             panic!("expected raw MJAI input")
@@ -1552,6 +1572,7 @@ fn better_validation_prefers_lower_policy_loss_then_higher_agreement() {
 fn validation_microbatch_and_sample_limit_fallbacks_work() {
     let cfg = TrainConfig {
         data_dir: PathBuf::from("/tmp/data"),
+        raw_mjai_data_dirs: Vec::new(),
         output_dir: PathBuf::from("/tmp/out"),
         num_epochs: 1,
         batch_size: 256,
@@ -1613,6 +1634,7 @@ fn validation_microbatch_and_sample_limit_fallbacks_work() {
 fn validate_config_rejects_zero_validation_microbatch_and_samples() {
     let cfg = TrainConfig {
         data_dir: PathBuf::from("/tmp/data"),
+        raw_mjai_data_dirs: Vec::new(),
         output_dir: PathBuf::from("/tmp/out"),
         num_epochs: 1,
         batch_size: 256,
@@ -1673,6 +1695,7 @@ fn build_loss_config_defaults_match_baseline() {
 fn validate_config_accepts_basic_rl_block() {
     let cfg = TrainConfig {
         data_dir: PathBuf::from("/tmp/data"),
+        raw_mjai_data_dirs: Vec::new(),
         output_dir: PathBuf::from("/tmp/out"),
         num_epochs: 1,
         batch_size: 256,
@@ -1825,6 +1848,7 @@ advanced_loss:
 fn validate_config_rejects_invalid_bc_hyperparameter_ranges() {
     let cfg = TrainConfig {
         data_dir: PathBuf::from("/tmp/data"),
+        raw_mjai_data_dirs: Vec::new(),
         output_dir: PathBuf::from("/tmp/out"),
         num_epochs: 1,
         batch_size: 256,
@@ -1880,6 +1904,7 @@ fn validate_config_rejects_invalid_bc_hyperparameter_ranges() {
 fn validate_config_requires_sidecar_when_exit_loss_is_enabled() {
     let cfg = TrainConfig {
         data_dir: PathBuf::from("/tmp/data"),
+        raw_mjai_data_dirs: Vec::new(),
         output_dir: PathBuf::from("/tmp/out"),
         num_epochs: 1,
         batch_size: 256,
@@ -1932,6 +1957,7 @@ fn validate_config_requires_sidecar_when_exit_loss_is_enabled() {
 fn validate_config_requires_sidecar_when_delta_q_loss_is_enabled() {
     let cfg = TrainConfig {
         data_dir: PathBuf::from("/tmp/data"),
+        raw_mjai_data_dirs: Vec::new(),
         output_dir: PathBuf::from("/tmp/out"),
         num_epochs: 1,
         batch_size: 256,
