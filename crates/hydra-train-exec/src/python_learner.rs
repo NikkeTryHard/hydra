@@ -204,6 +204,7 @@ pub fn build_python_learner_command(options: &PythonLearnerCliOptions) -> Python
             data_dirs,
             max_games,
             max_samples,
+            skip_games,
             train_fraction,
             augment,
             transport,
@@ -225,6 +226,10 @@ pub fn build_python_learner_command(options: &PythonLearnerCliOptions) -> Python
             if let Some(max_samples) = max_samples {
                 args.push("--raw-mjai-max-samples".to_string());
                 args.push(max_samples.to_string());
+            }
+            if *skip_games != 0 {
+                args.push("--raw-mjai-skip-games".to_string());
+                args.push(skip_games.to_string());
             }
             if *augment {
                 args.push("--raw-mjai-augment".to_string());
@@ -856,6 +861,7 @@ mod tests {
             data_dirs: vec![root.join("mjai"), root.join("mjai-2")],
             max_games: Some(5),
             max_samples: Some(4096),
+            skip_games: 3,
             train_fraction: 0.8,
             augment: true,
             transport: hydra_train_runtime::config::PythonRawMjaiTransportConfig::PinnedPyo3,
@@ -885,6 +891,12 @@ mod tests {
                 .args
                 .windows(2)
                 .any(|w| w == ["--raw-mjai-max-samples", "4096"])
+        );
+        assert!(
+            command
+                .args
+                .windows(2)
+                .any(|w| w == ["--raw-mjai-skip-games", "3"])
         );
         assert!(
             command

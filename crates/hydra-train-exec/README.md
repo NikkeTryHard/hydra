@@ -5,7 +5,7 @@ Crate-local map for training execution composition migrated out of train binarie
 ## Owns
 
 - Python process launch/probe execution helpers.
-- Raw-MJAI streaming execution, including Rust-launcher resume fail-closed checks.
+- Raw-MJAI streaming execution, including deterministic completed-game resume skip.
 - BC fixed-shape train/probe execution helpers.
 - Bootstrap, modes, orchestration, epoch/RL runners.
 - Heavy preflight benchmark/probe/validation execution.

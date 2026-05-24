@@ -122,6 +122,8 @@ def test_arena_run_writes_summary_per_game_and_scalars(tmp_path: Path, monkeypat
         assert path == Path("candidate.pt")
         return loaded[1]
 
+    calls: list[tuple[int, int, float, list[int], int]] = []
+
     class FakeExtension:
         @staticmethod
         def run_paired_arena(
@@ -132,13 +134,22 @@ def test_arena_run_writes_summary_per_game_and_scalars(tmp_path: Path, monkeypat
             candidate_models: int,
             inference: Any,
         ) -> dict[str, Any]:
-            assert (games, seed, temperature, candidate_seats, candidate_models) == (4, 7, 1.25, [0], 1)
+            calls.append((games, seed, temperature, candidate_seats, candidate_models))
             assert callable(inference)
             return {
-                "compared_games": 4,
-                "candidate_mean_placement": 1.25,
-                "baseline_mean_placement": 2.75,
-                "games": [{"game_index": 0, "candidate_place": 1}],
+                "games": games,
+                "candidate_winrate": 0.25,
+                "baseline_winrate": 0.75,
+                "candidate_avg_rank": 2.25,
+                "baseline_avg_rank": 2.75,
+                "candidate_top2": 0.5,
+                "baseline_top2": 0.25,
+                "candidate_fourth": 0.0,
+                "baseline_fourth": 0.25,
+                "candidate_avg_score": 26000.0,
+                "baseline_avg_score": 24666.0,
+                "score_delta": 1334.0,
+                "pt_delta": 1.334,
             }
 
     def fake_load_extension(config: arena_eval.ArenaEvalConfig) -> type[FakeExtension]:
@@ -176,14 +187,18 @@ def test_arena_run_writes_summary_per_game_and_scalars(tmp_path: Path, monkeypat
 
     written = json.loads(output.read_text(encoding="utf-8"))
     assert written["baseline"]["global_step"] == 10
-    assert written["candidates"][0]["result"]["compared_games"] == 4
+    assert written["candidates"][0]["result"]["games"] == 16
     assert summary["candidates"][0]["candidate"] == "candidate"
-    assert per_game.read_text(encoding="utf-8").strip() == (
-        '{"candidate":"candidate","candidate_index":0,"game":{"candidate_place":1,"game_index":0}}'
-    )
+    assert not per_game.exists()
+    assert calls == [
+        (4, 7, 1.25, [0], 1),
+        (4, 11, 1.25, [1], 1),
+        (4, 15, 1.25, [2], 1),
+        (4, 19, 1.25, [3], 1),
+    ]
     assert {tag for tag, _, _ in RecordingScalarWriter.records} >= {
-        "arena/candidate/compared_games",
-        "arena/candidate/candidate_mean_placement",
-        "arena/candidate/baseline_mean_placement",
+        "arena/candidate/games",
+        "arena/candidate/candidate_avg_rank",
+        "arena/candidate/baseline_avg_rank",
     }
     assert all(step == 20 for _, _, step in RecordingScalarWriter.records)

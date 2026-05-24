@@ -77,6 +77,8 @@ pub struct RawMjaiBatchStreamConfig {
     pub max_games: Option<usize>,
     /// Optional maximum output rows; current batch may stop at the cap.
     pub max_samples: Option<usize>,
+    /// Number of deterministic planned games to skip before emitting rows.
+    pub skip_games: usize,
     /// Worker threads for replay materialization.
     pub num_threads: Option<usize>,
     /// Bounded job/result queue depth.
@@ -97,6 +99,7 @@ impl Default for RawMjaiBatchStreamConfig {
             max_games: None,
             max_samples: None,
             num_threads: None,
+            skip_games: 0,
             queue_bound: 128,
             augment: false,
             source_manifest: None,
@@ -199,6 +202,7 @@ pub fn fill_raw_mjai_pinned_one_batch(
         None => scan_raw_mjai_inputs(&config.inputs)?,
     };
     let (entries, max_games_reached) = build_stream_plan(&source_manifest, config)?;
+    let entries = skip_stream_prefix(entries, config.skip_games)?;
     let mut totals = RawMjaiBatchStreamTotals {
         max_games_reached,
         ..RawMjaiBatchStreamTotals::default()
@@ -269,6 +273,7 @@ impl RawMjaiPinnedStream {
             None => scan_raw_mjai_inputs(&config.inputs)?,
         };
         let (entries, max_games_reached) = build_stream_plan(&source_manifest, &config)?;
+        let entries = skip_stream_prefix(entries, config.skip_games)?;
         let expected_count = entries.len();
         let (result_rx, producer, workers, stop) = spawn_persistent_workers(entries, &config)?;
         Ok(Self {
@@ -633,6 +638,7 @@ pub fn stream_raw_mjai_batches<W: Write>(
         None => scan_raw_mjai_inputs(&config.inputs)?,
     };
     let (entries, max_games_reached) = build_stream_plan(&source_manifest, config)?;
+    let entries = skip_stream_prefix(entries, config.skip_games)?;
     let mut stream = BatchStreamWriter::new(writer, config.batch_size)?;
     let mut totals = RawMjaiBatchStreamTotals {
         max_games_reached,
@@ -724,6 +730,26 @@ fn build_stream_plan(
         entry.sequence = sequence;
     }
     Ok((candidates, max_games_reached))
+}
+
+fn skip_stream_prefix(
+    mut entries: Vec<StreamPlanEntry>,
+    skip_games: usize,
+) -> io::Result<Vec<StreamPlanEntry>> {
+    if skip_games == 0 {
+        return Ok(entries);
+    }
+    if skip_games > entries.len() {
+        return Err(invalid_data(format!(
+            "raw MJAI resume skip_games {skip_games} exceeds planned games {}",
+            entries.len()
+        )));
+    }
+    entries.drain(..skip_games);
+    for (sequence, entry) in entries.iter_mut().enumerate() {
+        entry.sequence = sequence;
+    }
+    Ok(entries)
 }
 
 fn enumerate_stream_archive_entries(

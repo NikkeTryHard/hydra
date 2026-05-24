@@ -38,6 +38,7 @@ class RawMjaiDirectStream:
         train_fraction: float,
         augment: bool,
         split: str,
+        skip_games: int = 0,
     ) -> None:
         if batch_size <= 0:
             raise ValueError("raw MJAI batch size must be > 0")
@@ -56,6 +57,7 @@ class RawMjaiDirectStream:
         self.worker_threads = worker_threads
         self.max_games = max_games
         self.max_samples = max_samples
+        self.skip_games = skip_games
         self.train_fraction = train_fraction
         self.augment = augment
         self.split = split
@@ -93,6 +95,7 @@ class RawMjaiDirectStream:
             batch_size=self.batch_size,
             max_games=self.max_games,
             max_samples=self.max_samples,
+            skip_games=self.skip_games,
             queue_bound=self.queue_bound,
             worker_threads=self.worker_threads,
             train_fraction=self.train_fraction,
@@ -103,7 +106,7 @@ class RawMjaiDirectStream:
             "raw_mjai_direct_start "
             f"dirs={len(self.data_dirs)} batch={self.batch_size} prefetch={self.prefetch_batches} "
             f"queue_bound={self.queue_bound} workers={self.worker_threads} max_games={self.max_games} "
-            f"max_samples={self.max_samples} split={self.split}",
+            f"max_samples={self.max_samples} skip_games={self.skip_games} split={self.split}",
             file=sys.stderr,
             flush=True,
         )
@@ -249,6 +252,7 @@ def build_raw_mjai_stream_command(
     train_fraction: float,
     augment: bool,
     split: str = "train",
+    skip_games: int = 0,
 ) -> list[str]:
     cmd = [
         "pixi",
@@ -286,6 +290,8 @@ def build_raw_mjai_stream_command(
         cmd.extend(["--max-games", str(max_games)])
     if max_samples is not None:
         cmd.extend(["--max-samples", str(max_samples)])
+    if skip_games:
+        cmd.extend(["--skip-games", str(skip_games)])
     if augment:
         cmd.append("--augment")
     return cmd

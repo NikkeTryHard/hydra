@@ -19,14 +19,10 @@ from hydra_learner.raw_mjai_pinned import (
 RAW_MJAI_TRANSPORT_PINNED_PYO3 = "pinned_pyo3"
 RAW_MJAI_TRANSPORT_STDOUT = "stdout"
 RAW_MJAI_TRANSPORTS = (RAW_MJAI_TRANSPORT_PINNED_PYO3, RAW_MJAI_TRANSPORT_STDOUT)
-RAW_MJAI_CURSOR_RESUME_ERROR = (
-    "raw-MJAI resume is unsupported: checkpoint restores weights but raw stream cursor resume is "
-    "unsupported; use fresh output dir or BC shards"
-)
 
 
 def raw_mjai_cursor_resume_supported() -> bool:
-    return False
+    return True
 
 
 def raw_mjai_config_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
@@ -40,6 +36,7 @@ def raw_mjai_config_from_args(args: argparse.Namespace) -> dict[str, Any] | None
         "worker_threads": args.raw_mjai_worker_threads,
         "max_games": args.raw_mjai_max_games,
         "max_samples": args.raw_mjai_max_samples,
+        "skip_games": args.raw_mjai_skip_games,
         "train_fraction": args.raw_mjai_train_fraction,
         "augment": args.raw_mjai_augment,
         "validation_augment": args.raw_mjai_validation_augment,
@@ -56,6 +53,7 @@ def add_raw_mjai_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--raw-mjai-worker-threads", type=int, default=20)
     parser.add_argument("--raw-mjai-max-games", type=int)
     parser.add_argument("--raw-mjai-max-samples", type=int)
+    parser.add_argument("--raw-mjai-skip-games", type=int, default=0)
     parser.add_argument("--raw-mjai-train-fraction", type=float, default=0.9)
     parser.add_argument("--raw-mjai-augment", action="store_true")
     parser.add_argument("--raw-mjai-validation-augment", action="store_true")
@@ -70,11 +68,11 @@ def validate_raw_mjai_source_args(args: argparse.Namespace) -> None:
     if has_manifest == has_raw:
         raise ValueError("provide exactly one of --manifest or --raw-mjai-data-dir")
     if has_raw:
+        if args.raw_mjai_skip_games < 0:
+            raise ValueError("--raw-mjai-skip-games must be >= 0")
         for data_dir in args.raw_mjai_data_dirs:
             if not data_dir.exists():
                 raise ValueError(f"raw MJAI data dir does not exist: {data_dir}")
-        if args.resume is not None and not raw_mjai_cursor_resume_supported():
-            raise ValueError(RAW_MJAI_CURSOR_RESUME_ERROR)
     if has_raw and args.raw_mjai_train_fraction <= 0.0:
         raise ValueError("--raw-mjai-train-fraction must be > 0")
 
@@ -89,7 +87,6 @@ def validate_raw_mjai_source_args(args: argparse.Namespace) -> None:
 
 
 __all__: Sequence[str] = (
-    "RAW_MJAI_CURSOR_RESUME_ERROR",
     "RAW_MJAI_TRANSPORTS",
     "RAW_MJAI_TRANSPORT_PINNED_PYO3",
     "RAW_MJAI_TRANSPORT_STDOUT",

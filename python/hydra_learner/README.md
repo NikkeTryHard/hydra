@@ -69,7 +69,7 @@ Python backbone profile is checkpoint-stable and accepts only `conv2d_local3`: C
 
 Compile variants do not change model math, topology, checkpoint architecture, input/action shapes, residual profile, or losses; they only change TorchInductor strategy. Canonical production Python BC uses `compile_max_autotune`; use `compile_default` only for smoke/preflight/short debug.
 
-If YAML omits `bc_shards_manifest_path`, Rust launcher streams raw MJAI from `raw_mjai_data_dirs` when set, otherwise from `data_dir`. Default bridge crate is `hydra-raw-mjai-pyo3` pinned PyO3; stdout remains fallback. Raw-MJAI output must be fresh; resume is fail-closed until stream cursor resume exists.
+If YAML omits `bc_shards_manifest_path`, Rust launcher streams raw MJAI from `raw_mjai_data_dirs` when set, otherwise from `data_dir`. Default bridge crate is `hydra-raw-mjai-pyo3` pinned PyO3; stdout remains fallback. Raw-MJAI resume is default-on and skips deterministic completed games from checkpoint progress.
 ## Run artifacts and resume
 
 Rust launcher creates stable artifact dirs for every Python BC run:

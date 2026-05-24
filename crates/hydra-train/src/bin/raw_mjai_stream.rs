@@ -67,6 +67,10 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> io::Result<RawMjaiBatch
                     "--max-samples",
                 )?);
             }
+            "--skip-games" => {
+                config.skip_games =
+                    parse_usize(&next_value(&mut iter, "--skip-games")?, "--skip-games")?;
+            }
             "--num-threads" => {
                 config.num_threads = Some(parse_usize(
                     &next_value(&mut iter, "--num-threads")?,
@@ -136,6 +140,6 @@ fn parse_split(value: &str) -> io::Result<RawMjaiStreamSplit> {
 
 fn print_help() {
     println!(
-        "Usage: raw_mjai_stream --input PATH [--input PATH ...] [--batch-size N] [--max-games N] [--max-samples N] [--num-threads N] [--queue-bound N] [--train-fraction F] [--split train|validation] [--augment]"
+        "Usage: raw_mjai_stream --input PATH [--input PATH ...] [--batch-size N] [--max-games N] [--max-samples N] [--skip-games N] [--num-threads N] [--queue-bound N] [--train-fraction F] [--split train|validation] [--augment]"
     );
 }

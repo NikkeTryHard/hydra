@@ -22,7 +22,7 @@ from hydra_learner.batches import (
     synthetic_targets,
     targets_for_compiled_loss,
 )
-from hydra_learner.checkpoint import ModelConfig, RuntimeConfig, load_checkpoint
+from hydra_learner.checkpoint import ModelConfig, RuntimeConfig, load_checkpoint, load_checkpoint_metadata
 from hydra_learner.checkpointing import (
     RawMjaiResumeOffsets,
     apply_progress_offsets,
@@ -197,6 +197,12 @@ def run_training(args: argparse.Namespace) -> int:
     if args.raw_mjai_data_dirs and raw_train_max_samples is None and not args.full_epoch and args.steps is not None:
         raw_train_batches = args.steps + 1
         raw_train_max_samples = raw_train_batches * args.batch
+    raw_resume_offsets = RawMjaiResumeOffsets()
+    raw_resume_state = None
+    if args.raw_mjai_data_dirs and args.resume is not None:
+        raw_resume_state = load_checkpoint_metadata(args.resume)
+        raw_resume_offsets = RawMjaiResumeOffsets.from_resume(raw_resume_state, args.batch)
+        args.raw_mjai_skip_games += raw_resume_offsets.completed_games
 
     events.write(
         "input_setup_start",
@@ -210,6 +216,7 @@ def run_training(args: argparse.Namespace) -> int:
             "raw_mjai_queue_bound": args.raw_mjai_queue_bound,
             "raw_mjai_worker_threads": args.raw_mjai_worker_threads,
             "resume_requested": args.resume is not None,
+            "raw_mjai_skip_games": args.raw_mjai_skip_games,
         },
     )
     if args.manifest is not None:
@@ -225,6 +232,7 @@ def run_training(args: argparse.Namespace) -> int:
                 "transport": args.raw_mjai_transport,
                 "data_dir_count": len(args.raw_mjai_data_dirs),
                 "resume_requested": args.resume is not None,
+                "raw_mjai_skip_games": args.raw_mjai_skip_games,
             },
         )
         if args.raw_mjai_transport == RAW_MJAI_TRANSPORT_STDOUT:
@@ -239,6 +247,7 @@ def run_training(args: argparse.Namespace) -> int:
                 train_fraction=args.raw_mjai_train_fraction,
                 augment=args.raw_mjai_augment,
                 split=args.raw_mjai_split,
+                skip_games=args.raw_mjai_skip_games,
             )
             raw_stream.start()
             events.write("input_setup_complete", {"kind": "raw_mjai_stdout"})
@@ -256,6 +265,7 @@ def run_training(args: argparse.Namespace) -> int:
                 split=args.raw_mjai_split,
                 library_path=args.raw_mjai_pyo3_lib or default_raw_mjai_pyo3_library_path(),
                 ring_size=args.raw_mjai_prefetch_batches,
+                skip_games=args.raw_mjai_skip_games,
             )
             events.write("input_setup_complete", {"kind": "raw_mjai_pinned_pyo3"})
             events.write("raw_mjai_stream_open_complete", {"kind": "raw_mjai_pinned_pyo3"})
@@ -390,11 +400,11 @@ def run_training(args: argparse.Namespace) -> int:
         events.write("checkpoint_load_complete", {"global_step": resume_state.global_step})
         if args.raw_mjai_data_dirs:
             events.write(
-                "raw_mjai_checkpoint_resume_without_cursor",
+                "raw_mjai_checkpoint_resume_cursor",
                 {
                     "global_step": resume_state.global_step,
                     "samples_seen": resume_state.samples_seen,
-                    "stream_restarted": True,
+                    "skip_games": args.raw_mjai_skip_games,
                 },
             )
 

@@ -4,8 +4,8 @@
 
 # Fallback raw-MJAI root/file/archive. Required by config contract.
 data_dir: path/to/mjai
-# Optional shard cache/resume launch: build+validate compact v3 shards, then set this manifest.
-# Raw full-epoch path remains fresh-output only because raw stream cursor resume is unsupported.
+# Optional shard cache launch: build+validate compact v3 shards, then set this manifest.
+# Raw-MJAI is default; checkpoint resume skips deterministic completed games.
 # bc_shards_manifest_path: path/to/bc_shards_manifest.json
 
 
@@ -57,10 +57,10 @@ augment: true
 seed: 0
 source_filters: {}
 
-# Raw-MJAI output dirs must be fresh until durable stream cursor resume exists.
-# Use compact BC shards for resumable long runs/cache semantics.
+# Raw-MJAI resume is default-on. Checkpoint progress stores completed games; launcher skips
+# that deterministic prefix before streaming new rows.
 resume_checkpoint: null
-resume_latest: false
+resume_latest: true
 
 # Long-run observability. 512k validation reduces false plateau reads.
 log_every_n_steps: 50

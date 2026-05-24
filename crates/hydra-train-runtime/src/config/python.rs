@@ -5,38 +5,14 @@ use super::{PythonLearnerCliOptions, PythonLearnerInput, TrainConfig, validation
 /// Warmup steps used by train-config-driven Python timing launches.
 pub const PYTHON_TIMING_WARMUP_STEPS: usize = 10;
 
-/// Raw-MJAI launches cannot restore checkpoints until durable stream cursor
-/// resume exists. Restoring weights/RNG while replaying corpus prefix is unsafe.
+/// Raw-MJAI launches restore by skipping deterministic completed games from checkpoint progress.
 pub const fn raw_mjai_cursor_resume_supported() -> bool {
-    false
+    true
 }
 
 /// Resolves the Python learner checkpoint for a config-owned launch.
 pub fn python_resume_checkpoint(config: &TrainConfig) -> Result<Option<PathBuf>, String> {
-    let raw_mjai_input = config.bc_shards_manifest_path.is_none();
     let latest = config.output_dir.join("checkpoints/latest.pt");
-
-    if raw_mjai_input && !raw_mjai_cursor_resume_supported() {
-        if config.resume_checkpoint.is_some() {
-            return Err(
-                "Python Raw-MJAI input does not support resume_checkpoint until raw stream cursor resume exists; use a fresh output_dir or BC shards"
-                    .to_string(),
-            );
-        }
-        if config.resume_latest {
-            return Err(
-                "Python Raw-MJAI input does not support resume_latest until raw stream cursor resume exists; use a fresh output_dir or BC shards"
-                    .to_string(),
-            );
-        }
-        if latest.is_file() {
-            return Err(
-                "Python Raw-MJAI input found occupied checkpoints/latest.pt; raw stream cursor resume is unsupported, so choose a fresh output_dir or BC shards"
-                    .to_string(),
-            );
-        }
-        return Ok(None);
-    }
 
     if let Some(path) = &config.resume_checkpoint {
         return Ok(Some(path.clone()));
@@ -68,6 +44,7 @@ pub fn python_options_from_config(config: &TrainConfig) -> Result<PythonLearnerC
                 },
                 max_games: None,
                 max_samples: None,
+                skip_games: 0,
                 train_fraction: config.train_fraction,
                 augment: config.augment,
                 transport: config.python_raw_mjai_transport,

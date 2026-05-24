@@ -971,6 +971,10 @@ def _valid_args(**overrides: Any) -> argparse.Namespace:
         "torch_profiler_trace": None,
         "full_epoch": False,
         "raw_mjai_max_samples": None,
+        "raw_mjai_skip_games": 0,
+        "raw_mjai_train_fraction": 0.9,
+        "raw_mjai_transport": "stdout",
+        "raw_mjai_pyo3_lib": None,
         "resume": None,
         "raw_mjai_data_dirs": None,
         "raw_mjai_validation_augment": False,
@@ -981,27 +985,38 @@ def _valid_args(**overrides: Any) -> argparse.Namespace:
     return argparse.Namespace(**values)
 
 
-def test_raw_full_epoch_resume_without_cursor_is_rejected(tmp_path: Path) -> None:
+def test_raw_full_epoch_resume_with_cursor_is_allowed(tmp_path: Path) -> None:
     args = _valid_args(
         full_epoch=True,
         resume=tmp_path / "checkpoints" / "latest.pt",
         raw_mjai_data_dirs=[tmp_path / "raw"],
+        raw_mjai_skip_games=0,
         steps=None,
     )
     (tmp_path / "raw").mkdir()
 
-    with pytest.raises(ValueError, match="raw-MJAI resume is unsupported"):
-        validate_raw_mjai_source_args(args)
+    validate_raw_mjai_source_args(args)
 
 
-def test_bounded_raw_resume_without_cursor_is_rejected(tmp_path: Path) -> None:
+def test_bounded_raw_resume_with_cursor_is_allowed(tmp_path: Path) -> None:
     args = _valid_args(
         resume=tmp_path / "checkpoints" / "latest.pt",
         raw_mjai_data_dirs=[tmp_path / "raw"],
+        raw_mjai_skip_games=0,
     )
     (tmp_path / "raw").mkdir()
 
-    with pytest.raises(ValueError, match="raw-MJAI resume is unsupported"):
+    validate_raw_mjai_source_args(args)
+
+
+def test_raw_negative_skip_games_is_rejected(tmp_path: Path) -> None:
+    args = _valid_args(
+        raw_mjai_data_dirs=[tmp_path / "raw"],
+        raw_mjai_skip_games=-1,
+    )
+    (tmp_path / "raw").mkdir()
+
+    with pytest.raises(ValueError, match="--raw-mjai-skip-games must be >= 0"):
         validate_raw_mjai_source_args(args)
 
 

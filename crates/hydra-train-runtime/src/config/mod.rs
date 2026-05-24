@@ -625,6 +625,7 @@ pub enum PythonLearnerInput {
         data_dirs: Vec<PathBuf>,
         max_games: Option<usize>,
         max_samples: Option<usize>,
+        skip_games: usize,
         train_fraction: f32,
         augment: bool,
         transport: PythonRawMjaiTransportConfig,
@@ -885,7 +886,7 @@ pub fn default_augment() -> bool {
 }
 
 pub const fn default_resume_latest() -> bool {
-    false
+    true
 }
 
 pub fn default_seed() -> u64 {

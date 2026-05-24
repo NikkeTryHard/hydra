@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class RawMjaiResumeOffsets:
-    """Raw-MJAI resume restores state/counters; stream cursor restarts because no durable cursor exists."""
+    """Raw-MJAI resume cursor skips deterministic completed games before streaming."""
 
     loaded_games: int = 0
     skipped_games: int = 0
@@ -46,6 +46,10 @@ class RawMjaiResumeOffsets:
                 batches=progress.get("batches", resume_state.samples_seen // batch),
             )
         return cls(samples=resume_state.samples_seen, batches=resume_state.samples_seen // batch)
+
+    @property
+    def completed_games(self) -> int:
+        return self.loaded_games + self.skipped_games
 
 
 def apply_progress_offsets(progress: BuildProgress | None, offsets: RawMjaiResumeOffsets) -> BuildProgress | None:

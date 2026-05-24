@@ -311,6 +311,32 @@ def _numeric_scalars(result: dict[str, Any]) -> dict[str, object]:
     return {key: value for key, value in result.items() if isinstance(value, bool | int | float)}
 
 
+_ARENA_NUMERIC_KEYS = (
+    "candidate_winrate",
+    "baseline_winrate",
+    "candidate_avg_rank",
+    "baseline_avg_rank",
+    "candidate_top2",
+    "baseline_top2",
+    "candidate_fourth",
+    "baseline_fourth",
+    "candidate_avg_score",
+    "baseline_avg_score",
+    "score_delta",
+    "pt_delta",
+)
+
+
+def _aggregate_seat_results(results: list[dict[str, Any]]) -> dict[str, Any]:
+    if not results:
+        raise ValueError("seat-rotation results must not be empty")
+    games = sum(int(result["games"]) for result in results)
+    aggregate: dict[str, Any] = {"games": games, "seat_rotations": len(results)}
+    for key in _ARENA_NUMERIC_KEYS:
+        aggregate[key] = sum(float(result[key]) * int(result["games"]) for result in results) / games
+    return aggregate
+
+
 def log_arena_scalars(writer: ScalarEventWriter, candidate: LoadedArenaModel, result: dict[str, Any]) -> None:
     step = candidate.global_step
     add_scalars(writer, f"arena/{candidate.name}", _numeric_scalars(result), step, include_status_scalars=True)
@@ -330,19 +356,23 @@ def run_arena_eval(config: ArenaEvalConfig) -> dict[str, Any]:
     try:
         for candidate_index, candidate in enumerate(candidates):
             models = [baseline, candidate]
-            result = cast(
-                dict[str, Any],
-                run_paired_arena(
-                    config.games,
-                    config.seed,
-                    config.temperature,
-                    [candidate_index % 4],
-                    1,
-                    make_inference_callback(models, device),
-                ),
-            )
-            if not isinstance(result, dict):
-                raise TypeError(f"run_paired_arena returned {type(result).__name__}, expected dict")
+            seat_results: list[dict[str, Any]] = []
+            for seat in range(4):
+                seat_result = cast(
+                    dict[str, Any],
+                    run_paired_arena(
+                        config.games,
+                        config.seed + seat * config.games,
+                        config.temperature,
+                        [seat],
+                        1,
+                        make_inference_callback(models, device),
+                    ),
+                )
+                if not isinstance(seat_result, dict):
+                    raise TypeError(f"run_paired_arena returned {type(seat_result).__name__}, expected dict")
+                seat_results.append(seat_result)
+            result = _aggregate_seat_results(seat_results)
             per_game = _extract_per_game(result)
             if per_game is not None:
                 per_game_rows.extend(

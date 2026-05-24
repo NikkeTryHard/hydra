@@ -254,6 +254,20 @@ def load_checkpoint(
     )
 
 
+def load_checkpoint_metadata(path: Path) -> ResumeState:
+    checkpoint = _torch_load(path)
+    _validate_checkpoint_root(checkpoint)
+    raw_progress = checkpoint.get("raw_mjai_progress", {})
+    if not isinstance(raw_progress, dict):
+        raise ValueError("checkpoint raw_mjai_progress must be a dict")
+    return ResumeState(
+        global_step=int(checkpoint["global_step"]),
+        samples_seen=int(checkpoint["samples_seen"]),
+        raw_mjai_progress={str(key): int(value) for key, value in raw_progress.items()},
+        ema=None,
+    )
+
+
 def load_checkpoint_init_only(
     path: Path,
     *,

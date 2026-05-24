@@ -53,7 +53,7 @@ impl PyRawMjaiStream {
         clippy::too_many_arguments,
         reason = "PyO3 constructor mirrors Python keyword API for explicit stream config"
     )]
-    #[pyo3(signature = (data_dirs, batch_size=2048, train_fraction=0.9, worker_threads=20, queue_bound=8, max_games=None, max_samples=None, augment=false, split="train"))]
+    #[pyo3(signature = (data_dirs, batch_size=2048, train_fraction=0.9, worker_threads=20, queue_bound=8, max_games=None, max_samples=None, skip_games=0, augment=false, split="train"))]
     fn new(
         py: Python<'_>,
         data_dirs: RawMjaiPyInputs,
@@ -63,6 +63,7 @@ impl PyRawMjaiStream {
         queue_bound: usize,
         max_games: Option<usize>,
         max_samples: Option<usize>,
+        skip_games: usize,
         augment: bool,
         split: &str,
     ) -> PyResult<Self> {
@@ -75,6 +76,7 @@ impl PyRawMjaiStream {
             max_games,
             max_samples,
             num_threads: Some(worker_threads),
+            skip_games,
             queue_bound,
             augment,
             source_manifest: None,

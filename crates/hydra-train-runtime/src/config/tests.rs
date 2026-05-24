@@ -537,7 +537,7 @@ fn repository_example_config_matches_train_config_contract() {
     assert_eq!(config.batch_size, 3072);
     assert_eq!(config.python_raw_mjai_target_games, Some(6_000_000));
     assert_eq!(config.python_raw_mjai_estimated_samples_per_game, None);
-    assert!(!config.resume_latest);
+    assert!(config.resume_latest);
     assert!(config.ema.enabled);
     assert_eq!(config.ema.decay, 0.999);
     assert_eq!(config.ema.update_every_steps, 1);
@@ -658,65 +658,42 @@ fn python_options_from_config_accepts_plain_bc_defaults() {
 }
 
 #[test]
-fn python_resume_checkpoint_raw_mjai_fails_closed_for_explicit_resume() {
+fn python_resume_checkpoint_raw_mjai_allows_explicit_resume() {
     let mut config = python_guard_config();
     config.bc_shards_manifest_path = None;
-    config.resume_checkpoint = Some(PathBuf::from("/tmp/out/checkpoints/latest.pt"));
+    let checkpoint = PathBuf::from("/tmp/out/checkpoints/latest.pt");
+    config.resume_checkpoint = Some(checkpoint.clone());
 
-    let err =
-        python_options_from_config(&config).expect_err("explicit raw MJAI checkpoint must fail");
-    assert!(err.contains("Raw-MJAI"), "{err}");
-    assert!(err.contains("resume_checkpoint"), "{err}");
-    assert!(err.contains("BC shards"), "{err}");
+    let options =
+        python_options_from_config(&config).expect("raw MJAI explicit resume should work");
+    assert_eq!(options.resume, Some(checkpoint));
 }
 
 #[test]
-fn python_resume_checkpoint_raw_mjai_resume_latest_without_checkpoint_fails_closed() {
+fn python_resume_checkpoint_raw_mjai_resume_latest_without_checkpoint_is_none() {
     let mut config = python_guard_config();
     config.bc_shards_manifest_path = None;
     config.resume_latest = true;
 
-    let err = python_options_from_config(&config).expect_err("raw MJAI resume_latest must fail");
-    assert!(err.contains("Raw-MJAI"), "{err}");
-    assert!(err.contains("resume_latest"), "{err}");
-    assert!(err.contains("cursor"), "{err}");
+    let options =
+        python_options_from_config(&config).expect("raw MJAI resume_latest should be allowed");
+    assert_eq!(options.resume, None);
 }
 
 #[test]
-fn python_resume_checkpoint_raw_mjai_fails_closed_for_occupied_latest() {
+fn python_resume_checkpoint_raw_mjai_uses_occupied_latest_by_default() {
     let root = unique_temp_dir("raw-mjai-occupied");
     let checkpoint_dir = root.join("checkpoints");
     std::fs::create_dir_all(&checkpoint_dir).expect("checkpoint dir should be created");
-    std::fs::write(checkpoint_dir.join("latest.pt"), b"checkpoint")
-        .expect("latest checkpoint should write");
-    let mut config = python_guard_config();
-    config.bc_shards_manifest_path = None;
-    config.output_dir = root;
-    config.resume_latest = false;
-
-    let err =
-        python_options_from_config(&config).expect_err("occupied raw MJAI latest must fail closed");
-    assert!(err.contains("Raw-MJAI"), "{err}");
-    assert!(err.contains("cursor"), "{err}");
-    assert!(err.contains("BC shards"), "{err}");
-}
-
-#[test]
-fn python_resume_checkpoint_raw_mjai_fails_closed_for_latest_when_requested() {
-    let root = unique_temp_dir("raw-mjai-latest");
-    let checkpoint_dir = root.join("checkpoints");
-    std::fs::create_dir_all(&checkpoint_dir).expect("checkpoint dir should be created");
-    std::fs::write(checkpoint_dir.join("latest.pt"), b"checkpoint")
-        .expect("latest checkpoint should write");
+    let latest = checkpoint_dir.join("latest.pt");
+    std::fs::write(&latest, b"checkpoint").expect("latest checkpoint should write");
     let mut config = python_guard_config();
     config.bc_shards_manifest_path = None;
     config.output_dir = root;
     config.resume_latest = true;
 
-    let err = python_options_from_config(&config).expect_err("raw MJAI latest must fail closed");
-    assert!(err.contains("Raw-MJAI"), "{err}");
-    assert!(err.contains("resume_latest"), "{err}");
-    assert!(err.contains("cursor"), "{err}");
+    let options = python_options_from_config(&config).expect("raw MJAI latest resume should work");
+    assert_eq!(options.resume, Some(latest));
 }
 
 #[test]

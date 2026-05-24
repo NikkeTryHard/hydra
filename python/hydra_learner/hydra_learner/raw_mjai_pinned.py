@@ -226,6 +226,7 @@ class RawMjaiPinnedStream:
         split: str,
         library_path: Path,
         ring_size: int,
+        skip_games: int = 0,
         close_timeout_s: float = 30.0,
     ) -> None:
         if batch_size <= 0:
@@ -255,6 +256,7 @@ class RawMjaiPinnedStream:
             queue_bound=queue_bound,
             max_games=max_games,
             max_samples=max_samples,
+            skip_games=skip_games,
             augment=augment,
             split=split,
         )
@@ -263,7 +265,7 @@ class RawMjaiPinnedStream:
             "raw_mjai_pinned_open "
             f"dirs={len(self.data_dirs)} batch={batch_size} ring={ring_size} workers={worker_threads} "
             f"queue_bound={queue_bound} max_games={max_games} max_samples={max_samples} "
-            f"split={split} open_scan_plan_ms={initial_stats.open_scan_plan_ms:.3f}",
+            f"skip_games={skip_games} split={split} open_scan_plan_ms={initial_stats.open_scan_plan_ms:.3f}",
             file=sys.stderr,
             flush=True,
         )
