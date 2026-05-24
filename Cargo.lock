@@ -3422,8 +3422,10 @@ name = "hydra-raw-mjai-pyo3"
 version = "0.1.0"
 dependencies = [
  "hydra-core",
+ "hydra-engine",
  "hydra-train-exec",
  "pyo3",
+ "rand 0.9.4",
 ]
 
 [[package]]

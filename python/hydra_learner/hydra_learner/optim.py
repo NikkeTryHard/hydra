@@ -29,6 +29,7 @@ class LrSchedulerConfig:
     min_lr: float
     warmup_steps: int
     total_steps: int | None
+    target_games: int | None
     schedule: str
 
 
@@ -36,18 +37,23 @@ class LrScheduler:
     def __init__(self, config: LrSchedulerConfig) -> None:
         self.config = config
 
-    def lr_for_step(self, completed_steps: int) -> float:
+    def lr_for_step(self, completed_steps: int, completed_games: int | None = None) -> float:
         if self.config.schedule == "constant":
             return self.config.base_lr
         if self.config.warmup_steps > 0 and completed_steps < self.config.warmup_steps:
             return self.config.base_lr * (completed_steps / self.config.warmup_steps)
         if self.config.schedule != "cosine":
             raise ValueError(f"unsupported LR schedule {self.config.schedule!r}")
-        total_steps = self.config.total_steps
-        if total_steps is None:
-            raise ValueError("--lr-schedule cosine requires --schedule-total-steps or --steps")
-        decay_steps = max(1, total_steps - self.config.warmup_steps)
-        decay_index = min(max(0, completed_steps - self.config.warmup_steps), decay_steps)
+        horizon = self.config.target_games if self.config.target_games is not None else self.config.total_steps
+        if horizon is None:
+            raise ValueError("cosine LR schedule requires total_steps or target_games")
+        if self.config.target_games is not None and completed_games is not None:
+            decay_progress = completed_games
+            decay_steps = max(1, horizon)
+        else:
+            decay_progress = completed_steps - self.config.warmup_steps
+            decay_steps = max(1, horizon - self.config.warmup_steps)
+        decay_index = min(max(0, decay_progress), decay_steps)
         cosine = 0.5 * (1.0 + math.cos(math.pi * decay_index / decay_steps))
         return self.config.min_lr + (self.config.base_lr - self.config.min_lr) * cosine
 
@@ -65,6 +71,7 @@ def build_optimizer_config(args: argparse.Namespace) -> OptimizerConfig:
         lr_schedule=args.lr_schedule,
         lr_warmup_steps=args.lr_warmup_steps,
         schedule_total_steps=args.schedule_total_steps,
+        target_games=args.schedule_target_games,
         grad_clip_norm=args.grad_clip_norm,
         weight_decay=args.weight_decay,
         beta1=args.adam_beta1,
@@ -81,6 +88,7 @@ def build_lr_scheduler_config(args: argparse.Namespace) -> LrSchedulerConfig:
         min_lr=args.min_lr,
         warmup_steps=args.lr_warmup_steps,
         total_steps=args.schedule_total_steps,
+        target_games=args.schedule_target_games,
         schedule=args.lr_schedule,
     )
 

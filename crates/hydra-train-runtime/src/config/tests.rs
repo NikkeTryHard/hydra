@@ -44,6 +44,27 @@ fn python_residual_profiles_serde_and_string_contract_match() {
 }
 
 #[test]
+fn python_model_profiles_serde_and_dimensions_match() {
+    let cases = [
+        ("default", PythonModelProfileConfig::Default, 256, 10, 64),
+        ("balanced", PythonModelProfileConfig::Balanced, 256, 12, 64),
+        ("large", PythonModelProfileConfig::Large, 384, 16, 96),
+    ];
+    assert_eq!(
+        PythonModelProfileConfig::default(),
+        PythonModelProfileConfig::Large
+    );
+    for (text, profile, hidden, blocks, bottleneck) in cases {
+        let parsed: PythonModelProfileConfig =
+            serde_yaml::from_str(text).expect("profile should deserialize");
+        assert_eq!(parsed, profile);
+        assert_eq!(profile.hidden(), hidden);
+        assert_eq!(profile.blocks(), blocks);
+        assert_eq!(profile.bottleneck(), bottleneck);
+    }
+}
+
+#[test]
 fn python_backbone_profiles_serde_and_string_contract_match() {
     let cases = [
         ("conv2d_local3", PythonBackboneProfileConfig::Conv2dLocal3),
@@ -504,10 +525,7 @@ fn repository_example_config_matches_train_config_contract() {
 
     assert!(config.full_epoch);
     assert_eq!(config.max_train_steps, None);
-    assert_eq!(
-        config.python_model_profile,
-        PythonModelProfileConfig::Balanced
-    );
+    assert_eq!(config.python_model_profile, PythonModelProfileConfig::Large);
     assert_eq!(
         config.python_backbone_profile,
         PythonBackboneProfileConfig::Conv2dLocal3
@@ -517,11 +535,14 @@ fn repository_example_config_matches_train_config_contract() {
         PythonResidualProfileConfig::MishSe
     );
     assert_eq!(config.batch_size, 3072);
+    assert_eq!(config.python_raw_mjai_target_games, Some(6_000_000));
+    assert_eq!(config.python_raw_mjai_estimated_samples_per_game, None);
     assert!(!config.resume_latest);
     assert!(config.ema.enabled);
     assert_eq!(config.ema.decay, 0.999);
     assert_eq!(config.ema.update_every_steps, 1);
     assert_eq!(config.bc.grad_clip_norm, 1.0);
+    assert_eq!(config.max_validation_samples, Some(524_288));
 }
 
 #[test]
@@ -570,6 +591,8 @@ fn python_guard_config() -> TrainConfig {
         bc_head_profile: BcHeadProfile::default(),
         experimental_backbone_profile: None,
         python_raw_mjai_transport: Default::default(),
+        python_raw_mjai_target_games: None,
+        python_raw_mjai_estimated_samples_per_game: None,
         validation_gates: ValidationGateConfig::default(),
         ema: EmaConfig::default(),
         rl: None,
@@ -628,6 +651,7 @@ fn python_options_from_config_accepts_plain_bc_defaults() {
     assert_eq!(options.validation_source_mode, "fixed");
     assert_eq!(options.lr_schedule, "cosine");
     assert_eq!(options.schedule_total_steps, Some(3));
+    assert_eq!(options.schedule_target_games, None);
     assert_eq!(options.validation_steps, 0);
     assert_eq!(options.validation_max_samples, None);
     assert_eq!(options.ema_device, Default::default());
@@ -639,21 +663,23 @@ fn python_resume_checkpoint_raw_mjai_fails_closed_for_explicit_resume() {
     config.bc_shards_manifest_path = None;
     config.resume_checkpoint = Some(PathBuf::from("/tmp/out/checkpoints/latest.pt"));
 
-    let err = python_options_from_config(&config).expect_err("raw MJAI resume must fail closed");
+    let err =
+        python_options_from_config(&config).expect_err("explicit raw MJAI checkpoint must fail");
     assert!(err.contains("Raw-MJAI"), "{err}");
     assert!(err.contains("resume_checkpoint"), "{err}");
+    assert!(err.contains("BC shards"), "{err}");
 }
 
 #[test]
-fn python_resume_checkpoint_raw_mjai_fails_closed_for_resume_latest() {
+fn python_resume_checkpoint_raw_mjai_resume_latest_without_checkpoint_fails_closed() {
     let mut config = python_guard_config();
     config.bc_shards_manifest_path = None;
     config.resume_latest = true;
 
-    let err =
-        python_options_from_config(&config).expect_err("raw MJAI latest resume must fail closed");
+    let err = python_options_from_config(&config).expect_err("raw MJAI resume_latest must fail");
     assert!(err.contains("Raw-MJAI"), "{err}");
     assert!(err.contains("resume_latest"), "{err}");
+    assert!(err.contains("cursor"), "{err}");
 }
 
 #[test]
@@ -671,7 +697,26 @@ fn python_resume_checkpoint_raw_mjai_fails_closed_for_occupied_latest() {
     let err =
         python_options_from_config(&config).expect_err("occupied raw MJAI latest must fail closed");
     assert!(err.contains("Raw-MJAI"), "{err}");
-    assert!(err.contains("occupied"), "{err}");
+    assert!(err.contains("cursor"), "{err}");
+    assert!(err.contains("BC shards"), "{err}");
+}
+
+#[test]
+fn python_resume_checkpoint_raw_mjai_fails_closed_for_latest_when_requested() {
+    let root = unique_temp_dir("raw-mjai-latest");
+    let checkpoint_dir = root.join("checkpoints");
+    std::fs::create_dir_all(&checkpoint_dir).expect("checkpoint dir should be created");
+    std::fs::write(checkpoint_dir.join("latest.pt"), b"checkpoint")
+        .expect("latest checkpoint should write");
+    let mut config = python_guard_config();
+    config.bc_shards_manifest_path = None;
+    config.output_dir = root;
+    config.resume_latest = true;
+
+    let err = python_options_from_config(&config).expect_err("raw MJAI latest must fail closed");
+    assert!(err.contains("Raw-MJAI"), "{err}");
+    assert!(err.contains("resume_latest"), "{err}");
+    assert!(err.contains("cursor"), "{err}");
 }
 
 #[test]
@@ -730,6 +775,7 @@ fn python_options_full_epoch_without_step_budget_uses_constant_schedule() {
     config.bc_shards_manifest_path = None;
     config.max_train_steps = None;
     config.full_epoch = true;
+    config.resume_latest = false;
 
     let options =
         python_options_from_config(&config).expect("full-epoch raw MJAI should route to Python");
@@ -737,12 +783,54 @@ fn python_options_full_epoch_without_step_budget_uses_constant_schedule() {
     assert_eq!(options.steps, None);
     assert_eq!(options.lr_schedule, "constant");
     assert_eq!(options.schedule_total_steps, None);
+    assert_eq!(options.schedule_target_games, None);
+}
+
+#[test]
+fn python_options_full_epoch_with_raw_mjai_target_games_uses_cosine_schedule() {
+    let mut config = python_guard_config();
+    config.bc_shards_manifest_path = None;
+    config.max_train_steps = None;
+    config.full_epoch = true;
+    config.resume_latest = false;
+    config.batch_size = 1024;
+    config.python_raw_mjai_target_games = Some(5_000_000);
+    config.python_raw_mjai_estimated_samples_per_game = Some(70);
+
+    let options =
+        python_options_from_config(&config).expect("full-epoch raw MJAI should route to Python");
+
+    assert_eq!(options.steps, None);
+    assert_eq!(options.lr_schedule, "cosine");
+    assert_eq!(options.schedule_total_steps, None);
+    assert_eq!(options.schedule_target_games, Some(5_000_000));
+}
+
+#[test]
+fn python_options_explicit_max_train_steps_overrides_raw_mjai_target_games() {
+    let mut config = python_guard_config();
+    config.bc_shards_manifest_path = None;
+    config.max_train_steps = Some(3);
+    config.full_epoch = true;
+    config.resume_latest = false;
+    config.batch_size = 1024;
+    config.python_raw_mjai_target_games = Some(5_000_000);
+    config.python_raw_mjai_estimated_samples_per_game = Some(70);
+
+    let options =
+        python_options_from_config(&config).expect("full-epoch raw MJAI should route to Python");
+
+    assert_eq!(options.steps, Some(3));
+    assert_eq!(options.lr_schedule, "cosine");
+    assert_eq!(options.schedule_total_steps, Some(3));
+    assert_eq!(options.schedule_target_games, None);
 }
 
 #[test]
 fn python_options_from_config_uses_explicit_raw_mjai_dirs() {
     let mut config = python_guard_config();
     config.bc_shards_manifest_path = None;
+    config.resume_latest = false;
     config.raw_mjai_data_dirs = vec![PathBuf::from("/data/a"), PathBuf::from("/data/b")];
 
     let options = python_options_from_config(&config).expect("plain BC should route to Python");

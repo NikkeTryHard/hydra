@@ -1,10 +1,10 @@
-# Hydra balanced Python BC training config example.
+# Hydra long-run Python BC training config example.
 # Copy to a run config, edit paths, then run:
 #   pixi run cargo run --quiet --package hydra-train --features training --bin train -- <config.yaml>
 
 # Fallback raw-MJAI root/file/archive. Required by config contract.
 data_dir: path/to/mjai
-# Shard-first launch: build+validate compact v3 shards, then uncomment manifest.
+# Optional shard cache/resume launch: build+validate compact v3 shards, then set this manifest.
 # Raw full-epoch path remains fresh-output only because raw stream cursor resume is unsupported.
 # bc_shards_manifest_path: path/to/bc_shards_manifest.json
 
@@ -24,14 +24,14 @@ num_epochs: 1
 full_epoch: true
 max_train_steps: null
 
-# Balanced default: 256 hidden, 12 SE-ResNet blocks, bottleneck 64 (~5.34M params).
-# 2026-05-23 raw-MJAI 800-step A/B, 8 validation batches:
+# Large long-run profile: 384 hidden, 16 SE-ResNet blocks, bottleneck 96.
+# 2026-05-23 raw-MJAI 800-step A/B on balanced model:
 # - default conv2d_local3+mish_se: policy_nll 1.0413, ~37.0k samples/s.
 # - conv2d_local3+mish_eca: policy_nll 1.0240, ~35.6k samples/s; promising low-risk candidate.
 # - convnext_tile_k7+mish_se: policy_nll 0.9656, ~22.8k samples/s; strongest early candidate, much slower.
 # - global_pool_bias+mish_se: compile path hit NaN; do not use until debugged.
-# Keep production default unchanged until longer equal-sample validation confirms strength.
-python_model_profile: balanced
+# Keep backbone/residual production defaults unless longer equal-sample validation confirms strength.
+python_model_profile: large
 python_backbone_profile: conv2d_local3
 python_residual_profile: mish_se
 python_variant: compile_max_autotune
@@ -39,7 +39,7 @@ python_variant: compile_max_autotune
 # Keep conv layout contiguous unless a future benchmark proves otherwise.
 python_conv_memory_format: contiguous
 
-# Example raw-MJAI CUDA shape for balanced model.
+# Example raw-MJAI CUDA shape for large model.
 batch_size: 3072
 microbatch_size: 1024
 validation_microbatch_size: 1024
@@ -48,25 +48,28 @@ device: cuda:0
 bc_backend: python
 python_raw_mjai_transport: pinned_pyo3
 
+# Raw-MJAI LR horizon. Uses consumed games, not steps/samples; does not cap input.
+python_raw_mjai_target_games: 6000000
+
 # Deterministic replay split/augmentation contract.
 train_fraction: 0.9
 augment: true
 seed: 0
 source_filters: {}
 
-# Raw-MJAI resume is fail-closed: checkpoint restores weights, but raw cursor cannot resume.
-# Keep false while using raw input; shard manifest runs may safely set true.
+# Raw-MJAI output dirs must be fresh until durable stream cursor resume exists.
+# Use compact BC shards for resumable long runs/cache semantics.
 resume_checkpoint: null
 resume_latest: false
 
-# Balanced observability. Larger validation reduces false plateau reads.
+# Long-run observability. 512k validation reduces false plateau reads.
 log_every_n_steps: 50
 validate_every_n_steps: 1000
 checkpoint_every_n_steps: 2500
 keep_step_checkpoints: true
 validation_every_n_epochs: 1
 max_validation_batches: null
-max_validation_samples: 65536
+max_validation_samples: 524288
 # Python raw-MJAI validation uses a fixed, non-augmented held-out window by default.
 # Train `augment: true` does not apply to validation unless launcher policy changes.
 

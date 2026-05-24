@@ -19,6 +19,7 @@ pub mod python;
 pub use cli::{parse_args, usage, version};
 pub use python::{
     PYTHON_TIMING_WARMUP_STEPS, python_options_from_config, python_resume_checkpoint,
+    raw_mjai_cursor_resume_supported,
 };
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -74,6 +75,10 @@ pub struct TrainConfig {
     pub experimental_backbone_profile: Option<ExperimentalBackboneProfileConfig>,
     #[serde(default)]
     pub python_raw_mjai_transport: PythonRawMjaiTransportConfig,
+    #[serde(default)]
+    pub python_raw_mjai_target_games: Option<usize>,
+    #[serde(default)]
+    pub python_raw_mjai_estimated_samples_per_game: Option<usize>,
     #[serde(default)]
     pub validation_gates: ValidationGateConfig,
     #[serde(default)]
@@ -138,9 +143,10 @@ pub enum BcHeadProfile {
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PythonModelProfileConfig {
-    #[default]
     Default,
     Balanced,
+    #[default]
+    Large,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -167,8 +173,8 @@ impl PythonBackboneProfileConfig {
 impl PythonModelProfileConfig {
     pub const fn hidden(self) -> usize {
         match self {
-            Self::Default => 256,
-            Self::Balanced => 256,
+            Self::Default | Self::Balanced => 256,
+            Self::Large => 384,
         }
     }
 
@@ -176,13 +182,14 @@ impl PythonModelProfileConfig {
         match self {
             Self::Default => 10,
             Self::Balanced => 12,
+            Self::Large => 16,
         }
     }
 
     pub const fn bottleneck(self) -> usize {
         match self {
-            Self::Default => 64,
-            Self::Balanced => 64,
+            Self::Default | Self::Balanced => 64,
+            Self::Large => 96,
         }
     }
 }
@@ -320,6 +327,8 @@ impl TrainConfig {
             python_conv_memory_format: PythonConvMemoryFormatConfig::default(),
             experimental_backbone_profile: None,
             python_raw_mjai_transport: PythonRawMjaiTransportConfig::default(),
+            python_raw_mjai_target_games: None,
+            python_raw_mjai_estimated_samples_per_game: None,
             validation_gates: ValidationGateConfig::default(),
             ema: EmaConfig::default(),
             rl: None,
@@ -592,6 +601,7 @@ pub struct PythonLearnerCliOptions {
     pub lr_warmup_steps: usize,
     pub lr_schedule: String,
     pub schedule_total_steps: Option<usize>,
+    pub schedule_target_games: Option<usize>,
     pub grad_clip_norm: f64,
     pub weight_decay: f64,
     pub ema_enabled: bool,
@@ -875,7 +885,7 @@ pub fn default_augment() -> bool {
 }
 
 pub const fn default_resume_latest() -> bool {
-    true
+    false
 }
 
 pub fn default_seed() -> u64 {

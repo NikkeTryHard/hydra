@@ -12,6 +12,7 @@ import torch.nn as nn
 
 from hydra_learner.losses import (
     BaseTargets,
+    LossBreakdown,
     LossWeights,
     base_loss,
     bce_logits_mean,
@@ -26,6 +27,32 @@ from hydra_learner.losses import (
     value_mse,
 )
 from hydra_learner.metrics import EvalStats, StepStats
+
+
+def policy_diagnostics_from_logits(policy_logits: torch.Tensor, targets: BaseTargets) -> dict[str, torch.Tensor]:
+    masked_logits: torch.Tensor = policy_logits.masked_fill(~targets.legal_mask.to(dtype=torch.bool), -1.0e9)
+    target: torch.Tensor = targets.policy_target.to(dtype=torch.int64)
+    pred: torch.Tensor = masked_logits.argmax(dim=1)
+    topk: torch.Tensor = masked_logits.topk(k=min(5, masked_logits.shape[1]), dim=1).indices
+    log_probs: torch.Tensor = torch.log_softmax(masked_logits, dim=1)
+    probs: torch.Tensor = log_probs.exp()
+    target_probs: torch.Tensor = probs.gather(1, target[:, None]).squeeze(1).clamp_min(1.0e-12)
+    confidence: torch.Tensor = probs.max(dim=1).values
+    top2_probs: torch.Tensor = probs.topk(k=min(2, probs.shape[1]), dim=1).values
+    margin = top2_probs[:, 0] if top2_probs.shape[1] == 1 else top2_probs[:, 0] - top2_probs[:, 1]
+    return {
+        "policy_nll": -target_probs.log().mean(),
+        "policy_accuracy": (pred == target).to(dtype=torch.float32).mean(),
+        "policy_top3_accuracy": (topk[:, : min(3, topk.shape[1])] == target[:, None])
+        .any(dim=1)
+        .to(dtype=torch.float32)
+        .mean(),
+        "policy_top5_accuracy": (topk == target[:, None]).any(dim=1).to(dtype=torch.float32).mean(),
+        "policy_confidence": confidence.mean(),
+        "policy_entropy": -(probs * log_probs).sum(dim=1).mean(),
+        "policy_target_prob": target_probs.mean(),
+        "policy_margin": margin.mean(),
+    }
 
 
 def cuda_event_elapsed(start: torch.cuda.Event, end: torch.cuda.Event) -> float:
@@ -48,6 +75,8 @@ class HydraCompiledLossStep(nn.Module):
         self.model = model
         self.loss_mode = loss_mode
         self.weights = weights
+        self.last_outputs: object = None
+        self.last_breakdown: LossBreakdown | None = None
 
     @override
     def forward(
@@ -69,8 +98,23 @@ class HydraCompiledLossStep(nn.Module):
         safety_mask: torch.Tensor,
     ) -> torch.Tensor:
         outputs = self.model(obs)
+        self.last_outputs = outputs
         if self.loss_mode == "policy_only":
-            return masked_policy_ce_indices(outputs.policy_logits, policy_target, legal_mask).mean()
+            l_policy = masked_policy_ce_indices(outputs.policy_logits, policy_target, legal_mask).mean()
+            self.last_breakdown = LossBreakdown(
+                total=l_policy,
+                policy=l_policy,
+                value=l_policy * 0.0,
+                grp=l_policy * 0.0,
+                tenpai=l_policy * 0.0,
+                danger=l_policy * 0.0,
+                opp_next=l_policy * 0.0,
+                score_pdf=l_policy * 0.0,
+                score_cdf=l_policy * 0.0,
+                oracle_critic=l_policy * 0.0,
+                safety_residual=l_policy * 0.0,
+            )
+            return l_policy
         l_policy = masked_policy_ce_indices(outputs.policy_logits, policy_target, legal_mask).mean()
         l_value = value_mse(outputs.value, value_target).mean()
         l_grp = soft_ce(outputs.grp, grp_target).mean()
@@ -89,18 +133,27 @@ class HydraCompiledLossStep(nn.Module):
             + l_pdf * self.weights.score
             + l_cdf * self.weights.score
         )
+        l_oracle = l_policy * 0.0
+        l_safety = l_policy * 0.0
         if self.weights.oracle_critic > 0.0:
-            total = (
-                total
-                + oracle_critic_loss(outputs.oracle_critic, oracle_target, oracle_target_mask)
-                * self.weights.oracle_critic
-            )
+            l_oracle = oracle_critic_loss(outputs.oracle_critic, oracle_target, oracle_target_mask)
+            total = total + l_oracle * self.weights.oracle_critic
         if self.weights.safety_residual > 0.0:
-            total = (
-                total
-                + safety_residual_loss(outputs.safety_residual, safety_target, safety_mask)
-                * self.weights.safety_residual
-            )
+            l_safety = safety_residual_loss(outputs.safety_residual, safety_target, safety_mask)
+            total = total + l_safety * self.weights.safety_residual
+        self.last_breakdown = LossBreakdown(
+            total=total,
+            policy=l_policy,
+            value=l_value,
+            grp=l_grp,
+            tenpai=l_tenpai,
+            danger=l_danger,
+            opp_next=l_opp,
+            score_pdf=l_pdf,
+            score_cdf=l_cdf,
+            oracle_critic=l_oracle,
+            safety_residual=l_safety,
+        )
         return total
 
 
@@ -153,7 +206,7 @@ def restore_train_state(
 
 def run_step(
     loss_step: nn.Module,
-    model: nn.Module,
+    _model: nn.Module,
     optimizer: torch.optim.Optimizer,
     obs: torch.Tensor,
     targets: BaseTargets,
@@ -178,14 +231,47 @@ def run_step(
     bwd_ms = 0.0
     amp_ctx = torch.autocast(device_type="cuda", dtype=torch.bfloat16) if autocast else nullcontext()
     logical_loss = obs.new_zeros(())
+    diagnostic_sums: dict[str, torch.Tensor] = {}
+    diagnostic_head_losses: dict[str, torch.Tensor] = {}
     for start_idx in range(0, logical, microbatch):
         end_idx = min(start_idx + microbatch, logical)
         scale = (end_idx - start_idx) / logical
 
-        def fwd_loss() -> torch.Tensor:
-            with amp_ctx:
-                loss = loss_step(*loss_step_args(obs, targets, start_idx, end_idx))
-            return loss * scale
+        if collect_diagnostics:
+            micro_targets = slice_targets(targets, start_idx, end_idx)
+
+            def fwd_loss() -> torch.Tensor:
+                with amp_ctx:
+                    if hasattr(loss_step, "last_outputs"):
+                        setattr(loss_step, "last_outputs", None)
+                    if hasattr(loss_step, "last_breakdown"):
+                        setattr(loss_step, "last_breakdown", None)
+                    loss = loss_step(*loss_step_args(obs, targets, start_idx, end_idx))
+                outputs = getattr(loss_step, "last_outputs", None)
+                breakdown = getattr(loss_step, "last_breakdown", None)
+                if not hasattr(outputs, "policy_logits") or not isinstance(breakdown, LossBreakdown):
+                    raise RuntimeError(
+                        "collect_diagnostics requires loss_step to expose last_outputs and last_breakdown"
+                    )
+                for head in loss_breakdown_dict(breakdown, weights, loss_mode):
+                    head_loss = getattr(breakdown, head)
+                    current_head_loss = diagnostic_head_losses.get(head)
+                    weighted_head_loss = head_loss.detach() * scale
+                    diagnostic_head_losses[head] = (
+                        weighted_head_loss if current_head_loss is None else current_head_loss + weighted_head_loss
+                    )
+                for name, value in policy_diagnostics_from_logits(outputs.policy_logits, micro_targets).items():
+                    current = diagnostic_sums.get(name)
+                    weighted_value = value.detach() * scale
+                    diagnostic_sums[name] = weighted_value if current is None else current + weighted_value
+                return loss * scale
+
+        else:
+
+            def fwd_loss() -> torch.Tensor:
+                with amp_ctx:
+                    loss = loss_step(*loss_step_args(obs, targets, start_idx, end_idx))
+                return loss * scale
 
         if timed:
             ms, loss = time_cuda(fwd_loss)
@@ -218,10 +304,7 @@ def run_step(
     else:
         step_ms = (time.perf_counter() - step_start_wall) * 1000.0
     if collect_diagnostics:
-        with torch.inference_mode(), amp_ctx:
-            outputs = model(obs)
-            breakdown = base_loss(outputs, targets, weights)
-        head_losses = loss_breakdown_dict(breakdown, weights, loss_mode)
+        head_losses = {head: float(value.detach()) for head, value in diagnostic_head_losses.items()}
         target_coverage = target_coverage_dict(targets, weights, loss_mode)
     else:
         head_losses: dict[str, float] = {}
@@ -236,6 +319,18 @@ def run_step(
         head_losses=head_losses,
         target_coverage=target_coverage,
         grad_norm=grad_norm,
+        policy_nll=float(diagnostic_sums["policy_nll"].detach()) if collect_diagnostics else math.nan,
+        policy_accuracy=float(diagnostic_sums["policy_accuracy"].detach()) if collect_diagnostics else math.nan,
+        policy_top3_accuracy=float(diagnostic_sums["policy_top3_accuracy"].detach())
+        if collect_diagnostics
+        else math.nan,
+        policy_top5_accuracy=float(diagnostic_sums["policy_top5_accuracy"].detach())
+        if collect_diagnostics
+        else math.nan,
+        policy_confidence=float(diagnostic_sums["policy_confidence"].detach()) if collect_diagnostics else math.nan,
+        policy_entropy=float(diagnostic_sums["policy_entropy"].detach()) if collect_diagnostics else math.nan,
+        policy_target_prob=float(diagnostic_sums["policy_target_prob"].detach()) if collect_diagnostics else math.nan,
+        policy_margin=float(diagnostic_sums["policy_margin"].detach()) if collect_diagnostics else math.nan,
     )
     stat.train_gpu_ms = step_ms
     return stat
@@ -275,16 +370,11 @@ def evaluate_batch(
     with torch.inference_mode(), amp_ctx:
         outputs = model(obs)
         breakdown = base_loss(outputs, targets, weights)
+        policy_metrics = policy_diagnostics_from_logits(outputs.policy_logits, targets)
         masked_logits = outputs.policy_logits.masked_fill(~targets.legal_mask.to(dtype=torch.bool), -1.0e9)
         pred = masked_logits.argmax(dim=1)
         target = targets.policy_target.to(dtype=torch.int64)
-        accuracy = (pred == target).to(dtype=torch.float32).mean()
-        topk = masked_logits.topk(k=min(5, masked_logits.shape[1]), dim=1).indices
-        top3_accuracy = (topk[:, : min(3, topk.shape[1])] == target[:, None]).any(dim=1).to(dtype=torch.float32).mean()
-        top5_accuracy = (topk == target[:, None]).any(dim=1).to(dtype=torch.float32).mean()
-        probs = torch.softmax(masked_logits, dim=1)
-        target_probs = probs.gather(1, target[:, None]).squeeze(1).clamp_min(1.0e-12)
-        confidence = probs.max(dim=1).values
+        confidence = torch.softmax(masked_logits, dim=1).max(dim=1).values
         correct = (pred == target).to(dtype=torch.float32)
         ece = obs.new_zeros(())
         for bucket in range(10):
@@ -312,11 +402,11 @@ def evaluate_batch(
         oracle_critic=float(breakdown.oracle_critic.detach()),
         safety_residual=float(breakdown.safety_residual.detach()),
         target_coverage=target_coverage_dict(targets, weights, "full_base"),
-        policy_accuracy=float(accuracy.detach()),
-        policy_top3_accuracy=float(top3_accuracy.detach()),
-        policy_top5_accuracy=float(top5_accuracy.detach()),
-        policy_nll=float((-target_probs.log()).mean().detach()),
-        policy_confidence=float(confidence.mean().detach()),
+        policy_accuracy=float(policy_metrics["policy_accuracy"].detach()),
+        policy_top3_accuracy=float(policy_metrics["policy_top3_accuracy"].detach()),
+        policy_top5_accuracy=float(policy_metrics["policy_top5_accuracy"].detach()),
+        policy_nll=float(policy_metrics["policy_nll"].detach()),
+        policy_confidence=float(policy_metrics["policy_confidence"].detach()),
         policy_ece=float(ece.detach()),
         samples=obs.shape[0],
     )

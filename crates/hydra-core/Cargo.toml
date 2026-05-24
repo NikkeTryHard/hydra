@@ -36,6 +36,10 @@ smallvec = "1.15.1"
 proptest = "1.5"
 criterion = { version = "0.5", features = ["html_reports"] }
 
+[[example]]
+name = "ppo_smoke_fixture"
+path = "examples/ppo_smoke_fixture.rs"
+
 [[bench]]
 name = "simulator_bench"
 harness = false

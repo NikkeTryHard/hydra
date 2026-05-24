@@ -669,12 +669,20 @@ fn scan_raw_mjai_inputs(inputs: &[PathBuf]) -> io::Result<DataManifest> {
     })
 }
 
+fn raw_stream_order_key(identity: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in identity.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
 fn build_stream_plan(
     source_manifest: &DataManifest,
     config: &RawMjaiBatchStreamConfig,
 ) -> io::Result<(Vec<StreamPlanEntry>, bool)> {
-    let mut out = Vec::new();
-    let mut max_games_reached = false;
+    let mut candidates = Vec::new();
     for source in &source_manifest.sources {
         match source {
             DataSource::LooseFile(path) => {
@@ -683,21 +691,14 @@ fn build_stream_plan(
                 if !split_includes(config.split, is_train) {
                     continue;
                 }
-                if config.max_games.is_some_and(|max| out.len() >= max) {
-                    max_games_reached = true;
-                    break;
-                }
-                out.push(StreamPlanEntry {
-                    sequence: out.len(),
+                candidates.push(StreamPlanEntry {
+                    sequence: 0,
                     identity,
                     source: StreamPlanSource::LooseFile { path: path.clone() },
                 });
             }
             DataSource::Archive(path) => {
-                if enumerate_stream_archive_entries(path, config, &mut out)? {
-                    max_games_reached = true;
-                    break;
-                }
+                enumerate_stream_archive_entries(path, config, &mut candidates)?;
             }
             DataSource::ParsedSampleCache { path, .. } => {
                 return Err(invalid_data(format!(
@@ -707,14 +708,29 @@ fn build_stream_plan(
             }
         }
     }
-    Ok((out, max_games_reached))
+    candidates.sort_unstable_by(|a, b| {
+        raw_stream_order_key(&a.identity)
+            .cmp(&raw_stream_order_key(&b.identity))
+            .then_with(|| a.identity.cmp(&b.identity))
+    });
+    let mut max_games_reached = false;
+    if let Some(max) = config.max_games
+        && candidates.len() > max
+    {
+        candidates.truncate(max);
+        max_games_reached = true;
+    }
+    for (sequence, entry) in candidates.iter_mut().enumerate() {
+        entry.sequence = sequence;
+    }
+    Ok((candidates, max_games_reached))
 }
 
 fn enumerate_stream_archive_entries(
     archive_path: &Path,
     config: &RawMjaiBatchStreamConfig,
     out: &mut Vec<StreamPlanEntry>,
-) -> io::Result<bool> {
+) -> io::Result<()> {
     let file = File::open(archive_path)?;
     let reader = archive_reader(archive_path, file)?;
     let mut archive = tar::Archive::new(reader);
@@ -729,11 +745,8 @@ fn enumerate_stream_archive_entries(
         if !split_includes(config.split, is_train) {
             continue;
         }
-        if config.max_games.is_some_and(|max| out.len() >= max) {
-            return Ok(true);
-        }
         out.push(StreamPlanEntry {
-            sequence: out.len(),
+            sequence: 0,
             identity,
             source: StreamPlanSource::ArchiveEntry {
                 archive_path: archive_path.to_path_buf(),
@@ -741,7 +754,7 @@ fn enumerate_stream_archive_entries(
             },
         });
     }
-    Ok(false)
+    Ok(())
 }
 
 fn split_includes(split: RawMjaiStreamSplit, is_train: bool) -> bool {
@@ -1869,6 +1882,99 @@ fn archive_reader(path: &Path, file: File) -> io::Result<Box<dyn Read + Send>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn source_manifest(paths: &[&str]) -> DataManifest {
+        DataManifest {
+            sources: paths
+                .iter()
+                .map(|path| DataSource::LooseFile(PathBuf::from(path)))
+                .collect(),
+            total_games: paths.len(),
+            train_count: paths.len(),
+            val_count: 0,
+            counts_exact: true,
+        }
+    }
+
+    #[test]
+    fn build_stream_plan_globally_orders_loose_sources_across_input_folders() {
+        let manifest = source_manifest(&[
+            "dir_a/001.json",
+            "dir_a/002.json",
+            "dir_b/001.json",
+            "dir_b/002.json",
+        ]);
+        let config = RawMjaiBatchStreamConfig {
+            train_fraction: 1.0,
+            batch_size: 1,
+            queue_bound: 1,
+            source_manifest: Some(manifest.clone()),
+            ..RawMjaiBatchStreamConfig::default()
+        };
+
+        let (entries, max_games_reached) =
+            build_stream_plan(&manifest, &config).expect("stream plan should build");
+
+        assert!(!max_games_reached);
+        let planned: Vec<_> = entries
+            .iter()
+            .map(|entry| entry.identity.as_str())
+            .collect();
+        let input_order = vec![
+            "dir_a/001.json",
+            "dir_a/002.json",
+            "dir_b/001.json",
+            "dir_b/002.json",
+        ];
+        assert_ne!(planned, input_order);
+        let mut sorted = planned.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, input_order);
+        for (idx, entry) in entries.iter().enumerate() {
+            assert_eq!(entry.sequence, idx);
+        }
+    }
+
+    #[test]
+    fn build_stream_plan_applies_max_games_after_global_ordering() {
+        let manifest = source_manifest(&[
+            "dir_a/001.json",
+            "dir_a/002.json",
+            "dir_a/003.json",
+            "dir_b/001.json",
+            "dir_b/002.json",
+            "dir_b/003.json",
+        ]);
+        let config = RawMjaiBatchStreamConfig {
+            train_fraction: 1.0,
+            batch_size: 1,
+            queue_bound: 1,
+            max_games: Some(3),
+            source_manifest: Some(manifest.clone()),
+            ..RawMjaiBatchStreamConfig::default()
+        };
+
+        let (entries, max_games_reached) =
+            build_stream_plan(&manifest, &config).expect("stream plan should build");
+
+        assert!(max_games_reached);
+        assert_eq!(entries.len(), 3);
+        let planned: Vec<_> = entries
+            .iter()
+            .map(|entry| entry.identity.as_str())
+            .collect();
+        assert_ne!(
+            planned,
+            vec!["dir_a/001.json", "dir_a/002.json", "dir_a/003.json"]
+        );
+        assert!(
+            planned
+                .iter()
+                .any(|identity| identity.starts_with("dir_b/"))
+        );
+        for (idx, entry) in entries.iter().enumerate() {
+            assert_eq!(entry.sequence, idx);
+        }
+    }
 
     #[test]
     fn persistent_stream_counts_archive_entries() {

@@ -19,6 +19,14 @@ from hydra_learner.raw_mjai_pinned import (
 RAW_MJAI_TRANSPORT_PINNED_PYO3 = "pinned_pyo3"
 RAW_MJAI_TRANSPORT_STDOUT = "stdout"
 RAW_MJAI_TRANSPORTS = (RAW_MJAI_TRANSPORT_PINNED_PYO3, RAW_MJAI_TRANSPORT_STDOUT)
+RAW_MJAI_CURSOR_RESUME_ERROR = (
+    "raw-MJAI resume is unsupported: checkpoint restores weights but raw stream cursor resume is "
+    "unsupported; use fresh output dir or BC shards"
+)
+
+
+def raw_mjai_cursor_resume_supported() -> bool:
+    return False
 
 
 def raw_mjai_config_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
@@ -65,6 +73,8 @@ def validate_raw_mjai_source_args(args: argparse.Namespace) -> None:
         for data_dir in args.raw_mjai_data_dirs:
             if not data_dir.exists():
                 raise ValueError(f"raw MJAI data dir does not exist: {data_dir}")
+        if args.resume is not None and not raw_mjai_cursor_resume_supported():
+            raise ValueError(RAW_MJAI_CURSOR_RESUME_ERROR)
     if has_raw and args.raw_mjai_train_fraction <= 0.0:
         raise ValueError("--raw-mjai-train-fraction must be > 0")
 
@@ -79,6 +89,7 @@ def validate_raw_mjai_source_args(args: argparse.Namespace) -> None:
 
 
 __all__: Sequence[str] = (
+    "RAW_MJAI_CURSOR_RESUME_ERROR",
     "RAW_MJAI_TRANSPORTS",
     "RAW_MJAI_TRANSPORT_PINNED_PYO3",
     "RAW_MJAI_TRANSPORT_STDOUT",
@@ -93,5 +104,6 @@ __all__: Sequence[str] = (
     "build_raw_mjai_stream_command",
     "default_raw_mjai_pyo3_library_path",
     "raw_mjai_config_from_args",
+    "raw_mjai_cursor_resume_supported",
     "validate_raw_mjai_source_args",
 )

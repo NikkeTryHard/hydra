@@ -15,11 +15,20 @@ class StepStats:
     loss: float
     head_losses: dict[str, float]
     target_coverage: dict[str, dict[str, float | str]]
+    policy_nll: float = math.nan
+    policy_accuracy: float = math.nan
+    policy_top3_accuracy: float = math.nan
+    policy_top5_accuracy: float = math.nan
+    policy_confidence: float = math.nan
+    policy_entropy: float = math.nan
+    policy_target_prob: float = math.nan
+    policy_margin: float = math.nan
     fetch_decode_ms: float = math.nan
     h2d_wall_ms: float = math.nan
     train_gpu_ms: float = math.nan
     lr: float = math.nan
     grad_norm: float = math.nan
+    lr_progress_games: float = math.nan
 
 
 @dataclass
@@ -116,6 +125,14 @@ def summarize_steps(stats: list[StepStats], batch: int) -> dict[str, float]:
     fetch = [s.fetch_decode_ms for s in stats if not math.isnan(s.fetch_decode_ms)]
     h2d_wall = [s.h2d_wall_ms for s in stats if not math.isnan(s.h2d_wall_ms)]
     train_gpu = [s.train_gpu_ms for s in stats if not math.isnan(s.train_gpu_ms)]
+    policy_nll = [s.policy_nll for s in stats if not math.isnan(s.policy_nll)]
+    policy_accuracy = [s.policy_accuracy for s in stats if not math.isnan(s.policy_accuracy)]
+    policy_top3_accuracy = [s.policy_top3_accuracy for s in stats if not math.isnan(s.policy_top3_accuracy)]
+    policy_top5_accuracy = [s.policy_top5_accuracy for s in stats if not math.isnan(s.policy_top5_accuracy)]
+    policy_confidence = [s.policy_confidence for s in stats if not math.isnan(s.policy_confidence)]
+    policy_entropy = [s.policy_entropy for s in stats if not math.isnan(s.policy_entropy)]
+    policy_target_prob = [s.policy_target_prob for s in stats if not math.isnan(s.policy_target_prob)]
+    policy_margin = [s.policy_margin for s in stats if not math.isnan(s.policy_margin)]
 
     def avg(xs: list[float]) -> float:
         return sum(xs) / len(xs) if xs else math.nan
@@ -139,4 +156,12 @@ def summarize_steps(stats: list[StepStats], batch: int) -> dict[str, float]:
         "mean_input_pipeline_wall_ms": mean_fetch + mean_h2d_wall,
         "mean_total_wall_ms": mean_total_wall,
         "end_to_end_samples_per_s": batch * 1000.0 / mean_total_wall,
+        "mean_policy_nll": avg(policy_nll),
+        "mean_policy_accuracy": avg(policy_accuracy),
+        "mean_policy_top3_accuracy": avg(policy_top3_accuracy),
+        "mean_policy_top5_accuracy": avg(policy_top5_accuracy),
+        "mean_policy_confidence": avg(policy_confidence),
+        "mean_policy_entropy": avg(policy_entropy),
+        "mean_policy_target_prob": avg(policy_target_prob),
+        "mean_policy_margin": avg(policy_margin),
     }

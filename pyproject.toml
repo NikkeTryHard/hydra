@@ -9,6 +9,9 @@ description = "PyTorch BC learner lane for Hydra."
 requires-python = ">=3.12,<3.13"
 dependencies = []
 
+[project.scripts]
+hydra-arena-eval = "hydra_learner.arena_eval:main"
+
 [dependency-groups]
 dev = [
     "hatchling>=1.27,<2",

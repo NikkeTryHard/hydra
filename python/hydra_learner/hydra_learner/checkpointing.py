@@ -8,7 +8,12 @@ from typing import TYPE_CHECKING, Literal
 
 from hydra_learner.checkpoint import ModelConfig, OptimizerConfig, ResumeState, RuntimeConfig, save_checkpoint
 from hydra_learner.hydra_logging import json_raw_mjai_progress
-from hydra_learner.raw_mjai import BuildProgress, RawMjaiDirectStream, RawMjaiPinnedStream, build_progress_json
+from hydra_learner.raw_mjai import (
+    BuildProgress,
+    RawMjaiDirectStream,
+    RawMjaiPinnedStream,
+    build_progress_json,
+)
 
 if TYPE_CHECKING:
     import torch
@@ -17,11 +22,6 @@ if TYPE_CHECKING:
     from hydra_learner.losses import LossWeights
     from hydra_learner.model import HydraPolicyNet
     from hydra_learner.optim import EmaTracker
-
-RAW_MJAI_CURSOR_RESUME_ERROR = (
-    "raw-MJAI resume is unsupported: checkpoint restores weights but raw stream cursor resume is "
-    "unsupported; use fresh output dir or BC shards"
-)
 
 
 @dataclass(frozen=True)

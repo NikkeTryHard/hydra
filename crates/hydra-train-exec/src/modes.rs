@@ -539,6 +539,7 @@ fn python_preflight_options(
         lr_warmup_steps: hydra_train_runtime::config::default_bc_warmup_steps(),
         lr_schedule: "cosine".to_string(),
         schedule_total_steps: Some(preflight.preflight_config.measure_steps),
+        schedule_target_games: None,
         grad_clip_norm: f64::from(hydra_train_runtime::config::default_bc_grad_clip_norm()),
         weight_decay: f64::from(hydra_train_runtime::config::default_bc_weight_decay()),
         ema_enabled: false,

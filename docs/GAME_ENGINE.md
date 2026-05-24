@@ -294,10 +294,11 @@ Only requirement: same Rust toolchain version, since floating-point encoder outp
 
 `GameRunner` orchestrates one game start to finish. It holds riichienv `GameState`, `[SafetyInfo; 4]` array (one per player view), and action/round counters.
 
-Runner exposes two execution modes:
+Runner exposes three execution modes:
 
 - `step_once(selector)`: advance game one step using given `ActionSelector`. Handles round transitions (auto-resets safety), WaitAct vs WaitResponse phases. Returns `false` when game over.
-- `run_to_completion(selector)`: play full game by calling `step_once` in loop. Provides accessors for `scores()`, `total_actions()`, `rounds_played()`, and `safety(player)` after completion.
+- `step_once_recording(selector, recorder)`: same real rules/legal path, but emits `DecisionRecord` for each player decision before applying actions. Record includes encoded obs `[192,34]`, legal mask `[bool;46]`, selected compact Hydra action, legal count, player/seat, and turn. This is smoke/boundary plumbing, not production actor-pool self-play.
+- `run_to_completion(selector)`: play full game by calling checked steps in loop. Provides accessors for `scores()`, `total_actions()`, `rounds_played()`, and `safety(player)` after completion.
 
 ### ActionSelector Trait
 

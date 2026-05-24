@@ -24,6 +24,17 @@ if TYPE_CHECKING:
     from hydra_learner.shard_contracts import ManifestSummary
 
 
+_TB_STATIC_SCALAR_SUFFIXES = ("/active", "/status_code")
+_TB_STATIC_SCALAR_KEYS = {
+    "active",
+    "complete",
+    "enabled",
+    "full_batches",
+    "global_step",
+    "status_code",
+}
+
+
 def prefixed_metrics(prefix: str, metrics: dict[str, object]) -> dict[str, object]:
     return {f"{prefix}/{key}": value for key, value in metrics.items()}
 
@@ -75,10 +86,21 @@ def _finite_number(value: object) -> float | None:
     return None
 
 
+def _is_tensorboard_status_clutter(key: str) -> bool:
+    return key in _TB_STATIC_SCALAR_KEYS or key.endswith(_TB_STATIC_SCALAR_SUFFIXES)
+
+
 def add_scalars(
-    writer: ScalarEventWriter, prefix: str, metrics: dict[str, object] | dict[str, float], step: int
+    writer: ScalarEventWriter,
+    prefix: str,
+    metrics: dict[str, object] | dict[str, float],
+    step: int,
+    *,
+    include_status_scalars: bool = False,
 ) -> None:
     for key, value in metrics.items():
+        if not include_status_scalars and _is_tensorboard_status_clutter(key):
+            continue
         number = _finite_number(value)
         if number is not None:
             writer.add_scalar(f"{prefix}/{key}", number, step)
@@ -102,16 +124,20 @@ def log_step_scalars(
         "global_step": global_step,
         "lr": stat.lr,
         "grad_norm": stat.grad_norm,
+        "lr_progress_games": stat.lr_progress_games,
+        "policy_nll": stat.policy_nll,
+        "policy_accuracy": stat.policy_accuracy,
+        "policy_top3_accuracy": stat.policy_top3_accuracy,
+        "policy_top5_accuracy": stat.policy_top5_accuracy,
+        "policy_confidence": stat.policy_confidence,
+        "policy_entropy": stat.policy_entropy,
+        "policy_target_prob": stat.policy_target_prob,
+        "policy_margin": stat.policy_margin,
     }
     for head, loss in stat.head_losses.items():
         metrics[f"loss/{head}"] = loss
     for head, coverage in stat.target_coverage.items():
         metrics[f"coverage/{head}/fraction"] = coverage["fraction"]
-        metrics[f"coverage/{head}/active"] = 1.0 if coverage["active"] else 0.0
-        status = coverage["status"]
-        metrics[f"coverage/{head}/status_code"] = float(
-            ("absent", "present_zero", "present_positive").index(str(status))
-        )
     if stat.step_ms > 0.0 and math.isfinite(stat.step_ms):
         metrics["samples_per_s"] = batch * 1000.0 / stat.step_ms
     if math.isfinite(stat.fetch_decode_ms) and math.isfinite(stat.h2d_wall_ms):

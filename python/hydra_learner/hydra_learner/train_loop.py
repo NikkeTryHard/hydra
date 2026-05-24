@@ -72,7 +72,7 @@ from hydra_learner.raw_mjai import (
 from hydra_learner.shard_manifest import validate_manifest
 from hydra_learner.shard_reader import BcShardDataset
 from hydra_learner.step import HydraCompiledLossStep, run_non_mutating_train_step, run_step
-from hydra_learner.validation import RawMjaiValidationSource, evaluate_raw_and_ema
+from hydra_learner.validation import RawMjaiValidationSource, ValidationSourceInfo, evaluate_raw_and_ema
 
 
 @dataclass(frozen=True)
@@ -88,6 +88,91 @@ class PreMainAccounting:
 
     def as_log_fields(self) -> dict[str, object]:
         return asdict(self)
+
+
+@dataclass
+class ValidationConvergenceState:
+    best_policy_nll: float = math.inf
+    best_step: int = 0
+    validation_count: int = 0
+    best_validation_count: int = 0
+    last_policy_nll: float | None = None
+    recent_policy_nll: list[float] | None = None
+
+    def update(self, policy_nll: float, global_step: int) -> dict[str, float]:
+        if self.recent_policy_nll is None:
+            self.recent_policy_nll = []
+        self.validation_count += 1
+        delta_since_last = math.nan if self.last_policy_nll is None else policy_nll - self.last_policy_nll
+        self.last_policy_nll = policy_nll
+        if policy_nll < self.best_policy_nll:
+            self.best_policy_nll = policy_nll
+            self.best_step = global_step
+            self.best_validation_count = self.validation_count
+        self.recent_policy_nll.append(policy_nll)
+        if len(self.recent_policy_nll) > 8:
+            del self.recent_policy_nll[0]
+        slope = _simple_slope(self.recent_policy_nll)
+        return {
+            "policy_nll_best": self.best_policy_nll,
+            "policy_nll_delta_from_best": policy_nll - self.best_policy_nll,
+            "validations_since_best": float(self.validation_count - self.best_validation_count),
+            "steps_since_best": float(global_step - self.best_step),
+            "policy_nll_delta_since_last": delta_since_last,
+            "policy_nll_recent_slope": slope,
+        }
+
+
+def _simple_slope(values: list[float]) -> float:
+    n = len(values)
+    if n < 2:
+        return math.nan
+    x_mean = (n - 1) * 0.5
+    y_mean = sum(values) / n
+    denom = sum((i - x_mean) * (i - x_mean) for i in range(n))
+    return sum((i - x_mean) * (value - y_mean) for i, value in enumerate(values)) / denom
+
+
+def _numeric_validation_source_scalars(source: ValidationSourceInfo) -> dict[str, object]:
+    return {
+        key: value
+        for key, value in asdict(source).items()
+        if isinstance(value, int | float) and not isinstance(value, bool)
+    }
+
+
+def _raw_ema_delta_scalars(raw: dict[str, object], ema: dict[str, object] | None) -> dict[str, float]:
+    if ema is None:
+        return {}
+    out: dict[str, float] = {}
+    for key, raw_value in raw.items():
+        ema_value = ema.get(key)
+        if (
+            isinstance(raw_value, Real)
+            and not isinstance(raw_value, bool)
+            and isinstance(ema_value, Real)
+            and not isinstance(ema_value, bool)
+        ):
+            out[key] = float(ema_value) - float(raw_value)
+    return out
+
+
+def _validation_scalar_metrics(
+    *,
+    raw_metrics: dict[str, object],
+    ema_metrics: dict[str, object] | None,
+    source_info: ValidationSourceInfo,
+    convergence_metrics: dict[str, float],
+) -> dict[str, object]:
+    scalar_metrics = prefixed_metrics("raw", raw_metrics)
+    if ema_metrics is not None:
+        scalar_metrics |= prefixed_metrics("ema", ema_metrics)
+        scalar_metrics |= prefixed_metrics(
+            "ema_delta", cast(dict[str, object], _raw_ema_delta_scalars(raw_metrics, ema_metrics))
+        )
+    scalar_metrics |= prefixed_metrics("convergence", cast(dict[str, object], convergence_metrics))
+    scalar_metrics |= prefixed_metrics("source", _numeric_validation_source_scalars(source_info))
+    return scalar_metrics
 
 
 def run_training(args: argparse.Namespace) -> int:
@@ -188,8 +273,8 @@ def run_training(args: argparse.Namespace) -> int:
             args.schedule_total_steps = args.steps
         elif manifest_summary is not None:
             args.schedule_total_steps = max(1, math.ceil(manifest_summary.train_samples / args.batch))
-    if args.lr_schedule == "cosine" and args.schedule_total_steps is None:
-        raise ValueError("--lr-schedule cosine requires --schedule-total-steps when run horizon is unbounded")
+    if args.lr_schedule == "cosine" and args.schedule_total_steps is None and args.schedule_target_games is None:
+        raise ValueError("cosine LR needs --schedule-total-steps or --schedule-target-games for unbounded runs")
     events.write("torch_setup_start", {})
 
     if not torch.cuda.is_available():
@@ -467,6 +552,7 @@ def run_training(args: argparse.Namespace) -> int:
     stats: list[StepStats] = []
     best_policy_nll = math.inf
     best_policy_nll_step = 0
+    validation_convergence = ValidationConvergenceState()
     step_range = itertools.count() if args.steps is None else range(args.steps)
     with profiler_ctx as torch_profiler:
         for i in step_range:
@@ -532,7 +618,14 @@ def run_training(args: argparse.Namespace) -> int:
                     obs = staged.obs
                     targets = staged.targets
                     input_timing = staged.input_timing
-            lr = lr_scheduler.lr_for_step(global_step)
+            completed_games_for_lr: int | None = None
+            progress_for_lr = raw_pinned.progress() if raw_pinned is not None else None
+            if progress_for_lr is None and raw_stream is not None:
+                progress_for_lr = raw_stream.progress()
+            if progress_for_lr is not None:
+                completed_games_for_lr = progress_for_lr.loaded_games + raw_mjai_offsets.loaded_games
+
+            lr = lr_scheduler.lr_for_step(global_step, completed_games_for_lr)
             set_optimizer_lr(optimizer, lr)
             will_log = args.log_every_steps > 0 and (
                 (global_step + 1) % args.log_every_steps == 0 or (args.steps is not None and i + 1 == args.steps)
@@ -552,6 +645,7 @@ def run_training(args: argparse.Namespace) -> int:
                 collect_diagnostics=will_log,
             )
             stat.lr = lr
+            stat.lr_progress_games = math.nan if completed_games_for_lr is None else float(completed_games_for_lr)
             if real_dataset is not None or raw_stream is not None or raw_pinned is not None:
                 stat.fetch_decode_ms = input_timing.fetch_decode_ms
                 stat.h2d_wall_ms = input_timing.h2d_wall_ms
@@ -584,6 +678,14 @@ def run_training(args: argparse.Namespace) -> int:
                         "loss": stat.loss,
                         "head_losses": stat.head_losses,
                         "target_coverage": stat.target_coverage,
+                        "policy_nll": stat.policy_nll,
+                        "policy_accuracy": stat.policy_accuracy,
+                        "policy_top3_accuracy": stat.policy_top3_accuracy,
+                        "policy_top5_accuracy": stat.policy_top5_accuracy,
+                        "policy_confidence": stat.policy_confidence,
+                        "policy_entropy": stat.policy_entropy,
+                        "policy_target_prob": stat.policy_target_prob,
+                        "policy_margin": stat.policy_margin,
                         "step_ms": stat.step_ms,
                         "fwd_loss_ms": stat.fwd_loss_ms,
                         "backward_ms": stat.backward_ms,
@@ -593,6 +695,7 @@ def run_training(args: argparse.Namespace) -> int:
                         "h2d_wall_ms": stat.h2d_wall_ms,
                         "lr": stat.lr,
                         "grad_norm": stat.grad_norm,
+                        "lr_progress_games": stat.lr_progress_games,
                         "compile_dry_run": pre_main.compile_dry_run,
                         "warmup_mode": pre_main.warmup_mode,
                         "warmup_steps_counted": pre_main.warmup_steps_counted,
@@ -636,22 +739,8 @@ def run_training(args: argparse.Namespace) -> int:
                     ema_tracker=ema_tracker,
                 )
                 event_metrics = {"raw": metrics}
-                scalar_metrics = prefixed_metrics("raw", metrics)
                 if ema_metrics is not None:
                     event_metrics["ema"] = ema_metrics
-                    scalar_metrics |= prefixed_metrics("ema", ema_metrics)
-                eval_stats.append({"step": i + 1, "metrics": event_metrics})
-                events.write(
-                    "validation",
-                    {
-                        "step": i + 1,
-                        "global_step": global_step,
-                        "source": asdict(validation_source.info),
-                        "metrics": event_metrics,
-                    },
-                )
-                log_validation_scalars(scalar_writer, scalar_metrics, global_step, final=False)
-                scalar_writer.flush()
                 raw_policy_nll_value = metrics["policy_nll"]
                 if not isinstance(raw_policy_nll_value, Real):
                     raise TypeError("validation policy_nll metric must be numeric")
@@ -668,6 +757,25 @@ def run_training(args: argparse.Namespace) -> int:
                 if not isinstance(best_policy_nll_value, Real):
                     raise TypeError("best validation policy_nll metric must be numeric")
                 policy_nll = float(best_policy_nll_value)
+                convergence_metrics = validation_convergence.update(policy_nll, global_step)
+                scalar_metrics = _validation_scalar_metrics(
+                    raw_metrics=metrics,
+                    ema_metrics=ema_metrics,
+                    source_info=validation_source.info,
+                    convergence_metrics=convergence_metrics,
+                )
+                eval_stats.append({"step": i + 1, "metrics": event_metrics})
+                events.write(
+                    "validation",
+                    {
+                        "step": i + 1,
+                        "global_step": global_step,
+                        "source": asdict(validation_source.info),
+                        "metrics": event_metrics,
+                    },
+                )
+                log_validation_scalars(scalar_writer, scalar_metrics, global_step, final=False)
+                scalar_writer.flush()
                 if policy_nll < best_policy_nll:
                     best_policy_nll = policy_nll
                     best_policy_nll_step = global_step
@@ -768,10 +876,28 @@ def run_training(args: argparse.Namespace) -> int:
             ema_tracker=ema_tracker,
         )
         final_validation = {"raw": raw_final_validation}
-        final_scalar_metrics = prefixed_metrics("raw", raw_final_validation)
         if ema_final_validation is not None:
             final_validation["ema"] = ema_final_validation
-            final_scalar_metrics |= prefixed_metrics("ema", ema_final_validation)
+        final_best_metrics = raw_final_validation
+        if ema_final_validation is not None:
+            final_raw_policy_nll_value = raw_final_validation["policy_nll"]
+            final_ema_policy_nll_value = ema_final_validation["policy_nll"]
+            if not isinstance(final_raw_policy_nll_value, Real):
+                raise TypeError("final raw validation policy_nll metric must be numeric")
+            if not isinstance(final_ema_policy_nll_value, Real):
+                raise TypeError("final EMA validation policy_nll metric must be numeric")
+            if float(final_ema_policy_nll_value) < float(final_raw_policy_nll_value):
+                final_best_metrics = ema_final_validation
+        final_policy_nll_value = final_best_metrics["policy_nll"]
+        if not isinstance(final_policy_nll_value, Real):
+            raise TypeError("final validation policy_nll metric must be numeric")
+        final_convergence_metrics = validation_convergence.update(float(final_policy_nll_value), global_step)
+        final_scalar_metrics = _validation_scalar_metrics(
+            raw_metrics=raw_final_validation,
+            ema_metrics=ema_final_validation,
+            source_info=validation_source.info,
+            convergence_metrics=final_convergence_metrics,
+        )
         log_validation_scalars(scalar_writer, final_scalar_metrics, global_step, final=True)
     raw_progress: BuildProgress | None = None
     if raw_stream is not None:

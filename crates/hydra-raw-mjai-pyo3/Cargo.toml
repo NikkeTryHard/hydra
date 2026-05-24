@@ -16,4 +16,6 @@ name = "hydra_raw_mjai_pyo3"
 [dependencies]
 hydra-core = { path = "../hydra-core" }
 hydra-train-exec = { path = "../hydra-train-exec" }
+riichienv-core = { path = "../hydra-engine", package = "hydra-engine" }
+rand = "0.9"
 pyo3 = { version = "0.28.3", features = ["extension-module"] }

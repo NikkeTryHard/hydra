@@ -4,6 +4,9 @@
 //! WaitAct/WaitResponse handling, SafetyInfo updates, and
 //! policy-driven action selection.
 
+use crate::action::{HYDRA_ACTION_SPACE, build_legal_mask, riichienv_to_hydra};
+use crate::bridge::encode_observation_ref;
+use crate::encoder::{OBS_SIZE, ObservationEncoder};
 use riichienv_core::action::{Action, ActionType, Phase};
 use riichienv_core::rule::GameRule;
 use riichienv_core::state::GameState;
@@ -11,9 +14,21 @@ use riichienv_core::state::GameState;
 use crate::safety::{SafetyInfo, bit_test};
 use crate::seeding::SessionRng;
 
+pub struct ActionDecision<'a> {
+    pub player: u8,
+    pub seat_id: u8,
+    pub obs: &'a [f32; OBS_SIZE],
+    pub legal_mask: &'a [bool; HYDRA_ACTION_SPACE],
+    pub legal_actions: &'a [Action],
+    pub turn: u32,
+}
+
 /// Trait for action selection policies.
 /// Implemented by random agents, NN inference, etc.
 pub trait ActionSelector {
+    /// Observe the encoded decision context before `select_action` is called.
+    fn observe_decision(&mut self, _decision: ActionDecision<'_>) {}
+
     /// Select an action from the given legal actions.
     /// `player`: the player who must act (0-3)
     /// `legal_actions`: the available actions
@@ -36,6 +51,37 @@ pub enum StepOutcome {
     StepLimitExceeded,
     NoLegalAction { player: u8 },
 }
+#[derive(Debug, Clone)]
+pub struct DecisionRecord {
+    pub obs: [f32; OBS_SIZE],
+    pub legal_mask: [bool; HYDRA_ACTION_SPACE],
+    pub action: u8,
+    pub legal_count: u8,
+    pub player_id: u8,
+    pub seat_id: u8,
+    pub turn: u32,
+}
+
+trait DecisionRecorder {
+    fn record(&mut self, record: DecisionRecord);
+}
+
+struct NoopDecisionRecorder;
+
+impl DecisionRecorder for NoopDecisionRecorder {
+    #[inline]
+    fn record(&mut self, _record: DecisionRecord) {}
+}
+
+impl<F> DecisionRecorder for F
+where
+    F: FnMut(DecisionRecord),
+{
+    #[inline]
+    fn record(&mut self, record: DecisionRecord) {
+        self(record);
+    }
+}
 
 impl StepOutcome {
     #[inline]
@@ -52,6 +98,7 @@ pub struct GameRunner {
     rounds_played: u32,
     actions: [Option<Action>; 4],
     legal_buf: Vec<Action>,
+    encoder: ObservationEncoder,
 }
 impl GameRunner {
     /// Create a new game runner.
@@ -65,6 +112,7 @@ impl GameRunner {
             rounds_played: 1,
             actions: [None; 4],
             legal_buf: Vec::with_capacity(46),
+            encoder: ObservationEncoder::new(),
         }
     }
 
@@ -89,6 +137,7 @@ impl GameRunner {
             rounds_played: 1,
             actions: [None; 4],
             legal_buf: Vec::with_capacity(46),
+            encoder: ObservationEncoder::new(),
         }
     }
 
@@ -101,6 +150,7 @@ impl GameRunner {
         self.rounds_played = 1;
         self.actions = [None; 4];
         self.legal_buf.clear();
+        self.encoder = ObservationEncoder::new();
     }
 
     #[inline]
@@ -140,6 +190,28 @@ impl GameRunner {
 
     /// Advance one step and report why iteration stopped.
     pub fn step_once_checked<S: ActionSelector>(&mut self, selector: &mut S) -> StepOutcome {
+        let mut recorder = NoopDecisionRecorder;
+        self.step_once_checked_with_recorder(selector, &mut recorder)
+    }
+
+    /// Advance one step and record every player decision before it is applied.
+    pub fn step_once_recording<S, R>(&mut self, selector: &mut S, recorder: &mut R) -> StepOutcome
+    where
+        S: ActionSelector,
+        R: FnMut(DecisionRecord),
+    {
+        self.step_once_checked_with_recorder(selector, recorder)
+    }
+
+    fn step_once_checked_with_recorder<S, R>(
+        &mut self,
+        selector: &mut S,
+        recorder: &mut R,
+    ) -> StepOutcome
+    where
+        S: ActionSelector,
+        R: DecisionRecorder,
+    {
         if self.state.is_done {
             return StepOutcome::Complete;
         }
@@ -172,7 +244,17 @@ impl GameRunner {
                 if self.legal_buf.is_empty() {
                     return StepOutcome::NoLegalAction { player: pid };
                 }
+                let (encoded, legal_mask) = self.encode_decision(pid);
+                selector.observe_decision(ActionDecision {
+                    player: pid,
+                    seat_id: pid,
+                    obs: &encoded,
+                    legal_mask: &legal_mask,
+                    legal_actions: &self.legal_buf,
+                    turn: self.total_actions,
+                });
                 let chosen = selector.select_action(pid, &self.legal_buf);
+                self.record_encoded_decision(pid, encoded, legal_mask, &chosen, recorder);
                 self.track_action(pid, &chosen);
                 self.actions[pid as usize] = Some(chosen);
             }
@@ -186,7 +268,17 @@ impl GameRunner {
                     if self.legal_buf.is_empty() {
                         continue;
                     }
+                    let (encoded, legal_mask) = self.encode_decision(pid);
+                    selector.observe_decision(ActionDecision {
+                        player: pid,
+                        seat_id: pid,
+                        obs: &encoded,
+                        legal_mask: &legal_mask,
+                        legal_actions: &self.legal_buf,
+                        turn: self.total_actions,
+                    });
                     let chosen = selector.select_action(pid, &self.legal_buf);
+                    self.record_encoded_decision(pid, encoded, legal_mask, &chosen, recorder);
                     self.track_action(pid, &chosen);
                     self.actions[pid as usize] = Some(chosen);
                 }
@@ -200,6 +292,41 @@ impl GameRunner {
         } else {
             StepOutcome::Advanced
         }
+    }
+
+    fn encode_decision(&mut self, player: u8) -> ([f32; OBS_SIZE], [bool; HYDRA_ACTION_SPACE]) {
+        let obs = self.state.observe(player);
+        let encoded =
+            encode_observation_ref(&mut self.encoder, &obs, &self.safety[player as usize]);
+        let legal_mask = build_legal_mask(&self.legal_buf, crate::action::ActionPhase::Normal);
+        (encoded, legal_mask)
+    }
+
+    fn record_encoded_decision<R: DecisionRecorder>(
+        &mut self,
+        player: u8,
+        encoded: [f32; OBS_SIZE],
+        legal_mask: [bool; HYDRA_ACTION_SPACE],
+        action: &Action,
+        recorder: &mut R,
+    ) {
+        let legal_count = legal_mask
+            .iter()
+            .filter(|&&legal| legal)
+            .count()
+            .min(u8::MAX as usize) as u8;
+        let Ok(hydra_action) = riichienv_to_hydra(action) else {
+            return;
+        };
+        recorder.record(DecisionRecord {
+            obs: encoded,
+            legal_mask,
+            action: hydra_action.id(),
+            legal_count,
+            player_id: player,
+            seat_id: player,
+            turn: self.total_actions,
+        });
     }
 }
 

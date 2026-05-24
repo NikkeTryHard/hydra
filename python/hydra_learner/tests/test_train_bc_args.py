@@ -14,10 +14,16 @@ import torch
 import hydra_learner.hydra_logging as hydra_logging
 import hydra_learner.train_bc as train_bc
 import hydra_learner.validation as validation
+from hydra_learner.checkpoint import ResumeState
 from hydra_learner.losses import LossWeights
-from hydra_learner.metrics import EvalStats, StepStats, summarize_eval
+from hydra_learner.metrics import EvalStats, StepStats, summarize_eval, summarize_steps
 from hydra_learner.model import HydraPolicyNet
-from hydra_learner.raw_mjai import BuildProgress, RawMjaiBridgeStats, RawMjaiPinnedQueueStats
+from hydra_learner.raw_mjai import (
+    BuildProgress,
+    RawMjaiBridgeStats,
+    RawMjaiPinnedQueueStats,
+    validate_raw_mjai_source_args,
+)
 from hydra_learner.shard_contracts import PolicyBatch
 
 if TYPE_CHECKING:
@@ -96,6 +102,27 @@ def test_parse_args_accepts_ux_artifact_flags() -> None:
     assert args.validation_source_mode == "fixed"
 
 
+def test_parse_args_accepts_recommended_large_model_shape() -> None:
+    with patch.object(
+        sys,
+        "argv",
+        [
+            "python-bc-train",
+            "--hidden",
+            "384",
+            "--blocks",
+            "12",
+            "--bottleneck",
+            "96",
+        ],
+    ):
+        args = parse_args()
+
+    assert args.hidden == 384
+    assert args.blocks == 12
+    assert args.bottleneck == 96
+
+
 def _read_scalar_tags(path: Path) -> dict[str, float]:
     with path.open(encoding="utf-8") as file:
         records = [json.loads(line) for line in file]
@@ -120,6 +147,32 @@ def _policy_batch(rows: int, fill: float) -> PolicyBatch:
         safety_target=None,
         safety_mask=None,
     )
+
+
+def _eval_stats(**overrides: Any) -> EvalStats:
+    values = {
+        "loss": 0.0,
+        "policy": 0.0,
+        "value": 0.0,
+        "grp": 0.0,
+        "tenpai": 0.0,
+        "danger": 0.0,
+        "opp_next": 0.0,
+        "score_pdf": 0.0,
+        "score_cdf": 0.0,
+        "oracle_critic": 0.0,
+        "safety_residual": 0.0,
+        "target_coverage": {"policy": {"active": True, "status": "present_positive", "fraction": 1.0}},
+        "policy_accuracy": 0.0,
+        "policy_top3_accuracy": 0.0,
+        "policy_top5_accuracy": 0.0,
+        "policy_nll": 0.0,
+        "policy_confidence": 0.0,
+        "policy_ece": 0.0,
+        "samples": 1,
+    }
+    values.update(overrides)
+    return EvalStats(**values)
 
 
 class _ValidationStreamFixture:
@@ -164,57 +217,61 @@ def test_scalar_helpers_emit_production_metrics(tmp_path: Path, monkeypatch: Mon
         train_gpu_ms=10.0,
         lr=0.001,
         grad_norm=2.0,
+        policy_accuracy=0.75,
+        policy_nll=1.25,
+        policy_top3_accuracy=0.875,
+        policy_top5_accuracy=1.0,
+        policy_confidence=0.625,
+        policy_entropy=2.5,
+        policy_target_prob=0.5,
+        policy_margin=0.25,
     )
 
     log_step_scalars(writer, stat, batch=32, samples_seen=128, global_step=4)
     metrics = summarize_eval(
         [
-            EvalStats(
-                1.0,
-                0.5,
-                0.1,
-                0.2,
-                0.3,
-                0.4,
-                0.5,
-                0.6,
-                0.7,
-                0.0,
-                0.0,
-                {"policy": {"active": True, "status": "present_positive", "fraction": 1.0}},
-                0.8,
-                0.9,
-                0.95,
-                0.6,
-                0.85,
-                0.05,
-                4,
+            _eval_stats(
+                loss=1.0,
+                policy=0.5,
+                value=0.1,
+                grp=0.2,
+                tenpai=0.3,
+                danger=0.4,
+                opp_next=0.5,
+                score_pdf=0.6,
+                score_cdf=0.7,
+                policy_accuracy=0.8,
+                policy_top3_accuracy=0.9,
+                policy_top5_accuracy=0.95,
+                policy_nll=0.6,
+                policy_confidence=0.85,
+                policy_ece=0.05,
+                samples=4,
             ),
-            EvalStats(
-                3.0,
-                1.5,
-                0.3,
-                0.4,
-                0.5,
-                0.6,
-                0.7,
-                0.8,
-                0.9,
-                0.0,
-                0.0,
-                {"policy": {"active": True, "status": "present_positive", "fraction": 1.0}},
-                1.0,
-                0.8,
-                0.9,
-                0.4,
-                0.7,
-                0.1,
-                4,
+            _eval_stats(
+                loss=3.0,
+                policy=1.5,
+                value=0.3,
+                grp=0.4,
+                tenpai=0.5,
+                danger=0.6,
+                opp_next=0.7,
+                score_pdf=0.8,
+                score_cdf=0.9,
+                policy_accuracy=1.0,
+                policy_top3_accuracy=0.8,
+                policy_top5_accuracy=0.9,
+                policy_nll=0.4,
+                policy_confidence=0.7,
+                policy_ece=0.1,
+                samples=4,
             ),
         ]
     )
     log_validation_scalars(writer, metrics, 4, final=False)
-    add_scalars(writer, "skip", {"nan": float("nan"), "text": "x", "none": None, "flag": True}, 4)
+    add_scalars(
+        writer, "skip", {"nan": float("nan"), "text": "x", "none": None, "flag": True}, 4, include_status_scalars=True
+    )
     writer.close()
 
     tags = _read_scalar_tags(path / "scalars.jsonl")
@@ -226,11 +283,27 @@ def test_scalar_helpers_emit_production_metrics(tmp_path: Path, monkeypatch: Mon
     assert tags["train/grad_norm"] == 2.0
     assert tags["train/loss/policy"] == 0.25
     assert tags["train/loss/value"] == 0.125
+    assert tags["train/policy_accuracy"] == 0.75
+    assert tags["train/policy_nll"] == 1.25
+    assert tags["train/policy_top3_accuracy"] == 0.875
+    assert tags["train/policy_top5_accuracy"] == 1.0
+    assert tags["train/policy_confidence"] == 0.625
+    assert tags["train/policy_entropy"] == 2.5
+    assert tags["train/policy_target_prob"] == 0.5
+    assert tags["train/policy_margin"] == 0.25
+    assert "train/head_losses" not in tags
+    assert "train/target_coverage" not in tags
+    assert "train/coverage/policy/active" not in tags
+    assert "train/coverage/policy/status_code" not in tags
     assert tags["train/coverage/policy/fraction"] == 1.0
     assert tags["validation/loss"] == 2.0
     assert tags["validation/policy_accuracy"] == 0.9
     assert tags["validation/policy_top3_accuracy"] == 0.8500000000000001
     assert tags["validation/policy_ece"] == 0.07500000000000001
+    assert tags["validation/policy_top5_accuracy"] == 0.925
+    assert tags["validation/policy_nll"] == 0.5
+    assert tags["validation/policy_confidence"] == pytest.approx(0.775)
+    assert "validation/coverage/policy/status_code" not in tags
     assert tags["validation/samples"] == 8.0
     assert tags["skip/flag"] == 1.0
     assert "skip/nan" not in tags
@@ -252,47 +325,17 @@ def test_scalar_writer_emits_tensorboard_event_file_when_available(tmp_path: Pat
 def test_validation_metrics_weight_by_samples() -> None:
     metrics = summarize_eval(
         [
-            EvalStats(
-                1.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                {"policy": {"active": True, "status": "present_positive", "fraction": 1.0}},
-                0.5,
-                0.0,
-                0.0,
-                1.0,
-                0.0,
-                0.0,
-                2,
+            _eval_stats(
+                loss=1.0,
+                policy_accuracy=0.5,
+                policy_nll=1.0,
+                samples=2,
             ),
-            EvalStats(
-                3.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                {"policy": {"active": True, "status": "present_positive", "fraction": 1.0}},
-                1.0,
-                0.0,
-                0.0,
-                5.0,
-                0.0,
-                0.0,
-                6,
+            _eval_stats(
+                loss=3.0,
+                policy_accuracy=1.0,
+                policy_nll=5.0,
+                samples=6,
             ),
         ]
     )
@@ -300,6 +343,58 @@ def test_validation_metrics_weight_by_samples() -> None:
     assert metrics["samples"] == 8.0
     assert metrics["loss"] == 2.5
     assert metrics["policy_nll"] == 4.0
+    assert metrics["policy_accuracy"] == 0.875
+
+
+def test_step_summary_includes_train_policy_diagnostics() -> None:
+    summary = summarize_steps(
+        [
+            StepStats(
+                step_ms=10.0,
+                fwd_loss_ms=2.0,
+                backward_ms=3.0,
+                optimizer_ms=1.0,
+                loss=0.5,
+                head_losses={},
+                target_coverage={},
+                policy_nll=1.0,
+                policy_accuracy=0.5,
+                policy_top3_accuracy=0.75,
+                policy_top5_accuracy=0.8,
+                policy_confidence=0.6,
+                policy_entropy=2.0,
+                policy_target_prob=0.4,
+                policy_margin=0.1,
+            ),
+            StepStats(
+                step_ms=20.0,
+                fwd_loss_ms=4.0,
+                backward_ms=6.0,
+                optimizer_ms=2.0,
+                loss=1.5,
+                head_losses={},
+                target_coverage={},
+                policy_nll=3.0,
+                policy_accuracy=1.0,
+                policy_top3_accuracy=1.0,
+                policy_top5_accuracy=1.0,
+                policy_confidence=0.8,
+                policy_entropy=4.0,
+                policy_target_prob=0.6,
+                policy_margin=0.3,
+            ),
+        ],
+        batch=4,
+    )
+
+    assert summary["mean_policy_nll"] == 2.0
+    assert summary["mean_policy_accuracy"] == 0.75
+    assert summary["mean_policy_top3_accuracy"] == 0.875
+    assert summary["mean_policy_top5_accuracy"] == 0.9
+    assert summary["mean_policy_confidence"] == 0.7
+    assert summary["mean_policy_entropy"] == 3.0
+    assert summary["mean_policy_target_prob"] == 0.5
+    assert summary["mean_policy_margin"] == 0.2
 
 
 def test_raw_train_augment_does_not_imply_validation_augment(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
@@ -464,6 +559,32 @@ def test_raw_mjai_scalar_snapshot_includes_progress_bridge_and_queue() -> None:
     assert snapshot["queue/mean_producer_free_wait_ms"] == 2.0
 
 
+def test_raw_mjai_resume_offsets_preserve_checkpoint_progress() -> None:
+    state = ResumeState(
+        global_step=5,
+        samples_seen=40,
+        raw_mjai_progress={"loaded_games": 7, "skipped_games": 2, "samples": 36, "batches": 9},
+    )
+
+    offsets = RawMjaiResumeOffsets.from_resume(state, batch=4)
+
+    assert offsets.loaded_games == 7
+    assert offsets.skipped_games == 2
+    assert offsets.samples == 36
+    assert offsets.batches == 9
+
+
+def test_raw_mjai_resume_offsets_fallback_to_samples_seen() -> None:
+    state = ResumeState(global_step=5, samples_seen=40, raw_mjai_progress={})
+
+    offsets = RawMjaiResumeOffsets.from_resume(state, batch=4)
+
+    assert offsets.loaded_games == 0
+    assert offsets.skipped_games == 0
+    assert offsets.samples == 40
+    assert offsets.batches == 10
+
+
 def _cpu_tiny_training_objects() -> tuple[HydraPolicyNet, torch.optim.Optimizer, torch.nn.Module, train_bc.LrScheduler]:
     model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1.0e-3)
@@ -474,6 +595,7 @@ def _cpu_tiny_training_objects() -> tuple[HydraPolicyNet, torch.optim.Optimizer,
             min_lr=0.0,
             warmup_steps=0,
             total_steps=2,
+            target_games=None,
             schedule="cosine",
         )
     )
@@ -756,7 +878,9 @@ def test_bounded_raw_sample_cap_includes_staged_batch() -> None:
 
 def test_cosine_scheduler_uses_global_step_after_resume() -> None:
     scheduler = train_bc.LrScheduler(
-        train_bc.LrSchedulerConfig(base_lr=1.0, min_lr=0.1, warmup_steps=0, total_steps=1000, schedule="cosine")
+        train_bc.LrSchedulerConfig(
+            base_lr=1.0, min_lr=0.1, warmup_steps=0, total_steps=1000, target_games=None, schedule="cosine"
+        )
     )
     resumed_global_step = 400
 
@@ -769,7 +893,9 @@ def test_cosine_scheduler_uses_global_step_after_resume() -> None:
 
 def test_fresh_bounded_run_starts_cosine_at_step_zero() -> None:
     scheduler = train_bc.LrScheduler(
-        train_bc.LrSchedulerConfig(base_lr=1.0, min_lr=0.1, warmup_steps=0, total_steps=1000, schedule="cosine")
+        train_bc.LrSchedulerConfig(
+            base_lr=1.0, min_lr=0.1, warmup_steps=0, total_steps=1000, target_games=None, schedule="cosine"
+        )
     )
 
     assert scheduler.lr_for_step(0) == 1.0
@@ -777,10 +903,24 @@ def test_fresh_bounded_run_starts_cosine_at_step_zero() -> None:
 
 def test_constant_scheduler_ignores_global_resume_step() -> None:
     scheduler = train_bc.LrScheduler(
-        train_bc.LrSchedulerConfig(base_lr=1.0, min_lr=0.1, warmup_steps=0, total_steps=1000, schedule="constant")
+        train_bc.LrSchedulerConfig(
+            base_lr=1.0, min_lr=0.1, warmup_steps=0, total_steps=1000, target_games=None, schedule="constant"
+        )
     )
 
     assert scheduler.lr_for_step(400) == 1.0
+
+
+def test_target_games_schedule_uses_optimizer_steps_for_warmup() -> None:
+    scheduler = train_bc.LrScheduler(
+        train_bc.LrSchedulerConfig(
+            base_lr=1.0, min_lr=0.1, warmup_steps=1000, total_steps=None, target_games=10_000, schedule="cosine"
+        )
+    )
+
+    assert scheduler.lr_for_step(10, completed_games=9000) == 0.01
+    assert scheduler.lr_for_step(1000, completed_games=0) == 1.0
+    assert scheduler.lr_for_step(1000, completed_games=9000) < 0.2
 
 
 def test_pre_main_accounting_log_fields_mark_non_mutating_warmup() -> None:
@@ -812,6 +952,7 @@ def _valid_args(**overrides: Any) -> argparse.Namespace:
         "validation_every": 0,
         "lr_warmup_steps": 0,
         "schedule_total_steps": 10,
+        "schedule_target_games": None,
         "lr": 0.001,
         "min_lr": 0.0,
         "ema_enabled": False,
@@ -840,24 +981,28 @@ def _valid_args(**overrides: Any) -> argparse.Namespace:
     return argparse.Namespace(**values)
 
 
-def test_raw_full_epoch_resume_without_cursor_is_allowed(tmp_path: Path) -> None:
+def test_raw_full_epoch_resume_without_cursor_is_rejected(tmp_path: Path) -> None:
     args = _valid_args(
         full_epoch=True,
         resume=tmp_path / "checkpoints" / "latest.pt",
         raw_mjai_data_dirs=[tmp_path / "raw"],
         steps=None,
     )
+    (tmp_path / "raw").mkdir()
 
-    validate_args(args)
+    with pytest.raises(ValueError, match="raw-MJAI resume is unsupported"):
+        validate_raw_mjai_source_args(args)
 
 
-def test_bounded_raw_resume_without_cursor_is_allowed(tmp_path: Path) -> None:
+def test_bounded_raw_resume_without_cursor_is_rejected(tmp_path: Path) -> None:
     args = _valid_args(
         resume=tmp_path / "checkpoints" / "latest.pt",
         raw_mjai_data_dirs=[tmp_path / "raw"],
     )
+    (tmp_path / "raw").mkdir()
 
-    validate_args(args)
+    with pytest.raises(ValueError, match="raw-MJAI resume is unsupported"):
+        validate_raw_mjai_source_args(args)
 
 
 def test_shard_resume_args_unaffected(tmp_path: Path) -> None:

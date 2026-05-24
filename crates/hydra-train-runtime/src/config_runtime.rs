@@ -2,7 +2,7 @@ use std::thread::available_parallelism;
 
 use crate::preflight::{LoaderRuntimeConfig, PreflightConfig, PreflightTuningMode};
 
-use super::config::{RlTrainConfig, TrainConfig};
+use super::config::{RlTrainConfig, TrainConfig, raw_mjai_cursor_resume_supported};
 
 pub fn default_num_threads_for_system() -> usize {
     available_parallelism()
@@ -83,6 +83,27 @@ pub fn validate_config(config: &TrainConfig) -> Result<(), String> {
         return Err(
             "raw_mjai_data_dirs cannot be combined with bc_shards_manifest_path".to_string(),
         );
+    }
+    if config.bc_shards_manifest_path.is_none() && !raw_mjai_cursor_resume_supported() {
+        if config.resume_checkpoint.is_some() {
+            return Err(
+                "Raw-MJAI resume_checkpoint is unsupported until raw stream cursor resume exists; use a fresh output_dir or BC shards"
+                    .to_string(),
+            );
+        }
+        if config.resume_latest {
+            return Err(
+                "Raw-MJAI resume_latest is unsupported until raw stream cursor resume exists; use a fresh output_dir or BC shards"
+                    .to_string(),
+            );
+        }
+        let latest = config.output_dir.join("checkpoints/latest.pt");
+        if latest.is_file() {
+            return Err(
+                "Raw-MJAI output_dir has occupied checkpoints/latest.pt but raw stream cursor resume is unsupported; use a fresh output_dir or BC shards"
+                    .to_string(),
+            );
+        }
     }
     if config.validation_gates.enabled {
         if config.validation_gates.min_validation_samples == Some(0) {

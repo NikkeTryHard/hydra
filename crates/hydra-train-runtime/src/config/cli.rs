@@ -1181,6 +1181,7 @@ where
             lr_warmup_steps: python_lr_warmup_steps,
             lr_schedule: python_lr_schedule.clone(),
             schedule_total_steps: python_schedule_total_steps,
+            schedule_target_games: None,
             grad_clip_norm: python_grad_clip_norm,
             weight_decay: f64::from(super::default_bc_weight_decay()),
             ema_enabled: super::default_ema_enabled(),

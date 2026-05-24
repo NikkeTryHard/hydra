@@ -51,6 +51,7 @@ class OptimizerConfig:
     lr_schedule: Literal["constant", "cosine"] = "cosine"
     lr_warmup_steps: int = 0
     schedule_total_steps: int | None = None
+    target_games: int | None = None
     grad_clip_norm: float | None = None
     weight_decay: float = 0.01
     beta1: float = 0.9
@@ -95,6 +96,15 @@ class ResumeState:
     samples_seen: int
     raw_mjai_progress: dict[str, int]
     ema: EmaResumeState | None = None
+
+
+@dataclass(frozen=True)
+class InitOnlyState:
+    model_config: dict[str, Any]
+    weight_source: Literal["raw", "ema"]
+    global_step: int
+    samples_seen: int
+    manifest: dict[str, Any]
 
 
 def manifest_digest(path: Path | None) -> str | None:
@@ -244,6 +254,38 @@ def load_checkpoint(
     )
 
 
+def load_checkpoint_init_only(
+    path: Path,
+    *,
+    model: HydraPolicyNet,
+    expected_model_config: ModelConfig,
+    weight_source: Literal["raw", "ema"] = "raw",
+) -> InitOnlyState:
+    checkpoint = _torch_load(path)
+    _validate_checkpoint_root(checkpoint)
+    _expect_equal(checkpoint["model_config"], asdict(expected_model_config), "model_config")
+    checkpoint_weight_source = checkpoint.get("weight_source", "raw")
+    if checkpoint_weight_source not in {"raw", "ema"}:
+        raise ValueError(f"checkpoint weight_source must be 'raw' or 'ema', got {checkpoint_weight_source!r}")
+    if weight_source == "raw":
+        state = checkpoint["model_state"]
+    else:
+        if "ema_state" not in checkpoint:
+            raise ValueError("checkpoint ema_state missing for init-only EMA load")
+        state = _model_state_with_ema_weights(checkpoint["model_state"], checkpoint["ema_state"], model)
+    _load_model_state_strict(model, state)
+    manifest = checkpoint["manifest"]
+    if not isinstance(manifest, dict):
+        raise ValueError("checkpoint manifest must be a dict")
+    return InitOnlyState(
+        model_config=dict[str, Any](checkpoint["model_config"]),
+        weight_source=weight_source,
+        global_step=int(checkpoint["global_step"]),
+        samples_seen=int(checkpoint["samples_seen"]),
+        manifest=dict[str, Any](manifest),
+    )
+
+
 def _torch_load(path: Path) -> dict[str, Any]:
     try:
         obj = torch.load(path, map_location="cpu", weights_only=True)
@@ -342,14 +384,41 @@ def _load_ema_resume_state(
     )
 
 
+def _model_state_with_ema_weights(model_state: object, ema_state: object, model: nn.Module) -> dict[str, torch.Tensor]:
+    if not isinstance(model_state, dict):
+        raise ValueError("checkpoint model_state must be a dict")
+    if not isinstance(ema_state, dict):
+        raise ValueError("checkpoint ema_state must be a dict")
+    current = model.state_dict()
+    result: dict[str, torch.Tensor] = {}
+    typed_model_state = cast("dict[str, torch.Tensor]", model_state)
+    typed_ema_state = cast("dict[str, torch.Tensor]", ema_state)
+    for key, current_tensor in current.items():
+        source = typed_ema_state.get(key) if current_tensor.is_floating_point() else typed_model_state.get(key)
+        if source is None:
+            raise ValueError(f"model_state keys mismatch: missing=['{key}'] extra=[]")
+        result[key] = source.to(dtype=current_tensor.dtype)
+    return result
+
+
 def _checkpoint_optimizer_config_for_resume(actual: object, expected: OptimizerConfig) -> object:
     if not isinstance(actual, dict):
         return actual
     normalized = dict(actual)
     expected_dict = asdict(expected)
+    normalized.setdefault("target_games", None)
     for key in ("foreach", "fused"):
         if normalized.get(key) is None and expected_dict.get(key) is not None:
             normalized[key] = expected_dict[key]
+    for key in ("lr", "min_lr", "grad_clip_norm", "weight_decay", "beta1", "beta2", "eps"):
+        expected_value = expected_dict.get(key)
+        if (
+            key in normalized
+            and isinstance(normalized[key], float)
+            and isinstance(expected_value, float)
+            and abs(normalized[key] - expected_value) <= max(1.0e-12, abs(expected_value) * 1.0e-6)
+        ):
+            normalized[key] = expected_value
     return normalized
 
 

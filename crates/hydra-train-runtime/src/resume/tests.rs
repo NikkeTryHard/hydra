@@ -30,6 +30,8 @@ fn dummy_config() -> TrainConfig {
         bc_head_profile: crate::config::BcHeadProfile::Full,
         experimental_backbone_profile: None,
         python_raw_mjai_transport: Default::default(),
+        python_raw_mjai_target_games: None,
+        python_raw_mjai_estimated_samples_per_game: None,
         validation_gates: Default::default(),
         ema: Default::default(),
         rl: None,

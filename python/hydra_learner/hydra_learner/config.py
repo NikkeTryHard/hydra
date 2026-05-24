@@ -32,6 +32,7 @@ def json_config(args: argparse.Namespace, effective_raw_mjai_max_samples: int | 
         "lr_schedule": args.lr_schedule,
         "lr_warmup_steps": args.lr_warmup_steps,
         "schedule_total_steps": args.schedule_total_steps,
+        "schedule_target_games": args.schedule_target_games,
         "grad_clip_norm": args.grad_clip_norm,
         "weight_decay": args.weight_decay,
         "adam_beta1": args.adam_beta1,

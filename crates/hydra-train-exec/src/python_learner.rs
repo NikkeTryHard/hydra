@@ -188,6 +188,10 @@ pub fn build_python_learner_command(options: &PythonLearnerCliOptions) -> Python
         args.push("--schedule-total-steps".to_string());
         args.push(total_steps.to_string());
     }
+    if let Some(target_games) = options.schedule_target_games {
+        args.push("--schedule-target-games".to_string());
+        args.push(target_games.to_string());
+    }
     if options.full_epoch {
         args.push("--full-epoch".to_string());
     }
@@ -657,6 +661,7 @@ mod tests {
             lr_warmup_steps: 11,
             lr_schedule: "cosine".to_string(),
             schedule_total_steps: Some(99),
+            schedule_target_games: None,
             grad_clip_norm: 1.25,
             weight_decay: 2.0e-5,
             ema_enabled: true,

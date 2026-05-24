@@ -36,6 +36,8 @@ fn dummy_train_config() -> TrainConfig {
         python_conv_memory_format: Default::default(),
         experimental_backbone_profile: None,
         python_raw_mjai_transport: Default::default(),
+        python_raw_mjai_target_games: None,
+        python_raw_mjai_estimated_samples_per_game: None,
         validation_gates: Default::default(),
         ema: Default::default(),
         rl: None,

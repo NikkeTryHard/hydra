@@ -5,31 +5,33 @@ use super::{PythonLearnerCliOptions, PythonLearnerInput, TrainConfig, validation
 /// Warmup steps used by train-config-driven Python timing launches.
 pub const PYTHON_TIMING_WARMUP_STEPS: usize = 10;
 
+/// Raw-MJAI launches cannot restore checkpoints until durable stream cursor
+/// resume exists. Restoring weights/RNG while replaying corpus prefix is unsafe.
+pub const fn raw_mjai_cursor_resume_supported() -> bool {
+    false
+}
+
 /// Resolves the Python learner checkpoint for a config-owned launch.
-///
-/// Raw-MJAI launches are fail-closed for resume because streaming conversion cannot
-/// yet prove exact sample/optimizer continuity. BC-shard launches may resume from an
-/// explicit checkpoint or from `checkpoints/latest.pt` only when `resume_latest` is set.
 pub fn python_resume_checkpoint(config: &TrainConfig) -> Result<Option<PathBuf>, String> {
     let raw_mjai_input = config.bc_shards_manifest_path.is_none();
     let latest = config.output_dir.join("checkpoints/latest.pt");
 
-    if raw_mjai_input {
+    if raw_mjai_input && !raw_mjai_cursor_resume_supported() {
         if config.resume_checkpoint.is_some() {
             return Err(
-                "Python Raw-MJAI input does not support resume_checkpoint; build BC shards before resuming"
+                "Python Raw-MJAI input does not support resume_checkpoint until raw stream cursor resume exists; use a fresh output_dir or BC shards"
                     .to_string(),
             );
         }
         if config.resume_latest {
             return Err(
-                "Python Raw-MJAI input does not support resume_latest; build BC shards before resuming"
+                "Python Raw-MJAI input does not support resume_latest until raw stream cursor resume exists; use a fresh output_dir or BC shards"
                     .to_string(),
             );
         }
         if latest.is_file() {
             return Err(
-                "Python Raw-MJAI input refuses occupied checkpoints/latest.pt; use BC shards for resume or choose a fresh output_dir"
+                "Python Raw-MJAI input found occupied checkpoints/latest.pt; raw stream cursor resume is unsupported, so choose a fresh output_dir or BC shards"
                     .to_string(),
             );
         }
@@ -49,6 +51,7 @@ pub fn python_resume_checkpoint(config: &TrainConfig) -> Result<Option<PathBuf>,
 pub fn python_options_from_config(config: &TrainConfig) -> Result<PythonLearnerCliOptions, String> {
     validate_python_advanced_loss_guards(config)?;
     let advanced = config.advanced_loss.as_ref();
+    let schedule_total_steps = python_schedule_total_steps(config)?;
     Ok(PythonLearnerCliOptions {
         bc_shards_manifest: config
             .bc_shards_manifest_path
@@ -104,12 +107,21 @@ pub fn python_options_from_config(config: &TrainConfig) -> Result<PythonLearnerC
         learning_rate: config.bc.learning_rate,
         min_learning_rate: config.bc.min_learning_rate,
         lr_warmup_steps: config.bc.warmup_steps,
-        lr_schedule: if config.full_epoch && config.max_train_steps.is_none() {
+        lr_schedule: if config.full_epoch
+            && config.max_train_steps.is_none()
+            && schedule_total_steps.is_none()
+            && config.python_raw_mjai_target_games.is_none()
+        {
             "constant".to_string()
         } else {
             "cosine".to_string()
         },
-        schedule_total_steps: config.max_train_steps,
+        schedule_total_steps,
+        schedule_target_games: if config.max_train_steps.is_none() {
+            config.python_raw_mjai_target_games
+        } else {
+            None
+        },
         grad_clip_norm: f64::from(config.bc.grad_clip_norm),
         weight_decay: f64::from(config.bc.weight_decay),
         ema_enabled: config.ema.enabled,
@@ -126,6 +138,16 @@ pub fn python_options_from_config(config: &TrainConfig) -> Result<PythonLearnerC
             .unwrap_or(0.0)
             .into(),
     })
+}
+
+fn python_schedule_total_steps(config: &TrainConfig) -> Result<Option<usize>, String> {
+    if config.max_train_steps.is_some() || config.bc_shards_manifest_path.is_some() {
+        return Ok(config.max_train_steps);
+    }
+    if config.python_raw_mjai_target_games.is_some() {
+        return Ok(None);
+    }
+    Ok(None)
 }
 
 fn validate_python_advanced_loss_guards(config: &TrainConfig) -> Result<(), String> {

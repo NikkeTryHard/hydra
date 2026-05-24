@@ -522,7 +522,6 @@ pub fn initialize_training_bootstrap(
 > {
     initialize_training_bootstrap_for_backend::<TrainBackend>(config_path, config)
 }
-
 /// Initializes RL training bootstrap/runtime for the default train backend.
 pub fn initialize_rl_training_bootstrap(
     _config_path: &Path,

@@ -13,6 +13,7 @@ from hydra_learner.checkpoint import (
     OptimizerConfig,
     RuntimeConfig,
     load_checkpoint,
+    load_checkpoint_init_only,
     manifest_digest,
     restore_rng_state,
     save_checkpoint,
@@ -60,6 +61,79 @@ def test_save_load_restores_model_params_exactly(tmp_path: Path) -> None:
     assert state.samples_seen == 14
     for key, value in model.state_dict().items():
         torch.testing.assert_close(loaded_model.state_dict()[key], value, rtol=0.0, atol=0.0)
+
+
+def test_load_checkpoint_accepts_legacy_optimizer_config_without_target_games(tmp_path: Path) -> None:
+    model, optimizer = _model_optimizer()
+    ckpt = tmp_path / "ckpt.pt"
+    manifest = _write_manifest(tmp_path, b"manifest-a")
+    save_checkpoint(
+        ckpt,
+        model=model,
+        optimizer=optimizer,
+        model_config=_model_config(),
+        optimizer_config=_optimizer_config(),
+        runtime_config=_runtime_config(),
+        loss_weights=LossWeights(),
+        manifest_path=manifest,
+        global_step=7,
+        samples_seen=14,
+    )
+    payload = torch.load(ckpt, map_location="cpu", weights_only=True)
+    assert isinstance(payload, dict)
+    optimizer_config = payload["optimizer_config"]
+    assert isinstance(optimizer_config, dict)
+    optimizer_config.pop("target_games")
+    torch.save(payload, ckpt)
+
+    loaded_model, loaded_optimizer = _model_optimizer()
+    state = load_checkpoint(
+        ckpt,
+        model=loaded_model,
+        optimizer=loaded_optimizer,
+        expected_model_config=_model_config(),
+        expected_optimizer_config=_optimizer_config(),
+        expected_runtime_config=_runtime_config(),
+        expected_loss_weights=LossWeights(),
+        expected_manifest_path=manifest,
+    )
+
+    assert state.global_step == 7
+
+
+def test_load_checkpoint_returns_raw_mjai_progress(tmp_path: Path) -> None:
+    model, optimizer = _model_optimizer()
+    ckpt = tmp_path / "ckpt.pt"
+    manifest = _write_manifest(tmp_path, b"manifest-a")
+    progress = {"loaded_games": 12, "skipped_games": 3, "samples": 128, "batches": 32}
+    save_checkpoint(
+        ckpt,
+        model=model,
+        optimizer=optimizer,
+        model_config=_model_config(),
+        optimizer_config=_optimizer_config(),
+        runtime_config=_runtime_config(),
+        loss_weights=LossWeights(),
+        manifest_path=manifest,
+        global_step=7,
+        samples_seen=14,
+        raw_mjai_progress=progress,
+    )
+    loaded_model, loaded_optimizer = _model_optimizer()
+    state = load_checkpoint(
+        ckpt,
+        model=loaded_model,
+        optimizer=loaded_optimizer,
+        expected_model_config=_model_config(),
+        expected_optimizer_config=_optimizer_config(),
+        expected_runtime_config=_runtime_config(),
+        expected_loss_weights=LossWeights(),
+        expected_manifest_path=manifest,
+    )
+
+    assert state.global_step == 7
+    assert state.samples_seen == 14
+    assert state.raw_mjai_progress == progress
 
 
 def test_save_load_restores_ema_state_exactly(tmp_path: Path) -> None:
@@ -572,6 +646,120 @@ def test_checkpoint_contains_state_dict_not_compiled_object(tmp_path: Path) -> N
     assert "compile" in checkpoint
     assert "compiled" not in checkpoint
     assert all(isinstance(value, torch.Tensor) for value in checkpoint["model_state"].values())
+
+
+def test_init_only_loader_loads_model_without_optimizer_or_rng(tmp_path: Path) -> None:
+    random.seed(11)
+    np.random.seed(12)
+    torch.manual_seed(13)
+    model, optimizer = _model_optimizer()
+    _tiny_step(model, optimizer, torch.randn(2, 192, 34))
+    ckpt = tmp_path / "ckpt.pt"
+    manifest = _write_manifest(tmp_path, b"manifest-a")
+    save_checkpoint(
+        ckpt,
+        model=model,
+        optimizer=optimizer,
+        model_config=_model_config(),
+        optimizer_config=_optimizer_config(),
+        runtime_config=_runtime_config(),
+        loss_weights=LossWeights(),
+        manifest_path=manifest,
+        global_step=7,
+        samples_seen=14,
+    )
+    loaded_model, loaded_optimizer = _model_optimizer()
+    before_optimizer = loaded_optimizer.state_dict()
+    random.seed(21)
+    np.random.seed(22)
+    torch.manual_seed(23)
+    expected_random = (random.random(), np.random.rand(2), torch.randn(2))
+    random.seed(21)
+    np.random.seed(22)
+    torch.manual_seed(23)
+
+    state = load_checkpoint_init_only(
+        ckpt,
+        model=loaded_model,
+        expected_model_config=_model_config(),
+    )
+    actual_random = (random.random(), np.random.rand(2), torch.randn(2))
+
+    assert state.global_step == 7
+    assert state.samples_seen == 14
+    assert state.weight_source == "raw"
+    assert loaded_optimizer.state_dict() == before_optimizer
+    assert actual_random[0] == expected_random[0]
+    np.testing.assert_array_equal(actual_random[1], expected_random[1])
+    torch.testing.assert_close(actual_random[2], expected_random[2], rtol=0.0, atol=0.0)
+    for key, value in model.state_dict().items():
+        torch.testing.assert_close(loaded_model.state_dict()[key], value, rtol=0.0, atol=0.0)
+
+
+def test_init_only_loader_can_choose_ema_weights(tmp_path: Path) -> None:
+    model, optimizer = _model_optimizer()
+    ckpt = tmp_path / "ckpt.pt"
+    manifest = _write_manifest(tmp_path, b"manifest-a")
+    ema_config = EmaConfig(enabled=True, decay=0.9, start_step=0, update_every_steps=1, device="cpu")
+    ema_state = {
+        key: tensor.detach().to(dtype=torch.float32).add(1.0)
+        for key, tensor in model.state_dict().items()
+        if tensor.is_floating_point()
+    }
+    save_checkpoint(
+        ckpt,
+        model=model,
+        optimizer=optimizer,
+        model_config=_model_config(),
+        optimizer_config=_optimizer_config(),
+        runtime_config=_runtime_config(),
+        loss_weights=LossWeights(),
+        manifest_path=manifest,
+        global_step=1,
+        samples_seen=2,
+        ema_config=ema_config,
+        ema_state=ema_state,
+    )
+    loaded_model, _ = _model_optimizer()
+
+    state = load_checkpoint_init_only(
+        ckpt,
+        model=loaded_model,
+        expected_model_config=_model_config(),
+        weight_source="ema",
+    )
+
+    assert state.weight_source == "ema"
+    for key, value in loaded_model.state_dict().items():
+        if value.is_floating_point():
+            torch.testing.assert_close(value, ema_state[key].to(dtype=value.dtype), rtol=0.0, atol=0.0)
+        else:
+            torch.testing.assert_close(value, model.state_dict()[key], rtol=0.0, atol=0.0)
+
+
+def test_init_only_loader_rejects_model_config_mismatch(tmp_path: Path) -> None:
+    model, optimizer = _model_optimizer()
+    ckpt = tmp_path / "ckpt.pt"
+    manifest = _write_manifest(tmp_path, b"manifest-a")
+    save_checkpoint(
+        ckpt,
+        model=model,
+        optimizer=optimizer,
+        model_config=_model_config(),
+        optimizer_config=_optimizer_config(),
+        runtime_config=_runtime_config(),
+        loss_weights=LossWeights(),
+        manifest_path=manifest,
+        global_step=0,
+        samples_seen=0,
+    )
+
+    with pytest.raises(ValueError, match="model_config"):
+        load_checkpoint_init_only(
+            ckpt,
+            model=model,
+            expected_model_config=ModelConfig(hidden=9, blocks=1, bottleneck=4),
+        )
 
 
 def _model_optimizer() -> tuple[HydraPolicyNet, torch.optim.Optimizer]:

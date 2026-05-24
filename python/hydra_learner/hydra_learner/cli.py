@@ -77,6 +77,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr-warmup-steps", type=int, default=1000)
     parser.add_argument("--lr-schedule", choices=LR_SCHEDULES, default="cosine")
     parser.add_argument("--schedule-total-steps", type=int)
+    parser.add_argument("--schedule-target-games", type=int)
     parser.add_argument("--grad-clip-norm", type=float)
     parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("--adam-beta1", type=float, default=0.9)
@@ -132,6 +133,8 @@ def validate_args(args: argparse.Namespace) -> None:
             raise ValueError(f"--{name.replace('_', '-')} must be >= 0")
     if args.schedule_total_steps is not None and args.schedule_total_steps < 1:
         raise ValueError("--schedule-total-steps must be >= 1")
+    if args.schedule_target_games is not None and args.schedule_target_games < 1:
+        raise ValueError("--schedule-target-games must be >= 1")
     if args.lr <= 0.0:
         raise ValueError("--lr must be > 0")
     if args.min_lr < 0.0:
@@ -147,10 +150,13 @@ def validate_args(args: argparse.Namespace) -> None:
     if (
         args.lr_schedule == "cosine"
         and args.schedule_total_steps is None
+        and args.schedule_target_games is None
         and args.steps is None
         and args.manifest is None
     ):
-        raise ValueError("--lr-schedule cosine requires --schedule-total-steps, --steps, or --manifest")
+        raise ValueError(
+            "--lr-schedule cosine requires --schedule-total-steps, --schedule-target-games, --steps, or --manifest"
+        )
     if args.checkpoint_out is not None and args.checkpoint_dir is not None:
         raise ValueError("--checkpoint-out and --checkpoint-dir cannot be combined")
     if args.keep_step_checkpoints and args.checkpoint_dir is None:

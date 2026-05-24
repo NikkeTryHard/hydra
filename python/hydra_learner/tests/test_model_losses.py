@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from hydra_learner.batches import targets_for_compiled_loss, targets_from_policy_batch
 from hydra_learner.losses import (
     BaseTargets,
+    LossBreakdown,
     LossWeights,
     active_loss_heads,
     base_loss,
@@ -42,7 +43,7 @@ from hydra_learner.model import (
 )
 from hydra_learner.optim import LrScheduler, LrSchedulerConfig
 from hydra_learner.shard_reader import BcShardReader
-from hydra_learner.step import HydraCompiledLossStep, loss_step_args, run_step
+from hydra_learner.step import HydraCompiledLossStep, loss_step_args, policy_diagnostics_from_logits, run_step
 
 
 def test_model_outputs_base_head_shapes_and_finite() -> None:
@@ -71,6 +72,30 @@ def test_model_outputs_base_head_shapes_and_finite() -> None:
         out.danger,
     ):
         assert bool(torch.isfinite(tensor).all())
+
+
+def test_recommended_large_conv_profile_instantiates_and_keeps_output_contract() -> None:
+    model = HydraPolicyNet(hidden=384, blocks=12, bottleneck=96)
+    params = sum(parameter.numel() for parameter in model.parameters())
+
+    assert 11_000_000 <= params <= 12_000_000
+    with torch.no_grad():
+        out = model(torch.randn(1, 192, 34))
+    assert out.policy_logits.shape == (1, ACTION_SPACE)
+    assert out.opp_next_discard.shape == (1, OPPONENTS, TILE_WIDTH)
+    assert out.danger.shape == (1, OPPONENTS, TILE_WIDTH)
+    assert bool(torch.isfinite(out.policy_logits).all())
+
+
+@pytest.mark.parametrize(
+    ("hidden", "blocks", "bottleneck"),
+    [(384, 12, 96), (512, 16, 128)],
+)
+def test_large_conv_profiles_are_constructible(hidden: int, blocks: int, bottleneck: int) -> None:
+    model = HydraPolicyNet(hidden=hidden, blocks=blocks, bottleneck=bottleneck)
+
+    assert len(model.backbone.blocks) == blocks
+    assert model.base_heads.in_features == hidden
 
 
 @pytest.mark.parametrize("backbone_profile", [BACKBONE_PROFILE_CONVNEXT_TILE_K7, BACKBONE_PROFILE_GLOBAL_POOL_BIAS])
@@ -470,7 +495,7 @@ def test_run_step_rejects_nonfinite_first_microbatch_before_optimizer_step(monke
 
 def test_lr_scheduler_cosine_warmup_and_floor() -> None:
     scheduler = LrScheduler(
-        LrSchedulerConfig(base_lr=1.0, min_lr=0.1, warmup_steps=2, total_steps=6, schedule="cosine")
+        LrSchedulerConfig(base_lr=1.0, min_lr=0.1, warmup_steps=2, total_steps=6, target_games=None, schedule="cosine")
     )
 
     assert scheduler.lr_for_step(0) == 0.0
@@ -480,11 +505,24 @@ def test_lr_scheduler_cosine_warmup_and_floor() -> None:
 
 def test_lr_scheduler_constant_stays_base_lr() -> None:
     scheduler = LrScheduler(
-        LrSchedulerConfig(base_lr=0.25, min_lr=0.01, warmup_steps=3, total_steps=8, schedule="constant")
+        LrSchedulerConfig(
+            base_lr=0.25, min_lr=0.01, warmup_steps=3, total_steps=8, target_games=None, schedule="constant"
+        )
     )
 
     assert scheduler.lr_for_step(0) == 0.25
     assert scheduler.lr_for_step(8) == 0.25
+
+
+def test_lr_scheduler_target_games_keeps_step_based_warmup() -> None:
+    scheduler = LrScheduler(
+        LrSchedulerConfig(base_lr=1.0, min_lr=0.1, warmup_steps=2, total_steps=None, target_games=6, schedule="cosine")
+    )
+
+    assert scheduler.lr_for_step(0, completed_games=6) == 0.0
+    assert scheduler.lr_for_step(1, completed_games=6) == 0.5
+    assert scheduler.lr_for_step(2, completed_games=0) == 1.0
+    assert scheduler.lr_for_step(2, completed_games=6) == pytest.approx(0.1)
 
 
 def test_run_step_clips_gradients_and_reports_norm(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -515,13 +553,110 @@ def test_run_step_clips_gradients_and_reports_norm(monkeypatch: pytest.MonkeyPat
         False,
         False,
         grad_clip_norm=0.5,
-        collect_diagnostics=True,
+        collect_diagnostics=False,
     )
 
     assert stat.grad_norm > 0.5
-    assert "policy" in stat.head_losses
-    assert stat.target_coverage["policy"]["status"] == "present_positive"
     torch.testing.assert_close(loss.param.detach(), torch.tensor(9.5))
+
+
+def test_run_step_collects_policy_diagnostics_without_extra_forward(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _StaticModel(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.param = torch.nn.Parameter(torch.tensor(1.0))
+            self.calls = 0
+
+        @override
+        def forward(self, obs: torch.Tensor) -> HydraBaseOutput:
+            self.calls += 1
+            batch = obs.shape[0]
+            logits = obs.new_full((batch, ACTION_SPACE), -8.0)
+            logits[0, 0] = 4.0
+            logits[0, 1] = 1.0
+            logits[1, 1] = 3.0
+            logits[1, 0] = 2.0
+            logits = logits * self.param
+            grp = obs.new_zeros((batch, GRP_CLASSES))
+            grp[:, 0] = 1.0
+            score_pdf = obs.new_zeros((batch, SCORE_BINS))
+            score_pdf[:, 0] = 1.0
+            opp_next = obs.new_zeros((batch, OPPONENTS, TILE_WIDTH))
+            opp_next[:, :, 0] = 1.0
+            return HydraBaseOutput(
+                policy_logits=logits,
+                value=obs.new_zeros((batch, 1)),
+                score_pdf=score_pdf,
+                score_cdf=obs.new_zeros((batch, SCORE_BINS)),
+                opp_tenpai=obs.new_zeros((batch, OPPONENTS)),
+                grp=grp,
+                oracle_critic=obs.new_zeros((batch, 4)),
+                safety_residual=obs.new_zeros((batch, ACTION_SPACE)),
+                opp_next_discard=opp_next,
+                danger=obs.new_zeros((batch, OPPONENTS, TILE_WIDTH)),
+            )
+
+    class _StaticLossStep(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.last_outputs: object = None
+            self.last_breakdown: LossBreakdown | None = None
+            self.inner = _StaticModel()
+
+        # pyrefly: ignore[missing-override-decorator] - Test loss shim changes nn.Module.forward shape.
+        def forward(self, obs: torch.Tensor, *_args: torch.Tensor) -> object:
+            outputs = self.inner(obs)
+            self.last_outputs = outputs
+            loss = masked_policy_ce_indices(outputs.policy_logits, targets.policy_target, targets.legal_mask).mean()
+            self.last_breakdown = LossBreakdown(
+                total=loss,
+                policy=loss,
+                value=loss * 0.0,
+                grp=loss * 0.0,
+                tenpai=loss * 0.0,
+                danger=loss * 0.0,
+                opp_next=loss * 0.0,
+                score_pdf=loss * 0.0,
+                score_cdf=loss * 0.0,
+                oracle_critic=loss * 0.0,
+                safety_residual=loss * 0.0,
+            )
+            return loss
+
+    monkeypatch.setattr(torch.cuda, "Event", _cuda_event_factory)
+    loss_step = _StaticLossStep()
+    model = loss_step.inner
+    optimizer = torch.optim.SGD(loss_step.parameters(), lr=0.0)
+    targets = targets_for_compiled_loss(_cpu_action_targets(), LossWeights())
+    obs = torch.zeros(2, 192, 34)
+
+    stat = run_step(
+        loss_step,
+        model,
+        optimizer,
+        obs,
+        targets,
+        LossWeights(),
+        "full_base",
+        2,
+        False,
+        False,
+        collect_diagnostics=True,
+    )
+    calls_after_step = model.calls
+    expected = policy_diagnostics_from_logits(_StaticModel()(obs).policy_logits, targets)
+    calls_after_expected = model.calls
+
+    assert calls_after_step == 1
+    assert calls_after_expected == 1
+    assert stat.policy_nll == pytest.approx(float(expected["policy_nll"].detach()))
+    assert stat.policy_accuracy == pytest.approx(float(expected["policy_accuracy"].detach()))
+    assert stat.policy_top3_accuracy == pytest.approx(float(expected["policy_top3_accuracy"].detach()))
+    assert stat.policy_top5_accuracy == pytest.approx(float(expected["policy_top5_accuracy"].detach()))
+    assert stat.policy_confidence == pytest.approx(float(expected["policy_confidence"].detach()))
+    assert stat.policy_entropy == pytest.approx(float(expected["policy_entropy"].detach()))
+    assert stat.policy_target_prob == pytest.approx(float(expected["policy_target_prob"].detach()))
+    assert stat.policy_margin == pytest.approx(float(expected["policy_margin"].detach()))
 
 
 def _tiny_outputs(
