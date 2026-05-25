@@ -3415,6 +3415,13 @@ dependencies = [
  "hydra-core",
  "hydra-train-types",
  "libloading 0.8.9",
+ "ndarray 0.17.2",
+ "ort",
+ "safetensors 0.6.2",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -3423,9 +3430,11 @@ version = "0.1.0"
 dependencies = [
  "hydra-core",
  "hydra-engine",
+ "hydra-model",
  "hydra-train-exec",
  "pyo3",
  "rand 0.9.4",
+ "rayon",
 ]
 
 [[package]]
@@ -4878,6 +4887,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "ort"
+version = "2.0.0-rc.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7de3af33d24a745ffb8fab904b13478438d1cd52868e6f17735ef6e1f8bf133"
+dependencies = [
+ "libloading 0.9.0",
+ "ndarray 0.17.2",
+ "ort-sys",
+ "smallvec",
+ "tracing",
+]
+
+[[package]]
+name = "ort-sys"
+version = "2.0.0-rc.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7b497d21a8b6fbb4b5a544f8fadb77e801a09ae0add9e411d31c6f89e3c1e90"
+
+[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6179,6 +6207,16 @@ name = "safetensors"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d93279b86b3de76f820a8854dd06cbc33cfa57a417b19c47f6a25280112fb1df"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "safetensors"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "172dd94c5a87b5c79f945c863da53b2ebc7ccef4eca24ac63cca66a41aab2178"
 dependencies = [
  "serde",
  "serde_json",

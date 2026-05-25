@@ -340,7 +340,8 @@ Minimal RL add:
 
 ```yaml
 rl:
-  games_per_batch: 4
+  games_per_batch: 1024
+  decisions_per_game: 1024
   temperature: 1.0
   phase: drda_ach_self_play
 ```
@@ -349,7 +350,7 @@ Current RL phase enum:
 - `drda_ach_self_play`
 - `exit_pondering`
 
-Status: plain BC shard path defaults to Python/PyTorch through Rust launcher. Rust owns replay parsing, shard building, manifest validation, launcher glue, and CLI/config conversion via `hydra-train-runtime::config::python`. Python owner is `hydra_learner.cli`; train loop/modules live under `hydra_learner`; `train_bc.py` is compatibility entrypoint only. Python owns BC model/loss/optimizer/BF16/`torch.compile`/checkpoint. ExIt/DeltaQ/belief/mixture/opponent-hand-type are not supported by Python default yet; use `bc_backend: rust_burn` only for feature-gated legacy/debug or those advanced modes.
+Status: plain BC shard/raw-MJAI path defaults to Python/PyTorch through Rust launcher. Python owns training, model/loss/optimizer/BF16/`torch.compile`/checkpoint, and ONNX export. Rust owns replay parsing, shard building, manifest validation, launcher glue, CLI/config conversion via `hydra-train-runtime::config::python`, native ONNX arena, and RL inference. Arena defaults: ONNX Runtime CUDA/native path, `--games 1024`, `--arena-batch-decisions 1024`. Arena inputs may be ONNX export dirs containing `policy.onnx`, `policy.json`, and `parity_fixture.safetensors`, or `.pt` checkpoints that export to ONNX before native run. Legacy Python checkpoint inference requires explicit `--python-checkpoints`. ExIt/DeltaQ/belief/mixture/opponent-hand-type are not supported by Python default yet; use `bc_backend: rust_burn` only for feature-gated legacy/debug or those advanced modes.
 
 ## Preflight benchmark + YAML authority
 
@@ -748,6 +749,7 @@ Status:
 - BF16/autocast rejected in promotion mode.
 - Baseline checkpoint mandatory.
 - Artifact persists `arena_decision` and `arena_report` when arena runs.
+- Native arena is ONNX CUDA by default. Baseline/candidate paths may be ONNX export dirs or `.pt` checkpoints auto-exported to ONNX before paired eval; use `--python-checkpoints` only for legacy Python checkpoint inference.
 
 Invoke:
 

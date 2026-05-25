@@ -62,6 +62,16 @@ pub struct DecisionRecord {
     pub turn: u32,
 }
 
+#[derive(Debug, Clone)]
+pub struct PendingDecision {
+    pub obs: [f32; OBS_SIZE],
+    pub legal_mask: [bool; HYDRA_ACTION_SPACE],
+    pub legal_count: u8,
+    pub player_id: u8,
+    pub seat_id: u8,
+    pub turn: u32,
+}
+
 trait DecisionRecorder {
     fn record(&mut self, record: DecisionRecord);
 }
@@ -327,6 +337,135 @@ impl GameRunner {
             seat_id: player,
             turn: self.total_actions,
         });
+    }
+    pub fn pending_decisions(&mut self) -> Result<Vec<PendingDecision>, StepOutcome> {
+        if self.state.is_done {
+            return Err(StepOutcome::Complete);
+        }
+        if self.total_actions >= MAX_STEPS {
+            return Err(StepOutcome::StepLimitExceeded);
+        }
+        if self.state.needs_initialize_next_round {
+            self.state.step_unchecked(&[None; 4]);
+            self.rounds_played += 1;
+            for s in &mut self.safety {
+                s.reset();
+            }
+            return Err(if self.state.is_done {
+                StepOutcome::Complete
+            } else {
+                StepOutcome::Advanced
+            });
+        }
+
+        let mut decisions = Vec::with_capacity(4);
+        match self.state.phase {
+            Phase::WaitAct => {
+                let pid = self.state.current_player;
+                self.legal_buf.clear();
+                self.state.get_legal_actions_into(pid, &mut self.legal_buf);
+                if self.legal_buf.is_empty() {
+                    return Err(StepOutcome::NoLegalAction { player: pid });
+                }
+                decisions.push(self.pending_decision_for_player(pid));
+            }
+            Phase::WaitResponse => {
+                let n = self.state.active_player_count as usize;
+                let mut pids = [0u8; 4];
+                pids[..n].copy_from_slice(self.state.active_player_slice());
+                for &pid in &pids[..n] {
+                    self.legal_buf.clear();
+                    self.state.get_legal_actions_into(pid, &mut self.legal_buf);
+                    if self.legal_buf.is_empty() {
+                        continue;
+                    }
+                    decisions.push(self.pending_decision_for_player(pid));
+                }
+            }
+        }
+        Ok(decisions)
+    }
+
+    pub fn step_with_hydra_action_ids(&mut self, action_ids: &[u8]) -> StepOutcome {
+        if self.state.is_done {
+            return StepOutcome::Complete;
+        }
+        if self.total_actions >= MAX_STEPS {
+            return StepOutcome::StepLimitExceeded;
+        }
+        self.actions = [None; 4];
+        let mut cursor = 0usize;
+        match self.state.phase {
+            Phase::WaitAct => {
+                let pid = self.state.current_player;
+                self.legal_buf.clear();
+                self.state.get_legal_actions_into(pid, &mut self.legal_buf);
+                if self.legal_buf.is_empty() {
+                    return StepOutcome::NoLegalAction { player: pid };
+                }
+                let Some(&action_id) = action_ids.get(cursor) else {
+                    return StepOutcome::NoLegalAction { player: pid };
+                };
+                let Some(chosen) = self.action_for_hydra_id(action_id) else {
+                    return StepOutcome::NoLegalAction { player: pid };
+                };
+                self.track_action(pid, &chosen);
+                self.actions[pid as usize] = Some(chosen);
+            }
+            Phase::WaitResponse => {
+                let n = self.state.active_player_count as usize;
+                let mut pids = [0u8; 4];
+                pids[..n].copy_from_slice(self.state.active_player_slice());
+                for &pid in &pids[..n] {
+                    self.legal_buf.clear();
+                    self.state.get_legal_actions_into(pid, &mut self.legal_buf);
+                    if self.legal_buf.is_empty() {
+                        continue;
+                    }
+                    let Some(&action_id) = action_ids.get(cursor) else {
+                        return StepOutcome::NoLegalAction { player: pid };
+                    };
+                    cursor += 1;
+                    let Some(chosen) = self.action_for_hydra_id(action_id) else {
+                        return StepOutcome::NoLegalAction { player: pid };
+                    };
+                    self.track_action(pid, &chosen);
+                    self.actions[pid as usize] = Some(chosen);
+                }
+            }
+        }
+        self.state.step_unchecked(&self.actions);
+        self.total_actions += 1;
+        if self.state.is_done {
+            StepOutcome::Complete
+        } else {
+            StepOutcome::Advanced
+        }
+    }
+
+    fn pending_decision_for_player(&mut self, player: u8) -> PendingDecision {
+        let (obs, legal_mask) = self.encode_decision(player);
+        let legal_count = legal_mask
+            .iter()
+            .filter(|&&legal| legal)
+            .count()
+            .min(u8::MAX as usize) as u8;
+        PendingDecision {
+            obs,
+            legal_mask,
+            legal_count,
+            player_id: player,
+            seat_id: player,
+            turn: self.total_actions,
+        }
+    }
+
+    fn action_for_hydra_id(&self, action_id: u8) -> Option<Action> {
+        self.legal_buf.iter().copied().find(|action| {
+            riichienv_to_hydra(action)
+                .map(|hydra| hydra.id() == action_id)
+                .unwrap_or(false)
+        })
     }
 }
 

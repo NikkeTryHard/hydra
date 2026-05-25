@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, cast
 
 import torch
 
+from hydra_learner.ach_step import AchTrainStepConfig, ach_train_step
 from hydra_learner.checkpoint import ModelConfig, OptimizerConfig, RuntimeConfig, save_checkpoint
 from hydra_learner.ppo_step import PpoBatch, PpoTrainStepConfig, _validate_json_safe_metrics, ppo_train_step
 from hydra_learner.rl import DEFAULT_GAE_GAMMA, DEFAULT_GAE_LAMBDA, EntropyController
@@ -143,6 +144,34 @@ def train_step_from_rollout_artifact(
 ) -> PpoArtifactTrainStepResult:
     artifact = load_ppo_rollout_artifact(artifact_path)
     result = ppo_train_step(
+        model=model,
+        optimizer=optimizer,
+        batch=artifact_to_ppo_batch(artifact),
+        entropy_controller=entropy_controller,
+        config=config,
+    )
+    metadata = _artifact_metadata_dict(artifact)
+    metrics: dict[str, object] = dict(result.metrics)
+    metrics["rollout_schema_version"] = artifact.schema_version
+    metrics["rollout_contract_version"] = artifact.contract_version
+    _validate_json_safe_metrics(metrics)
+    return PpoArtifactTrainStepResult(
+        metrics=metrics,
+        entropy_controller=result.entropy_controller,
+        artifact_metadata=metadata,
+    )
+
+
+def train_ach_step_from_rollout_artifact(
+    *,
+    artifact_path: Path,
+    model: HydraPolicyNet,
+    optimizer: torch.optim.Optimizer,
+    entropy_controller: EntropyController,
+    config: AchTrainStepConfig,
+) -> PpoArtifactTrainStepResult:
+    artifact = load_ppo_rollout_artifact(artifact_path)
+    result = ach_train_step(
         model=model,
         optimizer=optimizer,
         batch=artifact_to_ppo_batch(artifact),

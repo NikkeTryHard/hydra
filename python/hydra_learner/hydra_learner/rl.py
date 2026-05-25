@@ -89,6 +89,86 @@ class PpoLossOutput:
     metrics: PpoLossMetrics
 
 
+@dataclass(frozen=True)
+class AchLossConfig:
+    eta: float = 1.0
+    eps: float = 0.5
+    l_th: float = 8.0
+    pi_old_min: float = 1.0e-8
+    advantage_epsilon: float = 1.0e-8
+    value_coef: float = 0.5
+    entropy_alpha: float = 0.0
+    bc_kl_reverse_coef: float = 0.0
+
+
+@dataclass(frozen=True)
+class AchLossMetrics:
+    policy_loss: torch.Tensor
+    value_loss: torch.Tensor
+    entropy: torch.Tensor
+    ratio_mean: torch.Tensor
+    ratio_min: torch.Tensor
+    ratio_max: torch.Tensor
+    ratio_clipped_fraction: torch.Tensor
+    gate_fraction: torch.Tensor
+    pos_gate_fraction: torch.Tensor
+    neg_gate_fraction: torch.Tensor
+    pi_old_clamp_fraction: torch.Tensor
+    pi_old_min: torch.Tensor
+    pi_old_raw_min: torch.Tensor
+    approx_kl_old: torch.Tensor
+    bc_kl_reverse: torch.Tensor
+    advantage_raw_mean: torch.Tensor
+    advantage_raw_std: torch.Tensor
+    advantage_raw_rms: torch.Tensor
+    advantage_scaled_mean: torch.Tensor
+    advantage_scaled_std: torch.Tensor
+    advantage_scaled_rms: torch.Tensor
+    advantage_positive_count: torch.Tensor
+    advantage_negative_count: torch.Tensor
+    advantage_zero_count: torch.Tensor
+    illegal_probability_max: torch.Tensor
+
+
+@dataclass(frozen=True)
+class AchLossOutput:
+    total: torch.Tensor
+    metrics: AchLossMetrics
+    entropy_per_row: torch.Tensor
+    gate_per_row: torch.Tensor
+    ratio_clipped_per_row: torch.Tensor
+    bc_kl_per_row: torch.Tensor
+
+    def metric_dict(self) -> dict[str, float | int]:
+        return {
+            "loss_policy": float(self.metrics.policy_loss),
+            "loss_value": float(self.metrics.value_loss),
+            "entropy": float(self.metrics.entropy),
+            "ratio_mean": float(self.metrics.ratio_mean),
+            "ratio_min": float(self.metrics.ratio_min),
+            "ratio_max": float(self.metrics.ratio_max),
+            "ratio_clipped_fraction": float(self.metrics.ratio_clipped_fraction),
+            "ach_gate_fraction": float(self.metrics.gate_fraction),
+            "ach_pos_gate_fraction": float(self.metrics.pos_gate_fraction),
+            "ach_neg_gate_fraction": float(self.metrics.neg_gate_fraction),
+            "pi_old_clamp_fraction": float(self.metrics.pi_old_clamp_fraction),
+            "pi_old_min": float(self.metrics.pi_old_min),
+            "pi_old_raw_min": float(self.metrics.pi_old_raw_min),
+            "approx_kl_old": float(self.metrics.approx_kl_old),
+            "bc_kl_reverse": float(self.metrics.bc_kl_reverse),
+            "advantage_raw_mean": float(self.metrics.advantage_raw_mean),
+            "advantage_raw_std": float(self.metrics.advantage_raw_std),
+            "advantage_raw_rms": float(self.metrics.advantage_raw_rms),
+            "advantage_scaled_mean": float(self.metrics.advantage_scaled_mean),
+            "advantage_scaled_std": float(self.metrics.advantage_scaled_std),
+            "advantage_scaled_rms": float(self.metrics.advantage_scaled_rms),
+            "advantage_positive_count": int(self.metrics.advantage_positive_count),
+            "advantage_negative_count": int(self.metrics.advantage_negative_count),
+            "advantage_zero_count": int(self.metrics.advantage_zero_count),
+            "illegal_probability_max": float(self.metrics.illegal_probability_max),
+        }
+
+
 def _require_finite(tensor: torch.Tensor, name: str) -> None:
     if not bool(torch.isfinite(tensor).all()):
         raise ValueError(f"{name} must be finite")
@@ -391,6 +471,141 @@ def ppo_loss(
             advantage_normalized_std=norm_std.detach(),
         ),
     )
+
+
+def ach_loss(
+    policy_logits: torch.Tensor,
+    values: torch.Tensor,
+    actions: torch.Tensor,
+    legal_mask: torch.Tensor,
+    old_logprob: torch.Tensor,
+    raw_advantages: torch.Tensor,
+    returns: torch.Tensor,
+    *,
+    bc_logits: torch.Tensor | None = None,
+    config: AchLossConfig | None = None,
+) -> AchLossOutput:
+    if config is None:
+        config = AchLossConfig()
+    if config.eta < 0.0 or not torch.isfinite(torch.tensor(config.eta)):
+        raise ValueError("eta must be finite and >= 0")
+    if config.eps <= 0.0 or not torch.isfinite(torch.tensor(config.eps)):
+        raise ValueError("eps must be finite and > 0")
+    if config.l_th <= 0.0 or not torch.isfinite(torch.tensor(config.l_th)):
+        raise ValueError("l_th must be finite and > 0")
+    if config.pi_old_min <= 0.0 or not torch.isfinite(torch.tensor(config.pi_old_min)):
+        raise ValueError("pi_old_min must be finite and > 0")
+    _require_finite(policy_logits, "policy_logits")
+    _require_finite(values, "values")
+    _require_finite(old_logprob, "old_logprob")
+    _require_finite(raw_advantages, "raw_advantages")
+    _require_finite(returns, "returns")
+    if bc_logits is not None:
+        _require_finite(bc_logits, "bc_logits")
+    mask = _require_action_logits(policy_logits, legal_mask)
+    action_ids = _require_actions(actions, mask)
+    flat_values = values.reshape(-1)
+    for name, tensor in (
+        ("old_logprob", old_logprob),
+        ("raw_advantages", raw_advantages),
+        ("returns", returns),
+        ("values", flat_values),
+    ):
+        if tensor.shape != action_ids.shape:
+            raise ValueError(f"{name} must have shape [batch]")
+
+    legal = mask.to(dtype=policy_logits.dtype)
+    legal_count = legal.sum(dim=1)
+    legal_mean = (policy_logits * legal).sum(dim=1, keepdim=True) / legal_count.unsqueeze(1)
+    centered = policy_logits - legal_mean
+    clamped = centered.clamp(-config.l_th, config.l_th)
+    log_probs = masked_log_softmax(clamped, mask)
+    probs = log_probs.exp().masked_fill(~mask, 0.0)
+    selected = action_ids.unsqueeze(1)
+    selected_logprob = log_probs.gather(1, selected).squeeze(1)
+    y_a = clamped.gather(1, selected).squeeze(1)
+    pi_a = probs.gather(1, selected).squeeze(1)
+    old_prob_raw = old_logprob.exp()
+    pi_old = old_prob_raw.clamp_min(config.pi_old_min)
+    ratio = pi_a / pi_old
+    _require_finite(ratio, "ratio")
+
+    advantage_rms = torch.sqrt((raw_advantages * raw_advantages).mean() + config.advantage_epsilon)
+    scaled_advantages = raw_advantages / advantage_rms
+    _require_finite(scaled_advantages, "scaled_advantages")
+    pos = scaled_advantages > 0.0
+    neg = scaled_advantages < 0.0
+    gate_pos = pos & (ratio < 1.0 + config.eps) & (y_a < config.l_th)
+    gate_neg = neg & (ratio > 1.0 - config.eps) & (y_a > -config.l_th)
+    gate_bool = gate_pos | gate_neg
+    gate = gate_bool.to(dtype=policy_logits.dtype)
+    policy_loss = -(gate * config.eta * y_a * scaled_advantages.detach() / pi_old).mean()
+    value_loss = value_mse(flat_values, returns).mean()
+    entropy_per_row = -(probs * log_probs.masked_fill(~mask, 0.0)).sum(dim=1)
+    entropy = entropy_per_row.mean()
+    if bc_logits is None:
+        bc_kl_per_row = torch.zeros_like(entropy_per_row)
+    else:
+        bc_kl_per_row = masked_kl(policy_logits, bc_logits, mask, direction="current_to_reference")
+    bc_kl_reverse = bc_kl_per_row.mean()
+    total = (
+        policy_loss
+        + config.value_coef * value_loss
+        + config.bc_kl_reverse_coef * bc_kl_reverse
+        - config.entropy_alpha * entropy
+    )
+    illegal_probs = probs.masked_select(~mask)
+    illegal_probability_max = (
+        illegal_probs.max()
+        if illegal_probs.numel() > 0
+        else torch.zeros((), dtype=policy_logits.dtype, device=policy_logits.device)
+    )
+    raw_mean = raw_advantages.mean()
+    scaled_mean = scaled_advantages.mean()
+    ratio_clipped = (ratio <= 1.0 - config.eps) | (ratio >= 1.0 + config.eps)
+    pos_count = pos.sum()
+    neg_count = neg.sum()
+    zero_count = (scaled_advantages == 0.0).sum()
+    return AchLossOutput(
+        total=total,
+        metrics=AchLossMetrics(
+            policy_loss=policy_loss.detach(),
+            value_loss=value_loss.detach(),
+            entropy=entropy.detach(),
+            ratio_mean=ratio.mean().detach(),
+            ratio_min=ratio.min().detach(),
+            ratio_max=ratio.max().detach(),
+            ratio_clipped_fraction=ratio_clipped.to(dtype=policy_logits.dtype).mean().detach(),
+            gate_fraction=gate.mean().detach(),
+            pos_gate_fraction=_safe_selected_mean(gate, pos).detach(),
+            neg_gate_fraction=_safe_selected_mean(gate, neg).detach(),
+            pi_old_clamp_fraction=(old_prob_raw < config.pi_old_min).to(dtype=policy_logits.dtype).mean().detach(),
+            pi_old_min=torch.tensor(config.pi_old_min, dtype=policy_logits.dtype, device=policy_logits.device),
+            pi_old_raw_min=old_prob_raw.min().detach(),
+            approx_kl_old=(old_logprob - selected_logprob).mean().detach(),
+            bc_kl_reverse=bc_kl_reverse.detach(),
+            advantage_raw_mean=raw_mean.detach(),
+            advantage_raw_std=torch.sqrt(((raw_advantages - raw_mean) ** 2).mean()).detach(),
+            advantage_raw_rms=torch.sqrt((raw_advantages * raw_advantages).mean()).detach(),
+            advantage_scaled_mean=scaled_mean.detach(),
+            advantage_scaled_std=torch.sqrt(((scaled_advantages - scaled_mean) ** 2).mean()).detach(),
+            advantage_scaled_rms=torch.sqrt((scaled_advantages * scaled_advantages).mean()).detach(),
+            advantage_positive_count=pos_count.detach(),
+            advantage_negative_count=neg_count.detach(),
+            advantage_zero_count=zero_count.detach(),
+            illegal_probability_max=illegal_probability_max.detach(),
+        ),
+        entropy_per_row=entropy_per_row.detach(),
+        gate_per_row=gate.detach(),
+        ratio_clipped_per_row=ratio_clipped.to(dtype=policy_logits.dtype).detach(),
+        bc_kl_per_row=bc_kl_per_row.detach(),
+    )
+
+
+def _safe_selected_mean(metric: torch.Tensor, selector: torch.Tensor) -> torch.Tensor:
+    if bool(selector.any()):
+        return metric[selector].mean()
+    return torch.zeros((), dtype=metric.dtype, device=metric.device)
 
 
 def value_mse(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:

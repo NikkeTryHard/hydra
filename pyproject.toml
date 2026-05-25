@@ -11,6 +11,7 @@ dependencies = []
 
 [project.scripts]
 hydra-arena-eval = "hydra_learner.arena_eval:main"
+hydra-export-inference = "hydra_learner.export_inference:main"
 
 [dependency-groups]
 dev = [
@@ -57,6 +58,10 @@ index-strategy = "unsafe-best-match"
 numpy = "==1.26.4"
 torch = "==2.11.0+cu128"
 tensorboard = ">=2.20,<3"
+safetensors = ">=0.5,<0.7"
+onnx = ">=1.19,<2"
+onnxscript = ">=0.4,<0.5"
+onnxruntime-gpu = "==1.23.2"
 
 [tool.pixi.feature.py-train.pypi-options]
 index-url = "https://download.pytorch.org/whl/cu128"
@@ -75,6 +80,10 @@ pytest = ">=8,<9"
 ruff = ">=0.11,<0.14"
 torch = "==2.11.0+cu128"
 tensorboard = ">=2.20,<3"
+safetensors = ">=0.5,<0.7"
+onnx = ">=1.19,<2"
+onnxscript = ">=0.4,<0.5"
+onnxruntime-gpu = "==1.23.2"
 
 [tool.pixi.feature.py-train-torch212-cu126.pypi-options]
 index-url = "https://download.pytorch.org/whl/cu126"
@@ -94,6 +103,10 @@ ruff = ">=0.11,<0.14"
 torch = "==2.12.0+cu126"
 tensorboard = ">=2.20,<3"
 torchvision = "==0.27.0+cu126"
+safetensors = ">=0.5,<0.7"
+onnx = ">=1.19,<2"
+onnxscript = ">=0.4,<0.5"
+onnxruntime-gpu = "==1.23.2"
 
 [tool.pixi.feature.py-train-torch212-nightly-cu128.pypi-options]
 index-url = "https://download.pytorch.org/whl/nightly/cu128"
@@ -113,6 +126,10 @@ ruff = ">=0.11,<0.14"
 torch = "==2.12.0.dev20260329+cu128"
 tensorboard = ">=2.20,<3"
 torchvision = "==0.26.0.dev20260329+cu128"
+safetensors = ">=0.5,<0.7"
+onnx = ">=1.19,<2"
+onnxscript = ">=0.4,<0.5"
+onnxruntime-gpu = "==1.23.2"
 
 
 [tool.pixi.activation]

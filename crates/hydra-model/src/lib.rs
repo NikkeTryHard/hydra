@@ -17,6 +17,10 @@ pub mod inference;
 /// Full Hydra model and forward DTOs.
 pub mod model;
 mod native_group_norm_mish;
+/// ONNX Runtime policy inference path.
+pub mod onnx_policy;
+/// ONNX Runtime initialization helpers.
+pub mod ort_init;
 /// Model-local profiling helpers.
 mod profiling;
 /// Search-as-Feature adaptor modules.

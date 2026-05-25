@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Arena evaluation CLI for PyTorch Hydra checkpoints."""
+"""Arena evaluation CLI for ONNX export dirs and legacy PyTorch checkpoints."""
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib
 import importlib.util
 import json
 import math
 import os
 import sys
+import tempfile
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -18,6 +20,13 @@ from typing import Any, Literal, cast
 import torch
 
 from hydra_learner.checkpoint import ModelConfig, load_checkpoint_init_only
+from hydra_learner.export_inference import (
+    ARTIFACT_NAME,
+    METADATA_NAME,
+    ExportConfig,
+    load_export_policy,
+    write_exported_policy,
+)
 from hydra_learner.hydra_logging import ScalarEventWriter, add_scalars
 from hydra_learner.model import (
     ACTION_SPACE,
@@ -49,6 +58,15 @@ class LoadedArenaModel:
 
 
 @dataclass(frozen=True)
+class LoadedNativeArenaModel:
+    name: str
+    path: Path
+    global_step: int
+    samples_seen: int
+    weight_source: WeightSource
+
+
+@dataclass(frozen=True)
 class ArenaEvalConfig:
     baseline: Path
     candidates: tuple[Path, ...]
@@ -62,6 +80,9 @@ class ArenaEvalConfig:
     device: str
     extension: str | None
     extension_path: Path | None
+    arena_batch_decisions: int
+    rust_native: bool
+    arena_threads: int
     hidden: int
     blocks: int
     bottleneck: int
@@ -72,16 +93,16 @@ class ArenaEvalConfig:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--baseline", type=Path, required=True, help="baseline .pt checkpoint")
+    parser.add_argument("--baseline", type=Path, required=True, help="baseline ONNX export dir or .pt checkpoint")
     parser.add_argument(
         "--candidate",
         dest="candidates",
         type=Path,
         action="append",
         required=True,
-        help="candidate .pt checkpoint; repeat for multiple candidates",
+        help="candidate ONNX export dir or .pt checkpoint; repeat for multiple candidates",
     )
-    parser.add_argument("--games", type=int, default=128, help="paired games per candidate")
+    parser.add_argument("--games", type=int, default=1024, help="paired games per candidate")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument(
@@ -90,9 +111,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--per-game-output", dest="per_game_path", type=Path, help="JSONL per-game output path")
     parser.add_argument("--tensorboard-dir", type=Path)
     parser.add_argument("--weight-source", choices=("raw", "ema"), default="raw")
-    parser.add_argument("--device", default="cuda", help="torch device for checkpoint inference")
+    parser.add_argument(
+        "--device",
+        default="cuda:0",
+        help="device for ONNX Runtime native inference or legacy torch checkpoint inference",
+    )
     parser.add_argument("--extension", help="importable PyO3 arena module name")
     parser.add_argument("--extension-path", type=Path, help="direct path to PyO3 arena extension")
+    parser.add_argument("--arena-batch-decisions", type=int, default=1024)
+    parser.add_argument(
+        "--arena-threads", type=int, default=0, help="native ONNX arena worker threads; 0 chooses a safe default"
+    )
+    parser.add_argument(
+        "--python-checkpoints", action="store_true", help="use legacy Python checkpoint inference for .pt inputs"
+    )
     parser.add_argument("--hidden", type=int, default=DEFAULT_HIDDEN)
     parser.add_argument("--blocks", type=int, default=DEFAULT_BLOCKS)
     parser.add_argument("--bottleneck", type=int, default=DEFAULT_SE_BOTTLENECK)
@@ -112,6 +144,10 @@ def validate_args(args: argparse.Namespace) -> ArenaEvalConfig:
         raise ValueError("provide at least one --candidate")
     if args.extension is not None and args.extension_path is not None:
         raise ValueError("--extension and --extension-path cannot be combined")
+    if args.arena_batch_decisions < 1:
+        raise ValueError("--arena-batch-decisions must be >= 1")
+    if args.arena_threads < 0:
+        raise ValueError("--arena-threads must be >= 0")
     device = torch.device(args.device)
     if device.type == "cuda" and not torch.cuda.is_available():
         raise ValueError("--device cuda requested but torch.cuda.is_available() is false")
@@ -128,6 +164,9 @@ def validate_args(args: argparse.Namespace) -> ArenaEvalConfig:
         device=args.device,
         extension=args.extension,
         extension_path=args.extension_path,
+        arena_batch_decisions=args.arena_batch_decisions,
+        rust_native=not args.python_checkpoints,
+        arena_threads=args.arena_threads,
         hidden=args.hidden,
         blocks=args.blocks,
         bottleneck=args.bottleneck,
@@ -142,10 +181,10 @@ def default_arena_pyo3_library_path() -> Path:
     if env_path:
         return Path(env_path)
     repo_root = Path(__file__).resolve().parents[3]
-    release_path = repo_root / "target" / "release" / "libhydra_arena_pyo3.so"
+    release_path = repo_root / "target" / "release" / "libhydra_raw_mjai_pyo3.so"
     if release_path.exists():
         return release_path
-    return repo_root / "target" / "debug" / "libhydra_arena_pyo3.so"
+    return repo_root / "target" / "debug" / "libhydra_raw_mjai_pyo3.so"
 
 
 def _load_extension_from_path(path: Path) -> Any:
@@ -234,6 +273,58 @@ def load_arena_model(path: Path, *, name: str, config: ArenaEvalConfig, device: 
         global_step=init.global_step,
         samples_seen=init.samples_seen,
         weight_source=init.weight_source,
+    )
+
+
+def _native_export_cache_dir(checkpoint_path: Path, weight_source: WeightSource) -> Path:
+    resolved = checkpoint_path.expanduser().resolve(strict=False)
+    cache_key = hashlib.sha256(str(resolved).encode("utf-8")).hexdigest()[:16]
+    return Path(tempfile.gettempdir()) / "hydra-onnx-arena" / f"{resolved.stem}-{cache_key}" / weight_source
+
+
+def _is_native_export_dir(path: Path) -> bool:
+    return path.is_dir() and (path / METADATA_NAME).is_file() and (path / ARTIFACT_NAME).is_file()
+
+
+def resolve_native_arena_path(path: Path, config: ArenaEvalConfig) -> Path:
+    if _is_native_export_dir(path):
+        return path
+    if path.is_dir():
+        raise ValueError(f"native arena input {path} must contain {METADATA_NAME} and {ARTIFACT_NAME}")
+    if path.suffix != ".pt":
+        raise ValueError(f"native arena input {path} must be an ONNX export directory or .pt checkpoint")
+    if not path.is_file():
+        raise ValueError(f"native arena checkpoint {path} does not exist")
+    export_config = ExportConfig(
+        checkpoint=path,
+        weight_source=config.weight_source,
+        output_dir=_native_export_cache_dir(path, config.weight_source),
+        fixture_obs=None,
+        num_fixture_rows=8,
+        max_batch=max(4096, config.arena_batch_decisions),
+        opset_version=18,
+    )
+    policy, obs, init, model_config, checkpoint = load_export_policy(export_config)
+    result = write_exported_policy(
+        export_config,
+        policy=policy,
+        obs=obs,
+        init=init,
+        model_config=model_config,
+        checkpoint=checkpoint,
+    )
+    return result.metadata_path.parent
+
+
+def load_native_arena_model(path: Path, *, name: str) -> LoadedNativeArenaModel:
+    metadata_path = path / "policy.json"
+    raw = json.loads(metadata_path.read_text(encoding="utf-8"))
+    return LoadedNativeArenaModel(
+        name=name,
+        path=path,
+        global_step=int(raw["checkpoint_global_step"]),
+        samples_seen=int(raw["checkpoint_samples_seen"]),
+        weight_source=cast(WeightSource, raw["weight_source"]),
     )
 
 
@@ -342,37 +433,121 @@ def log_arena_scalars(writer: ScalarEventWriter, candidate: LoadedArenaModel, re
     add_scalars(writer, f"arena/{candidate.name}", _numeric_scalars(result), step, include_status_scalars=True)
 
 
+def run_arena_eval_rust_native(config: ArenaEvalConfig, extension: Any) -> dict[str, Any]:
+    run_native = getattr(extension, "run_paired_arena_rust_native", None)
+    if not callable(run_native):
+        raise ValueError("arena extension missing run_paired_arena_rust_native")
+    baseline_path = resolve_native_arena_path(config.baseline, config)
+    candidate_paths = [resolve_native_arena_path(path, config) for path in config.candidates]
+    baseline = load_native_arena_model(baseline_path, name="baseline")
+    candidates = [load_native_arena_model(path, name=_checkpoint_name(path)) for path in candidate_paths]
+    writer = ScalarEventWriter(config.tensorboard_dir)
+    results: list[dict[str, Any]] = []
+    try:
+        for candidate_index, candidate in enumerate(candidates):
+            result = cast(
+                dict[str, Any],
+                run_native(
+                    config.games,
+                    config.seed,
+                    config.temperature,
+                    [candidate.path],
+                    baseline.path,
+                    config.arena_batch_decisions,
+                    config.device,
+                    config.arena_threads,
+                ),
+            )
+            if not isinstance(result, dict):
+                raise TypeError(f"run_paired_arena_rust_native returned {type(result).__name__}, expected dict")
+            log_arena_scalars(
+                writer,
+                LoadedArenaModel(
+                    candidate.name,
+                    candidate.path,
+                    torch.nn.Identity(),
+                    candidate.global_step,
+                    candidate.samples_seen,
+                    candidate.weight_source,
+                ),
+                result,
+            )
+            results.append(
+                {
+                    "candidate": candidate.name,
+                    "candidate_path": candidate.path,
+                    "candidate_index": candidate_index,
+                    "global_step": candidate.global_step,
+                    "samples_seen": candidate.samples_seen,
+                    "result": result,
+                }
+            )
+        writer.flush()
+    finally:
+        writer.close()
+    summary: dict[str, Any] = {
+        "config": asdict(config),
+        "baseline": {
+            "path": baseline.path,
+            "global_step": baseline.global_step,
+            "samples_seen": baseline.samples_seen,
+            "weight_source": baseline.weight_source,
+        },
+        "candidates": results,
+    }
+    _write_json(config.output_path, summary)
+    return summary
+
+
 def run_arena_eval(config: ArenaEvalConfig) -> dict[str, Any]:
+    extension = load_arena_extension(config)
+    if config.rust_native:
+        return run_arena_eval_rust_native(config, extension)
     device = torch.device(config.device)
     baseline = load_arena_model(config.baseline, name="baseline", config=config, device=device)
     candidates = [
         load_arena_model(path, name=_checkpoint_name(path), config=config, device=device) for path in config.candidates
     ]
-    extension = load_arena_extension(config)
+    run_paired_arena_batched = getattr(extension, "run_paired_arena_batched", None)
     run_paired_arena = extension.run_paired_arena
     writer = ScalarEventWriter(config.tensorboard_dir)
     results: list[dict[str, Any]] = []
     per_game_rows: list[Any] = []
     try:
         for candidate_index, candidate in enumerate(candidates):
-            models = [baseline, candidate]
-            seat_results: list[dict[str, Any]] = []
-            for seat in range(4):
-                seat_result = cast(
+            models = [candidate, baseline]
+            if callable(run_paired_arena_batched):
+                result = cast(
                     dict[str, Any],
-                    run_paired_arena(
+                    run_paired_arena_batched(
                         config.games,
-                        config.seed + seat * config.games,
+                        config.seed,
                         config.temperature,
-                        [seat],
                         1,
+                        config.arena_batch_decisions,
                         make_inference_callback(models, device),
                     ),
                 )
-                if not isinstance(seat_result, dict):
-                    raise TypeError(f"run_paired_arena returned {type(seat_result).__name__}, expected dict")
-                seat_results.append(seat_result)
-            result = _aggregate_seat_results(seat_results)
+                if not isinstance(result, dict):
+                    raise TypeError(f"run_paired_arena_batched returned {type(result).__name__}, expected dict")
+            else:
+                seat_results: list[dict[str, Any]] = []
+                for seat in range(4):
+                    seat_result = cast(
+                        dict[str, Any],
+                        run_paired_arena(
+                            config.games,
+                            config.seed + seat * config.games,
+                            config.temperature,
+                            [seat],
+                            1,
+                            make_inference_callback(models, device),
+                        ),
+                    )
+                    if not isinstance(seat_result, dict):
+                        raise TypeError(f"run_paired_arena returned {type(seat_result).__name__}, expected dict")
+                    seat_results.append(seat_result)
+                result = _aggregate_seat_results(seat_results)
             per_game = _extract_per_game(result)
             if per_game is not None:
                 per_game_rows.extend(
