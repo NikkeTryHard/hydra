@@ -17,6 +17,8 @@ from hydra_learner.losses import (
     base_loss,
     bce_logits_mean,
     danger_focal_bce,
+    deltaq_loss_unavailable,
+    exit_policy_loss,
     loss_breakdown_dict,
     masked_policy_ce_indices,
     opp_next_ce,
@@ -96,23 +98,30 @@ class HydraCompiledLossStep(nn.Module):
         oracle_target_mask: torch.Tensor,
         safety_target: torch.Tensor,
         safety_mask: torch.Tensor,
+        exit_target: torch.Tensor,
+        exit_mask: torch.Tensor,
+        deltaq_target: torch.Tensor,
+        deltaq_mask: torch.Tensor,
     ) -> torch.Tensor:
         outputs = self.model(obs)
         self.last_outputs = outputs
         if self.loss_mode == "policy_only":
             l_policy = masked_policy_ce_indices(outputs.policy_logits, policy_target, legal_mask).mean()
+            zero = l_policy * 0.0
             self.last_breakdown = LossBreakdown(
                 total=l_policy,
                 policy=l_policy,
-                value=l_policy * 0.0,
-                grp=l_policy * 0.0,
-                tenpai=l_policy * 0.0,
-                danger=l_policy * 0.0,
-                opp_next=l_policy * 0.0,
-                score_pdf=l_policy * 0.0,
-                score_cdf=l_policy * 0.0,
-                oracle_critic=l_policy * 0.0,
-                safety_residual=l_policy * 0.0,
+                value=zero,
+                grp=zero,
+                tenpai=zero,
+                danger=zero,
+                opp_next=zero,
+                score_pdf=zero,
+                score_cdf=zero,
+                oracle_critic=zero,
+                safety_residual=zero,
+                exit=zero,
+                deltaq=zero,
             )
             return l_policy
         l_policy = masked_policy_ce_indices(outputs.policy_logits, policy_target, legal_mask).mean()
@@ -141,6 +150,14 @@ class HydraCompiledLossStep(nn.Module):
         if self.weights.safety_residual > 0.0:
             l_safety = safety_residual_loss(outputs.safety_residual, safety_target, safety_mask)
             total = total + l_safety * self.weights.safety_residual
+        l_exit = l_policy * 0.0
+        l_deltaq = l_policy * 0.0
+        if self.weights.exit > 0.0:
+            l_exit = exit_policy_loss(outputs.policy_logits, exit_target, exit_mask, legal_mask).mean()
+            total = total + l_exit * self.weights.exit
+        if self.weights.deltaq > 0.0:
+            l_deltaq = deltaq_loss_unavailable()
+            total = total + l_deltaq * self.weights.deltaq
         self.last_breakdown = LossBreakdown(
             total=total,
             policy=l_policy,
@@ -153,6 +170,8 @@ class HydraCompiledLossStep(nn.Module):
             score_cdf=l_cdf,
             oracle_critic=l_oracle,
             safety_residual=l_safety,
+            exit=l_exit,
+            deltaq=l_deltaq,
         )
         return total
 
@@ -170,6 +189,18 @@ def loss_step_args(obs: torch.Tensor, targets: BaseTargets, start: int, end: int
     safety_mask = targets.safety_mask
     if safety_mask is None:
         raise ValueError("compiled loss targets missing safety_mask")
+    exit_target = targets.exit_target
+    if exit_target is None:
+        raise ValueError("compiled loss targets missing exit_target")
+    exit_mask = targets.exit_mask
+    if exit_mask is None:
+        raise ValueError("compiled loss targets missing exit_mask")
+    deltaq_target = targets.deltaq_target
+    if deltaq_target is None:
+        raise ValueError("compiled loss targets missing deltaq_target")
+    deltaq_mask = targets.deltaq_mask
+    if deltaq_mask is None:
+        raise ValueError("compiled loss targets missing deltaq_mask")
     return (
         obs[start:end],
         targets.policy_target[start:end],
@@ -186,6 +217,10 @@ def loss_step_args(obs: torch.Tensor, targets: BaseTargets, start: int, end: int
         oracle_target_mask[start:end],
         safety_target[start:end],
         safety_mask[start:end],
+        exit_target[start:end],
+        exit_mask[start:end],
+        deltaq_target[start:end],
+        deltaq_mask[start:end],
     )
 
 

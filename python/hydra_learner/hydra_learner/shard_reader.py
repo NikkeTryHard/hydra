@@ -9,6 +9,8 @@ import numpy as np
 
 from hydra_learner.shard_contracts import (
     ACTION_SPACE,
+    FLAG_DELTA_Q,
+    FLAG_EXIT,
     FLAG_SAFETY_RESIDUAL,
     GRP_CLASS_COUNT,
     NUM_CHANNELS,
@@ -108,6 +110,14 @@ class BcShardReader:
             if self.feature_flags & FLAG_SAFETY_RESIDUAL
             else None
         )
+        exit_target = np.zeros((batch_size, ACTION_SPACE), dtype=np.float32) if self.feature_flags & FLAG_EXIT else None
+        exit_mask = np.zeros((batch_size, ACTION_SPACE), dtype=np.float32) if self.feature_flags & FLAG_EXIT else None
+        deltaq_target = (
+            np.zeros((batch_size, ACTION_SPACE), dtype=np.float32) if self.feature_flags & FLAG_DELTA_Q else None
+        )
+        deltaq_mask = (
+            np.zeros((batch_size, ACTION_SPACE), dtype=np.float32) if self.feature_flags & FLAG_DELTA_Q else None
+        )
         row = 0
         remaining = batch_size
         sample = start
@@ -139,6 +149,10 @@ class BcShardReader:
                 score_cdf,
                 safety_target,
                 safety_mask,
+                exit_target,
+                exit_mask,
+                deltaq_target,
+                deltaq_mask,
                 row,
             )
             row += take
@@ -160,6 +174,10 @@ class BcShardReader:
             score_cdf=score_cdf,
             safety_target=safety_target,
             safety_mask=safety_mask,
+            exit_target=exit_target,
+            exit_mask=exit_mask,
+            deltaq_target=deltaq_target,
+            deltaq_mask=deltaq_mask,
         )
 
 

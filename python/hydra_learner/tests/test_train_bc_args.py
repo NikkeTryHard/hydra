@@ -1020,6 +1020,15 @@ def test_raw_negative_skip_games_is_rejected(tmp_path: Path) -> None:
         validate_raw_mjai_source_args(args)
 
 
+@pytest.mark.parametrize("weight_arg", ["w_exit", "w_deltaq"])
+def test_raw_mjai_positive_phase5_weights_reject_without_label_protocol(tmp_path: Path, weight_arg: str) -> None:
+    args = _valid_args(raw_mjai_data_dirs=[tmp_path / "raw"], **{weight_arg: 0.1})
+    (tmp_path / "raw").mkdir()
+
+    with pytest.raises(ValueError, match="compact shard labels"):
+        validate_raw_mjai_source_args(args)
+
+
 def test_shard_resume_args_unaffected(tmp_path: Path) -> None:
     args = _valid_args(
         manifest=tmp_path / "manifest.json",

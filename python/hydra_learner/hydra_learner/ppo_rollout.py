@@ -17,7 +17,9 @@ import torch
 
 from hydra_learner.ach_step import AchTrainStepConfig, ach_train_step
 from hydra_learner.checkpoint import ModelConfig, OptimizerConfig, RuntimeConfig, save_checkpoint
+from hydra_learner.drda import DrdaResidualPolicyNet, drda_ach_train_step
 from hydra_learner.ppo_step import PpoBatch, PpoTrainStepConfig, _validate_json_safe_metrics, ppo_train_step
+from hydra_learner.reward_shaping import normalize_reward_shaping_metadata
 from hydra_learner.rl import DEFAULT_GAE_GAMMA, DEFAULT_GAE_LAMBDA, EntropyController
 
 if TYPE_CHECKING:
@@ -33,6 +35,7 @@ class PpoRolloutMetadata:
     rank_utility_used: str | None = None
     gae_gamma: float = DEFAULT_GAE_GAMMA
     gae_lambda: float = DEFAULT_GAE_LAMBDA
+    reward_shaping: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -64,6 +67,7 @@ class PpoRolloutArtifact:
             raise ValueError("gae_gamma must be in (0, 1]")
         if not (0.0 < self.metadata.gae_lambda <= 1.0):
             raise ValueError("gae_lambda must be in (0, 1]")
+        normalize_reward_shaping_metadata(self.metadata.reward_shaping)
 
 
 @dataclass(frozen=True)
@@ -93,6 +97,7 @@ def save_ppo_rollout_artifact(path: Path, batch: PpoBatch, metadata: PpoRolloutM
             "rank_utility_used": metadata.rank_utility_used,
             "gae_gamma": metadata.gae_gamma,
             "gae_lambda": metadata.gae_lambda,
+            "reward_shaping": _rollout_reward_shaping_metadata(metadata),
         },
     }
     _put_optional_tensor(payload, "player_id", batch.player_id)
@@ -172,6 +177,34 @@ def train_ach_step_from_rollout_artifact(
 ) -> PpoArtifactTrainStepResult:
     artifact = load_ppo_rollout_artifact(artifact_path)
     result = ach_train_step(
+        model=model,
+        optimizer=optimizer,
+        batch=artifact_to_ppo_batch(artifact),
+        entropy_controller=entropy_controller,
+        config=config,
+    )
+    metadata = _artifact_metadata_dict(artifact)
+    metrics: dict[str, object] = dict(result.metrics)
+    metrics["rollout_schema_version"] = artifact.schema_version
+    metrics["rollout_contract_version"] = artifact.contract_version
+    _validate_json_safe_metrics(metrics)
+    return PpoArtifactTrainStepResult(
+        metrics=metrics,
+        entropy_controller=result.entropy_controller,
+        artifact_metadata=metadata,
+    )
+
+
+def train_drda_ach_step_from_rollout_artifact(
+    *,
+    artifact_path: Path,
+    model: DrdaResidualPolicyNet,
+    optimizer: torch.optim.Optimizer,
+    entropy_controller: EntropyController,
+    config: AchTrainStepConfig,
+) -> PpoArtifactTrainStepResult:
+    artifact = load_ppo_rollout_artifact(artifact_path)
+    result = drda_ach_train_step(
         model=model,
         optimizer=optimizer,
         batch=artifact_to_ppo_batch(artifact),
@@ -282,7 +315,15 @@ def _metadata_from_payload(payload: dict[str, object]) -> PpoRolloutMetadata:
         raise ValueError("gae_gamma must be numeric")
     if not isinstance(lam, int | float):
         raise ValueError("gae_lambda must be numeric")
-    return PpoRolloutMetadata(rank_utility_used=rank, gae_gamma=float(gamma), gae_lambda=float(lam))
+    reward_shaping_raw = payload.get("reward_shaping")
+    if reward_shaping_raw is not None and not isinstance(reward_shaping_raw, dict):
+        raise ValueError("reward_shaping must be a dict")
+    reward_shaping = _normalize_payload_reward_shaping(
+        cast("Mapping[str, object] | None", reward_shaping_raw), gamma=float(gamma), gae_lambda=float(lam)
+    )
+    return PpoRolloutMetadata(
+        rank_utility_used=rank, gae_gamma=float(gamma), gae_lambda=float(lam), reward_shaping=reward_shaping
+    )
 
 
 def _artifact_metadata_dict(artifact: PpoRolloutArtifact) -> dict[str, object]:
@@ -292,8 +333,23 @@ def _artifact_metadata_dict(artifact: PpoRolloutArtifact) -> dict[str, object]:
         "rank_utility_used": artifact.metadata.rank_utility_used,
         "gae_gamma": artifact.metadata.gae_gamma,
         "gae_lambda": artifact.metadata.gae_lambda,
+        "reward_shaping": _rollout_reward_shaping_metadata(artifact.metadata),
         "batch_rows": artifact.obs.shape[0],
     }
+
+
+def _rollout_reward_shaping_metadata(metadata: PpoRolloutMetadata) -> dict[str, object]:
+    return _normalize_payload_reward_shaping(
+        metadata.reward_shaping, gamma=metadata.gae_gamma, gae_lambda=metadata.gae_lambda
+    )
+
+
+def _normalize_payload_reward_shaping(
+    value: Mapping[str, object] | None, *, gamma: float, gae_lambda: float
+) -> dict[str, object]:
+    if value is None:
+        return normalize_reward_shaping_metadata({"enabled": False, "gae_gamma": gamma, "gae_lambda": gae_lambda})
+    return normalize_reward_shaping_metadata(value)
 
 
 def _require_tensor(value: object, name: str) -> torch.Tensor:

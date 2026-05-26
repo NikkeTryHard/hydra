@@ -16,7 +16,6 @@ from hydra_learner.rl import (
     EntropyController,
     ach_loss,
     default_entropy_target_fraction,
-    entropy_fraction,
     legal_count_bucket_means,
 )
 
@@ -99,7 +98,7 @@ def ach_train_step(
                 loss_out.gate_per_row, batch.legal_mask, torch.ones_like(loss_out.gate_per_row, dtype=torch.bool)
             ),
             "legal_count_bucket_pos_gate_fraction": _bucket_optional_means(
-                loss_out.gate_per_row, batch.legal_mask, batch.raw_advantages > 0.0
+                loss_out.gate_per_row, batch.legal_mask, batch.raw_advantages >= 0.0
             ),
             "legal_count_bucket_neg_gate_fraction": _bucket_optional_means(
                 loss_out.gate_per_row, batch.legal_mask, batch.raw_advantages < 0.0
@@ -110,7 +109,7 @@ def ach_train_step(
                 torch.ones_like(loss_out.ratio_clipped_per_row, dtype=torch.bool),
             ),
             "legal_count_bucket_bc_kl": legal_count_bucket_means(loss_out.bc_kl_per_row, batch.legal_mask),
-            "entropy_fraction_mean": float(entropy_fraction(outputs.policy_logits.detach(), batch.legal_mask).mean()),
+            "entropy_fraction_mean": float(loss_out.metrics.entropy_fraction_mean),
             "entropy_target_fraction_mean": float(default_entropy_target_fraction(batch.legal_count).mean()),
         }
     )

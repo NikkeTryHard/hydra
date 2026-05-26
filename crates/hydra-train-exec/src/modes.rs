@@ -550,6 +550,8 @@ fn python_preflight_options(
         compile_fullgraph_check: true,
         oracle_critic_weight: 0.0,
         safety_residual_weight: 0.0,
+        exit_weight: 0.0,
+        deltaq_weight: 0.0,
     })
 }
 

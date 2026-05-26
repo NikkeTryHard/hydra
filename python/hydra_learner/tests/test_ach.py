@@ -4,6 +4,7 @@ import json
 import math
 from dataclasses import fields
 from pathlib import Path
+from typing import cast
 
 import pytest
 import torch
@@ -175,6 +176,79 @@ def test_ach_advantage_rms_scaling_preserves_signs_and_zero_finite() -> None:
     )
     assert bool(torch.isfinite(zero.total))
     assert zero.metrics.advantage_zero_count == 2
+    assert zero.metrics.advantage_positive_count == 2
+    assert zero.metrics.advantage_zero_count == 2
+    assert zero.metric_dict()["ach_neg_gate_fraction"] is None
+
+
+# Phase 3A contract: zero advantage is in the nonnegative/positive group for ACH gate metrics.
+def test_ach_empty_sign_groups_emit_none_and_zero_is_positive() -> None:
+    positive = ach_loss(
+        torch.zeros(3, ACTION_SPACE),
+        torch.zeros(3),
+        torch.tensor([0, 1, 2]),
+        torch.ones(3, ACTION_SPACE, dtype=torch.bool),
+        torch.full((3,), -math.log(float(ACTION_SPACE))),
+        torch.tensor([1.0, 0.0, 2.0]),
+        torch.zeros(3),
+        config=AchLossConfig(value_coef=0.0),
+    )
+    positive_metrics = positive.metric_dict()
+    assert positive_metrics["ach_neg_gate_fraction"] is None
+    assert positive_metrics["ach_pos_gate_fraction"] == pytest.approx(1.0)
+    assert positive_metrics["advantage_positive_count"] == 3
+    assert positive_metrics["advantage_zero_count"] == 1
+    json.dumps(positive_metrics, allow_nan=False)
+
+    negative = ach_loss(
+        torch.zeros(2, ACTION_SPACE),
+        torch.zeros(2),
+        torch.tensor([0, 1]),
+        torch.ones(2, ACTION_SPACE, dtype=torch.bool),
+        torch.full((2,), -math.log(float(ACTION_SPACE))),
+        torch.tensor([-1.0, -2.0]),
+        torch.zeros(2),
+        config=AchLossConfig(value_coef=0.0),
+    )
+    negative_metrics = negative.metric_dict()
+    assert negative_metrics["ach_pos_gate_fraction"] is None
+    assert negative_metrics["ach_neg_gate_fraction"] == pytest.approx(1.0)
+    assert negative_metrics["advantage_negative_count"] == 2
+    json.dumps(negative_metrics, allow_nan=False)
+
+
+def test_ach_bc_kl_uses_centered_clamped_current_policy() -> None:
+    logits = torch.zeros(1, ACTION_SPACE)
+    logits[0, 0] = 100.0
+    mask = _mask_with_count(3)
+    bc_logits = torch.zeros_like(logits)
+    bc_logits[0, 1] = 3.0
+    cfg = AchLossConfig(l_th=2.0, value_coef=0.0, bc_kl_reverse_coef=1.0)
+
+    out = ach_loss(
+        logits,
+        torch.zeros(1),
+        torch.tensor([0]),
+        mask,
+        torch.log(torch.tensor([0.5])),
+        torch.tensor([1.0]),
+        torch.zeros(1),
+        bc_logits=bc_logits,
+        config=cfg,
+    )
+
+    centered = logits - (logits * mask.to(dtype=logits.dtype)).sum(dim=1, keepdim=True) / mask.sum(dim=1).unsqueeze(1)
+    clamped = centered.clamp(-cfg.l_th, cfg.l_th)
+    current_log = torch.log_softmax(clamped.masked_fill(~mask, -1.0e9), dim=1)
+    reference_log = torch.log_softmax(bc_logits.masked_fill(~mask, -1.0e9), dim=1)
+    expected = (current_log.exp().masked_fill(~mask, 0.0) * (current_log - reference_log).masked_fill(~mask, 0.0)).sum()
+    raw_current_log = torch.log_softmax(logits.masked_fill(~mask, -1.0e9), dim=1)
+    raw_kl = (
+        raw_current_log.exp().masked_fill(~mask, 0.0) * (raw_current_log - reference_log).masked_fill(~mask, 0.0)
+    ).sum()
+
+    torch.testing.assert_close(out.metrics.bc_kl_reverse, expected)
+    assert not torch.isclose(out.metrics.bc_kl_reverse, raw_kl)
 
 
 def test_ach_old_logprob_clamp_and_json_safety() -> None:
@@ -245,6 +319,48 @@ def test_ach_train_step_real_model_metrics_and_no_residual_config() -> None:
     assert not hasattr(model, "policy_logits_residual")
 
 
+def test_ach_step_sign_bucket_none_and_entropy_fraction_use_clamped_policy() -> None:
+    model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1.0e-3)
+    batch = _manual_batch(raw_advantages=torch.tensor([1.0, 0.0], dtype=torch.float32), legal_counts=(2, 2))
+    with torch.no_grad():
+        model.base_heads.weight.zero_()
+        model.base_heads.bias.zero_()
+        model.base_heads.bias[0] = 50.0
+
+    result = ach_train_step(
+        model=model,
+        optimizer=optimizer,
+        batch=batch,
+        entropy_controller=EntropyController(alpha=0.0, beta=0.0, alpha_max=0.0),
+        config=AchTrainStepConfig(l_th=1.0, value_coef=0.0, bc_kl_reverse_coef=0.0, grad_clip_norm=None),
+    )
+
+    assert result.metrics["ach_neg_gate_fraction"] is None
+    assert result.metrics["legal_count_bucket_neg_gate_fraction"][2] is None
+    assert result.metrics["legal_count_bucket_pos_gate_fraction"][2] == pytest.approx(
+        result.metrics["ach_pos_gate_fraction"]
+    )
+    raw_entropy_fraction = 0.0
+    expected_entropy_fraction = float(
+        -(torch.softmax(torch.tensor([1.0, -1.0]), dim=0) * torch.log_softmax(torch.tensor([1.0, -1.0]), dim=0)).sum()
+        / math.log(2.0)
+    )
+    assert result.metrics["entropy_fraction_mean"] != pytest.approx(raw_entropy_fraction)
+    assert result.metrics["entropy_fraction_mean"] == pytest.approx(expected_entropy_fraction)
+
+    negative_batch = _manual_batch(raw_advantages=torch.tensor([-1.0, -2.0], dtype=torch.float32), legal_counts=(2, 2))
+    negative_result = ach_train_step(
+        model=model,
+        optimizer=optimizer,
+        batch=negative_batch,
+        entropy_controller=EntropyController(alpha=0.0, beta=0.0, alpha_max=0.0),
+        config=AchTrainStepConfig(l_th=1.0, value_coef=0.0, bc_kl_reverse_coef=0.0, grad_clip_norm=None),
+    )
+    assert negative_result.metrics["ach_pos_gate_fraction"] is None
+    assert negative_result.metrics["legal_count_bucket_pos_gate_fraction"][2] is None
+
+
 def test_ach_rollout_artifact_trains_without_schema_change(tmp_path: Path) -> None:
     torch.manual_seed(103)
     model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
@@ -264,6 +380,40 @@ def test_ach_rollout_artifact_trains_without_schema_change(tmp_path: Path) -> No
     assert result.metrics["rollout_schema_version"] == 1
     assert result.metrics["rollout_contract_version"] == "ppo_rollout_v1"
     assert result.artifact_metadata["contract_version"] == "ppo_rollout_v1"
+    assert cast("dict[str, object]", result.artifact_metadata["reward_shaping"])["enabled"] is False
+
+
+def test_ach_default_artifact_metadata_does_not_change_current_direct_sampled_contract(tmp_path: Path) -> None:
+    torch.manual_seed(107)
+    base_model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
+    artifact_model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
+    direct_model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
+    artifact_model.load_state_dict(base_model.state_dict())
+    direct_model.load_state_dict(base_model.state_dict())
+    artifact_optimizer = torch.optim.AdamW(artifact_model.parameters(), lr=1.0e-3)
+    direct_optimizer = torch.optim.AdamW(direct_model.parameters(), lr=1.0e-3)
+    batch = _batch_from_model(base_model)
+    path = tmp_path / "rollout.pt"
+    save_ppo_rollout_artifact(path, batch, PpoRolloutMetadata(rank_utility_used="U_A"))
+
+    artifact_result = train_ach_step_from_rollout_artifact(
+        artifact_path=path,
+        model=artifact_model,
+        optimizer=artifact_optimizer,
+        entropy_controller=EntropyController(alpha=0.0, beta=0.0, alpha_max=0.0),
+        config=AchTrainStepConfig(grad_clip_norm=None),
+    )
+    direct_result = ach_train_step(
+        model=direct_model,
+        optimizer=direct_optimizer,
+        batch=batch,
+        entropy_controller=EntropyController(alpha=0.0, beta=0.0, alpha_max=0.0),
+        config=AchTrainStepConfig(grad_clip_norm=None),
+    )
+
+    comparable = ("loss_total", "loss_policy", "loss_value", "entropy", "bc_kl_reverse", "ach_gate_fraction")
+    for key in comparable:
+        assert artifact_result.metrics[key] == pytest.approx(direct_result.metrics[key])
 
 
 def test_phase3a_has_no_neurd_selector_or_objective() -> None:
@@ -304,6 +454,28 @@ def _batch_from_model(model: HydraPolicyNet) -> PpoBatch:
         raw_advantages=torch.tensor([1.0, -1.0], dtype=torch.float32),
         returns=value_old + torch.tensor([0.25, -0.25]),
         bc_logits=bc_logits,
+        legal_count=legal_mask.sum(dim=1).to(dtype=torch.int64),
+        rank_utility_used="U_A",
+    )
+
+
+def _manual_batch(*, raw_advantages: torch.Tensor, legal_counts: tuple[int, ...]) -> PpoBatch:
+    batch = raw_advantages.shape[0]
+    obs = torch.zeros(batch, 192, 34, dtype=torch.float32)
+    legal_mask = torch.zeros(batch, ACTION_SPACE, dtype=torch.bool)
+    actions = torch.zeros(batch, dtype=torch.int64)
+    for row, count in enumerate(legal_counts):
+        legal_mask[row, :count] = True
+        actions[row] = min(row, count - 1)
+    return PpoBatch(
+        obs=obs,
+        actions=actions,
+        legal_mask=legal_mask,
+        old_logprob=torch.full((batch,), -math.log(2.0), dtype=torch.float32),
+        value_old=torch.zeros(batch, dtype=torch.float32),
+        raw_advantages=raw_advantages,
+        returns=torch.zeros(batch, dtype=torch.float32),
+        bc_logits=torch.zeros(batch, ACTION_SPACE, dtype=torch.float32),
         legal_count=legal_mask.sum(dim=1).to(dtype=torch.int64),
         rank_utility_used="U_A",
     )

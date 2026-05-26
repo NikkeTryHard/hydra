@@ -655,6 +655,8 @@ fn python_options_from_config_accepts_plain_bc_defaults() {
     assert_eq!(options.validation_steps, 0);
     assert_eq!(options.validation_max_samples, None);
     assert_eq!(options.ema_device, Default::default());
+    assert_eq!(options.exit_weight, 0.0);
+    assert_eq!(options.deltaq_weight, 0.0);
 }
 
 #[test]
@@ -838,15 +840,92 @@ fn python_options_from_config_preserves_profiles_and_variant() {
 type PythonGuardCase = (fn(&mut TrainConfig), &'static str);
 
 #[test]
+fn python_options_from_config_accepts_exit_sidecar_default_off_and_weighted_with_manifest_provenance()
+ {
+    let mut config = python_guard_config();
+    config.exit_sidecar_path = Some(PathBuf::from("/tmp/exit.jsonl"));
+    let options = python_options_from_config(&config)
+        .expect("default-off ExIt sidecar should route through shards");
+    assert_eq!(options.exit_weight, 0.0);
+
+    let root = unique_temp_dir("exit-provenance");
+    std::fs::create_dir_all(&root).expect("temp root should be created");
+    let manifest = root.join("manifest.json");
+    std::fs::write(
+        &manifest,
+        r#"{"exit_sidecar":{"path":"/tmp/exit.jsonl","source_net_hash":123,"source_version":7}}"#,
+    )
+    .expect("manifest should write");
+    config.bc_shards_manifest_path = Some(manifest);
+    config.advanced_loss = Some(AdvancedLossConfig {
+        exit: Some(0.25),
+        ..Default::default()
+    });
+    let options = python_options_from_config(&config)
+        .expect("weighted ExIt sidecar should route through shards");
+    assert_eq!(options.exit_weight, 0.25);
+}
+
+#[test]
+fn python_options_from_config_rejects_weighted_exit_without_manifest_provenance() {
+    let cases: &[(Option<&str>, bool, &'static str)] = &[
+        (None, true, "exit_sidecar provenance"),
+        (None, false, "readable BC shard manifest provenance"),
+        (
+            Some(r#"{"exit_sidecar":{"path":"/tmp/exit.jsonl","source_version":7}}"#),
+            true,
+            "source_net_hash",
+        ),
+        (
+            Some(r#"{"exit_sidecar":{"path":"/tmp/exit.jsonl","source_net_hash":123}}"#),
+            true,
+            "source_version",
+        ),
+        (
+            Some(
+                r#"{"exit_sidecar":{"path":"/tmp/other.jsonl","source_net_hash":123,"source_version":7}}"#,
+            ),
+            true,
+            "sidecar path",
+        ),
+    ];
+    for (manifest_json, write_manifest, expected) in cases.iter().copied() {
+        let root = unique_temp_dir("exit-provenance-reject");
+        std::fs::create_dir_all(&root).expect("temp root should be created");
+        let manifest = root.join("manifest.json");
+        if write_manifest {
+            std::fs::write(&manifest, manifest_json.unwrap_or("{}"))
+                .expect("manifest should write");
+        }
+        let mut config = python_guard_config();
+        config.bc_shards_manifest_path = Some(manifest);
+        config.exit_sidecar_path = Some(PathBuf::from("/tmp/exit.jsonl"));
+        config.advanced_loss = Some(AdvancedLossConfig {
+            exit: Some(0.1),
+            ..Default::default()
+        });
+
+        let err = python_options_from_config(&config).expect_err("missing provenance should fail");
+        assert!(err.contains(expected), "{err}");
+    }
+}
+
+#[test]
 fn python_options_from_config_rejects_unsupported_advanced_modes() {
     let cases: &[PythonGuardCase] = &[
         (
-            |config| config.exit_sidecar_path = Some(PathBuf::from("/tmp/exit.jsonl")),
-            "ExIt sidecars",
+            |config| {
+                config.bc_shards_manifest_path = None;
+                config.exit_sidecar_path = Some(PathBuf::from("/tmp/exit.jsonl"));
+            },
+            "compact BC shards",
         ),
         (
-            |config| config.delta_q_sidecar_path = Some(PathBuf::from("/tmp/delta-q.jsonl")),
-            "DeltaQ sidecars",
+            |config| {
+                config.bc_shards_manifest_path = None;
+                config.delta_q_sidecar_path = Some(PathBuf::from("/tmp/delta-q.jsonl"));
+            },
+            "compact BC shards",
         ),
         (
             |config| {
@@ -855,7 +934,7 @@ fn python_options_from_config_rejects_unsupported_advanced_modes() {
                     ..Default::default()
                 })
             },
-            "advanced_loss.exit",
+            "ExIt sidecar-backed compact shard labels",
         ),
         (
             |config| {
@@ -864,7 +943,17 @@ fn python_options_from_config_rejects_unsupported_advanced_modes() {
                     ..Default::default()
                 })
             },
-            "advanced_loss.delta_q",
+            "DeltaQ sidecar-backed compact shard labels",
+        ),
+        (
+            |config| {
+                config.delta_q_sidecar_path = Some(PathBuf::from("/tmp/delta-q.jsonl"));
+                config.advanced_loss = Some(AdvancedLossConfig {
+                    delta_q: Some(0.1),
+                    ..Default::default()
+                })
+            },
+            "delta_q_output_contract_missing",
         ),
         (
             |config| {

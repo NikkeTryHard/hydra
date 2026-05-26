@@ -59,6 +59,10 @@ def _decode_rows(
     score_cdf: npt.NDArray[np.float32],
     safety_target: npt.NDArray[np.float32] | None,
     safety_mask: npt.NDArray[np.float32] | None,
+    exit_target: npt.NDArray[np.float32] | None,
+    exit_mask: npt.NDArray[np.float32] | None,
+    deltaq_target: npt.NDArray[np.float32] | None,
+    deltaq_mask: npt.NDArray[np.float32] | None,
     row_start: int,
 ) -> None:
     for idx in range(sample_count):
@@ -83,6 +87,10 @@ def _decode_rows(
             score_cdf,
             safety_target,
             safety_mask,
+            exit_target,
+            exit_mask,
+            deltaq_target,
+            deltaq_mask,
             row,
         )
 
@@ -105,6 +113,10 @@ def _decode_record(
     score_cdf: npt.NDArray[np.float32],
     safety_target: npt.NDArray[np.float32] | None,
     safety_mask: npt.NDArray[np.float32] | None,
+    exit_target: npt.NDArray[np.float32] | None,
+    exit_mask: npt.NDArray[np.float32] | None,
+    deltaq_target: npt.NDArray[np.float32] | None,
+    deltaq_mask: npt.NDArray[np.float32] | None,
     row: int,
 ) -> None:
     cursor: int = 0
@@ -169,15 +181,33 @@ def _decode_record(
         )
         cursor += OPTIONAL_ACTION_MASK_BYTES
     if feature_flags & FLAG_EXIT:
-        cursor += OPTIONAL_ACTION_FLOAT32_BYTES + OPTIONAL_ACTION_MASK_BYTES
+        cursor = _decode_optional_action_pair(record, cursor, row, exit_target, exit_mask, "ExIt")
     if feature_flags & FLAG_DELTA_Q:
-        cursor += OPTIONAL_ACTION_FLOAT32_BYTES + OPTIONAL_ACTION_MASK_BYTES
+        cursor = _decode_optional_action_pair(record, cursor, row, deltaq_target, deltaq_mask, "DeltaQ")
     if feature_flags & FLAG_BELIEF_FIELDS:
         cursor += BELIEF_FIELDS_BYTES
     if feature_flags & FLAG_MIXTURE_WEIGHTS:
         cursor += MIXTURE_WEIGHTS_BYTES
     if cursor != len(record):
         raise ValueError(f"BC shard compact record has {len(record) - cursor} trailing byte(s)")
+
+
+def _decode_optional_action_pair(
+    record: memoryview,
+    cursor: int,
+    row: int,
+    target: npt.NDArray[np.float32] | None,
+    mask: npt.NDArray[np.float32] | None,
+    name: str,
+) -> int:
+    if target is None or mask is None:
+        raise ValueError(f"BC shard {name} flag set but target buffers missing")
+    target[row] = np.frombuffer(
+        record[cursor : cursor + OPTIONAL_ACTION_FLOAT32_BYTES], dtype="<f4", count=ACTION_SPACE
+    )
+    cursor += OPTIONAL_ACTION_FLOAT32_BYTES
+    mask[row] = _unpack_bits(record[cursor : cursor + OPTIONAL_ACTION_MASK_BYTES], ACTION_SPACE).astype(np.float32)
+    return cursor + OPTIONAL_ACTION_MASK_BYTES
 
 
 def _score_delta_to_bin(score_delta: int) -> int:

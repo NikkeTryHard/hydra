@@ -70,6 +70,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--w-oracle-critic", type=float, default=0.0)
     parser.add_argument("--w-safety-residual", type=float, default=0.0)
+    parser.add_argument("--w-exit", type=float, default=0.0)
+    parser.add_argument("--w-deltaq", type=float, default=0.0)
     parser.add_argument("--compile-fullgraph-check", action="store_true")
     parser.add_argument("--out", type=Path, default=Path("/home/cachybtw/tmp/hydra_py_bc_result.json"))
     parser.add_argument("--lr", type=float, default=2.5e-4)
@@ -145,6 +147,10 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--grad-clip-norm must be > 0")
     if not (0.0 <= args.ema_decay < 1.0):
         raise ValueError("--ema-decay must be in [0, 1)")
+    if getattr(args, "w_exit", 0.0) < 0.0:
+        raise ValueError("--w-exit must be >= 0")
+    if getattr(args, "w_deltaq", 0.0) < 0.0:
+        raise ValueError("--w-deltaq must be >= 0")
     if args.ema_update_every_steps < 1:
         raise ValueError("--ema-update-every-steps must be >= 1")
     if (

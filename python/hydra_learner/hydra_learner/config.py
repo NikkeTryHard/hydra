@@ -43,6 +43,8 @@ def json_config(args: argparse.Namespace, effective_raw_mjai_max_samples: int | 
         "out": str(args.out),
         "w_oracle_critic": args.w_oracle_critic,
         "w_safety_residual": args.w_safety_residual,
+        "w_exit": args.w_exit,
+        "w_deltaq": args.w_deltaq,
         "compile_fullgraph_check": args.compile_fullgraph_check,
         "checkpoint_out": str(args.checkpoint_out) if args.checkpoint_out else None,
         "checkpoint_dir": str(args.checkpoint_dir) if args.checkpoint_dir else None,

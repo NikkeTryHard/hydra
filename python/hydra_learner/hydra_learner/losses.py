@@ -25,6 +25,8 @@ class LossWeights:
     score: float = 0.025
     oracle_critic: float = 0.0
     safety_residual: float = 0.0
+    exit: float = 0.0
+    deltaq: float = 0.0
 
 
 DEFAULT_LOSS_WEIGHTS = LossWeights()
@@ -37,6 +39,8 @@ LOSS_HEADS = (
     "grp",
     "oracle_critic",
     "safety_residual",
+    "exit",
+    "deltaq",
     "opp_next",
     "danger",
 )
@@ -58,6 +62,10 @@ class BaseTargets:
     oracle_target_mask: torch.Tensor | None = None
     safety_target: torch.Tensor | None = None
     safety_mask: torch.Tensor | None = None
+    exit_target: torch.Tensor | None = None
+    exit_mask: torch.Tensor | None = None
+    deltaq_target: torch.Tensor | None = None
+    deltaq_mask: torch.Tensor | None = None
 
 
 @dataclass(frozen=True)
@@ -73,6 +81,8 @@ class LossBreakdown:
     score_cdf: torch.Tensor
     oracle_critic: torch.Tensor
     safety_residual: torch.Tensor
+    exit: torch.Tensor
+    deltaq: torch.Tensor
 
 
 def masked_policy_ce(logits: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
@@ -140,6 +150,20 @@ def safety_residual_loss(pred: torch.Tensor, target: torch.Tensor, mask: torch.T
     return (sq * mask).sum() / mask.sum().clamp(min=1.0)
 
 
+def exit_policy_loss(
+    logits: torch.Tensor, target: torch.Tensor, mask: torch.Tensor, legal_mask: torch.Tensor
+) -> torch.Tensor:
+    support = mask.to(dtype=logits.dtype) * legal_mask.to(dtype=logits.dtype)
+    restricted_target = target.to(dtype=logits.dtype) * support
+    masked_logits = logits.masked_fill(~support.to(dtype=torch.bool), MASKED_LOGIT_SENTINEL)
+    log_probs = F.log_softmax(masked_logits, dim=1)
+    return -(restricted_target * log_probs).sum(dim=1)
+
+
+def deltaq_loss_unavailable() -> torch.Tensor:
+    raise ValueError("delta_q_output_contract_missing")
+
+
 def _zero_like_loss(reference: torch.Tensor) -> torch.Tensor:
     return reference.sum() * 0.0
 
@@ -168,6 +192,10 @@ def active_loss_heads(weights: LossWeights | None = None, loss_mode: str = "full
         heads.append("oracle_critic")
     if weights.safety_residual > 0.0:
         heads.append("safety_residual")
+    if weights.exit > 0.0:
+        heads.append("exit")
+    if weights.deltaq > 0.0:
+        heads.append("deltaq")
     if weights.opp_next > 0.0:
         heads.append("opp_next")
     if weights.danger > 0.0:
@@ -216,6 +244,10 @@ def target_coverage_dict(
     add("oracle_critic", *_optional_mask_coverage(targets.oracle_target_mask, 1))
     safety_width = 1 if targets.safety_mask is None else targets.safety_mask.shape[1]
     add("safety_residual", *_optional_mask_coverage(targets.safety_mask, safety_width))
+    exit_width = 1 if targets.exit_mask is None else targets.exit_mask.shape[1]
+    add("exit", *_optional_mask_coverage(targets.exit_mask, exit_width))
+    deltaq_width = 1 if targets.deltaq_mask is None else targets.deltaq_mask.shape[1]
+    add("deltaq", *_optional_mask_coverage(targets.deltaq_mask, deltaq_width))
     add(
         "opp_next",
         *_required_coverage(
@@ -251,6 +283,17 @@ def base_loss(outputs: HydraBaseOutput, targets: BaseTargets, weights: LossWeigh
             _require_tensor(targets.safety_target, "safety_target"),
             _require_tensor(targets.safety_mask, "safety_mask"),
         )
+    l_exit = _zero_like_loss(l_policy)
+    if weights.exit > 0.0:
+        l_exit = exit_policy_loss(
+            outputs.policy_logits,
+            _require_tensor(targets.exit_target, "exit_target"),
+            _require_tensor(targets.exit_mask, "exit_mask"),
+            targets.legal_mask,
+        ).mean()
+    l_deltaq = _zero_like_loss(l_policy)
+    if weights.deltaq > 0.0:
+        l_deltaq = deltaq_loss_unavailable()
     total = (
         l_policy * weights.policy
         + l_value * weights.value
@@ -262,6 +305,8 @@ def base_loss(outputs: HydraBaseOutput, targets: BaseTargets, weights: LossWeigh
         + l_cdf * weights.score
         + l_oracle * weights.oracle_critic
         + l_safety * weights.safety_residual
+        + l_exit * weights.exit
+        + l_deltaq * weights.deltaq
     )
     return LossBreakdown(
         total=total,
@@ -275,4 +320,6 @@ def base_loss(outputs: HydraBaseOutput, targets: BaseTargets, weights: LossWeigh
         score_cdf=l_cdf,
         oracle_critic=l_oracle,
         safety_residual=l_safety,
+        exit=l_exit,
+        deltaq=l_deltaq,
     )

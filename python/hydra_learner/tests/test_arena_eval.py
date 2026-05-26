@@ -407,3 +407,107 @@ def test_arena_run_writes_summary_per_game_and_scalars(tmp_path: Path, monkeypat
         "arena/candidate/baseline_avg_rank",
     }
     assert all(step == 20 for _, _, step in RecordingScalarWriter.records)
+
+
+def test_arena_main_prints_summary_json_when_not_quiet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output = tmp_path / "arena.json"
+
+    def fake_run_arena_eval(config: arena_eval.ArenaEvalConfig) -> dict[str, Any]:
+        summary = {
+            "config": {"games": config.games, "seed": config.seed},
+            "baseline": {"path": config.baseline},
+            "candidates": [
+                {
+                    "candidate": "candidate",
+                    "candidate_path": config.candidates[0],
+                    "result": {"games": config.games, "candidate_winrate": 0.25},
+                }
+            ],
+        }
+        arena_eval._write_json(config.output_path, summary)
+        return summary
+
+    monkeypatch.setattr(arena_eval, "run_arena_eval", fake_run_arena_eval)
+
+    exit_code = arena_eval.main(
+        [
+            "--baseline",
+            "baseline.pt",
+            "--candidate",
+            "candidate.pt",
+            "--games",
+            "4",
+            "--seed",
+            "17",
+            "--output",
+            str(output),
+            "--device",
+            "cpu",
+            "--extension",
+            "fake",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    printed = json.loads(captured.out)
+    assert printed["config"] == {"games": 4, "seed": 17}
+    assert printed["baseline"]["path"] == "baseline.pt"
+    assert printed["candidates"][0]["candidate_path"] == "candidate.pt"
+    assert captured.err == ""
+    written = json.loads(output.read_text(encoding="utf-8"))
+    assert written == printed
+
+
+def test_arena_main_quiet_suppresses_summary_stdout_but_writes_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output = tmp_path / "arena.json"
+
+    def fake_run_arena_eval(config: arena_eval.ArenaEvalConfig) -> dict[str, Any]:
+        summary = {
+            "config": {"games": config.games, "seed": config.seed},
+            "baseline": {"path": config.baseline},
+            "candidates": [
+                {
+                    "candidate": "candidate",
+                    "candidate_path": config.candidates[0],
+                    "result": {"games": config.games, "candidate_winrate": 0.25},
+                }
+            ],
+        }
+        arena_eval._write_json(config.output_path, summary)
+        return summary
+
+    monkeypatch.setattr(arena_eval, "run_arena_eval", fake_run_arena_eval)
+
+    exit_code = arena_eval.main(
+        [
+            "--baseline",
+            "baseline.pt",
+            "--candidate",
+            "candidate.pt",
+            "--games",
+            "4",
+            "--seed",
+            "17",
+            "--output",
+            str(output),
+            "--device",
+            "cpu",
+            "--extension",
+            "fake",
+            "--quiet",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == ""
+    assert captured.err == ""
+    written = json.loads(output.read_text(encoding="utf-8"))
+    assert written["config"] == {"games": 4, "seed": 17}
+    assert written["baseline"]["path"] == "baseline.pt"
+    assert written["candidates"][0]["candidate_path"] == "candidate.pt"

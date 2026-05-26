@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import math
+from typing import cast
 
 import pytest
 import torch
 
 from hydra_learner.model import ACTION_SPACE
+from hydra_learner.reward_shaping import RewardShapingConfig
 from hydra_learner.rl import (
     EntropyController,
     PlayerDecisionStep,
@@ -155,6 +157,59 @@ def test_player_local_truncation_uses_bootstrap_not_terminal_reward() -> None:
     torch.testing.assert_close(out.rewards, torch.tensor([0.0]))
     torch.testing.assert_close(out.returns, torch.tensor([0.75]))
     assert out.truncation.tolist() == [True]
+
+
+def test_player_local_gae_default_equivalence_and_explicit_beta_zero_shaping() -> None:
+    steps = [
+        PlayerDecisionStep(
+            player_id=0, value_old=0.1, phi_t=cast("float", _boom("phi_t")), phi_next=cast("float", _boom("phi_next"))
+        ),
+        PlayerDecisionStep(
+            player_id=0, value_old=0.2, phi_t=cast("float", _boom("phi_t")), phi_next=cast("float", _boom("phi_next"))
+        ),
+    ]
+
+    base = compute_player_local_gae(steps, final_placements=[0, 1, 2, 3], gamma=0.9, gae_lambda=0.8)
+    shaped_zero = compute_player_local_gae(
+        steps,
+        final_placements=[0, 1, 2, 3],
+        gamma=0.9,
+        gae_lambda=0.8,
+        reward_shaping=RewardShapingConfig(enabled=False, pbrs_beta=0.0),
+    )
+
+    torch.testing.assert_close(shaped_zero.rewards, base.rewards)
+    torch.testing.assert_close(shaped_zero.raw_advantages, base.raw_advantages)
+    torch.testing.assert_close(shaped_zero.returns, base.returns)
+    shaped_zero_enabled = compute_player_local_gae(
+        steps,
+        final_placements=[0, 1, 2, 3],
+        gamma=0.9,
+        gae_lambda=0.8,
+        reward_shaping=RewardShapingConfig(enabled=True, pbrs_beta=0.0),
+    )
+    torch.testing.assert_close(shaped_zero_enabled.rewards, base.rewards)
+    torch.testing.assert_close(shaped_zero_enabled.raw_advantages, base.raw_advantages)
+    torch.testing.assert_close(shaped_zero_enabled.returns, base.returns)
+
+
+def test_player_local_gae_nonzero_beta_requires_validation_artifact() -> None:
+    steps = [PlayerDecisionStep(player_id=0, value_old=0.0, phi_t=0.5, phi_next=0.0, terminal_next_phi=True)]
+    with pytest.raises(ValueError, match="validation_artifact_path"):
+        compute_player_local_gae(
+            steps,
+            final_placements=[0, 1, 2, 3],
+            reward_shaping=RewardShapingConfig(enabled=True, pbrs_beta=0.1),
+        )
+
+
+class _ExplodingPhi:
+    def __float__(self) -> float:
+        raise AssertionError("phi should not be converted on default/no-shaping path")
+
+
+def _boom(_name: str) -> object:
+    return _ExplodingPhi()
 
 
 def test_player_local_gae_rejects_invalid_player_and_placements() -> None:

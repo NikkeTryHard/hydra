@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
+import numpy.typing as npt
 import torch
 
 from hydra_learner.losses import BaseTargets, LossWeights
@@ -78,6 +79,36 @@ def validate_policy_batch_shapes(batch: PolicyBatch, *, context: str) -> None:
                 f"{context} {name} must have shape {shapes} and dtype {np.float32}, "
                 f"got shape {tuple(value.shape)} dtype {value.dtype}"
             )
+    _validate_optional_action_pair_np(batch.exit_target, batch.exit_mask, batch.legal_mask, "exit", rows, context)
+    _validate_optional_action_pair_np(batch.deltaq_target, batch.deltaq_mask, batch.legal_mask, "deltaq", rows, context)
+
+
+def _validate_optional_action_pair_np(
+    target: npt.NDArray[np.float32] | None,
+    mask: npt.NDArray[np.float32] | None,
+    legal: npt.NDArray[np.bool_],
+    name: str,
+    rows: int,
+    context: str,
+) -> None:
+    if (target is None) != (mask is None):
+        raise ValueError(f"{context} {name} target/mask must both be present or both absent")
+    if target is None or mask is None:
+        return
+    for suffix, value in (("target", target), ("mask", mask)):
+        if value.shape != (rows, ACTION_SPACE) or value.dtype != np.float32:
+            raise ValueError(
+                f"{context} {name}_{suffix} must have shape {(rows, ACTION_SPACE)} and dtype {np.float32}, "
+                f"got shape {tuple(value.shape)} dtype {value.dtype}"
+            )
+        if not np.isfinite(value).all():
+            raise ValueError(f"{context} {name}_{suffix} contains non-finite values")
+    if not ((mask == 0.0) | (mask == 1.0)).all():
+        raise ValueError(f"{context} {name}_mask must be binary")
+    if ((target != 0.0) & (mask == 0.0)).any():
+        raise ValueError(f"{context} {name}_target has nonzero mass outside target mask")
+    if ((mask != 0.0) & ~legal).any():
+        raise ValueError(f"{context} {name}_mask includes illegal action support")
 
 
 def validate_base_targets(targets: BaseTargets, *, batch: int, device: torch.device | None, context: str) -> None:
@@ -91,6 +122,39 @@ def validate_base_targets(targets: BaseTargets, *, batch: int, device: torch.dev
             raise ValueError(f"{context} {name} must be on {device}, got {tensor.device}")
         if tensor.is_floating_point() and not torch.isfinite(tensor).all().item():
             raise ValueError(f"{context} {name} contains non-finite values")
+    _validate_optional_action_pair_torch(
+        targets.exit_target, targets.exit_mask, targets.legal_mask, "exit", batch, context
+    )
+    _validate_optional_action_pair_torch(
+        targets.deltaq_target, targets.deltaq_mask, targets.legal_mask, "deltaq", batch, context
+    )
+
+
+def _validate_optional_action_pair_torch(
+    target: torch.Tensor | None,
+    mask: torch.Tensor | None,
+    legal: torch.Tensor,
+    name: str,
+    batch: int,
+    context: str,
+) -> None:
+    if (target is None) != (mask is None):
+        raise ValueError(f"{context} {name} target/mask must both be present or both absent")
+    if target is None or mask is None:
+        return
+    for suffix, tensor in (("target", target), ("mask", mask)):
+        if tensor.shape != (batch, ACTION_SPACE) or tensor.dtype != torch.float32:
+            raise ValueError(
+                f"{context} {name}_{suffix} must have shape {(batch, ACTION_SPACE)} and dtype torch.float32"
+            )
+        if not torch.isfinite(tensor).all().item():
+            raise ValueError(f"{context} {name}_{suffix} contains non-finite values")
+    if not torch.logical_or(mask == 0.0, mask == 1.0).all().item():
+        raise ValueError(f"{context} {name}_mask must be binary")
+    if torch.logical_and(target != 0.0, mask == 0.0).any().item():
+        raise ValueError(f"{context} {name}_target has nonzero mass outside target mask")
+    if torch.logical_and(mask != 0.0, ~legal.to(dtype=torch.bool)).any().item():
+        raise ValueError(f"{context} {name}_mask includes illegal action support")
 
 
 @dataclass(frozen=True)
@@ -138,6 +202,10 @@ def synthetic_targets(obs: torch.Tensor, legal: torch.Tensor, labels: torch.Tens
         oracle_target_mask=torch.ones(batch, device=device),
         safety_target=None,
         safety_mask=None,
+        exit_target=None,
+        exit_mask=None,
+        deltaq_target=None,
+        deltaq_mask=None,
     )
 
 
@@ -197,6 +265,10 @@ def tensors_from_pinned_policy_batch(
         oracle_target_mask=batch.oracle_target_mask.to(device=device, non_blocking=True),
         safety_target=None,
         safety_mask=None,
+        exit_target=None,
+        exit_mask=None,
+        deltaq_target=None,
+        deltaq_mask=None,
     )
     h2d_wall_ms = (time.perf_counter() - h2d_started) * 1000.0
     if obs.shape[1:] != (192, 34) or obs.dtype != torch.float32:
@@ -282,6 +354,10 @@ def targets_from_policy_batch(
         oracle_target_mask=torch.from_numpy(batch.oracle_target_mask).to(device=device),
         safety_target=None if batch.safety_target is None else torch.from_numpy(batch.safety_target).to(device=device),
         safety_mask=None if batch.safety_mask is None else torch.from_numpy(batch.safety_mask).to(device=device),
+        exit_target=None if batch.exit_target is None else torch.from_numpy(batch.exit_target).to(device=device),
+        exit_mask=None if batch.exit_mask is None else torch.from_numpy(batch.exit_mask).to(device=device),
+        deltaq_target=None if batch.deltaq_target is None else torch.from_numpy(batch.deltaq_target).to(device=device),
+        deltaq_mask=None if batch.deltaq_mask is None else torch.from_numpy(batch.deltaq_mask).to(device=device),
     )
 
 
@@ -311,6 +387,34 @@ def targets_for_compiled_loss(targets: BaseTargets, weights: LossWeights) -> Bas
         safety_mask = targets.safety_mask
         if safety_mask is None:
             safety_mask = targets.value_target.new_zeros((batch, ACTION_SPACE))
+    if weights.exit > 0.0:
+        exit_target = targets.exit_target
+        exit_mask = targets.exit_mask
+        if exit_target is None or exit_mask is None:
+            raise ValueError("exit targets are required when exit loss weight is positive")
+        _validate_weighted_action_targets(exit_target, exit_mask, targets.legal_mask, "exit", require_unit_mass=True)
+    else:
+        exit_target = targets.exit_target
+        if exit_target is None:
+            exit_target = targets.value_target.new_zeros((batch, ACTION_SPACE))
+        exit_mask = targets.exit_mask
+        if exit_mask is None:
+            exit_mask = targets.value_target.new_zeros((batch, ACTION_SPACE))
+    if weights.deltaq > 0.0:
+        deltaq_target = targets.deltaq_target
+        deltaq_mask = targets.deltaq_mask
+        if deltaq_target is None or deltaq_mask is None:
+            raise ValueError("deltaq targets are required when deltaq loss weight is positive")
+        _validate_weighted_action_targets(
+            deltaq_target, deltaq_mask, targets.legal_mask, "deltaq", require_unit_mass=False
+        )
+        raise ValueError("delta_q_output_contract_missing")
+    deltaq_target = targets.deltaq_target
+    if deltaq_target is None:
+        deltaq_target = targets.value_target.new_zeros((batch, ACTION_SPACE))
+    deltaq_mask = targets.deltaq_mask
+    if deltaq_mask is None:
+        deltaq_mask = targets.value_target.new_zeros((batch, ACTION_SPACE))
     return BaseTargets(
         policy_target=targets.policy_target,
         legal_mask=targets.legal_mask,
@@ -326,4 +430,24 @@ def targets_for_compiled_loss(targets: BaseTargets, weights: LossWeights) -> Bas
         oracle_target_mask=oracle_target_mask,
         safety_target=safety_target,
         safety_mask=safety_mask,
+        exit_target=exit_target,
+        exit_mask=exit_mask,
+        deltaq_target=deltaq_target,
+        deltaq_mask=deltaq_mask,
     )
+
+
+def _validate_weighted_action_targets(
+    target: torch.Tensor, mask: torch.Tensor, legal: torch.Tensor, name: str, *, require_unit_mass: bool
+) -> None:
+    _validate_optional_action_pair_torch(target, mask, legal, name, target.shape[0], "weighted targets")
+    support = mask.to(dtype=torch.bool)
+    if not support.any().item():
+        raise ValueError(f"{name} targets require nonempty support")
+    per_row_support = support.any(dim=1)
+    if not per_row_support.all().item():
+        raise ValueError(f"{name} targets require nonempty support for every sample")
+    if require_unit_mass:
+        mass = (target * mask).sum(dim=1)
+        if not torch.allclose(mass, torch.ones_like(mass), rtol=1.0e-4, atol=1.0e-4):
+            raise ValueError(f"{name} target support mass must be approximately 1")

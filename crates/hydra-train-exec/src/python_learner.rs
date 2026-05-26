@@ -154,6 +154,10 @@ pub fn build_python_learner_command(options: &PythonLearnerCliOptions) -> Python
         options.oracle_critic_weight.to_string(),
         "--w-safety-residual".to_string(),
         options.safety_residual_weight.to_string(),
+        "--w-exit".to_string(),
+        options.exit_weight.to_string(),
+        "--w-deltaq".to_string(),
+        options.deltaq_weight.to_string(),
         "--lr".to_string(),
         options.learning_rate.to_string(),
         "--min-lr".to_string(),
@@ -679,6 +683,8 @@ mod tests {
             compile_fullgraph_check: true,
             oracle_critic_weight: 0.25,
             safety_residual_weight: 0.5,
+            exit_weight: 0.125,
+            deltaq_weight: 0.0,
         }
     }
 
@@ -810,6 +816,8 @@ mod tests {
                 .windows(2)
                 .any(|w| w == ["--checkpoint-out", "/tmp/hydra py launcher/ckpt.pt"])
         );
+        assert!(command.args.windows(2).any(|w| w == ["--w-exit", "0.125"]));
+        assert!(command.args.windows(2).any(|w| w == ["--w-deltaq", "0"]));
         assert!(
             command
                 .args

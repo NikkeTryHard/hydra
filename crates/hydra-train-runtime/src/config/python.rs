@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::{PythonLearnerCliOptions, PythonLearnerInput, TrainConfig, validation_sample_limit};
 
@@ -114,6 +114,8 @@ pub fn python_options_from_config(config: &TrainConfig) -> Result<PythonLearnerC
             .and_then(|loss| loss.safety_residual)
             .unwrap_or(0.0)
             .into(),
+        exit_weight: advanced.and_then(|loss| loss.exit).unwrap_or(0.0).into(),
+        deltaq_weight: advanced.and_then(|loss| loss.delta_q).unwrap_or(0.0).into(),
     })
 }
 
@@ -128,18 +130,28 @@ fn python_schedule_total_steps(config: &TrainConfig) -> Result<Option<usize>, St
 }
 
 fn validate_python_advanced_loss_guards(config: &TrainConfig) -> Result<(), String> {
-    if config.exit_sidecar_path.is_some() {
-        return Err("Python BC learner does not support ExIt sidecars".to_string());
+    if config.exit_sidecar_path.is_some() && config.bc_shards_manifest_path.is_none() {
+        return Err(
+            "Python BC learner supports ExIt sidecars only through compact BC shards".to_string(),
+        );
     }
-    if config.delta_q_sidecar_path.is_some() {
-        return Err("Python BC learner does not support DeltaQ sidecars".to_string());
+    if config.delta_q_sidecar_path.is_some() && config.bc_shards_manifest_path.is_none() {
+        return Err(
+            "Python BC learner supports DeltaQ sidecars only through compact BC shards".to_string(),
+        );
     }
     if let Some(loss) = config.advanced_loss.as_ref() {
         if loss.exit.is_some_and(|weight| weight > 0.0) {
-            return Err("Python BC learner does not support advanced_loss.exit".to_string());
+            validate_python_exit_target_contract(config)?;
         }
         if loss.delta_q.is_some_and(|weight| weight > 0.0) {
-            return Err("Python BC learner does not support advanced_loss.delta_q".to_string());
+            if config.delta_q_sidecar_path.is_none() {
+                return Err(
+                    "advanced_loss.delta_q requires DeltaQ sidecar-backed compact shard labels"
+                        .to_string(),
+                );
+            }
+            return Err("delta_q_output_contract_missing".to_string());
         }
         if loss.belief_fields.is_some_and(|weight| weight > 0.0) {
             return Err(
@@ -156,6 +168,60 @@ fn validate_python_advanced_loss_guards(config: &TrainConfig) -> Result<(), Stri
                 "Python BC learner does not support advanced_loss.opponent_hand_type".to_string(),
             );
         }
+    }
+    Ok(())
+}
+
+fn validate_python_exit_target_contract(config: &TrainConfig) -> Result<(), String> {
+    let manifest_path = config.bc_shards_manifest_path.as_ref().ok_or_else(|| {
+        "advanced_loss.exit requires ExIt sidecar-backed compact shard labels".to_string()
+    })?;
+    let sidecar_path = config.exit_sidecar_path.as_ref().ok_or_else(|| {
+        "advanced_loss.exit requires ExIt sidecar-backed compact shard labels".to_string()
+    })?;
+    let text = std::fs::read_to_string(manifest_path).map_err(|err| {
+        format!("advanced_loss.exit requires readable BC shard manifest provenance: {err}")
+    })?;
+    let manifest: serde_json::Value = serde_json::from_str(&text).map_err(|err| {
+        format!("advanced_loss.exit requires valid BC shard manifest provenance: {err}")
+    })?;
+    let exit_sidecar = manifest
+        .get("exit_sidecar")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| {
+            "advanced_loss.exit requires manifest exit_sidecar provenance".to_string()
+        })?;
+    let manifest_sidecar = exit_sidecar
+        .get("path")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            "advanced_loss.exit requires manifest exit_sidecar.path provenance".to_string()
+        })?;
+    if Path::new(manifest_sidecar) != sidecar_path.as_path() {
+        return Err(
+            "advanced_loss.exit sidecar path must match BC shard manifest exit_sidecar.path"
+                .to_string(),
+        );
+    }
+    if exit_sidecar
+        .get("source_net_hash")
+        .and_then(serde_json::Value::as_u64)
+        .is_none()
+    {
+        return Err(
+            "advanced_loss.exit requires manifest exit_sidecar.source_net_hash provenance"
+                .to_string(),
+        );
+    }
+    if exit_sidecar
+        .get("source_version")
+        .and_then(serde_json::Value::as_u64)
+        .is_none()
+    {
+        return Err(
+            "advanced_loss.exit requires manifest exit_sidecar.source_version provenance"
+                .to_string(),
+        );
     }
     Ok(())
 }

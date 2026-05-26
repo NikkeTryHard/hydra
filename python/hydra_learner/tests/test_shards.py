@@ -23,13 +23,19 @@ from hydra_learner.shard_contracts import (
     BC_SHARD_MANIFEST_VERSION,
     BC_SHARD_VERSION,
     COMPACT_OBS_BASELINE_FACT_BYTES,
+    FLAG_DELTA_Q,
+    FLAG_EXIT,
+    FLAG_SAFETY_RESIDUAL,
     NUM_CHANNELS,
     OBS_SIZE,
+    OPTIONAL_ACTION_FLOAT32_BYTES,
+    OPTIONAL_ACTION_MASK_BYTES,
     SCORE_BIN_MIN,
     TILE_WIDTH,
 )
 from hydra_learner.shard_manifest import validate_manifest
 from hydra_learner.shard_reader import BcShardReader
+from hydra_learner.shards import BcShardReader as LegacyBcShardReader
 
 
 def _empty_obs_facts() -> bytearray:
@@ -323,6 +329,150 @@ def test_compact_reader_decodes_policy_batch(tmp_path: Path) -> None:
     assert bool(batch.legal_mask[1, 1])
     assert not bool(batch.legal_mask[1, 0])
     assert float(batch.obs[0, 55, 0]) == 1.0
+
+
+def _packed_action_mask(indices: tuple[int, ...]) -> bytes:
+    mask = bytearray((ACTION_SPACE + 7) // 8)
+    for action in indices:
+        mask[action // 8] |= 1 << (action % 8)
+    return bytes(mask)
+
+
+def _optional_pair(target: dict[int, float], mask_indices: tuple[int, ...]) -> bytes:
+    values = np.zeros((ACTION_SPACE,), dtype="<f4")
+    for action, value in target.items():
+        values[action] = value
+    return values.tobytes() + _packed_action_mask(mask_indices)
+
+
+def _record_with_optional_lanes(action: int) -> bytes:
+    return (
+        _record(action)
+        + _optional_pair({2: 0.25}, (2,))
+        + _optional_pair({3: 0.75}, (3,))
+        + _optional_pair({4: -1.25}, (4,))
+    )
+
+
+def test_compact_reader_decodes_safety_exit_deltaq_ordering(tmp_path: Path) -> None:
+    flags = FLAG_SAFETY_RESIDUAL | FLAG_EXIT | FLAG_DELTA_Q
+    record_size = BC_BASE_RECORD_SIZE + 3 * (OPTIONAL_ACTION_FLOAT32_BYTES + OPTIONAL_ACTION_MASK_BYTES)
+    shard = tmp_path / "train-00000.hybc"
+    manifest_path = _write_fixture(tmp_path)
+    sample_count = 1
+    byte_len = BC_SHARD_HEADER_SIZE + sample_count * record_size
+    header = struct.pack(
+        "<8sIIIIIQIIIQIIQQ",
+        BC_SHARD_MAGIC,
+        BC_SHARD_VERSION,
+        BC_SHARD_HEADER_SIZE,
+        record_size,
+        0,
+        0,
+        sample_count,
+        NUM_CHANNELS,
+        TILE_WIDTH,
+        ACTION_SPACE,
+        0,
+        flags,
+        BC_SHARD_LAYOUT_VERSION,
+        0,
+        0,
+    )
+    shard.write_bytes(header + _record_with_optional_lanes(2))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["totals"] = {"sample_count": sample_count, "shard_count": 1}
+    split = manifest["splits"][0]
+    split["sample_count"] = sample_count
+    split["feature_flags"] = flags
+    split["record_size"] = record_size
+    desc = split["shards"][0]
+    desc["sample_count"] = sample_count
+    desc["byte_len"] = byte_len
+    desc["feature_flags"] = flags
+    desc["record_size"] = record_size
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with BcShardReader(manifest_path) as reader:
+        batch = reader.batch_range(0, 1)
+
+    assert batch.safety_target is not None
+    assert batch.safety_mask is not None
+    assert batch.exit_target is not None
+    assert batch.exit_mask is not None
+    assert batch.deltaq_target is not None
+    assert batch.deltaq_mask is not None
+    assert float(batch.safety_target[0, 2]) == pytest.approx(0.25)
+    assert float(batch.exit_target[0, 3]) == pytest.approx(0.75)
+    assert float(batch.deltaq_target[0, 4]) == pytest.approx(-1.25)
+    assert float(batch.safety_mask[0, 2]) == 1.0
+    assert float(batch.exit_mask[0, 3]) == 1.0
+    assert float(batch.deltaq_mask[0, 4]) == 1.0
+    assert float(batch.exit_target[0, 2]) == 0.0
+    assert float(batch.deltaq_target[0, 3]) == 0.0
+
+
+def test_legacy_compact_reader_decodes_exit_deltaq_instead_of_skipping(tmp_path: Path) -> None:
+    flags = FLAG_SAFETY_RESIDUAL | FLAG_EXIT | FLAG_DELTA_Q
+    record_size = BC_BASE_RECORD_SIZE + 3 * (OPTIONAL_ACTION_FLOAT32_BYTES + OPTIONAL_ACTION_MASK_BYTES)
+    shard = tmp_path / "train-00000.hybc"
+    manifest_path = _write_fixture(tmp_path)
+    sample_count = 1
+    byte_len = BC_SHARD_HEADER_SIZE + sample_count * record_size
+    header = struct.pack(
+        "<8sIIIIIQIIIQIIQQ",
+        BC_SHARD_MAGIC,
+        BC_SHARD_VERSION,
+        BC_SHARD_HEADER_SIZE,
+        record_size,
+        0,
+        0,
+        sample_count,
+        NUM_CHANNELS,
+        TILE_WIDTH,
+        ACTION_SPACE,
+        0,
+        flags,
+        BC_SHARD_LAYOUT_VERSION,
+        0,
+        0,
+    )
+    shard.write_bytes(header + _record_with_optional_lanes(2))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["totals"] = {"sample_count": sample_count, "shard_count": 1}
+    split = manifest["splits"][0]
+    split["sample_count"] = sample_count
+    split["feature_flags"] = flags
+    split["record_size"] = record_size
+    desc = split["shards"][0]
+    desc["sample_count"] = sample_count
+    desc["byte_len"] = byte_len
+    desc["feature_flags"] = flags
+    desc["record_size"] = record_size
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with LegacyBcShardReader(manifest_path) as reader:
+        batch = reader.batch_range(0, 1)
+
+    assert batch.exit_target is not None
+    assert batch.exit_mask is not None
+    assert batch.deltaq_target is not None
+    assert batch.deltaq_mask is not None
+    assert float(batch.exit_target[0, 3]) == pytest.approx(0.75)
+    assert float(batch.deltaq_target[0, 4]) == pytest.approx(-1.25)
+    assert float(batch.exit_mask[0, 3]) == 1.0
+    assert float(batch.deltaq_mask[0, 4]) == 1.0
+
+
+def test_compact_reader_absent_exit_deltaq_flags_preserve_none(tmp_path: Path) -> None:
+    manifest_path = _write_fixture(tmp_path)
+    with BcShardReader(manifest_path) as reader:
+        batch = reader.batch_range(0, 1)
+    assert batch.exit_target is None
+    assert batch.exit_mask is None
+    assert batch.deltaq_target is None
+    assert batch.deltaq_mask is None
 
 
 def test_compact_reader_rejects_illegal_action_record(tmp_path: Path) -> None:

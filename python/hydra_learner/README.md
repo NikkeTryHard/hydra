@@ -7,17 +7,17 @@ Supported now:
 - compact BC shard ingest from `--manifest <bc_shards_manifest.json>`
 - raw-MJAI ingest from `--raw-mjai-data-dir <dir>`; default transport `pinned_pyo3`, fallback `stdout`
 - full base heads/losses: policy, value, GRP, tenpai, opponent next discard, danger, score PDF/CDF
-- default-off advanced labels already present in shard path: `oracle_critic`, `safety_residual`
+- default-off advanced labels already present in shard path: `oracle_critic`, `safety_residual`, ExIt target/mask, DeltaQ target/mask carrier
 - BF16 autocast on CUDA
 - `torch.compile` fullgraph clean for BC loss step
 - resumable data-only checkpoint save/load for shard runs with model + optimizer + RNG + config metadata
 - balanced JSONL lifecycle/step logs under `output_dir/logs`
 - TensorBoard event files under `output_dir/tensorboard`
 
-Not supported in Python default yet:
+Not active in Python default yet:
 
-- ExIt target/mask
-- DeltaQ target/mask
+- ExIt/search teacher training is default-off; ExIt loss only consumes validated compact-shard labels when explicitly weighted.
+- DeltaQ target/mask carrier is default-off; positive DeltaQ loss fails closed until reviewed output-head contract exists.
 - belief fields
 - mixture weights
 - opponent hand type

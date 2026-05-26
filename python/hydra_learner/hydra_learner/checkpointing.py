@@ -96,6 +96,7 @@ def atomic_save_training_checkpoint(
     ema_tracker: EmaTracker | None = None,
     ema_config: EmaConfig | None = None,
     weight_source: Literal["raw", "ema"] = "raw",
+    target_contract: dict[str, object] | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(f"{path.name}.tmp.{os.getpid()}")
@@ -114,6 +115,7 @@ def atomic_save_training_checkpoint(
         ema_tracker=ema_tracker,
         ema_config=ema_config,
         weight_source=weight_source,
+        target_contract=target_contract,
     )
     tmp_path.replace(path)
 
@@ -158,6 +160,7 @@ def save_training_checkpoint(
     ema_tracker: EmaTracker | None = None,
     ema_config: EmaConfig | None = None,
     weight_source: Literal["raw", "ema"] = "raw",
+    target_contract: dict[str, object] | None = None,
 ) -> None:
     save_checkpoint(
         path,
@@ -176,4 +179,5 @@ def save_training_checkpoint(
         ema_update_count=0 if ema_tracker is None else ema_tracker.update_count,
         ema_last_update_step=0 if ema_tracker is None else ema_tracker.last_update_step,
         weight_source=weight_source,
+        target_contract=target_contract,
     )

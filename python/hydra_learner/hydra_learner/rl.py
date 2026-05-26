@@ -14,6 +14,7 @@ import torch
 import torch.nn.functional as F
 
 from hydra_learner.model import ACTION_SPACE
+from hydra_learner.reward_shaping import RewardShapingConfig, apply_pbrs_reward
 
 PLACEMENT_UTILITY_DEFAULT: tuple[float, float, float, float] = (1.0, 0.3, -0.3, -1.0)
 PLACEMENT_UTILITY_TENHOU_RANK_1_06_02_NEG1: tuple[float, float, float, float] = (1.0, 0.6, 0.2, -1.0)
@@ -27,6 +28,9 @@ class PlayerDecisionStep:
     player_id: int
     value_old: float
     truncation_bootstrap_value: float | None = None
+    phi_t: float | None = None
+    phi_next: float | None = None
+    terminal_next_phi: bool = False
 
 
 @dataclass(frozen=True)
@@ -111,13 +115,14 @@ class AchLossMetrics:
     ratio_max: torch.Tensor
     ratio_clipped_fraction: torch.Tensor
     gate_fraction: torch.Tensor
-    pos_gate_fraction: torch.Tensor
-    neg_gate_fraction: torch.Tensor
+    pos_gate_fraction: torch.Tensor | None
+    neg_gate_fraction: torch.Tensor | None
     pi_old_clamp_fraction: torch.Tensor
     pi_old_min: torch.Tensor
     pi_old_raw_min: torch.Tensor
     approx_kl_old: torch.Tensor
     bc_kl_reverse: torch.Tensor
+    entropy_fraction_mean: torch.Tensor
     advantage_raw_mean: torch.Tensor
     advantage_raw_std: torch.Tensor
     advantage_raw_rms: torch.Tensor
@@ -139,7 +144,7 @@ class AchLossOutput:
     ratio_clipped_per_row: torch.Tensor
     bc_kl_per_row: torch.Tensor
 
-    def metric_dict(self) -> dict[str, float | int]:
+    def metric_dict(self) -> dict[str, float | int | None]:
         return {
             "loss_policy": float(self.metrics.policy_loss),
             "loss_value": float(self.metrics.value_loss),
@@ -149,13 +154,14 @@ class AchLossOutput:
             "ratio_max": float(self.metrics.ratio_max),
             "ratio_clipped_fraction": float(self.metrics.ratio_clipped_fraction),
             "ach_gate_fraction": float(self.metrics.gate_fraction),
-            "ach_pos_gate_fraction": float(self.metrics.pos_gate_fraction),
-            "ach_neg_gate_fraction": float(self.metrics.neg_gate_fraction),
+            "ach_pos_gate_fraction": _optional_float(self.metrics.pos_gate_fraction),
+            "ach_neg_gate_fraction": _optional_float(self.metrics.neg_gate_fraction),
             "pi_old_clamp_fraction": float(self.metrics.pi_old_clamp_fraction),
             "pi_old_min": float(self.metrics.pi_old_min),
             "pi_old_raw_min": float(self.metrics.pi_old_raw_min),
             "approx_kl_old": float(self.metrics.approx_kl_old),
             "bc_kl_reverse": float(self.metrics.bc_kl_reverse),
+            "entropy_fraction_mean": float(self.metrics.entropy_fraction_mean),
             "advantage_raw_mean": float(self.metrics.advantage_raw_mean),
             "advantage_raw_std": float(self.metrics.advantage_raw_std),
             "advantage_raw_rms": float(self.metrics.advantage_raw_rms),
@@ -324,6 +330,7 @@ def compute_player_local_gae(
     placement_utility: Sequence[float] = PLACEMENT_UTILITY_DEFAULT,
     gamma: float = DEFAULT_GAE_GAMMA,
     gae_lambda: float = DEFAULT_GAE_LAMBDA,
+    reward_shaping: RewardShapingConfig | None = None,
 ) -> PlayerLocalGae:
     if any(step.player_id < 0 or step.player_id >= 4 for step in steps):
         raise ValueError("player_id must be in 0..3")
@@ -335,21 +342,48 @@ def compute_player_local_gae(
 
     if len(placement_utility) != 4:
         raise ValueError("placement_utility must contain four values")
+    shaping_config = reward_shaping
+    shaping_enabled = shaping_config is not None and shaping_config.enabled and shaping_config.pbrs_beta > 0.0
     rewards = torch.zeros(len(steps), dtype=torch.float32)
     values = torch.tensor([step.value_old for step in steps], dtype=torch.float32)
     next_values = torch.zeros(len(steps), dtype=torch.float32)
     has_next = torch.zeros(len(steps), dtype=torch.bool)
     terminal_player_stream = torch.zeros(len(steps), dtype=torch.bool)
     truncation = torch.zeros(len(steps), dtype=torch.bool)
+    phi_t = torch.empty(0, dtype=torch.float32)
+    phi_next = torch.empty(0, dtype=torch.float32)
+    terminal_next_phi = torch.empty(0, dtype=torch.bool)
+    if shaping_enabled:
+        phi_t = torch.zeros(len(steps), dtype=torch.float32)
+        phi_next = torch.zeros(len(steps), dtype=torch.float32)
+        terminal_next_phi = torch.zeros(len(steps), dtype=torch.bool)
 
     for player in range(4):
         indices = [index for index, step in enumerate(steps) if step.player_id == player]
         for local, index in enumerate(indices):
             if local + 1 < len(indices):
                 has_next[index] = True
-                next_values[index] = values[indices[local + 1]]
+                next_index = indices[local + 1]
+                next_values[index] = values[next_index]
+                if shaping_enabled:
+                    current_phi = steps[index].phi_t
+                    if current_phi is not None:
+                        phi_t[index] = current_phi
+                    current_phi_next = steps[index].phi_next
+                    next_phi_t = steps[next_index].phi_t
+                    if current_phi_next is not None:
+                        phi_next[index] = current_phi_next
+                    elif next_phi_t is not None:
+                        phi_next[index] = next_phi_t
+                    terminal_next_phi[index] = steps[index].terminal_next_phi
                 continue
             step = steps[index]
+            if shaping_enabled:
+                if step.phi_t is not None:
+                    phi_t[index] = step.phi_t
+                if step.phi_next is not None:
+                    phi_next[index] = step.phi_next
+                terminal_next_phi[index] = step.terminal_next_phi
             if step.truncation_bootstrap_value is not None:
                 has_next[index] = True
                 truncation[index] = True
@@ -362,7 +396,27 @@ def compute_player_local_gae(
             if placement < 0 or placement >= 4:
                 raise ValueError("final placement must be in 0..3")
             rewards[index] = placement_utility[placement]
+            if shaping_enabled:
+                terminal_next_phi[index] = True
 
+    if shaping_enabled:
+        assert shaping_config is not None
+        shaping_config.validate(
+            gamma=gamma, gae_lambda=gae_lambda, rank_utility_id="U_A", rank_utility=placement_utility
+        )
+        rewards = apply_pbrs_reward(
+            rewards,
+            phi_t,
+            phi_next,
+            pbrs_beta=shaping_config.pbrs_beta,
+            gamma=gamma,
+            terminal_next=terminal_next_phi,
+            truncation=truncation,
+        )
+    elif shaping_config is not None:
+        shaping_config.validate(
+            gamma=gamma, gae_lambda=gae_lambda, rank_utility_id="U_A", rank_utility=placement_utility
+        )
     raw_advantages = torch.empty_like(rewards)
     returns = torch.empty_like(rewards)
     for player in range(4):
@@ -533,7 +587,7 @@ def ach_loss(
     advantage_rms = torch.sqrt((raw_advantages * raw_advantages).mean() + config.advantage_epsilon)
     scaled_advantages = raw_advantages / advantage_rms
     _require_finite(scaled_advantages, "scaled_advantages")
-    pos = scaled_advantages > 0.0
+    pos = scaled_advantages >= 0.0
     neg = scaled_advantages < 0.0
     gate_pos = pos & (ratio < 1.0 + config.eps) & (y_a < config.l_th)
     gate_neg = neg & (ratio > 1.0 - config.eps) & (y_a > -config.l_th)
@@ -546,7 +600,7 @@ def ach_loss(
     if bc_logits is None:
         bc_kl_per_row = torch.zeros_like(entropy_per_row)
     else:
-        bc_kl_per_row = masked_kl(policy_logits, bc_logits, mask, direction="current_to_reference")
+        bc_kl_per_row = masked_kl(clamped, bc_logits, mask, direction="current_to_reference")
     bc_kl_reverse = bc_kl_per_row.mean()
     total = (
         policy_loss
@@ -577,13 +631,14 @@ def ach_loss(
             ratio_max=ratio.max().detach(),
             ratio_clipped_fraction=ratio_clipped.to(dtype=policy_logits.dtype).mean().detach(),
             gate_fraction=gate.mean().detach(),
-            pos_gate_fraction=_safe_selected_mean(gate, pos).detach(),
-            neg_gate_fraction=_safe_selected_mean(gate, neg).detach(),
+            pos_gate_fraction=_safe_selected_mean(gate, pos),
+            neg_gate_fraction=_safe_selected_mean(gate, neg),
             pi_old_clamp_fraction=(old_prob_raw < config.pi_old_min).to(dtype=policy_logits.dtype).mean().detach(),
             pi_old_min=torch.tensor(config.pi_old_min, dtype=policy_logits.dtype, device=policy_logits.device),
             pi_old_raw_min=old_prob_raw.min().detach(),
             approx_kl_old=(old_logprob - selected_logprob).mean().detach(),
             bc_kl_reverse=bc_kl_reverse.detach(),
+            entropy_fraction_mean=entropy_fraction(clamped, mask).mean().detach(),
             advantage_raw_mean=raw_mean.detach(),
             advantage_raw_std=torch.sqrt(((raw_advantages - raw_mean) ** 2).mean()).detach(),
             advantage_raw_rms=torch.sqrt((raw_advantages * raw_advantages).mean()).detach(),
@@ -602,10 +657,16 @@ def ach_loss(
     )
 
 
-def _safe_selected_mean(metric: torch.Tensor, selector: torch.Tensor) -> torch.Tensor:
+def _safe_selected_mean(metric: torch.Tensor, selector: torch.Tensor) -> torch.Tensor | None:
     if bool(selector.any()):
-        return metric[selector].mean()
-    return torch.zeros((), dtype=metric.dtype, device=metric.device)
+        return metric[selector].mean().detach()
+    return None
+
+
+def _optional_float(value: torch.Tensor | None) -> float | None:
+    if value is None:
+        return None
+    return float(value)
 
 
 def value_mse(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:

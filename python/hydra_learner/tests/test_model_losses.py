@@ -7,7 +7,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from hydra_learner.batches import targets_for_compiled_loss, targets_from_policy_batch
+from hydra_learner.batches import targets_for_compiled_loss, targets_from_policy_batch, validate_base_targets
 from hydra_learner.losses import (
     BaseTargets,
     LossBreakdown,
@@ -15,6 +15,7 @@ from hydra_learner.losses import (
     active_loss_heads,
     base_loss,
     danger_focal_bce,
+    exit_policy_loss,
     masked_policy_ce,
     masked_policy_ce_indices,
     opp_next_ce,
@@ -396,6 +397,10 @@ def test_compiled_loss_step_matches_base_loss() -> None:
         oracle_target_mask=torch.ones(batch),
         safety_target=torch.ones(batch, ACTION_SPACE),
         safety_mask=torch.ones(batch, ACTION_SPACE),
+        exit_target=torch.zeros(batch, ACTION_SPACE),
+        exit_mask=torch.zeros(batch, ACTION_SPACE),
+        deltaq_target=torch.zeros(batch, ACTION_SPACE),
+        deltaq_mask=torch.zeros(batch, ACTION_SPACE),
     )
     obs = torch.randn(1, 192, 34)
     weights = LossWeights(safety_residual=0.01, oracle_critic=0.02)
@@ -427,7 +432,7 @@ def test_compiled_loss_targets_allocate_optional_fallbacks_once() -> None:
     assert prepared.safety_target.shape == (1, ACTION_SPACE)
     first_safety = prepared.safety_target
     sliced = loss_step_args(torch.zeros(1, 192, 34), prepared, 0, 1)
-    assert sliced[-2].data_ptr() == first_safety.data_ptr()
+    assert sliced[-6].data_ptr() == first_safety.data_ptr()
 
 
 def test_active_loss_heads_policy_only_is_explicit() -> None:
@@ -450,6 +455,193 @@ def test_target_coverage_distinguishes_absent_zero_and_nonzero_optional_masks() 
     nonzero_mask = _tiny_targets_with_optional(safety_mask=torch.tensor([[0.0, 1.0, 0.0]]))
     nonzero = target_coverage_dict(nonzero_mask, LossWeights(safety_residual=0.1))
     assert nonzero["safety_residual"] == {"active": True, "status": "present_positive", "fraction": 1.0}
+
+
+def _targets_with_action_lane(
+    *,
+    exit_target: torch.Tensor | None = None,
+    exit_mask: torch.Tensor | None = None,
+    deltaq_target: torch.Tensor | None = None,
+    deltaq_mask: torch.Tensor | None = None,
+) -> BaseTargets:
+    targets = _tiny_targets()
+    return BaseTargets(
+        policy_target=torch.zeros(1, dtype=torch.int64),
+        legal_mask=torch.ones(1, ACTION_SPACE, dtype=torch.bool),
+        value_target=targets.value_target,
+        grp_target=targets.grp_target,
+        tenpai_target=targets.tenpai_target,
+        danger_target=targets.danger_target,
+        danger_mask=targets.danger_mask,
+        opp_next_target=targets.opp_next_target,
+        score_pdf_target=targets.score_pdf_target,
+        score_cdf_target=targets.score_cdf_target,
+        exit_target=exit_target,
+        exit_mask=exit_mask,
+        deltaq_target=deltaq_target,
+        deltaq_mask=deltaq_mask,
+    )
+
+
+def _action_lane(action: int, value: float) -> tuple[torch.Tensor, torch.Tensor]:
+    target = torch.zeros(1, ACTION_SPACE, dtype=torch.float32)
+    mask = torch.zeros(1, ACTION_SPACE, dtype=torch.float32)
+    target[0, action] = value
+    mask[0, action] = 1.0
+    return target, mask
+
+
+def _action_outputs() -> HydraBaseOutput:
+    out = _tiny_outputs()
+    return HydraBaseOutput(
+        policy_logits=torch.zeros(1, ACTION_SPACE),
+        value=out.value,
+        score_pdf=out.score_pdf,
+        score_cdf=out.score_cdf,
+        opp_tenpai=out.opp_tenpai,
+        grp=out.grp,
+        oracle_critic=out.oracle_critic,
+        safety_residual=torch.zeros(1, ACTION_SPACE),
+        opp_next_discard=out.opp_next_discard,
+        danger=out.danger,
+    )
+
+
+def test_optional_action_target_boundary_validation_rejects_bad_inputs() -> None:
+    good_target, good_mask = _action_lane(1, 1.0)
+    validate_base_targets(
+        _targets_with_action_lane(exit_target=good_target, exit_mask=good_mask), batch=1, device=None, context="test"
+    )
+    with pytest.raises(ValueError, match="both be present"):
+        validate_base_targets(_targets_with_action_lane(exit_target=good_target), batch=1, device=None, context="test")
+    with pytest.raises(ValueError, match="shape"):
+        validate_base_targets(
+            _targets_with_action_lane(exit_target=good_target[:, :2], exit_mask=good_mask[:, :2]),
+            batch=1,
+            device=None,
+            context="test",
+        )
+    with pytest.raises(ValueError, match="dtype"):
+        validate_base_targets(
+            _targets_with_action_lane(exit_target=good_target.to(torch.float64), exit_mask=good_mask),
+            batch=1,
+            device=None,
+            context="test",
+        )
+    bad_mask = good_mask.clone()
+    bad_mask[0, 1] = 0.5
+    with pytest.raises(ValueError, match="binary"):
+        validate_base_targets(
+            _targets_with_action_lane(exit_target=good_target, exit_mask=bad_mask), batch=1, device=None, context="test"
+        )
+    bad_target = good_target.clone()
+    bad_target[0, 0] = float("nan")
+    with pytest.raises(ValueError, match="non-finite"):
+        validate_base_targets(
+            _targets_with_action_lane(exit_target=bad_target, exit_mask=good_mask), batch=1, device=None, context="test"
+        )
+    off_mask_target = good_target.clone()
+    off_mask_target[0, 0] = 0.1
+    with pytest.raises(ValueError, match="outside target mask"):
+        validate_base_targets(
+            _targets_with_action_lane(exit_target=off_mask_target, exit_mask=good_mask),
+            batch=1,
+            device=None,
+            context="test",
+        )
+    illegal_mask = torch.zeros(1, ACTION_SPACE, dtype=torch.float32)
+    illegal_target = torch.zeros(1, ACTION_SPACE, dtype=torch.float32)
+    illegal_mask[0, 2] = 1.0
+    illegal_target[0, 2] = 1.0
+    illegal = _targets_with_action_lane(exit_target=illegal_target, exit_mask=illegal_mask)
+    illegal = BaseTargets(
+        policy_target=illegal.policy_target,
+        legal_mask=torch.ones(1, ACTION_SPACE, dtype=torch.bool),
+        value_target=illegal.value_target,
+        grp_target=illegal.grp_target,
+        tenpai_target=illegal.tenpai_target,
+        danger_target=illegal.danger_target,
+        danger_mask=illegal.danger_mask,
+        opp_next_target=illegal.opp_next_target,
+        score_pdf_target=illegal.score_pdf_target,
+        score_cdf_target=illegal.score_cdf_target,
+        exit_target=illegal.exit_target,
+        exit_mask=illegal.exit_mask,
+    )
+    illegal.legal_mask[0, 2] = False
+    with pytest.raises(ValueError, match="illegal action"):
+        validate_base_targets(illegal, batch=1, device=None, context="test")
+
+
+def test_zero_weight_exit_deltaq_do_not_change_base_loss() -> None:
+    base = base_loss(_action_outputs(), _targets_with_action_lane(), LossWeights())
+    target, mask = _action_lane(1, 1.0)
+    with_lanes = base_loss(
+        _action_outputs(),
+        _targets_with_action_lane(exit_target=target, exit_mask=mask, deltaq_target=target, deltaq_mask=mask),
+        LossWeights(exit=0.0, deltaq=0.0),
+    )
+    torch.testing.assert_close(with_lanes.total, base.total)
+    assert targets_for_compiled_loss(_tiny_targets(), LossWeights()).exit_target is not None
+
+
+def test_exit_positive_weight_requires_labels_and_unit_support_mass() -> None:
+    with pytest.raises(ValueError, match="exit targets"):
+        targets_for_compiled_loss(_tiny_targets(), LossWeights(exit=0.1))
+    target, mask = _action_lane(1, 1.0)
+    targets = targets_for_compiled_loss(
+        _targets_with_action_lane(exit_target=target, exit_mask=mask), LossWeights(exit=0.1)
+    )
+    breakdown = base_loss(_action_outputs(), targets, LossWeights(exit=0.1))
+    assert torch.isfinite(breakdown.exit)
+    bad_mass, _ = _action_lane(1, 0.5)
+    with pytest.raises(ValueError, match="approximately 1"):
+        targets_for_compiled_loss(
+            _targets_with_action_lane(exit_target=bad_mass, exit_mask=mask), LossWeights(exit=0.1)
+        )
+
+
+def test_exit_policy_loss_uses_unit_mass_soft_ce_without_support_scaling() -> None:
+    logits = torch.tensor([[0.0, 1.0, 2.0, 9.0]])
+    target = torch.tensor([[0.25, 0.75, 0.0, 0.0]])
+    mask = torch.tensor([[1.0, 1.0, 0.0, 0.0]])
+    legal = torch.tensor([[True, True, True, False]])
+
+    actual = exit_policy_loss(logits, target, mask, legal)
+    expected = -(target[:, :2] * F.log_softmax(logits[:, :2], dim=1)).sum(dim=1)
+    old_wrong = expected / 2.0
+
+    torch.testing.assert_close(actual, expected)
+    assert not torch.allclose(actual, old_wrong)
+
+
+def test_exit_policy_loss_one_hot_target_matches_masked_policy_ce() -> None:
+    logits = torch.tensor([[0.0, 1.5, -2.0, 7.0]])
+    target = torch.tensor([[0.0, 1.0, 0.0, 0.0]])
+    mask = torch.tensor([[1.0, 1.0, 1.0, 0.0]])
+    legal = torch.tensor([[True, True, True, False]])
+
+    actual = exit_policy_loss(logits, target, mask, legal)
+    expected = masked_policy_ce_indices(logits, torch.tensor([1]), legal)
+
+    torch.testing.assert_close(actual, expected)
+
+
+def test_deltaq_carrier_validates_but_positive_loss_fails_closed() -> None:
+    target, mask = _action_lane(1, -0.5)
+    validate_base_targets(
+        _targets_with_action_lane(deltaq_target=target, deltaq_mask=mask), batch=1, device=None, context="test"
+    )
+    with pytest.raises(ValueError, match="delta_q_output_contract_missing"):
+        targets_for_compiled_loss(
+            _targets_with_action_lane(deltaq_target=target, deltaq_mask=mask), LossWeights(deltaq=0.1)
+        )
+    with pytest.raises(ValueError, match="delta_q_output_contract_missing"):
+        base_loss(
+            _action_outputs(),
+            _targets_with_action_lane(deltaq_target=target, deltaq_mask=mask),
+            LossWeights(deltaq=0.1),
+        )
 
 
 def _cuda_event_factory(*_args: object, **_kwargs: object) -> object:
@@ -620,6 +812,8 @@ def test_run_step_collects_policy_diagnostics_without_extra_forward(monkeypatch:
                 score_cdf=loss * 0.0,
                 oracle_critic=loss * 0.0,
                 safety_residual=loss * 0.0,
+                exit=loss * 0.0,
+                deltaq=loss * 0.0,
             )
             return loss
 

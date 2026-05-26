@@ -145,8 +145,12 @@ class PolicyBatch:
     danger_mask: npt.NDArray[np.float32]
     score_pdf: npt.NDArray[np.float32]
     score_cdf: npt.NDArray[np.float32]
-    safety_target: npt.NDArray[np.float32] | None
-    safety_mask: npt.NDArray[np.float32] | None
+    safety_target: npt.NDArray[np.float32] | None = None
+    safety_mask: npt.NDArray[np.float32] | None = None
+    exit_target: npt.NDArray[np.float32] | None = None
+    exit_mask: npt.NDArray[np.float32] | None = None
+    deltaq_target: npt.NDArray[np.float32] | None = None
+    deltaq_mask: npt.NDArray[np.float32] | None = None
 
 
 @dataclass(frozen=True)

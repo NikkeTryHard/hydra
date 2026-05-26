@@ -9,7 +9,8 @@ from safetensors.torch import load_file
 
 from hydra_learner import export_inference as export_inference_module
 from hydra_learner.checkpoint import EmaConfig, ModelConfig, OptimizerConfig, RuntimeConfig, save_checkpoint
-from hydra_learner.export_inference import export_inference, parse_args, validate_args
+from hydra_learner.drda import DrdaResidualConfig, drda_training_objective_metadata
+from hydra_learner.export_inference import export_inference, parse_args, validate_args, write_exported_policy
 from hydra_learner.losses import LossWeights
 from hydra_learner.model import (
     ACTION_SPACE,
@@ -99,6 +100,31 @@ def test_load_export_policy_validates_checkpoint_before_writing(tmp_path: Path) 
         assert policy(obs).shape == (8, ACTION_SPACE)
 
 
+def test_write_exported_policy_rejects_drda_checkpoint_before_creating_artifacts(tmp_path: Path) -> None:
+    checkpoint = _write_checkpoint(tmp_path)
+    config = validate_args(parse_args(["--checkpoint", str(checkpoint), "--output-dir", str(tmp_path / "direct")]))
+    policy, obs, init, model_config, raw_checkpoint = export_inference_module.load_export_policy(config)
+    base_checkpoint = tmp_path / "base.pt"
+    base_checkpoint.write_bytes(b"base checkpoint")
+    raw_checkpoint["training_objective"] = drda_training_objective_metadata(
+        config=DrdaResidualConfig(),
+        base_checkpoint_path=base_checkpoint,
+        base_model_config=ModelConfig(hidden=8, blocks=1, bottleneck=4),
+    )
+
+    with pytest.raises(ValueError, match="DRDA residual adapter checkpoints cannot be exported"):
+        write_exported_policy(
+            config,
+            policy=policy,
+            obs=obs,
+            init=init,
+            model_config=model_config,
+            checkpoint=raw_checkpoint,
+        )
+
+    assert not config.output_dir.exists() or not any(config.output_dir.iterdir())
+
+
 def test_export_rejects_unsupported_profile(tmp_path: Path) -> None:
     checkpoint = _write_checkpoint(
         tmp_path,
@@ -112,12 +138,31 @@ def test_export_rejects_unsupported_profile(tmp_path: Path) -> None:
         )
 
 
+def test_export_rejects_drda_residual_checkpoint(tmp_path: Path) -> None:
+    base_checkpoint = tmp_path / "base.pt"
+    base_checkpoint.write_bytes(b"base checkpoint")
+    checkpoint = _write_checkpoint(
+        tmp_path,
+        training_objective=drda_training_objective_metadata(
+            config=DrdaResidualConfig(),
+            base_checkpoint_path=base_checkpoint,
+            base_model_config=ModelConfig(hidden=8, blocks=1, bottleneck=4),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="DRDA residual adapter checkpoints cannot be exported"):
+        export_inference(
+            validate_args(parse_args(["--checkpoint", str(checkpoint), "--output-dir", str(tmp_path / "drda")]))
+        )
+
+
 def _write_checkpoint(
     tmp_path: Path,
     *,
     model: HydraPolicyNet | None = None,
     model_config: ModelConfig | None = None,
     with_ema: bool = False,
+    training_objective: dict[str, object] | None = None,
 ) -> Path:
     actual_model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4) if model is None else model
     optimizer = torch.optim.AdamW(actual_model.parameters(), lr=1.0e-3)
@@ -148,5 +193,6 @@ def _write_checkpoint(
         samples_seen=11,
         ema_config=ema_config,
         ema_state=ema_state,
+        training_objective=training_objective,
     )
     return path

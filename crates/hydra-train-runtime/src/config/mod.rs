@@ -614,6 +614,8 @@ pub struct PythonLearnerCliOptions {
     pub compile_fullgraph_check: bool,
     pub oracle_critic_weight: f64,
     pub safety_residual_weight: f64,
+    pub exit_weight: f64,
+    pub deltaq_weight: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]

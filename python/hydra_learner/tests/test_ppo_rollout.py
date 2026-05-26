@@ -35,13 +35,19 @@ from hydra_learner.ppo_smoke import (
     write_ppo_smoke_rollout_artifact,
 )
 from hydra_learner.ppo_step import PpoBatch, PpoTrainStepConfig
+from hydra_learner.reward_shaping import default_reward_shaping_metadata
 from hydra_learner.rl import EntropyController, masked_log_prob
 
 
 def test_ppo_rollout_artifact_roundtrip_and_batch_conversion(tmp_path: Path) -> None:
     batch = _valid_batch()
     path = tmp_path / "rollout.pt"
-    metadata = PpoRolloutMetadata(rank_utility_used="U_A", gae_gamma=0.995, gae_lambda=0.95)
+    metadata = PpoRolloutMetadata(
+        rank_utility_used="U_A",
+        gae_gamma=0.995,
+        gae_lambda=0.95,
+        reward_shaping=default_reward_shaping_metadata(gamma=0.995, gae_lambda=0.95),
+    )
 
     save_ppo_rollout_artifact(path, batch, metadata)
     artifact = load_ppo_rollout_artifact(path)
@@ -84,6 +90,54 @@ def test_ppo_rollout_artifact_validation_hard_errors(tmp_path: Path, field: str,
         load_ppo_rollout_artifact(path)
 
 
+def test_ppo_rollout_default_reward_shaping_uses_artifact_gamma_lambda(tmp_path: Path) -> None:
+    path = tmp_path / "custom-gamma.pt"
+    save_ppo_rollout_artifact(
+        path,
+        _valid_batch(),
+        PpoRolloutMetadata(rank_utility_used="U_A", gae_gamma=0.9, gae_lambda=0.8, reward_shaping=None),
+    )
+
+    artifact = load_ppo_rollout_artifact(path)
+    reward_shaping = cast("dict[str, object]", artifact.metadata.reward_shaping)
+
+    assert artifact.metadata.gae_gamma == pytest.approx(0.9)
+    assert artifact.metadata.gae_lambda == pytest.approx(0.8)
+    assert reward_shaping["enabled"] is False
+    assert reward_shaping["gae_gamma"] == pytest.approx(0.9)
+    assert reward_shaping["gae_lambda"] == pytest.approx(0.8)
+
+
+def test_legacy_ppo_rollout_missing_reward_shaping_uses_artifact_gamma_lambda(tmp_path: Path) -> None:
+    path = tmp_path / "legacy-custom-gamma.pt"
+    payload = _artifact_payload(_valid_batch())
+    metadata = cast("dict[str, object]", payload["metadata"])
+    metadata["gae_gamma"] = 0.9
+    metadata["gae_lambda"] = 0.8
+    metadata.pop("reward_shaping", None)
+    torch.save(payload, path)
+
+    artifact = load_ppo_rollout_artifact(path)
+    reward_shaping = cast("dict[str, object]", artifact.metadata.reward_shaping)
+
+    assert artifact.metadata.gae_gamma == pytest.approx(0.9)
+    assert artifact.metadata.gae_lambda == pytest.approx(0.8)
+    assert reward_shaping["enabled"] is False
+    assert reward_shaping["gae_gamma"] == pytest.approx(0.9)
+    assert reward_shaping["gae_lambda"] == pytest.approx(0.8)
+
+
+def test_ppo_rollout_artifact_rejects_incomplete_enabled_reward_shaping(tmp_path: Path) -> None:
+    path = tmp_path / "bad-shaping.pt"
+    payload = _artifact_payload(_valid_batch())
+    metadata = cast("dict[str, object]", payload["metadata"])
+    metadata["reward_shaping"] = {"enabled": True, "kind": "pbrs"}
+    torch.save(payload, path)
+
+    with pytest.raises(ValueError, match="reward_shaping"):
+        load_ppo_rollout_artifact(path)
+
+
 def test_ppo_rollout_artifact_rejects_all_illegal_selected_illegal_and_bad_bc_logits(tmp_path: Path) -> None:
     for mutate, match in (
         (_mutate_all_illegal, "all-illegal"),
@@ -119,6 +173,7 @@ def test_train_step_from_rollout_artifact_real_model_json_metrics_and_update(tmp
     assert _any_parameter_changed(model.state_dict(), before)
     assert 0.0 <= result.entropy_controller.alpha <= 0.05
     assert result.artifact_metadata["rank_utility_used"] == "U_A"
+    assert cast("dict[str, object]", result.artifact_metadata["reward_shaping"])["enabled"] is False
     assert result.metrics["rollout_contract_version"] == "ppo_rollout_v1"
     json.dumps(result.metrics, allow_nan=False)
 
@@ -303,6 +358,9 @@ def test_phase2_smoke_artifact_update_metrics_checkpoint_and_init_reload(tmp_pat
         assert key in metrics
     json.dumps(metrics, allow_nan=False)
     metrics_path = tmp_path / "metrics" / "ppo-smoke.jsonl"
+    artifact = load_ppo_rollout_artifact(artifact_result.artifact_path)
+    assert artifact.metadata.reward_shaping is not None
+    assert artifact.metadata.reward_shaping["enabled"] is False
     append_ppo_metrics_jsonl(metrics_path, metrics)
     assert len(metrics_path.read_text(encoding="utf-8").splitlines()) == 1
     assert _any_parameter_changed(model.state_dict(), before)

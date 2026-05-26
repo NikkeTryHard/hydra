@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import math
 import random
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -24,6 +27,13 @@ from hydra_learner.model import (
 
 if TYPE_CHECKING:
     from hydra_learner.losses import LossWeights
+
+
+TARGET_CONTRACT_SEMANTICS = {
+    "exit": "exit_root_child_visits_v1",
+    "delta_q": "delta_q_child_minus_root_v1",
+}
+TARGET_CONTRACT_PROVENANCE = "search-derived"
 
 CHECKPOINT_SCHEMA_VERSION = 1
 ENCODER_SHAPE = (OBS_CHANNELS, TILE_WIDTH)
@@ -117,6 +127,51 @@ def manifest_digest(path: Path | None) -> str | None:
     return h.hexdigest()
 
 
+def target_contract_from_manifest(manifest_path: Path | None, weights: LossWeights) -> dict[str, object] | None:
+    lanes: list[tuple[str, str]] = []
+    if weights.exit > 0.0:
+        lanes.append(("exit", "exit_sidecar"))
+    if weights.deltaq > 0.0:
+        raise ValueError("delta_q_output_contract_missing")
+    if not lanes:
+        return None
+    if manifest_path is None:
+        raise ValueError("target_contract metadata requires compact shard manifest")
+    with manifest_path.open("r", encoding="utf-8") as fh:
+        manifest = json.load(fh)
+    if not isinstance(manifest, Mapping):
+        raise ValueError("target_contract metadata requires manifest object")
+    digest = manifest_digest(manifest_path)
+    contract: dict[str, object] = {}
+    for lane, manifest_key in lanes:
+        sidecar = manifest.get(manifest_key)
+        if not isinstance(sidecar, Mapping):
+            raise ValueError(f"target_contract.{lane} requires {manifest_key} manifest metadata")
+        path = sidecar.get("path")
+        source_net_hash = sidecar.get("source_net_hash")
+        source_version = sidecar.get("source_version")
+        if not isinstance(path, str) or path == "":
+            raise ValueError(f"target_contract.{lane}.sidecar_path is required")
+        if not isinstance(source_net_hash, int):
+            raise ValueError(f"target_contract.{lane}.source_net_hash is required")
+        if not isinstance(source_version, int):
+            raise ValueError(f"target_contract.{lane}.source_version is required")
+        lane_contract: dict[str, object] = {
+            "lane": lane,
+            "sidecar_path": path,
+            "source_net_hash": source_net_hash,
+            "source_version": source_version,
+            "semantics": TARGET_CONTRACT_SEMANTICS[lane],
+            "provenance": TARGET_CONTRACT_PROVENANCE,
+            "manifest_path": str(manifest_path),
+            "manifest_digest_sha256": digest,
+            "coverage_fraction": 1.0,
+        }
+        _validate_target_lane_contract(lane, lane_contract)
+        contract[lane] = lane_contract
+    return contract
+
+
 def _numpy_rng_state() -> tuple[Any, ...]:
     return cast("tuple[Any, ...]", np.random.get_state())
 
@@ -175,6 +230,8 @@ def save_checkpoint(
     ema_update_count: int = 0,
     ema_last_update_step: int = 0,
     weight_source: Literal["raw", "ema"] = "raw",
+    training_objective: Mapping[str, object] | None = None,
+    target_contract: Mapping[str, object] | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     checkpoint = {
@@ -197,6 +254,12 @@ def save_checkpoint(
         "raw_mjai_progress": dict[str, int]() if raw_mjai_progress is None else dict(raw_mjai_progress),
         "compile": asdict(runtime_config),
     }
+    normalized_target_contract = _normalize_target_contract_for_weights(target_contract, loss_weights)
+    if normalized_target_contract is not None:
+        checkpoint["target_contract"] = normalized_target_contract
+    if training_objective is not None:
+        _validate_json_payload(training_objective, "training_objective")
+        checkpoint["training_objective"] = dict(training_objective)
     if ema_config is not None:
         checkpoint["ema_config"] = asdict(ema_config)
         checkpoint["ema_state"] = {} if ema_state is None else _cpu_ema_state(ema_state)
@@ -217,11 +280,26 @@ def load_checkpoint(
     expected_loss_weights: LossWeights,
     expected_manifest_path: Path | None,
     expected_ema_config: EmaConfig | None = None,
+    expected_target_contract: Mapping[str, object] | None = None,
 ) -> ResumeState:
     checkpoint = _torch_load(path)
     _validate_checkpoint_root(checkpoint)
     _expect_equal(checkpoint["model_config"], asdict(expected_model_config), "model_config")
-    _expect_equal(checkpoint["loss_weights"], asdict(expected_loss_weights), "loss_weights")
+    if expected_loss_weights.deltaq > 0.0:
+        raise ValueError("delta_q_output_contract_missing")
+    _expect_equal(
+        _normalize_loss_weights(checkpoint["loss_weights"]),
+        _normalize_expected_loss_weights(expected_loss_weights),
+        "loss_weights",
+    )
+    expected_target_contract_normalized = _normalize_target_contract_for_weights(
+        expected_target_contract, expected_loss_weights
+    )
+    actual_target_contract = checkpoint.get("target_contract")
+    if expected_target_contract_normalized is not None:
+        _expect_equal(actual_target_contract, expected_target_contract_normalized, "target_contract")
+    elif actual_target_contract is not None:
+        _validate_json_payload(actual_target_contract, "target_contract")
     _expect_equal(
         _checkpoint_optimizer_config_for_resume(checkpoint["optimizer_config"], expected_optimizer_config),
         asdict(expected_optimizer_config),
@@ -332,6 +410,7 @@ def _validate_checkpoint_root(checkpoint: dict[str, Any]) -> None:
         raise ValueError(f"checkpoint missing keys: {sorted(missing)}")
     if checkpoint["schema_version"] != CHECKPOINT_SCHEMA_VERSION:
         raise ValueError(f"checkpoint schema_version mismatch: {checkpoint['schema_version']!r}")
+    _normalize_loss_weights(checkpoint["loss_weights"])
 
 
 def _load_model_state_strict(model: nn.Module, state: object) -> None:
@@ -434,6 +513,106 @@ def _checkpoint_optimizer_config_for_resume(actual: object, expected: OptimizerC
         ):
             normalized[key] = expected_value
     return normalized
+
+
+def _normalize_loss_weights(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        raise TypeError("checkpoint loss_weights must be an object")
+    normalized = dict(value)
+    normalized.setdefault("exit", 0.0)
+    normalized.setdefault("deltaq", 0.0)
+    return normalized
+
+
+def _normalize_expected_loss_weights(weights: LossWeights) -> dict[str, object]:
+    expected = asdict(weights)
+    expected.setdefault("exit", 0.0)
+    expected.setdefault("deltaq", 0.0)
+    return expected
+
+
+def _normalize_target_contract_for_weights(
+    value: Mapping[str, object] | None, weights: LossWeights
+) -> dict[str, object] | None:
+    lanes: list[str] = []
+    if weights.exit > 0.0:
+        lanes.append("exit")
+    if weights.deltaq > 0.0:
+        raise ValueError("delta_q_output_contract_missing")
+    if not lanes:
+        if value is not None:
+            _validate_json_payload(value, "target_contract")
+        return None if value is None else dict(value)
+    if value is None:
+        raise ValueError("target_contract metadata is required when target loss weights are positive")
+    _validate_json_payload(value, "target_contract")
+    contract = dict(value)
+    for lane in lanes:
+        lane_value = contract.get(lane)
+        if not isinstance(lane_value, Mapping):
+            raise ValueError(f"target_contract.{lane} metadata is required")
+        _validate_target_lane_contract(lane, lane_value)
+    return contract
+
+
+def _validate_target_lane_contract(lane: str, value: Mapping[str, object]) -> None:
+    required = {
+        "lane",
+        "sidecar_path",
+        "source_net_hash",
+        "source_version",
+        "semantics",
+        "provenance",
+        "manifest_path",
+        "manifest_digest_sha256",
+        "coverage_fraction",
+    }
+    missing = required.difference(value)
+    if missing:
+        raise ValueError(f"target_contract.{lane} missing keys: {sorted(missing)}")
+    if value["lane"] != lane:
+        raise ValueError(f"target_contract.{lane}.lane mismatch")
+    if value["semantics"] != TARGET_CONTRACT_SEMANTICS[lane]:
+        raise ValueError(f"target_contract.{lane}.semantics mismatch")
+    if value["provenance"] != TARGET_CONTRACT_PROVENANCE:
+        raise ValueError(f"target_contract.{lane}.provenance mismatch")
+    coverage = value["coverage_fraction"]
+    if (
+        not isinstance(coverage, int | float)
+        or not math.isfinite(float(coverage))
+        or not (0.0 < float(coverage) <= 1.0)
+    ):
+        raise ValueError(f"target_contract.{lane}.coverage_fraction must be in (0, 1]")
+    _validate_sidecar_tuple(value, lane)
+
+
+def _validate_sidecar_tuple(value: Mapping[str, object], lane: str) -> None:
+    tuple_keys = ("sidecar_path", "source_net_hash", "source_version")
+    present = [value.get(key) is not None for key in tuple_keys]
+    if any(present) and not all(present):
+        raise ValueError(f"target_contract.{lane} sidecar tuple must have path/hash/version all present or all absent")
+
+
+def _validate_json_payload(value: object, path: str) -> None:
+    if isinstance(value, bool | str) or value is None:
+        return
+    if isinstance(value, int):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"{path} contains non-finite float")
+        return
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(f"{path} keys must be strings")
+            _validate_json_payload(item, f"{path}.{key}")
+        return
+    if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
+        for index, item in enumerate(value):
+            _validate_json_payload(item, f"{path}[{index}]")
+        return
+    raise TypeError(f"{path} contains unsupported {type(value).__name__}")
 
 
 def _expect_equal(actual: object, expected: object, name: str) -> None:

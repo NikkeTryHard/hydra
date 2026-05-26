@@ -1194,6 +1194,8 @@ where
             compile_fullgraph_check: python_compile_fullgraph_check,
             oracle_critic_weight: python_oracle_critic_weight,
             safety_residual_weight: python_safety_residual_weight,
+            exit_weight: 0.0,
+            deltaq_weight: 0.0,
         })
     } else {
         if python_output_dir.is_some()

@@ -15,6 +15,7 @@ import torch
 from safetensors.torch import load_file, save_file
 
 from hydra_learner.checkpoint import CHECKPOINT_SCHEMA_VERSION, ModelConfig, _torch_load, load_checkpoint_init_only
+from hydra_learner.drda import DRDA_RESIDUAL_MODE, DRDA_RESIDUAL_OBJECTIVE
 from hydra_learner.model import (
     ACTION_SPACE,
     BACKBONE_PROFILE_CONV2D_LOCAL3,
@@ -97,6 +98,7 @@ def validate_args(args: argparse.Namespace) -> ExportConfig:
 
 def load_export_policy(config: ExportConfig) -> tuple[PolicyOnly, torch.Tensor, Any, ModelConfig, dict[str, Any]]:
     checkpoint = _torch_load(config.checkpoint)
+    _reject_drda_checkpoint_export(checkpoint)
     raw_model_config = checkpoint.get("model_config")
     if not isinstance(raw_model_config, dict):
         raise ValueError("checkpoint missing model_config")
@@ -136,6 +138,7 @@ def write_exported_policy(
     model_config: ModelConfig,
     checkpoint: dict[str, Any],
 ) -> ExportResult:
+    _reject_drda_checkpoint_export(checkpoint)
     config.output_dir.mkdir(parents=True, exist_ok=True)
     artifact_path = config.output_dir / ARTIFACT_NAME
     metadata_path = config.output_dir / METADATA_NAME
@@ -181,6 +184,19 @@ def export_inference(config: ExportConfig) -> ExportResult:
         model_config=model_config,
         checkpoint=checkpoint,
     )
+
+
+def _reject_drda_checkpoint_export(checkpoint: dict[str, Any]) -> None:
+    training_objective = checkpoint.get("training_objective")
+    if not isinstance(training_objective, dict):
+        return
+    objective = training_objective.get("objective")
+    mode = training_objective.get("mode")
+    if objective == DRDA_RESIDUAL_OBJECTIVE or mode == DRDA_RESIDUAL_MODE:
+        raise ValueError(
+            "DRDA residual adapter checkpoints cannot be exported to ONNX/native arena yet; "
+            "additive DRDA runtime/export support is not implemented"
+        )
 
 
 def _export_onnx(policy: PolicyOnly, obs: torch.Tensor, artifact_path: Path, config: ExportConfig) -> None:

@@ -12,6 +12,7 @@ import torch
 from hydra_learner.model import ACTION_SPACE, OBS_CHANNELS, TILE_WIDTH, HydraPolicyNet
 from hydra_learner.ppo_rollout import PpoRolloutMetadata, save_ppo_rollout_artifact
 from hydra_learner.ppo_step import PpoBatch
+from hydra_learner.reward_shaping import default_reward_shaping_metadata
 from hydra_learner.rl import (
     DEFAULT_GAE_GAMMA,
     DEFAULT_GAE_LAMBDA,
@@ -124,7 +125,10 @@ def write_ppo_smoke_rollout_artifact(
         path,
         batch,
         PpoRolloutMetadata(
-            rank_utility_used=RANK_UTILITY_U_A, gae_gamma=DEFAULT_GAE_GAMMA, gae_lambda=DEFAULT_GAE_LAMBDA
+            rank_utility_used=RANK_UTILITY_U_A,
+            gae_gamma=DEFAULT_GAE_GAMMA,
+            gae_lambda=DEFAULT_GAE_LAMBDA,
+            reward_shaping=default_reward_shaping_metadata(gamma=DEFAULT_GAE_GAMMA, gae_lambda=DEFAULT_GAE_LAMBDA),
         ),
     )
     metrics = smoke_artifact_boundary_metrics(path, rollout, batch)

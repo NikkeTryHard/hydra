@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import random
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from hydra_learner.checkpoint import (
     manifest_digest,
     restore_rng_state,
     save_checkpoint,
+    target_contract_from_manifest,
 )
 from hydra_learner.losses import LossWeights
 from hydra_learner.model import (
@@ -762,6 +764,284 @@ def test_init_only_loader_rejects_model_config_mismatch(tmp_path: Path) -> None:
         )
 
 
+def _target_contract(manifest_path: Path, *, lane: str = "exit") -> dict[str, object]:
+    semantics = "exit_root_child_visits_v1" if lane == "exit" else "delta_q_child_minus_root_v1"
+    return {
+        lane: {
+            "lane": lane,
+            "sidecar_path": "/labels/sidecar.jsonl",
+            "source_net_hash": 123,
+            "source_version": 7,
+            "semantics": semantics,
+            "provenance": "search-derived",
+            "manifest_path": str(manifest_path),
+            "manifest_digest_sha256": manifest_digest(manifest_path),
+            "coverage_fraction": 1.0,
+        }
+    }
+
+
+def test_checkpoint_normalizes_legacy_loss_weights_missing_phase5(tmp_path: Path) -> None:
+    model, optimizer = _model_optimizer()
+    ckpt = tmp_path / "ckpt.pt"
+    manifest = _write_manifest(tmp_path, b"manifest")
+    save_checkpoint(
+        ckpt,
+        model=model,
+        optimizer=optimizer,
+        model_config=_model_config(),
+        optimizer_config=_optimizer_config(),
+        runtime_config=_runtime_config(),
+        loss_weights=LossWeights(),
+        manifest_path=manifest,
+        global_step=1,
+        samples_seen=2,
+    )
+    checkpoint = torch.load(ckpt, map_location="cpu", weights_only=False)
+    del checkpoint["loss_weights"]["exit"]
+    del checkpoint["loss_weights"]["deltaq"]
+    torch.save(checkpoint, ckpt)
+
+    state = load_checkpoint(
+        ckpt,
+        model=model,
+        optimizer=optimizer,
+        expected_model_config=_model_config(),
+        expected_optimizer_config=_optimizer_config(),
+        expected_runtime_config=_runtime_config(),
+        expected_loss_weights=LossWeights(),
+        expected_manifest_path=manifest,
+    )
+    assert state.global_step == 1
+
+
+def test_checkpoint_target_contract_required_and_resume_checked(tmp_path: Path) -> None:
+    model, optimizer = _model_optimizer()
+    ckpt = tmp_path / "ckpt.pt"
+    manifest = _write_manifest(tmp_path, b"manifest")
+    with pytest.raises(ValueError, match="target_contract metadata"):
+        save_checkpoint(
+            ckpt,
+            model=model,
+            optimizer=optimizer,
+            model_config=_model_config(),
+            optimizer_config=_optimizer_config(),
+            runtime_config=_runtime_config(),
+            loss_weights=LossWeights(exit=0.1),
+            manifest_path=manifest,
+            global_step=1,
+            samples_seen=2,
+        )
+    contract = _target_contract(manifest)
+    save_checkpoint(
+        ckpt,
+        model=model,
+        optimizer=optimizer,
+        model_config=_model_config(),
+        optimizer_config=_optimizer_config(),
+        runtime_config=_runtime_config(),
+        loss_weights=LossWeights(exit=0.1),
+        manifest_path=manifest,
+        global_step=1,
+        samples_seen=2,
+        target_contract=contract,
+    )
+    load_checkpoint(
+        ckpt,
+        model=model,
+        optimizer=optimizer,
+        expected_model_config=_model_config(),
+        expected_optimizer_config=_optimizer_config(),
+        expected_runtime_config=_runtime_config(),
+        expected_loss_weights=LossWeights(exit=0.1),
+        expected_manifest_path=manifest,
+        expected_target_contract=contract,
+    )
+    mismatched = _target_contract(manifest)
+    assert isinstance(mismatched["exit"], dict)
+    mismatched["exit"]["source_version"] = 8
+    with pytest.raises(ValueError, match="target_contract mismatch"):
+        load_checkpoint(
+            ckpt,
+            model=model,
+            optimizer=optimizer,
+            expected_model_config=_model_config(),
+            expected_optimizer_config=_optimizer_config(),
+            expected_runtime_config=_runtime_config(),
+            expected_loss_weights=LossWeights(exit=0.1),
+            expected_manifest_path=manifest,
+            expected_target_contract=mismatched,
+        )
+
+
+def test_target_contract_from_manifest_save_resume_and_mismatch(tmp_path: Path) -> None:
+    model, optimizer = _model_optimizer()
+    manifest = _write_sidecar_manifest(tmp_path)
+    weights = LossWeights(exit=0.1)
+    contract = target_contract_from_manifest(manifest, weights)
+    assert contract is not None
+    ckpt = tmp_path / "ckpt.pt"
+
+    save_checkpoint(
+        ckpt,
+        model=model,
+        optimizer=optimizer,
+        model_config=_model_config(),
+        optimizer_config=_optimizer_config(),
+        runtime_config=_runtime_config(),
+        loss_weights=weights,
+        manifest_path=manifest,
+        global_step=3,
+        samples_seen=6,
+        target_contract=contract,
+    )
+    payload = torch.load(ckpt, map_location="cpu", weights_only=True)
+    assert payload["target_contract"] == contract
+
+    loaded_model, loaded_optimizer = _model_optimizer()
+    state = load_checkpoint(
+        ckpt,
+        model=loaded_model,
+        optimizer=loaded_optimizer,
+        expected_model_config=_model_config(),
+        expected_optimizer_config=_optimizer_config(),
+        expected_runtime_config=_runtime_config(),
+        expected_loss_weights=weights,
+        expected_manifest_path=manifest,
+        expected_target_contract=contract,
+    )
+    assert state.global_step == 3
+
+    mismatched_manifest = _write_sidecar_manifest(tmp_path, source_version=8)
+    mismatched = target_contract_from_manifest(mismatched_manifest, weights)
+    with pytest.raises(ValueError, match="target_contract mismatch"):
+        load_checkpoint(
+            ckpt,
+            model=loaded_model,
+            optimizer=loaded_optimizer,
+            expected_model_config=_model_config(),
+            expected_optimizer_config=_optimizer_config(),
+            expected_runtime_config=_runtime_config(),
+            expected_loss_weights=weights,
+            expected_manifest_path=manifest,
+            expected_target_contract=mismatched,
+        )
+
+
+def test_target_contract_from_manifest_rejects_missing_provenance(tmp_path: Path) -> None:
+    manifest = _write_manifest(tmp_path, b"{}")
+    with pytest.raises(ValueError, match="exit_sidecar manifest metadata"):
+        target_contract_from_manifest(manifest, LossWeights(exit=0.1))
+    with pytest.raises(ValueError, match="delta_q_output_contract_missing"):
+        target_contract_from_manifest(manifest, LossWeights(deltaq=0.1))
+
+
+def test_checkpoint_target_contract_partial_sidecar_tuple_rejects(tmp_path: Path) -> None:
+    model, optimizer = _model_optimizer()
+    manifest = _write_manifest(tmp_path, b"manifest")
+    contract = _target_contract(manifest)
+    assert isinstance(contract["exit"], dict)
+    contract["exit"]["source_version"] = None
+    with pytest.raises(ValueError, match="path/hash/version"):
+        save_checkpoint(
+            tmp_path / "ckpt.pt",
+            model=model,
+            optimizer=optimizer,
+            model_config=_model_config(),
+            optimizer_config=_optimizer_config(),
+            runtime_config=_runtime_config(),
+            loss_weights=LossWeights(exit=0.1),
+            manifest_path=manifest,
+            global_step=1,
+            samples_seen=2,
+            target_contract=contract,
+        )
+
+
+def test_checkpoint_deltaq_positive_fails_closed_even_with_contract(tmp_path: Path) -> None:
+    model, optimizer = _model_optimizer()
+    manifest = _write_manifest(tmp_path, b"manifest")
+    contract = _target_contract(manifest, lane="delta_q")
+    weights = LossWeights(deltaq=0.1)
+    with pytest.raises(ValueError, match="delta_q_output_contract_missing"):
+        save_checkpoint(
+            tmp_path / "ckpt.pt",
+            model=model,
+            optimizer=optimizer,
+            model_config=_model_config(),
+            optimizer_config=_optimizer_config(),
+            runtime_config=_runtime_config(),
+            loss_weights=weights,
+            manifest_path=manifest,
+            global_step=1,
+            samples_seen=2,
+            target_contract=contract,
+        )
+
+
+def test_checkpoint_deltaq_positive_load_fails_closed_even_with_contract(tmp_path: Path) -> None:
+    model, optimizer = _model_optimizer()
+    manifest = _write_manifest(tmp_path, b"manifest")
+    ckpt = tmp_path / "ckpt.pt"
+    save_checkpoint(
+        ckpt,
+        model=model,
+        optimizer=optimizer,
+        model_config=_model_config(),
+        optimizer_config=_optimizer_config(),
+        runtime_config=_runtime_config(),
+        loss_weights=LossWeights(),
+        manifest_path=manifest,
+        global_step=1,
+        samples_seen=2,
+    )
+    with pytest.raises(ValueError, match="delta_q_output_contract_missing"):
+        load_checkpoint(
+            ckpt,
+            model=model,
+            optimizer=optimizer,
+            expected_model_config=_model_config(),
+            expected_optimizer_config=_optimizer_config(),
+            expected_runtime_config=_runtime_config(),
+            expected_loss_weights=LossWeights(deltaq=0.1),
+            expected_manifest_path=manifest,
+            expected_target_contract=_target_contract(manifest, lane="delta_q"),
+        )
+
+
+def test_checkpoint_deltaq_zero_allows_json_safe_metadata(tmp_path: Path) -> None:
+    model, optimizer = _model_optimizer()
+    manifest = _write_manifest(tmp_path, b"manifest")
+    contract = _target_contract(manifest, lane="delta_q")
+    ckpt = tmp_path / "ckpt.pt"
+    save_checkpoint(
+        ckpt,
+        model=model,
+        optimizer=optimizer,
+        model_config=_model_config(),
+        optimizer_config=_optimizer_config(),
+        runtime_config=_runtime_config(),
+        loss_weights=LossWeights(),
+        manifest_path=manifest,
+        global_step=1,
+        samples_seen=2,
+        target_contract=contract,
+    )
+    payload = torch.load(ckpt, map_location="cpu", weights_only=True)
+    assert payload["target_contract"] == contract
+    state = load_checkpoint(
+        ckpt,
+        model=model,
+        optimizer=optimizer,
+        expected_model_config=_model_config(),
+        expected_optimizer_config=_optimizer_config(),
+        expected_runtime_config=_runtime_config(),
+        expected_loss_weights=LossWeights(),
+        expected_manifest_path=manifest,
+    )
+    assert state.global_step == 1
+
+
 def _model_optimizer() -> tuple[HydraPolicyNet, torch.optim.Optimizer]:
     model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1.0e-3)
@@ -792,5 +1072,20 @@ def _runtime_config() -> RuntimeConfig:
 def _write_manifest(tmp_path: Path, content: bytes) -> Path:
     path = tmp_path / "manifest.json"
     path.write_bytes(content)
+    assert manifest_digest(path) is not None
+    return path
+
+
+def _write_sidecar_manifest(tmp_path: Path, *, source_net_hash: int = 123, source_version: int = 7) -> Path:
+    path = tmp_path / "manifest.json"
+    data = {
+        "manifest_version": 3,
+        "exit_sidecar": {
+            "path": "/labels/exit.jsonl",
+            "source_net_hash": source_net_hash,
+            "source_version": source_version,
+        },
+    }
+    path.write_text(json.dumps(data), encoding="utf-8")
     assert manifest_digest(path) is not None
     return path

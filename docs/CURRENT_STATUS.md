@@ -46,7 +46,9 @@ File uses status vocabulary from `research/design/HYDRA_RECONCILIATION.md`.
 
 - Narrow DeltaQ supervision lane impl in code, promotion-gated through arena-confirmation path.
 - DeltaQ promotion artifacts now persist explicit `arena_decision` plus `arena_report`, but lane still **not** default-on.
+- Python compact-shard learner can carry ExIt and DeltaQ target/mask lanes default-off; ExIt can supervise policy logits only when explicitly weighted and labeled, while DeltaQ positive loss fails closed until output-head contract exists.
 - `validation_gates` config exists for experiments; disabled by default and gates best-checkpoint promotion, not resume checkpoints.
+- Phase 4C GRP-derived `Phi` + PBRS reward-shaping path is implemented but default-off/fail-closed. Default RL artifacts keep terminal `U_A` reward only. Nonzero PBRS needs strict validation artifact authorization; no real artifact is marked validated.
 
 ### Experimental / parked
 

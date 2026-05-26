@@ -84,6 +84,8 @@ def validate_raw_mjai_source_args(args: argparse.Namespace) -> None:
                 f"{library_path}; build `pixi run cargo build -p hydra-raw-mjai-pyo3 --release --quiet`, "
                 "set HYDRA_RAW_MJAI_PYO3_LIB, pass --raw-mjai-pyo3-lib, or select --raw-mjai-transport stdout"
             )
+    if has_raw and (getattr(args, "w_exit", 0.0) > 0.0 or getattr(args, "w_deltaq", 0.0) > 0.0):
+        raise ValueError("positive ExIt/DeltaQ weights require compact shard labels")
 
 
 __all__: Sequence[str] = (

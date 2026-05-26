@@ -22,7 +22,13 @@ from hydra_learner.batches import (
     synthetic_targets,
     targets_for_compiled_loss,
 )
-from hydra_learner.checkpoint import ModelConfig, RuntimeConfig, load_checkpoint, load_checkpoint_metadata
+from hydra_learner.checkpoint import (
+    ModelConfig,
+    RuntimeConfig,
+    load_checkpoint,
+    load_checkpoint_metadata,
+    target_contract_from_manifest,
+)
 from hydra_learner.checkpointing import (
     RawMjaiResumeOffsets,
     apply_progress_offsets,
@@ -335,7 +341,14 @@ def run_training(args: argparse.Namespace) -> int:
         targets = None
         input_timing = InputTiming()
     autocast = args.variant != "eager_fp32"
-    weights = LossWeights(oracle_critic=args.w_oracle_critic, safety_residual=args.w_safety_residual)
+    weights = LossWeights(
+        oracle_critic=args.w_oracle_critic,
+        safety_residual=args.w_safety_residual,
+        exit=args.w_exit,
+        deltaq=args.w_deltaq,
+    )
+    target_manifest_path = args.manifest if raw_stream is None else raw_stream.manifest_path
+    target_contract = target_contract_from_manifest(target_manifest_path, weights)
     if args.loss_mode not in COMPILED_LOSS_MODES:
         raise ValueError(f"unsupported loss mode {args.loss_mode!r}")
     loss_step: nn.Module = HydraCompiledLossStep(model, args.loss_mode, weights)
@@ -370,8 +383,9 @@ def run_training(args: argparse.Namespace) -> int:
             expected_optimizer_config=optimizer_config,
             expected_runtime_config=runtime_config,
             expected_loss_weights=weights,
-            expected_manifest_path=args.manifest if raw_stream is None else raw_stream.manifest_path,
+            expected_manifest_path=target_manifest_path,
             expected_ema_config=ema_config,
+            expected_target_contract=target_contract,
         )
         if ema_tracker is not None:
             if resume_state.ema is None:
@@ -801,13 +815,14 @@ def run_training(args: argparse.Namespace) -> int:
                                 optimizer_config=optimizer_config,
                                 runtime_config=runtime_config,
                                 loss_weights=weights,
-                                manifest_path=args.manifest if raw_stream is None else raw_stream.manifest_path,
+                                manifest_path=target_manifest_path,
                                 global_step=global_step,
                                 samples_seen=samples_seen,
                                 raw_mjai_progress=checkpoint_raw_progress(raw_stream, raw_pinned, raw_mjai_offsets),
                                 ema_tracker=ema_tracker,
                                 ema_config=ema_config,
                                 weight_source=best_weight_source,
+                                target_contract=target_contract,
                             )
                         events.write(
                             "best_checkpoint_saved",
@@ -839,7 +854,7 @@ def run_training(args: argparse.Namespace) -> int:
                         optimizer_config=optimizer_config,
                         runtime_config=runtime_config,
                         loss_weights=weights,
-                        manifest_path=args.manifest if raw_stream is None else raw_stream.manifest_path,
+                        manifest_path=target_manifest_path,
                         global_step=global_step,
                         samples_seen=samples_seen,
                         raw_mjai_progress=raw_mjai_progress_dict(
@@ -854,6 +869,7 @@ def run_training(args: argparse.Namespace) -> int:
                         ),
                         ema_tracker=ema_tracker,
                         ema_config=ema_config,
+                        target_contract=target_contract,
                     )
                 events.write(
                     "checkpoint_saved",
@@ -981,12 +997,13 @@ def run_training(args: argparse.Namespace) -> int:
                 optimizer_config=optimizer_config,
                 runtime_config=runtime_config,
                 loss_weights=weights,
-                manifest_path=args.manifest if raw_stream is None else raw_stream.manifest_path,
+                manifest_path=target_manifest_path,
                 global_step=global_step,
                 samples_seen=samples_seen,
                 raw_mjai_progress=raw_mjai_progress_dict(apply_progress_offsets(raw_progress, raw_mjai_offsets)),
                 ema_tracker=ema_tracker,
                 ema_config=ema_config,
+                target_contract=target_contract,
             )
         result["checkpoint_path"] = str(latest_checkpoint)
         events.write(
