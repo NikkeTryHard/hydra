@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::Path;
 use std::time::Instant;
 
@@ -24,7 +23,7 @@ use hydra_replay_sidecar::{
     DeltaQSidecarIndex, ExitSidecarIndex, source_net_hash_from_checkpoint_identity,
 };
 use hydra_train_algo::gae::GaeConfig;
-use hydra_train_runtime::config::{RlTrainConfig, TrainConfig};
+use hydra_train_runtime::config::{RlTrainConfig, TrainConfig, rl_stage_for_config};
 use hydra_train_runtime::config_runtime::train_microbatch_size;
 use hydra_train_runtime::loss_policy::{
     build_bc_exit_config, build_loss_config, build_rl_loss_config,
@@ -47,6 +46,7 @@ use crate::artifacts::{
     load_or_scan_manifest_cache, open_rl_step_log_appender, open_step_log_appender,
     open_training_log_appender,
 };
+use crate::campaign_layout::CampaignRunLayout;
 use crate::resume::{
     ResumeContext, RlResumeContext, RlRuntimeResumeContract, RuntimeResumeContract,
     rl_runtime_resume_contract, runtime_resume_contract, validate_resume_runtime_compatibility,
@@ -533,7 +533,18 @@ pub fn initialize_rl_training_bootstrap(
 
     let resume = RlResumeContext::load(&config)?;
     let session_start_global_step = resume.session_start_global_step;
-    let artifacts = RlArtifactPaths::new(&config.output_dir, session_start_global_step);
+    let run_layout = CampaignRunLayout::new(
+        &config.output_dir,
+        config.stage.as_deref(),
+        config.run_name.as_deref(),
+        rl_stage_for_config(&config),
+    );
+    run_layout.ensure()?;
+    if config.tensorboard {
+        run_layout.ensure_tensorboard_dir()?;
+    }
+    let artifacts =
+        RlArtifactPaths::new_for_run_dir(&run_layout.run_dir, session_start_global_step);
     artifacts.create_root_dir()?;
 
     let device_name = device_label(&config.device);

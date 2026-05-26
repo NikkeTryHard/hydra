@@ -28,7 +28,7 @@ use crate::artifacts::{
 use crate::bootstrap::{RlTrainingBootstrap, RlTrainingRuntime};
 use crate::presentation::timestamped;
 use crate::resume::{RlRuntimeResumeContract, build_rl_resume_state};
-use crate::rl_step::{RlPhaseTrainRequest, rl_phase_train_step_with_controller};
+use crate::rl_step::{RlPhaseTrainRequest, rl_stage_train_step_with_controller};
 
 /// Converts the scalar maintenance plan into the live ExIt producer config.
 #[must_use]
@@ -37,7 +37,7 @@ pub fn live_exit_config_from_plan(
 ) -> hydra_search_labels::live_exit::LiveExitConfig {
     hydra_search_labels::live_exit::LiveExitConfig {
         enabled: plan.shallow_exit_enabled || plan.deep_exit_enabled,
-        exit_config: hydra_search_labels::exit::ExitConfig::default_phase3(),
+        exit_config: hydra_search_labels::exit::ExitConfig::default_live_exit(),
     }
 }
 
@@ -411,7 +411,7 @@ pub fn run_rl_training_loop(
         format_status_line("RL mode:", rl_mode_summary(&rl_config, total_steps))
     );
 
-    let mut rebase_tracker = RebaseTracker::default_phase2();
+    let mut rebase_tracker = RebaseTracker::default_drda_ach_self_play();
     let distill_state = DistillState::default();
     let distill_cfg = DistillConfig::fast_distill();
     let mut self_play_coordinator = CooperativeSelfPlayCoordinator::new();
@@ -424,7 +424,7 @@ pub fn run_rl_training_loop(
             let _self_play_scope = nvtx::scope(PROFILING_STAGE_SELF_PLAY);
             let plan = maintenance_plan_from_inputs(OrchestratorPlanInputs {
                 phase: runtime.pipeline_state.phase,
-                phase_progress: runtime.pipeline_state.phase_progress(),
+                stage_progress: runtime.pipeline_state.stage_progress(),
                 should_advance_phase: runtime.pipeline_state.should_advance_phase(),
                 rebase_due: rebase_tracker.should_rebase(),
                 distill_due: distill_state.should_distill(&distill_cfg, elapsed_secs),
@@ -453,7 +453,7 @@ pub fn run_rl_training_loop(
         let batch_size = batch.batch_size();
         let (model, report) = {
             let _train_scope = nvtx::scope(PROFILING_STAGE_TRAIN);
-            rl_phase_train_step_with_controller(
+            rl_stage_train_step_with_controller(
                 runtime.model,
                 RlPhaseTrainRequest {
                     state: &runtime.pipeline_state,

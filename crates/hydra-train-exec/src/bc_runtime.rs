@@ -65,7 +65,7 @@ pub fn bc_total_with_exit_from_breakdown<B: Backend>(
 }
 
 /// Returns the default phase learning rate schedule.
-pub fn phase_learning_rate(
+pub fn stage_learning_rate(
     phase: hydra_train_types::phase::TrainingPhase,
     step: usize,
     total_steps: usize,

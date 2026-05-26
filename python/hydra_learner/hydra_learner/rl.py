@@ -1,4 +1,4 @@
-"""Phase-0 masked PPO/GAE tensor utilities.
+"""Masked PPO/GAE tensor utilities.
 
 These helpers are deliberately pure tensor/list code. They do not own rollout I/O,
 checkpoint resume, or self-play orchestration.

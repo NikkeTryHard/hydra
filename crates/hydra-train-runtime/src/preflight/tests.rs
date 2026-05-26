@@ -442,6 +442,8 @@ fn dummy_config() -> TrainConfig {
         data_dir: PathBuf::from("/data"),
         raw_mjai_data_dirs: Vec::new(),
         output_dir: PathBuf::from("/output"),
+        stage: None,
+        run_name: None,
         num_epochs: 1,
         batch_size: 256,
         microbatch_size: Some(64),

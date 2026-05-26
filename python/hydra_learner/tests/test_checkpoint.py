@@ -781,7 +781,7 @@ def _target_contract(manifest_path: Path, *, lane: str = "exit") -> dict[str, ob
     }
 
 
-def test_checkpoint_normalizes_legacy_loss_weights_missing_phase5(tmp_path: Path) -> None:
+def test_checkpoint_normalizes_legacy_loss_weights_missing_optional_targets(tmp_path: Path) -> None:
     model, optimizer = _model_optimizer()
     ckpt = tmp_path / "ckpt.pt"
     manifest = _write_manifest(tmp_path, b"manifest")

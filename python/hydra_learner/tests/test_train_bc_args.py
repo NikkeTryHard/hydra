@@ -1021,7 +1021,7 @@ def test_raw_negative_skip_games_is_rejected(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("weight_arg", ["w_exit", "w_deltaq"])
-def test_raw_mjai_positive_phase5_weights_reject_without_label_protocol(tmp_path: Path, weight_arg: str) -> None:
+def test_raw_mjai_positive_advanced_weights_reject_without_label_protocol(tmp_path: Path, weight_arg: str) -> None:
     args = _valid_args(raw_mjai_data_dirs=[tmp_path / "raw"], **{weight_arg: 0.1})
     (tmp_path / "raw").mkdir()
 

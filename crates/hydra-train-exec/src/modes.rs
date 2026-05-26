@@ -44,7 +44,7 @@ use crate::preflight_runtime::{
 use crate::presentation::{
     BcHyperparamSummaryInput, bc_hyperparam_summary, format_advisory_line,
     format_preflight_bench_markdown_table, format_preflight_selection_line,
-    format_probe_results_table, format_status_line, format_timed_phase_message,
+    format_probe_results_table, format_status_line, format_timed_stage_message,
     format_train_timing_markdown_table, print_banner_field, print_header_block, timestamped,
 };
 use crate::probe_summary::{best_probe_summary, format_probe_selection_summary, probe_kind_name};
@@ -613,7 +613,7 @@ pub fn handle_preflight_mode(preflight: PreflightCliOptions) -> Result<(), Strin
     }
     println!(
         "{}",
-        format_timed_phase_message(
+        format_timed_stage_message(
             "preflight_wall_clock",
             "total elapsed including output",
             preflight_wall_start.elapsed().as_secs_f64(),

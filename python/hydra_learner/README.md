@@ -10,9 +10,10 @@ Supported now:
 - default-off advanced labels already present in shard path: `oracle_critic`, `safety_residual`, ExIt target/mask, DeltaQ target/mask carrier
 - BF16 autocast on CUDA
 - `torch.compile` fullgraph clean for BC loss step
-- resumable data-only checkpoint save/load for shard runs with model + optimizer + RNG + config metadata
-- balanced JSONL lifecycle/step logs under `output_dir/logs`
-- TensorBoard event files under `output_dir/tensorboard`
+- resumable data-only checkpoint save/load for raw-MJAI and shard-backed runs with model + optimizer + RNG + config metadata; raw-MJAI uses game-boundary cursor restore
+- balanced JSONL lifecycle/step logs under concrete run dir `logs/`
+- TensorBoard event files under concrete run dir `tensorboard/`
+- T1 PPO control long-run path via Rust YAML `rl.phase: ppo_control`; exports current checkpoint to ONNX, collects real-game rollouts through `hydra-raw-mjai-pyo3`, then runs masked PPO-GAE with run-local `exports/`, `rollouts/`, and `eval/`.
 
 Not active in Python default yet:
 
@@ -46,7 +47,7 @@ Default Rust/Burn env remains root/default Pixi env with torch/libtorch `2.9.0` 
 ```bash
 pixi run cargo run --quiet --package hydra-train --features training --bin train -- \
   --bc-shards-manifest path/to/bc_shards_manifest.json \
-  --output-dir path/to/output-dir \
+  --output-dir path/to/hydra-campaign \
   --device cuda:0 \
   --python-variant compile_max_autotune \
   --python-warmup 1 \
@@ -65,32 +66,41 @@ pixi run -e py-train python scripts/hydra_pytorch_oracle.py ...
 
 Residual profiles are checkpoint-stable architecture strings. Default `mish_se` is canonical SE-ResNet: Mish + GroupNorm + SE, 10 blocks, 256 hidden. Opt-ins: `silu_se`, `relu_se`, `mish_no_se`, `relu_no_se`, `relu_no_norm_no_se`. No-SE profiles are speed/ablation only. 5k equal-step raw-MJAI validation: `mish_no_se` had faster train loop but slightly worse validation than `mish_se`; keep opt-in, do not promote. Checkpoint resume requires exact profile match.
 
-Python backbone profile is checkpoint-stable and accepts only `conv2d_local3`: Conv2d over singleton height with local-3 tile kernels. `token_linear_local3` was probed and deleted: slower in repeated raw-MJAI timing, higher architecture risk, no concrete profiler reason to keep.
+Python backbone profile is checkpoint-stable. Supported values: `conv2d_local3`, `tileformer_bias`, `convnext_tile_k7`, `global_pool_bias`; current default/canonical value is `conv2d_local3`. Non-default backbone profiles are training/checkpoint-supported only; ONNX/native-arena export supports `conv2d_local3` only for now.
 
 Compile variants do not change model math, topology, checkpoint architecture, input/action shapes, residual profile, or losses; they only change TorchInductor strategy. Canonical production Python BC uses `compile_max_autotune`; use `compile_default` only for smoke/preflight/short debug.
 
 If YAML omits `bc_shards_manifest_path`, Rust launcher streams raw MJAI from `raw_mjai_data_dirs` when set, otherwise from `data_dir`. Default bridge crate is `hydra-raw-mjai-pyo3` pinned PyO3; stdout remains fallback. Raw-MJAI resume is default-on and skips deterministic completed games from checkpoint progress.
 ## Run artifacts and resume
 
-Rust launcher creates stable artifact dirs for every Python BC run:
+Rust launcher treats `output_dir` as campaign root, resolves concrete run dir, and passes that run dir to Python. Campaign root owns `campaign.json`, `registry/`, and `stages/`; Python writes only under run dir:
 
 ```text
-<output_dir>/python_learner_result.json
-<output_dir>/logs/events.jsonl
-<output_dir>/logs/train_steps.jsonl
-<output_dir>/logs/stdout.log          # background mode only
-<output_dir>/logs/stderr.log          # background mode only
-<output_dir>/logs/tensorboard.log     # auto TensorBoard output
-<output_dir>/checkpoints/latest.pt
-<output_dir>/checkpoints/step_<global_step>.pt  # only with --python-keep-step-checkpoints
-<output_dir>/tensorboard/events.out.tfevents.*
+<output_dir>/stages/<stage>/latest_run
+<output_dir>/stages/<stage>/runs/<run_id>/config.yaml
+<output_dir>/stages/<stage>/runs/<run_id>/launch_metadata.json
+<output_dir>/stages/<stage>/runs/<run_id>/python_learner_result.json
+<output_dir>/stages/<stage>/runs/<run_id>/logs/events.jsonl
+<output_dir>/stages/<stage>/runs/<run_id>/logs/train_steps.jsonl
+<output_dir>/stages/<stage>/runs/<run_id>/logs/stdout.log          # background mode only
+<output_dir>/stages/<stage>/runs/<run_id>/logs/stderr.log          # background mode only
+<output_dir>/stages/<stage>/runs/<run_id>/logs/tensorboard.log     # auto TensorBoard output
+<output_dir>/stages/<stage>/runs/<run_id>/checkpoints/latest.pt
+<output_dir>/stages/<stage>/runs/<run_id>/checkpoints/step_<global_step>.pt  # only with --python-keep-step-checkpoints
+<output_dir>/stages/<stage>/runs/<run_id>/exports/                # ONNX/native export artifacts
+<output_dir>/stages/<stage>/runs/<run_id>/rollouts/               # RL rollout batches/artifacts
+<output_dir>/stages/<stage>/runs/<run_id>/eval/                   # arena/eval reports
+<output_dir>/stages/<stage>/runs/<run_id>/summary.json
+<output_dir>/stages/<stage>/runs/<run_id>/tensorboard/events.out.tfevents.*
 ```
 
 `events.jsonl` is lifecycle/resume/validation/checkpoint log. `train_steps.jsonl`
 is balanced step telemetry, written every `--python-log-every-steps` and final
 step; avoid `1` on CUDA unless debugging sync/log overhead.
 
-Resume shard runs with config `resume_checkpoint: <output_dir>/checkpoints/latest.pt` or CLI `--python-resume <checkpoint>`. Checkpoint load validates schema, model, optimizer, runtime, loss weights, manifest/source contract, and RNG metadata. Raw-MJAI resume is rejected before launch.
+Stages are `T0_bc_baseline`, `T1_ppo_control`, `T2_direct_sampled_ach`, `T3_drda_residual_ach`, `T4_pbrs_beta_sweep`, `T5_exit_auxiliary`, `T6_delta_q_experiment`, and `T7_population_window`.
+
+Resume with config `resume_checkpoint: <run_dir>/checkpoints/latest.pt` or CLI `--python-resume <checkpoint>`. `resume_latest: true` resolves through stage `latest_run` marker when stage metadata is available. Checkpoint load validates schema, model, optimizer, runtime, loss weights, source contract, and RNG metadata. Raw-MJAI resume supports game-boundary cursor restore when checkpoint/runtime metadata matches.
 
 Periodic checkpoint controls:
 
@@ -126,7 +136,7 @@ Rust detaches learner, writes `train.pid`, redirects stdout/stderr logs, and
 prints output/log/checkpoint/TensorBoard URL plus watch command:
 
 ```bash
-tail -f <output_dir>/logs/train_steps.jsonl
+tail -f <output_dir>/stages/<stage>/runs/<run_id>/logs/train_steps.jsonl
 ```
 
 

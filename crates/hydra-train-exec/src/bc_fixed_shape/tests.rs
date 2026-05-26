@@ -687,9 +687,9 @@ fn model_gradients_are_finite(
 }
 
 #[cfg(feature = "libtorch")]
-const PHASE4_RELATIVE_LOSS_TOLERANCE: f64 = 0.05;
+const BF16_RELATIVE_LOSS_TOLERANCE: f64 = 0.05;
 #[cfg(feature = "libtorch")]
-const PHASE4_MAX_ABS_LOGITS_TOLERANCE: f32 = 0.25;
+const BF16_MAX_ABS_LOGITS_TOLERANCE: f32 = 0.25;
 
 #[cfg(feature = "libtorch")]
 fn tensor2_to_vec(tensor: &Tensor<TestTrainBackend, 2>) -> Vec<f32> {
@@ -730,8 +730,8 @@ fn fixed_batch_forward_backward_probe(
         dummy_train_sample(10),
     ];
     let (obs, targets) = collate_samples::<TestTrainBackend>(&logical_batch, false, &device)
-        .expect("phase4 fixed batch collation should succeed")
-        .expect("phase4 fixed batch collation should produce tensors");
+        .expect("bf16 fixed batch collation should succeed")
+        .expect("bf16 fixed batch collation should produce tensors");
     let output = hydra_model::amp::maybe_autocast(use_amp, || model.forward(obs));
     let logits_finite = output.is_finite();
     let logits = tensor2_to_vec(&output.policy_logits);
@@ -751,9 +751,9 @@ fn fixed_batch_forward_backward_probe(
 }
 
 #[cfg(feature = "libtorch")]
-fn tiny_phase4_replay() -> String {
+fn tiny_bf16_replay() -> String {
     [
-        r#"{"type":"start_game","names":["a","b","c","d"],"id":"phase4-game"}"#,
+        r#"{"type":"start_game","names":["a","b","c","d"],"id":"bf16-game"}"#,
         r#"{"type":"start_kyoku","bakaze":"E","kyoku":1,"honba":0,"kyotaku":0,"oya":0,"scores":[25000,25000,25000,25000],"dora_marker":"1m","tehais":[["1m","2m","3m","4m","5m","6m","7m","8m","9m","1p","2p","3p","4p"],["1s","2s","3s","4s","5s","6s","7s","8s","9s","E","S","W","N"],["P","F","C","1m","1m","2m","2m","3m","3m","4m","4m","5m","5m"],["6p","6p","7p","7p","8p","8p","9p","9p","1s","1s","2s","2s","3s"]]}"#,
         r#"{"type":"dahai","actor":0,"pai":"4p","tsumogiri":false}"#,
         r#"{"type":"tsumo","actor":1,"pai":"P"}"#,
@@ -767,20 +767,20 @@ fn tiny_phase4_replay() -> String {
 }
 
 #[cfg(feature = "libtorch")]
-fn phase4_temp_dir(label: &str) -> std::path::PathBuf {
-    let path = crate::test_support::unique_test_path("hydra-phase4", label);
-    std::fs::create_dir_all(&path).expect("phase4 temp dir should be creatable");
+fn bf16_temp_dir(label: &str) -> std::path::PathBuf {
+    let path = crate::test_support::unique_test_path("hydra-bf16", label);
+    std::fs::create_dir_all(&path).expect("bf16 temp dir should be creatable");
     path
 }
 
 #[cfg(feature = "libtorch")]
-fn build_phase4_shards(label: &str) -> std::path::PathBuf {
-    let root = phase4_temp_dir(label);
+fn build_bf16_shards(label: &str) -> std::path::PathBuf {
+    let root = bf16_temp_dir(label);
     let input = root.join("input");
     let output = root.join("shards");
-    std::fs::create_dir_all(&input).expect("phase4 input dir should be creatable");
-    let replay = input.join("phase4.mjai");
-    std::fs::write(&replay, tiny_phase4_replay()).expect("phase4 replay should be writable");
+    std::fs::create_dir_all(&input).expect("bf16 input dir should be creatable");
+    let replay = input.join("bf16.mjai");
+    std::fs::write(&replay, tiny_bf16_replay()).expect("bf16 replay should be writable");
     let source_manifest = hydra_data_core::DataManifest {
         sources: vec![hydra_data_core::DataSource::LooseFile(replay)],
         total_games: 1,
@@ -802,13 +802,13 @@ fn build_phase4_shards(label: &str) -> std::path::PathBuf {
             report_name: None,
             ..crate::bc_shard_builder::BuildBcShardsConfig::default()
         })
-        .expect("phase4 compact shard build should pass");
+        .expect("bf16 compact shard build should pass");
     assert!(built.manifest.totals.sample_count > 0);
     built.manifest_path
 }
 
 #[cfg(feature = "libtorch")]
-fn phase4_train_config(
+fn bf16_train_config(
     manifest_path: Option<std::path::PathBuf>,
 ) -> hydra_train_runtime::config::TrainConfig {
     let mut config = crate::test_support::dummy_train_config();
@@ -828,12 +828,12 @@ fn shard_train_step(manifest_path: &std::path::Path, use_amp: bool) -> (f64, boo
     let device = LibTorchDevice::Cuda(0);
     let reader =
         hydra_bc_shards::load_bc_shard_reader(manifest_path, hydra_bc_shards::BcShardSplit::Train)
-            .expect("phase4 train shard reader should load");
+            .expect("bf16 train shard reader should load");
     let take = reader.sample_count().min(2);
-    assert!(take > 0, "phase4 shard smoke requires at least one sample");
+    assert!(take > 0, "bf16 shard smoke requires at least one sample");
     let host_batch = reader
         .collate_host_batch_range(0, take, false)
-        .expect("phase4 shard host batch should collate");
+        .expect("bf16 shard host batch should collate");
     let mut model_slot = Some(tiny_dummy_model(&device));
     let mut optimizer = AdamConfig::new().init();
     let train_loss_fn = dummy_train_loss();
@@ -857,15 +857,15 @@ fn shard_train_step(manifest_path: &std::path::Path, use_amp: bool) -> (f64, boo
         #[cfg(feature = "cuda-graph")]
         None,
     )
-    .expect("phase4 shard train step should pass");
+    .expect("bf16 shard train step should pass");
     let model = model_slot
         .as_ref()
-        .expect("phase4 shard model slot should remain populated");
+        .expect("bf16 shard model slot should remain populated");
     assert!(model_params_are_fp32(model));
     let stats = stats
         .first()
         .copied()
-        .expect("phase4 shard train step should produce stats");
+        .expect("bf16 shard train step should produce stats");
     (
         stats.total_loss,
         stats.total_loss.is_finite(),
@@ -1507,11 +1507,11 @@ fn bc_fixed_shape_cuda_bf16_amp_train_step_runs_real_amp() {
 
 #[test]
 #[cfg(feature = "libtorch")]
-#[ignore = "manual CUDA Phase 4 parity gate; run explicitly with --features libtorch"]
-fn phase4_fixed_batch_fp32_vs_bf16_amp_parity_gate() {
+#[ignore = "manual CUDA BF16 parity gate; run explicitly with --features libtorch"]
+fn bf16_fixed_batch_fp32_vs_bf16_amp_parity_gate() {
     assert!(
         Cuda::is_available(),
-        "CUDA is required for Phase 4 parity gate"
+        "CUDA is required for BF16 parity gate"
     );
     let (
         fp32_loss,
@@ -1531,56 +1531,56 @@ fn phase4_fixed_batch_fp32_vs_bf16_amp_parity_gate() {
     ) = fixed_batch_forward_backward_probe(true);
     let relative_loss_drift = (bf16_loss - fp32_loss).abs() / fp32_loss.abs().max(f64::EPSILON);
     let max_abs_logits_drift = max_abs_diff(&fp32_logits, &bf16_logits);
-    println!("phase4_parity_fp32_loss={fp32_loss:.8}");
-    println!("phase4_parity_bf16_loss={bf16_loss:.8}");
-    println!("phase4_parity_relative_loss_drift={relative_loss_drift:.8}");
-    println!("phase4_parity_max_abs_logits_drift={max_abs_logits_drift:.8}");
-    println!("phase4_parity_fp32_logits_dtype={fp32_logits_dtype:?}");
-    println!("phase4_parity_bf16_logits_dtype={bf16_logits_dtype:?}");
+    println!("bf16_parity_fp32_loss={fp32_loss:.8}");
+    println!("bf16_parity_bf16_loss={bf16_loss:.8}");
+    println!("bf16_parity_relative_loss_drift={relative_loss_drift:.8}");
+    println!("bf16_parity_max_abs_logits_drift={max_abs_logits_drift:.8}");
+    println!("bf16_parity_fp32_logits_dtype={fp32_logits_dtype:?}");
+    println!("bf16_parity_bf16_logits_dtype={bf16_logits_dtype:?}");
     assert!(fp32_loss.is_finite() && bf16_loss.is_finite());
     assert!(fp32_logits_finite && bf16_logits_finite);
     assert!(fp32_gradients_finite && bf16_gradients_finite);
     assert!(model_params_are_fp32(&fp32_model));
     assert!(model_params_are_fp32(&bf16_model));
-    assert!(relative_loss_drift <= PHASE4_RELATIVE_LOSS_TOLERANCE);
-    assert!(max_abs_logits_drift <= PHASE4_MAX_ABS_LOGITS_TOLERANCE);
+    assert!(relative_loss_drift <= BF16_RELATIVE_LOSS_TOLERANCE);
+    assert!(max_abs_logits_drift <= BF16_MAX_ABS_LOGITS_TOLERANCE);
 }
 
 #[test]
 #[cfg(feature = "libtorch")]
-#[ignore = "manual CUDA Phase 4 shard smoke; run explicitly with --features libtorch"]
-fn phase4_tiny_compact_shard_bf16_smoke_gate() {
+#[ignore = "manual CUDA BF16 shard smoke; run explicitly with --features libtorch"]
+fn tiny_compact_shard_bf16_smoke_gate() {
     assert!(
         Cuda::is_available(),
-        "CUDA is required for Phase 4 shard smoke"
+        "CUDA is required for BF16 shard smoke"
     );
-    let manifest_path = build_phase4_shards("shard-smoke");
-    let config = phase4_train_config(Some(manifest_path.clone()));
+    let manifest_path = build_bf16_shards("shard-smoke");
+    let config = bf16_train_config(Some(manifest_path.clone()));
     assert_eq!(config.effective_precision(), EffectivePrecision::Bf16Amp);
     let (loss, finite, sample_count) = shard_train_step(&manifest_path, config.use_amp());
-    println!("phase4_shard_manifest={}", manifest_path.display());
+    println!("bf16_shard_manifest={}", manifest_path.display());
     println!("effective_precision={}", config.effective_precision());
-    println!("phase4_shard_loss={loss:.8}");
-    println!("phase4_shard_samples={sample_count}");
+    println!("bf16_shard_loss={loss:.8}");
+    println!("bf16_shard_samples={sample_count}");
     assert!(finite);
     assert!(sample_count > 0);
 }
 
 #[test]
 #[cfg(feature = "libtorch")]
-#[ignore = "manual CUDA Phase 4 validation policy gate; run explicitly with --features libtorch"]
-fn phase4_validation_policy_train_bf16_validation_fp32_gate() {
+#[ignore = "manual CUDA BF16 validation policy gate; run explicitly with --features libtorch"]
+fn validation_policy_train_bf16_validation_fp32_gate() {
     assert!(
         Cuda::is_available(),
-        "CUDA is required for Phase 4 validation policy gate"
+        "CUDA is required for BF16 validation policy gate"
     );
     let device = LibTorchDevice::Cuda(0);
     let model = tiny_dummy_model(&device);
     let train_loss_fn = dummy_train_loss();
     let logical_batch = vec![dummy_train_sample(0), dummy_train_sample(5)];
     let (obs, targets) = collate_samples::<TestTrainBackend>(&logical_batch, false, &device)
-        .expect("phase4 validation gate collation should succeed")
-        .expect("phase4 validation gate collation should produce tensors");
+        .expect("bf16 validation gate collation should succeed")
+        .expect("bf16 validation gate collation should produce tensors");
     let train_output = hydra_model::amp::maybe_autocast(true, || model.forward(obs));
     let train_dtype = train_output.policy_logits.dtype();
     let breakdown = train_loss_fn.total_loss(&train_output, &targets);
@@ -1596,10 +1596,10 @@ fn phase4_validation_policy_train_bf16_validation_fp32_gate() {
     );
     let validation_output = model.valid().forward(obs);
     let validation_dtype = validation_output.policy_logits.dtype();
-    println!("phase4_validation_train_forward_dtype={train_dtype:?}");
-    println!("phase4_validation_forward_dtype={validation_dtype:?}");
+    println!("bf16_validation_train_forward_dtype={train_dtype:?}");
+    println!("bf16_validation_forward_dtype={validation_dtype:?}");
     println!(
-        "phase4_validation_params_fp32={}",
+        "bf16_validation_params_fp32={}",
         model_params_are_fp32(&model)
     );
     assert_eq!(train_dtype, DType::BF16);
@@ -1610,13 +1610,13 @@ fn phase4_validation_policy_train_bf16_validation_fp32_gate() {
 
 #[test]
 #[cfg(feature = "libtorch")]
-#[ignore = "manual CUDA Phase 4 throughput/memory smoke; run explicitly with --features libtorch"]
-fn phase4_throughput_memory_smoke_gate() {
+#[ignore = "manual CUDA BF16 throughput/memory smoke; run explicitly with --features libtorch"]
+fn bf16_throughput_memory_smoke_gate() {
     assert!(
         Cuda::is_available(),
-        "CUDA is required for Phase 4 throughput/memory smoke"
+        "CUDA is required for BF16 throughput/memory smoke"
     );
-    let manifest_path = build_phase4_shards("throughput");
+    let manifest_path = build_bf16_shards("throughput");
     let measure = |use_amp: bool| -> (f64, f64, f64, usize) {
         synchronize_cuda();
         let started = Instant::now();
@@ -1640,17 +1640,17 @@ fn phase4_throughput_memory_smoke_gate() {
     let (fp32_sps, fp32_wall, fp32_loss, fp32_samples) = measure(false);
     let (bf16_sps, bf16_wall, bf16_loss, bf16_samples) = measure(true);
     let speed_ratio = bf16_sps / fp32_sps.max(f64::EPSILON);
-    println!("phase4_perf_manifest={}", manifest_path.display());
-    println!("phase4_perf_fp32_samples_per_sec={fp32_sps:.2}");
-    println!("phase4_perf_bf16_samples_per_sec={bf16_sps:.2}");
-    println!("phase4_perf_fp32_wall_sec={fp32_wall:.6}");
-    println!("phase4_perf_bf16_wall_sec={bf16_wall:.6}");
-    println!("phase4_perf_fp32_last_loss={fp32_loss:.8}");
-    println!("phase4_perf_bf16_last_loss={bf16_loss:.8}");
-    println!("phase4_perf_fp32_samples={fp32_samples}");
-    println!("phase4_perf_bf16_samples={bf16_samples}");
-    println!("phase4_perf_peak_cuda_memory=unavailable_tch_api_not_exposed");
-    println!("phase4_perf_speed_ratio={speed_ratio:.6}");
+    println!("bf16_perf_manifest={}", manifest_path.display());
+    println!("bf16_perf_fp32_samples_per_sec={fp32_sps:.2}");
+    println!("bf16_perf_bf16_samples_per_sec={bf16_sps:.2}");
+    println!("bf16_perf_fp32_wall_sec={fp32_wall:.6}");
+    println!("bf16_perf_bf16_wall_sec={bf16_wall:.6}");
+    println!("bf16_perf_fp32_last_loss={fp32_loss:.8}");
+    println!("bf16_perf_bf16_last_loss={bf16_loss:.8}");
+    println!("bf16_perf_fp32_samples={fp32_samples}");
+    println!("bf16_perf_bf16_samples={bf16_samples}");
+    println!("bf16_perf_peak_cuda_memory=unavailable_tch_api_not_exposed");
+    println!("bf16_perf_speed_ratio={speed_ratio:.6}");
     assert!(fp32_loss.is_finite() && bf16_loss.is_finite());
     assert!(
         speed_ratio >= 0.90,

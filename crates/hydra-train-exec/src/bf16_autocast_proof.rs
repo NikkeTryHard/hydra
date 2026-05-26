@@ -66,8 +66,8 @@ pub(crate) fn restore_cuda_autocast_state(
 
 /// Runs `f` with CUDA autocast enabled and dtype forced to BF16.
 ///
-/// This is crate-private proof plumbing for Phase 2 only. It must not be used by production
-/// training until the external proof gates pass and Phase 3 explicitly enables AMP.
+/// This is crate-private BF16 proof plumbing only. It must not be used by production
+/// training until external proof gates explicitly enable AMP.
 pub(crate) fn with_cuda_bf16_autocast_dtype_proof_only<F, R>(f: F) -> Result<R, &'static str>
 where
     F: FnOnce() -> R + UnwindSafe,

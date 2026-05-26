@@ -6,6 +6,8 @@ fn dummy_config() -> TrainConfig {
         data_dir: "/data".into(),
         raw_mjai_data_dirs: Vec::new(),
         output_dir: "/output".into(),
+        stage: None,
+        run_name: None,
         num_epochs: 4,
         batch_size: 256,
         microbatch_size: Some(64),

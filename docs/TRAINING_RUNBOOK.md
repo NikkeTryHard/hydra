@@ -25,7 +25,7 @@ Modes:
 | Mode | Invoke | Use |
 |---|---|---|
 | normal raw-MJAI BC train | `train config.yaml` with `data_dir`/`raw_mjai_data_dirs` and no `bc_shards_manifest_path` | default Python/PyTorch BC learner via Rust launcher |
-| legacy Rust/Burn debug/advanced | `train config.yaml` with `bc_backend: rust_burn` or CLI `--bc-backend rust-burn` | feature-gated path; required only for ExIt/DeltaQ/belief/mixture/opponent-hand-type until Python supports them |
+| legacy Rust/Burn debug/advanced | `train config.yaml` with `bc_backend: rust_burn` or CLI `--bc-backend rust-burn` | feature-gated path for unsupported advanced modes and existing DeltaQ promotion authority; Python has dormant/default-off ExIt target consumption and DeltaQ carrier metadata, but positive DeltaQ loss/head still fails closed |
 | preflight | `train --preflight --pf-candidate-tuples ... --pf-output md` | benchmark exact runtime tuples against synthetic/in-memory work; no config, manifest, dataset, cache, choice, or YAML write |
 | probe-only | `train config.yaml --probe-kind <train|validation|rl_games|rl_microbatch> --probe-candidate-microbatch <N> ...` | bounded candidate check, no full train |
 
@@ -45,7 +45,9 @@ Choose:
 |---|---|
 | `data_dir` | replay root, loose file, or archive path |
 | `raw_mjai_data_dirs` | optional explicit raw-MJAI roots; when set, Python raw-MJAI uses exactly these entries instead of `data_dir` |
-| `output_dir` | Python BC writes result, logs, checkpoints, TensorBoard events, and background pid here |
+| `output_dir` | campaign root; Python BC and Rust/Python RL put run artifacts under `stages/<stage>/runs/<run_id>/` |
+| `run_name` | optional run id override; default config-owned launches use `latest_run` |
+| `stage` | optional stage override; default stages follow training objective/phase mapping below |
 | `num_epochs` | Rust/Burn epoch count; Python BC uses `max_train_steps` as run length |
 | `batch_size` | logical batch before microbatch/accum |
 | `microbatch_size` | explicit train microbatch override |
@@ -68,13 +70,13 @@ Choose:
 | `python_variant` | Python BC TorchInductor strategy only; default/canonical `compile_max_autotune`; use `compile_default` only for smoke/preflight/short debug |
 | `validation_gates` | optional best-checkpoint gate; off by default |
 | `python_raw_mjai_transport` | raw-MJAI input transport when `bc_shards_manifest_path` absent; default `pinned_pyo3`, fallback `stdout` |
-| `tensorboard` | Python BC writes TensorBoard event files under `output_dir/tensorboard` |
+| `tensorboard` | Python writes TensorBoard event files under concrete run dir's `tensorboard/` |
 | `launch_tensorboard` | Rust launcher starts TensorBoard detached and reports URL; scans port upward if busy |
 | `tensorboard_host` / `tensorboard_port` | TensorBoard bind host and preferred port |
-| `background` | Detach Python BC learner; write `train.pid`, stdout/stderr logs, watch command |
+| `background` | Detach Python learner; write run-local `train.pid`, stdout/stderr logs, watch command |
 | `log_every_n_steps` | Balanced Python step JSONL/TensorBoard cadence; avoid `1` on CUDA unless debugging |
-| `checkpoint_every_n_steps` | Refresh `checkpoints/latest.pt`; final step also saves |
-| `keep_step_checkpoints` | Also retain immutable `checkpoints/step_<global_step>.pt` files |
+| `checkpoint_every_n_steps` | Refresh run-local `checkpoints/latest.pt`; final step also saves |
+| `keep_step_checkpoints` | Also retain immutable run-local `checkpoints/step_<global_step>.pt` files |
 | `max_train_steps` | Python BC training length today; if unset, launcher smoke default is `30` steps |
 
 Minimal raw-MJAI BC train, default Python/PyTorch backend:
@@ -84,7 +86,7 @@ data_dir: /data/mjai              # raw replay root/file/archive; used directly 
 # raw_mjai_data_dirs:            # optional exact multiple roots; overrides data_dir for raw MJAI
 #   - /data/mjai-a
 #   - /data/mjai-b
-output_dir: /output
+output_dir: /output/hydra-campaign
 num_epochs: 1
 batch_size: 2048
 microbatch_size: 1024
@@ -106,7 +108,7 @@ Optional BC shard train/cache, default Python/PyTorch backend:
 
 ```yaml
 data_dir: /data                 # still retained as config contract; shard path supplies samples
-output_dir: /output
+output_dir: /output/hydra-campaign
 num_epochs: 1
 batch_size: 2048
 device: cuda:0
@@ -115,9 +117,39 @@ bc_shards_manifest_path: /data/bc_shards_manifest.json
 ```
 
 If `bc_shards_manifest_path` is absent, Python learner streams raw MJAI from `raw_mjai_data_dirs` when set, otherwise from `data_dir`; this is normal BC path. `raw_mjai_data_dirs` is explicit: list each folder/file/archive to include; Hydra does not expand parent bundle into sibling datasets for you. Default bridge crate is `hydra-raw-mjai-pyo3` (`python_raw_mjai_transport: pinned_pyo3`); `stdout` remains fallback. Rust raw-MJAI helper runs in Pixi `default` env; Python training runs in Pixi `py-train`.
-Python BC writes operator artifacts under `output_dir`:
+
+`output_dir` is campaign root. Top level owns campaign metadata only:
 
 ```text
+<output_dir>/campaign.json
+<output_dir>/registry/baselines.jsonl
+<output_dir>/registry/promotions.jsonl
+<output_dir>/registry/seed_bank.json
+<output_dir>/registry/opponent_pools/
+<output_dir>/stages/<stage>/latest_run
+<output_dir>/stages/<stage>/runs/<run_id>/...
+```
+
+Default stage names and implemented phase mapping:
+
+| Stage | Name |
+|---|---|
+| T0 | `T0_bc_baseline` |
+| T1 | `T1_ppo_control` |
+| T2 | `T2_direct_sampled_ach` |
+| T3 | `T3_drda_residual_ach` |
+| T4 | `T4_pbrs_beta_sweep` |
+| T5 | `T5_exit_auxiliary` |
+| T6 | `T6_delta_q_experiment` |
+| T7 | `T7_population_window` |
+
+Explicit `stage` overrides default mapping for both Python and Rust training paths; `run_name` overrides run id. Without overrides, RL phases use matching T1-T7 stage below.
+
+Run-local artifacts live under `<output_dir>/stages/<stage>/runs/<run_id>/`:
+
+```text
+config.yaml
+launch_metadata.json
 logs/events.jsonl       lifecycle, resume, validation, checkpoint events
 logs/train_steps.jsonl  balanced step telemetry, cadence `log_every_n_steps`
 logs/tensorboard.log    TensorBoard process output when launched
@@ -125,20 +157,24 @@ logs/stdout.log         background learner stdout
 logs/stderr.log         background learner stderr
 train.pid               background learner pid
 checkpoints/latest.pt   resumable data-only checkpoint
-tensorboard/            TensorBoard event files
+checkpoints/step_<global_step>.pt  optional immutable checkpoint
+exports/                ONNX/native export artifacts
+rollouts/               RL rollout batches/artifacts
+eval/                   arena/eval reports
+summary.json
 python_learner_result.json
+tensorboard/            TensorBoard event files
 ```
-
-Resume with `resume_checkpoint: <output_dir>/checkpoints/latest.pt` only for shard-backed runs. Python checkpoint load validates schema, model/runtime/optimizer/loss/EMA contracts, manifest/source identity, and RNG metadata. Raw-MJAI config resume fails closed in Rust launcher/config conversion and direct Python CLI (`resume_checkpoint`, `resume_latest`, raw `--resume`, or occupied `checkpoints/latest.pt`) because stream cursor resume does not exist. Present-but-mismatched metadata hard error. Step logs/TensorBoard include current `lr`; `grad_norm` logs only when clipping path reports without extra timed-step sync. Checkpoint metadata includes `weight_source: raw|ema`; resume accepts raw authority only, never silently mixes exported EMA weights back into mutable train state.
-
+Python BC and RL artifacts live under `<output_dir>/stages/<stage>/runs/<run_id>/`; Rust RL compatibility artifacts use same run-local layout instead of `<output_dir>/rl`.
+Resume with `resume_checkpoint: <run_dir>/checkpoints/latest.pt` or `resume_latest: true` resolves through stage `latest_run` marker when stage metadata is available. Resume is supported for raw-MJAI and shard-backed Python BC runs when checkpoint runtime metadata matches current config. Python checkpoint load validates schema, model/runtime/optimizer/loss/EMA contracts, manifest/source identity when shards are used, raw-MJAI progress metadata when raw input is used, and RNG metadata. Raw-MJAI resume restores at game boundaries. Rust passes resume checkpoint to Python; Python reads/writes relative to concrete run dir.
 Python BC diagnostic logs expose train/validation head health, not only total loss. `logs/train_steps.jsonl` has `head_losses` and `target_coverage`; validation events in `logs/events.jsonl` and TensorBoard scalars include per-head losses: `policy`, `value`, `score_pdf`, `score_cdf`, `tenpai`, `grp`, weighted `oracle_critic`, weighted `safety_residual`, `opp_next`, `danger`. GRP/NextRank/oracle labels can already exist in BC data and validation surfaces when present; later RL GRP work means using validated predictor/potential for shaping, not inventing first awareness. With `ema.enabled`, validation logs `metrics.raw.*` and `metrics.ema.*`; TensorBoard uses `validation/raw/*` and `validation/ema/*`. Coverage status is explicit per head: `absent`, `present_zero`, or `present_positive`, plus sample-weighted fraction. Positive optional weights hard-error when labels/masks are absent; all-zero present masks log `present_zero` so `full_base` data-path bugs surface instead of hiding in total loss.
-Phase 4C PBRS shaping is dormant/default-off. Rollout/control-run metadata records `reward_shaping.enabled=false` and terminal `U_A` reward by default. Nonzero `pbrs_beta` hard-errors unless strict validation report authorizes activation with matching GRP class count, rank utility, state boundary, gamma/lambda, encoder/action contract, and public-only source identity; thresholds-absent reports cannot activate beta.
+PBRS shaping is dormant/default-off. Rollout/control-run metadata records `reward_shaping.enabled=false` and terminal `U_A` reward by default. Nonzero `pbrs_beta` hard-errors unless strict validation report authorizes activation with matching GRP class count, rank utility, state boundary, gamma/lambda, encoder/action contract, and public-only source identity; thresholds-absent reports cannot activate beta.
 
 Python BC step/sample accounting: `global_step`, `samples_seen`, JSONL, TensorBoard, and checkpoint step count every optimizer update that mutates weights. `--warmup` is timing/compile warmup only: it replays staged train batch through forward/backward/optimizer, then restores model + optimizer state, so it does not count as training and does not advance corpus position. Torch compile dry-run also snapshot/restores model + optimizer state. If raw-MJAI supplies that dry-run batch, logs expose it as consumed-but-non-mutating: `compile_dry_run=true`, `warmup_mode=non_mutating_replay_first_batch`, `warmup_steps_counted=0`, `samples_consumed_pre_main`, `pre_main_batches_changed_weights=false`. Raw-MJAI progress fields remain separate corpus-consumption counters; use them with `samples_seen` for plateau/corpus-position diagnosis.
 
 Raw-MJAI target-game LR scheduling uses optimizer steps for `lr_warmup_steps`; consumed-game progress only drives post-warmup cosine decay. Do not use loaded games as warmup progress.
 
-For long Python BC runs, raw-MJAI is default and resumable. Checkpoint restore validates weights/RNG/optimizer/runtime metadata, reads `raw_mjai_progress.loaded_games + skipped_games`, and passes that count as `--raw-mjai-skip-games` so Rust skips deterministic completed-game prefix before streaming new rows. This is game-boundary cursor resume: checkpoints do not represent partial in-flight game row offset.
+For long Python BC runs, raw-MJAI is default on-the-fly input path and is resumable at game boundaries. Compact shards remain fixed-materialized dataset/cache path when repeated train/validation runs, fixed split artifacts, or sidecar-baked labels are needed.
 
 Raw-MJAI Python validation default = fixed held-out window. Python pre-materializes `validation_steps` batches once from validation split, no suit augmentation unless direct CLI passes `--raw-mjai-validation-augment`. Rust/YAML respects `max_validation_batches` when set; otherwise it derives ceil batches from `max_validation_samples` and passes requested sample cap to Python. Validation logs expose requested/actual batches, requested/actual samples, and sample cap overrun. Plateau diagnosis should use this fixed, non-augmented validation: flat curve then means model stopped improving on same held-out samples. Direct Python can opt back into moving validation with `--validation-source-mode streaming`; logs label mode explicitly.
 
@@ -174,7 +210,7 @@ Launcher picks first available TensorBoard port at or above `tensorboard_port`.
 If `background: true`, CLI returns after spawn and prints:
 
 ```bash
-tail -f <output_dir>/logs/train_steps.jsonl
+tail -f <output_dir>/stages/<stage>/runs/<run_id>/logs/train_steps.jsonl
 ```
 
 Direct Python/CLI equivalents:
@@ -229,7 +265,7 @@ python_residual_profile: mish_se          # default canonical SE-ResNet
 # python_residual_profile: relu_no_norm_no_se # speed/ablation only; validation-only, never default
 ```
 
-Python learner backbone profile is part of checkpoint metadata. Valid value now only `conv2d_local3`; default is `conv2d_local3`. Removed probe `token_linear_local3`: slower than Conv2d in raw-MJAI timing, higher architecture risk, no profiler reason to keep.
+Python learner backbone profile is checkpoint metadata. Supported values: `conv2d_local3`, `tileformer_bias`, `convnext_tile_k7`, `global_pool_bias`; current default/canonical value is `conv2d_local3`. Non-default backbone profiles are training/checkpoint-supported only; ONNX/native-arena export supports `conv2d_local3` only for now.
 
 ```bash
 --backbone-profile conv2d_local3
@@ -337,21 +373,38 @@ validation_gates:
   require_sidecar_coverage_when_weighted: true
 ```
 
-Minimal RL add:
+## RL operator contract
+
+Rust and Python RL stages use campaign layout: `output_dir` remains campaign root, and logs/artifacts go under `<output_dir>/stages/<stage>/runs/<run_id>/` with run-local `logs/`, `checkpoints/`, `exports/`, `rollouts/`, `eval/`, and `tensorboard/`. Stage defaults follow T1-T7 phase mapping above; set top-level `stage:` to override stage name and `run_name:` to override run id.
+
+| Surface | Status | Operator contract |
+|---|---|---|
+| Python T1 PPO control | current T1 operator path | `train config.yaml` with `rl.phase: ppo_control`; Rust launcher starts Python `ppo-control`, exports current `.pt` to ONNX each rollout, collects real GameRunner decisions through `hydra-raw-mjai-pyo3` native collector, then runs masked PPO-GAE. Artifacts land under `stages/T1_ppo_control/runs/<run_id>/` unless `stage`/`run_name` override them. |
+| Rust DRDA/ACH RL train path | legacy/advanced path | `train config.yaml` with `rl.phase: drda_ach_self_play` when explicitly using Rust RL compatibility lane; not T1 default. It uses same `stages/<stage>/runs/<run_id>/` layout, not `<output_dir>/rl`; default stage is matching T2/T3/T4/T5/T6/T7 phase lane unless top-level `stage:` overrides it. |
+| Python ExIt/DeltaQ target lanes | dormant-supported from compact shards | ExIt may be weighted only with matching manifest sidecar provenance; positive DeltaQ fails closed until output-head contract exists. |
+
+Minimal RL train YAML accepted by `RlTrainConfig`:
 
 ```yaml
 rl:
   games_per_batch: 1024
-  decisions_per_game: 1024
   temperature: 1.0
-  phase: drda_ach_self_play
+  phase: ppo_control
+  microbatch_size: 1024
 ```
 
-Current RL phase enum:
-- `drda_ach_self_play`
-- `exit_pondering`
+Supported `rl.phase` values and default stage mapping:
+- `ppo_control` -> `T1_ppo_control` (T1 masked PPO-GAE long-run operator path)
+- direct sampled ACH -> `T2_direct_sampled_ach`
+- `drda_ach_self_play` -> `T3_drda_residual_ach` (legacy/advanced Rust RL lane)
+- PBRS beta sweep -> `T4_pbrs_beta_sweep`
+- `exit_pondering` -> `T5_exit_auxiliary`
+- DeltaQ experiment -> `T6_delta_q_experiment`
+- population window -> `T7_population_window`
 
-Status: plain BC shard/raw-MJAI path defaults to Python/PyTorch through Rust launcher. Python owns training, model/loss/optimizer/BF16/`torch.compile`/checkpoint, and ONNX export. Rust owns replay parsing, shard building, manifest validation, launcher glue, CLI/config conversion via `hydra-train-runtime::config::python`, native ONNX arena, and RL inference. Arena defaults: ONNX Runtime CUDA/native path, `--games 1024`, `--arena-batch-decisions 1024`. Arena inputs may be ONNX export dirs containing `policy.onnx`, `policy.json`, and `parity_fixture.safetensors`, or `.pt` checkpoints that export to ONNX before native run. Legacy Python checkpoint inference requires explicit `--python-checkpoints`. ExIt/DeltaQ/belief/mixture/opponent-hand-type are not supported by Python default yet; use `bc_backend: rust_burn` only for feature-gated legacy/debug or those advanced modes.
+Top-level `stage:` overrides these defaults for campaign layout only; it does not enable capability or change RL algorithm behavior.
+
+Plain BC shard/raw-MJAI path defaults to Python/PyTorch through Rust launcher. Python owns BC training, model/loss/optimizer/BF16/`torch.compile`/checkpoint, and ONNX export. Rust owns replay parsing, shard building, manifest validation, launcher glue, CLI/config conversion via `hydra-train-runtime::config::python`, native ONNX arena, and RL inference. Arena defaults: ONNX Runtime CUDA/native path, `--games 1024`, `--arena-batch-decisions 1024`. Arena inputs may be ONNX export dirs containing `policy.onnx`, `policy.json`, and `parity_fixture.safetensors`, or `.pt` checkpoints that export to ONNX before native run. Legacy Python checkpoint inference requires explicit `--python-checkpoints`. Belief/mixture/opponent-hand-type remain unsupported by Python default; use `bc_backend: rust_burn` only for feature-gated legacy/debug or those advanced modes.
 
 ## Preflight benchmark + YAML authority
 
@@ -413,7 +466,7 @@ Use optional shards when:
 - ExIt/DeltaQ labels should be baked into validated artifact.
 - training should consume fixed materialized dataset instead of raw replay streaming each run.
 
-Raw loose/archive replay via `data_dir` is routine BC default. It also remains audit, shard-production, debug, and one-off transport-comparison path. Use fresh output dir for raw runs until cursor resume exists.
+Raw loose/archive replay via `data_dir` is routine BC default and supports game-boundary cursor resume through checkpoint progress. It also remains audit, shard-production, debug, and one-off transport-comparison path.
 
 Build CLI:
 
@@ -466,12 +519,11 @@ CUDA shard no-starvation proof result: serious CUDA BC compact-shard runs should
 Optional resumable/cache workflow:
 1. Audit raw corpus:
 `pixi run cargo run --quiet --package hydra-train --features training --bin mjai_audit -- /home/cachybtw/Downloads/dataset_bundle/tenhou-houou-mjai-2025 --threads 20 --failure-examples 20 --failure-inventory-dir /home/cachybtw/dev/hydra/training/2026-05-23-audit-failures`.
-2. Build compact v3 train+validation shards only when opting into shard cache/resume. Raw-MJAI training must use fresh output dir:
+2. Build compact v3 train+validation shards only when opting into fixed/cache/sidecar-label workflow. Raw-MJAI fresh runs and game-boundary cursor resume are supported when checkpoint/runtime metadata matches.
 `pixi run cargo run --quiet --package hydra-train --features training --bin build_bc_shards -- --input /home/cachybtw/Downloads/dataset_bundle/tenhou-houou-mjai-2025 --output-dir /home/cachybtw/dev/hydra/training/2026-05-23-bc-shards --manifest-name bc_shards_manifest.json --split both --train-fraction 0.9 --num-threads 20 --queue-bound 8 --chunk-games 256 --resume --progress-jsonl /home/cachybtw/dev/hydra/training/2026-05-23-bc-shards/progress.jsonl --report-name report.json`.
 3. Validate manifest:
 `pixi run cargo run --quiet --package hydra-train --features training --bin build_bc_shards -- --validate-manifest /home/cachybtw/dev/hydra/training/2026-05-23-bc-shards/bc_shards_manifest.json`.
-4. Set `bc_shards_manifest_path` in `training/local-rtx5070-raw-mjai-balanced.yaml`, set `resume_latest: true`, keep `data_dir` as source provenance, then train:
-`pixi run cargo run --quiet --package hydra-train --features training --bin train -- training/local-rtx5070-raw-mjai-balanced.yaml`.
+4. Set `bc_shards_manifest_path` in your train config, set `resume_latest: true`, keep `data_dir` as source provenance, then train with that config.
 5. Rebuild shards on dataset/contract change.
 
 Shard consume semantics:

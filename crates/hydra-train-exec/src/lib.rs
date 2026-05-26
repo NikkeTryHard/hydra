@@ -23,6 +23,8 @@ mod bf16_autocast_proof;
 /// Training bootstrap initialization and prepared runtime state.
 #[cfg(feature = "burn-libtorch-obsolete")]
 pub mod bootstrap;
+/// Shared campaign/run artifact layout helpers.
+mod campaign_layout;
 /// LibTorch/Rayon runtime helpers for execution-owned config materialization.
 #[cfg(feature = "burn-libtorch-obsolete")]
 pub mod config_runtime;

@@ -151,8 +151,8 @@ pub fn trainer_config_from_train_config(config: &TrainConfig) -> BCTrainerConfig
 /// Builds the RL train-step config from YAML/runtime scalar config.
 pub fn rl_config_from_train_config(rl: &RlTrainConfig) -> RlConfig {
     let mut cfg = match rl.phase {
-        RlPhaseConfig::DrdaAchSelfPlay => RlConfig::default_phase2(),
-        RlPhaseConfig::ExitPondering => RlConfig::default_phase3(),
+        RlPhaseConfig::DrdaAchSelfPlay => RlConfig::default_drda_ach_self_play(),
+        RlPhaseConfig::ExitPondering => RlConfig::default_exit_pondering(),
     };
     if let Some(lr) = rl.learning_rate {
         cfg = cfg.with_lr(lr);

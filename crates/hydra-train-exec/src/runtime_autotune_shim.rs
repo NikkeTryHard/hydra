@@ -1,7 +1,7 @@
 use crate::data_pipeline::{DataManifest, StreamingLoaderConfig};
 use crate::model::{HydraModelConfig, HydraModelInit};
 use crate::rl_runner::live_exit_config_from_plan;
-use crate::rl_step::{RlPhaseTrainRequest, rl_phase_train_step_with_controller};
+use crate::rl_step::{RlPhaseTrainRequest, rl_stage_train_step_with_controller};
 use burn::backend::libtorch::LibTorchDevice;
 use burn::tensor::backend::AutodiffBackend;
 use colored::Colorize;
@@ -24,7 +24,7 @@ use crate::preflight_runtime::{
     TrainMeasurementSpec, measure_samples_per_second, run_train_measurement_loop,
 };
 use crate::presentation::{
-    format_preflight_summary_line, format_runtime_tuning_message, format_timed_phase_message,
+    format_preflight_summary_line, format_runtime_tuning_message, format_timed_stage_message,
     make_bar,
 };
 use hydra_train_runtime::config::{RlTrainConfig, TrainConfig, loader_runtime_config};
@@ -359,7 +359,7 @@ where
     let mut controller = HeadActivationController::new(HeadActivationConfig::default_with_params(
         model_config.estimated_params(),
     ));
-    let mut rebase_tracker = RebaseTracker::default_phase2();
+    let mut rebase_tracker = RebaseTracker::default_drda_ach_self_play();
     let distill_state = DistillState::default();
     let distill_cfg = DistillConfig::fast_distill();
     let mut self_play_coordinator = CooperativeSelfPlayCoordinator::new();
@@ -374,7 +374,7 @@ where
         let elapsed_secs = completed_steps as u64;
         let plan = maintenance_plan_from_inputs(OrchestratorPlanInputs {
             phase: state.phase,
-            phase_progress: state.phase_progress(),
+            stage_progress: state.stage_progress(),
             should_advance_phase: state.should_advance_phase(),
             rebase_due: rebase_tracker.should_rebase(),
             distill_due: distill_state.should_distill(&distill_cfg, elapsed_secs),
@@ -400,7 +400,7 @@ where
 
         controller.try_activate(hydra_train_runtime::head_gates::AdvancedHead::DeltaQ);
         let batch_samples = batch.batch_size();
-        let (next_model, _) = rl_phase_train_step_with_controller(
+        let (next_model, _) = rl_stage_train_step_with_controller(
             model,
             RlPhaseTrainRequest {
                 state: &state,
@@ -777,7 +777,7 @@ pub fn autotune_ranked_loader_runtime_with_seed(
     let coarse_started = Instant::now();
     println!(
         "{}",
-        format_timed_phase_message(
+        format_timed_stage_message(
             "runtime_coarse_search",
             &format!(
                 "starting tuples={}",
@@ -834,7 +834,7 @@ pub fn autotune_ranked_loader_runtime_with_seed(
     coarse_progress.finish_with_message("runtime coarse search complete".green().to_string());
     println!(
         "{}",
-        format_timed_phase_message(
+        format_timed_stage_message(
             "runtime_coarse_search",
             "complete",
             coarse_started.elapsed().as_secs_f64(),
@@ -867,7 +867,7 @@ pub fn autotune_ranked_loader_runtime_with_seed(
         )?;
         println!(
             "{}",
-            format_timed_phase_message(
+            format_timed_stage_message(
                 "runtime_refine",
                 "complete",
                 refine_started.elapsed().as_secs_f64(),
@@ -921,7 +921,7 @@ pub fn autotune_ranked_loader_runtime_with_seed(
 
     println!(
         "{}",
-        format_timed_phase_message(
+        format_timed_stage_message(
             "runtime_tuning_total",
             "complete",
             runtime_tuning_started.elapsed().as_secs_f64(),

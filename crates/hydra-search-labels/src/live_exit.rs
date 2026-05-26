@@ -527,7 +527,7 @@ impl Default for LiveExitConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            exit_config: ExitConfig::default_phase3(),
+            exit_config: ExitConfig::default_live_exit(),
         }
     }
 }

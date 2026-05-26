@@ -490,7 +490,7 @@ pub struct RlConfig {
 }
 
 impl RlConfig {
-    pub fn default_phase2() -> Self {
+    pub fn default_drda_ach_self_play() -> Self {
         Self {
             tau_drda: 4.0,
             ach_cfg: AchConfig::new(),
@@ -516,7 +516,7 @@ impl RlConfig {
         self
     }
 
-    pub fn default_phase3() -> Self {
+    pub fn default_exit_pondering() -> Self {
         Self {
             tau_drda: 4.0,
             ach_cfg: AchConfig::new(),

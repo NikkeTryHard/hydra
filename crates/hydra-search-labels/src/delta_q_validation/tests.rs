@@ -387,7 +387,7 @@ fn test_collect_validation_metrics_maps_gate_outcomes_to_delta_q_counters() {
         &incompatible,
         &model,
         &device,
-        &ExitConfig::default_phase3(),
+        &ExitConfig::default_live_exit(),
         &mut report,
     );
     assert_eq!(report.total_states, 1);
@@ -401,7 +401,7 @@ fn test_collect_validation_metrics_maps_gate_outcomes_to_delta_q_counters() {
         &too_few,
         &model,
         &device,
-        &ExitConfig::default_phase3(),
+        &ExitConfig::default_live_exit(),
         &mut report,
     );
     assert_eq!(report.total_states, 2);
@@ -413,7 +413,7 @@ fn test_collect_validation_metrics_maps_gate_outcomes_to_delta_q_counters() {
     let not_hard = step_with_discards(&[1, 3]);
     let strict_cfg = ExitConfig {
         hard_state_threshold: f32::INFINITY,
-        ..ExitConfig::default_phase3()
+        ..ExitConfig::default_live_exit()
     };
     collect_validation_metrics_for_step(&not_hard, &model, &device, &strict_cfg, &mut report);
     assert_eq!(report.total_states, 3);
@@ -432,7 +432,7 @@ fn test_collect_validation_metrics_maps_gate_outcomes_to_delta_q_counters() {
     passing.delta_q_label = Some(TrajectoryDeltaQLabel { target, mask });
     let permissive_cfg = ExitConfig {
         hard_state_threshold: -1.0,
-        ..ExitConfig::default_phase3()
+        ..ExitConfig::default_live_exit()
     };
     collect_validation_metrics_for_step(&passing, &model, &device, &permissive_cfg, &mut report);
     assert_eq!(report.total_states, 4);

@@ -18,8 +18,8 @@ mod cli;
 pub mod python;
 pub use cli::{parse_args, usage, version};
 pub use python::{
-    PYTHON_TIMING_WARMUP_STEPS, python_options_from_config, python_resume_checkpoint,
-    raw_mjai_cursor_resume_supported,
+    PYTHON_TIMING_WARMUP_STEPS, python_options_from_config, python_ppo_control_options_from_config,
+    python_resume_checkpoint, python_run_dir, raw_mjai_cursor_resume_supported,
 };
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -29,6 +29,10 @@ pub struct TrainConfig {
     #[serde(default)]
     pub raw_mjai_data_dirs: Vec<PathBuf>,
     pub output_dir: PathBuf,
+    #[serde(default)]
+    pub stage: Option<String>,
+    #[serde(default)]
+    pub run_name: Option<String>,
     pub num_epochs: usize,
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
@@ -355,26 +359,44 @@ impl TrainConfig {
             full_epoch: false,
             max_validation_batches: None,
             max_validation_samples: default_max_validation_samples(),
+            stage: None,
+            run_name: None,
         }
     }
 }
 
+/// YAML selector for RL training lane.
+///
+/// `ppo_control` dispatches the Python T1 masked PPO-GAE operator path.
+/// `drda_ach_self_play` remains the legacy Rust/Burn RL lane when that
+/// compatibility feature is available.
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RlPhaseConfig {
+    PpoControl,
     DrdaAchSelfPlay,
     ExitPondering,
 }
 
 impl RlPhaseConfig {
+    pub const fn default_stage(self) -> &'static str {
+        rl_stage_for_phase(self)
+    }
+
     pub fn to_training_phase(self) -> PipelineTrainingPhase {
         match self {
             Self::DrdaAchSelfPlay => PipelineTrainingPhase::DrdaAchSelfPlay,
+            Self::PpoControl => PipelineTrainingPhase::DrdaAchSelfPlay,
             Self::ExitPondering => PipelineTrainingPhase::ExitPondering,
         }
     }
 }
 
+/// YAML-owned RL training configuration.
+///
+/// Accepted fields are exactly `games_per_batch`, `temperature`, `phase`,
+/// `learning_rate`, `exit_weight`, `aux_weight`, and `microbatch_size`.
+/// Unknown fields fail deserialization.
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct RlTrainConfig {
@@ -564,10 +586,50 @@ impl BcBackendConfig {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct PythonPpoControlCliOptions {
+    pub init_checkpoint: PathBuf,
+    pub output_dir: PathBuf,
+    pub stage: Option<String>,
+    pub run_name: Option<String>,
+    pub device: String,
+    pub steps: usize,
+    pub games_per_update: usize,
+    pub seed: u64,
+    pub temperature: f32,
+    pub arena_batch_decisions: usize,
+    pub arena_threads: usize,
+    pub hidden: usize,
+    pub blocks: usize,
+    pub bottleneck: usize,
+    pub residual_profile: PythonResidualProfileConfig,
+    pub conv_memory_format: PythonConvMemoryFormatConfig,
+    pub backbone_profile: PythonBackboneProfileConfig,
+    pub learning_rate: f64,
+    pub min_learning_rate: f64,
+    pub lr_warmup_steps: usize,
+    pub grad_clip_norm: f64,
+    pub weight_decay: f64,
+    pub adamw_fused: PythonAdamwFlagConfig,
+    pub adamw_foreach: PythonAdamwFlagConfig,
+    pub bc_kl_reverse_coef: f64,
+    pub resume: Option<PathBuf>,
+    pub checkpoint_every_steps: usize,
+    pub log_every_steps: usize,
+    pub keep_step_checkpoints: bool,
+    pub tensorboard: bool,
+    pub launch_tensorboard: bool,
+    pub tensorboard_host: String,
+    pub tensorboard_port: u16,
+    pub background: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct PythonLearnerCliOptions {
     pub bc_shards_manifest: PathBuf,
     pub input: PythonLearnerInput,
     pub output_dir: PathBuf,
+    pub stage: Option<String>,
+    pub run_name: Option<String>,
     pub device: String,
     pub batch_size: usize,
     pub microbatch_size: usize,
@@ -840,6 +902,33 @@ fn default_true() -> bool {
     true
 }
 
+pub const DEFAULT_BC_STAGE: &str = "bc_baseline";
+pub const T0_BC_STAGE: &str = DEFAULT_BC_STAGE;
+pub const T1_PPO_CONTROL_STAGE: &str = "T1_ppo_control";
+pub const T2_DIRECT_SAMPLED_ACH_STAGE: &str = "T2_direct_sampled_ach";
+pub const T3_DRDA_RESIDUAL_ACH_STAGE: &str = "T3_drda_residual_ach";
+pub const T4_PBRS_BETA_SWEEP_STAGE: &str = "T4_pbrs_beta_sweep";
+pub const T5_EXIT_AUXILIARY_STAGE: &str = "T5_exit_auxiliary";
+pub const T6_DELTAQ_EXPERIMENT_STAGE: &str = "T6_deltaq_experiment";
+pub const T7_POPULATION_WINDOW_STAGE: &str = "T7_population_window";
+pub const DEFAULT_PPO_STAGE: &str = T1_PPO_CONTROL_STAGE;
+
+pub const fn rl_stage_for_phase(phase: RlPhaseConfig) -> &'static str {
+    match phase {
+        RlPhaseConfig::PpoControl => T1_PPO_CONTROL_STAGE,
+        RlPhaseConfig::DrdaAchSelfPlay => T3_DRDA_RESIDUAL_ACH_STAGE,
+        RlPhaseConfig::ExitPondering => T5_EXIT_AUXILIARY_STAGE,
+    }
+}
+
+pub fn rl_stage_for_config(config: &TrainConfig) -> &str {
+    if let Some(stage) = config.stage.as_deref() {
+        return stage;
+    }
+    let phase = config.rl.as_ref().map_or(default_rl_phase(), |rl| rl.phase);
+    rl_stage_for_phase(phase)
+}
+
 pub fn default_backbone_se_every_n() -> usize {
     1
 }
@@ -848,7 +937,7 @@ pub fn default_batch_size() -> usize {
 }
 
 pub fn default_rl_games_per_batch() -> usize {
-    4
+    1024
 }
 
 pub fn default_rl_temperature() -> f32 {
@@ -856,7 +945,7 @@ pub fn default_rl_temperature() -> f32 {
 }
 
 pub fn default_rl_phase() -> RlPhaseConfig {
-    RlPhaseConfig::DrdaAchSelfPlay
+    RlPhaseConfig::PpoControl
 }
 
 pub fn default_bc_learning_rate() -> f64 {

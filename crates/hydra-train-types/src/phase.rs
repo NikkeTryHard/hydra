@@ -91,7 +91,7 @@ impl TrainingPhase {
     }
 
     /// Returns this phase's zero-based rollout index.
-    pub fn phase_index(self) -> u8 {
+    pub fn stage_index(self) -> u8 {
         match self {
             Self::BenchmarkGates => 0,
             Self::BcWarmStart => 1,
@@ -160,19 +160,19 @@ impl PipelineState {
     }
 
     /// Returns current phase-local progress.
-    pub fn phase_progress(&self) -> f32 {
+    pub fn stage_progress(&self) -> f32 {
         let budget = self.phase.gpu_hours_budget() as f32;
         if budget == 0.0 {
             return 0.0;
         }
-        self.phase_hours_used() / budget
+        self.stage_hours_used() / budget
     }
 
     /// Returns GPU-hours consumed within the current phase.
-    pub fn phase_hours_used(&self) -> f32 {
-        let phase_start = self.phase.cumulative_budget_before() as f32;
-        let phase_budget = self.phase.gpu_hours_budget() as f32;
-        (self.gpu_hours_used - phase_start).clamp(0.0, phase_budget)
+    pub fn stage_hours_used(&self) -> f32 {
+        let stage_start = self.phase.cumulative_budget_before() as f32;
+        let stage_budget = self.phase.gpu_hours_budget() as f32;
+        (self.gpu_hours_used - stage_start).clamp(0.0, stage_budget)
     }
 
     /// Increments the learner version counter.
@@ -206,9 +206,9 @@ impl PipelineState {
     /// Returns a stable human-readable progress summary.
     pub fn progress_summary(&self) -> String {
         format!(
-            "phase={:?} phase_hours={:.1}/{} total_hours={:.1} games={} v{}->v{}",
+            "phase={:?} stage_hours={:.1}/{} total_hours={:.1} games={} v{}->v{}",
             self.phase,
-            self.phase_hours_used(),
+            self.stage_hours_used(),
             self.phase.gpu_hours_budget(),
             self.gpu_hours_used,
             self.total_games,

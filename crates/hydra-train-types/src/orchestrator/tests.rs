@@ -45,21 +45,21 @@ fn validation_gate_evaluation_checks_g0_to_g3() {
 }
 
 #[test]
-fn benchmark_phase_can_advance_early_once_gates_pass() {
+fn benchmark_stage_can_advance_early_once_gates_pass() {
     let mut state = PipelineState::default();
     state.tick_gpu_hours(12.0);
     let report = GateReport {
         passed: true,
         failures: Vec::new(),
     };
-    assert!(phase_advance_report(&state, Some(&report), None).passed);
+    assert!(stage_advance_report(&state, Some(&report), None).passed);
 }
 
 #[test]
-fn maintenance_plan_enables_mid_phase2_exit_and_rebase() {
+fn maintenance_plan_enables_mid_drda_exit_and_rebase() {
     let plan = maintenance_plan_from_inputs(OrchestratorPlanInputs {
         phase: TrainingPhase::DrdaAchSelfPlay,
-        phase_progress: 0.75125,
+        stage_progress: 0.75125,
         should_advance_phase: false,
         rebase_due: true,
         distill_due: true,
@@ -73,10 +73,10 @@ fn maintenance_plan_enables_mid_phase2_exit_and_rebase() {
 }
 
 #[test]
-fn maintenance_plan_keeps_benchmark_phase_idle() {
+fn maintenance_plan_keeps_benchmark_stage_idle() {
     let plan = maintenance_plan_from_inputs(OrchestratorPlanInputs {
         phase: TrainingPhase::BenchmarkGates,
-        phase_progress: 0.0,
+        stage_progress: 0.0,
         should_advance_phase: false,
         rebase_due: true,
         distill_due: true,

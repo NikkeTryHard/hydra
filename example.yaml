@@ -15,8 +15,11 @@ data_dir: path/to/mjai
 #   - /path/to/dataset-folder-a
 #   - /path/to/dataset-folder-b
 
-# Run output root.
-output_dir: path/to/output/hydra-bc
+# Campaign root. Python BC/RL and Rust RL artifacts are written under stages/<stage>/runs/<run_id>/.
+output_dir: path/to/output/hydra-campaign
+# Optional layout overrides; defaults follow BC/RL phase mapping T0-T7.
+# stage: T1_ppo_control
+# run_name: latest_run
 
 
 # Full raw-MJAI epoch is the stopping condition.
@@ -58,7 +61,8 @@ seed: 0
 source_filters: {}
 
 # Raw-MJAI resume is default-on. Checkpoint progress stores completed games; launcher skips
-# that deterministic prefix before streaming new rows.
+# that deterministic prefix before streaming new rows. `resume_latest` resolves through the
+# stage latest_run marker when available; explicit checkpoints use <run_dir>/checkpoints/latest.pt.
 resume_checkpoint: null
 resume_latest: true
 
@@ -80,7 +84,7 @@ launch_tensorboard: true
 tensorboard_host: 127.0.0.1
 tensorboard_port: 6006
 
-# Detach learner, write train.pid, stdout/stderr logs, and print watch command.
+# Detach learner, write run-local train.pid/stdout/stderr logs, and print watch command.
 background: true
 
 # Rust/Burn loader fields retained for config contract; Python raw-MJAI uses launcher-owned stream defaults.

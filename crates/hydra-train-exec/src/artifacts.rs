@@ -71,11 +71,15 @@ pub struct BcArtifactPaths {
     pub validation_gate_path: PathBuf,
 }
 
-/// RL artifact paths rooted below the configured output directory.
+/// RL artifact paths rooted below a campaign run directory.
 pub struct RlArtifactPaths {
-    /// RL artifact root directory.
+    /// RL campaign run directory.
     pub root: PathBuf,
-    /// TensorBoard root directory.
+    /// Run-local log directory.
+    pub logs_dir: PathBuf,
+    /// Run-local checkpoint directory.
+    pub checkpoints_dir: PathBuf,
+    /// Run-local TensorBoard root directory.
     pub tb_root: PathBuf,
     /// TensorBoard session directory.
     pub tb_session_dir: PathBuf,
@@ -385,35 +389,44 @@ impl BcArtifactPaths {
 }
 
 impl RlArtifactPaths {
-    /// Builds RL artifact paths from the output directory and resume step.
+    /// Builds RL artifact paths rooted at a concrete campaign run directory.
     #[must_use]
-    pub fn new(output_dir: &Path, resume_global_step: usize) -> Self {
-        let root = output_dir.join("rl");
-        let tb_root = root.join("tb");
+    pub fn new_for_run_dir(run_dir: &Path, resume_global_step: usize) -> Self {
+        let root = run_dir.to_path_buf();
+        let logs_dir = root.join("logs");
+        let checkpoints_dir = root.join("checkpoints");
+        let tb_root = root.join("tensorboard");
         let tb_session_dir = tb_root.join(format!(
             "run_g{:08}_{}",
             resume_global_step,
             current_timestamp_s()
         ));
         Self {
-            latest_model_base: root.join("latest_model"),
-            latest_optimizer_base: root.join("latest_optimizer"),
-            latest_state_path: root.join("latest_state.yaml"),
-            step_log_path: root.join("step_log.jsonl"),
+            latest_model_base: checkpoints_dir.join("latest_model"),
+            latest_optimizer_base: checkpoints_dir.join("latest_optimizer"),
+            latest_state_path: checkpoints_dir.join("latest_state.yaml"),
+            step_log_path: logs_dir.join("step_log.jsonl"),
             root,
+            logs_dir,
+            checkpoints_dir,
             tb_root,
             tb_session_dir,
         }
     }
 
-    /// Creates the RL artifact root directory.
+    /// Builds RL artifact paths from a legacy output directory.
+    #[must_use]
+    pub fn new(output_dir: &Path, resume_global_step: usize) -> Self {
+        Self::new_for_run_dir(&output_dir.join("rl"), resume_global_step)
+    }
+
+    /// Creates the RL campaign run artifact directories.
     pub fn create_root_dir(&self) -> Result<(), String> {
-        fs::create_dir_all(&self.root).map_err(|err| {
-            format!(
-                "failed to create RL artifact dir {}: {err}",
-                self.root.display()
-            )
-        })?;
+        for dir in [&self.root, &self.logs_dir, &self.checkpoints_dir] {
+            fs::create_dir_all(dir).map_err(|err| {
+                format!("failed to create RL artifact dir {}: {err}", dir.display())
+            })?;
+        }
         Ok(())
     }
 
@@ -1961,26 +1974,35 @@ mod wrapper_moved_tests {
 
     #[test]
     fn rl_artifact_paths_build_expected_names() {
-        let output_dir = temp_dir_path("rl_artifact_paths");
-        let artifacts = RlArtifactPaths::new(&output_dir, 7);
+        let run_dir = temp_dir_path("rl_artifact_paths")
+            .join("stages")
+            .join("T1_ppo_control")
+            .join("runs")
+            .join("run_001");
+        let artifacts = RlArtifactPaths::new_for_run_dir(&run_dir, 7);
 
-        assert_eq!(artifacts.root, output_dir.join("rl"));
-        assert_eq!(artifacts.tb_root, artifacts.root.join("tb"));
+        assert_eq!(artifacts.root, run_dir);
+        assert_eq!(artifacts.logs_dir, artifacts.root.join("logs"));
+        assert_eq!(
+            artifacts.checkpoints_dir,
+            artifacts.root.join("checkpoints")
+        );
+        assert_eq!(artifacts.tb_root, artifacts.root.join("tensorboard"));
         assert_eq!(
             artifacts.latest_model_base,
-            artifacts.root.join("latest_model")
+            artifacts.checkpoints_dir.join("latest_model")
         );
         assert_eq!(
             artifacts.latest_optimizer_base,
-            artifacts.root.join("latest_optimizer")
+            artifacts.checkpoints_dir.join("latest_optimizer")
         );
         assert_eq!(
             artifacts.latest_state_path,
-            artifacts.root.join("latest_state.yaml")
+            artifacts.checkpoints_dir.join("latest_state.yaml")
         );
         assert_eq!(
             artifacts.step_log_path,
-            artifacts.root.join("step_log.jsonl")
+            artifacts.logs_dir.join("step_log.jsonl")
         );
         let tb_session = artifacts
             .tb_session_dir
@@ -1989,7 +2011,7 @@ mod wrapper_moved_tests {
             .to_string_lossy();
         assert!(tb_session.starts_with("run_g00000007_"));
 
-        cleanup_dir(&output_dir);
+        cleanup_dir(&artifacts.root);
     }
 
     #[test]
@@ -2028,7 +2050,7 @@ mod wrapper_moved_tests {
     fn artifact_directory_creators_make_expected_directories() {
         let output_dir = temp_dir_path("artifact_dir_create");
         let bc_artifacts = BcArtifactPaths::new(&output_dir, 3);
-        let rl_artifacts = RlArtifactPaths::new(&output_dir, 9);
+        let rl_artifacts = RlArtifactPaths::new_for_run_dir(&output_dir.join("rl_run"), 9);
 
         bc_artifacts.create_root_dir().expect("create bc root");
         bc_artifacts
@@ -2043,6 +2065,8 @@ mod wrapper_moved_tests {
         assert!(bc_artifacts.tb_root.is_dir());
         assert!(bc_artifacts.tb_session_dir.is_dir());
         assert!(rl_artifacts.root.is_dir());
+        assert!(rl_artifacts.logs_dir.is_dir());
+        assert!(rl_artifacts.checkpoints_dir.is_dir());
         assert!(rl_artifacts.tb_root.is_dir());
         assert!(rl_artifacts.tb_session_dir.is_dir());
 

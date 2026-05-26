@@ -1,4 +1,4 @@
-"""Phase-2 deterministic PPO smoke artifact builder."""
+"""Deterministic PPO smoke artifact builder."""
 
 from __future__ import annotations
 

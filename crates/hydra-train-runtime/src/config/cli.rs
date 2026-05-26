@@ -1148,6 +1148,8 @@ where
                 manifest: bc_shards_manifest.clone(),
             },
             output_dir,
+            stage: None,
+            run_name: None,
             device: python_device.clone(),
             batch_size: 2048,
             microbatch_size: 1024,

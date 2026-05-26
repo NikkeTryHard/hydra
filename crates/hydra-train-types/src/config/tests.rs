@@ -82,18 +82,18 @@ fn experimental_backbone_profile_rejects_zero_se_stride() {
 
 #[test]
 fn rl_config_defaults_match_legacy_contract() {
-    let phase2 = RlConfig::default_phase2();
-    assert_eq!(phase2.tau_drda, 4.0);
-    assert!((phase2.lr - 2.5e-4).abs() < f64::EPSILON);
-    assert!((phase2.exit_weight - DEFAULT_EXIT_WEIGHT).abs() < f32::EPSILON);
-    assert!((phase2.aux_weight - DEFAULT_AUX_WEIGHT).abs() < f32::EPSILON);
-    assert!(phase2.validate().is_ok());
+    let drda = RlConfig::default_drda_ach_self_play();
+    assert_eq!(drda.tau_drda, 4.0);
+    assert!((drda.lr - 2.5e-4).abs() < f64::EPSILON);
+    assert!((drda.exit_weight - DEFAULT_EXIT_WEIGHT).abs() < f32::EPSILON);
+    assert!((drda.aux_weight - DEFAULT_AUX_WEIGHT).abs() < f32::EPSILON);
+    assert!(drda.validate().is_ok());
 
-    let phase3 = RlConfig::default_phase3();
-    assert!((phase3.lr - 1e-4).abs() < f64::EPSILON);
-    assert!((phase3.exit_weight - DEFAULT_EXIT_WEIGHT).abs() < f32::EPSILON);
-    assert!((phase3.aux_weight - DEFAULT_AUX_WEIGHT).abs() < f32::EPSILON);
-    assert!(phase3.validate().is_ok());
+    let exit = RlConfig::default_exit_pondering();
+    assert!((exit.lr - 1e-4).abs() < f64::EPSILON);
+    assert!((exit.exit_weight - DEFAULT_EXIT_WEIGHT).abs() < f32::EPSILON);
+    assert!((exit.aux_weight - DEFAULT_AUX_WEIGHT).abs() < f32::EPSILON);
+    assert!(exit.validate().is_ok());
 }
 
 #[test]
@@ -140,7 +140,7 @@ fn config_validation_rejects_non_finite_scalars() {
         Err("learning rates must be finite")
     );
     assert_eq!(
-        RlConfig::default_phase2()
+        RlConfig::default_drda_ach_self_play()
             .with_aux_weight(f32::INFINITY)
             .validate(),
         Err("rl config values must be finite")

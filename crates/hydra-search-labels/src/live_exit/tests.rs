@@ -128,7 +128,7 @@ fn base_pi_from_logits_sums_to_one() {
 
 #[test]
 fn budget_from_legal_count_respects_minimum() {
-    let cfg = ExitConfig::default_phase3();
+    let cfg = ExitConfig::default_live_exit();
     // 3 legal discards -> 8.0 * 3 = 24, but min_visits is 64
     assert_eq!(budget_from_legal_count(&cfg, 3), 64);
     // 10 legal discards -> 8.0 * 10 = 80, exceeds min_visits
@@ -184,7 +184,7 @@ fn rejects_incompatible_state_non_discard_legal() {
     let state = make_test_game();
     let obs = make_test_obs();
     let safety = SafetyInfo::new();
-    let cfg = ExitConfig::default_phase3();
+    let cfg = ExitConfig::default_live_exit();
     let values = vec![(1u8, 0.5), (5, 0.3), (10, 0.1)];
     let mut model = make_stub_model(&values);
     let mut adapter = StubAdapter { fail_obs: false };
@@ -203,7 +203,7 @@ fn rejects_fewer_than_two_legal_discards() {
     let state = make_test_game();
     let obs = make_test_obs();
     let safety = SafetyInfo::new();
-    let cfg = ExitConfig::default_phase3();
+    let cfg = ExitConfig::default_live_exit();
     let mut model = |_: &[f32; OBS_SIZE]| ([0.0f32; HYDRA_ACTION_SPACE], 0.5f32);
     let mut adapter = StubAdapter { fail_obs: false };
 
@@ -235,7 +235,7 @@ fn rejects_non_hard_state() {
     let state = make_test_game();
     let obs = make_test_obs();
     let safety = SafetyInfo::new();
-    let cfg = ExitConfig::default_phase3();
+    let cfg = ExitConfig::default_live_exit();
     let mut model = |_: &[f32; OBS_SIZE]| ([0.0f32; HYDRA_ACTION_SPACE], 0.5f32);
     let mut adapter = StubAdapter { fail_obs: false };
 
@@ -253,7 +253,7 @@ fn rejects_missing_child_observation() {
     let state = make_test_game();
     let obs = make_test_obs();
     let safety = SafetyInfo::new();
-    let cfg = ExitConfig::default_phase3();
+    let cfg = ExitConfig::default_live_exit();
     let mut model = |_: &[f32; OBS_SIZE]| ([0.0f32; HYDRA_ACTION_SPACE], 0.5f32);
     let mut adapter = StubAdapter { fail_obs: true };
 
@@ -268,7 +268,7 @@ fn rejects_non_finite_value() {
     let state = make_test_game();
     let obs = make_test_obs();
     let safety = SafetyInfo::new();
-    let cfg = ExitConfig::default_phase3();
+    let cfg = ExitConfig::default_live_exit();
     let mut model = |_: &[f32; OBS_SIZE]| ([0.0f32; HYDRA_ACTION_SPACE], f32::NAN);
     let mut adapter = StubAdapter { fail_obs: false };
 
@@ -284,7 +284,7 @@ fn produces_valid_exit_label_on_good_input() {
     let state = make_test_game();
     let obs = make_test_obs();
     let safety = SafetyInfo::new();
-    let cfg = ExitConfig::default_phase3();
+    let cfg = ExitConfig::default_live_exit();
 
     // Distinct child values so visits differ meaningfully
     let values = vec![(1u8, 0.8), (5, 0.5), (10, 0.2)];
@@ -335,7 +335,7 @@ fn produces_delta_q_label_on_good_input() {
     let state = make_test_game();
     let obs = make_test_obs();
     let safety = SafetyInfo::new();
-    let cfg = ExitConfig::default_phase3();
+    let cfg = ExitConfig::default_live_exit();
     let values = vec![(1u8, 0.8), (5, 0.5), (10, 0.2)];
     let mut model = make_stub_model(&values);
     let mut adapter = StubAdapter { fail_obs: false };
@@ -463,7 +463,7 @@ fn rejects_aka_discard_state() {
     let state = make_test_game();
     let obs = make_test_obs();
     let safety = SafetyInfo::new();
-    let cfg = ExitConfig::default_phase3();
+    let cfg = ExitConfig::default_live_exit();
     let mut model = |_: &[f32; OBS_SIZE]| ([0.0f32; HYDRA_ACTION_SPACE], 0.5f32);
     let mut adapter = StubAdapter { fail_obs: false };
 
@@ -682,7 +682,7 @@ fn try_exit_label_from_context_matches_try_live_exit_label_on_selfplay_fixture()
 
     let step = make_discard_only_step(&legal_tiles[..legal_tiles.len().min(13)]);
     let ctx = RootDecisionContext::from_step(&step);
-    let cfg = ExitConfig::default_phase3();
+    let cfg = ExitConfig::default_live_exit();
     let values: Vec<(u8, f32)> = legal_tiles
         .iter()
         .enumerate()
@@ -735,7 +735,7 @@ fn try_search_labels_from_context_batched_child_values_matches_single_call_fixtu
 
     let step = make_discard_only_step(&legal_tiles[..legal_tiles.len().min(13)]);
     let ctx = RootDecisionContext::from_step(&step);
-    let cfg = ExitConfig::default_phase3();
+    let cfg = ExitConfig::default_live_exit();
     let values: Vec<(u8, f32)> = legal_tiles
         .iter()
         .enumerate()
@@ -814,7 +814,7 @@ fn selfplay_adapter_produces_label_via_try_live_exit() {
 
     let step = make_discard_only_step(&legal_tiles[..legal_tiles.len().min(13)]);
 
-    let cfg = ExitConfig::default_phase3();
+    let cfg = ExitConfig::default_live_exit();
     let values: Vec<(u8, f32)> = legal_tiles
         .iter()
         .enumerate()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 from hydra_learner.constants import (
@@ -23,6 +24,7 @@ from hydra_learner.model import (
     RESIDUAL_PROFILE_DEFAULT,
     RESIDUAL_PROFILES,
 )
+from hydra_learner.ppo_control import main as ppo_control_main
 from hydra_learner.raw_mjai import add_raw_mjai_args, validate_raw_mjai_source_args
 from hydra_learner.train_loop import run_training
 
@@ -187,6 +189,8 @@ def validate_args(args: argparse.Namespace) -> None:
 
 
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "ppo-control":
+        return ppo_control_main(sys.argv[2:])
     args = parse_args()
     validate_args(args)
     validate_raw_mjai_source_args(args)

@@ -496,7 +496,7 @@ fn ach_rl_step_integration() {
         exit_mask: None,
     };
     let loss_fn = HydraLoss::<TestBackend>::new(HydraLossConfig::new());
-    let cfg = RlConfig::default_phase2();
+    let cfg = RlConfig::default_drda_ach_self_play();
     let mut optim = AdamConfig::new().init();
     let (_, loss) = rl_step(model, &rl_batch, &cfg, &loss_fn, &mut optim);
     assert!(loss.is_finite(), "rl_step loss not finite: {loss}");
@@ -583,7 +583,7 @@ fn exit_rl_step_with_target() {
         exit_mask,
     };
     let loss_fn = HydraLoss::<TestBackend>::new(HydraLossConfig::new());
-    let cfg = RlConfig::default_phase3();
+    let cfg = RlConfig::default_exit_pondering();
     let mut optim = AdamConfig::new().init();
     let (_, loss) = rl_step(model, &rl_batch, &cfg, &loss_fn, &mut optim);
     assert!(loss.is_finite(), "exit rl_step loss not finite: {loss}");

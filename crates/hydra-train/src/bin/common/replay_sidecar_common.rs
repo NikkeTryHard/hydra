@@ -198,7 +198,7 @@ pub(super) fn load_model(
 }
 
 pub(super) fn build_exit_config(cli: &ReplaySidecarCli) -> ExitConfig {
-    let mut exit_cfg = ExitConfig::default_phase3();
+    let mut exit_cfg = ExitConfig::default_live_exit();
     if let Some(min_visits) = cli.min_visits {
         exit_cfg.min_visits = min_visits;
     }

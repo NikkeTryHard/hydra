@@ -1,4 +1,4 @@
-"""Minimal real-model PPO train step for Phase 1A."""
+"""Minimal real-model PPO train step."""
 
 from __future__ import annotations
 

@@ -14,6 +14,8 @@ pub(crate) fn dummy_train_config() -> TrainConfig {
         data_dir: std::env::temp_dir().join("hydra-test-data"),
         raw_mjai_data_dirs: Vec::new(),
         output_dir: std::env::temp_dir().join("hydra-test-out"),
+        stage: None,
+        run_name: None,
         num_epochs: 1,
         batch_size: 256,
         microbatch_size: Some(64),

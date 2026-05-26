@@ -77,6 +77,9 @@ fn tiny_test_model_config() -> HydraModelConfig {
 fn dummy_train_config(output_dir: PathBuf, data_dir: PathBuf) -> TrainConfig {
     TrainConfig {
         data_dir,
+        raw_mjai_data_dirs: Vec::new(),
+        stage: None,
+        run_name: None,
         output_dir,
         num_epochs: 1,
         batch_size: 256,
@@ -98,6 +101,12 @@ fn dummy_train_config(output_dir: PathBuf, data_dir: PathBuf) -> TrainConfig {
         python_variant: Default::default(),
         bc_head_profile: hydra_train_runtime::config::BcHeadProfile::Full,
         experimental_backbone_profile: None,
+        python_model_profile: Default::default(),
+        python_backbone_profile: Default::default(),
+        python_conv_memory_format: Default::default(),
+        python_raw_mjai_target_games: None,
+        python_raw_mjai_estimated_samples_per_game: None,
+        ema: Default::default(),
         python_raw_mjai_transport: Default::default(),
         validation_gates: ValidationGateConfig::default(),
         rl: None,
@@ -115,7 +124,13 @@ fn dummy_train_config(output_dir: PathBuf, data_dir: PathBuf) -> TrainConfig {
         log_every_n_steps: 10,
         validate_every_n_steps: 10,
         checkpoint_every_n_steps: 10,
+        full_epoch: false,
         max_train_steps: None,
+        keep_step_checkpoints: false,
+        launch_tensorboard: false,
+        tensorboard_host: "127.0.0.1".to_string(),
+        tensorboard_port: 6006,
+        background: false,
         max_validation_batches: None,
         max_validation_samples: None,
     }
@@ -123,17 +138,17 @@ fn dummy_train_config(output_dir: PathBuf, data_dir: PathBuf) -> TrainConfig {
 
 fn tiny_real_mjai_replay() -> String {
     [
-            r#"{"type":"start_game","names":["a","b","c","d"],"id":"game-1"}"#,
-            r#"{"type":"start_kyoku","bakaze":"E","kyoku":1,"honba":0,"kyotaku":0,"oya":0,"scores":[25000,25000,25000,25000],"dora_marker":"1m","tehais":[["1m","2m","3m","4m","5m","6m","7m","8m","9m","1p","2p","3p","4p"],["1s","2s","3s","4s","5s","6s","7s","8s","9s","E","S","W","N"],["P","F","C","1m","1m","2m","2m","3m","3m","4m","4m","5m","5m"],["6p","6p","7p","7p","8p","8p","9p","9p","1s","1s","2s","2s","3s"]]}"#,
-            r#"{"type":"tsumo","actor":0,"pai":"5p"}"#,
-            r#"{"type":"dahai","actor":0,"pai":"1m","tsumogiri":false}"#,
-            r#"{"type":"tsumo","actor":1,"pai":"E"}"#,
-            r#"{"type":"dahai","actor":1,"pai":"E","tsumogiri":true}"#,
-            r#"{"type":"ryukyoku","scores":[25000,25000,25000,25000]}"#,
-            r#"{"type":"end_game"}"#,
-        ]
-        .join("\n")
-            + "\n"
+        r#"{"type":"start_game","names":["a","b","c","d"],"id":"game-1"}"#,
+        r#"{"type":"start_kyoku","bakaze":"E","kyoku":1,"honba":0,"kyotaku":0,"oya":0,"scores":[25000,25000,25000,25000],"dora_marker":"1m","tehais":[["1m","2m","3m","4m","5m","6m","7m","8m","9m","1p","2p","3p","4p"],["1s","2s","3s","4s","5s","6s","7s","8s","9s","E","S","W","N"],["P","F","C","1m","1m","2m","2m","3m","3m","4m","4m","5m","5m"],["6p","6p","7p","7p","8p","8p","9p","9p","1s","1s","2s","2s","3s"]]}"#,
+        r#"{"type":"tsumo","actor":0,"pai":"5p"}"#,
+        r#"{"type":"dahai","actor":0,"pai":"1m","tsumogiri":false}"#,
+        r#"{"type":"tsumo","actor":1,"pai":"E"}"#,
+        r#"{"type":"dahai","actor":1,"pai":"E","tsumogiri":true}"#,
+        r#"{"type":"ryukyoku","scores":[25000,25000,25000,25000]}"#,
+        r#"{"type":"end_game"}"#,
+    ]
+    .join("\n")
+        + "\n"
 }
 
 fn save_latest_tiny_model_checkpoint(output_dir: &Path) {
@@ -262,13 +277,14 @@ fn initialize_rl_training_bootstrap_restores_pipeline_state() {
 }
 
 #[test]
-fn initialize_rl_training_bootstrap_uses_config_phase_without_resume() {
-    let root_dir = unique_temp_dir("config_phase_without_resume");
+fn initialize_rl_training_bootstrap_uses_config_stage_without_resume() {
+    let root_dir = unique_temp_dir("config_stage_without_resume");
     let output_dir = root_dir.join("output");
     let data_dir = root_dir.join("data");
     create_empty_dir(&data_dir);
 
-    let config = dummy_train_config(output_dir.clone(), data_dir);
+    let mut config = dummy_train_config(output_dir.clone(), data_dir);
+    config.run_name = Some("run_002".to_string());
     let rl = RlTrainConfig {
         phase: hydra_train_runtime::config::RlPhaseConfig::ExitPondering,
         games_per_batch: 4,
@@ -283,6 +299,42 @@ fn initialize_rl_training_bootstrap_uses_config_phase_without_resume() {
         runtime.pipeline_state.phase,
         bootstrap.rl_config.phase.to_training_phase()
     );
+    let run_dir = output_dir
+        .join("stages")
+        .join("T5_exit_auxiliary")
+        .join("runs")
+        .join("run_002");
+    assert_eq!(bootstrap.artifacts.root, run_dir);
+    assert_eq!(
+        bootstrap.artifacts.step_log_path,
+        run_dir.join("logs/step_log.jsonl")
+    );
+    assert_eq!(
+        bootstrap.artifacts.latest_model_base,
+        run_dir.join("checkpoints/latest_model")
+    );
+    assert_eq!(
+        bootstrap.artifacts.latest_optimizer_base,
+        run_dir.join("checkpoints/latest_optimizer")
+    );
+    assert_eq!(
+        bootstrap.artifacts.latest_state_path,
+        run_dir.join("checkpoints/latest_state.yaml")
+    );
+    assert_eq!(bootstrap.artifacts.tb_root, run_dir.join("tensorboard"));
+    assert!(output_dir.join("campaign.json").is_file());
+    assert!(output_dir.join("registry/opponent_pools").is_dir());
+    assert_eq!(
+        fs::read_to_string(output_dir.join("stages/T5_exit_auxiliary/latest_run"))
+            .expect("read latest run"),
+        "run_002\n"
+    );
+    assert!(run_dir.join("logs").is_dir());
+    assert!(run_dir.join("checkpoints").is_dir());
+    assert!(run_dir.join("exports").is_dir());
+    assert!(run_dir.join("rollouts").is_dir());
+    assert!(run_dir.join("eval").is_dir());
+    assert!(run_dir.join("tensorboard").is_dir());
     cleanup_dir(&root_dir);
 }
 

@@ -31,7 +31,7 @@ impl ExitConfig {
         )
     }
 
-    pub fn default_phase3() -> Self {
+    pub fn default_live_exit() -> Self {
         Self::new()
     }
     pub fn min_visits_reached(&self, visit_count: u32) -> bool {

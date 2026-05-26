@@ -440,7 +440,7 @@ fn parse_args_reports_missing_optional_flag_values() {
 }
 
 #[test]
-fn build_exit_config_keeps_phase3_defaults_without_overrides() {
+fn build_exit_config_keeps_live_exit_defaults_without_overrides() {
     let cli = ReplaySidecarCli {
         input: PathBuf::from("game.json"),
         checkpoint: PathBuf::from("model_base"),
@@ -452,7 +452,7 @@ fn build_exit_config_keeps_phase3_defaults_without_overrides() {
     };
 
     let cfg = build_exit_config(&cli);
-    let default_cfg = ExitConfig::default_phase3();
+    let default_cfg = ExitConfig::default_live_exit();
     assert_eq!(cfg.min_visits, default_cfg.min_visits);
     assert_eq!(cfg.hard_state_threshold, default_cfg.hard_state_threshold);
     assert_eq!(cfg.safety_valve_max_kl, default_cfg.safety_valve_max_kl);

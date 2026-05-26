@@ -133,8 +133,8 @@ fn anneal_exit_weight_phases() {
 }
 
 #[test]
-fn default_phase3_matches_roadmap_defaults() {
-    let cfg = ExitConfig::default_phase3();
+fn default_live_exit_matches_roadmap_defaults() {
+    let cfg = ExitConfig::default_live_exit();
     assert!((cfg.exit_weight - 0.5).abs() < 1e-6);
     assert_eq!(cfg.min_visits, 64);
 }

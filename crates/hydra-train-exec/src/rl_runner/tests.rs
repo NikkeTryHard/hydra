@@ -77,7 +77,7 @@ fn helper_test_rl_config(output_dir: PathBuf, tensorboard: bool) -> TrainConfig 
     config
 }
 
-fn synthetic_phase_report(loss: Option<f64>, exit_weight: Option<f32>) -> PhaseTrainReport {
+fn synthetic_stage_report(loss: Option<f64>, exit_weight: Option<f32>) -> PhaseTrainReport {
     PhaseTrainReport {
         phase: TrainingPhase::DrdaAchSelfPlay,
         skipped: false,
@@ -138,7 +138,7 @@ fn dummy_rl_config(output_dir: PathBuf) -> TrainConfig {
 }
 
 #[test]
-fn rl_mode_summary_formats_phase_runtime_and_steps() {
+fn rl_mode_summary_formats_stage_runtime_and_steps() {
     let rl_config = RlTrainConfig {
         games_per_batch: 16,
         temperature: 0.375,
@@ -242,7 +242,7 @@ fn reached_session_step_budget_trips_on_exact_session_budget() {
 }
 
 #[test]
-fn maintenance_plan_keeps_live_exit_disabled_before_phase2_midpoint() {
+fn maintenance_plan_keeps_live_exit_disabled_before_drda_midpoint() {
     let state = PipelineState {
         phase: TrainingPhase::DrdaAchSelfPlay,
         gpu_hours_used: TrainingPhase::DrdaAchSelfPlay.cumulative_budget_before() as f32
@@ -251,9 +251,9 @@ fn maintenance_plan_keeps_live_exit_disabled_before_phase2_midpoint() {
     };
     let plan = maintenance_plan_from_inputs(OrchestratorPlanInputs {
         phase: state.phase,
-        phase_progress: state.phase_progress(),
+        stage_progress: state.stage_progress(),
         should_advance_phase: state.should_advance_phase(),
-        rebase_due: RebaseTracker::default_phase2().should_rebase(),
+        rebase_due: RebaseTracker::default_drda_ach_self_play().should_rebase(),
         distill_due: DistillState::default().should_distill(&DistillConfig::fast_distill(), 29),
         distill_should_warn: DistillState::default().should_warn(0.05),
     });
@@ -265,7 +265,7 @@ fn maintenance_plan_keeps_live_exit_disabled_before_phase2_midpoint() {
 
 #[test]
 fn maintenance_plan_enables_deep_live_exit_in_exit_phase() {
-    let mut rebase = RebaseTracker::default_phase2();
+    let mut rebase = RebaseTracker::default_drda_ach_self_play();
     rebase.tick(40.0);
     let distill = DistillState {
         last_kl_drift: 0.08,
@@ -278,7 +278,7 @@ fn maintenance_plan_enables_deep_live_exit_in_exit_phase() {
     };
     let plan = maintenance_plan_from_inputs(OrchestratorPlanInputs {
         phase: state.phase,
-        phase_progress: state.phase_progress(),
+        stage_progress: state.stage_progress(),
         should_advance_phase: state.should_advance_phase(),
         rebase_due: rebase.should_rebase(),
         distill_due: distill.should_distill(&DistillConfig::fast_distill(), 30),
@@ -296,7 +296,7 @@ fn maintenance_plan_enables_deep_live_exit_in_exit_phase() {
 
 #[test]
 fn maintenance_plan_stays_idle_in_oracle_guiding_phase() {
-    let mut rebase = RebaseTracker::default_phase2();
+    let mut rebase = RebaseTracker::default_drda_ach_self_play();
     rebase.tick(100.0);
     let state = PipelineState {
         phase: TrainingPhase::OracleGuiding,
@@ -309,7 +309,7 @@ fn maintenance_plan_stays_idle_in_oracle_guiding_phase() {
     };
     let plan = maintenance_plan_from_inputs(OrchestratorPlanInputs {
         phase: state.phase,
-        phase_progress: state.phase_progress(),
+        stage_progress: state.stage_progress(),
         should_advance_phase: state.should_advance_phase(),
         rebase_due: rebase.should_rebase(),
         distill_due: distill.should_distill(&DistillConfig::fast_distill(), 999),
@@ -497,7 +497,7 @@ fn rl_loop_decision_helpers_treat_pre_session_steps_as_immediate_emit_and_persis
 }
 
 #[test]
-fn advance_rl_pipeline_state_uses_phase_budget_fraction_per_step() {
+fn advance_rl_pipeline_state_uses_stage_budget_fraction_per_step() {
     let mut state = PipelineState {
         phase: TrainingPhase::ExitPondering,
         gpu_hours_used: 3.0,
@@ -566,7 +566,7 @@ fn run_rl_training_loop_does_not_rewrite_latest_checkpoint_after_boundary_save()
     let latest_model_path = latest_model_base.with_extension("mpk");
     let latest_meta_path = latest_model_base.with_extension("meta.json");
     let latest_optimizer_path = latest_optimizer_base.with_extension("bin");
-    let mut rebase_tracker = RebaseTracker::default_phase2();
+    let mut rebase_tracker = RebaseTracker::default_drda_ach_self_play();
 
     runtime.head_controller.try_activate(AdvancedHead::DeltaQ);
     runtime.head_controller.tick_warmup();
@@ -582,7 +582,7 @@ fn run_rl_training_loop_does_not_rewrite_latest_checkpoint_after_boundary_save()
             session_start_global_step: bootstrap.session_start_global_step,
             total_steps: bootstrap.total_steps,
             batch_size: 6,
-            report: synthetic_phase_report(Some(0.75), Some(0.25)),
+            report: synthetic_stage_report(Some(0.75), Some(0.25)),
             profiling: Some(ProfilingEnvelope::leaf(PROFILING_STAGE_RL_STEP, 1.5)),
         },
     )
@@ -622,7 +622,7 @@ fn finalize_rl_step_side_effects_records_logging_scope_order() {
 
     let (bootstrap, mut runtime) =
         initialize_rl_training_bootstrap(&output_dir, config, rl_cfg).expect("rl bootstrap");
-    let mut rebase_tracker = RebaseTracker::default_phase2();
+    let mut rebase_tracker = RebaseTracker::default_drda_ach_self_play();
 
     let (_, events) = nvtx::with_test_recorder(|| {
         finalize_rl_step_side_effects(
@@ -636,7 +636,7 @@ fn finalize_rl_step_side_effects_records_logging_scope_order() {
                 session_start_global_step: bootstrap.session_start_global_step,
                 total_steps: bootstrap.total_steps,
                 batch_size: 6,
-                report: synthetic_phase_report(Some(0.75), Some(0.25)),
+                report: synthetic_stage_report(Some(0.75), Some(0.25)),
                 profiling: Some(ProfilingEnvelope::leaf(PROFILING_STAGE_RL_STEP, 1.5)),
             },
         )
@@ -664,7 +664,7 @@ fn finalize_rl_step_side_effects_persists_progress_checkpoint_and_stop_boundary(
     let latest_state_path = bootstrap.artifacts.latest_state_path.clone();
     let latest_model_base = bootstrap.artifacts.latest_model_base.clone();
     let latest_optimizer_base = bootstrap.artifacts.latest_optimizer_base.clone();
-    let mut rebase_tracker = RebaseTracker::default_phase2();
+    let mut rebase_tracker = RebaseTracker::default_drda_ach_self_play();
 
     runtime.head_controller.try_activate(AdvancedHead::DeltaQ);
     runtime.head_controller.tick_warmup();
@@ -680,7 +680,7 @@ fn finalize_rl_step_side_effects_persists_progress_checkpoint_and_stop_boundary(
             session_start_global_step: bootstrap.session_start_global_step,
             total_steps: bootstrap.total_steps,
             batch_size: 6,
-            report: synthetic_phase_report(Some(0.75), Some(0.25)),
+            report: synthetic_stage_report(Some(0.75), Some(0.25)),
             profiling: Some(ProfilingEnvelope::leaf(PROFILING_STAGE_RL_STEP, 1.5)),
         },
     )
@@ -797,7 +797,7 @@ fn run_rl_training_loop_records_rl_step_scope_order() {
                 Ok((
                     batch.batch_size(),
                     (),
-                    synthetic_phase_report(Some(0.75), Some(0.25)),
+                    synthetic_stage_report(Some(0.75), Some(0.25)),
                 ))
             },
         )
@@ -835,7 +835,7 @@ fn finalize_rl_step_side_effects_writes_tensorboard_and_fallback_values_without_
     let latest_state_path = bootstrap.artifacts.latest_state_path.clone();
     let latest_model_base = bootstrap.artifacts.latest_model_base.clone();
     let latest_optimizer_base = bootstrap.artifacts.latest_optimizer_base.clone();
-    let mut rebase_tracker = RebaseTracker::default_phase2();
+    let mut rebase_tracker = RebaseTracker::default_drda_ach_self_play();
 
     runtime.head_controller.try_activate(AdvancedHead::DeltaQ);
 
@@ -850,7 +850,7 @@ fn finalize_rl_step_side_effects_writes_tensorboard_and_fallback_values_without_
             session_start_global_step: bootstrap.session_start_global_step,
             total_steps: bootstrap.total_steps,
             batch_size: 7,
-            report: synthetic_phase_report(None, None),
+            report: synthetic_stage_report(None, None),
             profiling: None,
         },
     )

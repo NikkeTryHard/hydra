@@ -5,7 +5,7 @@
 
 use crate::phase::{PipelineState, TrainingPhase};
 
-/// Scalar benchmark gate measurements for phase-0 acceptance.
+/// Scalar benchmark gate measurements for preflight acceptance.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BenchmarkGateMetrics {
     pub afbs_on_turn_ms: f32,
@@ -51,7 +51,7 @@ pub struct PhaseTrainReport {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OrchestratorPlanInputs {
     pub phase: TrainingPhase,
-    pub phase_progress: f32,
+    pub stage_progress: f32,
     pub should_advance_phase: bool,
     pub rebase_due: bool,
     pub distill_due: bool,
@@ -68,7 +68,7 @@ pub struct MaintenancePlan {
     pub deep_exit_enabled: bool,
 }
 
-/// Evaluates phase-0 benchmark gates using archive threshold strings.
+/// Evaluates benchmark gates using archive threshold strings.
 pub fn evaluate_benchmark_gates(
     metrics: &BenchmarkGateMetrics,
     max_distill_kl_drift: f32,
@@ -123,7 +123,7 @@ pub fn evaluate_validation_gates(metrics: &ValidationGateMetrics) -> GateReport 
 }
 
 /// Computes whether the pipeline may advance from the current phase.
-pub fn phase_advance_report(
+pub fn stage_advance_report(
     state: &PipelineState,
     benchmark_report: Option<&GateReport>,
     validation_report: Option<&GateReport>,
@@ -137,7 +137,7 @@ pub fn phase_advance_report(
         },
         TrainingPhase::DrdaAchSelfPlay | TrainingPhase::ExitPondering => {
             if !state.should_advance_phase() {
-                failures.push("phase_budget_incomplete");
+                failures.push("stage_budget_incomplete");
             }
             match validation_report {
                 Some(report) if report.passed => {}
@@ -147,7 +147,7 @@ pub fn phase_advance_report(
         }
         _ => {
             if !state.should_advance_phase() {
-                failures.push("phase_budget_incomplete");
+                failures.push("stage_budget_incomplete");
             }
         }
     }
@@ -170,7 +170,7 @@ pub fn maybe_advance_phase(state: &mut PipelineState, advance_report: &GateRepor
 /// Builds scalar maintenance decisions from backend-specific status DTOs.
 pub fn maintenance_plan_from_inputs(inputs: OrchestratorPlanInputs) -> MaintenancePlan {
     let shallow_exit_enabled = match inputs.phase {
-        TrainingPhase::DrdaAchSelfPlay => inputs.phase_progress > 0.5,
+        TrainingPhase::DrdaAchSelfPlay => inputs.stage_progress > 0.5,
         TrainingPhase::ExitPondering => true,
         _ => false,
     };

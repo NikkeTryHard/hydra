@@ -1,4 +1,4 @@
-"""Fail-closed GRP potential and PBRS helpers for Phase 4C."""
+"""Fail-closed GRP potential and PBRS helpers for Reward shaping."""
 
 from __future__ import annotations
 
@@ -25,9 +25,9 @@ REWARD_BASE_TERMINAL_U_A = "terminal_U_A"
 REWARD_SHAPING_METADATA_KIND_NONE = "none"
 REWARD_SHAPING_METADATA_KIND_PBRS = "pbrs"
 VALIDATION_REPORT_SCHEMA_VERSION = 1
-VALIDATION_REPORT_CONTRACT_VERSION = "phase4c_reward_shaping_validation_v1"
-VALIDATION_THRESHOLDS_ABSENT_REASON = "phase4c_thresholds_absent"
-THRESHOLD_CONTRACT_VERSION_PHASE4C_V1 = "phase4c_threshold_contract_v1"
+VALIDATION_REPORT_CONTRACT_VERSION = "reward_shaping_validation_v1"
+VALIDATION_THRESHOLDS_ABSENT_REASON = "reward_shaping_thresholds_absent"
+THRESHOLD_CONTRACT_VERSION_V1 = "reward_shaping_threshold_contract_v1"
 REQUIRED_GATE_RESULT_CATEGORIES: tuple[str, ...] = (
     "calibration_logloss_brier_ece",
     "bucket_sample_bias",
@@ -299,7 +299,7 @@ def normalize_reward_shaping_metadata(value: Mapping[str, object] | None) -> dic
             field_value = metadata[name]
             if not isinstance(field_value, str) or not field_value:
                 raise ValueError(f"enabled reward_shaping.{name} must be a non-empty string")
-        if metadata["threshold_contract_version"] != THRESHOLD_CONTRACT_VERSION_PHASE4C_V1:
+        if metadata["threshold_contract_version"] != THRESHOLD_CONTRACT_VERSION_V1:
             raise ValueError("enabled reward_shaping.threshold_contract_version mismatch")
         for name in ("threshold_contract_id", "threshold_contract_hash"):
             field_value = metadata[name]
@@ -693,7 +693,7 @@ def _validate_validation_report_dict(payload: dict[str, object]) -> None:
 
 
 def _validate_activation_authority(report: RewardShapingValidationReport) -> None:
-    if report.threshold_contract_version != THRESHOLD_CONTRACT_VERSION_PHASE4C_V1:
+    if report.threshold_contract_version != THRESHOLD_CONTRACT_VERSION_V1:
         raise ValueError("validation report threshold_contract_version mismatch")
     if not report.threshold_contract_id:
         raise ValueError("validation report threshold_contract_id required")

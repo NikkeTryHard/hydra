@@ -133,7 +133,7 @@ pub fn rl_step<B: AutodiffBackend>(
     loss_fn: &HydraLoss<B>,
     optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
 ) -> (HydraModel<B>, f64) {
-    rl_step_with_phase_progress_and_controller(
+    rl_step_with_stage_progress_and_controller(
         model,
         RlStepRequest {
             batch,
@@ -147,7 +147,7 @@ pub fn rl_step<B: AutodiffBackend>(
     )
 }
 
-pub fn rl_step_with_phase_progress<B: AutodiffBackend>(
+pub fn rl_step_with_stage_progress<B: AutodiffBackend>(
     model: HydraModel<B>,
     batch: &RlBatch<B>,
     cfg: &RlConfig,
@@ -156,7 +156,7 @@ pub fn rl_step_with_phase_progress<B: AutodiffBackend>(
     loss_fn: &HydraLoss<B>,
     optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
 ) -> (HydraModel<B>, f64) {
-    rl_step_with_phase_progress_and_controller(
+    rl_step_with_stage_progress_and_controller(
         model,
         RlStepRequest {
             batch,
@@ -169,7 +169,7 @@ pub fn rl_step_with_phase_progress<B: AutodiffBackend>(
         optimizer,
     )
 }
-pub fn rl_phase_train_step<B: AutodiffBackend>(
+pub fn rl_stage_train_step<B: AutodiffBackend>(
     state: &PipelineState,
     model: HydraModel<B>,
     batch: &RlBatch<B>,
@@ -177,7 +177,7 @@ pub fn rl_phase_train_step<B: AutodiffBackend>(
     loss_fn: &HydraLoss<B>,
     optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
 ) -> Result<(HydraModel<B>, PhaseTrainReport), &'static str> {
-    rl_phase_train_step_with_controller(
+    rl_stage_train_step_with_controller(
         model,
         RlPhaseTrainRequest {
             state,
@@ -190,7 +190,7 @@ pub fn rl_phase_train_step<B: AutodiffBackend>(
     )
 }
 
-pub fn rl_phase_train_step_with_controller<B: AutodiffBackend>(
+pub fn rl_stage_train_step_with_controller<B: AutodiffBackend>(
     model: HydraModel<B>,
     request: RlPhaseTrainRequest<'_, B>,
     optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
@@ -198,9 +198,9 @@ pub fn rl_phase_train_step_with_controller<B: AutodiffBackend>(
     match request.state.phase {
         TrainingPhase::DrdaAchSelfPlay | TrainingPhase::ExitPondering => {
             let exit_phase = request.state.phase.exit_schedule_phase();
-            let progress = request.state.phase_progress();
+            let progress = request.state.stage_progress();
             let exit_weight = request.cfg.effective_exit_weight(exit_phase, progress);
-            let (model, loss) = rl_step_with_phase_progress_and_controller(
+            let (model, loss) = rl_step_with_stage_progress_and_controller(
                 model,
                 RlStepRequest {
                     batch: request.batch,
@@ -225,7 +225,7 @@ pub fn rl_phase_train_step_with_controller<B: AutodiffBackend>(
                 },
             ))
         }
-        _ => Err("rl_phase_train_step only supports self-play phases"),
+        _ => Err("rl_stage_train_step only supports self-play phases"),
     }
 }
 
@@ -235,7 +235,7 @@ pub fn rl_phase_train_step_with_controller<B: AutodiffBackend>(
 /// statistics match the non-microbatched path exactly. Each microbatch
 /// runs forward+backward independently; gradients are accumulated and
 /// applied in one optimizer step at the end.
-pub fn rl_step_with_phase_progress_and_controller<B: AutodiffBackend>(
+pub fn rl_step_with_stage_progress_and_controller<B: AutodiffBackend>(
     model: HydraModel<B>,
     mut request: RlStepRequest<'_, B>,
     optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,

@@ -12,7 +12,7 @@ from hydra_learner.reward_shaping import (
     PHI_DEFINITION_GRP_EXPECTED_U_A_V1,
     REQUIRED_GATE_RESULT_CATEGORIES,
     STATE_BOUNDARY_PLAYER_LOCAL_DECISION_STREAM_V1,
-    THRESHOLD_CONTRACT_VERSION_PHASE4C_V1,
+    THRESHOLD_CONTRACT_VERSION_V1,
     VALIDATION_THRESHOLDS_ABSENT_REASON,
     RewardShapingConfig,
     RewardShapingValidationReport,
@@ -160,7 +160,7 @@ def test_enabled_reward_shaping_metadata_requires_artifact_and_threshold_authori
     report_path = tmp_path / "valid.json"
     report.write(report_path)
     metadata = RewardShapingConfig(enabled=True, pbrs_beta=0.1, validation_artifact_path=report_path).metadata()
-    assert metadata["threshold_contract_version"] == THRESHOLD_CONTRACT_VERSION_PHASE4C_V1
+    assert metadata["threshold_contract_version"] == THRESHOLD_CONTRACT_VERSION_V1
     assert metadata["threshold_contract_id"] == "synthetic-threshold-contract"
     assert metadata["threshold_contract_hash"] == "sha256:synthetic-threshold-contract"
 
@@ -223,7 +223,7 @@ def _synthetic_validated_report(
 ) -> RewardShapingValidationReport:
     return RewardShapingValidationReport(
         schema_version=1,
-        contract_version="phase4c_reward_shaping_validation_v1",
+        contract_version="reward_shaping_validation_v1",
         predictor_checkpoint_hash="sha256:synthetic",
         predictor_checkpoint_id="synthetic-validated",
         predictor_checkpoint_path="/synthetic/path.pt",
@@ -244,7 +244,7 @@ def _synthetic_validated_report(
         metrics={"nll": 0.1},
         bucket_metrics={"actor_0": {"sample_count": 4}},
         baselines={"score_only": {"missing": True}},
-        threshold_contract_version=THRESHOLD_CONTRACT_VERSION_PHASE4C_V1 if authorized else None,
+        threshold_contract_version=THRESHOLD_CONTRACT_VERSION_V1 if authorized else None,
         threshold_contract_id="synthetic-threshold-contract" if authorized else None,
         threshold_contract_hash="sha256:synthetic-threshold-contract" if authorized else None,
         gate_results=cast(

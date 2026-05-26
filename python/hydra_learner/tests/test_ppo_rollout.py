@@ -5,12 +5,13 @@ import random
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 import pytest
 import torch
 
+from hydra_learner import ppo_control
 from hydra_learner.checkpoint import (
     ModelConfig,
     OptimizerConfig,
@@ -19,6 +20,7 @@ from hydra_learner.checkpoint import (
 )
 from hydra_learner.losses import LossWeights
 from hydra_learner.model import ACTION_SPACE, HydraPolicyNet
+from hydra_learner.ppo_control_config import PpoControlConfig
 from hydra_learner.ppo_rollout import (
     PpoRolloutMetadata,
     append_ppo_metrics_jsonl,
@@ -37,6 +39,134 @@ from hydra_learner.ppo_smoke import (
 from hydra_learner.ppo_step import PpoBatch, PpoTrainStepConfig
 from hydra_learner.reward_shaping import default_reward_shaping_metadata
 from hydra_learner.rl import EntropyController, masked_log_prob
+
+
+def test_ppo_control_uses_run_local_artifact_layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run_dir = tmp_path / "campaign" / "stages" / "T1_ppo_control" / "runs" / "run-1"
+    init_checkpoint = tmp_path / "init.pt"
+    init_checkpoint.write_bytes(b"checkpoint")
+    seen: dict[str, object] = {}
+
+    class _FakeModel(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.zeros(()))
+
+    class _FakeOptimizer:
+        def __init__(self) -> None:
+            self.param_groups = [{"lr": 0.0}]
+
+    class _FakeInit:
+        global_step = 0
+        samples_seen = 0
+
+    class _FakeExtension:
+        pass
+
+    class _FakeResult:
+        def __init__(self) -> None:
+            self.metrics: dict[str, float] = {"loss_total": 0.0}
+            self.entropy_controller: None = None
+
+    def fake_save(path: Path, *_args: object, **_kwargs: object) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"checkpoint")
+
+    def fake_export(config: Any) -> None:
+        seen["policy_dir"] = config.output_dir
+        config.output_dir.mkdir(parents=True, exist_ok=True)
+
+    def fake_collect(_extension: object, _config: PpoControlConfig, policy_dir: Path, _seed: int) -> dict[str, object]:
+        seen["collect_policy_dir"] = policy_dir
+        return {}
+
+    batch = PpoBatch(
+        obs=torch.zeros(2, 192, 34),
+        actions=torch.zeros(2, dtype=torch.int64),
+        legal_mask=torch.ones(2, ACTION_SPACE, dtype=torch.bool),
+        old_logprob=torch.zeros(2),
+        value_old=torch.zeros(2),
+        raw_advantages=torch.zeros(2),
+        returns=torch.zeros(2),
+        bc_logits=torch.zeros(2, ACTION_SPACE),
+        legal_count=torch.full((2,), ACTION_SPACE, dtype=torch.int64),
+    )
+
+    monkeypatch.setattr(ppo_control, "_model", lambda _config: _FakeModel())
+    monkeypatch.setattr(ppo_control, "build_optimizer", lambda _model, _optimizer_config: _FakeOptimizer())
+    monkeypatch.setattr(ppo_control, "load_checkpoint_init_only", lambda *_args, **_kwargs: _FakeInit())
+    monkeypatch.setattr(ppo_control, "_save_t1_checkpoint", fake_save)
+    monkeypatch.setattr(ppo_control, "export_inference", fake_export)
+    monkeypatch.setattr(ppo_control, "_load_extension", lambda _path: _FakeExtension())
+    monkeypatch.setattr(ppo_control, "_collect_native_rollout", fake_collect)
+    monkeypatch.setattr(ppo_control, "_batch_from_native_payload", lambda _payload, _model: batch)
+    monkeypatch.setattr(ppo_control, "_batch_to_device", lambda batch, _device: batch)
+    monkeypatch.setattr(ppo_control, "ppo_train_step", lambda **_kwargs: _FakeResult())
+
+    config = PpoControlConfig(
+        init_checkpoint=init_checkpoint,
+        output_dir=run_dir,
+        steps=1,
+        games_per_update=1,
+        seed=7,
+        device="cpu",
+        temperature=1.0,
+        arena_batch_decisions=1,
+        arena_threads=0,
+        extension_path=tmp_path / "libfake.so",
+        hidden=8,
+        blocks=1,
+        bottleneck=4,
+        residual_profile="tiny",
+        backbone_profile="conv2d_local3",
+        conv_memory_format="contiguous",
+        lr=1.0e-3,
+        min_lr=0.0,
+        lr_warmup_steps=0,
+        grad_clip_norm=None,
+        weight_decay=0.0,
+        adam_beta1=0.9,
+        adam_beta2=0.999,
+        adam_eps=1.0e-8,
+        adamw_fused="off",
+        adamw_foreach="off",
+        bc_kl_reverse_coef=0.0,
+        entropy_alpha=1.0e-3,
+        entropy_beta=1.0e-2,
+        entropy_alpha_max=0.05,
+        log_every_steps=1,
+        checkpoint_every_steps=1,
+        keep_step_checkpoints=True,
+        resume=None,
+        tensorboard_dir=None,
+        quiet=True,
+    )
+
+    summary = ppo_control.run_ppo_control(config)
+
+    assert (run_dir / "logs" / "events.jsonl").is_file()
+    assert (run_dir / "logs" / "train_steps.jsonl").is_file()
+    assert (run_dir / "logs" / "tensorboard").is_dir()
+    assert (run_dir / "checkpoints" / "latest.pt").is_file()
+    assert (run_dir / "checkpoints" / "step_1.pt").is_file()
+    assert (run_dir / "exports" / "onnx_step_00000000").is_dir()
+    assert (run_dir / "rollouts").is_dir()
+    assert (run_dir / "eval").is_dir()
+    assert (run_dir / "summary.json").is_file()
+    assert (run_dir / "launch_metadata.json").is_file()
+    assert seen["policy_dir"] == run_dir / "exports" / "onnx_step_00000000"
+    assert seen["collect_policy_dir"] == run_dir / "exports" / "onnx_step_00000000"
+    assert summary["paths"] == {
+        "run_dir": str(run_dir),
+        "logs": str(run_dir / "logs"),
+        "checkpoints": str(run_dir / "checkpoints"),
+        "exports": str(run_dir / "exports"),
+        "rollouts": str(run_dir / "rollouts"),
+        "eval": str(run_dir / "eval"),
+        "tensorboard": str(run_dir / "logs" / "tensorboard"),
+    }
+    with (run_dir / "summary.json").open(encoding="utf-8") as file:
+        assert json.load(file) == summary
 
 
 def test_ppo_rollout_artifact_roundtrip_and_batch_conversion(tmp_path: Path) -> None:
@@ -302,11 +432,11 @@ def test_checkpoint_smoke_after_artifact_train_step_init_only_reload(tmp_path: P
         torch.testing.assert_close(fresh.state_dict()[key], value, rtol=0.0, atol=0.0)
 
 
-def test_phase2_smoke_artifact_update_metrics_checkpoint_and_init_reload(tmp_path: Path) -> None:
+def test_ppo_rollout_smoke_artifact_update_metrics_checkpoint_and_init_reload(tmp_path: Path) -> None:
     torch.manual_seed(61)
     model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
     rollout = _real_rust_rollout_fixture(tmp_path)
-    artifact_path = tmp_path / "phase2-rollout.pt"
+    artifact_path = tmp_path / "ppo-rollout.pt"
 
     artifact_result = write_ppo_smoke_rollout_artifact(artifact_path, rollout, model=model, torch_seed=1234)
     artifact = load_ppo_rollout_artifact(artifact_path)
@@ -386,7 +516,7 @@ def test_phase2_smoke_artifact_update_metrics_checkpoint_and_init_reload(tmp_pat
         torch.testing.assert_close(fresh.state_dict()[key], value, rtol=0.0, atol=0.0)
 
 
-def test_phase2_smoke_artifact_is_deterministic_for_same_seed_and_model(tmp_path: Path) -> None:
+def test_ppo_rollout_smoke_artifact_is_deterministic_for_same_seed_and_model(tmp_path: Path) -> None:
     torch.manual_seed(67)
     first_model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
     second_model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
@@ -410,7 +540,7 @@ def test_phase2_smoke_artifact_is_deterministic_for_same_seed_and_model(tmp_path
         (lambda rollout: _bad_placements_rollout(rollout), "placements"),
     ],
 )
-def test_phase2_smoke_rollout_negative_boundary_errors(
+def test_ppo_rollout_negative_boundary_errors(
     mutate: Callable[[RustGameRollout], RustGameRollout], match: str, tmp_path: Path
 ) -> None:
     torch.manual_seed(71)

@@ -181,7 +181,7 @@ def test_ach_advantage_rms_scaling_preserves_signs_and_zero_finite() -> None:
     assert zero.metric_dict()["ach_neg_gate_fraction"] is None
 
 
-# Phase 3A contract: zero advantage is in the nonnegative/positive group for ACH gate metrics.
+# ACH contract: zero advantage is in the nonnegative/positive group for gate metrics.
 def test_ach_empty_sign_groups_emit_none_and_zero_is_positive() -> None:
     positive = ach_loss(
         torch.zeros(3, ACTION_SPACE),
@@ -416,7 +416,7 @@ def test_ach_default_artifact_metadata_does_not_change_current_direct_sampled_co
         assert artifact_result.metrics[key] == pytest.approx(direct_result.metrics[key])
 
 
-def test_phase3a_has_no_neurd_selector_or_objective() -> None:
+def test_ach_has_no_neurd_selector_or_objective() -> None:
     names = set(dir(ach_step_module)) | set(dir(rl_module))
     assert not any("neurd" in name.lower() for name in names)
 

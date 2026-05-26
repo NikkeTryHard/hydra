@@ -68,7 +68,7 @@ use crate::data_pipeline::{
     stream_train_epoch,
 };
 use crate::presentation::{
-    format_progress_message, make_bar, make_spinner, phase_label, timestamped,
+    format_progress_message, make_bar, make_spinner, progress_label, timestamped,
 };
 use crate::progress::EpochLogEntry;
 use crate::resume::{BestValidation, EpochContinuation, RuntimeResumeContract};
@@ -1225,7 +1225,7 @@ where
             "{}",
             timestamped(format!(
                 "{} {} {} {} {} {}",
-                phase_label("epoch", epoch, config.num_epochs())
+                progress_label("epoch", epoch, config.num_epochs())
                     .bold()
                     .cyan(),
                 format!("train_loss={:.4}", train_stats.total_loss).green(),
@@ -3237,8 +3237,8 @@ where
     } = runtime;
 
     let multi = MultiProgress::new();
-    let load_label = phase_label("load", epoch, config.num_epochs);
-    let train_label = phase_label("train", epoch, config.num_epochs);
+    let load_label = progress_label("load", epoch, config.num_epochs);
+    let train_label = progress_label("train", epoch, config.num_epochs);
     let load_pb = if manifest.counts_exact {
         multi.add(make_bar(
             manifest.train_count as u64,
@@ -3687,7 +3687,7 @@ where
         .min(total_rows);
 
     let multi = MultiProgress::new();
-    let train_label = phase_label("train", epoch, config.num_epochs);
+    let train_label = progress_label("train", epoch, config.num_epochs);
     let estimated_steps = total_rows
         .saturating_sub(samples_to_skip)
         .div_ceil(config.batch_size.max(1))

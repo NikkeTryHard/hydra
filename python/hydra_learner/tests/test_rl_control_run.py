@@ -15,19 +15,19 @@ from hydra_learner.checkpoint import ModelConfig, OptimizerConfig, RuntimeConfig
 from hydra_learner.checkpoint_eval import PairedCheckpointEvalThresholds, build_paired_checkpoint_eval_summary
 from hydra_learner.losses import LossWeights
 from hydra_learner.model import ACTION_SPACE, HydraPolicyNet
-from hydra_learner.phase4_control_run import (
-    Phase4CheckpointConfig,
-    Phase4ControlRunConfig,
-    Phase4EvalConfig,
-    Phase4ObjectiveConfig,
-    make_native_arena_eval_pair,
-    run_phase4_control_run,
-    run_phase4_native_eval_pair,
-)
 from hydra_learner.ppo_rollout import PpoRolloutMetadata, save_ppo_rollout_artifact
 from hydra_learner.ppo_step import PpoBatch, PpoTrainStepConfig
 from hydra_learner.reward_shaping import default_reward_shaping_metadata
 from hydra_learner.rl import EntropyController, masked_log_prob
+from hydra_learner.rl_control_run import (
+    RlCheckpointConfig,
+    RlControlRunConfig,
+    RlEvalConfig,
+    RlObjectiveConfig,
+    make_native_arena_eval_pair,
+    run_rl_control_run,
+    run_rl_native_eval_pair,
+)
 
 
 def test_n1_control_run_saves_isolated_ppo_and_ach_checkpoints_and_summary(tmp_path: Path) -> None:
@@ -41,7 +41,7 @@ def test_n1_control_run_saves_isolated_ppo_and_ach_checkpoints_and_summary(tmp_p
         PpoRolloutMetadata(rank_utility_used="U_A", gae_gamma=0.995, gae_lambda=0.95),
     )
 
-    result = run_phase4_control_run(
+    result = run_rl_control_run(
         config=_control_config(tmp_path, (artifact_path,), update_steps=1),
         model_factory=_model_factory,
         initial_state_dict=initial_state,
@@ -54,7 +54,7 @@ def test_n1_control_run_saves_isolated_ppo_and_ach_checkpoints_and_summary(tmp_p
     payload = json.loads((tmp_path / "out" / "summary.json").read_text(encoding="utf-8"))
     assert payload == result.summary
     json.dumps(payload, allow_nan=False)
-    assert payload["run_id"] == "phase4-test"
+    assert payload["run_id"] == "rl-control-test"
     assert payload["update_step_count"] == 1
     assert payload["checkpoint_paths"] == {
         "ppo": str(result.ppo_checkpoint_path),
@@ -124,7 +124,7 @@ def test_artifact_sequence_ordering_is_deterministic(tmp_path: Path) -> None:
     save_ppo_rollout_artifact(first, _batch_from_model(initial_model), PpoRolloutMetadata(rank_utility_used="U_A"))
     save_ppo_rollout_artifact(second, _batch_from_model(initial_model), PpoRolloutMetadata(rank_utility_used="U_A"))
 
-    result = run_phase4_control_run(
+    result = run_rl_control_run(
         config=_control_config(tmp_path, (second, first), update_steps=3),
         model_factory=_model_factory,
         initial_state_dict=_clone_state(initial_model),
@@ -157,7 +157,7 @@ def test_control_run_rejects_mixed_reward_shaping_metadata(tmp_path: Path) -> No
     )
 
     with pytest.raises(ValueError, match="mixed rollout reward metadata"):
-        run_phase4_control_run(
+        run_rl_control_run(
             config=_control_config(tmp_path, (first, second), update_steps=1),
             model_factory=_model_factory,
             initial_state_dict=_clone_state(initial_model),
@@ -187,12 +187,12 @@ def test_eval_surface_accepts_synthetic_metrics_without_arena(tmp_path: Path) ->
             "baseline_mean_placement": 2.40,
         }
 
-    result = run_phase4_control_run(
+    result = run_rl_control_run(
         config=_control_config(
             tmp_path,
             (artifact_path,),
             update_steps=1,
-            eval_config=Phase4EvalConfig(
+            eval_config=RlEvalConfig(
                 baseline_objective="ppo",
                 candidate_objective="direct_sampled_ach",
                 seed=123,
@@ -285,7 +285,7 @@ def test_native_arena_eval_pair_calls_arena_eval_and_returns_json_safe_metrics(
     json.dumps(metrics, allow_nan=False, sort_keys=True, separators=(",", ":"))
 
 
-def test_native_arena_eval_pair_feeds_phase4_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_native_arena_eval_pair_feeds_control_run_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     torch.manual_seed(409)
     initial_model = _model_factory()
     artifact_path = tmp_path / "rollout.pt"
@@ -313,12 +313,12 @@ def test_native_arena_eval_pair_feeds_phase4_summary(tmp_path: Path, monkeypatch
         }
 
     monkeypatch.setattr(arena_eval, "run_arena_eval", fake_run_arena_eval)
-    result = run_phase4_control_run(
+    result = run_rl_control_run(
         config=_control_config(
             tmp_path,
             (artifact_path,),
             update_steps=1,
-            eval_config=Phase4EvalConfig(
+            eval_config=RlEvalConfig(
                 baseline_objective="ppo",
                 candidate_objective="direct_sampled_ach",
                 seed=707,
@@ -371,7 +371,7 @@ def test_native_arena_eval_pair_uses_arena_export_semantics_for_pt_inputs(
     monkeypatch.setattr(arena_eval, "run_arena_eval", fake_run_arena_eval)
     monkeypatch.setattr(arena_eval, "resolve_native_arena_path", fake_resolve)
 
-    metrics = run_phase4_native_eval_pair(
+    metrics = run_rl_native_eval_pair(
         baseline=baseline,
         candidate=candidate,
         seed=11,
@@ -411,14 +411,12 @@ def test_summary_json_rejects_non_finite_metrics_before_write(tmp_path: Path) ->
         return {"games": 1, "candidate_top2_rate": float("nan")}
 
     with pytest.raises(ValueError, match="must be finite"):
-        run_phase4_control_run(
+        run_rl_control_run(
             config=_control_config(
                 tmp_path,
                 (artifact_path,),
                 update_steps=1,
-                eval_config=Phase4EvalConfig(
-                    baseline_objective="ppo", candidate_objective="direct_sampled_ach", seed=1
-                ),
+                eval_config=RlEvalConfig(baseline_objective="ppo", candidate_objective="direct_sampled_ach", seed=1),
             ),
             model_factory=_model_factory,
             initial_state_dict=_clone_state(initial_model),
@@ -428,9 +426,9 @@ def test_summary_json_rejects_non_finite_metrics_before_write(tmp_path: Path) ->
         )
 
 
-def test_phase4_scope_has_no_neurd_residual_tau_rebase_grp_search_or_burn_fields() -> None:
-    field_names = {field.name for field in fields(Phase4ObjectiveConfig)} | {
-        field.name for field in fields(Phase4ControlRunConfig)
+def test_control_run_scope_has_no_neurd_residual_tau_rebase_grp_search_or_burn_fields() -> None:
+    field_names = {field.name for field in fields(RlObjectiveConfig)} | {
+        field.name for field in fields(RlControlRunConfig)
     }
     nested_names = {field.name for field in fields(PpoTrainStepConfig)} | {
         field.name for field in fields(AchTrainStepConfig)
@@ -444,18 +442,18 @@ def _control_config(
     artifact_paths: tuple[Path, ...],
     *,
     update_steps: int,
-    eval_config: Phase4EvalConfig | None = None,
-) -> Phase4ControlRunConfig:
-    return Phase4ControlRunConfig(
-        run_id="phase4-test",
+    eval_config: RlEvalConfig | None = None,
+) -> RlControlRunConfig:
+    return RlControlRunConfig(
+        run_id="rl-control-test",
         artifact_paths=artifact_paths,
         update_steps=update_steps,
         source_init_id="init-fixture",
-        objectives=Phase4ObjectiveConfig(
+        objectives=RlObjectiveConfig(
             ppo=PpoTrainStepConfig(bc_kl_reverse_coef=0.01, grad_clip_norm=None),
             ach=AchTrainStepConfig(bc_kl_reverse_coef=0.01, grad_clip_norm=None),
         ),
-        checkpoint=Phase4CheckpointConfig(
+        checkpoint=RlCheckpointConfig(
             model=_model_config(),
             optimizer=_optimizer_config(),
             runtime=_runtime_config(),
@@ -487,9 +485,7 @@ def _optimizer_config() -> OptimizerConfig:
 
 
 def _runtime_config() -> RuntimeConfig:
-    return RuntimeConfig(
-        variant="eager", loss_mode="phase4_control", precision_mode="fp32", compile_fullgraph_check=False
-    )
+    return RuntimeConfig(variant="eager", loss_mode="rl_control", precision_mode="fp32", compile_fullgraph_check=False)
 
 
 def _batch_from_model(model: HydraPolicyNet) -> PpoBatch:

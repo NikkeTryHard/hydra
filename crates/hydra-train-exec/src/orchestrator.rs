@@ -10,7 +10,7 @@ use hydra_train_types::phase::{PipelineState, TrainingPhase};
 
 use crate::bc_runtime::{
     BcExitConfig, BcTrainBatchInput, BcTrainStepContext, OracleGuidingBatchInput,
-    OracleGuidingStepSchedule, bc_train_step, oracle_guiding_train_step, phase_learning_rate,
+    OracleGuidingStepSchedule, bc_train_step, oracle_guiding_train_step, stage_learning_rate,
 };
 use crate::losses::HydraLoss;
 
@@ -41,7 +41,7 @@ pub struct SupervisedPhaseTrainRequest<'a, B: Backend> {
 }
 
 /// Runs one supervised phase train step and emits a scalar report.
-pub fn supervised_phase_train_step<B: AutodiffBackend>(
+pub fn supervised_stage_train_step<B: AutodiffBackend>(
     model: HydraModel<B>,
     request: SupervisedPhaseTrainRequest<'_, B>,
     optimizer: &mut impl burn::optim::Optimizer<HydraModel<B>, B>,
@@ -60,7 +60,7 @@ pub fn supervised_phase_train_step<B: AutodiffBackend>(
             },
         )),
         TrainingPhase::BcWarmStart => {
-            let lr = phase_learning_rate(request.state.phase, request.step, request.total_steps);
+            let lr = stage_learning_rate(request.state.phase, request.step, request.total_steps);
             let empty_batch = empty_bc_batch(&request.obs);
             let (model, loss) = bc_train_step(
                 model,
@@ -102,7 +102,7 @@ pub fn supervised_phase_train_step<B: AutodiffBackend>(
                     rng_values: request.rng_values,
                 },
                 OracleGuidingStepSchedule {
-                    base_lr: phase_learning_rate(
+                    base_lr: stage_learning_rate(
                         request.state.phase,
                         request.step,
                         request.total_steps,
@@ -126,7 +126,7 @@ pub fn supervised_phase_train_step<B: AutodiffBackend>(
                 },
             ))
         }
-        _ => Err("supervised_phase_train_step only supports benchmark/bc/oracle phases"),
+        _ => Err("supervised_stage_train_step only supports benchmark/bc/oracle phases"),
     }
 }
 

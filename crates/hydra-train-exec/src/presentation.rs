@@ -61,7 +61,7 @@ pub fn make_spinner(template: &str) -> Result<ProgressBar, String> {
 }
 
 /// Formats the preflight phase label used in progress bars.
-pub fn preflight_phase_label(phase: &str) -> String {
+pub fn preflight_progress_label(phase: &str) -> String {
     format!("preflight {phase}")
 }
 
@@ -103,7 +103,7 @@ pub fn format_runtime_tuning_message(
 }
 
 /// Formats a timed preflight phase line.
-pub fn format_timed_phase_message(phase: &str, detail: &str, elapsed_seconds: f64) -> String {
+pub fn format_timed_stage_message(phase: &str, detail: &str, elapsed_seconds: f64) -> String {
     with_utc_timestamp(format!(
         "{} {} {}",
         "[preflight:timing]".bold().cyan(),
@@ -171,7 +171,7 @@ pub fn precision_runtime_summary(
 }
 
 /// Formats an epoch/phase label.
-pub fn phase_label(prefix: &str, epoch_index: usize, num_epochs: usize) -> String {
+pub fn progress_label(prefix: &str, epoch_index: usize, num_epochs: usize) -> String {
     if num_epochs <= 1 {
         prefix.to_string()
     } else {

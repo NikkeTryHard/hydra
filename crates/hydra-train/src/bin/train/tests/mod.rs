@@ -14,7 +14,7 @@ use std::time::Duration;
 use hydra_train_exec::artifacts::BcArtifactPaths;
 #[cfg(feature = "burn-libtorch-obsolete")]
 use hydra_train_exec::config_runtime::train_device;
-use hydra_train_exec::presentation::{format_progress_message, phase_label};
+use hydra_train_exec::presentation::{format_progress_message, progress_label};
 use hydra_train_exec::resume::{
     BestValidation, EpochContinuation, paused_training_message,
     validate_resume_runtime_compatibility,
@@ -1969,9 +1969,9 @@ fn validation_agreement_is_sample_weighted_across_chunks() {
 }
 
 #[test]
-fn phase_label_hides_redundant_single_epoch_denominator() {
-    assert_eq!(phase_label("train", 0, 1), "train");
-    assert_eq!(phase_label("train", 1, 3), "train 2/3");
+fn progress_label_hides_redundant_single_epoch_denominator() {
+    assert_eq!(progress_label("train", 0, 1), "train");
+    assert_eq!(progress_label("train", 1, 3), "train 2/3");
 }
 
 #[test]

@@ -878,7 +878,11 @@ fn actor_relative_opponent_targets(
     targets
 }
 
-fn replay_phase_for_event(event: &MjaiEvent, state: &GameState, actor: usize) -> ActionPhase {
+fn replay_action_phase_for_event(
+    event: &MjaiEvent,
+    state: &GameState,
+    actor: usize,
+) -> ActionPhase {
     if matches!(event, MjaiEvent::Dahai { .. })
         && (state.players[actor].riichi_stage || state.players[actor].riichi_declared)
     {
@@ -1260,7 +1264,7 @@ fn prepare_replay_decisions_with_options(
         if let Some(decision) = finalize_prepared_replay_decision_ref(
             actor,
             env_action,
-            replay_phase_for_event(event, state, actor),
+            replay_action_phase_for_event(event, state, actor),
             state,
             safety,
             encoder,
@@ -1276,7 +1280,7 @@ fn prepare_replay_decisions_with_options(
         actor,
         env_action,
         obs,
-        replay_phase_for_event(event, state, actor),
+        replay_action_phase_for_event(event, state, actor),
         state,
         safety,
         encoder,

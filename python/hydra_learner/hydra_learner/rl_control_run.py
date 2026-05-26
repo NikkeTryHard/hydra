@@ -34,13 +34,13 @@ EvalPairCallable = Callable[[Path, Path, int], Mapping[str, object]]
 
 
 @dataclass(frozen=True)
-class Phase4ObjectiveConfig:
+class RlObjectiveConfig:
     ppo: PpoTrainStepConfig
     ach: AchTrainStepConfig
 
 
 @dataclass(frozen=True)
-class Phase4CheckpointConfig:
+class RlCheckpointConfig:
     model: ModelConfig
     optimizer: OptimizerConfig
     runtime: RuntimeConfig
@@ -49,7 +49,7 @@ class Phase4CheckpointConfig:
 
 
 @dataclass(frozen=True)
-class Phase4EvalConfig:
+class RlEvalConfig:
     baseline_objective: ObjectiveName
     candidate_objective: ObjectiveName
     seed: int
@@ -57,19 +57,19 @@ class Phase4EvalConfig:
 
 
 @dataclass(frozen=True)
-class Phase4ControlRunConfig:
+class RlControlRunConfig:
     run_id: str
     artifact_paths: tuple[Path, ...]
     update_steps: int
     source_init_id: str
-    objectives: Phase4ObjectiveConfig
-    checkpoint: Phase4CheckpointConfig
+    objectives: RlObjectiveConfig
+    checkpoint: RlCheckpointConfig
     output_dir: Path
-    eval: Phase4EvalConfig | None = None
+    eval: RlEvalConfig | None = None
 
 
 @dataclass(frozen=True)
-class Phase4ControlRunResult:
+class RlControlRunResult:
     summary: dict[str, object]
     ppo_checkpoint_path: Path
     ach_checkpoint_path: Path
@@ -96,10 +96,10 @@ def make_native_arena_eval_pair(
     backbone_profile: str = arena_eval.BACKBONE_PROFILE_DEFAULT,
     conv_memory_format: str = arena_eval.CONV_MEMORY_FORMAT_DEFAULT,
 ) -> EvalPairCallable:
-    """Build a Phase 4B eval_pair callable backed by arena_eval."""
+    """Build a RL control-run eval_pair callable backed by arena_eval."""
 
     def eval_pair(baseline: Path, candidate: Path, seed: int) -> Mapping[str, object]:
-        return run_phase4_native_eval_pair(
+        return run_rl_native_eval_pair(
             baseline=baseline,
             candidate=candidate,
             seed=seed,
@@ -126,7 +126,7 @@ def make_native_arena_eval_pair(
     return eval_pair
 
 
-def run_phase4_native_eval_pair(
+def run_rl_native_eval_pair(
     *,
     baseline: Path,
     candidate: Path,
@@ -188,15 +188,15 @@ def run_phase4_native_eval_pair(
     return _json_round_trip(metrics)
 
 
-def run_phase4_control_run(
+def run_rl_control_run(
     *,
-    config: Phase4ControlRunConfig,
+    config: RlControlRunConfig,
     model_factory: Callable[[], HydraPolicyNet],
     initial_state_dict: Mapping[str, torch.Tensor],
     optimizer_factory: Callable[[Iterable[torch.nn.Parameter]], torch.optim.Optimizer],
     entropy_controller: EntropyController,
     eval_pair: EvalPairCallable | None = None,
-) -> Phase4ControlRunResult:
+) -> RlControlRunResult:
     if config.update_steps < 1:
         raise ValueError("update_steps must be >= 1")
     if not config.artifact_paths:
@@ -321,7 +321,7 @@ def run_phase4_control_run(
     summary_path.write_text(
         json.dumps(summary, allow_nan=False, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8"
     )
-    return Phase4ControlRunResult(
+    return RlControlRunResult(
         summary=summary,
         ppo_checkpoint_path=ppo_checkpoint_path,
         ach_checkpoint_path=ach_checkpoint_path,
@@ -402,7 +402,7 @@ def _save_objective_checkpoint(
     *,
     model: HydraPolicyNet,
     optimizer: torch.optim.Optimizer,
-    checkpoint_config: Phase4CheckpointConfig,
+    checkpoint_config: RlCheckpointConfig,
     global_step: int,
     samples_seen: int,
     training_objective: Mapping[str, object],

@@ -3,7 +3,10 @@ use std::env;
 
 #[cfg(test)]
 use hydra_train_runtime::config::validation_sample_limit;
-use hydra_train_runtime::config::{BcBackend, parse_args, python_options_from_config, read_config};
+use hydra_train_runtime::config::{
+    BcBackend, RlPhaseConfig, parse_args, python_options_from_config,
+    python_ppo_control_options_from_config, read_config,
+};
 
 #[cfg(test)]
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -73,6 +76,44 @@ fn run() -> Result<(), String> {
         "config path is required unless --list-devices or --preflight is used".to_string()
     })?;
     let config = read_config(config_path)?;
+    if config
+        .rl
+        .as_ref()
+        .is_some_and(|rl| rl.phase == RlPhaseConfig::PpoControl)
+    {
+        let python_ppo = python_ppo_control_options_from_config(&config)?;
+        hydra_train_exec::gpu_config::apply_gpu_performance_flags(&python_ppo.device);
+        let report = hydra_train_exec::python_learner::run_python_ppo_control(&python_ppo)?;
+        if let Some(pid) = report.pid {
+            println!(
+                "Python PPO control running in background: pid={} output={} logs={} checkpoint={} tensorboard={}",
+                pid,
+                python_ppo.output_dir.display(),
+                report.log_dir.display(),
+                report
+                    .checkpoint_path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "none".to_string()),
+                report.tensorboard_url.as_deref().unwrap_or("disabled")
+            );
+        } else {
+            println!(
+                "Python PPO control complete: samples/s={:.2} global_step={} result={} checkpoint={} logs={} tensorboard={}",
+                report.samples_per_second,
+                report.global_step,
+                report.result_path.display(),
+                report
+                    .checkpoint_path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "none".to_string()),
+                report.log_dir.display(),
+                report.tensorboard_url.as_deref().unwrap_or("disabled")
+            );
+        }
+        return Ok(());
+    }
     if config.rl.is_none()
         && !cli.delta_q_promotion
         && config.bc_backend.as_cli_backend() == BcBackend::Python

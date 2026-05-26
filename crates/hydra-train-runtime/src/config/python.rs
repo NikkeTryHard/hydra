@@ -1,6 +1,9 @@
 use std::path::{Path, PathBuf};
 
-use super::{PythonLearnerCliOptions, PythonLearnerInput, TrainConfig, validation_sample_limit};
+use super::{
+    DEFAULT_BC_STAGE, PythonLearnerCliOptions, PythonLearnerInput, PythonPpoControlCliOptions,
+    RlPhaseConfig, TrainConfig, rl_stage_for_config, validation_sample_limit,
+};
 
 /// Warmup steps used by train-config-driven Python timing launches.
 pub const PYTHON_TIMING_WARMUP_STEPS: usize = 10;
@@ -10,9 +13,26 @@ pub const fn raw_mjai_cursor_resume_supported() -> bool {
     true
 }
 
-/// Resolves the Python learner checkpoint for a config-owned launch.
+/// Resolves the Python run directory for a config-owned launch.
+pub fn python_run_dir(config: &TrainConfig, default_stage: &str) -> PathBuf {
+    let stage = config.stage.as_deref().unwrap_or(default_stage);
+    let run_name = config.run_name.as_deref().unwrap_or("latest_run");
+    config
+        .output_dir
+        .join("stages")
+        .join(stage)
+        .join("runs")
+        .join(run_name)
+}
 pub fn python_resume_checkpoint(config: &TrainConfig) -> Result<Option<PathBuf>, String> {
-    let latest = config.output_dir.join("checkpoints/latest.pt");
+    python_resume_checkpoint_for_stage(config, DEFAULT_BC_STAGE)
+}
+
+fn python_resume_checkpoint_for_stage(
+    config: &TrainConfig,
+    default_stage: &str,
+) -> Result<Option<PathBuf>, String> {
+    let latest = python_run_dir(config, default_stage).join("checkpoints/latest.pt");
 
     if let Some(path) = &config.resume_checkpoint {
         return Ok(Some(path.clone()));
@@ -50,7 +70,9 @@ pub fn python_options_from_config(config: &TrainConfig) -> Result<PythonLearnerC
                 transport: config.python_raw_mjai_transport,
             }
         },
-        output_dir: config.output_dir.clone(),
+        output_dir: python_run_dir(config, DEFAULT_BC_STAGE),
+        stage: config.stage.clone(),
+        run_name: config.run_name.clone(),
         device: config.device.clone(),
         batch_size: config.batch_size,
         microbatch_size: config.microbatch_size.unwrap_or(1024),
@@ -116,6 +138,73 @@ pub fn python_options_from_config(config: &TrainConfig) -> Result<PythonLearnerC
             .into(),
         exit_weight: advanced.and_then(|loss| loss.exit).unwrap_or(0.0).into(),
         deltaq_weight: advanced.and_then(|loss| loss.delta_q).unwrap_or(0.0).into(),
+    })
+}
+
+/// Converts YAML-owned train config into Python T1 PPO-control CLI options.
+pub fn python_ppo_control_options_from_config(
+    config: &TrainConfig,
+) -> Result<PythonPpoControlCliOptions, String> {
+    let rl = config
+        .rl
+        .as_ref()
+        .ok_or_else(|| "rl config is required for Python PPO control".to_string())?;
+    if rl.phase != RlPhaseConfig::PpoControl {
+        return Err("rl.phase must be ppo_control for Python PPO control".to_string());
+    }
+    if config.python_backbone_profile != super::PythonBackboneProfileConfig::Conv2dLocal3 {
+        return Err(
+            "Python PPO control native rollout requires python_backbone_profile=conv2d_local3"
+                .to_string(),
+        );
+    }
+    let steps = config
+        .max_train_steps
+        .or(Some(config.num_epochs))
+        .filter(|steps| *steps > 0)
+        .ok_or_else(|| "max_train_steps or num_epochs must be greater than 0".to_string())?;
+    Ok(PythonPpoControlCliOptions {
+        init_checkpoint: python_ppo_control_init_checkpoint(config)?,
+        output_dir: python_run_dir(config, rl_stage_for_config(config)),
+        stage: config.stage.clone(),
+        run_name: config.run_name.clone(),
+        device: config.device.clone(),
+        steps,
+        games_per_update: rl.games_per_batch,
+        seed: config.seed,
+        temperature: rl.temperature,
+        arena_batch_decisions: config.batch_size,
+        arena_threads: config.num_threads.unwrap_or(0),
+        hidden: config.python_model_profile.hidden(),
+        blocks: config.python_model_profile.blocks(),
+        bottleneck: config.python_model_profile.bottleneck(),
+        residual_profile: config.python_residual_profile,
+        conv_memory_format: config.python_conv_memory_format,
+        backbone_profile: config.python_backbone_profile,
+        learning_rate: rl.learning_rate.unwrap_or(config.bc.learning_rate),
+        min_learning_rate: config.bc.min_learning_rate,
+        lr_warmup_steps: config.bc.warmup_steps,
+        grad_clip_norm: f64::from(config.bc.grad_clip_norm),
+        weight_decay: f64::from(config.bc.weight_decay),
+        adamw_fused: config.bc.adamw_fused,
+        adamw_foreach: config.bc.adamw_foreach,
+        bc_kl_reverse_coef: 0.01,
+        resume: python_resume_checkpoint_for_stage(config, rl_stage_for_config(config))?,
+        checkpoint_every_steps: config.checkpoint_every_n_steps,
+        log_every_steps: config.log_every_n_steps,
+        keep_step_checkpoints: config.keep_step_checkpoints,
+        tensorboard: config.tensorboard,
+        launch_tensorboard: config.launch_tensorboard,
+        tensorboard_host: config.tensorboard_host.clone(),
+        tensorboard_port: config.tensorboard_port,
+        background: config.background,
+    })
+}
+
+fn python_ppo_control_init_checkpoint(config: &TrainConfig) -> Result<PathBuf, String> {
+    config.resume_checkpoint.clone().ok_or_else(|| {
+        "rl.phase=ppo_control requires resume_checkpoint to name the BC/init .pt checkpoint"
+            .to_string()
     })
 }
 

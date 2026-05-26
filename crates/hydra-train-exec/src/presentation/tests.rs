@@ -102,10 +102,10 @@ fn advisory_line_renders_key_and_message() {
 }
 
 #[test]
-fn phase_and_progress_helpers_render_expected_text() {
-    assert_eq!(preflight_phase_label("scan"), "preflight scan");
-    assert_eq!(phase_label("epoch", 0, 1), "epoch");
-    assert_eq!(phase_label("epoch", 1, 3), "epoch 2/3");
+fn progress_helpers_render_expected_text() {
+    assert_eq!(preflight_progress_label("scan"), "preflight scan");
+    assert_eq!(progress_label("epoch", 0, 1), "epoch");
+    assert_eq!(progress_label("epoch", 1, 3), "epoch 2/3");
     assert_eq!(
         format_progress_message(0.12345, 0.875, "lr=2.5e-4", 48.678),
         "loss=0.1235 agree=87.50% steps/s=48.68 lr=2.5e-4"
@@ -124,7 +124,7 @@ fn formatted_status_lines_keep_core_text_when_stripped() {
     assert!(runtime.contains("phase=train"));
     assert!(runtime.contains("candidate=64 option=1/1"));
 
-    let timed = strip_ansi(&format_timed_phase_message("scan", "done", 12.345));
+    let timed = strip_ansi(&format_timed_stage_message("scan", "done", 12.345));
     assert!(timed.contains("[preflight:timing]"));
     assert!(timed.contains("phase=scan"));
     assert!(timed.contains("done elapsed=12.35s"));
@@ -257,7 +257,7 @@ fn parse_probe_progress_fields_rejects_missing_prefix_and_malformed_tokens() {
 }
 
 #[test]
-fn format_probe_progress_line_covers_each_supported_phase_and_fallbacks() {
+fn format_probe_progress_line_covers_each_supported_stage_and_fallbacks() {
     let scan_start = strip_ansi(
         &format_probe_progress_line("probe_progress kind=train candidate_mb=64 phase=scan_start")
             .expect("scan_start should render"),

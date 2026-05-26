@@ -115,12 +115,12 @@ Run preflight benchmark:
 pixi run cargo run -p hydra-train --no-default-features --features training --bin train -- --preflight --pf-candidate-tuples 1024:2:1:1 --pf-warmup-steps 10 --pf-measure-steps 100 --pf-repetitions 1 --pf-output md
 ```
 
-Run default BC shard training through Rust launcher. Rust validates CLI/manifest contracts, then launches Python/PyTorch BC learner in Pixi `py-train`. Output includes `logs/`, `checkpoints/latest.pt`, TensorBoard events, and `python_learner_result.json`:
+Run default BC shard training through Rust launcher. Rust validates CLI/manifest contracts, resolves campaign run dir, then launches Python/PyTorch BC learner in Pixi `py-train`. `--output-dir` is campaign root; output lands under `stages/<stage>/runs/<run_id>/` with run-local `logs/`, `checkpoints/latest.pt`, TensorBoard events, and `python_learner_result.json`:
 
 ```bash
 pixi run cargo run --quiet --package hydra-train --features training --bin train -- \
   --bc-shards-manifest path/to/bc_shards_manifest.json \
-  --output-dir path/to/output-dir \
+  --output-dir path/to/hydra-campaign \
   --device cuda:0 \
   --python-variant compile_max_autotune \
   --python-warmup 1 \
@@ -140,13 +140,15 @@ pixi run cargo run -p hydra-train --no-default-features --features training --bi
 Notes:
 
 - Config examples and operator details live in [`docs/TRAINING_RUNBOOK.md`](docs/TRAINING_RUNBOOK.md).
-- Plain BC with `bc_shards_manifest_path` trains/resumes compact shards. Without shard manifest, YAML `raw_mjai_data_dirs` streams explicit raw-MJAI roots when set; otherwise `data_dir` streams one raw-MJAI input. Raw-MJAI output dirs must be fresh; resume is fail-closed until stream cursor resume exists. Default bridge is `hydra-raw-mjai-pyo3` pinned PyO3, with stdout fallback.
+- Plain BC with `bc_shards_manifest_path` trains/resumes compact shards. Without shard manifest, YAML `raw_mjai_data_dirs` streams explicit raw-MJAI roots when set; otherwise `data_dir` streams one raw-MJAI input. Default bridge is `hydra-raw-mjai-pyo3` pinned PyO3, with stdout fallback.
 - Default plain-BC backend is Python/PyTorch. Rust owns replay parsing, shard building, manifest validation, launcher glue, and config conversion via `hydra-train-runtime::config::python`. Python owner is `hydra_learner.cli`; train loop/modules live under `hydra_learner`, while `train_bc.py` and `scripts/hydra_pytorch_oracle.py` are compatibility entrypoints only.
 - Use `bc_backend: rust_burn` or CLI `--bc-backend rust-burn` only for feature-gated legacy/debug or advanced labels not supported by Python default yet: ExIt, DeltaQ, belief, mixture, opponent hand type.
 - `device: cpu` works for CPU Rust paths. Default Python BC expects CUDA for throughput.
-- Python BC run artifacts: `logs/events.jsonl`, `logs/train_steps.jsonl`, `checkpoints/latest.pt`, `tensorboard/events.out.tfevents.*`, `python_learner_result.json`.
-- Resume Python BC only on shard-backed runs with `resume_checkpoint: <output_dir>/checkpoints/latest.pt`, `resume_latest: true`, or direct `--python-resume <checkpoint>`.
-- `--python-background` detaches learner, writes `train.pid`, redirects stdout/stderr to `logs/`, and prints `tail -f <output_dir>/logs/train_steps.jsonl`.
+- `output_dir` is campaign root. Top-level campaign files are `campaign.json`, `registry/`, and `stages/`; Python BC/RL and Rust RL run artifacts are under `stages/<stage>/runs/<run_id>/`, not `<output_dir>/rl`.
+- Stage names / implemented phase mapping: `T0_bc_baseline`, `T1_ppo_control`, `T2_direct_sampled_ach`, `T3_drda_residual_ach`, `T4_pbrs_beta_sweep`, `T5_exit_auxiliary`, `T6_delta_q_experiment`, `T7_population_window`. Top-level `stage:` overrides layout stage; `run_name:` overrides run id.
+- Run-local artifacts: `logs/events.jsonl`, `logs/train_steps.jsonl`, `checkpoints/latest.pt`, optional `checkpoints/step_<global_step>.pt`, `exports/`, `rollouts/`, `eval/`, `tensorboard/events.out.tfevents.*`, `python_learner_result.json`.
+- Resume Python BC/RL with `resume_checkpoint: <run_dir>/checkpoints/latest.pt`, `resume_latest: true`, or direct `--python-resume <checkpoint>`; latest resolves through stage `latest_run` marker when available. Rust RL compatibility paths use same stage/run layout for artifacts/logs.
+- `--python-background` detaches learner, writes run-local `train.pid`, redirects stdout/stderr to `logs/`, and prints `tail -f <run_dir>/logs/train_steps.jsonl`.
 - `--python-launch-tensorboard` starts TensorBoard on first free port at or above `--python-tensorboard-port` and reports URL.
 - CUDA graph support is explicit and compile-checked with:
 

@@ -28,7 +28,7 @@ fn budget_and_progress_are_clamped() {
 }
 
 #[test]
-fn phase_advancement() {
+fn stage_advancement() {
     let mut state = PipelineState::default();
     state.advance_phase();
     assert_eq!(state.phase, TrainingPhase::BcWarmStart);
@@ -37,7 +37,7 @@ fn phase_advancement() {
 }
 
 #[test]
-fn phase_budgets_are_cumulative() {
+fn stage_budgets_are_cumulative() {
     assert_eq!(TrainingPhase::BenchmarkGates.cumulative_budget_before(), 0);
     assert_eq!(TrainingPhase::BcWarmStart.cumulative_budget_before(), 150);
     assert_eq!(TrainingPhase::OracleGuiding.cumulative_budget_before(), 200);
@@ -56,18 +56,18 @@ fn phase_budgets_are_cumulative() {
 }
 
 #[test]
-fn phase_progress_uses_phase_local_hours() {
+fn stage_progress_uses_stage_local_hours() {
     let state = PipelineState {
         phase: TrainingPhase::DrdaAchSelfPlay,
         gpu_hours_used: 600.0,
         ..PipelineState::default()
     };
-    assert!((state.phase_hours_used() - 200.0).abs() < 1e-6);
-    assert!((state.phase_progress() - 0.25).abs() < 1e-6);
+    assert!((state.stage_hours_used() - 200.0).abs() < 1e-6);
+    assert!((state.stage_progress() - 0.25).abs() < 1e-6);
 }
 
 #[test]
-fn phase_advance_requires_cumulative_budget() {
+fn stage_advance_requires_cumulative_budget() {
     let state = PipelineState {
         phase: TrainingPhase::OracleGuiding,
         gpu_hours_used: 250.0,
@@ -84,7 +84,7 @@ fn phase_advance_requires_cumulative_budget() {
 }
 
 #[test]
-fn exit_schedule_phase_matches_hydra_final_rollout_plan() {
+fn exit_schedule_stage_matches_hydra_final_rollout_plan() {
     assert_eq!(TrainingPhase::BcWarmStart.exit_schedule_phase(), 1);
     assert_eq!(TrainingPhase::OracleGuiding.exit_schedule_phase(), 1);
     assert_eq!(TrainingPhase::DrdaAchSelfPlay.exit_schedule_phase(), 2);
@@ -92,7 +92,7 @@ fn exit_schedule_phase_matches_hydra_final_rollout_plan() {
 }
 
 #[test]
-fn phase_uses_exit_oracle() {
+fn stage_uses_exit_oracle() {
     assert!(!TrainingPhase::BcWarmStart.uses_exit());
     assert!(TrainingPhase::ExitPondering.uses_exit());
     assert!(!TrainingPhase::BcWarmStart.uses_oracle());

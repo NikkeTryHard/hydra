@@ -1,4 +1,5 @@
 use super::*;
+use crate::config_runtime::validate_rl_config;
 use std::path::PathBuf;
 
 #[test]
@@ -546,6 +547,41 @@ fn repository_example_config_matches_train_config_contract() {
 }
 
 #[test]
+fn documented_minimal_rl_config_parses_and_validates() {
+    let text = r#"data_dir: /data
+output_dir: /out
+num_epochs: 1
+device: cpu
+rl:
+  games_per_batch: 1024
+  temperature: 1.0
+  phase: drda_ach_self_play
+  microbatch_size: 1024
+"#;
+    let config: TrainConfig = serde_yaml::from_str(text).expect("documented RL YAML should parse");
+    let rl = config.rl.expect("rl config should be present");
+    assert_eq!(rl.games_per_batch, 1024);
+    assert_eq!(rl.temperature, 1.0);
+    assert_eq!(rl.phase, RlPhaseConfig::DrdaAchSelfPlay);
+    assert_eq!(rl.microbatch_size, Some(1024));
+    validate_rl_config(&rl).expect("documented RL YAML should validate");
+}
+
+#[test]
+fn documented_removed_rl_field_is_rejected() {
+    let text = r#"data_dir: /data
+output_dir: /out
+num_epochs: 1
+rl:
+  games_per_batch: 4
+  decisions_per_game: 1024
+"#;
+    let err =
+        serde_yaml::from_str::<TrainConfig>(text).expect_err("unsupported RL field should fail");
+    assert!(err.to_string().contains("decisions_per_game"), "{err}");
+}
+
+#[test]
 fn config_accepts_explicit_raw_mjai_data_dirs() {
     let text = r#"data_dir: /fallback
 raw_mjai_data_dirs:
@@ -567,6 +603,8 @@ fn python_guard_config() -> TrainConfig {
         data_dir: PathBuf::from("/tmp/data"),
         raw_mjai_data_dirs: Vec::new(),
         output_dir: PathBuf::from("/tmp/out"),
+        stage: None,
+        run_name: None,
         num_epochs: 1,
         batch_size: 1024,
         microbatch_size: Some(1024),
@@ -660,6 +698,32 @@ fn python_options_from_config_accepts_plain_bc_defaults() {
 }
 
 #[test]
+fn python_options_from_config_maps_campaign_root_to_default_bc_run_dir() {
+    let config = python_guard_config();
+
+    let options = python_options_from_config(&config).expect("plain BC should route to Python");
+
+    assert_eq!(
+        options.output_dir,
+        PathBuf::from("/tmp/out/stages/bc_baseline/runs/latest_run")
+    );
+}
+
+#[test]
+fn python_options_from_config_uses_explicit_stage_and_run_name() {
+    let mut config = python_guard_config();
+    config.stage = Some("bc_custom".to_string());
+    config.run_name = Some("run_001".to_string());
+
+    let options = python_options_from_config(&config).expect("plain BC should route to Python");
+
+    assert_eq!(
+        options.output_dir,
+        PathBuf::from("/tmp/out/stages/bc_custom/runs/run_001")
+    );
+}
+
+#[test]
 fn python_resume_checkpoint_raw_mjai_allows_explicit_resume() {
     let mut config = python_guard_config();
     config.bc_shards_manifest_path = None;
@@ -685,7 +749,12 @@ fn python_resume_checkpoint_raw_mjai_resume_latest_without_checkpoint_is_none() 
 #[test]
 fn python_resume_checkpoint_raw_mjai_uses_occupied_latest_by_default() {
     let root = unique_temp_dir("raw-mjai-occupied");
-    let checkpoint_dir = root.join("checkpoints");
+    let checkpoint_dir = root
+        .join("stages")
+        .join("bc_baseline")
+        .join("runs")
+        .join("latest_run")
+        .join("checkpoints");
     std::fs::create_dir_all(&checkpoint_dir).expect("checkpoint dir should be created");
     let latest = checkpoint_dir.join("latest.pt");
     std::fs::write(&latest, b"checkpoint").expect("latest checkpoint should write");
@@ -701,7 +770,12 @@ fn python_resume_checkpoint_raw_mjai_uses_occupied_latest_by_default() {
 #[test]
 fn python_resume_checkpoint_bc_shards_uses_latest_when_requested() {
     let root = unique_temp_dir("bc-shards-latest");
-    let checkpoint_dir = root.join("checkpoints");
+    let checkpoint_dir = root
+        .join("stages")
+        .join("bc_baseline")
+        .join("runs")
+        .join("latest_run")
+        .join("checkpoints");
     std::fs::create_dir_all(&checkpoint_dir).expect("checkpoint dir should be created");
     let latest = checkpoint_dir.join("latest.pt");
     std::fs::write(&latest, b"checkpoint").expect("latest checkpoint should write");
@@ -989,4 +1063,75 @@ fn python_options_from_config_rejects_unsupported_advanced_modes() {
         let err = python_options_from_config(&config).expect_err("unsupported mode should fail");
         assert!(err.contains(expected), "{err}");
     }
+}
+
+#[test]
+fn python_ppo_control_options_from_config_maps_campaign_root_to_default_ppo_run_dir() {
+    let mut config = python_guard_config();
+    config.rl = Some(RlTrainConfig::default());
+    config.python_backbone_profile = PythonBackboneProfileConfig::Conv2dLocal3;
+    config.resume_checkpoint = Some(PathBuf::from("/tmp/bc/checkpoints/latest.pt"));
+
+    let options = python_ppo_control_options_from_config(&config)
+        .expect("PPO control should route to Python");
+
+    assert_eq!(
+        options.output_dir,
+        PathBuf::from("/tmp/out/stages/T1_ppo_control/runs/latest_run")
+    );
+}
+
+#[test]
+fn rl_stage_helpers_map_default_phases_and_respect_override() {
+    assert_eq!(
+        rl_stage_for_phase(RlPhaseConfig::PpoControl),
+        T1_PPO_CONTROL_STAGE
+    );
+    assert_eq!(
+        rl_stage_for_phase(RlPhaseConfig::DrdaAchSelfPlay),
+        T3_DRDA_RESIDUAL_ACH_STAGE
+    );
+    assert_eq!(
+        rl_stage_for_phase(RlPhaseConfig::ExitPondering),
+        T5_EXIT_AUXILIARY_STAGE
+    );
+    assert_eq!(
+        RlPhaseConfig::DrdaAchSelfPlay.default_stage(),
+        T3_DRDA_RESIDUAL_ACH_STAGE
+    );
+
+    let mut config = python_guard_config();
+    config.rl = Some(RlTrainConfig {
+        phase: RlPhaseConfig::DrdaAchSelfPlay,
+        ..Default::default()
+    });
+    assert_eq!(rl_stage_for_config(&config), T3_DRDA_RESIDUAL_ACH_STAGE);
+
+    config.stage = Some("custom_stage".to_string());
+    assert_eq!(rl_stage_for_config(&config), "custom_stage");
+}
+
+#[test]
+fn python_run_dir_uses_rl_phase_stage_default() {
+    let mut config = python_guard_config();
+    config.rl = Some(RlTrainConfig {
+        phase: RlPhaseConfig::DrdaAchSelfPlay,
+        ..Default::default()
+    });
+
+    assert_eq!(
+        python_run_dir(&config, rl_stage_for_config(&config)),
+        PathBuf::from("/tmp/out/stages/T3_drda_residual_ach/runs/latest_run")
+    );
+
+    config.rl = Some(RlTrainConfig {
+        phase: RlPhaseConfig::ExitPondering,
+        ..Default::default()
+    });
+    config.run_name = Some("run_002".to_string());
+
+    assert_eq!(
+        python_run_dir(&config, rl_stage_for_config(&config)),
+        PathBuf::from("/tmp/out/stages/T5_exit_auxiliary/runs/run_002")
+    );
 }

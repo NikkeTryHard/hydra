@@ -33,7 +33,7 @@ pub struct RebaseTracker {
 }
 
 impl RebaseTracker {
-    pub fn default_phase2() -> Self {
+    pub fn default_drda_ach_self_play() -> Self {
         Self::new(37.5)
     }
 
