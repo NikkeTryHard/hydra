@@ -5,7 +5,7 @@ mod ppo_rollout;
 use arena::{
     PyPairedArenaMetrics, run_paired_arena, run_paired_arena_batched, run_paired_arena_rust_native,
 };
-use ppo_rollout::collect_ppo_rollouts_rust_native;
+use ppo_rollout::{collect_ppo_rollouts_rust_native, collect_ppo_rollouts_with_callback};
 use std::mem;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -373,6 +373,7 @@ fn hydra_raw_mjai_pyo3(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResul
     module.add_function(wrap_pyfunction!(run_paired_arena_batched, module)?)?;
     module.add_function(wrap_pyfunction!(run_paired_arena_rust_native, module)?)?;
     module.add_function(wrap_pyfunction!(collect_ppo_rollouts_rust_native, module)?)?;
+    module.add_function(wrap_pyfunction!(collect_ppo_rollouts_with_callback, module)?)?;
     module.add_class::<PyRawMjaiNext>()?;
     Ok(())
 }

@@ -420,13 +420,22 @@ class HydraPolicyNet(nn.Module):
         self.opp_next_head = nn.Conv2d(hidden, OPPONENTS, kernel_size=1)
         self.danger_head = nn.Conv2d(hidden, OPPONENTS, kernel_size=1)
 
+    def _features(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.backbone_profile == BACKBONE_PROFILE_TILEFORMER_BIAS:
+            return self.backbone(obs)
+        spatial = self.backbone(obs)
+        return spatial, spatial.mean(dim=(2, 3))
+
+    def policy_value(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return only policy logits and scalar value for PPO/arena hot paths."""
+        _, pooled = self._features(obs)
+        packed = F.linear(pooled, self.base_heads.weight[:47], self.base_heads.bias[:47])
+        return packed[:, 0:46], torch.tanh(packed[:, 46:47])
+
+
     @override
     def forward(self, obs: torch.Tensor) -> HydraBaseOutput:
-        if self.backbone_profile == BACKBONE_PROFILE_TILEFORMER_BIAS:
-            spatial, pooled = self.backbone(obs)
-        else:
-            spatial = self.backbone(obs)
-            pooled = spatial.mean(dim=(2, 3))
+        spatial, pooled = self._features(obs)
         packed = self.base_heads(pooled)
         return HydraBaseOutput(
             policy_logits=packed[:, 0:46],

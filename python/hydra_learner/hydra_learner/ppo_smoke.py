@@ -59,6 +59,7 @@ def build_ppo_batch_from_rust_rollout(
     rank_utility_used: str = RANK_UTILITY_U_A,
     gae_gamma: float = DEFAULT_GAE_GAMMA,
     gae_lambda: float = DEFAULT_GAE_LAMBDA,
+    output_device: torch.device | None = None,
 ) -> PpoBatch:
     _validate_rollout_metadata(rollout)
     if rank_utility_used != RANK_UTILITY_U_A:
@@ -75,31 +76,50 @@ def build_ppo_batch_from_rust_rollout(
     if not bool((legal_count > 0).all()):
         raise ValueError("legal_mask has an all-illegal row")
 
+    model_device = next(model.parameters()).device
+    batch_device = torch.device("cpu") if output_device is None else output_device
+    obs_for_model = obs.to(model_device)
+    legal_mask_for_model = legal_mask.to(model_device)
     with torch.inference_mode():
         model.eval()
-        outputs = model(obs)
-        logits = outputs.policy_logits.detach().to(dtype=torch.float32)
-        value_old = outputs.value.squeeze(1).detach().to(dtype=torch.float32)
-        actions = _actions_from_rows_or_sample(rollout.rows, logits, legal_mask, torch_seed)
-        old_logprob = masked_log_prob(logits, legal_mask, actions).detach().to(dtype=torch.float32)
+        outputs = model(obs_for_model)
+        logits_model = outputs.policy_logits.detach().to(dtype=torch.float32)
+        value_old_model = outputs.value.squeeze(1).detach().to(dtype=torch.float32)
+        actions = _actions_from_rows_or_sample(rollout.rows, logits_model, legal_mask_for_model, torch_seed)
+        old_logprob_model = (
+            masked_log_prob(logits_model, legal_mask_for_model, actions).detach().to(dtype=torch.float32)
+        )
 
+    logits = logits_model.to(batch_device)
+    value_old = value_old_model.to(batch_device)
+    old_logprob = old_logprob_model.to(batch_device)
+    actions = actions.to(batch_device)
+    obs = obs.to(batch_device)
+    legal_mask = legal_mask.to(batch_device)
+    legal_count = legal_count.to(batch_device)
+    player_id = player_id.to(batch_device)
+    seat_id = seat_id.to(batch_device)
+    game_id = game_id.to(batch_device)
+    turn = turn.to(batch_device)
     gae = compute_player_local_gae(
         [
             PlayerDecisionStep(player_id=int(pid), value_old=float(value))
-            for pid, value in zip(player_id.tolist(), value_old.tolist(), strict=True)
+            for pid, value in zip(player_id.cpu().tolist(), value_old.cpu().tolist(), strict=True)
         ],
         final_placements=rollout.placements,
         gamma=gae_gamma,
         gae_lambda=gae_lambda,
     )
+    raw_advantages = gae.raw_advantages.to(batch_device)
+    returns = gae.returns.to(batch_device)
     batch = PpoBatch(
         obs=obs,
         actions=actions,
         legal_mask=legal_mask,
         old_logprob=old_logprob,
         value_old=value_old,
-        raw_advantages=gae.raw_advantages,
-        returns=gae.returns,
+        raw_advantages=raw_advantages,
+        returns=returns,
         bc_logits=logits.clone(),
         legal_count=legal_count,
         player_id=player_id,
@@ -109,7 +129,7 @@ def build_ppo_batch_from_rust_rollout(
         rank_utility_used=rank_utility_used,
     )
     batch.validate()
-    _validate_terminal_reward_once(gae.terminal_player_stream, player_id)
+    _validate_terminal_reward_once(gae.terminal_player_stream.to(player_id.device), player_id)
     return batch
 
 
@@ -217,7 +237,7 @@ def _actions_from_rows_or_sample(
     explicit = [row.action for row in rows]
     if all(action is not None for action in explicit):
         action_ids = [action for action in explicit if action is not None]
-        actions = torch.tensor(action_ids, dtype=torch.int64)
+        actions = torch.tensor(action_ids, dtype=torch.int64, device=logits.device)
         if not bool(legal_mask.gather(1, actions.unsqueeze(1)).squeeze(1).all()):
             raise ValueError("row action must be legal")
         return actions
@@ -225,10 +245,14 @@ def _actions_from_rows_or_sample(
         raise ValueError("actions must be all present or all absent")
     generator = torch.Generator(device="cpu")
     generator.manual_seed(torch_seed)
-    masked_logits = logits.masked_fill(~legal_mask, -1.0e9)
-    probs = torch.softmax(masked_logits, dim=1).masked_fill(~legal_mask, 0.0)
+    logits_cpu = logits.cpu()
+    legal_mask_cpu = legal_mask.cpu()
+    masked_logits = logits_cpu.masked_fill(~legal_mask_cpu, -1.0e9)
+    probs = torch.softmax(masked_logits, dim=1).masked_fill(~legal_mask_cpu, 0.0)
     return (
-        torch.multinomial(probs, num_samples=1, replacement=True, generator=generator).squeeze(1).to(dtype=torch.int64)
+        torch.multinomial(probs, num_samples=1, replacement=True, generator=generator)
+        .squeeze(1)
+        .to(device=logits.device, dtype=torch.int64)
     )
 
 

@@ -24,6 +24,7 @@ pub(crate) fn build_python_learner_command_for_run_dir(
     let result_path = run_dir.join(PYTHON_LEARNER_RESULT);
     let mut args = vec![
         "run".to_string(),
+        "--frozen".to_string(),
         "-e".to_string(),
         "py-train".to_string(),
         "python".to_string(),
@@ -211,6 +212,7 @@ pub(crate) fn build_python_ppo_control_command_for_run_dir(
     let result_path = run_dir.join(PYTHON_PPO_CONTROL_RESULT);
     let mut args = vec![
         "run".to_string(),
+        "--frozen".to_string(),
         "-e".to_string(),
         "py-train".to_string(),
         "python".to_string(),
@@ -220,8 +222,6 @@ pub(crate) fn build_python_ppo_control_command_for_run_dir(
         options.init_checkpoint.display().to_string(),
         "--out".to_string(),
         run_dir.display().to_string(),
-        "--steps".to_string(),
-        options.steps.to_string(),
         "--games-per-update".to_string(),
         options.games_per_update.to_string(),
         "--seed".to_string(),
@@ -250,10 +250,12 @@ pub(crate) fn build_python_ppo_control_command_for_run_dir(
         options.learning_rate.to_string(),
         "--min-lr".to_string(),
         options.min_learning_rate.to_string(),
-        "--lr-warmup-steps".to_string(),
-        options.lr_warmup_steps.to_string(),
+        "--lr-warmup-samples".to_string(),
+        options.lr_warmup_samples.to_string(),
         "--grad-clip-norm".to_string(),
         options.grad_clip_norm.to_string(),
+        "--microbatch-size".to_string(),
+        options.microbatch_size.to_string(),
         "--weight-decay".to_string(),
         options.weight_decay.to_string(),
         "--adamw-fused".to_string(),
@@ -266,8 +268,20 @@ pub(crate) fn build_python_ppo_control_command_for_run_dir(
         options.checkpoint_every_steps.to_string(),
         "--log-every-steps".to_string(),
         options.log_every_steps.to_string(),
+        "--rollout-inference".to_string(),
+        options.rollout_inference.clone(),
         "--quiet".to_string(),
     ];
+    if let Some(decay_samples) = options.lr_decay_samples {
+        args.push("--lr-decay-samples".to_string());
+        args.push(decay_samples.to_string());
+    }
+    if let Some(steps) = options.steps {
+        args.push("--steps".to_string());
+        args.push(steps.to_string());
+    } else {
+        args.push("--run-forever".to_string());
+    }
     if let Some(resume) = options.resume.as_ref() {
         args.push("--resume".to_string());
         args.push(resume.display().to_string());

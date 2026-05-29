@@ -18,11 +18,12 @@ data_dir: path/to/mjai
 # Campaign root. Python BC/RL and Rust RL artifacts are written under stages/<stage>/runs/<run_id>/.
 output_dir: path/to/output/hydra-campaign
 # Optional layout overrides; defaults follow BC/RL phase mapping T0-T7.
+# For one-file T1 PPO launch, set these explicitly:
 # stage: T1_ppo_control
 # run_name: latest_run
 
 
-# Full raw-MJAI epoch is the stopping condition.
+# BC normally stops by epoch/steps. T1 PPO can be endless through `rl.run_forever: true`.
 num_epochs: 1
 full_epoch: true
 max_train_steps: null
@@ -119,3 +120,17 @@ validation_gates:
   require_sidecar_coverage_when_weighted: true
 
 rl: null
+# T1 PPO control example. Uncomment this block, set `stage/run_name`, and set
+# `resume_checkpoint` to the BC checkpoint to seed from. With `run_forever: true`,
+# no max step is passed; stop the background process manually.
+# rl:
+#   phase: ppo_control
+#   run_forever: true
+#   games_per_batch: 1024
+#   microbatch_size: 768
+#   temperature: 1.0
+#   learning_rate: 0.000025
+#   rollout_inference: torch-callback
+#   bc_kl_reverse_coef: 0.01
+#   lr_warmup_samples: 250000
+#   lr_decay_samples: null

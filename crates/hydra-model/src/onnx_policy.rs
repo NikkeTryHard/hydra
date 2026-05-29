@@ -120,6 +120,10 @@ impl OnnxPolicyRuntime {
         }
         let mut builder = Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)
+            .map_err(|err| OnnxPolicyError::Invalid(err.to_string()))?
+            .with_intra_threads(1)
+            .map_err(|err| OnnxPolicyError::Invalid(err.to_string()))?
+            .with_inter_threads(1)
             .map_err(|err| OnnxPolicyError::Invalid(err.to_string()))?;
         if let OnnxPolicyDevice::Cuda { device_id } = device {
             let cuda = CUDA::default()

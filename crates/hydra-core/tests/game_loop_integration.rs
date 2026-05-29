@@ -7,7 +7,7 @@
 use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::arena::compute_placements;
 use hydra_core::encoder::OBS_SIZE;
-use hydra_core::game_loop::{DecisionRecord, FirstActionSelector, GameRunner};
+use hydra_core::game_loop::{DecisionRecord, FirstActionSelector, GameRunner, StepOutcome};
 
 #[test]
 fn game_runner_accessible_and_completes() {
@@ -103,6 +103,49 @@ fn game_runner_recording_boundary_is_seed_deterministic() {
     let second = collect(123);
     assert!(!first.is_empty());
     assert_eq!(first, second);
+}
+
+#[test]
+fn cached_legal_action_step_matches_hydra_action_ids() {
+    let mut cached = GameRunner::new(Some(2026052901), 0);
+    let mut baseline = GameRunner::new(Some(2026052901), 0);
+    let mut acted = 0usize;
+    while !cached.is_done() && acted < 400 {
+        match (cached.pending_decisions(), baseline.pending_decisions()) {
+            (Err(StepOutcome::Advanced), Err(StepOutcome::Advanced)) => continue,
+            (Err(left), Err(right)) => {
+                assert_eq!(left, right);
+                if matches!(left, StepOutcome::Complete | StepOutcome::StepLimitExceeded) {
+                    break;
+                }
+            }
+            (Ok(cached_decisions), Ok(baseline_decisions)) => {
+                assert_eq!(cached_decisions.len(), baseline_decisions.len());
+                let mut ids = Vec::with_capacity(cached_decisions.len());
+                let mut tokens = Vec::with_capacity(cached_decisions.len());
+                for (cached_decision, baseline_decision) in cached_decisions.iter().zip(&baseline_decisions) {
+                    assert_eq!(cached_decision.legal_mask, baseline_decision.legal_mask);
+                    let action = cached_decision
+                        .legal_mask
+                        .iter()
+                        .position(|&legal| legal)
+                        .expect("legal action") as u8;
+                    ids.push(action);
+                    tokens.push((cached_decision.legal_actions.clone(), action));
+                }
+                let cached_outcome = cached.step_with_cached_legal_actions(&tokens);
+                let baseline_outcome = baseline.step_with_hydra_action_ids(&ids);
+                assert_eq!(cached_outcome, baseline_outcome);
+                assert_eq!(cached.scores(), baseline.scores());
+                acted += 1;
+            }
+            (left, right) => panic!("pending mismatch: {left:?} vs {right:?}"),
+        }
+    }
+    assert!(acted > 20);
+    assert_eq!(cached.total_actions(), baseline.total_actions());
+    assert_eq!(cached.rounds_played(), baseline.rounds_played());
+    assert_eq!(cached.scores(), baseline.scores());
 }
 
 fn assert_record_contract(record: &DecisionRecord) {

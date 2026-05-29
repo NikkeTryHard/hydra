@@ -143,8 +143,8 @@ fn command_preserves_paths_and_compile_default_args() {
         root.join("out/stages/bc_baseline/runs/run-test/python_learner_result.json")
     );
     assert_eq!(
-        command.args[0..5],
-        ["run", "-e", "py-train", "python", PYTHON_LEARNER_SCRIPT]
+        command.args[0..6],
+        ["run", "--frozen", "-e", "py-train", "python", PYTHON_LEARNER_SCRIPT]
     );
     assert!(
         command

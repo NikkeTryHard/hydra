@@ -3428,6 +3428,7 @@ dependencies = [
 name = "hydra-raw-mjai-pyo3"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "hydra-core",
  "hydra-engine",
  "hydra-model",

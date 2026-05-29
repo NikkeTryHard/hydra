@@ -106,6 +106,9 @@ def test_ppo_train_step_real_model_finite_update_and_metrics() -> None:
         "advantage_normalized_mean",
         "advantage_normalized_std",
         "grad_norm",
+        "forward_backward_ms",
+        "grad_clip_ms",
+        "optimizer_ms",
     ):
         assert key in result.metrics
         assert isinstance(result.metrics[key], float)
@@ -154,6 +157,72 @@ def test_ppo_train_step_without_grad_clip_has_json_safe_grad_norm() -> None:
 
     json.dumps(result.metrics, allow_nan=False)
     assert math.isfinite(result.metrics["grad_norm"])
+
+
+def test_ppo_train_step_microbatch_matches_full_batch_update() -> None:
+    torch.manual_seed(19)
+    base_model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
+    batch = _batch_from_model_rows(base_model, rows=6)
+    full_model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
+    micro_model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
+    full_model.load_state_dict(base_model.state_dict(), strict=True)
+    micro_model.load_state_dict(base_model.state_dict(), strict=True)
+    full_optimizer = torch.optim.SGD(full_model.parameters(), lr=1.0e-4)
+    micro_optimizer = torch.optim.SGD(micro_model.parameters(), lr=1.0e-4)
+    controller = EntropyController(alpha=1.0e-3, beta=1.0e-2, alpha_max=0.05)
+    step_config = PpoTrainStepConfig(
+        clip_epsilon=0.2,
+        value_coef=0.5,
+        bc_kl_reverse_coef=0.01,
+        grad_clip_norm=None,
+    )
+
+    full = ppo_train_step(
+        model=full_model,
+        optimizer=full_optimizer,
+        batch=batch,
+        entropy_controller=controller,
+        config=step_config,
+    )
+    micro = ppo_train_step(
+        model=micro_model,
+        optimizer=micro_optimizer,
+        batch=batch,
+        entropy_controller=controller,
+        config=PpoTrainStepConfig(
+            clip_epsilon=step_config.clip_epsilon,
+            value_coef=step_config.value_coef,
+            bc_kl_reverse_coef=step_config.bc_kl_reverse_coef,
+            grad_clip_norm=step_config.grad_clip_norm,
+            microbatch_size=2,
+        ),
+    )
+
+    for key in (
+        "loss_total",
+        "loss_policy",
+        "loss_value",
+        "entropy",
+        "bc_kl_reverse",
+        "approx_kl_old",
+        "clip_fraction",
+        "ratio_mean",
+        "explained_variance",
+        "advantage_raw_mean",
+        "advantage_raw_std",
+        "advantage_normalized_mean",
+        "advantage_normalized_std",
+        "grad_norm",
+        "entropy_alpha_after",
+    ):
+        assert micro.metrics[key] == pytest.approx(full.metrics[key], abs=1.0e-6)
+    assert micro.metrics["microbatch_count"] == 3
+    assert micro.entropy_controller == full.entropy_controller
+    for name, tensor in full_model.state_dict().items():
+        if tensor.is_floating_point():
+            assert torch.allclose(micro_model.state_dict()[name], tensor, atol=1.0e-7, rtol=1.0e-6), name
+        else:
+            assert torch.equal(micro_model.state_dict()[name], tensor), name
 
 
 def test_ppo_train_step_extreme_old_logprob_hard_errors_before_metrics() -> None:
@@ -225,6 +294,38 @@ def _batch_from_model(
         seat_id=torch.tensor([0, 1], dtype=torch.int64),
         game_id=torch.tensor([1, 1], dtype=torch.int64),
         turn=torch.tensor([0, 1], dtype=torch.int64),
+        rank_utility_used="U_A",
+    )
+
+
+def _batch_from_model_rows(model: HydraPolicyNet, *, rows: int) -> PpoBatch:
+    obs = torch.randn(rows, 192, 34, dtype=torch.float32)
+    legal_mask = torch.zeros(rows, ACTION_SPACE, dtype=torch.bool)
+    actions = torch.empty(rows, dtype=torch.int64)
+    for row in range(rows):
+        count = 2 + row % 4
+        legal_mask[row, :count] = True
+        actions[row] = row % count
+    with torch.inference_mode():
+        out = model(obs)
+        old_logprob = masked_log_prob(out.policy_logits, legal_mask, actions).to(dtype=torch.float32)
+        value_old = out.value.squeeze(1).to(dtype=torch.float32)
+        returns = value_old + torch.linspace(-0.3, 0.3, rows, dtype=torch.float32)
+        bc_logits = out.policy_logits.detach().clone().to(dtype=torch.float32)
+    return PpoBatch(
+        obs=obs,
+        actions=actions,
+        legal_mask=legal_mask,
+        old_logprob=old_logprob,
+        value_old=value_old,
+        raw_advantages=torch.linspace(-1.0, 1.0, rows, dtype=torch.float32),
+        returns=returns,
+        bc_logits=bc_logits,
+        legal_count=legal_mask.sum(dim=1).to(dtype=torch.int64),
+        player_id=torch.arange(rows, dtype=torch.int64) % 4,
+        seat_id=torch.arange(rows, dtype=torch.int64) % 4,
+        game_id=torch.zeros(rows, dtype=torch.int64),
+        turn=torch.arange(rows, dtype=torch.int64),
         rank_utility_used="U_A",
     )
 

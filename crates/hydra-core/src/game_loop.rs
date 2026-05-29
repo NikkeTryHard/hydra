@@ -62,6 +62,26 @@ pub struct DecisionRecord {
     pub turn: u32,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct CachedLegalActions {
+    turn: u32,
+    player_id: u8,
+    by_hydra_id: [Option<Action>; HYDRA_ACTION_SPACE],
+}
+
+fn legal_action_map(legal_actions: &[Action]) -> [Option<Action>; HYDRA_ACTION_SPACE] {
+    let mut by_hydra_id = [None; HYDRA_ACTION_SPACE];
+    for &action in legal_actions {
+        if let Ok(hydra) = riichienv_to_hydra(&action) {
+            let idx = usize::from(hydra.id());
+            if idx < HYDRA_ACTION_SPACE && by_hydra_id[idx].is_none() {
+                by_hydra_id[idx] = Some(action);
+            }
+        }
+    }
+    by_hydra_id
+}
+
 #[derive(Debug, Clone)]
 pub struct PendingDecision {
     pub obs: [f32; OBS_SIZE],
@@ -70,6 +90,7 @@ pub struct PendingDecision {
     pub player_id: u8,
     pub seat_id: u8,
     pub turn: u32,
+    pub legal_actions: CachedLegalActions,
 }
 
 trait DecisionRecorder {
@@ -338,6 +359,10 @@ impl GameRunner {
             turn: self.total_actions,
         });
     }
+
+    fn cached_action_for_hydra_id(cached: &CachedLegalActions, action_id: u8) -> Option<Action> {
+        cached.by_hydra_id.get(usize::from(action_id)).copied().flatten()
+    }
     pub fn pending_decisions(&mut self) -> Result<Vec<PendingDecision>, StepOutcome> {
         if self.state.is_done {
             return Err(StepOutcome::Complete);
@@ -443,6 +468,57 @@ impl GameRunner {
         }
     }
 
+    pub fn step_with_cached_legal_actions(&mut self, decisions: &[(CachedLegalActions, u8)]) -> StepOutcome {
+        if self.state.is_done {
+            return StepOutcome::Complete;
+        }
+        if self.total_actions >= MAX_STEPS {
+            return StepOutcome::StepLimitExceeded;
+        }
+        self.actions = [None; 4];
+        let mut cursor = 0usize;
+        match self.state.phase {
+            Phase::WaitAct => {
+                let pid = self.state.current_player;
+                let Some((cached, action_id)) = decisions.get(cursor) else {
+                    return StepOutcome::NoLegalAction { player: pid };
+                };
+                if cached.turn != self.total_actions || cached.player_id != pid {
+                    return StepOutcome::NoLegalAction { player: pid };
+                }
+                let Some(chosen) = Self::cached_action_for_hydra_id(cached, *action_id) else {
+                    return StepOutcome::NoLegalAction { player: pid };
+                };
+                self.track_action(pid, &chosen);
+                self.actions[pid as usize] = Some(chosen);
+            }
+            Phase::WaitResponse => {
+                for (cached, action_id) in decisions {
+                    let pid = cached.player_id;
+                    if cached.turn != self.total_actions {
+                        return StepOutcome::NoLegalAction { player: pid };
+                    }
+                    let Some(chosen) = Self::cached_action_for_hydra_id(cached, *action_id) else {
+                        return StepOutcome::NoLegalAction { player: pid };
+                    };
+                    self.track_action(pid, &chosen);
+                    self.actions[pid as usize] = Some(chosen);
+                    cursor += 1;
+                }
+                if cursor == 0 {
+                    return StepOutcome::NoLegalAction { player: self.state.current_player };
+                }
+            }
+        }
+        self.state.step_unchecked(&self.actions);
+        self.total_actions += 1;
+        if self.state.is_done {
+            StepOutcome::Complete
+        } else {
+            StepOutcome::Advanced
+        }
+    }
+
     fn pending_decision_for_player(&mut self, player: u8) -> PendingDecision {
         let (obs, legal_mask) = self.encode_decision(player);
         let legal_count = legal_mask
@@ -457,6 +533,11 @@ impl GameRunner {
             player_id: player,
             seat_id: player,
             turn: self.total_actions,
+            legal_actions: CachedLegalActions {
+                turn: self.total_actions,
+                player_id: player,
+                by_hydra_id: legal_action_map(&self.legal_buf),
+            }
         }
     }
 

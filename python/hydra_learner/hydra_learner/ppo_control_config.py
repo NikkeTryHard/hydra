@@ -15,7 +15,7 @@ RANK_UTILITY = "U_A"
 class PpoControlConfig:
     init_checkpoint: Path
     output_dir: Path
-    steps: int
+    steps: int | None
     games_per_update: int
     seed: int
     device: str
@@ -31,8 +31,10 @@ class PpoControlConfig:
     conv_memory_format: str
     lr: float
     min_lr: float
-    lr_warmup_steps: int
+    lr_warmup_samples: int
+    lr_decay_samples: int | None
     grad_clip_norm: float | None
+    microbatch_size: int
     weight_decay: float
     adam_beta1: float
     adam_beta2: float
@@ -49,13 +51,15 @@ class PpoControlConfig:
     resume: Path | None
     tensorboard_dir: Path | None
     quiet: bool
+    rollout_inference: str
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run production T1 PPO-control self-play training.")
     parser.add_argument("--init-checkpoint", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True, help="output dir")
-    parser.add_argument("--steps", type=int, required=True)
+    parser.add_argument("--steps", type=int)
+    parser.add_argument("--run-forever", action="store_true")
     parser.add_argument("--games-per-update", type=int, default=4)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cuda:0")
@@ -71,8 +75,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--conv-memory-format", required=True)
     parser.add_argument("--lr", type=float, default=2.5e-5)
     parser.add_argument("--min-lr", type=float, default=1.0e-6)
-    parser.add_argument("--lr-warmup-steps", type=int, default=1000)
+    parser.add_argument("--lr-warmup-samples", type=int, default=1_000_000)
+    parser.add_argument("--lr-decay-samples", type=int)
     parser.add_argument("--grad-clip-norm", type=float, default=0.5)
+    parser.add_argument("--microbatch-size", type=int, default=1024)
     parser.add_argument("--weight-decay", type=float, default=1.0e-5)
     parser.add_argument("--adam-beta1", type=float, default=0.9)
     parser.add_argument("--adam-beta2", type=float, default=0.999)
@@ -89,12 +95,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--tensorboard-dir", type=Path)
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--rollout-inference", choices=("torch-callback", "rust-ort"), default="torch-callback")
     return parser.parse_args(argv)
 
 
 def validate_args(args: argparse.Namespace) -> PpoControlConfig:
-    if args.steps < 1:
-        raise ValueError("--steps must be >= 1")
+    if args.run_forever:
+        args.steps = None
+    elif args.steps is None or args.steps < 1:
+        raise ValueError("--steps must be >= 1 unless --run-forever is set")
     if args.games_per_update < 1:
         raise ValueError("--games-per-update must be >= 1")
     if not math.isfinite(args.temperature) or args.temperature <= 0.0:
@@ -103,10 +112,14 @@ def validate_args(args: argparse.Namespace) -> PpoControlConfig:
         raise ValueError("--arena-batch-decisions must be >= 1")
     if args.lr <= 0.0 or args.min_lr < 0.0 or args.min_lr > args.lr:
         raise ValueError("invalid learning-rate bounds")
-    if args.lr_warmup_steps < 0:
-        raise ValueError("--lr-warmup-steps must be >= 0")
+    if args.lr_warmup_samples < 0:
+        raise ValueError("--lr-warmup-samples must be >= 0")
+    if args.lr_decay_samples is not None and args.lr_decay_samples < 1:
+        raise ValueError("--lr-decay-samples must be >= 1")
     if args.grad_clip_norm is not None and args.grad_clip_norm <= 0.0:
         raise ValueError("--grad-clip-norm must be > 0")
+    if args.microbatch_size < 1:
+        raise ValueError("--microbatch-size must be >= 1")
     if args.log_every_steps < 1 or args.checkpoint_every_steps < 1:
         raise ValueError("log/checkpoint cadence must be >= 1")
     if args.backbone_profile != "conv2d_local3":
@@ -132,8 +145,10 @@ def validate_args(args: argparse.Namespace) -> PpoControlConfig:
         conv_memory_format=args.conv_memory_format,
         lr=args.lr,
         min_lr=args.min_lr,
-        lr_warmup_steps=args.lr_warmup_steps,
+        lr_warmup_samples=args.lr_warmup_samples,
+        lr_decay_samples=args.lr_decay_samples,
         grad_clip_norm=args.grad_clip_norm,
+        microbatch_size=args.microbatch_size,
         weight_decay=args.weight_decay,
         adam_beta1=args.adam_beta1,
         adam_beta2=args.adam_beta2,
@@ -150,6 +165,7 @@ def validate_args(args: argparse.Namespace) -> PpoControlConfig:
         resume=args.resume,
         tensorboard_dir=args.tensorboard_dir,
         quiet=args.quiet,
+        rollout_inference=args.rollout_inference,
     )
 
 

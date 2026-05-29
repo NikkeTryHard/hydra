@@ -133,7 +133,7 @@ onnxruntime-gpu = "==1.23.2"
 
 
 [tool.pixi.activation]
-env = { LIBTORCH_USE_PYTORCH = "1", PROTOC = "$CONDA_PREFIX/lib/python3.12/site-packages/torch/bin/protoc", LD_LIBRARY_PATH = "$CONDA_PREFIX/lib/python3.12/site-packages/torch/lib:$CONDA_PREFIX/lib:$LD_LIBRARY_PATH", CUDA_HOME = "$CONDA_PREFIX", CUDA_PATH = "/opt/cuda", RUSTC_WRAPPER = "$PIXI_PROJECT_ROOT/scripts/rustc-wrapper.sh", SCCACHE_DIR = "$PIXI_PROJECT_ROOT/.pixi/sccache" }
+env = { LIBTORCH_USE_PYTORCH = "1", PROTOC = "$CONDA_PREFIX/lib/python3.12/site-packages/torch/bin/protoc", LD_LIBRARY_PATH = "$CONDA_PREFIX/lib/python3.12/site-packages/torch/lib:$CONDA_PREFIX/lib/python3.12/site-packages/onnxruntime/capi:$CONDA_PREFIX/lib/python3.12/site-packages/nvidia/cublas/lib:$CONDA_PREFIX/lib/python3.12/site-packages/nvidia/cuda_runtime/lib:$CONDA_PREFIX/lib/python3.12/site-packages/nvidia/cudnn/lib:$CONDA_PREFIX/lib/python3.12/site-packages/nvidia/cufft/lib:$CONDA_PREFIX/lib/python3.12/site-packages/nvidia/curand/lib:$CONDA_PREFIX/lib/python3.12/site-packages/nvidia/cusparse/lib:$CONDA_PREFIX/lib/python3.12/site-packages/nvidia/nvjitlink/lib:$CONDA_PREFIX/lib:$LD_LIBRARY_PATH", CUDA_HOME = "$CONDA_PREFIX", CUDA_PATH = "/opt/cuda", RUSTC_WRAPPER = "$PIXI_PROJECT_ROOT/scripts/rustc-wrapper.sh", SCCACHE_DIR = "$PIXI_PROJECT_ROOT/.pixi/sccache" }
 
 [tool.pixi.target.linux-64.activation.env]
 CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER = "$CONDA_PREFIX/bin/clang"
@@ -181,7 +181,8 @@ typecheck-python = { cmd = "pyrefly check", description = "Type-check Python lea
 test-rust = { cmd = "scripts/nextest-quiet.sh run --workspace --all-targets --no-default-features --cargo-profile dev --cargo-quiet --no-fail-fast", description = "Default no-heavy Rust tests" }
 test-python = { cmd = "scripts/pytest-quiet.sh python/hydra_learner", description = "Run Python learner tests" }
 test-python-cuda = { cmd = "scripts/pytest-quiet.sh python/hydra_learner -m 'cuda or compile'", description = "Run Python CUDA/compile tests" }
-python-bc-train = { cmd = "pixi run -e py-train python scripts/hydra_pytorch_oracle.py", description = "Run stable Python BC learner; pass args after --" }
+python-bc-train = { cmd = "python scripts/hydra_pytorch_oracle.py", default-environment = "py-train", description = "Run stable Python BC learner; pass args after --" }
+python-ppo-control = { cmd = "python scripts/hydra_pytorch_oracle.py ppo-control", default-environment = "py-train", description = "Run stable Python T1 PPO-control learner; pass args after --" }
 python-bc-train-cu126 = { cmd = "pixi run -e py-train-torch212-cu126 python scripts/hydra_pytorch_oracle.py", description = "Run Torch 2.12 cu126 probe; pass args after --" }
 python-bc-train-nightly = { cmd = "pixi run -e py-train-torch212-nightly-cu128 python scripts/hydra_pytorch_oracle.py", description = "Run Torch 2.12 nightly cu128 probe; pass args after --" }
 torch-check = { cmd = "python -c \"import torch, os; print(torch.__version__); print(torch.version.cuda); print(torch.cuda.is_available()); print(os.path.join(os.path.dirname(torch.__file__), 'lib'))\"", description = "Print default-env PyTorch info" }

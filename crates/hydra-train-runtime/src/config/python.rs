@@ -158,11 +158,17 @@ pub fn python_ppo_control_options_from_config(
                 .to_string(),
         );
     }
-    let steps = config
-        .max_train_steps
-        .or(Some(config.num_epochs))
-        .filter(|steps| *steps > 0)
-        .ok_or_else(|| "max_train_steps or num_epochs must be greater than 0".to_string())?;
+    let steps = if rl.run_forever {
+        None
+    } else {
+        Some(
+            config
+                .max_train_steps
+                .or(Some(config.num_epochs))
+                .filter(|steps| *steps > 0)
+                .ok_or_else(|| "max_train_steps or num_epochs must be greater than 0".to_string())?,
+        )
+    };
     Ok(PythonPpoControlCliOptions {
         init_checkpoint: python_ppo_control_init_checkpoint(config)?,
         output_dir: python_run_dir(config, rl_stage_for_config(config)),
@@ -173,7 +179,8 @@ pub fn python_ppo_control_options_from_config(
         games_per_update: rl.games_per_batch,
         seed: config.seed,
         temperature: rl.temperature,
-        arena_batch_decisions: config.batch_size,
+        arena_batch_decisions: rl.arena_batch_decisions.unwrap_or(config.batch_size),
+        microbatch_size: rl.microbatch_size.unwrap_or(1024),
         arena_threads: config.num_threads.unwrap_or(0),
         hidden: config.python_model_profile.hidden(),
         blocks: config.python_model_profile.blocks(),
@@ -183,13 +190,14 @@ pub fn python_ppo_control_options_from_config(
         backbone_profile: config.python_backbone_profile,
         learning_rate: rl.learning_rate.unwrap_or(config.bc.learning_rate),
         min_learning_rate: config.bc.min_learning_rate,
-        lr_warmup_steps: config.bc.warmup_steps,
+        lr_warmup_samples: rl.lr_warmup_samples.unwrap_or(1_000_000),
+        lr_decay_samples: rl.lr_decay_samples,
         grad_clip_norm: f64::from(config.bc.grad_clip_norm),
         weight_decay: f64::from(config.bc.weight_decay),
         adamw_fused: config.bc.adamw_fused,
         adamw_foreach: config.bc.adamw_foreach,
-        bc_kl_reverse_coef: 0.01,
-        resume: python_resume_checkpoint_for_stage(config, rl_stage_for_config(config))?,
+        bc_kl_reverse_coef: rl.bc_kl_reverse_coef.unwrap_or(0.01),
+        resume: None,
         checkpoint_every_steps: config.checkpoint_every_n_steps,
         log_every_steps: config.log_every_n_steps,
         keep_step_checkpoints: config.keep_step_checkpoints,
@@ -197,6 +205,10 @@ pub fn python_ppo_control_options_from_config(
         launch_tensorboard: config.launch_tensorboard,
         tensorboard_host: config.tensorboard_host.clone(),
         tensorboard_port: config.tensorboard_port,
+        rollout_inference: rl
+            .rollout_inference
+            .clone()
+            .unwrap_or_else(|| "torch-callback".to_owned()),
         background: config.background,
     })
 }

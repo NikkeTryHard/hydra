@@ -21,6 +21,7 @@ from hydra_learner.checkpoint import (
 from hydra_learner.losses import LossWeights
 from hydra_learner.model import ACTION_SPACE, HydraPolicyNet
 from hydra_learner.ppo_control_config import PpoControlConfig
+from hydra_learner.ppo_control_rollout import _batch_to_device, _terminal_gae_from_cpu_values
 from hydra_learner.ppo_rollout import (
     PpoRolloutMetadata,
     append_ppo_metrics_jsonl,
@@ -33,12 +34,44 @@ from hydra_learner.ppo_rollout import (
 from hydra_learner.ppo_smoke import (
     RustDecisionRow,
     RustGameRollout,
+    build_ppo_batch_from_rust_rollout,
     load_rust_game_rollout_json,
     write_ppo_smoke_rollout_artifact,
 )
 from hydra_learner.ppo_step import PpoBatch, PpoTrainStepConfig
 from hydra_learner.reward_shaping import default_reward_shaping_metadata
-from hydra_learner.rl import EntropyController, masked_log_prob
+from hydra_learner.rl import (
+    EntropyController,
+    PlayerDecisionStep,
+    compute_player_local_gae,
+    masked_log_prob,
+)
+
+
+def test_terminal_gae_fast_path_matches_reference() -> None:
+    player_ids = [0, 1, 0, 2, 3, 1, 2, 3, 0, 1]
+    values = torch.tensor([0.2, -0.1, 0.4, 0.05, -0.2, 0.3, 0.1, -0.4, 0.0, 0.25], dtype=torch.float32)
+    spans = [(0, 6, (0, 1, 2, 3)), (6, 10, (2, 0, 3, 1))]
+    actual_adv, actual_returns = _terminal_gae_from_cpu_values(
+        player_ids_cpu=player_ids,
+        value_old_cpu=values,
+        game_spans=spans,
+        device=torch.device("cpu"),
+    )
+    expected_adv = torch.empty_like(values)
+    expected_returns = torch.empty_like(values)
+    for start, end, placements in spans:
+        gae = compute_player_local_gae(
+            [
+                PlayerDecisionStep(player_id=player_ids[index], value_old=float(values[index]))
+                for index in range(start, end)
+            ],
+            final_placements=placements,
+        )
+        expected_adv[start:end] = gae.raw_advantages
+        expected_returns[start:end] = gae.returns
+    torch.testing.assert_close(actual_adv, expected_adv)
+    torch.testing.assert_close(actual_returns, expected_returns)
 
 
 def test_ppo_control_uses_run_local_artifact_layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -72,7 +105,7 @@ def test_ppo_control_uses_run_local_artifact_layout(tmp_path: Path, monkeypatch:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"checkpoint")
 
-    def fake_export(config: Any) -> None:
+    def fake_export(config: Any, **_kwargs: object) -> None:
         seen["policy_dir"] = config.output_dir
         config.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -96,10 +129,10 @@ def test_ppo_control_uses_run_local_artifact_layout(tmp_path: Path, monkeypatch:
     monkeypatch.setattr(ppo_control, "build_optimizer", lambda _model, _optimizer_config: _FakeOptimizer())
     monkeypatch.setattr(ppo_control, "load_checkpoint_init_only", lambda *_args, **_kwargs: _FakeInit())
     monkeypatch.setattr(ppo_control, "_save_t1_checkpoint", fake_save)
-    monkeypatch.setattr(ppo_control, "export_inference", fake_export)
+    monkeypatch.setattr(ppo_control, "export_loaded_policy", fake_export)
     monkeypatch.setattr(ppo_control, "_load_extension", lambda _path: _FakeExtension())
     monkeypatch.setattr(ppo_control, "_collect_native_rollout", fake_collect)
-    monkeypatch.setattr(ppo_control, "_batch_from_native_payload", lambda _payload, _model: batch)
+    monkeypatch.setattr(ppo_control, "_batch_from_native_payload_fast", lambda _payload, _model: batch)
     monkeypatch.setattr(ppo_control, "_batch_to_device", lambda batch, _device: batch)
     monkeypatch.setattr(ppo_control, "ppo_train_step", lambda **_kwargs: _FakeResult())
 
@@ -122,8 +155,10 @@ def test_ppo_control_uses_run_local_artifact_layout(tmp_path: Path, monkeypatch:
         conv_memory_format="contiguous",
         lr=1.0e-3,
         min_lr=0.0,
-        lr_warmup_steps=0,
+        lr_warmup_samples=0,
+        lr_decay_samples=None,
         grad_clip_norm=None,
+        microbatch_size=1,
         weight_decay=0.0,
         adam_beta1=0.9,
         adam_beta2=0.999,
@@ -140,6 +175,7 @@ def test_ppo_control_uses_run_local_artifact_layout(tmp_path: Path, monkeypatch:
         resume=None,
         tensorboard_dir=None,
         quiet=True,
+        rollout_inference="rust-ort",
     )
 
     summary = ppo_control.run_ppo_control(config)
@@ -167,6 +203,132 @@ def test_ppo_control_uses_run_local_artifact_layout(tmp_path: Path, monkeypatch:
     }
     with (run_dir / "summary.json").open(encoding="utf-8") as file:
         assert json.load(file) == summary
+
+
+def test_ppo_control_logs_stage_and_resource_metrics(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run_dir = tmp_path / "campaign" / "stages" / "T1_ppo_control" / "runs" / "run-telemetry"
+    init_checkpoint = tmp_path / "init.pt"
+    init_checkpoint.write_bytes(b"checkpoint")
+
+    class _FakeModel(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.zeros(()))
+
+    class _FakeOptimizer:
+        def __init__(self) -> None:
+            self.param_groups = [{"lr": 0.0}]
+
+    class _FakeInit:
+        global_step = 0
+        samples_seen = 0
+
+    class _FakeResult:
+        def __init__(self) -> None:
+            self.metrics: dict[str, float] = {"loss_total": 0.0}
+            self.entropy_controller: None = None
+
+    batch = PpoBatch(
+        obs=torch.zeros(2, 192, 34),
+        actions=torch.zeros(2, dtype=torch.int64),
+        legal_mask=torch.ones(2, ACTION_SPACE, dtype=torch.bool),
+        old_logprob=torch.zeros(2),
+        value_old=torch.zeros(2),
+        raw_advantages=torch.zeros(2),
+        returns=torch.zeros(2),
+        bc_logits=torch.zeros(2, ACTION_SPACE),
+        legal_count=torch.full((2,), ACTION_SPACE, dtype=torch.int64),
+    )
+
+    monkeypatch.setattr(ppo_control, "_model", lambda _config: _FakeModel())
+    monkeypatch.setattr(ppo_control, "build_optimizer", lambda _model, _optimizer_config: _FakeOptimizer())
+    monkeypatch.setattr(ppo_control, "load_checkpoint_init_only", lambda *_args, **_kwargs: _FakeInit())
+    monkeypatch.setattr(
+        ppo_control, "_save_t1_checkpoint", lambda path, *_args, **_kwargs: path.write_bytes(b"checkpoint")
+    )
+    monkeypatch.setattr(
+        ppo_control,
+        "export_loaded_policy",
+        lambda config, **_kwargs: config.output_dir.mkdir(parents=True, exist_ok=True),
+    )
+    monkeypatch.setattr(ppo_control, "_load_extension", lambda _path: object())
+    monkeypatch.setattr(ppo_control, "_collect_native_rollout", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(ppo_control, "_batch_from_native_payload_fast", lambda _payload, _model: batch)
+    monkeypatch.setattr(ppo_control, "ppo_train_step", lambda **_kwargs: _FakeResult())
+
+    config = PpoControlConfig(
+        init_checkpoint=init_checkpoint,
+        output_dir=run_dir,
+        steps=1,
+        games_per_update=1,
+        seed=7,
+        device="cpu",
+        temperature=1.0,
+        arena_batch_decisions=1,
+        arena_threads=0,
+        extension_path=tmp_path / "libfake.so",
+        hidden=8,
+        blocks=1,
+        bottleneck=4,
+        residual_profile="tiny",
+        backbone_profile="conv2d_local3",
+        conv_memory_format="contiguous",
+        lr=1.0e-3,
+        min_lr=0.0,
+        lr_warmup_samples=0,
+        lr_decay_samples=None,
+        grad_clip_norm=None,
+        microbatch_size=1,
+        weight_decay=0.0,
+        adam_beta1=0.9,
+        adam_beta2=0.999,
+        adam_eps=1.0e-8,
+        adamw_fused="off",
+        adamw_foreach="off",
+        bc_kl_reverse_coef=0.0,
+        entropy_alpha=1.0e-3,
+        entropy_beta=1.0e-2,
+        entropy_alpha_max=0.05,
+        log_every_steps=1,
+        checkpoint_every_steps=1,
+        keep_step_checkpoints=False,
+        resume=None,
+        tensorboard_dir=None,
+        quiet=True,
+        rollout_inference="rust-ort",
+    )
+
+    summary = ppo_control.run_ppo_control(config)
+    with (run_dir / "logs" / "events.jsonl").open(encoding="utf-8") as file:
+        run_start = json.loads(file.readline())
+    with (run_dir / "logs" / "train_steps.jsonl").open(encoding="utf-8") as file:
+        train_step_event = json.loads(file.readline())
+    train_step = {key: value for key, value in train_step_event.items() if key not in {"event", "ts"}}
+    summary_payload = cast("dict[str, Any]", summary["summary"])
+
+    assert "resources/start/gpu_util_percent" in run_start
+    for key in (
+        "checkpoint_save_ms",
+        "onnx_export_ms",
+        "native_rollout_ms",
+        "batch_build_ms",
+        "h2d_ms",
+        "train_step_ms",
+        "resources/update/cpu_percent",
+        "resources/update/disk_read_mb_s",
+        "resources/update/disk_write_mb_s",
+        "resources/update/gpu_util_percent",
+    ):
+        assert key in train_step_event
+    assert summary_payload["last_train_metrics"] == train_step
+
+
+def test_batch_to_device_returns_same_batch_when_already_on_target() -> None:
+    batch = _valid_batch()
+
+    moved = _batch_to_device(batch, torch.device("cpu"))
+
+    assert moved is batch
 
 
 def test_ppo_rollout_artifact_roundtrip_and_batch_conversion(tmp_path: Path) -> None:
@@ -528,6 +690,37 @@ def test_ppo_rollout_smoke_artifact_is_deterministic_for_same_seed_and_model(tmp
 
     for name in ("obs", "actions", "legal_mask", "old_logprob", "value_old", "raw_advantages", "returns", "bc_logits"):
         torch.testing.assert_close(getattr(first, name), getattr(second, name), rtol=0.0, atol=0.0)
+
+
+def test_ppo_rollout_batch_uses_model_device_without_moving_model(tmp_path: Path) -> None:
+    torch.manual_seed(69)
+    model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
+    rollout = _real_rust_rollout_fixture(tmp_path)
+    before_device = next(model.parameters()).device
+
+    batch = build_ppo_batch_from_rust_rollout(rollout, model=model, torch_seed=99, output_device=before_device)
+
+    assert next(model.parameters()).device == before_device
+    assert batch.obs.device == before_device
+    assert batch.old_logprob.device == before_device
+    batch.validate()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for GPU rollout batch path")
+def test_ppo_rollout_batch_accepts_cuda_model_without_cpu_demote(tmp_path: Path) -> None:
+    torch.manual_seed(70)
+    device = torch.device("cuda:0")
+    model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4).to(device)
+    rollout = _real_rust_rollout_fixture(tmp_path)
+    before_device = next(model.parameters()).device
+
+    batch = build_ppo_batch_from_rust_rollout(rollout, model=model, torch_seed=99, output_device=device)
+    torch.cuda.synchronize(device)
+
+    assert next(model.parameters()).device == before_device
+    assert batch.obs.device == device
+    assert batch.old_logprob.device == device
+    batch.validate()
 
 
 @pytest.mark.parametrize(

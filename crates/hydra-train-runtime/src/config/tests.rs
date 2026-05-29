@@ -1071,6 +1071,7 @@ fn python_ppo_control_options_from_config_maps_campaign_root_to_default_ppo_run_
     config.rl = Some(RlTrainConfig::default());
     config.python_backbone_profile = PythonBackboneProfileConfig::Conv2dLocal3;
     config.resume_checkpoint = Some(PathBuf::from("/tmp/bc/checkpoints/latest.pt"));
+    config.rl.as_mut().expect("rl config").microbatch_size = Some(321);
 
     let options = python_ppo_control_options_from_config(&config)
         .expect("PPO control should route to Python");
@@ -1079,6 +1080,7 @@ fn python_ppo_control_options_from_config_maps_campaign_root_to_default_ppo_run_
         options.output_dir,
         PathBuf::from("/tmp/out/stages/T1_ppo_control/runs/latest_run")
     );
+    assert_eq!(options.microbatch_size, 321);
 }
 
 #[test]

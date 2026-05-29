@@ -6,16 +6,17 @@ import math
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import torch
 
 from hydra_learner.arena_eval import _write_json, default_arena_pyo3_library_path
 from hydra_learner.checkpoint import load_checkpoint, load_checkpoint_init_only
-from hydra_learner.export_inference import ExportConfig, export_inference
+from hydra_learner.export_inference import ExportConfig, export_loaded_policy
 from hydra_learner.hydra_logging import JsonlLogger, ScalarEventWriter, add_scalars
 from hydra_learner.losses import LossWeights
 from hydra_learner.optim import build_optimizer, set_optimizer_lr
+from hydra_learner.phase_telemetry import PhaseTelemetry
 from hydra_learner.ppo_control_checkpoint import (
     _model,
     _model_config,
@@ -33,12 +34,13 @@ from hydra_learner.ppo_control_config import (
     validate_args,
 )
 from hydra_learner.ppo_control_rollout import (
-    _batch_from_native_payload,
-    _batch_to_device,
+    _batch_from_native_payload_fast,
+    _collect_callback_rollout,
     _collect_native_rollout,
 )
 from hydra_learner.ppo_step import PpoTrainStepConfig, _validate_json_safe_metrics, ppo_train_step
 from hydra_learner.rl import EntropyController
+from hydra_learner.system_telemetry import resource_delta_metrics, sample_resources, snapshot_metrics
 
 
 def run_ppo_control(config: PpoControlConfig) -> dict[str, object]:
@@ -54,13 +56,23 @@ def run_ppo_control(config: PpoControlConfig) -> dict[str, object]:
     events = JsonlLogger(log_dir / "events.jsonl")
     train_log = JsonlLogger(log_dir / "train_steps.jsonl")
     scalars = ScalarEventWriter(tensorboard_dir)
+    phase_telemetry = PhaseTelemetry(log_dir / "phase_telemetry.jsonl")
+    phase_telemetry.start()
     model_config = _model_config(config)
     optimizer_config = _optimizer_config(config)
     runtime_config = _runtime_config()
     loss_weights = LossWeights()
     config_digest = _config_digest(config)
-    events.write("run_start", {"config": _json_config(config), "config_digest_sha256": config_digest})
-
+    started = time.perf_counter()
+    run_start_resources = sample_resources()
+    events.write(
+        "run_start",
+        {
+            "config": _json_config(config),
+            "config_digest_sha256": config_digest,
+            **snapshot_metrics("resources/start", run_start_resources),
+        },
+    )
     model = _model(config).to(torch.device(config.device))
     optimizer = build_optimizer(model, optimizer_config)
     entropy = EntropyController(
@@ -101,50 +113,77 @@ def run_ppo_control(config: PpoControlConfig) -> dict[str, object]:
                 "samples_seen": init.samples_seen,
             },
         )
-
     extension = _load_extension(config.extension_path or default_arena_pyo3_library_path())
-    started = time.perf_counter()
-    while global_step < config.steps:
-        set_optimizer_lr(optimizer, _lr_for_step(config, global_step))
+    first_update_started_at = None
+    startup_s = 0.0
+    while config.steps is None or global_step < config.steps:
+        if first_update_started_at is None:
+            first_update_started_at = time.perf_counter()
+            startup_s = first_update_started_at - started
+        set_optimizer_lr(optimizer, _lr_for_samples(config, samples_seen))
         rollout_seed = config.seed + completed_games
+        update_resource_start = sample_resources()
         rollout_started = time.perf_counter()
-        current_checkpoint = checkpoint_dir / "current_for_rollout.pt"
-        _save_t1_checkpoint(
-            current_checkpoint,
-            config,
-            model,
-            optimizer,
-            model_config,
-            optimizer_config,
-            runtime_config,
-            loss_weights,
-            global_step,
-            samples_seen,
-            completed_games,
-            config_digest,
-        )
+        checkpoint_save_ms = 0.0
         policy_dir = export_dir / f"onnx_step_{global_step:08d}"
-        export_inference(
-            ExportConfig(current_checkpoint, "raw", policy_dir, None, 8, max(4096, config.arena_batch_decisions), 18)
-        )
-        payload = _collect_native_rollout(extension, config, policy_dir, rollout_seed)
-        batch = _batch_from_native_payload(payload, model)
-        batch = _batch_to_device(batch, torch.device(config.device))
+        stage_started = time.perf_counter()
+        phase_telemetry.set_phase("rollout_export", global_step)
+        if config.rollout_inference == "rust-ort":
+            export_loaded_policy(
+                ExportConfig(None, "raw", policy_dir, None, 8, max(4096, config.arena_batch_decisions), 18),
+                model=model,
+                model_config=model_config,
+                global_step=global_step,
+                samples_seen=samples_seen,
+                torch_version=torch.__version__,
+                source_label=f"ppo_control_live:{config_digest}:{global_step}:{samples_seen}",
+            )
+            onnx_export_ms = (time.perf_counter() - stage_started) * 1000.0
+            stage_started = time.perf_counter()
+            phase_telemetry.set_phase("rollout_collect", global_step)
+            payload = _collect_native_rollout(extension, config, policy_dir, rollout_seed)
+        else:
+            onnx_export_ms = 0.0
+            stage_started = time.perf_counter()
+            phase_telemetry.set_phase("rollout_collect", global_step)
+            payload = _collect_callback_rollout(extension, config, model, rollout_seed)
+        native_rollout_ms = (time.perf_counter() - stage_started) * 1000.0
+        stage_started = time.perf_counter()
+        phase_telemetry.set_phase("batch_build", global_step)
+        batch = _batch_from_native_payload_fast(payload, model)
+        batch_build_ms = (time.perf_counter() - stage_started) * 1000.0
+        h2d_ms = 0.0
+        stage_started = time.perf_counter()
+        phase_telemetry.set_phase("train_step", global_step)
         result = ppo_train_step(
             model=model,
             optimizer=optimizer,
             batch=batch,
             entropy_controller=entropy,
             config=PpoTrainStepConfig(
-                bc_kl_reverse_coef=config.bc_kl_reverse_coef, grad_clip_norm=config.grad_clip_norm
+                bc_kl_reverse_coef=config.bc_kl_reverse_coef,
+                grad_clip_norm=config.grad_clip_norm,
+                microbatch_size=config.microbatch_size,
             ),
         )
+        train_step_ms = (time.perf_counter() - stage_started) * 1000.0
+        phase_telemetry.set_phase("train_sync", global_step)
+        if torch.device(config.device).type == "cuda":
+            torch.cuda.synchronize(torch.device(config.device))
+            train_step_ms = (time.perf_counter() - stage_started) * 1000.0
         entropy = result.entropy_controller
+        native_timing = payload.get("timing")
+        native_timing_metrics = {
+            f"native_timing/{key}": value
+            for key, value in cast("dict[str, object]", native_timing).items()
+            if isinstance(value, int | float)
+        } if isinstance(native_timing, dict) else {}
         global_step += 1
         rows = batch.obs.shape[0]
         samples_seen += rows
         completed_games += config.games_per_update
         elapsed = time.perf_counter() - rollout_started
+        update_resource_end = sample_resources()
         metrics: dict[str, object] = {
             **result.metrics,
             "global_step": global_step,
@@ -156,6 +195,16 @@ def run_ppo_control(config: PpoControlConfig) -> dict[str, object]:
             "rollout_update_ms": elapsed * 1000.0,
             "samples_per_s": rows / elapsed if elapsed > 0.0 else 0.0,
             "lr": optimizer.param_groups[0]["lr"],
+            "checkpoint_save_ms": checkpoint_save_ms,
+            "onnx_export_ms": onnx_export_ms,
+            **native_timing_metrics,
+            "lr_schedule_progress_samples": samples_seen,
+            "native_rollout_ms": native_rollout_ms,
+            "batch_build_ms": batch_build_ms,
+            "h2d_ms": h2d_ms,
+            "train_step_ms": train_step_ms,
+            "startup_s": startup_s,
+            **resource_delta_metrics("resources/update", update_resource_start, update_resource_end),
         }
         _validate_json_safe_metrics(metrics)
         if global_step % config.log_every_steps == 0:
@@ -192,6 +241,7 @@ def run_ppo_control(config: PpoControlConfig) -> dict[str, object]:
                     completed_games,
                     config_digest,
                 )
+        last_metrics = metrics
     total_s = time.perf_counter() - started
     summary: dict[str, object] = {
         "objective": OBJECTIVE,
@@ -199,7 +249,10 @@ def run_ppo_control(config: PpoControlConfig) -> dict[str, object]:
         "samples_seen": samples_seen,
         "completed_games": completed_games,
         "checkpoint_path": str(checkpoint_dir / "latest.pt"),
-        "summary": {"samples_per_s": samples_seen / total_s if total_s > 0.0 else 0.0},
+        "summary": {
+            "samples_per_s": samples_seen / total_s if total_s > 0.0 else 0.0,
+            "last_train_metrics": last_metrics,
+        },
         "config_digest_sha256": config_digest,
         "paths": {
             "run_dir": str(config.output_dir),
@@ -216,6 +269,8 @@ def run_ppo_control(config: PpoControlConfig) -> dict[str, object]:
     _write_json(config.output_dir / "launch_metadata.json", {"config": _json_config(config), **summary})
     events.write("run_complete", summary)
     events.close()
+    phase_telemetry.set_phase("shutdown", global_step)
+    phase_telemetry.close()
     train_log.close()
     scalars.close()
     if not config.quiet:
@@ -223,12 +278,15 @@ def run_ppo_control(config: PpoControlConfig) -> dict[str, object]:
     return summary
 
 
-def _lr_for_step(config: PpoControlConfig, step: int) -> float:
-    if config.lr_warmup_steps > 0 and step < config.lr_warmup_steps:
-        return config.lr * (step / config.lr_warmup_steps)
-    decay_steps = max(1, config.steps - config.lr_warmup_steps)
-    decay_index = min(max(0, step - config.lr_warmup_steps), decay_steps)
-    cosine = 0.5 * (1.0 + math.cos(math.pi * decay_index / decay_steps))
+def _lr_for_samples(config: PpoControlConfig, samples_seen: int) -> float:
+    if config.lr_warmup_samples > 0 and samples_seen < config.lr_warmup_samples:
+        warmup_fraction = samples_seen / config.lr_warmup_samples
+        return max(config.min_lr, config.lr * warmup_fraction)
+    if config.lr_decay_samples is None:
+        return config.lr
+    decay_samples = max(1, config.lr_decay_samples - config.lr_warmup_samples)
+    decay_index = min(max(0, samples_seen - config.lr_warmup_samples), decay_samples)
+    cosine = 0.5 * (1.0 + math.cos(math.pi * decay_index / decay_samples))
     return config.min_lr + (config.lr - config.min_lr) * cosine
 
 

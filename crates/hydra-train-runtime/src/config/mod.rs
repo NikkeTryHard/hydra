@@ -414,6 +414,18 @@ pub struct RlTrainConfig {
     pub aux_weight: Option<f32>,
     #[serde(default)]
     pub microbatch_size: Option<usize>,
+    #[serde(default)]
+    pub run_forever: bool,
+    #[serde(default)]
+    pub rollout_inference: Option<String>,
+    #[serde(default)]
+    pub bc_kl_reverse_coef: Option<f64>,
+    #[serde(default)]
+    pub lr_warmup_samples: Option<usize>,
+    #[serde(default)]
+    pub lr_decay_samples: Option<usize>,
+    #[serde(default)]
+    pub arena_batch_decisions: Option<usize>,
 }
 
 impl Default for RlTrainConfig {
@@ -426,8 +438,14 @@ impl Default for RlTrainConfig {
             exit_weight: None,
             aux_weight: None,
             microbatch_size: None,
+            run_forever: false,
+            lr_warmup_samples: None,
+            lr_decay_samples: None,
+            rollout_inference: None,
+            bc_kl_reverse_coef: None,
+            arena_batch_decisions: None,
         }
-    }
+}
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -592,11 +610,12 @@ pub struct PythonPpoControlCliOptions {
     pub stage: Option<String>,
     pub run_name: Option<String>,
     pub device: String,
-    pub steps: usize,
+    pub steps: Option<usize>,
     pub games_per_update: usize,
     pub seed: u64,
     pub temperature: f32,
     pub arena_batch_decisions: usize,
+    pub microbatch_size: usize,
     pub arena_threads: usize,
     pub hidden: usize,
     pub blocks: usize,
@@ -606,7 +625,8 @@ pub struct PythonPpoControlCliOptions {
     pub backbone_profile: PythonBackboneProfileConfig,
     pub learning_rate: f64,
     pub min_learning_rate: f64,
-    pub lr_warmup_steps: usize,
+    pub lr_warmup_samples: usize,
+    pub lr_decay_samples: Option<usize>,
     pub grad_clip_norm: f64,
     pub weight_decay: f64,
     pub adamw_fused: PythonAdamwFlagConfig,
@@ -620,6 +640,7 @@ pub struct PythonPpoControlCliOptions {
     pub launch_tensorboard: bool,
     pub tensorboard_host: String,
     pub tensorboard_port: u16,
+    pub rollout_inference: String,
     pub background: bool,
 }
 

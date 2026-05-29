@@ -21,3 +21,4 @@ riichienv-core = { path = "../hydra-engine", package = "hydra-engine" }
 rand = "0.9"
 rayon = "1.10"
 pyo3 = { version = "0.28.3", features = ["extension-module"] }
+bytemuck = "1.21"

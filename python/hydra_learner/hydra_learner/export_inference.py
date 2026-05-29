@@ -36,14 +36,13 @@ WeightSource = Literal["raw", "ema"]
 
 @dataclass(frozen=True)
 class ExportConfig:
-    checkpoint: Path
+    checkpoint: Path | None
     weight_source: WeightSource
     output_dir: Path
     fixture_obs: Path | None
     num_fixture_rows: int
     max_batch: int
     opset_version: int
-
 
 @dataclass(frozen=True)
 class ExportResult:
@@ -137,25 +136,29 @@ def write_exported_policy(
     init: Any,
     model_config: ModelConfig,
     checkpoint: dict[str, Any],
+    source_label: str | None = None,
+    source_sha256: str | None = None,
 ) -> ExportResult:
     _reject_drda_checkpoint_export(checkpoint)
     config.output_dir.mkdir(parents=True, exist_ok=True)
     artifact_path = config.output_dir / ARTIFACT_NAME
     metadata_path = config.output_dir / METADATA_NAME
     fixture_path = config.output_dir / FIXTURE_NAME
-    source_hash = _sha256_file(config.checkpoint)
+    source_hash = "" if config.checkpoint is None else _sha256_file(config.checkpoint)
+    export_obs = obs.to(next(policy.parameters()).device)
     with torch.inference_mode():
-        expected = policy(obs).detach().cpu().contiguous()
-    _export_onnx(policy, obs, artifact_path, config)
+        expected = policy(export_obs).detach().cpu().contiguous()
+    _export_onnx(policy, export_obs, artifact_path, config)
     artifact_hash = _sha256_file(artifact_path)
     metadata = _metadata(
         checkpoint=checkpoint,
         checkpoint_path=config.checkpoint,
-        checkpoint_sha256=source_hash,
+        checkpoint_sha256=source_sha256 or source_hash,
         artifact_sha256=artifact_hash,
         init=init,
         model_config=model_config,
         config=config,
+        source_label=source_label,
     )
     metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     save_file(
@@ -167,14 +170,47 @@ def write_exported_policy(
         artifact_path=artifact_path,
         metadata_path=metadata_path,
         fixture_path=fixture_path,
-        source_checkpoint_sha256=source_hash,
+        source_checkpoint_sha256=source_sha256 or source_hash,
         global_step=init.global_step,
         samples_seen=init.samples_seen,
         weight_source=init.weight_source,
     )
 
 
+def export_loaded_policy(
+    config: ExportConfig,
+    *,
+    model: HydraPolicyNet,
+    model_config: ModelConfig,
+    global_step: int,
+    samples_seen: int,
+    torch_version: str | None,
+    source_label: str,
+) -> ExportResult:
+    _validate_supported_model_config(model_config)
+    was_training = model.training
+    model.eval()
+    obs = _fixture_obs(config.fixture_obs, config.num_fixture_rows)
+    checkpoint = {"torch_version": torch_version}
+    init = _ExportInit(global_step=global_step, samples_seen=samples_seen, weight_source=config.weight_source)
+    try:
+        return write_exported_policy(
+            config,
+            policy=PolicyOnly(model).eval(),
+            obs=obs,
+            init=init,
+            model_config=model_config,
+            checkpoint=checkpoint,
+            source_label=source_label,
+            source_sha256=hashlib.sha256(source_label.encode()).hexdigest(),
+        )
+    finally:
+        model.train(was_training)
+
+
 def export_inference(config: ExportConfig) -> ExportResult:
+    if config.checkpoint is None:
+        raise ValueError("checkpoint export requires a checkpoint path")
     policy, obs, init, model_config, checkpoint = load_export_policy(config)
     return write_exported_policy(
         config,
@@ -219,13 +255,11 @@ def _export_onnx(policy: PolicyOnly, obs: torch.Tensor, artifact_path: Path, con
                 dynamic_shapes={"obs": {0: batch_dim}},
                 opset_version=config.opset_version,
                 external_data=False,
-                optimize=True,
+                optimize=False,
                 verify=False,
             )
     except ModuleNotFoundError as exc:
         raise ValueError("ONNX export requires onnx and onnxscript Python packages") from exc
-
-
 def _ensure_onnxscript_torch_api_alias() -> None:
     try:
         import onnxscript._framework_apis.torch_2_9 as torch_2_9  # noqa: PLC0415 -- optional exporter compatibility shim.
@@ -273,17 +307,18 @@ def _validate_supported_model_config(config: ModelConfig) -> None:
 def _metadata(
     *,
     checkpoint: dict[str, Any],
-    checkpoint_path: Path,
+    checkpoint_path: Path | None,
     checkpoint_sha256: str,
     artifact_sha256: str,
     init: Any,
     model_config: ModelConfig,
     config: ExportConfig,
+    source_label: str | None = None,
 ) -> dict[str, Any]:
     return {
         "schema_version": EXPORT_SCHEMA_VERSION,
         "format": "onnx",
-        "source_checkpoint_path": str(checkpoint_path),
+        "source_checkpoint_path": str(checkpoint_path) if checkpoint_path is not None else source_label,
         "source_checkpoint_sha256": checkpoint_sha256,
         "checkpoint_schema_version": CHECKPOINT_SCHEMA_VERSION,
         "checkpoint_global_step": init.global_step,
@@ -309,6 +344,13 @@ def _metadata(
         },
         "torch_version": checkpoint.get("torch_version"),
     }
+
+
+@dataclass(frozen=True)
+class _ExportInit:
+    global_step: int
+    samples_seen: int
+    weight_source: WeightSource
 
 
 def _fixture_obs(path: Path | None, num_rows: int) -> torch.Tensor:
