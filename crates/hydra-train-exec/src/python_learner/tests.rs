@@ -144,7 +144,14 @@ fn command_preserves_paths_and_compile_default_args() {
     );
     assert_eq!(
         command.args[0..6],
-        ["run", "--frozen", "-e", "py-train", "python", PYTHON_LEARNER_SCRIPT]
+        [
+            "run",
+            "--frozen",
+            "-e",
+            "py-train",
+            "python",
+            PYTHON_LEARNER_SCRIPT
+        ]
     );
     assert!(
         command

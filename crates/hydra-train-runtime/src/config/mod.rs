@@ -445,7 +445,7 @@ impl Default for RlTrainConfig {
             bc_kl_reverse_coef: None,
             arena_batch_decisions: None,
         }
-}
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

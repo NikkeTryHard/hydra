@@ -35,10 +35,13 @@ from hydra_learner.ppo_control_config import (
 )
 from hydra_learner.ppo_control_rollout import (
     _batch_from_native_payload_fast,
+    _batch_to_device,
     _collect_callback_rollout,
     _collect_native_rollout,
 )
 from hydra_learner.ppo_step import PpoTrainStepConfig, _validate_json_safe_metrics, ppo_train_step
+
+_BATCH_TO_DEVICE_FOR_TESTS = _batch_to_device
 from hydra_learner.rl import EntropyController
 from hydra_learner.system_telemetry import resource_delta_metrics, sample_resources, snapshot_metrics
 
@@ -116,6 +119,7 @@ def run_ppo_control(config: PpoControlConfig) -> dict[str, object]:
     extension = _load_extension(config.extension_path or default_arena_pyo3_library_path())
     first_update_started_at = None
     startup_s = 0.0
+    last_metrics: dict[str, object] = {}
     while config.steps is None or global_step < config.steps:
         if first_update_started_at is None:
             first_update_started_at = time.perf_counter()
@@ -173,11 +177,15 @@ def run_ppo_control(config: PpoControlConfig) -> dict[str, object]:
             train_step_ms = (time.perf_counter() - stage_started) * 1000.0
         entropy = result.entropy_controller
         native_timing = payload.get("timing")
-        native_timing_metrics = {
-            f"native_timing/{key}": value
-            for key, value in cast("dict[str, object]", native_timing).items()
-            if isinstance(value, int | float)
-        } if isinstance(native_timing, dict) else {}
+        native_timing_metrics = (
+            {
+                f"native_timing/{key}": value
+                for key, value in cast("dict[str, object]", native_timing).items()
+                if isinstance(value, int | float)
+            }
+            if isinstance(native_timing, dict)
+            else {}
+        )
         global_step += 1
         rows = batch.obs.shape[0]
         samples_seen += rows

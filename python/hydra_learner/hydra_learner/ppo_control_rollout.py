@@ -153,7 +153,10 @@ def _batch_from_native_binary_payload(payload: Mapping[str, object], model: Hydr
         raise TypeError("native rollout obs_f32_le must be bytes")
     if not isinstance(legal_raw, bytes | bytearray | memoryview):
         raise TypeError("native rollout legal_mask_u8 must be bytes")
-    row_count = int(payload.get("row_count"))
+    row_count_raw = payload.get("row_count")
+    if not isinstance(row_count_raw, int):
+        raise TypeError("native rollout row_count must be an int")
+    row_count = row_count_raw
     if row_count < 1:
         raise ValueError("native rollout row_count must be positive")
     pin_memory = torch.cuda.is_available()
@@ -231,8 +234,8 @@ def _batch_from_native_binary_payload(payload: Mapping[str, object], model: Hydr
         if len(starts) != len(terminals) or len(ends) != len(terminals) or len(placements) != len(terminals) * 4:
             raise ValueError("native rollout span fields must match games length")
         for idx in range(len(starts)):
-            start = int(starts[idx])
-            end = int(ends[idx])
+            start = starts[idx]
+            end = ends[idx]
             if end <= start or end > row_count:
                 raise ValueError("native rollout invalid game span")
             placement_offset = idx * 4
@@ -385,9 +388,7 @@ def _terminal_gae_from_cpu_values(
                     continue
                 value = float(values[local_index])
                 delta = (
-                    (reward if not has_next else 0.0)
-                    + (DEFAULT_GAE_GAMMA * next_value if has_next else 0.0)
-                    - value
+                    (reward if not has_next else 0.0) + (DEFAULT_GAE_GAMMA * next_value if has_next else 0.0) - value
                 )
                 running = delta + (discount * running if has_next else 0.0)
                 index = start + local_index

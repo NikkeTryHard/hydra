@@ -1,6 +1,5 @@
 //! Native PPO rollout collection for Python PPO control.
 
-
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -13,9 +12,8 @@ use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyByteArray, PyBytes, PyDict, PyList};
-use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
-
+use rand::{Rng, SeedableRng};
 
 use crate::{PLAYER_COUNT, duration_ms, normalize_worker_threads};
 use rayon::prelude::*;
@@ -104,7 +102,11 @@ struct RolloutPolicyOutput {
 }
 
 trait RolloutPolicyInfer {
-    fn logits_batch(&mut self, requests: &[RolloutRequest], timing: &mut RolloutTiming) -> PyResult<RolloutPolicyOutput>;
+    fn logits_batch(
+        &mut self,
+        requests: &[RolloutRequest],
+        timing: &mut RolloutTiming,
+    ) -> PyResult<RolloutPolicyOutput>;
 }
 
 struct OnnxRolloutPolicy<'a> {
@@ -112,7 +114,11 @@ struct OnnxRolloutPolicy<'a> {
 }
 
 impl RolloutPolicyInfer for OnnxRolloutPolicy<'_> {
-    fn logits_batch(&mut self, requests: &[RolloutRequest], timing: &mut RolloutTiming) -> PyResult<RolloutPolicyOutput> {
+    fn logits_batch(
+        &mut self,
+        requests: &[RolloutRequest],
+        timing: &mut RolloutTiming,
+    ) -> PyResult<RolloutPolicyOutput> {
         let gather_start = Instant::now();
         let mut obs = Vec::with_capacity(requests.len() * OBS_SIZE);
         for request in requests {
@@ -125,7 +131,10 @@ impl RolloutPolicyInfer for OnnxRolloutPolicy<'_> {
             .policy_logits_batch(&obs)
             .map_err(|err| PyValueError::new_err(err.to_string()))?;
         timing.callback_python += python_start.elapsed();
-        Ok(RolloutPolicyOutput { logits, values: None })
+        Ok(RolloutPolicyOutput {
+            logits,
+            values: None,
+        })
     }
 }
 
@@ -135,7 +144,11 @@ struct CallbackRolloutPolicy<'py> {
 }
 
 impl RolloutPolicyInfer for CallbackRolloutPolicy<'_> {
-    fn logits_batch(&mut self, requests: &[RolloutRequest], timing: &mut RolloutTiming) -> PyResult<RolloutPolicyOutput> {
+    fn logits_batch(
+        &mut self,
+        requests: &[RolloutRequest],
+        timing: &mut RolloutTiming,
+    ) -> PyResult<RolloutPolicyOutput> {
         let gather_start = Instant::now();
         let mut obs = Vec::with_capacity(requests.len() * OBS_SIZE);
         for request in requests {
@@ -155,53 +168,60 @@ impl RolloutPolicyInfer for CallbackRolloutPolicy<'_> {
     }
 }
 fn parse_policy_output(raw: Bound<'_, PyAny>, rows: usize) -> PyResult<RolloutPolicyOutput> {
-    if let Ok(buffer) = PyBuffer::<f32>::get(&raw) {
-        if let Some(values) = buffer.as_slice(raw.py()) {
-            let expected_with_values = rows * (HYDRA_ACTION_SPACE + 1);
-            if values.len() == expected_with_values {
-                let mut logits = Vec::with_capacity(rows);
-                let mut value_old = Vec::with_capacity(rows);
-                for row_idx in 0..rows {
-                    let offset = row_idx * (HYDRA_ACTION_SPACE + 1);
-                    let mut row_logits = [0.0f32; HYDRA_ACTION_SPACE];
-                    for action_idx in 0..HYDRA_ACTION_SPACE {
-                        row_logits[action_idx] = values[offset + action_idx].get();
-                    }
-                    logits.push(row_logits);
-                    value_old.push(values[offset + HYDRA_ACTION_SPACE].get());
+    if let Ok(buffer) = PyBuffer::<f32>::get(&raw)
+        && let Some(values) = buffer.as_slice(raw.py())
+    {
+        let expected_with_values = rows * (HYDRA_ACTION_SPACE + 1);
+        if values.len() == expected_with_values {
+            let mut logits = Vec::with_capacity(rows);
+            let mut value_old = Vec::with_capacity(rows);
+            for row_idx in 0..rows {
+                let offset = row_idx * (HYDRA_ACTION_SPACE + 1);
+                let mut row_logits = [0.0f32; HYDRA_ACTION_SPACE];
+                for action_idx in 0..HYDRA_ACTION_SPACE {
+                    row_logits[action_idx] = values[offset + action_idx].get();
                 }
-                return Ok(RolloutPolicyOutput { logits, values: Some(value_old) });
+                logits.push(row_logits);
+                value_old.push(values[offset + HYDRA_ACTION_SPACE].get());
             }
-            let expected_logits = rows * HYDRA_ACTION_SPACE;
-            if values.len() == expected_logits {
-                let mut logits = Vec::with_capacity(rows);
-                for row_idx in 0..rows {
-                    let offset = row_idx * HYDRA_ACTION_SPACE;
-                    let mut row_logits = [0.0f32; HYDRA_ACTION_SPACE];
-                    for action_idx in 0..HYDRA_ACTION_SPACE {
-                        row_logits[action_idx] = values[offset + action_idx].get();
-                    }
-                    logits.push(row_logits);
+            return Ok(RolloutPolicyOutput {
+                logits,
+                values: Some(value_old),
+            });
+        }
+        let expected_logits = rows * HYDRA_ACTION_SPACE;
+        if values.len() == expected_logits {
+            let mut logits = Vec::with_capacity(rows);
+            for row_idx in 0..rows {
+                let offset = row_idx * HYDRA_ACTION_SPACE;
+                let mut row_logits = [0.0f32; HYDRA_ACTION_SPACE];
+                for action_idx in 0..HYDRA_ACTION_SPACE {
+                    row_logits[action_idx] = values[offset + action_idx].get();
                 }
-                return Ok(RolloutPolicyOutput { logits, values: None });
+                logits.push(row_logits);
             }
+            return Ok(RolloutPolicyOutput {
+                logits,
+                values: None,
+            });
         }
     }
-    if let Ok(torch) = raw.py().import("torch") {
-        if let Ok(tensor_type) = torch.getattr("Tensor") {
-            if raw.is_instance(&tensor_type)? {
-                let cpu = raw.call_method1("to", ("cpu",))?;
-                let contiguous = cpu.call_method0("contiguous")?;
-                let raw_bytes = contiguous.call_method0("numpy")?.call_method0("tobytes")?;
-                return parse_policy_output(raw_bytes, rows);
-            }
-        }
+    if let Ok(torch) = raw.py().import("torch")
+        && let Ok(tensor_type) = torch.getattr("Tensor")
+        && raw.is_instance(&tensor_type)?
+    {
+        let cpu = raw.call_method1("to", ("cpu",))?;
+        let contiguous = cpu.call_method0("contiguous")?;
+        let raw_bytes = contiguous.call_method0("numpy")?.call_method0("tobytes")?;
+        return parse_policy_output(raw_bytes, rows);
     }
     if let Ok(bytes) = raw.extract::<&[u8]>() {
         let expected_with_values = rows * (HYDRA_ACTION_SPACE + 1) * std::mem::size_of::<f32>();
         if bytes.len() == expected_with_values {
             let values = bytemuck::try_cast_slice::<u8, f32>(bytes).map_err(|err| {
-                PyValueError::new_err(format!("PPO inference callback output must be f32 bytes: {err}"))
+                PyValueError::new_err(format!(
+                    "PPO inference callback output must be f32 bytes: {err}"
+                ))
             })?;
             let mut logits = Vec::with_capacity(rows);
             let mut value_old = Vec::with_capacity(rows);
@@ -211,11 +231,17 @@ fn parse_policy_output(raw: Bound<'_, PyAny>, rows: usize) -> PyResult<RolloutPo
                 logits.push(row_logits);
                 value_old.push(row[HYDRA_ACTION_SPACE]);
             }
-            return Ok(RolloutPolicyOutput { logits, values: Some(value_old) });
+            return Ok(RolloutPolicyOutput {
+                logits,
+                values: Some(value_old),
+            });
         }
     }
     let logits = parse_logits(raw, rows)?;
-    Ok(RolloutPolicyOutput { logits, values: None })
+    Ok(RolloutPolicyOutput {
+        logits,
+        values: None,
+    })
 }
 
 fn parse_logits(raw: Bound<'_, PyAny>, rows: usize) -> PyResult<Vec<[f32; HYDRA_ACTION_SPACE]>> {
@@ -228,7 +254,9 @@ fn parse_logits(raw: Bound<'_, PyAny>, rows: usize) -> PyResult<Vec<[f32; HYDRA_
             )));
         }
         let values = bytemuck::try_cast_slice::<u8, f32>(bytes).map_err(|err| {
-            PyValueError::new_err(format!("PPO inference callback logits must be f32 bytes: {err}"))
+            PyValueError::new_err(format!(
+                "PPO inference callback logits must be f32 bytes: {err}"
+            ))
         })?;
         let mut out = Vec::with_capacity(rows);
         for row in values.chunks_exact(HYDRA_ACTION_SPACE) {
@@ -260,7 +288,6 @@ fn parse_logits(raw: Bound<'_, PyAny>, rows: usize) -> PyResult<Vec<[f32; HYDRA_
     }
     Ok(out)
 }
-
 
 #[allow(
     clippy::too_many_arguments,
@@ -406,7 +433,9 @@ fn collect_ppo_rollouts_native_inner<'py>(
             .collect::<Vec<_>>();
         timing.action_alloc += action_alloc_start.elapsed();
         let action_sample_start = Instant::now();
-        for (request_idx, (request, scores)) in requests.iter().zip(policy_output.logits.iter()).enumerate() {
+        for (request_idx, (request, scores)) in
+            requests.iter().zip(policy_output.logits.iter()).enumerate()
+        {
             let (action, old_logprob) = sample_action_and_logprob(
                 scores,
                 &request.decision.legal_mask,
@@ -426,7 +455,10 @@ fn collect_ppo_rollouts_native_inner<'py>(
                 seat_id: request.decision.seat_id,
                 turn: request.decision.turn,
                 old_logits: Some(*scores),
-                value_old: policy_output.values.as_ref().map(|values| values[request_idx]),
+                value_old: policy_output
+                    .values
+                    .as_ref()
+                    .map(|values| values[request_idx]),
                 old_logprob: Some(old_logprob),
             });
         }
@@ -447,16 +479,24 @@ fn collect_ppo_rollouts_native_inner<'py>(
         .saturating_sub(timing.pending + timing.infer + timing.sample + timing.step);
 
     let sort_start = Instant::now();
-    let mut rows_by_game = (0..games).map(|_| None).collect::<Vec<Option<Vec<RolloutRow>>>>();
-    let mut terminals_by_game = (0..games).map(|_| None).collect::<Vec<Option<RolloutTerminal>>>();
+    let mut rows_by_game = (0..games)
+        .map(|_| None)
+        .collect::<Vec<Option<Vec<RolloutRow>>>>();
+    let mut terminals_by_game = (0..games)
+        .map(|_| None)
+        .collect::<Vec<Option<RolloutTerminal>>>();
     for shard in shards {
         for completed in shard.completed_games {
             let game_idx = completed.terminal.game_id as usize;
             if game_idx >= games {
-                return Err(PyRuntimeError::new_err("native rollout completed game_id out of range"));
+                return Err(PyRuntimeError::new_err(
+                    "native rollout completed game_id out of range",
+                ));
             }
             if rows_by_game[game_idx].is_some() {
-                return Err(PyRuntimeError::new_err("native rollout duplicate completed game"));
+                return Err(PyRuntimeError::new_err(
+                    "native rollout duplicate completed game",
+                ));
             }
             rows_by_game[game_idx] = Some(completed.rows);
             terminals_by_game[game_idx] = Some(completed.terminal);
@@ -501,7 +541,10 @@ fn collect_ppo_rollouts_native_inner<'py>(
     py_timing.set_item("callback_python_ms", duration_ms(timing.callback_python))?;
     py_timing.set_item("callback_parse_ms", duration_ms(timing.callback_parse))?;
     py_timing.set_item("action_alloc_ms", duration_ms(timing.action_alloc))?;
-    py_timing.set_item("action_sample_store_ms", duration_ms(timing.action_sample_store))?;
+    py_timing.set_item(
+        "action_sample_store_ms",
+        duration_ms(timing.action_sample_store),
+    )?;
     py_timing.set_item("action_apply_ms", duration_ms(timing.action_apply))?;
     py_timing.set_item("infer_ms", duration_ms(timing.infer))?;
     py_timing.set_item("sample_ms", duration_ms(timing.sample))?;
@@ -528,12 +571,16 @@ fn collect_ppo_rollouts_native_inner<'py>(
     let mut game_row_starts = vec![0u8; games * std::mem::size_of::<u64>()];
     let mut game_row_ends = vec![0u8; games * std::mem::size_of::<u64>()];
     let mut placements_bytes = vec![0u8; games * PLAYER_COUNT];
-    for (game_idx, ((start, end), terminal)) in game_spans.iter().zip(terminals.iter()).enumerate() {
+    for (game_idx, ((start, end), terminal)) in game_spans.iter().zip(terminals.iter()).enumerate()
+    {
         let offset = game_idx * std::mem::size_of::<u64>();
-        game_row_starts[offset..offset + std::mem::size_of::<u64>()].copy_from_slice(&(*start as u64).to_ne_bytes());
-        game_row_ends[offset..offset + std::mem::size_of::<u64>()].copy_from_slice(&(*end as u64).to_ne_bytes());
+        game_row_starts[offset..offset + std::mem::size_of::<u64>()]
+            .copy_from_slice(&(*start as u64).to_ne_bytes());
+        game_row_ends[offset..offset + std::mem::size_of::<u64>()]
+            .copy_from_slice(&(*end as u64).to_ne_bytes());
         let placement_offset = game_idx * PLAYER_COUNT;
-        placements_bytes[placement_offset..placement_offset + PLAYER_COUNT].copy_from_slice(&terminal.placements);
+        placements_bytes[placement_offset..placement_offset + PLAYER_COUNT]
+            .copy_from_slice(&terminal.placements);
     }
     let cached_policy_scalars = row_refs
         .iter()
@@ -544,12 +591,34 @@ fn collect_ppo_rollouts_native_inner<'py>(
     } else {
         Vec::new()
     };
-    let mut value_old_values = if cached_policy_scalars { vec![0.0f32; row_count] } else { Vec::new() };
-    let mut old_logprob_values = if cached_policy_scalars { vec![0.0f32; row_count] } else { Vec::new() };
-    let mut raw_advantage_values = if cached_policy_scalars { vec![0.0f32; row_count] } else { Vec::new() };
-    let mut return_values = if cached_policy_scalars { vec![0.0f32; row_count] } else { Vec::new() };
+    let mut value_old_values = if cached_policy_scalars {
+        vec![0.0f32; row_count]
+    } else {
+        Vec::new()
+    };
+    let mut old_logprob_values = if cached_policy_scalars {
+        vec![0.0f32; row_count]
+    } else {
+        Vec::new()
+    };
+    let mut raw_advantage_values = if cached_policy_scalars {
+        vec![0.0f32; row_count]
+    } else {
+        Vec::new()
+    };
+    let mut return_values = if cached_policy_scalars {
+        vec![0.0f32; row_count]
+    } else {
+        Vec::new()
+    };
     if cached_policy_scalars {
-        fill_terminal_gae_by_game(&rows_by_game, &terminals, &game_spans, &mut raw_advantage_values, &mut return_values)?;
+        fill_terminal_gae_by_game(
+            &rows_by_game,
+            &terminals,
+            &game_spans,
+            &mut raw_advantage_values,
+            &mut return_values,
+        )?;
     }
     obs_values
         .par_chunks_mut(OBS_SIZE)
@@ -561,18 +630,32 @@ fn collect_ppo_rollouts_native_inner<'py>(
         .zip(game_ids.par_chunks_mut(std::mem::size_of::<u64>()))
         .zip(turns.par_chunks_mut(std::mem::size_of::<u32>()))
         .zip(row_refs.par_iter())
-        .for_each(|((((((((obs_out, legal_out), action_out), legal_count_out), player_id_out), seat_id_out), game_id_out), turn_out), &row)| {
-            obs_out.copy_from_slice(&row.obs);
-            for (dst, &legal) in legal_out.iter_mut().zip(row.legal_mask.iter()) {
-                *dst = u8::from(legal);
-            }
-            *action_out = row.action;
-            *legal_count_out = row.legal_count;
-            *player_id_out = row.player_id;
-            *seat_id_out = row.seat_id;
-            game_id_out.copy_from_slice(&row.game_id.to_ne_bytes());
-            turn_out.copy_from_slice(&row.turn.to_ne_bytes());
-        });
+        .for_each(
+            |(
+                (
+                    (
+                        (
+                            ((((obs_out, legal_out), action_out), legal_count_out), player_id_out),
+                            seat_id_out,
+                        ),
+                        game_id_out,
+                    ),
+                    turn_out,
+                ),
+                &row,
+            )| {
+                obs_out.copy_from_slice(&row.obs);
+                for (dst, &legal) in legal_out.iter_mut().zip(row.legal_mask.iter()) {
+                    *dst = u8::from(legal);
+                }
+                *action_out = row.action;
+                *legal_count_out = row.legal_count;
+                *player_id_out = row.player_id;
+                *seat_id_out = row.seat_id;
+                game_id_out.copy_from_slice(&row.game_id.to_ne_bytes());
+                turn_out.copy_from_slice(&row.turn.to_ne_bytes());
+            },
+        );
     if cached_policy_scalars {
         value_old_values
             .par_iter_mut()
@@ -591,7 +674,10 @@ fn collect_ppo_rollouts_native_inner<'py>(
                 logits_out.copy_from_slice(&row.old_logits.expect("checked cached logits"));
             });
     }
-    result.set_item("obs_f32_le", PyBytes::new(py, bytemuck::cast_slice(&obs_values)))?;
+    result.set_item(
+        "obs_f32_le",
+        PyBytes::new(py, bytemuck::cast_slice(&obs_values)),
+    )?;
     result.set_item("legal_mask_u8", PyBytes::new(py, &legal_bytes))?;
     result.set_item("actions", PyBytes::new(py, &actions))?;
     result.set_item("legal_counts", PyBytes::new(py, &legal_counts))?;
@@ -603,13 +689,28 @@ fn collect_ppo_rollouts_native_inner<'py>(
     result.set_item("game_row_ends_u64_le", PyBytes::new(py, &game_row_ends))?;
     result.set_item("placements_u8", PyBytes::new(py, &placements_bytes))?;
     if cached_policy_logits {
-        result.set_item("old_logits_f32_le", PyBytes::new(py, bytemuck::cast_slice(&old_logits_values)))?;
+        result.set_item(
+            "old_logits_f32_le",
+            PyBytes::new(py, bytemuck::cast_slice(&old_logits_values)),
+        )?;
     }
     if cached_policy_scalars {
-        result.set_item("value_old_f32_le", PyBytes::new(py, bytemuck::cast_slice(&value_old_values)))?;
-        result.set_item("old_logprob_f32_le", PyBytes::new(py, bytemuck::cast_slice(&old_logprob_values)))?;
-        result.set_item("raw_advantages_f32_le", PyBytes::new(py, bytemuck::cast_slice(&raw_advantage_values)))?;
-        result.set_item("returns_f32_le", PyBytes::new(py, bytemuck::cast_slice(&return_values)))?;
+        result.set_item(
+            "value_old_f32_le",
+            PyBytes::new(py, bytemuck::cast_slice(&value_old_values)),
+        )?;
+        result.set_item(
+            "old_logprob_f32_le",
+            PyBytes::new(py, bytemuck::cast_slice(&old_logprob_values)),
+        )?;
+        result.set_item(
+            "raw_advantages_f32_le",
+            PyBytes::new(py, bytemuck::cast_slice(&raw_advantage_values)),
+        )?;
+        result.set_item(
+            "returns_f32_le",
+            PyBytes::new(py, bytemuck::cast_slice(&return_values)),
+        )?;
     }
     result.set_item("row_count", row_count)?;
     timing.pack += pack_start.elapsed();
@@ -665,7 +766,9 @@ fn fill_terminal_gae_by_game(
     returns: &mut [f32],
 ) -> PyResult<()> {
     let discount = PPO_GAE_GAMMA * PPO_GAE_LAMBDA;
-    for (game_idx, (terminal, &(start, _end))) in terminals.iter().zip(game_spans.iter()).enumerate() {
+    for (game_idx, (terminal, &(start, _end))) in
+        terminals.iter().zip(game_spans.iter()).enumerate()
+    {
         let game_rows = rows_by_game[game_idx]
             .as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("native rollout missing rows"))?;
@@ -678,11 +781,15 @@ fn fill_terminal_gae_by_game(
                 if usize::from(row.player_id) != player {
                     continue;
                 }
-                let value = row
-                    .value_old
-                    .ok_or_else(|| PyRuntimeError::new_err("native rollout missing cached value"))?;
+                let value = row.value_old.ok_or_else(|| {
+                    PyRuntimeError::new_err("native rollout missing cached value")
+                })?;
                 let delta = (if has_next { 0.0 } else { reward })
-                    + if has_next { PPO_GAE_GAMMA * next_value } else { 0.0 }
+                    + if has_next {
+                        PPO_GAE_GAMMA * next_value
+                    } else {
+                        0.0
+                    }
                     - value;
                 running = delta + if has_next { discount * running } else { 0.0 };
                 let row_idx = start + local_idx;
@@ -725,11 +832,17 @@ fn collect_rollout_shard_requests(
     let mut requests = Vec::with_capacity(max_requests);
     let mut completed = 0usize;
     if shard.active.is_empty() {
-        return Ok(RolloutShardStep { requests, completed });
+        return Ok(RolloutShardStep {
+            requests,
+            completed,
+        });
     }
     let mut inspected = 0usize;
     shard.next_game_idx %= shard.active.len();
-    while !shard.active.is_empty() && requests.len() < max_requests && inspected < shard.active.len() {
+    while !shard.active.is_empty()
+        && requests.len() < max_requests
+        && inspected < shard.active.len()
+    {
         let game_idx = shard.next_game_idx % shard.active.len();
         match shard.active[game_idx].runner.pending_decisions() {
             Ok(decisions) => {
@@ -776,11 +889,17 @@ fn collect_rollout_shard_requests(
             }
         }
     }
-    Ok(RolloutShardStep { requests, completed })
+    Ok(RolloutShardStep {
+        requests,
+        completed,
+    })
 }
 
 fn first_legal_rollout_action_id(legal_mask: &[bool; HYDRA_ACTION_SPACE]) -> Option<u8> {
-    legal_mask.iter().position(|&legal| legal).map(|idx| idx as u8)
+    legal_mask
+        .iter()
+        .position(|&legal| legal)
+        .map(|idx| idx as u8)
 }
 
 fn sample_action_and_logprob(
@@ -847,7 +966,9 @@ fn masked_action_logprob(
 ) -> PyResult<f32> {
     let action_idx = action as usize;
     if action_idx >= HYDRA_ACTION_SPACE || !legal_mask[action_idx] {
-        return Err(PyRuntimeError::new_err("PPO rollout sampled illegal action"));
+        return Err(PyRuntimeError::new_err(
+            "PPO rollout sampled illegal action",
+        ));
     }
     let mut max_score = f32::NEG_INFINITY;
     for (&score, &legal) in scores.iter().zip(legal_mask.iter()) {
@@ -871,7 +992,10 @@ fn masked_action_logprob(
     Ok((scores[action_idx] - max_score) / temp - total.ln())
 }
 
-fn apply_rollout_shard_actions(shard: &mut RolloutShard, action_rows: &[(usize, u8)]) -> PyResult<()> {
+fn apply_rollout_shard_actions(
+    shard: &mut RolloutShard,
+    action_rows: &[(usize, u8)],
+) -> PyResult<()> {
     let mut cursor = action_rows.len();
     while cursor > 0 {
         cursor -= 1;
@@ -976,11 +1100,18 @@ mod tests {
         }
         let mut sample_rng = StdRng::seed_from_u64(12345);
         let mut fused_rng = StdRng::seed_from_u64(12345);
-        let action = crate::arena::sampling::sample_from_scores_with_rng(&scores, &legal_mask, 0.7, &mut sample_rng)
-            .expect("sample action");
-        let old_logprob = masked_action_logprob(&scores, &legal_mask, action, 0.7).expect("logprob");
-        let (fused_action, fused_logprob) = sample_action_and_logprob(&scores, &legal_mask, 0.7, &mut fused_rng)
-            .expect("fused sample");
+        let action = crate::arena::sampling::sample_from_scores_with_rng(
+            &scores,
+            &legal_mask,
+            0.7,
+            &mut sample_rng,
+        )
+        .expect("sample action");
+        let old_logprob =
+            masked_action_logprob(&scores, &legal_mask, action, 0.7).expect("logprob");
+        let (fused_action, fused_logprob) =
+            sample_action_and_logprob(&scores, &legal_mask, 0.7, &mut fused_rng)
+                .expect("fused sample");
         assert_eq!(fused_action, action);
         assert!((fused_logprob - old_logprob).abs() <= 1e-6);
     }
@@ -1035,7 +1166,10 @@ mod tests {
                         .iter()
                         .position(|&legal| legal)
                         .expect("legal action exists") as u8;
-                    assert!(matches!(game.step_with_hydra_action_ids(&[action]), StepOutcome::Advanced));
+                    assert!(matches!(
+                        game.step_with_hydra_action_ids(&[action]),
+                        StepOutcome::Advanced
+                    ));
                     return;
                 }
                 Err(StepOutcome::Advanced) => continue,
@@ -1044,8 +1178,6 @@ mod tests {
         }
         panic!("runner did not reach WaitAct decision");
     }
-
-
 
     fn test_row(game_id: u64, _local_idx: u64, turn: u32, player_id: u8) -> RolloutRow {
         RolloutRow {

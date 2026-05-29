@@ -166,7 +166,9 @@ pub fn python_ppo_control_options_from_config(
                 .max_train_steps
                 .or(Some(config.num_epochs))
                 .filter(|steps| *steps > 0)
-                .ok_or_else(|| "max_train_steps or num_epochs must be greater than 0".to_string())?,
+                .ok_or_else(|| {
+                    "max_train_steps or num_epochs must be greater than 0".to_string()
+                })?,
         )
     };
     Ok(PythonPpoControlCliOptions {

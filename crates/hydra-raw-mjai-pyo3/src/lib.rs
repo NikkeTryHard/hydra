@@ -373,7 +373,10 @@ fn hydra_raw_mjai_pyo3(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResul
     module.add_function(wrap_pyfunction!(run_paired_arena_batched, module)?)?;
     module.add_function(wrap_pyfunction!(run_paired_arena_rust_native, module)?)?;
     module.add_function(wrap_pyfunction!(collect_ppo_rollouts_rust_native, module)?)?;
-    module.add_function(wrap_pyfunction!(collect_ppo_rollouts_with_callback, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        collect_ppo_rollouts_with_callback,
+        module
+    )?)?;
     module.add_class::<PyRawMjaiNext>()?;
     Ok(())
 }

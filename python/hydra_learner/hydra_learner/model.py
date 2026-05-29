@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import override
+from typing import ClassVar, override
 
 import torch
 import torch.nn as nn
@@ -391,6 +391,8 @@ class ResidualSeBlock(nn.Module):
 class HydraPolicyNet(nn.Module):
     """Hydra base-head hot-path topology used by the PyTorch learner."""
 
+    policy_value: ClassVar
+
     def __init__(
         self,
         hidden: int = DEFAULT_HIDDEN,
@@ -431,7 +433,6 @@ class HydraPolicyNet(nn.Module):
         _, pooled = self._features(obs)
         packed = F.linear(pooled, self.base_heads.weight[:47], self.base_heads.bias[:47])
         return packed[:, 0:46], torch.tanh(packed[:, 46:47])
-
 
     @override
     def forward(self, obs: torch.Tensor) -> HydraBaseOutput:

@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import math
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 import torch
-import torch.nn as nn
 
 from hydra_learner.model import ACTION_SPACE, OBS_CHANNELS, TILE_WIDTH
 from hydra_learner.rl import (
@@ -21,6 +20,12 @@ from hydra_learner.rl import (
     normalize_advantages,
     value_mse,
 )
+
+
+class PolicyValueModel(Protocol):
+    def train(self, mode: bool = True) -> object: ...
+    def parameters(self) -> Iterator[torch.nn.Parameter]: ...
+    def policy_value(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]: ...
 
 
 @dataclass(frozen=True)
@@ -91,7 +96,7 @@ class PpoTrainStepResult:
 
 def ppo_train_step(
     *,
-    model: nn.Module,
+    model: PolicyValueModel,
     optimizer: torch.optim.Optimizer,
     batch: PpoBatch,
     entropy_controller: EntropyController,
@@ -312,9 +317,9 @@ def _ppo_loss_for_advantages(
     safe_current_log = current_log_probs.masked_fill(~legal_mask, 0.0)
     entropy = -(current_probs * safe_current_log).sum(dim=1).mean()
     reference_log_probs = masked_log_softmax(bc_logits, legal_mask)
-    bc_kl_reverse = (current_probs * (safe_current_log - reference_log_probs.masked_fill(~legal_mask, 0.0))).sum(
-        dim=1
-    ).mean()
+    bc_kl_reverse = (
+        (current_probs * (safe_current_log - reference_log_probs.masked_fill(~legal_mask, 0.0))).sum(dim=1).mean()
+    )
     total = (
         policy_loss
         + config.value_coef * value_loss

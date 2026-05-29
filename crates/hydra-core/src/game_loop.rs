@@ -361,7 +361,11 @@ impl GameRunner {
     }
 
     fn cached_action_for_hydra_id(cached: &CachedLegalActions, action_id: u8) -> Option<Action> {
-        cached.by_hydra_id.get(usize::from(action_id)).copied().flatten()
+        cached
+            .by_hydra_id
+            .get(usize::from(action_id))
+            .copied()
+            .flatten()
     }
     pub fn pending_decisions(&mut self) -> Result<Vec<PendingDecision>, StepOutcome> {
         if self.state.is_done {
@@ -468,7 +472,10 @@ impl GameRunner {
         }
     }
 
-    pub fn step_with_cached_legal_actions(&mut self, decisions: &[(CachedLegalActions, u8)]) -> StepOutcome {
+    pub fn step_with_cached_legal_actions(
+        &mut self,
+        decisions: &[(CachedLegalActions, u8)],
+    ) -> StepOutcome {
         if self.state.is_done {
             return StepOutcome::Complete;
         }
@@ -506,7 +513,9 @@ impl GameRunner {
                     cursor += 1;
                 }
                 if cursor == 0 {
-                    return StepOutcome::NoLegalAction { player: self.state.current_player };
+                    return StepOutcome::NoLegalAction {
+                        player: self.state.current_player,
+                    };
                 }
             }
         }
@@ -537,7 +546,7 @@ impl GameRunner {
                 turn: self.total_actions,
                 player_id: player,
                 by_hydra_id: legal_action_map(&self.legal_buf),
-            }
+            },
         }
     }
 

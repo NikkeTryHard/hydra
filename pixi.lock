@@ -348,9 +348,9 @@ environments:
       - conda: https://prefix.dev/conda-forge/noarch/ca-certificates-2026.5.20-hbd8a1cb_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/tzdata-2025c-hc9c84f9_1.conda
       - pypi: .
-      - pypi: https://download-r2.pytorch.org/whl/nightly/cu128/torch-2.12.0.dev20260329%2Bcu128-cp312-cp312-manylinux_2_28_x86_64.whl
-      - pypi: https://download-r2.pytorch.org/whl/nightly/cu128/torchvision-0.26.0.dev20260329%2Bcu128-cp312-cp312-manylinux_2_28_x86_64.whl
-      - pypi: https://download-r2.pytorch.org/whl/nightly/triton-3.6.0%2Bgit7e48d5df-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+      - pypi: https://download-r2.pytorch.org/whl/nightly/cu128/torch-2.12.0.dev20260407%2Bcu128-cp312-cp312-manylinux_2_28_x86_64.whl
+      - pypi: https://download-r2.pytorch.org/whl/nightly/cu128/torchvision-0.27.0.dev20260407%2Bcu128-cp312-cp312-manylinux_2_28_x86_64.whl
+      - pypi: https://download-r2.pytorch.org/whl/nightly/triton-3.7.0%2Bgit9c288bc5-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/05/6b/32f747947df2da6994e999492ab306a903659555dddc0fbdeb9d71f75e52/nvidia_cuda_nvrtc_cu12-12.8.93-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/0d/9b/a997b638fcd068ad6e4d53b8551a7d30fe8b404d6f1804abf1df69838932/nvidia_cuda_runtime_cu12-12.8.90-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/0f/50/de23fde84e45f5c4fda2488c759b69990fd4512387a8632860f3ac9cd225/numpy-1.26.4-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
@@ -1629,9 +1629,9 @@ packages:
   - opt-einsum>=3.3 ; extra == 'opt-einsum'
   - pyyaml ; extra == 'pyyaml'
   requires_python: '>=3.10'
-- pypi: https://download-r2.pytorch.org/whl/nightly/cu128/torch-2.12.0.dev20260329%2Bcu128-cp312-cp312-manylinux_2_28_x86_64.whl
+- pypi: https://download-r2.pytorch.org/whl/nightly/cu128/torch-2.12.0.dev20260407%2Bcu128-cp312-cp312-manylinux_2_28_x86_64.whl
   name: torch
-  version: 2.12.0.dev20260329+cu128
+  version: 2.12.0.dev20260407+cu128
   index: https://download.pytorch.org/whl/nightly/cu128
   requires_dist:
   - filelock
@@ -1647,25 +1647,25 @@ packages:
   - nvidia-cusparselt-cu12==0.7.1 ; sys_platform == 'linux'
   - nvidia-nccl-cu12==2.29.7 ; sys_platform == 'linux'
   - nvidia-nvshmem-cu12==3.4.5 ; sys_platform == 'linux'
-  - triton==3.6.0+git7e48d5df ; sys_platform == 'linux'
+  - triton==3.7.0+git9c288bc5 ; sys_platform == 'linux'
   - optree>=0.13.0 ; extra == 'optree'
   - opt-einsum>=3.3 ; extra == 'opt-einsum'
   - pyyaml ; extra == 'pyyaml'
   requires_python: '>=3.10'
-- pypi: https://download-r2.pytorch.org/whl/nightly/cu128/torchvision-0.26.0.dev20260329%2Bcu128-cp312-cp312-manylinux_2_28_x86_64.whl
+- pypi: https://download-r2.pytorch.org/whl/nightly/cu128/torchvision-0.27.0.dev20260407%2Bcu128-cp312-cp312-manylinux_2_28_x86_64.whl
   name: torchvision
-  version: 0.26.0.dev20260329+cu128
+  version: 0.27.0.dev20260407+cu128
   index: https://download.pytorch.org/whl/nightly/cu128
   requires_dist:
   - numpy
-  - torch==2.12.0.dev20260329
+  - torch==2.12.0.dev20260407
   - pillow>=5.3.0,!=8.3.*
   - gdown>=4.7.3 ; extra == 'gdown'
   - scipy ; extra == 'scipy'
   requires_python: '>=3.10,!=3.14.1'
-- pypi: https://download-r2.pytorch.org/whl/nightly/triton-3.6.0%2Bgit7e48d5df-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+- pypi: https://download-r2.pytorch.org/whl/nightly/triton-3.7.0%2Bgit9c288bc5-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
   name: triton
-  version: 3.6.0+git7e48d5df
+  version: 3.7.0+git9c288bc5
   index: https://download.pytorch.org/whl/nightly/cu128
   requires_dist:
   - importlib-metadata ; python_full_version < '3.10'

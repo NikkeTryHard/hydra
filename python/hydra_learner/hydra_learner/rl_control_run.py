@@ -303,7 +303,7 @@ def run_rl_control_run(
     summary: dict[str, object] = {
         "run_id": config.run_id,
         "objective_configs": {
-            "ppo": asdict(config.objectives.ppo),
+            "ppo": _ppo_config_dict(config.objectives.ppo),
             "direct_sampled_ach": asdict(config.objectives.ach),
         },
         "artifact_metadata": artifact_metadata,
@@ -326,6 +326,13 @@ def run_rl_control_run(
         ppo_checkpoint_path=ppo_checkpoint_path,
         ach_checkpoint_path=ach_checkpoint_path,
     )
+
+
+def _ppo_config_dict(config: PpoTrainStepConfig) -> dict[str, object]:
+    payload = asdict(config)
+    if payload.get("microbatch_size") is None:
+        del payload["microbatch_size"]
+    return payload
 
 
 def _load_artifact_sequence(paths: tuple[Path, ...]) -> list[tuple[Path, PpoRolloutArtifact]]:

@@ -123,7 +123,9 @@ fn cached_legal_action_step_matches_hydra_action_ids() {
                 assert_eq!(cached_decisions.len(), baseline_decisions.len());
                 let mut ids = Vec::with_capacity(cached_decisions.len());
                 let mut tokens = Vec::with_capacity(cached_decisions.len());
-                for (cached_decision, baseline_decision) in cached_decisions.iter().zip(&baseline_decisions) {
+                for (cached_decision, baseline_decision) in
+                    cached_decisions.iter().zip(&baseline_decisions)
+                {
                     assert_eq!(cached_decision.legal_mask, baseline_decision.legal_mask);
                     let action = cached_decision
                         .legal_mask
@@ -131,7 +133,7 @@ fn cached_legal_action_step_matches_hydra_action_ids() {
                         .position(|&legal| legal)
                         .expect("legal action") as u8;
                     ids.push(action);
-                    tokens.push((cached_decision.legal_actions.clone(), action));
+                    tokens.push((cached_decision.legal_actions, action));
                 }
                 let cached_outcome = cached.step_with_cached_legal_actions(&tokens);
                 let baseline_outcome = baseline.step_with_hydra_action_ids(&ids);

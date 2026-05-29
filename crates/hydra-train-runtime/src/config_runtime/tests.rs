@@ -273,6 +273,12 @@ fn rl_and_loader_runtime_configs_map_expected_fields() {
         exit_weight: Some(0.7),
         aux_weight: Some(0.2),
         microbatch_size: None,
+        run_forever: false,
+        rollout_inference: None,
+        bc_kl_reverse_coef: None,
+        lr_warmup_samples: None,
+        lr_decay_samples: None,
+        arena_batch_decisions: None,
     };
 
     config.num_threads = None;

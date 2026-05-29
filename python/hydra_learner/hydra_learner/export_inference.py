@@ -44,6 +44,7 @@ class ExportConfig:
     max_batch: int
     opset_version: int
 
+
 @dataclass(frozen=True)
 class ExportResult:
     artifact_path: Path
@@ -96,6 +97,8 @@ def validate_args(args: argparse.Namespace) -> ExportConfig:
 
 
 def load_export_policy(config: ExportConfig) -> tuple[PolicyOnly, torch.Tensor, Any, ModelConfig, dict[str, Any]]:
+    if config.checkpoint is None:
+        raise ValueError("export checkpoint path is required")
     checkpoint = _torch_load(config.checkpoint)
     _reject_drda_checkpoint_export(checkpoint)
     raw_model_config = checkpoint.get("model_config")
@@ -260,6 +263,8 @@ def _export_onnx(policy: PolicyOnly, obs: torch.Tensor, artifact_path: Path, con
             )
     except ModuleNotFoundError as exc:
         raise ValueError("ONNX export requires onnx and onnxscript Python packages") from exc
+
+
 def _ensure_onnxscript_torch_api_alias() -> None:
     try:
         import onnxscript._framework_apis.torch_2_9 as torch_2_9  # noqa: PLC0415 -- optional exporter compatibility shim.

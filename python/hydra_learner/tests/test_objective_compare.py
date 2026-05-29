@@ -174,8 +174,15 @@ def test_compare_deterministic_for_same_cpu_fixture(tmp_path: Path) -> None:
         config=_comparison_config(),
     )
 
-    assert first.metrics == second.metrics
-    assert first.ppo_metrics == second.ppo_metrics
+    timing_keys = {"forward_backward_ms", "h2d_ms", "grad_clip_ms", "optimizer_ms", "post_metrics_ms"}
+    first_metrics = {key: value for key, value in first.metrics.items() if key.removeprefix("ppo.") not in timing_keys}
+    second_metrics = {
+        key: value for key, value in second.metrics.items() if key.removeprefix("ppo.") not in timing_keys
+    }
+    first_ppo_metrics = {key: value for key, value in first.ppo_metrics.items() if key not in timing_keys}
+    second_ppo_metrics = {key: value for key, value in second.ppo_metrics.items() if key not in timing_keys}
+    assert first_metrics == second_metrics
+    assert first_ppo_metrics == second_ppo_metrics
     assert first.ach_metrics == second.ach_metrics
 
 
