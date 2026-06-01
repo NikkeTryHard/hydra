@@ -4,7 +4,7 @@ Crate-local map for observation encoder components. Public ABI remains via `hydr
 
 ## Owns
 
-- Observation encoder impl modules.
+- Observation encoder facade plus focused `encoder/` layout, DTO, baseline, context, and dirty-update modules.
 - Batch encoder components.
 - Runtime feature materialization into Hydra fixed-superset observation tensors.
 - Internal encoder composition over runtime types, safety, belief/search pieces, and engine observations.

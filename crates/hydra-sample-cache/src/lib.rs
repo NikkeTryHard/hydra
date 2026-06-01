@@ -1,44 +1,30 @@
 //! Parsed-sample cache file format for BC raw-path reuse.
 
 use std::fs::{self, File};
-use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::io::{self, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use hydra_data_core::sample::MjaiSample;
+
+mod header;
+mod limits;
+mod path;
+mod primitives;
+mod sample;
+
+pub use path::{is_parsed_sample_cache_file, parsed_sample_cache_file_name};
 
 #[cfg(test)]
 use hydra_core::action::HYDRA_ACTION_SPACE;
 #[cfg(test)]
 use hydra_core::encoder::OBS_SIZE;
 
+#[cfg(test)]
+use limits::{MAX_PARSED_SAMPLE_CACHE_METADATA_STRING_LEN, MAX_PARSED_SAMPLE_CACHE_SAMPLES};
+#[cfg(test)]
+use sample::test_support::{FLAG_BELIEF_FIELDS, FLAG_MIXTURE_WEIGHTS};
+
 pub const PARSED_SAMPLE_CACHE_EXTENSION: &str = ".samples.cache";
-
-const PARSED_SAMPLE_CACHE_MAGIC: &[u8; PARSED_SAMPLE_CACHE_MAGIC_LEN] = b"HPSCACHE";
-const PARSED_SAMPLE_CACHE_MAGIC_LEN: usize = 8;
-const PARSED_SAMPLE_CACHE_VERSION: u32 = 1;
-const FINAL_SCORE_COUNT: usize = 4;
-const OPPONENT_COUNT: usize = 3;
-const MAX_PARSED_SAMPLE_CACHE_METADATA_STRING_LEN: usize = 64 * 1024;
-const MAX_PARSED_SAMPLE_CACHE_SAMPLES: u32 = 10_000;
-
-const FLAG_ORACLE_TARGET: u16 = 1 << 0;
-const FLAG_SAFETY_RESIDUAL: u16 = 1 << 1;
-const FLAG_SAFETY_RESIDUAL_MASK: u16 = 1 << 2;
-const FLAG_EXIT_TARGET: u16 = 1 << 3;
-const FLAG_EXIT_MASK: u16 = 1 << 4;
-const FLAG_DELTA_Q_TARGET: u16 = 1 << 5;
-const FLAG_DELTA_Q_MASK: u16 = 1 << 6;
-const FLAG_BELIEF_FIELDS: u16 = 1 << 7;
-const FLAG_MIXTURE_WEIGHTS: u16 = 1 << 8;
-const KNOWN_OPTIONAL_FLAGS: u16 = FLAG_ORACLE_TARGET
-    | FLAG_SAFETY_RESIDUAL
-    | FLAG_SAFETY_RESIDUAL_MASK
-    | FLAG_EXIT_TARGET
-    | FLAG_EXIT_MASK
-    | FLAG_DELTA_Q_TARGET
-    | FLAG_DELTA_Q_MASK
-    | FLAG_BELIEF_FIELDS
-    | FLAG_MIXTURE_WEIGHTS;
 
 #[cfg(test)]
 const DANGER_TARGET_SIZE: usize = 3 * 34;
@@ -71,42 +57,6 @@ pub struct ParsedSampleCacheGame {
     pub final_scores: [i32; 4],
 }
 
-/// Returns whether a path names a parsed-sample cache file.
-pub fn is_parsed_sample_cache_file(path: &Path) -> bool {
-    matches!(
-        path.file_name().and_then(|name| name.to_str()),
-        Some(name) if name.ends_with(PARSED_SAMPLE_CACHE_EXTENSION)
-    )
-}
-
-pub fn parsed_sample_cache_file_name(source_path: &Path) -> io::Result<String> {
-    let file_name = source_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "source path does not have a valid UTF-8 filename: {}",
-                    source_path.display()
-                ),
-            )
-        })?;
-    let stem = file_name
-        .strip_suffix(".json.gz")
-        .or_else(|| file_name.strip_suffix(".json"))
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "expected loose MJAI file ending in .json or .json.gz, got {}",
-                    source_path.display()
-                ),
-            )
-        })?;
-    Ok(format!("{stem}{PARSED_SAMPLE_CACHE_EXTENSION}"))
-}
-
 pub fn write_parsed_sample_cache(
     path: &Path,
     original_source_path: &Path,
@@ -119,20 +69,16 @@ pub fn write_parsed_sample_cache(
     let file = File::create(path)?;
     let mut writer = BufWriter::new(file);
 
-    writer.write_all(PARSED_SAMPLE_CACHE_MAGIC)?;
-    write_u32(&mut writer, PARSED_SAMPLE_CACHE_VERSION)?;
-    write_u32(&mut writer, checked_sample_count(game.samples.len())?)?;
-
-    let source_path = original_source_path.to_string_lossy();
-    write_string(&mut writer, original_identity)?;
-    write_string(&mut writer, &source_path)?;
-
-    for score in game.final_scores {
-        write_i32(&mut writer, score)?;
-    }
+    header::write_header(
+        &mut writer,
+        original_source_path,
+        original_identity,
+        game.samples.len(),
+    )?;
+    header::write_final_scores(&mut writer, game.final_scores)?;
 
     for sample in &game.samples {
-        write_sample(&mut writer, sample)?;
+        sample::write_sample(&mut writer, sample)?;
     }
     writer.flush()?;
     Ok(())
@@ -140,8 +86,8 @@ pub fn write_parsed_sample_cache(
 
 pub fn read_parsed_sample_cache_metadata(path: &Path) -> io::Result<ParsedSampleCacheMetadata> {
     let mut reader = BufReader::new(File::open(path)?);
-    let header = read_header_internal(&mut reader)?;
-    let _ = read_final_scores(&mut reader)?;
+    let header = header::read_header_internal(&mut reader)?;
+    let _ = header::read_final_scores(&mut reader)?;
     Ok(ParsedSampleCacheMetadata {
         original_source_path: PathBuf::from(header.original_source_path),
         original_identity: header.original_identity,
@@ -151,12 +97,12 @@ pub fn read_parsed_sample_cache_metadata(path: &Path) -> io::Result<ParsedSample
 
 pub fn load_parsed_sample_cache(path: &Path) -> io::Result<ParsedSampleCacheFile> {
     let mut reader = BufReader::new(File::open(path)?);
-    let header = read_header_internal(&mut reader)?;
-    let final_scores = read_final_scores(&mut reader)?;
+    let header = header::read_header_internal(&mut reader)?;
+    let final_scores = header::read_final_scores(&mut reader)?;
     let sample_count = header.sample_count as usize;
     let mut samples = Vec::with_capacity(sample_count);
     for _ in 0..sample_count {
-        samples.push(read_sample(&mut reader)?);
+        samples.push(sample::read_sample(&mut reader)?);
     }
     Ok(ParsedSampleCacheFile {
         metadata: ParsedSampleCacheMetadata {
@@ -177,341 +123,6 @@ fn invalid_data(message: impl Into<String>) -> io::Error {
 
 fn invalid_input(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.into())
-}
-
-fn checked_sample_count(sample_count: usize) -> io::Result<u32> {
-    let sample_count = u32::try_from(sample_count).map_err(|_| {
-        invalid_input(format!(
-            "parsed-sample cache sample count {sample_count} exceeds u32 format capacity"
-        ))
-    })?;
-    validate_sample_count(sample_count).map_err(|err| invalid_input(err.to_string()))?;
-    Ok(sample_count)
-}
-
-fn validate_sample_count(sample_count: u32) -> io::Result<()> {
-    if sample_count > MAX_PARSED_SAMPLE_CACHE_SAMPLES {
-        return Err(invalid_data(format!(
-            "parsed-sample cache sample count {sample_count} exceeds maximum {MAX_PARSED_SAMPLE_CACHE_SAMPLES}"
-        )));
-    }
-    Ok(())
-}
-
-struct ParsedSampleCacheHeader {
-    sample_count: u32,
-    original_identity: String,
-    original_source_path: String,
-}
-
-fn read_header_internal(reader: &mut impl Read) -> io::Result<ParsedSampleCacheHeader> {
-    let mut magic = [0u8; PARSED_SAMPLE_CACHE_MAGIC_LEN];
-    reader.read_exact(&mut magic)?;
-    if &magic != PARSED_SAMPLE_CACHE_MAGIC {
-        return Err(invalid_data("parsed-sample cache magic mismatch"));
-    }
-
-    let version = read_u32(reader)?;
-    if version != PARSED_SAMPLE_CACHE_VERSION {
-        return Err(invalid_data(format!(
-            "parsed-sample cache version {version} unsupported (expected {})",
-            PARSED_SAMPLE_CACHE_VERSION
-        )));
-    }
-
-    let sample_count = read_u32(reader)?;
-    validate_sample_count(sample_count)?;
-    let original_identity = read_string(reader)?;
-    let original_source_path = read_string(reader)?;
-
-    Ok(ParsedSampleCacheHeader {
-        sample_count,
-        original_identity,
-        original_source_path,
-    })
-}
-
-fn read_final_scores(reader: &mut impl Read) -> io::Result<[i32; 4]> {
-    let mut final_scores = [0i32; FINAL_SCORE_COUNT];
-    for score in &mut final_scores {
-        *score = read_i32(reader)?;
-    }
-    Ok(final_scores)
-}
-
-fn write_sample(writer: &mut impl Write, sample: &MjaiSample) -> io::Result<()> {
-    let flags = sample_optional_flags(sample);
-    validate_presence_invariants(
-        sample.belief_fields_present,
-        flags & FLAG_BELIEF_FIELDS != 0,
-        "belief_fields",
-    )
-    .map_err(|err| invalid_input(err.to_string()))?;
-    validate_presence_invariants(
-        sample.mixture_weights_present,
-        flags & FLAG_MIXTURE_WEIGHTS != 0,
-        "mixture_weights",
-    )
-    .map_err(|err| invalid_input(err.to_string()))?;
-
-    write_f32_array(writer, &sample.obs)?;
-    write_u8(writer, sample.action)?;
-    write_f32_array(writer, &sample.legal_mask)?;
-    write_u8(writer, sample.placement)?;
-    write_i32(writer, sample.score_delta)?;
-    write_u8(writer, sample.grp_label)?;
-    write_f32_array(writer, &sample.tenpai)?;
-    writer.write_all(&sample.opp_next)?;
-    write_f32_array(writer, &sample.danger)?;
-    write_f32_array(writer, &sample.danger_mask)?;
-    write_bool(writer, sample.belief_fields_present)?;
-    write_bool(writer, sample.mixture_weights_present)?;
-    write_u16(writer, flags)?;
-
-    write_optional_f32_array(writer, sample.oracle_target.as_ref())?;
-    write_optional_f32_array(writer, sample.safety_residual.as_ref())?;
-    write_optional_f32_array(writer, sample.safety_residual_mask.as_ref())?;
-    write_optional_f32_array(writer, sample.exit_target.as_ref())?;
-    write_optional_f32_array(writer, sample.exit_mask.as_ref())?;
-    write_optional_f32_array(writer, sample.delta_q_target.as_ref())?;
-    write_optional_f32_array(writer, sample.delta_q_mask.as_ref())?;
-    write_optional_f32_array(writer, sample.belief_fields.as_ref())?;
-    write_optional_f32_array(writer, sample.mixture_weights.as_ref())?;
-    Ok(())
-}
-
-fn sample_optional_flags(sample: &MjaiSample) -> u16 {
-    let mut flags = 0u16;
-    if sample.oracle_target.is_some() {
-        flags |= FLAG_ORACLE_TARGET;
-    }
-    if sample.safety_residual.is_some() {
-        flags |= FLAG_SAFETY_RESIDUAL;
-    }
-    if sample.safety_residual_mask.is_some() {
-        flags |= FLAG_SAFETY_RESIDUAL_MASK;
-    }
-    if sample.exit_target.is_some() {
-        flags |= FLAG_EXIT_TARGET;
-    }
-    if sample.exit_mask.is_some() {
-        flags |= FLAG_EXIT_MASK;
-    }
-    if sample.delta_q_target.is_some() {
-        flags |= FLAG_DELTA_Q_TARGET;
-    }
-    if sample.delta_q_mask.is_some() {
-        flags |= FLAG_DELTA_Q_MASK;
-    }
-    if sample.belief_fields.is_some() {
-        flags |= FLAG_BELIEF_FIELDS;
-    }
-    if sample.mixture_weights.is_some() {
-        flags |= FLAG_MIXTURE_WEIGHTS;
-    }
-    flags
-}
-
-fn validate_presence_invariants(
-    bool_present: bool,
-    flag_present: bool,
-    field_name: &str,
-) -> io::Result<()> {
-    if bool_present != flag_present {
-        return Err(invalid_data(format!(
-            "parsed-sample cache {field_name} presence flag mismatch"
-        )));
-    }
-    Ok(())
-}
-
-fn read_sample(reader: &mut impl Read) -> io::Result<MjaiSample> {
-    let obs = read_f32_array(reader)?;
-    let action = read_u8(reader)?;
-    let legal_mask = read_f32_array(reader)?;
-    let placement = read_u8(reader)?;
-    let score_delta = read_i32(reader)?;
-    let grp_label = read_u8(reader)?;
-    let tenpai = read_f32_array(reader)?;
-    let mut opp_next = [0u8; OPPONENT_COUNT];
-    reader.read_exact(&mut opp_next)?;
-    let danger = read_f32_array(reader)?;
-    let danger_mask = read_f32_array(reader)?;
-    let belief_fields_present = read_bool(reader)?;
-    let mixture_weights_present = read_bool(reader)?;
-    let flags = read_u16(reader)?;
-    if flags & !KNOWN_OPTIONAL_FLAGS != 0 {
-        return Err(invalid_data(format!(
-            "parsed-sample cache sample has unknown optional flag bits: 0x{:04x}",
-            flags & !KNOWN_OPTIONAL_FLAGS
-        )));
-    }
-    validate_presence_invariants(
-        belief_fields_present,
-        flags & FLAG_BELIEF_FIELDS != 0,
-        "belief_fields",
-    )?;
-    validate_presence_invariants(
-        mixture_weights_present,
-        flags & FLAG_MIXTURE_WEIGHTS != 0,
-        "mixture_weights",
-    )?;
-
-    Ok(MjaiSample {
-        obs,
-        compact_facts: None,
-        action,
-        legal_mask,
-        placement,
-        score_delta,
-        grp_label,
-        oracle_target: read_optional_f32_array(reader, flags & FLAG_ORACLE_TARGET != 0)?,
-        tenpai,
-        opp_next,
-        danger,
-        danger_mask,
-        safety_residual: read_optional_f32_array(reader, flags & FLAG_SAFETY_RESIDUAL != 0)?,
-        safety_residual_mask: read_optional_f32_array(
-            reader,
-            flags & FLAG_SAFETY_RESIDUAL_MASK != 0,
-        )?,
-        exit_target: read_optional_f32_array(reader, flags & FLAG_EXIT_TARGET != 0)?,
-        exit_mask: read_optional_f32_array(reader, flags & FLAG_EXIT_MASK != 0)?,
-        delta_q_target: read_optional_f32_array(reader, flags & FLAG_DELTA_Q_TARGET != 0)?,
-        delta_q_mask: read_optional_f32_array(reader, flags & FLAG_DELTA_Q_MASK != 0)?,
-        belief_fields: read_optional_f32_array(reader, flags & FLAG_BELIEF_FIELDS != 0)?,
-        mixture_weights: read_optional_f32_array(reader, flags & FLAG_MIXTURE_WEIGHTS != 0)?,
-        belief_fields_present,
-        mixture_weights_present,
-    })
-}
-
-fn write_optional_f32_array<const N: usize>(
-    writer: &mut impl Write,
-    values: Option<&[f32; N]>,
-) -> io::Result<()> {
-    if let Some(values) = values {
-        write_f32_array(writer, values)?;
-    }
-    Ok(())
-}
-
-fn read_optional_f32_array<const N: usize>(
-    reader: &mut impl Read,
-    present: bool,
-) -> io::Result<Option<[f32; N]>> {
-    present.then(|| read_f32_array(reader)).transpose()
-}
-
-fn write_string(writer: &mut impl Write, value: &str) -> io::Result<()> {
-    if value.len() > MAX_PARSED_SAMPLE_CACHE_METADATA_STRING_LEN {
-        return Err(invalid_input(format!(
-            "parsed-sample cache metadata string length {} exceeds maximum {MAX_PARSED_SAMPLE_CACHE_METADATA_STRING_LEN}",
-            value.len()
-        )));
-    }
-    write_u32(
-        writer,
-        u32::try_from(value.len()).map_err(|_| {
-            invalid_input(format!(
-                "parsed-sample cache metadata string length {} exceeds u32 format capacity",
-                value.len()
-            ))
-        })?,
-    )?;
-    writer.write_all(value.as_bytes())
-}
-
-fn read_string(reader: &mut impl Read) -> io::Result<String> {
-    let len = read_u32(reader)? as usize;
-    if len > MAX_PARSED_SAMPLE_CACHE_METADATA_STRING_LEN {
-        return Err(invalid_data(format!(
-            "parsed-sample cache metadata string length {len} exceeds maximum {MAX_PARSED_SAMPLE_CACHE_METADATA_STRING_LEN}"
-        )));
-    }
-    let mut bytes = vec![0u8; len];
-    reader.read_exact(&mut bytes)?;
-    String::from_utf8(bytes)
-        .map_err(|err| invalid_data(format!("invalid UTF-8 in cache metadata: {err}")))
-}
-
-fn write_bool(writer: &mut impl Write, value: bool) -> io::Result<()> {
-    write_u8(writer, u8::from(value))
-}
-
-fn read_bool(reader: &mut impl Read) -> io::Result<bool> {
-    match read_u8(reader)? {
-        0 => Ok(false),
-        1 => Ok(true),
-        other => Err(invalid_data(format!(
-            "invalid bool value in parsed-sample cache: {other}"
-        ))),
-    }
-}
-
-fn write_u8(writer: &mut impl Write, value: u8) -> io::Result<()> {
-    writer.write_all(&[value])
-}
-
-fn read_u8(reader: &mut impl Read) -> io::Result<u8> {
-    let mut buf = [0u8; 1];
-    reader.read_exact(&mut buf)?;
-    Ok(buf[0])
-}
-
-fn write_u16(writer: &mut impl Write, value: u16) -> io::Result<()> {
-    writer.write_all(&value.to_le_bytes())
-}
-
-fn read_u16(reader: &mut impl Read) -> io::Result<u16> {
-    let mut buf = [0u8; 2];
-    reader.read_exact(&mut buf)?;
-    Ok(u16::from_le_bytes(buf))
-}
-
-fn write_u32(writer: &mut impl Write, value: u32) -> io::Result<()> {
-    writer.write_all(&value.to_le_bytes())
-}
-
-fn read_u32(reader: &mut impl Read) -> io::Result<u32> {
-    let mut buf = [0u8; 4];
-    reader.read_exact(&mut buf)?;
-    Ok(u32::from_le_bytes(buf))
-}
-
-fn write_i32(writer: &mut impl Write, value: i32) -> io::Result<()> {
-    writer.write_all(&value.to_le_bytes())
-}
-
-fn read_i32(reader: &mut impl Read) -> io::Result<i32> {
-    let mut buf = [0u8; 4];
-    reader.read_exact(&mut buf)?;
-    Ok(i32::from_le_bytes(buf))
-}
-
-fn write_f32(writer: &mut impl Write, value: f32) -> io::Result<()> {
-    writer.write_all(&value.to_le_bytes())
-}
-
-fn read_f32(reader: &mut impl Read) -> io::Result<f32> {
-    let mut buf = [0u8; 4];
-    reader.read_exact(&mut buf)?;
-    Ok(f32::from_le_bytes(buf))
-}
-
-fn write_f32_array<const N: usize>(writer: &mut impl Write, values: &[f32; N]) -> io::Result<()> {
-    for value in values {
-        write_f32(writer, *value)?;
-    }
-    Ok(())
-}
-
-fn read_f32_array<const N: usize>(reader: &mut impl Read) -> io::Result<[f32; N]> {
-    let mut out = [0.0f32; N];
-    for value in &mut out {
-        *value = read_f32(reader)?;
-    }
-    Ok(out)
 }
 
 #[cfg(test)]

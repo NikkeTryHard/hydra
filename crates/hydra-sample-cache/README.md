@@ -10,6 +10,14 @@ Crate-local map for parsed-sample cache format. Used by BC raw-path reuse.
 - Cache read/write helpers and metadata-only read path.
 - Cache magic/version validation.
 
+
+## Internal modules
+
+- `path`: cache suffix detection and MJAI source filename rewrite.
+- `header`/`limits`: binary header metadata, magic/version/sample-count validation, final scores, and format limits.
+- `sample`: `MjaiSample` binary payload encoding, optional flags, and presence checks.
+- `primitives`: private endian/string/bool/f32 binary helpers.
+
 ## Does not own
 
 - MJAI replay parsing: `hydra-replay-loader` owns.

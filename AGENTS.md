@@ -15,7 +15,12 @@ Hydra = Riichi Mahjong AI. Goal: LuckyJ-level strength, reproducible train/eval.
 - Build scripts: exact `cargo:rerun-if-changed/env-changed`; no broad invalidation.
 - Unsafe needs local safety invariant. Comments explain invariant/intent only.
 
+## Commit exclusions
+
+- Never commit files under `local/` or `training/`. They are local/run artifacts even when task creates or stages them. Before every commit/push, verify `git ls-files local training` is empty; if not, remove them from index with `git rm -r --cached --ignore-unmatch local training`.
+
 ## Compatibility facts
+Retain these contracts unless owner source and compatibility docs change together:
 
 - Live encoder/model input `192x34`; old `85x34` = historical baseline-prefix channels `0..84`.
 - Action space fixed `46`; legal mask `[bool; 46]`.
@@ -57,20 +62,27 @@ Boundary: runtime/action/encoder/game semantics before training consumers. Confi
 
 ## Build / gates
 
-Use Pixi from repo root. Never system Cargo for normal work. `pyproject.toml` is tool/task SSOT; legacy `pixi.toml` removed.
+Use Pixi from repo root. Never system Cargo for normal work. `pyproject.toml` `[tool.pixi.tasks]` is command/tool SSOT; legacy `pixi.toml` removed.
 
-Fast Rust:
+Canonical gates are quiet: success prints nothing; warnings/errors print captured diagnostics.
+```bash
+pixi run gate           # one-command default gate: fmt-check + lint + Rust/Python tests
+pixi run gate-full      # gate + all-feature Rust tests
+pixi run check          # default no-heavy Rust check
+pixi run check-lib      # fast Rust library check
+pixi run test           # default Rust + Python tests
+pixi run test-lib       # fast Rust library tests
+pixi run lint           # lint gate; staged Markdown compression + anti-game scan + Rust/Python checks
+```
+
+Focused commands stay Pixi-owned:
 ```bash
 pixi run cargo check -p <crate> --no-default-features --quiet
 pixi run scripts/nextest-quiet.sh run -p <crate> --lib --no-default-features --cargo-profile dev --cargo-quiet
 pixi run scripts/nextest-quiet.sh run <test-name> --no-default-features --cargo-profile dev --cargo-quiet
-```
-
-Fast Python:
-```bash
 pixi run ruff format --check <paths>
 pixi run ruff check <paths>
-pixi run pyrefly check <paths>
+pixi run scripts/pyrefly-quiet.sh <paths>
 pixi run scripts/pytest-quiet.sh <tests>
 ```
 
@@ -105,10 +117,10 @@ Pixi/libtorch facts:
 `python/hydra_learner/hydra_learner/`:
 - `cli.py`: user BC train CLI entry; keep as dispatch/config glue.
 - `train_bc.py`: compatibility entrypoint only.
-- `train_loop.py`: Python BC training loop owner: fit/validate/checkpoint/log cadence.
-- `model.py`: HydraPolicyNet, profiles, 192x34 -> 46 policy/value/head surfaces.
+- `train_loop.py`, `train_validation.py`: Python BC training loop owner: fit/validate/checkpoint/log cadence.
+- `model.py`, `model_profiles.py`, `model_blocks.py`, `model_backbones.py`: HydraPolicyNet, profiles, 192x34 -> 46 policy/value/head surfaces.
 - `losses.py`: BC auxiliary loss math; no I/O/config.
-- `checkpoint.py`: production checkpoint schema/save/load validation.
+- `checkpoint.py`, `checkpoint_schema.py`, `checkpoint_rng.py`, `checkpoint_ema.py`: production checkpoint schema/save/load/RNG/EMA validation.
 - `checkpointing.py`: runtime checkpoint helpers around train loop.
 - `export_inference.py`: `.pt` -> ONNX policy export + metadata + parity fixture for Rust arena/RL.
 - `arena_eval.py`: eval CLI; native ONNX default, `.pt` auto-export, legacy Python path behind `--python-checkpoints`.
@@ -146,7 +158,7 @@ Useful invariants:
 - RNG/seeding: read `research/design/SEEDING.md`; preserve deterministic replay/eval.
 - Perf work: use benchmark/profile evidence before durable claims; update `research/infrastructure/ENGINE_BENCHMARKS.md` only for durable claims.
 - Dataset root `/home/cachybtw/Downloads/dataset_bundle/`; known corpus `/home/cachybtw/Downloads/dataset_bundle/tenhou-houou-mjai-2025`. Do not broad `find`/glob/list there (~200k files). Use exact paths.
-- Infra/checkpoint/container work: read `research/infrastructure/INFRASTRUCTURE.md` and `docker/train/README.md` as needed.
+- Infra/checkpoint/container work: read `research/infrastructure/INFRASTRUCTURE.md` and inspect `docker/train/` Dockerfiles as needed.
 - Suspicious low sample/high skip replay data: audit with `mjai_audit` before trust.
 - `advanced_loss.exit`/`delta_q` positive requires matching sidecar path; validation promotion must hydrate needed labels.
 - Default training/perf uses `cuda:0` when GPU exists. CPU train only explicit debug/compat.

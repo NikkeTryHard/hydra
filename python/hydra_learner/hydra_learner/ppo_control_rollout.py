@@ -389,16 +389,17 @@ def _batch_from_native_binary_payload(
         if not game_spans or game_spans[-1][1] != row_count:
             raise ValueError("native rollout spans must cover row_count")
     else:
+        game_ids_cpu: list[int] | memoryview
         if not isinstance(game_ids_raw, bytes | bytearray | memoryview):
             game_ids_cpu = game_id.cpu().tolist()
         else:
             game_ids_cpu = memoryview(game_ids_raw).cast("Q")
-        start = 0
+        start: int = 0
         for terminal in terminals:
             if not isinstance(terminal, Mapping):
                 raise ValueError("native rollout game terminal must be an object")
             gid = int(terminal["game_id"])
-            end = start
+            end: int = start
             while end < row_count and int(game_ids_cpu[end]) == gid:
                 end += 1
             if end == start:

@@ -4,7 +4,7 @@ Crate-local map for belief-state/search primitives. Keep independent of encoder 
 
 ## Owns
 
-- AFBS support modules.
+- AFBS support modules: tree/PUCT, provenance cache, ponder queue, leaf batching.
 - CT-SMC belief/search pieces.
 - Endgame, hand-EV, robust-opponent, Sinkhorn support.
 - Batch shanten search helpers.

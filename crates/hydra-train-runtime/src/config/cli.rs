@@ -1,364 +1,33 @@
 use std::path::PathBuf;
 
-use crate::preflight::{PreflightBenchTuple, PreflightConfig, ProbeKind};
+use crate::preflight::PreflightConfig;
 
 use super::{
-    BcBackend, BenchmarkBaselineCliOptions, BenchmarkBaselineSource,
-    ExperimentalBackboneProfileConfig, ExperimentalTrainBackend, PreflightCliOptions,
-    PreflightProfile, ProbeBatchChildRequest, ProbeChildRequest, ProbeCliRequest,
-    ProbeSingleChildRequest, PythonAdamwFlagConfig, PythonBackboneProfileConfig,
+    BcBackend, BenchmarkBaselineCliOptions, BenchmarkBaselineSource, ExperimentalTrainBackend,
+    PreflightCliOptions, PreflightProfile, ProbeBatchChildRequest, ProbeChildRequest,
+    ProbeCliRequest, ProbeSingleChildRequest, PythonAdamwFlagConfig, PythonBackboneProfileConfig,
     PythonConvMemoryFormatConfig, PythonLearnerCliOptions, PythonLearnerInput,
     PythonLearnerVariant, PythonResidualProfileConfig, TrainCli, default_device,
     default_preflight_config_for_profile,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PreflightModeArg {
-    Safe,
-    Unsafe,
-}
+mod common;
+mod preflight;
+mod probe;
+mod python;
 
-fn normalize_long_flag(arg: &str) -> String {
-    arg.replace('_', "-")
-}
-
-fn parse_preflight_mode(value: &str) -> Result<PreflightModeArg, String> {
-    match value {
-        "safe" => Ok(PreflightModeArg::Safe),
-        "unsafe" => Ok(PreflightModeArg::Unsafe),
-        _ => Err(format!(
-            "unsupported --preflight-mode value '{value}'; expected safe or unsafe"
-        )),
-    }
-}
-
-fn parse_benchmark_source(value: &str) -> Result<BenchmarkBaselineSource, String> {
-    match value {
-        "mjai" | "raw" | "raw_mjai" => Ok(BenchmarkBaselineSource::Mjai),
-        "bc-shards" | "bc_shards" | "shards" => Ok(BenchmarkBaselineSource::BcShards),
-        "both" => Ok(BenchmarkBaselineSource::Both),
-        _ => Err(format!(
-            "unsupported --bench-source value '{value}'; expected mjai, bc-shards, or both"
-        )),
-    }
-}
-
-fn parse_experimental_backend(value: &str) -> Result<ExperimentalTrainBackend, String> {
-    match value {
-        "libtorch" | "tch" => Ok(ExperimentalTrainBackend::LibTorch),
-        "burn-cuda" | "burn_cuda" | "cuda" => Ok(ExperimentalTrainBackend::BurnCuda),
-        _ => Err(format!(
-            "unsupported --experimental-backend value '{value}'; expected libtorch or burn-cuda"
-        )),
-    }
-}
-
-fn parse_bc_backend(value: &str) -> Result<BcBackend, String> {
-    match value {
-        "python" | "pytorch" => Ok(BcBackend::Python),
-        "rust-burn" | "rust_burn" | "rust" | "burn" => Ok(BcBackend::RustBurn),
-        _ => Err(format!(
-            "unsupported --bc-backend value '{value}'; expected python or rust-burn"
-        )),
-    }
-}
-
-fn parse_python_variant(value: &str) -> Result<PythonLearnerVariant, String> {
-    match value {
-        "eager_fp32" => Ok(PythonLearnerVariant::EagerFp32),
-        "eager_bf16" => Ok(PythonLearnerVariant::EagerBf16),
-        "compile_default" => Ok(PythonLearnerVariant::CompileDefault),
-        "compile_reduce_overhead" => Ok(PythonLearnerVariant::CompileReduceOverhead),
-        "compile_max_autotune" => Ok(PythonLearnerVariant::CompileMaxAutotune),
-        _ => Err(format!(
-            "unsupported --python-variant value '{value}'; expected eager_fp32, eager_bf16, compile_default, compile_reduce_overhead, or compile_max_autotune"
-        )),
-    }
-}
-
-fn parse_python_residual_profile(value: &str) -> Result<PythonResidualProfileConfig, String> {
-    match value {
-        "mish_se" => Ok(PythonResidualProfileConfig::MishSe),
-        "silu_se" => Ok(PythonResidualProfileConfig::SiluSe),
-        "relu_se" => Ok(PythonResidualProfileConfig::ReluSe),
-        "mish_no_se" => Ok(PythonResidualProfileConfig::MishNoSe),
-        "mish_eca" => Ok(PythonResidualProfileConfig::MishEca),
-        "relu_no_se" => Ok(PythonResidualProfileConfig::ReluNoSe),
-        "relu_no_norm_no_se" => Ok(PythonResidualProfileConfig::ReluNoNormNoSe),
-        _ => Err(format!(
-            "unsupported --python-residual-profile value '{value}'; expected mish_se, silu_se, relu_se, mish_no_se, mish_eca, relu_no_se, or relu_no_norm_no_se"
-        )),
-    }
-}
-
-fn parse_experimental_backbone_profile(
-    value: &str,
-) -> Result<ExperimentalBackboneProfileConfig, String> {
-    let mut profile = ExperimentalBackboneProfileConfig {
-        activation: super::BackboneActivationConfig::Mish,
-        se_every_n: super::default_backbone_se_every_n(),
-        norm: super::BackboneNormConfig::Both,
-        num_blocks: None,
-        hidden_channels: None,
-    };
-    for part in value.split(',') {
-        let (key, raw) = part.split_once('=').ok_or_else(|| {
-            format!("invalid --experimental-backbone-profile segment '{part}'; expected key=value")
-        })?;
-        match key {
-            "activation" => {
-                profile.activation = match raw {
-                    "mish" => super::BackboneActivationConfig::Mish,
-                    "silu" => super::BackboneActivationConfig::Silu,
-                    "relu" => super::BackboneActivationConfig::Relu,
-                    _ => return Err(format!("unsupported backbone activation '{raw}'")),
-                };
-            }
-            "se_every_n" | "se-every-n" => {
-                profile.se_every_n =
-                    parse_usize_flag_allowing_zero("se_every_n", Some(raw.to_string()), false)?;
-            }
-            "norm" => {
-                profile.norm = match raw {
-                    "both" => super::BackboneNormConfig::Both,
-                    "first_only" | "first-only" => super::BackboneNormConfig::FirstOnly,
-                    _ => return Err(format!("unsupported backbone norm '{raw}'")),
-                };
-            }
-            "blocks" | "num_blocks" | "num-blocks" => {
-                profile.num_blocks = Some(parse_usize_flag_allowing_zero(
-                    "num_blocks",
-                    Some(raw.to_string()),
-                    false,
-                )?);
-            }
-            "hidden" | "hidden_channels" | "hidden-channels" => {
-                profile.hidden_channels = Some(parse_usize_flag_allowing_zero(
-                    "hidden_channels",
-                    Some(raw.to_string()),
-                    false,
-                )?);
-            }
-            _ => return Err(format!("unsupported backbone profile key '{key}'")),
-        }
-    }
-    Ok(profile)
-}
-
-fn parse_preflight_profile(value: &str) -> Result<PreflightProfile, String> {
-    match value {
-        "default" => Ok(PreflightProfile::Default),
-        "fast-repeated-run" => Ok(PreflightProfile::FastRepeatedRun),
-        _ => Err(format!(
-            "unsupported --pf-profile value '{value}'; expected default or fast-repeated-run"
-        )),
-    }
-}
-
-fn parse_positive_usize_text(flag: &str, raw: &str) -> Result<usize, String> {
-    if raw.is_empty() || raw.starts_with('+') || raw.starts_with('-') {
-        return Err(format!(
-            "invalid {flag} value '{raw}': expected positive integer"
-        ));
-    }
-    let value = raw
-        .parse::<usize>()
-        .map_err(|err| format!("invalid {flag} value '{raw}': {err}"))?;
-    if value == 0 {
-        return Err(format!("{flag} must be greater than 0"));
-    }
-    Ok(value)
-}
-
-fn parse_usize_flag_allowing_zero(
-    flag: &str,
-    value: Option<String>,
-    allow_zero: bool,
-) -> Result<usize, String> {
-    let raw = value.ok_or_else(|| format!("missing value for {flag}"))?;
-    if raw != raw.trim()
-        || raw.contains(char::is_whitespace)
-        || raw.starts_with('+')
-        || raw.starts_with('-')
-    {
-        return Err(format!("invalid {flag} value '{raw}': expected integer"));
-    }
-    let parsed = raw
-        .parse::<usize>()
-        .map_err(|err| format!("invalid {flag} value '{raw}': {err}"))?;
-    if !allow_zero && parsed == 0 {
-        return Err(format!("{flag} must be greater than 0"));
-    }
-    Ok(parsed)
-}
-
-fn parse_u64_flag_allowing_zero(
-    flag: &str,
-    value: Option<String>,
-    allow_zero: bool,
-) -> Result<u64, String> {
-    let raw = value.ok_or_else(|| format!("missing value for {flag}"))?;
-    if raw != raw.trim()
-        || raw.contains(char::is_whitespace)
-        || raw.starts_with('+')
-        || raw.starts_with('-')
-    {
-        return Err(format!("invalid {flag} value '{raw}': expected integer"));
-    }
-    let parsed = raw
-        .parse::<u64>()
-        .map_err(|err| format!("invalid {flag} value '{raw}': {err}"))?;
-    if !allow_zero && parsed == 0 {
-        return Err(format!("{flag} must be greater than 0"));
-    }
-    Ok(parsed)
-}
-
-fn parse_f64_flag(flag: &str, value: Option<String>) -> Result<f64, String> {
-    let raw = value.ok_or_else(|| format!("missing value for {flag}"))?;
-    let trimmed = raw.trim();
-    if trimmed.is_empty() || trimmed.contains(char::is_whitespace) {
-        return Err(format!(
-            "invalid {flag} value '{raw}': expected finite number"
-        ));
-    }
-    let parsed = trimmed
-        .parse::<f64>()
-        .map_err(|err| format!("invalid {flag} value '{raw}': {err}"))?;
-    if !parsed.is_finite() {
-        return Err(format!("{flag} must be finite"));
-    }
-    Ok(parsed)
-}
-
-fn parse_bool_flag(flag: &str, value: Option<String>) -> Result<bool, String> {
-    let raw = value.ok_or_else(|| format!("missing value for {flag}"))?;
-    match raw.as_str() {
-        "0" => Ok(false),
-        "1" => Ok(true),
-        _ => Err(format!("invalid {flag} value '{raw}'; expected 0 or 1")),
-    }
-}
-
-fn parse_usize_range_list(flag: &str, raw: &str) -> Result<Vec<usize>, String> {
-    let mut values = Vec::new();
-    for segment in raw.trim().split(',') {
-        let atom = segment.trim();
-        if atom.is_empty() {
-            return Err(format!("invalid {flag} value '{raw}': empty range segment"));
-        }
-        if atom.contains(char::is_whitespace) {
-            return Err(format!(
-                "invalid {flag} value '{raw}': whitespace inside range atom"
-            ));
-        }
-        parse_usize_range_atom(flag, atom, &mut values)?;
-    }
-    Ok(values)
-}
-
-fn parse_usize_range_atom(flag: &str, atom: &str, out: &mut Vec<usize>) -> Result<(), String> {
-    if let Some((start, rest)) = atom.split_once('-') {
-        let (end, step, multiply) = if let Some((end, step)) = rest.split_once('+') {
-            (end, parse_positive_usize_text(flag, step)?, false)
-        } else if let Some((end, factor)) = rest.split_once('*') {
-            (end, parse_positive_usize_text(flag, factor)?, true)
-        } else {
-            (rest, 1, false)
-        };
-        let start = parse_positive_usize_text(flag, start)?;
-        let end = parse_positive_usize_text(flag, end)?;
-        if start > end {
-            return Err(format!("invalid {flag} range '{atom}': start exceeds end"));
-        }
-        if multiply && step == 1 {
-            return Err(format!(
-                "invalid {flag} range '{atom}': multiplicative step must be greater than 1"
-            ));
-        }
-        let mut current = start;
-        while current <= end {
-            out.push(current);
-            current = if multiply {
-                current.checked_mul(step)
-            } else {
-                current.checked_add(step)
-            }
-            .ok_or_else(|| format!("invalid {flag} range '{atom}': overflow"))?;
-        }
-    } else {
-        out.push(parse_positive_usize_text(flag, atom)?);
-    }
-    Ok(())
-}
-
-fn parse_f64_list(flag: &str, raw: &str) -> Result<Vec<f64>, String> {
-    let mut values = Vec::new();
-    for segment in raw.trim().split(',') {
-        let atom = segment.trim();
-        if atom.is_empty() {
-            return Err(format!("invalid {flag} value '{raw}': empty float segment"));
-        }
-        if atom.contains(char::is_whitespace) {
-            return Err(format!(
-                "invalid {flag} value '{raw}': whitespace inside float atom"
-            ));
-        }
-        let value = atom
-            .parse::<f64>()
-            .map_err(|err| format!("invalid {flag} value '{atom}': {err}"))?;
-        if !value.is_finite() {
-            return Err(format!("{flag} entries must be finite"));
-        }
-        if value <= 0.0 {
-            return Err(format!("{flag} entries must be greater than 0"));
-        }
-        values.push(value);
-    }
-    Ok(values)
-}
-
-fn parse_preflight_bench_candidate_tuples(raw: &str) -> Result<Vec<PreflightBenchTuple>, String> {
-    let mut out = Vec::new();
-    for atom in raw.split(',') {
-        let atom = atom.trim();
-        if atom.is_empty() {
-            return Err("--pf-candidate-tuples contains an empty tuple".to_string());
-        }
-        let mut fields = atom.split(':');
-        let batch_size = parse_positive_usize_text(
-            "--pf-candidate-tuples batch",
-            fields.next().unwrap_or_default(),
-        )?;
-        let ring_batches = parse_positive_usize_text(
-            "--pf-candidate-tuples ring",
-            fields.next().unwrap_or_default(),
-        )?;
-        let loader_threads = parse_positive_usize_text(
-            "--pf-candidate-tuples threads",
-            fields.next().unwrap_or_default(),
-        )?;
-        let prefetch_batches = parse_positive_usize_text(
-            "--pf-candidate-tuples prefetch",
-            fields.next().unwrap_or_default(),
-        )?;
-        if fields.next().is_some() {
-            return Err(format!(
-                "invalid --pf-candidate-tuples tuple {atom}: expected batch:ring:threads:prefetch"
-            ));
-        }
-        out.push(PreflightBenchTuple {
-            batch_size,
-            ring_batches,
-            loader_threads,
-            prefetch_batches,
-        });
-    }
-    if out.is_empty() {
-        return Err("--pf-candidate-tuples must contain at least one tuple".to_string());
-    }
-    Ok(out)
-}
+use common::{
+    normalize_long_flag, parse_bool_flag, parse_f64_flag, parse_f64_list,
+    parse_u64_flag_allowing_zero, parse_usize_flag, parse_usize_flag_allowing_zero,
+    parse_usize_range_list,
+};
+use preflight::{
+    PreflightModeArg, parse_bc_backend, parse_benchmark_source,
+    parse_experimental_backbone_profile, parse_experimental_backend,
+    parse_preflight_bench_candidate_tuples, parse_preflight_mode, parse_preflight_profile,
+};
+use probe::parse_probe_kind;
+use python::{parse_python_residual_profile, parse_python_variant};
 
 pub fn usage(program: &str) -> String {
     format!(
@@ -368,24 +37,6 @@ pub fn usage(program: &str) -> String {
 
 pub fn version(program: &str) -> String {
     format!("{program} {}", env!("CARGO_PKG_VERSION"))
-}
-
-fn parse_probe_kind(value: &str) -> Result<ProbeKind, String> {
-    match value {
-        "train" => Ok(ProbeKind::Train),
-        "validation" => Ok(ProbeKind::Validation),
-        "rl_games" => Ok(ProbeKind::RlGames),
-        "rl_microbatch" => Ok(ProbeKind::RlMicrobatch),
-        _ => Err(format!(
-            "unsupported --probe-kind value '{value}'; expected train, validation, rl_games, or rl_microbatch"
-        )),
-    }
-}
-
-fn parse_usize_flag(flag: &str, value: Option<String>) -> Result<usize, String> {
-    let raw = value.ok_or_else(|| format!("missing value for {flag}"))?;
-    raw.parse::<usize>()
-        .map_err(|err| format!("invalid {flag} value '{raw}': {err}"))
 }
 
 pub fn parse_args<I>(args: I) -> Result<TrainCli, String>

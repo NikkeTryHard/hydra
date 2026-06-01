@@ -4,8 +4,8 @@ Crate-local map for search-label generation and validation support.
 
 ## Owns
 
-- ExIt target construction, losses, AFBS tree adapters.
-- Live/root-decision search-label producers and adapter traits.
+- ExIt target construction, losses, gates, and AFBS tree target adapters.
+- Live/root-decision search-label producers, all-legal root seeding, adapter traits, and live config.
 - Replay-indexed offline ExIt sidecar helpers.
 - Replay-indexed offline DeltaQ sidecar helpers.
 - DeltaQ and ExIt validation reports/collectors.

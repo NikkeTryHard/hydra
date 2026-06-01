@@ -448,6 +448,51 @@ fn parse_policy_output(
                 values: Some(value_old),
             });
         }
+        let legal_expected_bytes =
+            legal_expected.map(|expected| expected * std::mem::size_of::<f32>());
+        if Some(bytes.len()) == legal_expected_bytes {
+            let (requests, legal_total) = legal_context.expect("checked legal context");
+            let values = bytemuck::try_cast_slice::<u8, f32>(bytes).map_err(|err| {
+                PyValueError::new_err(format!(
+                    "PPO inference callback legal-only output must be f32 bytes: {err}"
+                ))
+            })?;
+            let mut logits = Vec::with_capacity(rows);
+            let mut legal_logits = Vec::with_capacity(legal_total);
+            let mut cursor = 0usize;
+            for request in requests {
+                let mut row_logits = [0.0f32; HYDRA_ACTION_SPACE];
+                for (action_idx, &is_legal) in request.decision.legal_mask.iter().enumerate() {
+                    if is_legal {
+                        let logit = values[cursor];
+                        row_logits[action_idx] = logit;
+                        legal_logits.push(logit);
+                        cursor += 1;
+                    }
+                }
+                logits.push(row_logits);
+            }
+            if cursor != legal_total {
+                return Err(PyValueError::new_err(
+                    "PPO inference callback legal-only count mismatch",
+                ));
+            }
+            let mut value_old = Vec::with_capacity(rows);
+            for idx in 0..rows {
+                value_old.push(values[legal_total + idx]);
+            }
+            return Ok(RolloutPolicyOutput {
+                logits,
+                legal_logits: Some(legal_logits),
+                values: Some(value_old),
+            });
+        }
+        if let Some(expected) = legal_expected_bytes {
+            return Err(PyValueError::new_err(format!(
+                "PPO inference callback returned {} bytes, expected {expected} legal logits+values bytes",
+                bytes.len()
+            )));
+        }
     }
     let logits = parse_logits(raw, rows)?;
     Ok(RolloutPolicyOutput {
@@ -1242,6 +1287,9 @@ fn collect_rollout_batch_requests(
         }
         requests.extend(step.requests);
     }
+    if requests.len() > batch_decisions {
+        requests.truncate(batch_decisions);
+    }
     let collection_passes = 1usize;
     if shard_request_min == usize::MAX {
         shard_request_min = 0;
@@ -1573,7 +1621,7 @@ mod tests {
 
     #[test]
     fn legal_only_parse_preserves_order_and_sampling_parity() {
-        Python::try_attach(|py| {
+        Python::attach(|py| {
             let mut runner = GameRunner::new(Some(20260601), 0);
             let decisions = loop {
                 match runner.pending_decisions() {
@@ -1643,13 +1691,12 @@ mod tests {
             .expect("legal sample");
             assert_eq!(legal_action, full_action);
             assert!((legal_logprob - full_logprob).abs() <= 1e-6);
-        })
-        .expect("Python attached");
+        });
     }
 
     #[test]
     fn legal_only_parse_rejects_wrong_length() {
-        Python::try_attach(|py| {
+        Python::attach(|py| {
             let mut runner = GameRunner::new(Some(20260602), 0);
             let decisions = loop {
                 match runner.pending_decisions() {
@@ -1684,13 +1731,12 @@ mod tests {
             .expect("bad legal-only length");
 
             assert!(err.to_string().contains("legal logits+values"));
-        })
-        .expect("Python attached");
+        });
     }
 
     #[test]
     fn parse_policy_output_accepts_split_logits_and_values() {
-        Python::try_attach(|py| {
+        Python::attach(|py| {
             let rows = 2usize;
             let mut logits = vec![0.0f32; rows * HYDRA_ACTION_SPACE];
             for (idx, value) in logits.iter_mut().enumerate() {
@@ -1712,13 +1758,12 @@ mod tests {
                 (rows * HYDRA_ACTION_SPACE - 1) as f32 * 0.25
             );
             assert_eq!(parsed.values.expect("values"), values);
-        })
-        .expect("Python attached");
+        });
     }
 
     #[test]
     fn parse_policy_output_accepts_packed_numpy_memoryview() {
-        Python::try_attach(|py| {
+        Python::attach(|py| {
             let rows = 2usize;
             let mut packed = vec![0.0f32; rows * (HYDRA_ACTION_SPACE + 1)];
             for row in 0..rows {
@@ -1751,13 +1796,12 @@ mod tests {
                 (100 + HYDRA_ACTION_SPACE - 1) as f32
             );
             assert_eq!(parsed.values.expect("values"), vec![-0.5, 0.5]);
-        })
-        .expect("Python attached");
+        });
     }
 
     #[test]
     fn parse_policy_output_rejects_bad_packed_buffer_length() {
-        Python::try_attach(|py| {
+        Python::attach(|py| {
             let rows = 2usize;
             let packed = vec![0.0f32; rows * (HYDRA_ACTION_SPACE + 1) - 1];
             let array_module = py.import("array").expect("array import");
@@ -1777,13 +1821,12 @@ mod tests {
                 .expect("bad packed length");
 
             assert!(err.to_string().contains("buffer items"));
-        })
-        .expect("Python attached");
+        });
     }
 
     #[test]
     fn parse_policy_output_rejects_bad_packed_dtype() {
-        Python::try_attach(|py| {
+        Python::attach(|py| {
             let rows = 2usize;
             let packed = vec![0.0f64; rows * (HYDRA_ACTION_SPACE + 1)];
             let array_module = py.import("array").expect("array import");
@@ -1803,13 +1846,12 @@ mod tests {
                 .expect("bad packed dtype");
 
             assert!(err.to_string().contains("must be float32"));
-        })
-        .expect("Python attached");
+        });
     }
 
     #[test]
     fn parse_policy_output_rejects_bad_split_value_count() {
-        Python::try_attach(|py| {
+        Python::attach(|py| {
             let rows = 2usize;
             let logits = vec![0.0f32; rows * HYDRA_ACTION_SPACE];
             let values = vec![1.0f32];
@@ -1826,8 +1868,7 @@ mod tests {
                 err.to_string()
                     .contains("returned 4 value bytes, expected 8")
             );
-        })
-        .expect("Python attached");
+        });
     }
 
     #[test]

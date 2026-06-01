@@ -20,5 +20,10 @@ hydra-model = { path = "../hydra-model", default-features = false }
 riichienv-core = { path = "../hydra-engine", package = "hydra-engine" }
 rand = "0.9"
 rayon = "1.10"
-pyo3 = { version = "0.28.3", features = ["extension-module"] }
+pyo3 = { version = "0.28.3", features = ["auto-initialize"] }
 bytemuck = "1.21"
+
+
+[features]
+default = ["extension-module"]
+extension-module = ["pyo3/extension-module"]

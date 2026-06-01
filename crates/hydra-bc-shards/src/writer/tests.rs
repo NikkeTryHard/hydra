@@ -9,6 +9,9 @@ use crate::{
     BC_DENSE_SHARD_MAGIC, BC_SHARD_HEADER_SIZE, BC_SHARD_LAYOUT_VERSION, DENSE_REBUILD_MESSAGE,
     FLAG_EXIT, FLAG_SAFETY_RESIDUAL, PACKED_ACTION_MASK_BYTES, record_size_for_flags,
 };
+use crate::{SPATIAL_TARGET_SIZE, TILE_COUNT};
+use hydra_core::action::HYDRA_ACTION_SPACE;
+use hydra_core::encoder::{NUM_CHANNELS, OBS_SIZE};
 use hydra_data_core::sample::{
     COMPACT_MISSING_TILE, CompactObservationFacts, CompactPlayerDiscards, CompactPlayerMelds,
     CompactSafetyFacts,

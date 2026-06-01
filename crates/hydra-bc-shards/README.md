@@ -10,6 +10,13 @@ Crate-local map for backend-agnostic behavior-cloning shard host format.
 - Split manifest/build totals descriptors.
 - Optional target flags for safety residual, ExIt, DeltaQ, oracle/masks.
 
+## Internal module map
+
+- `manifest/`: frozen ABI constants, manifest DTOs, and contract validators.
+- `reader/`: header validation, record decoding, observation reconstruction, and suit/action augmentation.
+- `writer/`: header writing, record encoding, observation fact encoding, packed masks, and primitive writes.
+- `host.rs`: backend-agnostic host batches and reusable scratch buffers.
+
 ## Does not own
 
 - Replay parsing/sample creation: `hydra-replay-loader` and `hydra-data-core` own.

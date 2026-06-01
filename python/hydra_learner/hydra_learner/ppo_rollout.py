@@ -544,7 +544,7 @@ def snapshot_metadata_from_payload(payload: Mapping[str, object]) -> PpoSnapshot
         rollout_seed=_require_int(payload.get("rollout_seed"), "rollout_seed"),
         temperature=_require_float(payload.get("temperature"), "temperature"),
         inference_backend=_require_str(payload.get("inference_backend"), "inference_backend"),
-        device=cast("str | None", device_raw),
+        device=device_raw,
         hidden=_require_int(payload.get("hidden"), "hidden"),
         blocks=_require_int(payload.get("blocks"), "blocks"),
         bottleneck=_require_int(payload.get("bottleneck"), "bottleneck"),

@@ -1,4 +1,7 @@
 use super::*;
+use hydra_belief_search::hand_ev::HandEvFeatures;
+use hydra_belief_search::shanten_batch;
+
 use hydra_safety::bit_set;
 
 #[test]

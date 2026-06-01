@@ -227,7 +227,7 @@ def _validate_batch_snapshot(batch: PpoBatch, snapshot: PpoSnapshotMetadata) -> 
 
 def _legal_count_probe_metrics(batch: PpoBatch) -> dict[str, object]:
     counts = batch.legal_count.detach().to(device="cpu", dtype=torch.float32)
-    rows = int(counts.numel())
+    rows = counts.numel()
     if rows < 1:
         raise ValueError("PPO legal count probe requires at least one row")
     sorted_counts, _ = torch.sort(counts)
@@ -245,7 +245,7 @@ def _legal_count_probe_metrics(batch: PpoBatch) -> dict[str, object]:
         "legal_count_p99": percentile(0.99),
         "legal_count_max": float(counts.max()),
         "legal_logits_f32_count": int(sum_legal),
-        "legal_only_transport_ratio": float(transport_ratio),
+        "legal_only_transport_ratio": transport_ratio,
     }
 
 

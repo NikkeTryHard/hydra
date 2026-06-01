@@ -6,7 +6,7 @@ Crate-local map for shared runtime rails. Pure, low-level, no engine/training de
 
 - Runtime constants/newtypes used across Hydra runtime crates.
 - Action rails in `src/action.rs`.
-- Tile rails in `src/tile.rs`.
+- Tile rails in `src/tile/`.
 - Dependency-cycle breaker below engine-facing/runtime-facing crates.
 
 ## Does not own

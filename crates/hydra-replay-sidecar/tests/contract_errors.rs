@@ -136,6 +136,38 @@ fn exit_lookup_hard_errors_on_shape_version_and_provenance() {
             expected: REPLAY_EXIT_PROVENANCE,
         })
     ));
+
+    let mut record = exit_record();
+    record.semantics = "manual".to_string();
+    assert!(matches!(
+        ExitSidecarIndex::from_records(vec![record]).lookup_label(&key(), 2, &legal_mask, 9, 1),
+        Err(SidecarContractError::Semantics {
+            sidecar: SidecarKind::Exit,
+            expected: REPLAY_EXIT_SEMANTICS_V1,
+        })
+    ));
+
+    let mut record = exit_record();
+    record.legal_mask_digest = 0;
+    assert!(matches!(
+        ExitSidecarIndex::from_records(vec![record]).lookup_label(&key(), 2, &legal_mask, 9, 1),
+        Err(SidecarContractError::LegalMaskDigest {
+            sidecar: SidecarKind::Exit,
+            expected,
+            actual: 0,
+        }) if expected == legal_mask_digest_from_f32(&legal_mask)
+    ));
+
+    let mut record = exit_record();
+    record.source_version = 2;
+    assert!(matches!(
+        ExitSidecarIndex::from_records(vec![record]).lookup_label(&key(), 2, &legal_mask, 9, 1),
+        Err(SidecarContractError::SourceVersion {
+            sidecar: SidecarKind::Exit,
+            expected: 1,
+            actual: 2,
+        })
+    ));
 }
 
 #[test]
@@ -172,6 +204,47 @@ fn delta_q_lookup_hard_errors_on_shape_version_and_provenance() {
         Err(SidecarContractError::Provenance {
             sidecar: SidecarKind::DeltaQ,
             expected: REPLAY_DELTA_Q_PROVENANCE,
+        })
+    ));
+
+    let mut record = delta_q_record();
+    record.semantics = "manual".to_string();
+    assert!(matches!(
+        DeltaQSidecarIndex::from_records(vec![record]).lookup_label(&key(), 2, &legal_mask, 9, 1),
+        Err(SidecarContractError::Semantics {
+            sidecar: SidecarKind::DeltaQ,
+            expected: REPLAY_DELTA_Q_SEMANTICS_V1,
+        })
+    ));
+
+    let mut record = delta_q_record();
+    record.legal_mask_digest = 0;
+    assert!(matches!(
+        DeltaQSidecarIndex::from_records(vec![record]).lookup_label(&key(), 2, &legal_mask, 9, 1),
+        Err(SidecarContractError::LegalMaskDigest {
+            sidecar: SidecarKind::DeltaQ,
+            expected,
+            actual: 0,
+        }) if expected == legal_mask_digest_from_f32(&legal_mask)
+    ));
+
+    let mut record = delta_q_record();
+    record.source_net_hash = 10;
+    assert!(matches!(
+        DeltaQSidecarIndex::from_records(vec![record]).lookup_label(&key(), 2, &legal_mask, 9, 1),
+        Err(SidecarContractError::SourceNetHash {
+            sidecar: SidecarKind::DeltaQ,
+            expected: 9,
+            actual: 10,
+        })
+    ));
+
+    let mut record = delta_q_record();
+    record.mask[2] = 0.5;
+    assert!(matches!(
+        DeltaQSidecarIndex::from_records(vec![record]).lookup_label(&key(), 2, &legal_mask, 9, 1),
+        Err(SidecarContractError::DeltaQContract {
+            sidecar: SidecarKind::DeltaQ,
         })
     ));
 }

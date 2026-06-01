@@ -15,6 +15,8 @@ fi
 
 mapfile -t md_files < <(
   git -C "$ROOT_DIR" diff --cached --name-only --diff-filter=ACMR -- '*.md' \
+    | grep -v '^local/' \
+    | grep -v '^training/' \
     | grep -v '\.original\.md$' || true
 )
 

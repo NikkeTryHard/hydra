@@ -1,4 +1,6 @@
 use super::*;
+use hydra_runtime_types::action::HYDRA_ACTION_SPACE;
+const OBS_SIZE: usize = 192 * 34;
 
 #[test]
 fn puct_selects_high_prior_unvisited() {

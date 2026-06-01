@@ -523,7 +523,7 @@ fn interval_advisories_report_optimizer_and_model_dominance() {
     assert!(keys.contains(&"model_compute_dominates_cuda_interval"));
     let optimizer = advisory(&advisories, "optimizer_step_dominates_cuda_interval");
     assert_eq!(optimizer.severity, AdvisorySeverity::Warning);
-    assert!(optimizer.message.contains("Burn Adam is unfused"));
+    assert!(optimizer.message.contains("fused optimizer"));
     let model = advisory(&advisories, "model_compute_dominates_cuda_interval");
     assert_eq!(model.severity, AdvisorySeverity::Info);
     assert!(model.message.contains("static-input parity proof"));

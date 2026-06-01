@@ -1,19 +1,9 @@
 use super::*;
-#[cfg(feature = "burn-libtorch-obsolete")]
-use burn::backend::libtorch::LibTorchDevice;
-#[cfg(feature = "burn-libtorch-obsolete")]
-use burn::prelude::*;
-#[cfg(feature = "burn-libtorch-obsolete")]
-use hydra_train_algo::bc::policy_agreement_counts;
 use std::fs;
 use std::path::{Path, PathBuf};
-#[cfg(feature = "burn-libtorch-obsolete")]
-use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
 use hydra_train_exec::artifacts::BcArtifactPaths;
-#[cfg(feature = "burn-libtorch-obsolete")]
-use hydra_train_exec::config_runtime::train_device;
 use hydra_train_exec::presentation::{format_progress_message, progress_label};
 use hydra_train_exec::resume::{
     BestValidation, EpochContinuation, paused_training_message,
@@ -754,39 +744,6 @@ fn write_temp_file(label: &str, extension: &str, contents: &str) -> PathBuf {
     path
 }
 
-#[cfg(feature = "burn-libtorch-obsolete")]
-fn train_device_env_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-}
-
-#[cfg(feature = "burn-libtorch-obsolete")]
-struct TrainDeviceEnvGuard {
-    _lock: MutexGuard<'static, ()>,
-}
-
-#[cfg(feature = "burn-libtorch-obsolete")]
-impl TrainDeviceEnvGuard {
-    fn reset() -> Self {
-        let lock = train_device_env_lock()
-            .lock()
-            .expect("train device env lock should not be poisoned");
-        unsafe {
-            env::remove_var("HYDRA_TRAIN_DEVICE");
-        }
-        Self { _lock: lock }
-    }
-}
-
-#[cfg(feature = "burn-libtorch-obsolete")]
-impl Drop for TrainDeviceEnvGuard {
-    fn drop(&mut self) {
-        unsafe {
-            env::remove_var("HYDRA_TRAIN_DEVICE");
-        }
-    }
-}
-
 #[test]
 fn read_resume_state_rejects_legacy_resume_semantics() {
     let dir = unique_temp_dir("legacy_resume_state");
@@ -862,6 +819,8 @@ fn schedule_total_steps_extends_from_resume_global_step() {
         data_dir: PathBuf::from("/tmp/data"),
         raw_mjai_data_dirs: Vec::new(),
         output_dir: PathBuf::from("/tmp/out"),
+        stage: None,
+        run_name: None,
         num_epochs: 1,
         batch_size: 256,
         microbatch_size: Some(64),
@@ -886,6 +845,8 @@ fn schedule_total_steps_extends_from_resume_global_step() {
         bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
         experimental_backbone_profile: None,
         python_raw_mjai_transport: Default::default(),
+        python_raw_mjai_target_games: None,
+        python_raw_mjai_estimated_samples_per_game: None,
         validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
         ema: hydra_train_runtime::config::EmaConfig::default(),
         rl: None,
@@ -1380,6 +1341,8 @@ fn validation_microbatch_and_sample_limit_fallbacks_work() {
         data_dir: PathBuf::from("/tmp/data"),
         raw_mjai_data_dirs: Vec::new(),
         output_dir: PathBuf::from("/tmp/out"),
+        stage: None,
+        run_name: None,
         num_epochs: 1,
         batch_size: 256,
         microbatch_size: Some(64),
@@ -1404,6 +1367,8 @@ fn validation_microbatch_and_sample_limit_fallbacks_work() {
         bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
         experimental_backbone_profile: None,
         python_raw_mjai_transport: Default::default(),
+        python_raw_mjai_target_games: None,
+        python_raw_mjai_estimated_samples_per_game: None,
         validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
         ema: hydra_train_runtime::config::EmaConfig::default(),
         rl: None,
@@ -1468,6 +1433,8 @@ fn validate_config_rejects_zero_validation_microbatch_and_samples() {
         data_dir: PathBuf::from("/tmp/data"),
         raw_mjai_data_dirs: Vec::new(),
         output_dir: PathBuf::from("/tmp/out"),
+        stage: None,
+        run_name: None,
         num_epochs: 1,
         batch_size: 256,
         microbatch_size: Some(64),
@@ -1492,6 +1459,8 @@ fn validate_config_rejects_zero_validation_microbatch_and_samples() {
         bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
         experimental_backbone_profile: None,
         python_raw_mjai_transport: Default::default(),
+        python_raw_mjai_target_games: None,
+        python_raw_mjai_estimated_samples_per_game: None,
         validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
         ema: hydra_train_runtime::config::EmaConfig::default(),
         rl: None,
@@ -1540,6 +1509,8 @@ fn validate_config_accepts_basic_rl_block() {
         data_dir: PathBuf::from("/tmp/data"),
         raw_mjai_data_dirs: Vec::new(),
         output_dir: PathBuf::from("/tmp/out"),
+        stage: None,
+        run_name: None,
         num_epochs: 1,
         batch_size: 256,
         microbatch_size: Some(64),
@@ -1564,6 +1535,8 @@ fn validate_config_accepts_basic_rl_block() {
         bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
         experimental_backbone_profile: None,
         python_raw_mjai_transport: Default::default(),
+        python_raw_mjai_target_games: None,
+        python_raw_mjai_estimated_samples_per_game: None,
         validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
         ema: hydra_train_runtime::config::EmaConfig::default(),
         rl: Some(hydra_train_runtime::config::RlTrainConfig::default()),
@@ -1704,6 +1677,8 @@ fn validate_config_rejects_invalid_bc_hyperparameter_ranges() {
         data_dir: PathBuf::from("/tmp/data"),
         raw_mjai_data_dirs: Vec::new(),
         output_dir: PathBuf::from("/tmp/out"),
+        stage: None,
+        run_name: None,
         num_epochs: 1,
         batch_size: 256,
         microbatch_size: Some(64),
@@ -1728,6 +1703,8 @@ fn validate_config_rejects_invalid_bc_hyperparameter_ranges() {
         bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
         experimental_backbone_profile: None,
         python_raw_mjai_transport: Default::default(),
+        python_raw_mjai_target_games: None,
+        python_raw_mjai_estimated_samples_per_game: None,
         validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
         ema: hydra_train_runtime::config::EmaConfig::default(),
         rl: None,
@@ -1773,6 +1750,8 @@ fn validate_config_requires_sidecar_when_exit_loss_is_enabled() {
         data_dir: PathBuf::from("/tmp/data"),
         raw_mjai_data_dirs: Vec::new(),
         output_dir: PathBuf::from("/tmp/out"),
+        stage: None,
+        run_name: None,
         num_epochs: 1,
         batch_size: 256,
         microbatch_size: Some(64),
@@ -1800,6 +1779,8 @@ fn validate_config_requires_sidecar_when_exit_loss_is_enabled() {
         bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
         experimental_backbone_profile: None,
         python_raw_mjai_transport: Default::default(),
+        python_raw_mjai_target_games: None,
+        python_raw_mjai_estimated_samples_per_game: None,
         validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
         ema: hydra_train_runtime::config::EmaConfig::default(),
         rl: None,
@@ -1837,6 +1818,8 @@ fn validate_config_requires_sidecar_when_delta_q_loss_is_enabled() {
         data_dir: PathBuf::from("/tmp/data"),
         raw_mjai_data_dirs: Vec::new(),
         output_dir: PathBuf::from("/tmp/out"),
+        stage: None,
+        run_name: None,
         num_epochs: 1,
         batch_size: 256,
         microbatch_size: Some(64),
@@ -1864,6 +1847,8 @@ fn validate_config_requires_sidecar_when_delta_q_loss_is_enabled() {
         bc_head_profile: hydra_train_runtime::config::BcHeadProfile::default(),
         experimental_backbone_profile: None,
         python_raw_mjai_transport: Default::default(),
+        python_raw_mjai_target_games: None,
+        python_raw_mjai_estimated_samples_per_game: None,
         validation_gates: hydra_train_runtime::config::ValidationGateConfig::default(),
         ema: hydra_train_runtime::config::EmaConfig::default(),
         rl: None,
@@ -1893,79 +1878,6 @@ fn validate_config_requires_sidecar_when_delta_q_loss_is_enabled() {
     };
     let err = validate_config(&cfg).expect_err("delta_q loss without sidecar should fail");
     assert!(err.contains("delta_q_sidecar_path"));
-}
-
-#[cfg(feature = "burn-libtorch-obsolete")]
-#[test]
-fn train_device_prefers_env_override_then_config() {
-    let _guard = TrainDeviceEnvGuard::reset();
-    assert_eq!(
-        train_device("cpu").expect("cpu device"),
-        LibTorchDevice::Cpu
-    );
-    assert_eq!(
-        train_device("cuda:2").expect("cuda device"),
-        LibTorchDevice::Cuda(2)
-    );
-
-    unsafe {
-        env::set_var("HYDRA_TRAIN_DEVICE", "cuda:0");
-    }
-    assert_eq!(
-        train_device("cpu").expect("env cuda device"),
-        LibTorchDevice::Cuda(0)
-    );
-
-    unsafe {
-        env::set_var("HYDRA_TRAIN_DEVICE", "cpu");
-    }
-    assert_eq!(
-        train_device("cuda:3").expect("env cpu device"),
-        LibTorchDevice::Cpu
-    );
-}
-
-#[cfg(feature = "burn-libtorch-obsolete")]
-#[test]
-fn train_device_rejects_invalid_env_value() {
-    let _guard = TrainDeviceEnvGuard::reset();
-    unsafe {
-        env::set_var("HYDRA_TRAIN_DEVICE", "vulkan");
-    }
-    let err = train_device("cpu").expect_err("invalid env value should fail");
-    assert!(err.contains("unsupported HYDRA_TRAIN_DEVICE"));
-}
-
-#[cfg(feature = "burn-libtorch-obsolete")]
-#[test]
-fn validation_agreement_is_sample_weighted_across_chunks() {
-    let device: <burn::backend::ndarray::NdArray<f32> as burn::tensor::backend::BackendTypes>::Device = Default::default();
-    let logits = Tensor::<burn::backend::ndarray::NdArray<f32>, 2>::from_floats(
-        [[5.0, 0.0], [5.0, 0.0], [5.0, 0.0], [5.0, 0.0], [0.0, 5.0]],
-        &device,
-    );
-    let mask = Tensor::<burn::backend::ndarray::NdArray<f32>, 2>::ones([5, 2], &device);
-    let targets =
-        Tensor::<burn::backend::ndarray::NdArray<f32>, 1, Int>::from_ints([0, 1, 1, 1, 1], &device);
-
-    let (chunk1_correct, chunk1_total) = policy_agreement_counts(
-        logits.clone().slice([0..4, 0..2]),
-        mask.clone().slice([0..4, 0..2]),
-        targets.clone().slice(0..4),
-    );
-    let (chunk2_correct, chunk2_total) = policy_agreement_counts(
-        logits.slice([4..5, 0..2]),
-        mask.slice([4..5, 0..2]),
-        targets.slice(4..5),
-    );
-
-    let weighted = (chunk1_correct + chunk2_correct) as f64 / (chunk1_total + chunk2_total) as f64;
-    let naive_chunk_average = ((chunk1_correct as f64 / chunk1_total as f64)
-        + (chunk2_correct as f64 / chunk2_total as f64))
-        / 2.0;
-
-    assert!((weighted - 0.4).abs() < 1e-12);
-    assert!((naive_chunk_average - 0.625).abs() < 1e-12);
 }
 
 #[test]

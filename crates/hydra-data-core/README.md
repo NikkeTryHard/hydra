@@ -10,6 +10,15 @@ Crate-local map for pure data sample contracts and scoring helpers.
 - GRP placement label helpers.
 - One-hot action helper for sample targets.
 
+## Internal map
+
+- `sample.rs`: public sample API glue and `MjaiSample`.
+- `sample/compact.rs`: compact replay observation fact DTOs and extraction.
+- `sample/score.rs`: score-delta bin/CDF/PDF/value helpers.
+- `sample/placement.rs`: final placement and GRP permutation helpers.
+- `manifest.rs`: manifest/source/filter DTOs.
+- `manifest/io.rs`: private discovery-index binary IO helpers.
+
 ## Does not own
 
 - Replay loading/parsing: `hydra-replay-loader` owns.

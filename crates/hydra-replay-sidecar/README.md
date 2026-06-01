@@ -11,6 +11,12 @@ Crate-local map for pure replay sidecar JSONL contracts.
 - JSONL record reader helpers.
 - Legal-mask digest/copy helpers.
 
+
+## Internal modules
+
+- `exit/record.rs`, `exit/index.rs`, `exit/validate.rs` own ExIt schema, lookup, and contract checks.
+- `delta_q/record.rs`, `delta_q/index.rs`, `delta_q/validate.rs` own DeltaQ schema, lookup, and contract checks.
+
 ## Does not own
 
 - Replay parsing/conversion: `hydra-replay-loader` owns.

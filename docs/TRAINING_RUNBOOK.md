@@ -4,12 +4,13 @@ Compact op entrypoint. Owns: train CLI modes, YAML shape, preflight authority, B
 
 Truth owners:
 - train-bin glue: `crates/hydra-train/src/bin/train.rs`
-- YAML contract: `crates/hydra-train-runtime/src/config.rs`; Python option conversion: `crates/hydra-train-runtime/src/config/python.rs`
+- YAML contract: `crates/hydra-train-runtime/src/config/schema.rs`; CLI DTOs/parser facade: `crates/hydra-train-runtime/src/config/{cli_types.rs,cli.rs}`; Python option conversion: `crates/hydra-train-runtime/src/config/python.rs`
+- stage/profile defaults: `crates/hydra-train-runtime/src/config/{stages.rs,profiles.rs}`
 - shard contract: `crates/hydra-bc-shards/src/lib.rs`
 - shard builder CLI: `crates/hydra-train/src/bin/build_bc_shards.rs`; impl: `crates/hydra-train-exec/src/bc_shard_builder.rs`
 - sidecar shared flags: `crates/hydra-train/src/bin/common/replay_sidecar_common.rs`
 - current shipped/staged status: `docs/CURRENT_STATUS.md`
-- replay audit before train/shard/sidecar: `docker/train/README.md`
+- replay audit before train/shard/sidecar: `mjai_audit` / `docker/train/` Dockerfile workflow
 - compat/runtime surface: `docs/COMPATIBILITY_SURFACE.md`
 
 ## Train CLI modes
@@ -17,7 +18,7 @@ Truth owners:
 Binary shape (`hydra-train` bin stays glue; contracts live in `hydra-train-runtime`, execution in `hydra-train-exec`):
 
 ```bash
-cargo run -p hydra-train --bin train -- <config.yaml> [flags]
+pixi run cargo run -p hydra-train --no-default-features --features training --bin train -- <config.yaml> [flags]
 ```
 
 Modes:
@@ -134,13 +135,13 @@ Default stage names and implemented phase mapping:
 
 | Stage | Name |
 |---|---|
-| T0 | `T0_bc_baseline` |
+| T0 | `bc_baseline` |
 | T1 | `T1_ppo_control` |
 | T2 | `T2_direct_sampled_ach` |
 | T3 | `T3_drda_residual_ach` |
 | T4 | `T4_pbrs_beta_sweep` |
 | T5 | `T5_exit_auxiliary` |
-| T6 | `T6_delta_q_experiment` |
+| T6 | `T6_deltaq_experiment` |
 | T7 | `T7_population_window` |
 
 Explicit `stage` overrides default mapping for both Python and Rust training paths; `run_name` overrides run id. Without overrides, RL phases use matching T1-T7 stage below.
@@ -301,8 +302,8 @@ Use `--raw-mjai-transport stdout` only for compat/debug fallback.
 Torch 2.12 CUDA 12.6 probe env:
 
 ```bash
-pixi run -e py-train-torch212-cu126 torch-check
-pixi run -e py-train-torch212-cu126 python-bc-train -- \
+pixi run torch-check-cu126
+pixi run python-bc-train-cu126 -- \
   --raw-mjai-data-dir /path/to/mjai \
   --raw-mjai-transport pinned_pyo3 \
   --raw-mjai-worker-threads 20 \
@@ -323,7 +324,7 @@ Torch 2.12 nightly CUDA 12.8 local probe env:
 
 ```bash
 TORCHINDUCTOR_MAX_AUTOTUNE_DEFER_LAYOUT_FREEZING=1 \
-  pixi run -e py-train-torch212-nightly-cu128 python-bc-train -- \
+  pixi run python-bc-train-nightly -- \
   --raw-mjai-data-dir /home/cachybtw/Downloads/dataset_bundle/tenhou-houou-mjai-2025 \
   --raw-mjai-transport pinned_pyo3 \
   --raw-mjai-worker-threads 20 \
@@ -399,7 +400,7 @@ Supported `rl.phase` values and default stage mapping:
 - `drda_ach_self_play` -> `T3_drda_residual_ach` (legacy/advanced Rust RL lane)
 - PBRS beta sweep -> `T4_pbrs_beta_sweep`
 - `exit_pondering` -> `T5_exit_auxiliary`
-- DeltaQ experiment -> `T6_delta_q_experiment`
+- DeltaQ experiment -> `T6_deltaq_experiment`
 - population window -> `T7_population_window`
 
 Top-level `stage:` overrides these defaults for campaign layout only; it does not enable capability or change RL algorithm behavior.
@@ -807,7 +808,7 @@ Status:
 Invoke:
 
 ```bash
-cargo run -p hydra-train --bin train -- \
+pixi run cargo run -p hydra-train --no-default-features --features training --bin train -- \
   /config/train.yaml \
   --delta-q-promotion \
   --delta-q-baseline-checkpoint /models/baseline/model_base
@@ -888,7 +889,7 @@ Semantics:
 CUDA graph probe:
 
 ```bash
-HYDRA_CUDA_GRAPH_PROBE=1 train config.yaml
+HYDRA_CUDA_GRAPH_PROBE=1 pixi run cargo run -p hydra-train --no-default-features --features cuda-graph --bin train -- config.yaml
 ```
 
 Reports JSON with `probe_mode=compute_capture_only`, warmup/parity/capture timings, replay repeats, blockers. Production replay intentionally off: `cuda_graph_replay=production_off_probe_only`, because Burn Adam needs fresh Rust-side `GradientsParams`; graph replay cannot safely feed optimizer state.
@@ -926,7 +927,7 @@ Hard failures remain for invalid contracts: stale shard manifest, missing requir
 ## Operator checklist
 
 New BC steady-state run:
-1. Audit corpus with `mjai_audit`; command refs in `docker/train/README.md`.
+1. Audit corpus with `mjai_audit`; inspect `docker/train/` Dockerfiles for container workflow refs.
 2. Build sidecars if using ExIt/DeltaQ supervision; capture reports.
 3. Build BC shards with matching sidecar provenance only if using optional shard cache path.
 4. Inspect manifest split/sample totals and sidecar provenance.

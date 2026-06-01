@@ -16,7 +16,7 @@ Core responsibilities:
 - Parallel batch sim with `rayon`
 - Game loop abstraction with pluggable action selection
 
-Hydra uses 100% Rust stack (see `research/infrastructure/INFRASTRUCTURE.md`). Training/runtime callers may depend on `hydra-core` facade; impl ownership lives in split crates below.
+Hydra's runtime/game engine stack is 100% Rust (see `research/infrastructure/INFRASTRUCTURE.md`). Default BC training is Python/PyTorch through Rust launcher; training/runtime callers may depend on `hydra-core` facade, while impl ownership lives in split crates below.
 
 ## Foundation: RiichiEnv
 
@@ -38,17 +38,17 @@ Because `riichienv-core` correctness already verified upstream: smly ran Mortal 
 
 | Public route | impl owner | Role |
 |--------------|----------------------|------|
-| `hydra_core::tile` | `hydra-runtime-types::tile` | Tile constants/types, 136-format repr, aka-dora, suit permutation |
-| `hydra_core::action` | bridge in `hydra-core` over `hydra-runtime-types::action` | 46-action `HydraAction`, riichienv conversion, legal mask builder |
+| `hydra_core::tile` | facade over `hydra-runtime-types::tile` modules | Tile constants/types, 136-format repr, aka-dora, suit permutation |
+| `hydra_core::action` | facade in `hydra-core/src/action/` over `hydra-runtime-types::action` | 46-action `HydraAction`, riichienv conversion, legal mask builder |
 | `hydra_core::encoder` | `hydra-encoder::encoder` | 192x34 fixed-superset tensor, `ObservationEncoder`, `DirtyFlags` |
 | `hydra_core::batch_encoder` | `hydra-encoder::batch_encoder` | Pre-allocated contiguous batch encoding buffer |
 | `hydra_core::safety` | `hydra-safety` | `SafetyInfo`: genbutsu, suji, kabe, one-chance |
 | `hydra_core::{ct_smc, hand_ev, afbs, endgame, robust_opponent, shanten_batch, sinkhorn}` | `hydra-belief-search` | Belief/search, Hand-EV, shanten cache, Sinkhorn/SIB helpers |
 | `hydra_core::bridge` | `hydra-core::bridge` | riichienv `Observation` -> encoder-ready data |
-| `hydra_core::simulator` | `hydra-core::simulator` | `BatchSimulator`, `BatchConfig`, `GameResult` collection |
-| `hydra_core::game_loop` | `hydra-core::game_loop` | `GameRunner`, `ActionSelector`, run loop |
+| `hydra_core::simulator` | `hydra-core/src/simulator/` | `BatchSimulator`, `BatchConfig`, `GameResult` collection |
+| `hydra_core::game_loop` | `hydra-core/src/game_loop/` | `GameRunner`, `ActionSelector`, run loop |
 | `hydra_core::seeding` | `hydra-core::seeding` | SHA-256 KDF, `SessionRng`, deterministic wall shuffle |
-| `hydra_core::arena` | `hydra-core::arena` | Arena/runtime glue for core orchestration |
+| `hydra_core::arena` | `hydra-core/src/arena/` | Arena/runtime glue for core orchestration |
 
 
 ## Tile System (`hydra-runtime-types::tile`, via `hydra_core::tile`)
@@ -146,7 +146,7 @@ Each observation is `192 x 34` float tensor (6,528 values). First 85 channels re
 | 40-42 | Aka dora flags | Per-suit plane: ch 40 = manzu red five, ch 41 = pinzu, ch 42 = souzu. 1.0 at 5-tile column if red five visible |
 | 43-46 | Riichi flags | One channel per player. Whole plane = 1.0 if player declared riichi |
 | 47-50 | Scores | One channel per player. Whole plane filled with score / 100,000 |
-| 51-54 | Relative score gaps | One channel per player. Filled with (player_score - my_score) / 30,000 |
+| 51-54 | Relative score gaps | One channel per player. Filled with (my_score - player_score) / 30,000 |
 | 55-58 | Shanten one-hot | Ch 55 = tenpai (0), ch 56 = iishanten (1), ch 57 = ryanshanten (2), ch 58 = 3+ shanten. Whole plane = 1.0 for matching shanten |
 | 59 | Round number | Whole plane filled with kyoku / 8.0 (normalized round index) |
 | 60 | Honba count | Whole plane filled with honba / 10.0 |
@@ -180,9 +180,9 @@ Each observation is `192 x 34` float tensor (6,528 values). First 85 channels re
 
 ### Incremental Encoding with DirtyFlags
 
-`DirtyFlags` is bitflags struct; each bit maps to channel group (hand, discards, melds, dora, scores, safety, etc.). When game state changes, only relevant flags are set. On next `encode()` call, only flagged groups recompute. Unchanged channels stay in buffer.
+`DirtyFlags` is bitflags struct; each bit maps to baseline channel group plus optional Group C/D context groups. `encode_incremental()` updates baseline channels only; `SEARCH` and `HAND_EV` are consumed by `encode_incremental_with_context()`, which layers fixed-shape search/belief and Hand-EV channels after baseline update. Unchanged channels stay in buffer.
 
-This matters for perf: one discard dirties only discard + safety channels, skipping more expensive hand/meld/dora re-encoding. In batch sim of thousands of games, savings compound.
+This matters for perf: callers can dirty only channel groups that changed while preserving buffer reuse. Event presets include context dirty bits so context-aware callers clear/rewrite Groups C/D on draw/discard/call; baseline-only callers ignore those bits by API design.
 
 ## Safety System (`hydra-safety`, via `hydra_core::safety`)
 

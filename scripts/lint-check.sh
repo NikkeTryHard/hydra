@@ -73,11 +73,20 @@ run_rustfmt_check() {
 }
 
 run_step() {
-  if [[ "$VERBOSE" == "1" ]]; then
-    printf '\n[hydra lint] %s\n' "$1"
-  fi
+  local label="$1"
   shift
-  "$@"
+  if [[ "$VERBOSE" == "1" ]]; then
+    printf '\n[hydra lint] %s\n' "$label"
+    "$@"
+    return
+  fi
+
+  local output
+  if ! output="$("$@" 2>&1)"; then
+    printf '[hydra lint] %s failed\n' "$label" >&2
+    printf '%s' "$output" >&2
+    return 1
+  fi
 }
 
 
@@ -259,9 +268,9 @@ HOOK
 }
 
 run_python_gate() {
-  run_step 'checking Python format' pixi run -e py-train ruff format --check python scripts/hydra_pytorch_oracle.py
-  run_step 'checking Python lint' pixi run -e py-train ruff check python scripts/hydra_pytorch_oracle.py
-  run_step 'checking Python types' pixi run -e py-train pyrefly check
+  run_step 'checking Python format' pixi run -e py-train scripts/ruff-quiet.sh format --check python scripts/hydra_pytorch_oracle.py
+  run_step 'checking Python lint' pixi run -e py-train scripts/ruff-quiet.sh check python scripts/hydra_pytorch_oracle.py
+  run_step 'checking Python types' pixi run -e py-train scripts/pyrefly-quiet.sh
   run_step 'checking Python tests' pixi run -e py-train scripts/pytest-quiet.sh python/hydra_learner
 }
 

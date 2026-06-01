@@ -150,18 +150,16 @@ fmt = [{ task = "fmt-rust" }, { task = "fmt-python" }]
 fmt-check = [{ task = "fmt-rust-check" }, { task = "fmt-python-check" }]
 check = { cmd = "cargo check --workspace --all-targets --no-default-features --quiet", description = "Default no-heavy Rust check" }
 check-lib = { cmd = "cargo check --workspace --lib --no-default-features --quiet", description = "Fast Rust lib check" }
-build = { cmd = "cargo build --workspace --no-default-features --quiet", description = "Fast default Rust build" }
-build-release = { cmd = "cargo build --workspace --no-default-features --release --quiet", description = "Release Rust build" }
-build-fast = { depends-on = ["build-release"], description = "Compatibility alias for release Rust build" }
-test = [{ task = "test-rust" }, { task = "test-python" }]
-test-lib = { cmd = "scripts/nextest-quiet.sh run --workspace --lib --no-default-features --cargo-profile dev --cargo-quiet --no-fail-fast", description = "Fast Rust lib tests" }
-test-fast = { cmd = "scripts/nextest-quiet.sh run --workspace --tests --no-default-features --cargo-profile dev --cargo-quiet --no-fail-fast", description = "Rust integration tests, no benches/examples" }
-test-exhaustive = { cmd = "scripts/nextest-quiet.sh run --workspace --all-targets --all-features --cargo-profile dev --cargo-quiet --no-fail-fast", description = "All-feature Rust tests" }
-nextest = { depends-on = ["test-rust"], description = "Compatibility alias for Rust tests" }
-lint = [{ task = "lint-rust" }, { task = "lint-python" }, { task = "typecheck-python" }]
+test = { cmd = "pixi run -q --no-progress test-rust && pixi run -q --no-progress test-python", description = "Quiet default Rust + Python tests" }
+test-lib = { cmd = "scripts/nextest-quiet.sh run --workspace --lib --no-default-features --cargo-profile dev --cargo-quiet --no-fail-fast", description = "Quiet fast Rust lib tests" }
+lint = { cmd = "pixi run -q --no-progress lint-rust && pixi run -q --no-progress lint-python && pixi run -q --no-progress typecheck-python", description = "Quiet fast lint gate" }
+gate = { cmd = "pixi run -q --no-progress -x scripts/quiet-gate.sh --fast", description = "Quiet full default gate: fmt-check + lint + tests" }
+gate-full = { cmd = "pixi run -q --no-progress -x scripts/quiet-gate.sh --full", description = "Quiet full gate plus all-feature Rust tests" }
 lint-exhaustive = { cmd = "scripts/lint-check.sh --exhaustive", description = "All-feature/CUDA Rust lint plus Python gate" }
 lint-cuda-graph = { cmd = "scripts/lint-check.sh --cuda-graph", description = "CUDA graph Rust lint plus Python gate" }
-quality = [{ task = "fmt-check" }, { task = "lint" }, { task = "test" }]
+quality = { cmd = "pixi run -q --no-progress gate", description = "Compatibility alias for quiet default gate" }
+build = { cmd = "cargo build --workspace --no-default-features --quiet", description = "Fast default Rust build" }
+build-release = { cmd = "cargo build --workspace --no-default-features --release --quiet", description = "Release Rust build" }
 bench-core = { cmd = "cargo bench -p hydra-core --no-default-features --features benchmarks", description = "Run hydra-core benches" }
 bench-engine = { cmd = "cargo bench -p hydra-engine --no-default-features --features benchmarks", description = "Run hydra-engine benches" }
 bench-train = { cmd = "cargo bench -p hydra-train --no-default-features --features training", description = "Run hydra-train benches" }
@@ -173,13 +171,12 @@ clean = { cmd = "cargo clean", description = "Delete Cargo build artifacts" }
 fmt-rust = { cmd = "cargo fmt --all", description = "Format Rust workspace" }
 fmt-rust-check = { cmd = "cargo fmt --all -- --check", description = "Check Rust formatting" }
 fmt-python = { cmd = "ruff format python scripts/hydra_pytorch_oracle.py", description = "Format Python learner code" }
-fmt-python-check = { cmd = "ruff format --check python scripts/hydra_pytorch_oracle.py", description = "Check Python formatting" }
+fmt-python-check = { cmd = "scripts/ruff-quiet.sh format --check python scripts/hydra_pytorch_oracle.py", description = "Quiet Python formatting check" }
 lint-rust = { cmd = "scripts/lint-check.sh --fast --rust-only", description = "Fast Rust lint" }
-lint-python = { cmd = "ruff check python scripts/hydra_pytorch_oracle.py", description = "Lint Python learner code" }
-lint-python-fix = { cmd = "ruff check --fix python scripts/hydra_pytorch_oracle.py", description = "Auto-fix Python lint" }
-typecheck-python = { cmd = "pyrefly check", description = "Type-check Python learner code" }
-test-rust = { cmd = "scripts/nextest-quiet.sh run --workspace --all-targets --no-default-features --cargo-profile dev --cargo-quiet --no-fail-fast", description = "Default no-heavy Rust tests" }
-test-python = { cmd = "scripts/pytest-quiet.sh python/hydra_learner", description = "Run Python learner tests" }
+lint-python = { cmd = "scripts/ruff-quiet.sh check python scripts/hydra_pytorch_oracle.py", description = "Quiet Python lint" }
+typecheck-python = { cmd = "scripts/pyrefly-quiet.sh", description = "Quiet Python type check; warnings fail" }
+test-rust = { cmd = "scripts/nextest-quiet.sh run --workspace --all-targets --no-default-features --cargo-profile dev --cargo-quiet --no-fail-fast", description = "Quiet no-heavy Rust tests" }
+test-python = { cmd = "scripts/pytest-quiet.sh python/hydra_learner", description = "Quiet Python learner tests" }
 test-python-cuda = { cmd = "scripts/pytest-quiet.sh python/hydra_learner -m 'cuda or compile'", description = "Run Python CUDA/compile tests" }
 python-bc-train = { cmd = "python scripts/hydra_pytorch_oracle.py", default-environment = "py-train", description = "Run stable Python BC learner; pass args after --" }
 python-ppo-control = { cmd = "python scripts/hydra_pytorch_oracle.py ppo-control", default-environment = "py-train", description = "Run stable Python T1 PPO-control learner; pass args after --" }
@@ -250,7 +247,6 @@ project-excludes = ["scripts/generate_*.py"]
 search-path = ["python/hydra_learner"]
 python-version = "3.12"
 python-platform = "linux"
-preset = "strict"
 check-unannotated-defs = true
 infer-return-types = "checked"
 min-severity = "warn"

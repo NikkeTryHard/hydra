@@ -1,4 +1,8 @@
 use super::*;
+use crate::header::{checked_sample_count, read_header_internal};
+use crate::limits::{PARSED_SAMPLE_CACHE_MAGIC, PARSED_SAMPLE_CACHE_VERSION};
+use crate::primitives::{write_f32_array, write_i32, write_u8, write_u16};
+use crate::sample::read_sample;
 use std::fs;
 use std::io::{Cursor, ErrorKind};
 use std::path::Path;
@@ -9,8 +13,7 @@ fn unique_temp_path(label: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("clock should be after epoch")
         .as_nanos();
-    PathBuf::from("/home/cachybtw/tmp")
-        .join(format!("hydra_parsed_sample_cache_{label}_{unique}.cache"))
+    std::env::temp_dir().join(format!("hydra_parsed_sample_cache_{label}_{unique}.cache"))
 }
 
 fn sample_with_optionals(action: u8) -> MjaiSample {

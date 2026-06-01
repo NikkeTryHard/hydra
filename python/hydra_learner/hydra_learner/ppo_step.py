@@ -148,12 +148,12 @@ def ppo_train_step(
     grad_norm_sum = 0.0
     grad_norm_max = 0.0
     metric_rows = 0
-    optimizer_steps = 0
-    epochs_completed = 0
-    stopped_early = False
+    optimizer_steps: int = 0
+    epochs_completed: int = 0
+    stopped_early: bool = False
 
     for epoch in range(config.epochs):
-        epoch_rows = 0
+        epoch_rows: int = 0
         for start in range(0, batch_rows, microbatch_size):
             end = min(start + microbatch_size, batch_rows)
             row_slice = slice(start, end)
@@ -212,7 +212,7 @@ def ppo_train_step(
                 grad_norm_tensor = _clip_grad_norm_for_ppo(model.parameters(), config.grad_clip_norm)
                 if grad_end_event is not None:
                     grad_end_event.record()
-                grad_norm = float(grad_norm_tensor.detach())
+                grad_norm: float = float(grad_norm_tensor.detach())
             else:
                 grad_norm = _total_grad_norm(model.parameters())
                 if grad_end_event is not None:
@@ -468,7 +468,7 @@ def _clip_grad_norm_for_ppo(parameters: Iterable[torch.nn.Parameter], max_norm: 
     ):
         norms = torch._foreach_norm(grads, 2.0)
         total_norm = torch.linalg.vector_norm(torch.stack(norms), 2.0)
-        clip_coef = float(max_norm) / (total_norm + 1.0e-6)
+        clip_coef = max_norm / (total_norm + 1.0e-6)
         torch._foreach_mul_(grads, torch.clamp(clip_coef, max=1.0))
         return total_norm
     return torch.nn.utils.clip_grad_norm_(params, max_norm)

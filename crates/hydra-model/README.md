@@ -12,9 +12,10 @@ opponent hand type, safety residual, oracle critic, and search-as-feature.
 - AMP compatibility helpers.
 - SE-ResNet backbone modules.
 - Model output heads.
-- Inference server/policy-selection utilities.
-- Full Hydra model and forward DTOs.
+- Inference facade plus server, pure CPU policy, and tensor utility modules.
+- Full Hydra model facade plus init, CPU adapter, forward graph, and output DTO modules.
 - Search-as-Feature adaptor modules.
+- ONNX Runtime policy loader split across metadata, device parsing, runtime, and output extraction modules.
 
 ## Does not own
 

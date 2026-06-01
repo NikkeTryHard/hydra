@@ -1,7 +1,12 @@
 use super::*;
-use hydra_core::action::HYDRA_ACTION_SPACE;
-use hydra_core::afbs::AfbsTree;
-use hydra_core::encoder::OBS_SIZE;
+use crate::exit::{ExitConfig, build_exit_from_afbs_tree};
+use hydra_core::action::{DISCARD_END, HYDRA_ACTION_SPACE};
+use hydra_core::afbs::{AfbsTree, predicted_child_hash};
+use hydra_core::bridge::encode_observation;
+use hydra_core::encoder::{OBS_SIZE, ObservationEncoder};
+use hydra_core::safety::SafetyInfo;
+use riichienv_core::observation::Observation;
+use riichienv_core::state::GameState;
 
 // --- Test adapter that returns deterministic child observations ---
 
