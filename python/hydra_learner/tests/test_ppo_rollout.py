@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import random
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import replace
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast, override
 
 import numpy as np
 import pytest
@@ -20,13 +22,27 @@ from hydra_learner.checkpoint import (
 )
 from hydra_learner.losses import LossWeights
 from hydra_learner.model import ACTION_SPACE, HydraPolicyNet
-from hydra_learner.ppo_control_config import PpoControlConfig
-from hydra_learner.ppo_control_rollout import _batch_to_device, _terminal_gae_from_cpu_values
+from hydra_learner.ppo_control_config import (
+    PpoControlConfig,
+    _compatible_resume_config_digests,
+    _config_digest,
+    _json_config,
+)
+from hydra_learner.ppo_control_rollout import (
+    _batch_from_native_payload_fast,
+    _batch_to_device,
+    _make_ppo_inference_callback,
+    _terminal_gae_from_cpu_values,
+)
 from hydra_learner.ppo_rollout import (
     PpoRolloutMetadata,
+    PpoSnapshotMetadata,
     append_ppo_metrics_jsonl,
     artifact_to_ppo_batch,
+    build_ppo_snapshot_metadata,
+    load_ppo_policy_snapshot_artifact,
     load_ppo_rollout_artifact,
+    save_ppo_policy_snapshot_artifact,
     save_ppo_rollout_artifact,
     save_ppo_training_checkpoint,
     train_step_from_rollout_artifact,
@@ -45,6 +61,7 @@ from hydra_learner.rl import (
     PlayerDecisionStep,
     compute_player_local_gae,
     masked_log_prob,
+    masked_log_softmax,
 )
 
 
@@ -108,10 +125,18 @@ def test_ppo_control_uses_run_local_artifact_layout(tmp_path: Path, monkeypatch:
     def fake_export(config: Any, **_kwargs: object) -> None:
         seen["policy_dir"] = config.output_dir
         config.output_dir.mkdir(parents=True, exist_ok=True)
+        seen["export_mode"] = config.export_mode
 
-    def fake_collect(_extension: object, _config: PpoControlConfig, policy_dir: Path, _seed: int) -> dict[str, object]:
+    def fake_collect(
+        _extension: object,
+        _config: PpoControlConfig,
+        policy_dir: Path,
+        _seed: int,
+        snapshot: PpoSnapshotMetadata,
+    ) -> dict[str, object]:
         seen["collect_policy_dir"] = policy_dir
-        return {}
+        seen["snapshot_id"] = snapshot.snapshot_id
+        return {"snapshot_metadata": snapshot.to_payload()}
 
     batch = PpoBatch(
         obs=torch.zeros(2, 192, 34),
@@ -159,6 +184,8 @@ def test_ppo_control_uses_run_local_artifact_layout(tmp_path: Path, monkeypatch:
         lr_decay_samples=None,
         grad_clip_norm=None,
         microbatch_size=1,
+        epochs=1,
+        target_kl=None,
         weight_decay=0.0,
         adam_beta1=0.9,
         adam_beta2=0.999,
@@ -176,6 +203,7 @@ def test_ppo_control_uses_run_local_artifact_layout(tmp_path: Path, monkeypatch:
         tensorboard_dir=None,
         quiet=True,
         rollout_inference="rust-ort",
+        ppo_pipeline_depth=0,
     )
 
     summary = ppo_control.run_ppo_control(config)
@@ -192,6 +220,7 @@ def test_ppo_control_uses_run_local_artifact_layout(tmp_path: Path, monkeypatch:
     assert (run_dir / "launch_metadata.json").is_file()
     assert seen["policy_dir"] == run_dir / "exports" / "onnx_step_00000000"
     assert seen["collect_policy_dir"] == run_dir / "exports" / "onnx_step_00000000"
+    assert seen["export_mode"] == "ppo_policy_value"
     assert summary["paths"] == {
         "run_dir": str(run_dir),
         "logs": str(run_dir / "logs"),
@@ -203,6 +232,153 @@ def test_ppo_control_uses_run_local_artifact_layout(tmp_path: Path, monkeypatch:
     }
     with (run_dir / "summary.json").open(encoding="utf-8") as file:
         assert json.load(file) == summary
+
+
+def test_native_binary_payload_uses_cached_policy_scalars_without_model_recompute() -> None:
+    row_count = 2
+    obs = torch.arange(row_count * 192 * 34, dtype=torch.float32).reshape(row_count, 192, 34) / 1000.0
+    legal_mask = torch.zeros(row_count, ACTION_SPACE, dtype=torch.uint8)
+    legal_mask[0, :3] = 1
+    legal_mask[1, 2:6] = 1
+    actions = bytes([1, 3])
+    legal_counts = bytes([3, 4])
+    player_ids = bytes([0, 1])
+    seat_ids = bytes([0, 1])
+    game_ids = torch.tensor([0, 0], dtype=torch.uint64).numpy().tobytes()
+    turns = torch.tensor([1, 2], dtype=torch.uint32).numpy().tobytes()
+    starts = torch.tensor([0], dtype=torch.uint64).numpy().tobytes()
+    ends = torch.tensor([2], dtype=torch.uint64).numpy().tobytes()
+    placements = bytes([0, 1, 2, 3])
+    old_logits = torch.full((row_count, ACTION_SPACE), -9.0, dtype=torch.float32)
+    old_logits[0, 1] = 4.0
+    old_logits[1, 3] = 5.0
+    value_old = torch.tensor([0.25, -0.5], dtype=torch.float32)
+    old_logprob = torch.tensor([-0.125, -0.25], dtype=torch.float32)
+    raw_advantages = torch.tensor([1.25, -1.5], dtype=torch.float32)
+    returns = torch.tensor([1.5, -2.0], dtype=torch.float32)
+
+    class ExplodingModel(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.zeros(()))
+
+        def policy_value(self, _obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+            raise AssertionError("native exact payload must not recompute policy_value")
+
+    payload: dict[str, object] = {
+        "obs_f32_le": bytearray(obs.numpy().tobytes()),
+        "legal_mask_u8": bytearray(legal_mask.numpy().tobytes()),
+        "actions": bytearray(actions),
+        "legal_counts": bytearray(legal_counts),
+        "player_ids": bytearray(player_ids),
+        "seat_ids": bytearray(seat_ids),
+        "game_ids_u64_le": bytearray(game_ids),
+        "turns_u32_le": bytearray(turns),
+        "game_row_starts_u64_le": bytearray(starts),
+        "game_row_ends_u64_le": bytearray(ends),
+        "placements_u8": bytearray(placements),
+        "old_logits_f32_le": bytearray(old_logits.numpy().tobytes()),
+        "value_old_f32_le": bytearray(value_old.numpy().tobytes()),
+        "old_logprob_f32_le": bytearray(old_logprob.numpy().tobytes()),
+        "raw_advantages_f32_le": bytearray(raw_advantages.numpy().tobytes()),
+        "returns_f32_le": bytearray(returns.numpy().tobytes()),
+        "row_count": row_count,
+        "games": [{"game_id": 0, "placements": [0, 1, 2, 3]}],
+    }
+
+    batch = _batch_from_native_payload_fast(payload, cast("HydraPolicyNet", ExplodingModel()))
+
+    torch.testing.assert_close(batch.bc_logits, old_logits)
+    torch.testing.assert_close(batch.value_old, value_old)
+    torch.testing.assert_close(batch.old_logprob, old_logprob)
+    torch.testing.assert_close(batch.raw_advantages, raw_advantages)
+    torch.testing.assert_close(batch.returns, returns)
+
+
+def test_native_binary_legal_only_payload_reconstructs_masked_logits_and_validates() -> None:
+    row_count = 2
+    obs = torch.arange(row_count * 192 * 34, dtype=torch.float32).reshape(row_count, 192, 34) / 1000.0
+    legal_mask = torch.zeros(row_count, ACTION_SPACE, dtype=torch.uint8)
+    legal_mask[0, [0, 2, 4]] = 1
+    legal_mask[1, [1, 3, 5, 7]] = 1
+    full_logits = torch.full((row_count, ACTION_SPACE), 99.0, dtype=torch.float32)
+    full_logits[0, [0, 2, 4]] = torch.tensor([0.25, -0.5, 1.0])
+    full_logits[1, [1, 3, 5, 7]] = torch.tensor([-1.25, 0.0, 0.75, 1.25])
+    old_legal_logits = full_logits[legal_mask.to(dtype=torch.bool)]
+    value_old = torch.tensor([0.25, -0.5], dtype=torch.float32)
+    old_logprob = masked_log_prob(full_logits, legal_mask.to(dtype=torch.bool), torch.tensor([4, 7]))
+    raw_advantages = torch.tensor([1.25, -1.5], dtype=torch.float32)
+    returns = torch.tensor([1.5, -2.0], dtype=torch.float32)
+
+    class ExplodingModel(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.zeros(()))
+
+        def policy_value(self, _obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+            raise AssertionError("legal-only exact payload must not recompute policy_value")
+
+    payload: dict[str, object] = {
+        "obs_f32_le": bytearray(obs.numpy().tobytes()),
+        "legal_mask_u8": bytearray(legal_mask.numpy().tobytes()),
+        "actions": bytearray([4, 7]),
+        "legal_counts": bytearray([3, 4]),
+        "player_ids": bytearray([0, 1]),
+        "seat_ids": bytearray([0, 1]),
+        "game_ids_u64_le": bytearray(torch.tensor([0, 0], dtype=torch.uint64).numpy().tobytes()),
+        "turns_u32_le": bytearray(torch.tensor([1, 2], dtype=torch.uint32).numpy().tobytes()),
+        "game_row_starts_u64_le": bytearray(torch.tensor([0], dtype=torch.uint64).numpy().tobytes()),
+        "game_row_ends_u64_le": bytearray(torch.tensor([2], dtype=torch.uint64).numpy().tobytes()),
+        "placements_u8": bytearray([0, 1, 2, 3]),
+        "old_legal_logits_f32_le": bytearray(old_legal_logits.numpy().tobytes()),
+        "value_old_f32_le": bytearray(value_old.numpy().tobytes()),
+        "old_logprob_f32_le": bytearray(old_logprob.numpy().tobytes()),
+        "raw_advantages_f32_le": bytearray(raw_advantages.numpy().tobytes()),
+        "returns_f32_le": bytearray(returns.numpy().tobytes()),
+        "row_count": row_count,
+        "games": [{"game_id": 0, "placements": [0, 1, 2, 3]}],
+    }
+
+    batch = _batch_from_native_payload_fast(payload, cast("HydraPolicyNet", ExplodingModel()))
+
+    batch.validate()
+    torch.testing.assert_close(
+        masked_log_softmax(batch.bc_logits, batch.legal_mask), masked_log_softmax(full_logits, batch.legal_mask)
+    )
+    assert torch.count_nonzero(batch.bc_logits.masked_select(~batch.legal_mask)) == 0
+    torch.testing.assert_close(batch.value_old, value_old)
+    torch.testing.assert_close(batch.old_logprob, old_logprob)
+
+
+def test_native_binary_legal_only_payload_rejects_bad_length() -> None:
+    row_count = 1
+    obs = torch.zeros(row_count, 192, 34, dtype=torch.float32)
+    legal_mask = torch.zeros(row_count, ACTION_SPACE, dtype=torch.uint8)
+    legal_mask[0, :3] = 1
+    payload: dict[str, object] = {
+        "obs_f32_le": bytearray(obs.numpy().tobytes()),
+        "legal_mask_u8": bytearray(legal_mask.numpy().tobytes()),
+        "actions": bytearray([0]),
+        "legal_counts": bytearray([3]),
+        "player_ids": bytearray([0]),
+        "seat_ids": bytearray([0]),
+        "game_ids_u64_le": bytearray(torch.tensor([0], dtype=torch.uint64).numpy().tobytes()),
+        "turns_u32_le": bytearray(torch.tensor([1], dtype=torch.uint32).numpy().tobytes()),
+        "game_row_starts_u64_le": bytearray(torch.tensor([0], dtype=torch.uint64).numpy().tobytes()),
+        "game_row_ends_u64_le": bytearray(torch.tensor([1], dtype=torch.uint64).numpy().tobytes()),
+        "placements_u8": bytearray([0, 1, 2, 3]),
+        "old_legal_logits_f32_le": bytearray(torch.zeros(2, dtype=torch.float32).numpy().tobytes()),
+        "value_old_f32_le": bytearray(torch.zeros(1, dtype=torch.float32).numpy().tobytes()),
+        "old_logprob_f32_le": bytearray(torch.zeros(1, dtype=torch.float32).numpy().tobytes()),
+        "raw_advantages_f32_le": bytearray(torch.ones(1, dtype=torch.float32).numpy().tobytes()),
+        "returns_f32_le": bytearray(torch.ones(1, dtype=torch.float32).numpy().tobytes()),
+        "row_count": row_count,
+        "games": [{"game_id": 0, "placements": [0, 1, 2, 3]}],
+    }
+    model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
+
+    with pytest.raises(ValueError, match="old_legal_logits_f32_le length"):
+        _batch_from_native_payload_fast(payload, model)
 
 
 def test_ppo_control_logs_stage_and_resource_metrics(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -252,7 +428,22 @@ def test_ppo_control_logs_stage_and_resource_metrics(tmp_path: Path, monkeypatch
         lambda config, **_kwargs: config.output_dir.mkdir(parents=True, exist_ok=True),
     )
     monkeypatch.setattr(ppo_control, "_load_extension", lambda _path: object())
-    monkeypatch.setattr(ppo_control, "_collect_native_rollout", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        ppo_control,
+        "_collect_native_rollout",
+        lambda *_args, **_kwargs: {
+            "timing": {
+                "mean_requests_per_batch": 1.0,
+                "batch_bucket_le_64": 1,
+                "active_games_mean": 1.0,
+                "shard_request_min_mean": 1.0,
+                "shard_request_max_mean": 1.0,
+                "shard_unused_quota": 0,
+                "shard_request_deficit": 0,
+                "collection_passes": 1,
+            }
+        },
+    )
     monkeypatch.setattr(ppo_control, "_batch_from_native_payload_fast", lambda _payload, _model: batch)
     monkeypatch.setattr(ppo_control, "ppo_train_step", lambda **_kwargs: _FakeResult())
 
@@ -279,6 +470,8 @@ def test_ppo_control_logs_stage_and_resource_metrics(tmp_path: Path, monkeypatch
         lr_decay_samples=None,
         grad_clip_norm=None,
         microbatch_size=1,
+        epochs=1,
+        target_kl=None,
         weight_decay=0.0,
         adam_beta1=0.9,
         adam_beta2=0.999,
@@ -296,6 +489,7 @@ def test_ppo_control_logs_stage_and_resource_metrics(tmp_path: Path, monkeypatch
         tensorboard_dir=None,
         quiet=True,
         rollout_inference="rust-ort",
+        ppo_pipeline_depth=0,
     )
 
     summary = ppo_control.run_ppo_control(config)
@@ -318,8 +512,33 @@ def test_ppo_control_logs_stage_and_resource_metrics(tmp_path: Path, monkeypatch
         "resources/update/disk_read_mb_s",
         "resources/update/disk_write_mb_s",
         "resources/update/gpu_util_percent",
+        "native_timing/mean_requests_per_batch",
+        "native_timing/batch_bucket_le_64",
+        "native_timing/active_games_mean",
+        "native_timing/shard_request_min_mean",
+        "native_timing/shard_request_max_mean",
+        "native_timing/shard_unused_quota",
+        "native_timing/shard_request_deficit",
+        "native_timing/collection_passes",
+        "snapshot_id",
+        "snapshot_global_step",
+        "snapshot_samples_seen",
+        "snapshot_completed_games",
+        "pipeline_depth",
+        "pipeline_enabled",
+        "rollout_wait_ms",
+        "train_overlap_ms",
+        "overlap_efficiency",
+        "future_rollout_ms",
+        "in_flight_discarded",
     ):
         assert key in train_step_event
+    assert train_step_event["snapshot_global_step"] == 0
+    assert train_step_event["snapshot_samples_seen"] == 0
+    assert train_step_event["snapshot_completed_games"] == 0
+    assert isinstance(train_step_event["snapshot_id"], str)
+    assert train_step_event["pipeline_depth"] == 0
+    assert train_step_event["pipeline_enabled"] is False
     assert summary_payload["last_train_metrics"] == train_step
 
 
@@ -331,21 +550,148 @@ def test_batch_to_device_returns_same_batch_when_already_on_target() -> None:
     assert moved is batch
 
 
+def test_native_payload_path_preserves_snapshot_metadata() -> None:
+    model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
+    snapshot = _snapshot_metadata()
+    payload: dict[str, object] = {
+        "snapshot_metadata": snapshot.to_payload(),
+        "row_count": 1,
+        "obs_f32_le": bytearray(torch.zeros(1, 192, 34, dtype=torch.float32).numpy().tobytes()),
+        "legal_mask_u8": bytearray([1] * ACTION_SPACE),
+        "actions": bytearray([0]),
+        "legal_counts": bytearray([ACTION_SPACE]),
+        "player_ids": bytearray([0]),
+        "seat_ids": bytearray([0]),
+        "game_ids_u64_le": bytearray((0).to_bytes(8, "little")),
+        "turns_u32_le": bytearray((0).to_bytes(4, "little")),
+        "game_row_starts_u64_le": bytearray((0).to_bytes(8, "little")),
+        "game_row_ends_u64_le": bytearray((1).to_bytes(8, "little")),
+        "placements_u8": bytearray([0, 1, 2, 3]),
+        "old_logits_f32_le": bytearray(torch.zeros(1, ACTION_SPACE, dtype=torch.float32).numpy().tobytes()),
+        "value_old_f32_le": bytearray(torch.zeros(1, dtype=torch.float32).numpy().tobytes()),
+        "old_logprob_f32_le": bytearray(torch.zeros(1, dtype=torch.float32).numpy().tobytes()),
+        "raw_advantages_f32_le": bytearray(torch.ones(1, dtype=torch.float32).numpy().tobytes()),
+        "returns_f32_le": bytearray(torch.ones(1, dtype=torch.float32).numpy().tobytes()),
+        "games": [{"game_id": 0, "seed": 7, "placements": [0, 1, 2, 3]}],
+    }
+
+    batch = _batch_from_native_payload_fast(payload, model)
+
+    assert batch.snapshot_metadata == snapshot.to_payload()
+    torch.testing.assert_close(batch.old_logprob, torch.zeros(1), rtol=0.0, atol=0.0)
+
+
+def test_ppo_inference_callback_returns_packed_reusable_memoryview() -> None:
+    torch.manual_seed(83)
+    model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
+    callback = _make_ppo_inference_callback(model, torch.device("cpu"), initial_capacity=3)
+    obs = torch.randn(3, 192, 34, dtype=torch.float32)
+
+    packed = callback(bytearray(obs.numpy().tobytes()), obs.shape[0])
+
+    assert isinstance(packed, memoryview)
+    packed_array = np.frombuffer(packed, dtype=np.float32).reshape(3, ACTION_SPACE + 1)
+    assert packed_array.shape == (3, ACTION_SPACE + 1)
+    assert packed_array.dtype == np.float32
+    assert packed_array.flags.c_contiguous
+    timings = callback._timings  # type: ignore[attr-defined]
+    assert timings["callback_obs_h2d_ms"] >= 0.0
+    assert timings["callback_forward_ms"] >= 0.0
+    assert timings["callback_d2h_pack_ms"] >= 0.0
+    assert timings["callback_pack_copy_ms"] >= 0.0
+    assert timings["callback_return_view_ms"] >= 0.0
+    with torch.inference_mode():
+        expected_logits, expected_values = model.policy_value(obs)
+    np.testing.assert_allclose(packed_array[:, :ACTION_SPACE], expected_logits.numpy(), rtol=0.0, atol=0.0)
+    np.testing.assert_allclose(packed_array[:, ACTION_SPACE], expected_values.reshape(3).numpy(), rtol=0.0, atol=0.0)
+
+    initial_ptr = callback._packed_buffer_ptr()  # type: ignore[attr-defined]
+    initial_capacity = callback._packed_capacity()  # type: ignore[attr-defined]
+    callback(bytearray(obs[:2].numpy().tobytes()), 2)
+    assert callback._packed_buffer_ptr() == initial_ptr  # type: ignore[attr-defined]
+    assert callback._packed_capacity() == initial_capacity  # type: ignore[attr-defined]
+
+    larger_obs = torch.randn(5, 192, 34, dtype=torch.float32)
+    callback(bytearray(larger_obs.numpy().tobytes()), 5)
+    assert callback._packed_capacity() == 5  # type: ignore[attr-defined]
+    assert callback._packed_buffer_ptr() != initial_ptr  # type: ignore[attr-defined]
+
+
+def test_ppo_inference_callback_returns_legal_only_packed_memoryview() -> None:
+    torch.manual_seed(84)
+    model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
+    callback = _make_ppo_inference_callback(model, torch.device("cpu"), initial_capacity=1)
+    obs = torch.randn(2, 192, 34, dtype=torch.float32)
+    legal_mask = torch.zeros(2, ACTION_SPACE, dtype=torch.uint8)
+    legal_mask[0, [0, 3, 5]] = 1
+    legal_mask[1, [2, 4]] = 1
+
+    packed = callback(bytearray(obs.numpy().tobytes()), bytearray(legal_mask.numpy().tobytes()), obs.shape[0])
+    assert isinstance(packed, memoryview)
+
+    packed_array = np.frombuffer(packed, dtype=np.float32)
+    assert packed_array.shape == (7,)
+    timings = callback._timings  # type: ignore[attr-defined]
+    assert timings["callback_legal_gather_ms"] >= 0.0
+    assert timings["callback_legal_d2h_pack_ms"] >= 0.0
+    assert timings["callback_d2h_pack_ms"] >= timings["callback_legal_d2h_pack_ms"]
+    assert timings["callback_legal_transport_ratio"] == pytest.approx(7 / (2 * (ACTION_SPACE + 1)))
+    with torch.inference_mode():
+        expected_logits, expected_values = model.policy_value(obs)
+    expected = torch.cat(
+        [expected_logits[legal_mask.to(dtype=torch.bool)], expected_values.reshape(2)],
+        dim=0,
+    )
+    np.testing.assert_allclose(packed_array, expected.numpy(), rtol=0.0, atol=0.0)
+
+
+def test_ppo_inference_callback_rejects_negative_rows() -> None:
+    model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
+    callback = _make_ppo_inference_callback(model, torch.device("cpu"))
+
+    with pytest.raises(ValueError, match="rows must be non-negative"):
+        callback(bytearray(), -1)
+
+
+def _snapshot_metadata() -> PpoSnapshotMetadata:
+    return build_ppo_snapshot_metadata(
+        config_digest_sha256="a" * 64,
+        global_step=3,
+        samples_seen=20,
+        completed_games=5,
+        rollout_seed=12,
+        temperature=0.8,
+        inference_backend="torch-callback",
+        hidden=8,
+        blocks=1,
+        bottleneck=4,
+        residual_profile="tiny",
+        backbone_profile="conv2d_local3",
+        conv_memory_format="contiguous",
+        encoder_shape=(192, 34),
+        action_space=ACTION_SPACE,
+    )
+
+
 def test_ppo_rollout_artifact_roundtrip_and_batch_conversion(tmp_path: Path) -> None:
     batch = _valid_batch()
     path = tmp_path / "rollout.pt"
+    snapshot = _snapshot_metadata()
     metadata = PpoRolloutMetadata(
         rank_utility_used="U_A",
         gae_gamma=0.995,
         gae_lambda=0.95,
         reward_shaping=default_reward_shaping_metadata(gamma=0.995, gae_lambda=0.95),
+        snapshot=snapshot,
     )
-
     save_ppo_rollout_artifact(path, batch, metadata)
     artifact = load_ppo_rollout_artifact(path)
     loaded_batch = artifact_to_ppo_batch(artifact)
 
     assert artifact.metadata == metadata
+    assert loaded_batch.snapshot_metadata == snapshot.to_payload()
+    assert artifact.metadata.snapshot is not None
+    assert artifact.metadata.snapshot.snapshot_id == snapshot.snapshot_id
     for name in (
         "obs",
         "actions",
@@ -379,6 +725,30 @@ def test_ppo_rollout_artifact_validation_hard_errors(tmp_path: Path, field: str,
     torch.save(payload, path)
 
     with pytest.raises((TypeError, ValueError), match=match):
+        load_ppo_rollout_artifact(path)
+
+
+def test_ppo_rollout_artifact_rejects_malformed_snapshot_metadata(tmp_path: Path) -> None:
+    path = tmp_path / "bad-snapshot.pt"
+    payload = _artifact_payload(_valid_batch())
+    metadata = cast("dict[str, object]", payload["metadata"])
+    snapshot = _snapshot_metadata().to_payload()
+    snapshot.pop("snapshot_id")
+    metadata["snapshot"] = snapshot
+    torch.save(payload, path)
+
+    with pytest.raises(ValueError, match="snapshot_id"):
+        load_ppo_rollout_artifact(path)
+
+
+def test_ppo_rollout_artifact_rejects_new_schema_missing_snapshot_metadata(tmp_path: Path) -> None:
+    path = tmp_path / "missing-snapshot.pt"
+    payload = _artifact_payload(_valid_batch())
+    metadata = cast("dict[str, object]", payload["metadata"])
+    metadata["snapshot_required"] = True
+    torch.save(payload, path)
+
+    with pytest.raises(ValueError, match="snapshot"):
         load_ppo_rollout_artifact(path)
 
 
@@ -743,7 +1113,7 @@ def test_ppo_rollout_negative_boundary_errors(
         write_ppo_smoke_rollout_artifact(tmp_path / "bad.pt", bad, model=model, torch_seed=5)
 
 
-def _valid_batch() -> PpoBatch:
+def _valid_batch(snapshot_metadata: dict[str, object] | None = None) -> PpoBatch:
     obs = torch.zeros(2, 192, 34, dtype=torch.float32)
     legal_mask = torch.zeros(2, ACTION_SPACE, dtype=torch.bool)
     legal_mask[0, :2] = True
@@ -764,6 +1134,7 @@ def _valid_batch() -> PpoBatch:
         game_id=torch.tensor([123, 123], dtype=torch.int64),
         turn=torch.tensor([0, 1], dtype=torch.int64),
         rank_utility_used="U_A",
+        snapshot_metadata=snapshot_metadata,
     )
 
 
@@ -895,6 +1266,930 @@ def _bad_finite_obs() -> torch.Tensor:
     obs = torch.zeros(192, 34, dtype=torch.float32)
     obs[0, 0] = torch.nan
     return obs
+
+
+def test_ppo_policy_snapshot_artifact_roundtrip_strict_loads(tmp_path: Path) -> None:
+    model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4, residual_profile="mish_se")
+    model_config = ModelConfig(hidden=8, blocks=1, bottleneck=4)
+    snapshot = _snapshot_metadata()
+
+    path, size = save_ppo_policy_snapshot_artifact(tmp_path, model=model, model_config=model_config, snapshot=snapshot)
+    artifact = load_ppo_policy_snapshot_artifact(path, expected_snapshot=snapshot, expected_model_config=model_config)
+
+    assert path.name == f"snapshot_{snapshot.global_step:08d}_{snapshot.snapshot_id}.pt"
+    assert size > 0
+    assert not path.with_suffix(".pt.tmp").exists()
+    assert artifact.snapshot_metadata.snapshot_id == snapshot.snapshot_id
+    assert artifact.model_config == model_config
+    assert set(artifact.model_state) == set(model.state_dict())
+
+
+def test_ppo_policy_snapshot_artifact_rejects_wrong_snapshot_id(tmp_path: Path) -> None:
+    model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4, residual_profile="mish_se")
+    model_config = ModelConfig(hidden=8, blocks=1, bottleneck=4)
+    snapshot = _snapshot_metadata()
+    other = build_ppo_snapshot_metadata(
+        config_digest_sha256=snapshot.config_digest_sha256,
+        global_step=snapshot.global_step + 1,
+        samples_seen=snapshot.samples_seen,
+        completed_games=snapshot.completed_games,
+        rollout_seed=snapshot.rollout_seed,
+        temperature=snapshot.temperature,
+        inference_backend=snapshot.inference_backend,
+        hidden=snapshot.hidden,
+        blocks=snapshot.blocks,
+        bottleneck=snapshot.bottleneck,
+        residual_profile=snapshot.residual_profile,
+        backbone_profile=snapshot.backbone_profile,
+        conv_memory_format=snapshot.conv_memory_format,
+        encoder_shape=snapshot.encoder_shape,
+        action_space=snapshot.action_space,
+    )
+    path, _size = save_ppo_policy_snapshot_artifact(tmp_path, model=model, model_config=model_config, snapshot=snapshot)
+
+    with pytest.raises(ValueError, match="metadata does not match"):
+        load_ppo_policy_snapshot_artifact(path, expected_snapshot=other, expected_model_config=model_config)
+
+
+def test_ppo_pipeline_rejects_mixed_snapshot_batch() -> None:
+    snapshot = _snapshot_metadata()
+    batch = _valid_batch(snapshot_metadata={**snapshot.to_payload(), "snapshot_id": "other"})
+
+    with pytest.raises(ValueError, match="different policies"):
+        ppo_control._validate_batch_snapshot(batch, snapshot)
+
+
+def test_ppo_frozen_snapshot_does_not_share_parameter_storage(tmp_path: Path) -> None:
+    init_checkpoint = tmp_path / "init.pt"
+    init_checkpoint.write_bytes(b"checkpoint")
+    config = PpoControlConfig(
+        init_checkpoint=init_checkpoint,
+        output_dir=tmp_path / "run",
+        steps=1,
+        games_per_update=1,
+        seed=7,
+        device="cpu",
+        temperature=1.0,
+        arena_batch_decisions=1,
+        arena_threads=0,
+        extension_path=tmp_path / "libfake.so",
+        hidden=8,
+        blocks=1,
+        bottleneck=4,
+        residual_profile="mish_se",
+        backbone_profile="conv2d_local3",
+        conv_memory_format="contiguous",
+        lr=1.0e-3,
+        min_lr=0.0,
+        lr_warmup_samples=0,
+        lr_decay_samples=None,
+        grad_clip_norm=None,
+        microbatch_size=1,
+        epochs=1,
+        target_kl=None,
+        weight_decay=0.0,
+        adam_beta1=0.9,
+        adam_beta2=0.999,
+        adam_eps=1.0e-8,
+        adamw_fused="off",
+        adamw_foreach="off",
+        bc_kl_reverse_coef=0.0,
+        entropy_alpha=1.0e-3,
+        entropy_beta=1.0e-2,
+        entropy_alpha_max=0.05,
+        log_every_steps=1,
+        checkpoint_every_steps=1,
+        keep_step_checkpoints=False,
+        resume=None,
+        tensorboard_dir=None,
+        quiet=True,
+        rollout_inference="rust-ort",
+        ppo_pipeline_depth=1,
+    )
+    live = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
+
+    frozen = ppo_control._capture_frozen_model_snapshot(config, live)
+    live_param = next(live.parameters())
+    frozen_param = next(frozen.parameters())
+    before = frozen_param.detach().clone()
+    with torch.no_grad():
+        live_param.add_(1.0)
+
+    assert live_param.data_ptr() != frozen_param.data_ptr()
+    torch.testing.assert_close(frozen_param, before)
+    assert frozen.training is False
+
+
+def test_ppo_pipeline_depth_one_snapshot_order_and_batch_metrics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    init_checkpoint = tmp_path / "init.pt"
+    init_checkpoint.write_bytes(b"checkpoint")
+    order: list[str] = []
+
+    class _FakeModel(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.zeros(()))
+
+    class _FakeOptimizer:
+        def __init__(self) -> None:
+            self.param_groups = [{"lr": 0.0}]
+
+    class _FakeInit:
+        global_step = 0
+        samples_seen = 0
+
+    class _FakeResult:
+        def __init__(self) -> None:
+            self.metrics: dict[str, float] = {"loss_total": 0.0}
+            self.entropy_controller: None = None
+
+    def collect(**kwargs: object) -> ppo_control._RolloutResult:
+        step = cast("int", kwargs["global_step"])
+        samples = cast("int", kwargs["samples_seen"])
+        completed = cast("int", kwargs["completed_games"])
+        cfg = cast("PpoControlConfig", kwargs["config"])
+        snapshot = ppo_control._snapshot_metadata(
+            cfg, cast("str", kwargs["config_digest"]), step, samples, completed, cfg.seed + completed
+        )
+        order.append(f"snapshot {step}")
+        order.append(f"rollout {step}")
+        return ppo_control._RolloutResult(
+            payload={"snapshot_metadata": snapshot.to_payload()},
+            batch=_valid_batch(snapshot_metadata=snapshot.to_payload()),
+            snapshot=snapshot,
+            rollout_seed=snapshot.rollout_seed,
+            onnx_export_ms=0.0,
+            native_rollout_ms=0.0,
+            batch_build_ms=0.0,
+            rollout_started=ppo_control.time.perf_counter(),
+            future_rollout_ms=0.0,
+        )
+
+    def rollout_from_snapshot(**kwargs: object) -> ppo_control._RolloutResult:
+        snapshot = cast("PpoSnapshotMetadata", kwargs["expected_snapshot"])
+        order.append(f"snapshot {snapshot.global_step}")
+        order.append(f"rollout {snapshot.global_step}")
+        batch = _valid_batch(snapshot_metadata=snapshot.to_payload())
+        return ppo_control._RolloutResult(
+            payload={"snapshot_metadata": snapshot.to_payload()},
+            batch=batch,
+            snapshot=snapshot,
+            rollout_seed=snapshot.rollout_seed,
+            onnx_export_ms=0.0,
+            native_rollout_ms=0.0,
+            batch_build_ms=0.0,
+            rollout_started=ppo_control.time.perf_counter(),
+            future_rollout_ms=25.0,
+            child_start_load_ms=3.0,
+        )
+
+    class _FakeFuture:
+        def __init__(self, result: ppo_control._RolloutResult) -> None:
+            self._result = result
+
+        def result(self) -> ppo_control._RolloutResult:
+            return self._result
+
+        def cancel(self) -> bool:
+            return True
+
+    class _FakeExecutor:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def submit(self, fn: Callable[..., ppo_control._RolloutResult], **kwargs: object) -> _FakeFuture:
+            return _FakeFuture(fn(**kwargs))
+
+        def shutdown(self, *, wait: bool, cancel_futures: bool) -> None:
+            assert wait is False
+            assert cancel_futures is True
+
+    def train(**_kwargs: object) -> _FakeResult:
+        order.append(f"train {len([item for item in order if item.startswith('train')])}")
+        return _FakeResult()
+
+    monkeypatch.setattr(ppo_control, "_model", lambda _config: _FakeModel())
+    monkeypatch.setattr(ppo_control, "build_optimizer", lambda _model, _optimizer_config: _FakeOptimizer())
+    monkeypatch.setattr(ppo_control, "load_checkpoint_init_only", lambda *_args, **_kwargs: _FakeInit())
+    monkeypatch.setattr(ppo_control, "_load_extension", lambda _path: object())
+    monkeypatch.setattr(ppo_control, "_collect_rollout_batch", collect)
+    monkeypatch.setattr(ppo_control, "_collect_rollout_batch_from_snapshot_artifact", rollout_from_snapshot)
+    monkeypatch.setattr(ppo_control, "ppo_train_step", train)
+    monkeypatch.setattr(ppo_control, "ProcessPoolExecutor", _FakeExecutor)
+    monkeypatch.setattr(
+        ppo_control,
+        "save_ppo_policy_snapshot_artifact",
+        lambda _run_dir, **_kwargs: (tmp_path / "snapshot.pt", 7),
+    )
+    monkeypatch.setattr(
+        ppo_control,
+        "_save_t1_checkpoint",
+        lambda path, *_args, **_kwargs: path.parent.mkdir(parents=True, exist_ok=True)
+        or path.write_bytes(b"checkpoint"),
+    )
+    config = _ppo_control_config(tmp_path, init_checkpoint, steps=2, pipeline_depth=1)
+
+    summary = ppo_control.run_ppo_control(config)
+
+    assert order == ["snapshot 0", "rollout 0", "train 0", "snapshot 1", "rollout 1", "train 1"]
+    metrics = cast("dict[str, Any]", cast("dict[str, Any]", summary["summary"])["last_train_metrics"])
+    assert metrics["pipeline_enabled"] is True
+    assert metrics["pipeline_mode"] == "process_short_lived"
+    assert metrics["snapshot_global_step"] == 1
+    assert metrics["train_overlap_ms"] > 0.0
+    assert metrics["overlap_efficiency"] > 0.0
+    assert metrics["snapshot_save_ms"] >= 0.0
+    assert metrics["snapshot_artifact_bytes"] == 7
+    assert metrics["child_start_load_ms"] == 3.0
+
+
+def test_ppo_pipeline_failed_future_aborts_before_next_train(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    init_checkpoint = tmp_path / "init.pt"
+    init_checkpoint.write_bytes(b"checkpoint")
+    train_calls = 0
+
+    class _FakeModel(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.zeros(()))
+
+    class _FakeOptimizer:
+        def __init__(self) -> None:
+            self.param_groups = [{"lr": 0.0}]
+
+    class _FakeInit:
+        global_step = 0
+        samples_seen = 0
+
+    class _FakeResult:
+        def __init__(self) -> None:
+            self.metrics: dict[str, float] = {"loss_total": 0.0}
+            self.entropy_controller: None = None
+
+    def collect(**kwargs: object) -> ppo_control._RolloutResult:
+        step = cast("int", kwargs["global_step"])
+        if step == 1:
+            raise RuntimeError("future failed")
+        cfg = cast("PpoControlConfig", kwargs["config"])
+        snapshot = ppo_control._snapshot_metadata(cfg, cast("str", kwargs["config_digest"]), 0, 0, 0, cfg.seed)
+        return ppo_control._RolloutResult(
+            {"snapshot_metadata": snapshot.to_payload()},
+            _valid_batch(snapshot_metadata=snapshot.to_payload()),
+            snapshot,
+            snapshot.rollout_seed,
+            0.0,
+            0.0,
+            0.0,
+            ppo_control.time.perf_counter(),
+            0.0,
+        )
+
+    def rollout_from_snapshot(**kwargs: object) -> ppo_control._RolloutResult:
+        snapshot = cast("PpoSnapshotMetadata", kwargs["expected_snapshot"])
+        if snapshot.global_step == 1:
+            raise RuntimeError("future failed")
+        return collect(
+            config=kwargs["config"],
+            config_digest=kwargs["config_digest"],
+            global_step=snapshot.global_step,
+            samples_seen=snapshot.samples_seen,
+            completed_games=snapshot.completed_games,
+        )
+
+    class _FakeFuture:
+        def __init__(self, result: ppo_control._RolloutResult | BaseException) -> None:
+            self._result = result
+
+        def result(self) -> ppo_control._RolloutResult:
+            if isinstance(self._result, BaseException):
+                raise self._result
+            return self._result
+
+        def cancel(self) -> bool:
+            return True
+
+    class _FakeExecutor:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def submit(self, fn: Callable[..., ppo_control._RolloutResult], **kwargs: object) -> _FakeFuture:
+            try:
+                return _FakeFuture(fn(**kwargs))
+            except BaseException as exc:
+                return _FakeFuture(exc)
+
+        def shutdown(self, *, wait: bool, cancel_futures: bool) -> None:
+            assert wait is False
+            assert cancel_futures is True
+
+    def train(**_kwargs: object) -> _FakeResult:
+        nonlocal train_calls
+        train_calls += 1
+        return _FakeResult()
+
+    monkeypatch.setattr(ppo_control, "_model", lambda _config: _FakeModel())
+    monkeypatch.setattr(ppo_control, "build_optimizer", lambda _model, _optimizer_config: _FakeOptimizer())
+    monkeypatch.setattr(ppo_control, "load_checkpoint_init_only", lambda *_args, **_kwargs: _FakeInit())
+    monkeypatch.setattr(ppo_control, "_load_extension", lambda _path: object())
+    monkeypatch.setattr(ppo_control, "_collect_rollout_batch", collect)
+    monkeypatch.setattr(ppo_control, "_collect_rollout_batch_from_snapshot_artifact", rollout_from_snapshot)
+    monkeypatch.setattr(ppo_control, "ppo_train_step", train)
+    monkeypatch.setattr(ppo_control, "ProcessPoolExecutor", _FakeExecutor)
+    monkeypatch.setattr(
+        ppo_control,
+        "save_ppo_policy_snapshot_artifact",
+        lambda _run_dir, **_kwargs: (tmp_path / "snapshot.pt", 7),
+    )
+    monkeypatch.setattr(
+        ppo_control, "_save_t1_checkpoint", lambda path, *_args, **_kwargs: path.write_bytes(b"checkpoint")
+    )
+
+    with pytest.raises(RuntimeError, match="future failed"):
+        ppo_control.run_ppo_control(_ppo_control_config(tmp_path, init_checkpoint, steps=2, pipeline_depth=1))
+
+    assert train_calls == 1
+
+
+def test_ppo_pipeline_in_flight_rollout_discarded_on_shutdown(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    init_checkpoint = tmp_path / "init.pt"
+    init_checkpoint.write_bytes(b"checkpoint")
+    cancelled = False
+
+    class _FakeModel(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.zeros(()))
+
+    class _FakeOptimizer:
+        def __init__(self) -> None:
+            self.param_groups = [{"lr": 0.0}]
+
+    class _FakeInit:
+        global_step = 0
+        samples_seen = 0
+
+    class _FakeResult:
+        def __init__(self) -> None:
+            self.metrics: dict[str, float] = {"loss_total": 0.0}
+            self.entropy_controller: None = None
+
+    class _FakeFuture:
+        def result(self) -> ppo_control._RolloutResult:
+            raise AssertionError("discarded future must not be consumed")
+
+        def cancel(self) -> bool:
+            nonlocal cancelled
+            cancelled = True
+            return True
+
+    class _FakeExecutor:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def submit(self, *_args: object, **_kwargs: object) -> _FakeFuture:
+            return _FakeFuture()
+
+        def shutdown(self, *, wait: bool, cancel_futures: bool) -> None:
+            assert wait is False
+            assert cancel_futures is True
+
+    def collect(**kwargs: object) -> ppo_control._RolloutResult:
+        cfg = cast("PpoControlConfig", kwargs["config"])
+        snapshot = ppo_control._snapshot_metadata(cfg, cast("str", kwargs["config_digest"]), 0, 0, 0, cfg.seed)
+        return ppo_control._RolloutResult(
+            {"snapshot_metadata": snapshot.to_payload()},
+            _valid_batch(snapshot_metadata=snapshot.to_payload()),
+            snapshot,
+            snapshot.rollout_seed,
+            0.0,
+            0.0,
+            0.0,
+            ppo_control.time.perf_counter(),
+            0.0,
+        )
+
+    def save_checkpoint(_path: Path, *_args: object, **_kwargs: object) -> None:
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(ppo_control, "ProcessPoolExecutor", _FakeExecutor)
+    monkeypatch.setattr(ppo_control, "_model", lambda _config: _FakeModel())
+    monkeypatch.setattr(ppo_control, "build_optimizer", lambda _model, _optimizer_config: _FakeOptimizer())
+    monkeypatch.setattr(ppo_control, "load_checkpoint_init_only", lambda *_args, **_kwargs: _FakeInit())
+    monkeypatch.setattr(ppo_control, "_load_extension", lambda _path: object())
+    monkeypatch.setattr(ppo_control, "_collect_rollout_batch", collect)
+    monkeypatch.setattr(
+        ppo_control,
+        "_collect_rollout_batch_from_snapshot_artifact",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError()),
+    )
+    monkeypatch.setattr(ppo_control, "ppo_train_step", lambda **_kwargs: _FakeResult())
+    monkeypatch.setattr(
+        ppo_control,
+        "save_ppo_policy_snapshot_artifact",
+        lambda _run_dir, **_kwargs: (tmp_path / "snapshot.pt", 7),
+    )
+    monkeypatch.setattr(ppo_control, "_save_t1_checkpoint", save_checkpoint)
+
+    with pytest.raises(KeyboardInterrupt):
+        ppo_control.run_ppo_control(_ppo_control_config(tmp_path, init_checkpoint, steps=2, pipeline_depth=1))
+
+    assert cancelled
+
+
+def test_ppo_control_serial_default_depth_zero(tmp_path: Path) -> None:
+    init_checkpoint = tmp_path / "init.pt"
+    init_checkpoint.write_bytes(b"checkpoint")
+    args = ppo_control.parse_args(
+        [
+            "--init-checkpoint",
+            str(init_checkpoint),
+            "--out",
+            str(tmp_path / "run"),
+            "--steps",
+            "1",
+            "--hidden",
+            "8",
+            "--blocks",
+            "1",
+            "--bottleneck",
+            "4",
+            "--residual-profile",
+            "mish_se",
+            "--backbone-profile",
+            "conv2d_local3",
+            "--conv-memory-format",
+            "contiguous",
+        ]
+    )
+
+    config = ppo_control.validate_args(args)
+
+    assert config.ppo_pipeline_depth == 0
+
+
+def test_ppo_control_rollout_device_defaults_to_train_device(tmp_path: Path) -> None:
+    init_checkpoint = tmp_path / "init.pt"
+    init_checkpoint.write_bytes(b"checkpoint")
+    args = ppo_control.parse_args(
+        [
+            "--init-checkpoint",
+            str(init_checkpoint),
+            "--out",
+            str(tmp_path / "run"),
+            "--steps",
+            "1",
+            "--device",
+            "cpu",
+            "--hidden",
+            "8",
+            "--blocks",
+            "1",
+            "--bottleneck",
+            "4",
+            "--residual-profile",
+            "mish_se",
+            "--backbone-profile",
+            "conv2d_local3",
+            "--conv-memory-format",
+            "contiguous",
+        ]
+    )
+
+    config = ppo_control.validate_args(args)
+
+    assert config.rollout_device is None
+    assert ppo_control._effective_rollout_device(config) == "cpu"
+
+
+def test_ppo_control_accepts_explicit_cpu_rollout_device(tmp_path: Path) -> None:
+    init_checkpoint = tmp_path / "init.pt"
+    init_checkpoint.write_bytes(b"checkpoint")
+    args = ppo_control.parse_args(
+        [
+            "--init-checkpoint",
+            str(init_checkpoint),
+            "--out",
+            str(tmp_path / "run"),
+            "--steps",
+            "1",
+            "--device",
+            "cpu",
+            "--ppo-rollout-device",
+            "cpu",
+            "--hidden",
+            "8",
+            "--blocks",
+            "1",
+            "--bottleneck",
+            "4",
+            "--residual-profile",
+            "mish_se",
+            "--backbone-profile",
+            "conv2d_local3",
+            "--conv-memory-format",
+            "contiguous",
+        ]
+    )
+
+    config = ppo_control.validate_args(args)
+
+    assert config.rollout_device == "cpu"
+
+
+def test_ppo_control_invalid_rollout_device_rejected(tmp_path: Path) -> None:
+    init_checkpoint = tmp_path / "init.pt"
+    init_checkpoint.write_bytes(b"checkpoint")
+    args = ppo_control.parse_args(
+        [
+            "--init-checkpoint",
+            str(init_checkpoint),
+            "--out",
+            str(tmp_path / "run"),
+            "--steps",
+            "1",
+            "--device",
+            "cpu",
+            "--ppo-rollout-device",
+            "mps",
+            "--hidden",
+            "8",
+            "--blocks",
+            "1",
+            "--bottleneck",
+            "4",
+            "--residual-profile",
+            "mish_se",
+            "--backbone-profile",
+            "conv2d_local3",
+            "--conv-memory-format",
+            "contiguous",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="--ppo-rollout-device"):
+        ppo_control.validate_args(args)
+
+
+def test_ppo_pipeline_child_receives_requested_rollout_device(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    init_checkpoint = tmp_path / "init.pt"
+    init_checkpoint.write_bytes(b"checkpoint")
+    config = _ppo_control_config(tmp_path, init_checkpoint, steps=1, pipeline_depth=1)
+    config = replace(config, rollout_device="cpu")
+    seen: dict[str, str] = {}
+
+    class _FakeArtifact:
+        def __init__(self) -> None:
+            self.model_config = _model_config()
+            self.model_state: dict[str, torch.Tensor] = {}
+
+    class _FakeModel(torch.nn.Module):
+        @override
+        def load_state_dict(
+            self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False
+        ) -> torch.nn.modules.module._IncompatibleKeys:
+            del state_dict, assign
+            assert strict is True
+            return torch.nn.modules.module._IncompatibleKeys([], [])
+
+        @override
+        def to(self, *args: Any, **kwargs: Any) -> _FakeModel:
+            device = args[0] if args else kwargs.get("device")
+            seen["model_device"] = str(device)
+            return self
+
+        @override
+        def eval(self) -> _FakeModel:
+            return self
+
+    monkeypatch.setattr(ppo_control, "load_ppo_policy_snapshot_artifact", lambda *_args, **_kwargs: _FakeArtifact())
+    monkeypatch.setattr(ppo_control, "HydraPolicyNet", lambda **_kwargs: _FakeModel())
+    monkeypatch.setattr(ppo_control, "_load_extension", lambda _path: object())
+
+    def collect(**kwargs: object) -> ppo_control._RolloutResult:
+        cfg = cast("PpoControlConfig", kwargs["config"])
+        seen["rollout_device"] = ppo_control._effective_rollout_device(cfg)
+        snapshot = ppo_control._snapshot_metadata(
+            cfg,
+            cast("str", kwargs["config_digest"]),
+            cast("int", kwargs["global_step"]),
+            cast("int", kwargs["samples_seen"]),
+            cast("int", kwargs["completed_games"]),
+            cfg.seed + cast("int", kwargs["completed_games"]),
+        )
+        return ppo_control._RolloutResult(
+            payload={"snapshot_metadata": snapshot.to_payload()},
+            batch=_valid_batch(snapshot_metadata=snapshot.to_payload()),
+            snapshot=snapshot,
+            rollout_seed=snapshot.rollout_seed,
+            onnx_export_ms=0.0,
+            native_rollout_ms=0.0,
+            batch_build_ms=0.0,
+            rollout_started=ppo_control.time.perf_counter(),
+            future_rollout_ms=0.0,
+        )
+
+    monkeypatch.setattr(ppo_control, "_collect_rollout_batch", collect)
+
+    snapshot = ppo_control._snapshot_metadata(config, "0" * 64, 1, 2, 3, 10)
+    result = ppo_control._collect_rollout_batch_from_snapshot_artifact(
+        config=config,
+        config_digest="0" * 64,
+        model_config=_model_config(),
+        snapshot_path=tmp_path / "snapshot.pt",
+        expected_snapshot=snapshot,
+        export_dir=tmp_path / "exports",
+    )
+
+    assert result.snapshot == snapshot
+    assert seen == {"model_device": "cpu", "rollout_device": "cpu"}
+
+
+def test_ppo_control_invalid_pipeline_depth_rejected(tmp_path: Path) -> None:
+    init_checkpoint = tmp_path / "init.pt"
+    init_checkpoint.write_bytes(b"checkpoint")
+
+    with pytest.raises(SystemExit):
+        ppo_control.parse_args(
+            [
+                "--init-checkpoint",
+                str(init_checkpoint),
+                "--out",
+                str(tmp_path / "run"),
+                "--steps",
+                "1",
+                "--hidden",
+                "8",
+                "--blocks",
+                "1",
+                "--bottleneck",
+                "4",
+                "--residual-profile",
+                "mish_se",
+                "--backbone-profile",
+                "conv2d_local3",
+                "--conv-memory-format",
+                "contiguous",
+                "--ppo-pipeline-depth",
+                "2",
+            ]
+        )
+
+
+def test_ppo_resume_compatible_digests_include_current_and_lr_decay_legacy(tmp_path: Path) -> None:
+    init_checkpoint = tmp_path / "init.pt"
+    init_checkpoint.write_bytes(b"checkpoint")
+    config = replace(_ppo_control_config(tmp_path, init_checkpoint, steps=1, pipeline_depth=1), lr_decay_samples=1000)
+    legacy = _json_config(config)
+    legacy["resume"] = None
+    legacy["lr_decay_samples"] = None
+
+    digests = _compatible_resume_config_digests(config)
+
+    assert _config_digest(config) in digests
+    assert ppo_control_config_digest_for_payload(legacy) in digests
+
+
+def test_ppo_resume_compatible_digests_include_legacy_rollout_field_omission(tmp_path: Path) -> None:
+    init_checkpoint = tmp_path / "init.pt"
+    init_checkpoint.write_bytes(b"checkpoint")
+    config = _ppo_control_config(tmp_path, init_checkpoint, steps=1, pipeline_depth=0)
+    legacy = _json_config(config)
+    legacy["resume"] = None
+    del legacy["ppo_pipeline_depth"]
+    del legacy["rollout_device"]
+
+    assert ppo_control_config_digest_for_payload(legacy) in _compatible_resume_config_digests(config)
+
+
+def test_ppo_resume_compatible_digests_do_not_omit_non_default_pipeline_depth(tmp_path: Path) -> None:
+    init_checkpoint = tmp_path / "init.pt"
+    init_checkpoint.write_bytes(b"checkpoint")
+    config = _ppo_control_config(tmp_path, init_checkpoint, steps=1, pipeline_depth=1)
+    legacy = _json_config(config)
+    legacy["resume"] = None
+    del legacy["ppo_pipeline_depth"]
+    del legacy["rollout_device"]
+
+    assert ppo_control_config_digest_for_payload(legacy) not in _compatible_resume_config_digests(config)
+
+
+def test_ppo_resume_compatible_digests_do_not_omit_explicit_rollout_device(tmp_path: Path) -> None:
+    init_checkpoint = tmp_path / "init.pt"
+    init_checkpoint.write_bytes(b"checkpoint")
+    config = replace(_ppo_control_config(tmp_path, init_checkpoint, steps=1, pipeline_depth=0), rollout_device="cpu")
+    legacy = _json_config(config)
+    legacy["resume"] = None
+    del legacy["ppo_pipeline_depth"]
+    del legacy["rollout_device"]
+
+    assert ppo_control_config_digest_for_payload(legacy) not in _compatible_resume_config_digests(config)
+
+
+def test_ppo_resume_compatible_digests_include_combined_legacy_omissions(tmp_path: Path) -> None:
+    init_checkpoint = tmp_path / "init.pt"
+    init_checkpoint.write_bytes(b"checkpoint")
+    config = replace(_ppo_control_config(tmp_path, init_checkpoint, steps=1, pipeline_depth=0), lr_decay_samples=1000)
+    legacy = _json_config(config)
+    legacy["resume"] = None
+    legacy["lr_decay_samples"] = None
+    del legacy["ppo_pipeline_depth"]
+    del legacy["rollout_device"]
+
+    assert ppo_control_config_digest_for_payload(legacy) in _compatible_resume_config_digests(config)
+
+
+def test_ppo_resume_compatible_digests_include_checkpoint_fixture() -> None:
+    config = _checkpoint_fixture_ppo_control_config()
+
+    assert CHECKPOINT_FIXTURE_CONFIG_DIGEST in _compatible_resume_config_digests(config)
+
+
+def test_ppo_resume_compatible_digests_ignore_run_local_fields_for_fixture() -> None:
+    config = replace(
+        _checkpoint_fixture_ppo_control_config(),
+        output_dir=Path("/home/cachybtw/dev/hydra/training/diagnostics/ppo_phase3i_resume_smoke_20260601T052845Z"),
+        steps=1,
+        resume=Path(
+            "/home/cachybtw/dev/hydra/training/diagnostics/ppo_phase3i_resume_smoke_20260601T052845Z/checkpoints/latest.pt"
+        ),
+        tensorboard_dir=Path(
+            "/home/cachybtw/dev/hydra/training/diagnostics/ppo_phase3i_resume_smoke_20260601T052845Z/tensorboard"
+        ),
+    )
+
+    assert CHECKPOINT_FIXTURE_CONFIG_DIGEST in _compatible_resume_config_digests(config)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("microbatch_size", 769),
+        ("epochs", 4),
+        ("hidden", 385),
+        ("lr", 0.0002),
+        ("games_per_update", 1025),
+    ],
+)
+def test_ppo_resume_compatible_digests_keep_safety_fields_for_fixture(
+    field: Literal["microbatch_size", "epochs", "hidden", "lr", "games_per_update"], value: float
+) -> None:
+    kwargs: dict[str, Any] = {
+        "output_dir": Path("/home/cachybtw/dev/hydra/training/diagnostics/ppo_phase3i_resume_smoke_20260601T052845Z"),
+        "steps": 1,
+        "resume": Path(
+            "/home/cachybtw/dev/hydra/training/diagnostics/ppo_phase3i_resume_smoke_20260601T052845Z/checkpoints/latest.pt"
+        ),
+        "tensorboard_dir": Path(
+            "/home/cachybtw/dev/hydra/training/diagnostics/ppo_phase3i_resume_smoke_20260601T052845Z/tensorboard"
+        ),
+        field: value,
+    }
+    config = replace(_checkpoint_fixture_ppo_control_config(), **kwargs)
+
+    assert CHECKPOINT_FIXTURE_CONFIG_DIGEST not in _compatible_resume_config_digests(config)
+
+
+def test_ppo_resume_compatible_digests_run_local_omission_does_not_omit_non_default_pipeline_depth() -> None:
+    config = replace(
+        _checkpoint_fixture_ppo_control_config(),
+        output_dir=Path("/home/cachybtw/dev/hydra/training/diagnostics/ppo_phase3i_resume_smoke_20260601T052845Z"),
+        steps=1,
+        resume=Path(
+            "/home/cachybtw/dev/hydra/training/diagnostics/ppo_phase3i_resume_smoke_20260601T052845Z/checkpoints/latest.pt"
+        ),
+        tensorboard_dir=Path(
+            "/home/cachybtw/dev/hydra/training/diagnostics/ppo_phase3i_resume_smoke_20260601T052845Z/tensorboard"
+        ),
+        ppo_pipeline_depth=1,
+    )
+
+    assert CHECKPOINT_FIXTURE_CONFIG_DIGEST not in _compatible_resume_config_digests(config)
+
+
+def test_ppo_resume_compatible_digests_run_local_omission_does_not_omit_explicit_rollout_device() -> None:
+    config = replace(
+        _checkpoint_fixture_ppo_control_config(),
+        output_dir=Path("/home/cachybtw/dev/hydra/training/diagnostics/ppo_phase3i_resume_smoke_20260601T052845Z"),
+        steps=1,
+        resume=Path(
+            "/home/cachybtw/dev/hydra/training/diagnostics/ppo_phase3i_resume_smoke_20260601T052845Z/checkpoints/latest.pt"
+        ),
+        tensorboard_dir=Path(
+            "/home/cachybtw/dev/hydra/training/diagnostics/ppo_phase3i_resume_smoke_20260601T052845Z/tensorboard"
+        ),
+        rollout_device="cuda:0",
+    )
+
+    assert CHECKPOINT_FIXTURE_CONFIG_DIGEST not in _compatible_resume_config_digests(config)
+
+
+CHECKPOINT_FIXTURE_CONFIG_DIGEST = "ff5e69914d5456db97dfec8270172f2887c8a087a4e87520f2202455744e34c9"
+
+
+def _checkpoint_fixture_ppo_control_config() -> PpoControlConfig:
+    output_dir = Path(
+        "/home/cachybtw/dev/hydra/training/2026-05-24-rtx5070-raw-mjai-large-6m-copy/stages/T1_ppo_control/runs/latest_run"
+    )
+    return PpoControlConfig(
+        init_checkpoint=Path(
+            "/home/cachybtw/dev/hydra/training/2026-05-24-rtx5070-raw-mjai-large-6m-copy/logs/checkpoints/best.pt"
+        ),
+        output_dir=output_dir,
+        steps=None,
+        games_per_update=1024,
+        seed=0,
+        device="cuda:0",
+        temperature=1.0,
+        arena_batch_decisions=3072,
+        arena_threads=0,
+        extension_path=None,
+        hidden=384,
+        blocks=16,
+        bottleneck=96,
+        residual_profile="mish_se",
+        backbone_profile="conv2d_local3",
+        conv_memory_format="contiguous",
+        lr=0.0001,
+        min_lr=1.0e-6,
+        lr_warmup_samples=0,
+        lr_decay_samples=1_000_000_000,
+        grad_clip_norm=1.0,
+        microbatch_size=768,
+        epochs=3,
+        target_kl=0.005,
+        weight_decay=9.999999747378752e-06,
+        adam_beta1=0.9,
+        adam_beta2=0.999,
+        adam_eps=1.0e-8,
+        adamw_fused="on",
+        adamw_foreach="auto",
+        bc_kl_reverse_coef=0.0,
+        entropy_alpha=1.0e-3,
+        entropy_beta=1.0e-2,
+        entropy_alpha_max=0.05,
+        log_every_steps=1,
+        checkpoint_every_steps=250,
+        keep_step_checkpoints=False,
+        resume=output_dir / "checkpoints" / "latest.pt",
+        tensorboard_dir=output_dir / "tensorboard",
+        quiet=True,
+        rollout_inference="torch-callback",
+        ppo_pipeline_depth=0,
+        rollout_device=None,
+    )
+
+
+def ppo_control_config_digest_for_payload(payload: dict[str, object]) -> str:
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _ppo_control_config(tmp_path: Path, init_checkpoint: Path, *, steps: int, pipeline_depth: int) -> PpoControlConfig:
+    return PpoControlConfig(
+        init_checkpoint=init_checkpoint,
+        output_dir=tmp_path / "run",
+        steps=steps,
+        games_per_update=1,
+        seed=7,
+        device="cpu",
+        temperature=1.0,
+        arena_batch_decisions=1,
+        arena_threads=0,
+        extension_path=tmp_path / "libfake.so",
+        hidden=8,
+        blocks=1,
+        bottleneck=4,
+        residual_profile="tiny",
+        backbone_profile="conv2d_local3",
+        conv_memory_format="contiguous",
+        lr=1.0e-3,
+        min_lr=0.0,
+        lr_warmup_samples=0,
+        lr_decay_samples=None,
+        grad_clip_norm=None,
+        microbatch_size=1,
+        epochs=1,
+        target_kl=None,
+        weight_decay=0.0,
+        adam_beta1=0.9,
+        adam_beta2=0.999,
+        adam_eps=1.0e-8,
+        adamw_fused="off",
+        adamw_foreach="off",
+        bc_kl_reverse_coef=0.0,
+        entropy_alpha=1.0e-3,
+        entropy_beta=1.0e-2,
+        entropy_alpha_max=0.05,
+        log_every_steps=1,
+        checkpoint_every_steps=1,
+        keep_step_checkpoints=False,
+        resume=None,
+        tensorboard_dir=None,
+        quiet=True,
+        rollout_inference="rust-ort",
+        ppo_pipeline_depth=pipeline_depth,
+    )
 
 
 def _bad_placements_rollout(rollout: RustGameRollout) -> RustGameRollout:

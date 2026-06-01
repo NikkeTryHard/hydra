@@ -224,7 +224,7 @@ def save_checkpoint(
     manifest_path: Path | None,
     global_step: int,
     samples_seen: int,
-    raw_mjai_progress: dict[str, int] | None = None,
+    raw_mjai_progress: Mapping[str, object] | None = None,
     ema_config: EmaConfig | None = None,
     ema_state: dict[str, torch.Tensor] | None = None,
     ema_update_count: int = 0,
@@ -512,6 +512,10 @@ def _checkpoint_optimizer_config_for_resume(actual: object, expected: OptimizerC
             and abs(normalized[key] - expected_value) <= max(1.0e-12, abs(expected_value) * 1.0e-6)
         ):
             normalized[key] = expected_value
+    if normalized.get("lr_schedule") == "constant" and expected_dict.get("lr_schedule") == "cosine":
+        normalized["lr_schedule"] = expected_dict["lr_schedule"]
+    if normalized.get("lr_schedule") == expected_dict.get("lr_schedule") == "cosine":
+        normalized["target_games"] = expected_dict["target_games"]
     return normalized
 
 

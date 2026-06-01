@@ -1,13 +1,16 @@
 use super::{
     build_python_learner_command,
     command::PythonLearnerCommand,
-    command_builder::{PYTHON_LEARNER_SCRIPT, build_python_learner_command_for_run_dir},
+    command_builder::{
+        PYTHON_LEARNER_SCRIPT, build_python_learner_command_for_run_dir,
+        build_python_ppo_control_command_for_run_dir,
+    },
     run_python_learner_with_runner,
     runner::PythonLearnerRunner,
     tensorboard::{tensorboard_port_for_run_dir, tensorboard_url},
 };
 use hydra_train_runtime::config::{
-    PythonLearnerCliOptions, PythonLearnerInput, PythonLearnerVariant,
+    PythonLearnerCliOptions, PythonLearnerInput, PythonLearnerVariant, PythonPpoControlCliOptions,
 };
 use std::fs::{self, File};
 use std::os::unix::process::ExitStatusExt;
@@ -308,6 +311,68 @@ fn command_preserves_paths_and_compile_default_args() {
             .args
             .windows(2)
             .any(|w| w == ["--checkpoint-every-steps", "7"])
+    );
+}
+
+#[test]
+fn ppo_control_command_passes_pipeline_depth() {
+    let root = PathBuf::from("/tmp/hydra ppo launcher");
+    let opts = PythonPpoControlCliOptions {
+        init_checkpoint: root.join("init.pt"),
+        output_dir: root.join("out"),
+        stage: None,
+        run_name: None,
+        device: "cpu".to_string(),
+        rollout_device: Some("cpu".to_string()),
+        steps: Some(2),
+        games_per_update: 4,
+        seed: 7,
+        temperature: 1.0,
+        arena_batch_decisions: 8,
+        microbatch_size: 2,
+        epochs: 1,
+        target_kl: None,
+        arena_threads: 0,
+        hidden: 8,
+        blocks: 1,
+        bottleneck: 4,
+        residual_profile: hydra_train_runtime::config::PythonResidualProfileConfig::MishSe,
+        conv_memory_format: hydra_train_runtime::config::PythonConvMemoryFormatConfig::Contiguous,
+        backbone_profile: hydra_train_runtime::config::PythonBackboneProfileConfig::Conv2dLocal3,
+        learning_rate: 1.0e-3,
+        min_learning_rate: 0.0,
+        lr_warmup_samples: 0,
+        lr_decay_samples: None,
+        grad_clip_norm: 0.5,
+        weight_decay: 0.0,
+        adamw_fused: hydra_train_runtime::config::PythonAdamwFlagConfig::Off,
+        adamw_foreach: hydra_train_runtime::config::PythonAdamwFlagConfig::Off,
+        bc_kl_reverse_coef: 0.0,
+        resume: None,
+        checkpoint_every_steps: 1,
+        log_every_steps: 1,
+        keep_step_checkpoints: false,
+        tensorboard: false,
+        launch_tensorboard: false,
+        tensorboard_host: "127.0.0.1".to_string(),
+        tensorboard_port: 6006,
+        rollout_inference: "torch-callback".to_string(),
+        ppo_pipeline_depth: 1,
+        background: false,
+    };
+    let command = build_python_ppo_control_command_for_run_dir(&opts, &root.join("run"));
+
+    assert!(
+        command
+            .args
+            .windows(2)
+            .any(|w| w == ["--ppo-pipeline-depth", "1"])
+    );
+    assert!(
+        command
+            .args
+            .windows(2)
+            .any(|w| w == ["--ppo-rollout-device", "cpu"])
     );
 }
 

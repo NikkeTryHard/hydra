@@ -13,6 +13,7 @@ use riichienv_core::state::GameState;
 
 use crate::safety::{SafetyInfo, bit_test};
 use crate::seeding::SessionRng;
+use std::time::{Duration, Instant};
 
 pub struct ActionDecision<'a> {
     pub player: u8,
@@ -91,6 +92,20 @@ pub struct PendingDecision {
     pub seat_id: u8,
     pub turn: u32,
     pub legal_actions: CachedLegalActions,
+}
+
+#[derive(Default)]
+pub struct PendingDecisionTiming {
+    pub calls: u64,
+    pub decisions: u64,
+    pub advanced: u64,
+    pub complete: u64,
+    pub wait_act: u64,
+    pub wait_response: u64,
+    pub legal_actions: Duration,
+    pub observe: Duration,
+    pub encode: Duration,
+    pub legal_pack: Duration,
 }
 
 trait DecisionRecorder {
@@ -275,7 +290,7 @@ impl GameRunner {
                 if self.legal_buf.is_empty() {
                     return StepOutcome::NoLegalAction { player: pid };
                 }
-                let (encoded, legal_mask) = self.encode_decision(pid);
+                let (encoded, legal_mask) = self.encode_decision(pid, None);
                 selector.observe_decision(ActionDecision {
                     player: pid,
                     seat_id: pid,
@@ -299,7 +314,7 @@ impl GameRunner {
                     if self.legal_buf.is_empty() {
                         continue;
                     }
-                    let (encoded, legal_mask) = self.encode_decision(pid);
+                    let (encoded, legal_mask) = self.encode_decision(pid, None);
                     selector.observe_decision(ActionDecision {
                         player: pid,
                         seat_id: pid,
@@ -325,11 +340,27 @@ impl GameRunner {
         }
     }
 
-    fn encode_decision(&mut self, player: u8) -> ([f32; OBS_SIZE], [bool; HYDRA_ACTION_SPACE]) {
+    fn encode_decision(
+        &mut self,
+        player: u8,
+        mut timing: Option<&mut PendingDecisionTiming>,
+    ) -> ([f32; OBS_SIZE], [bool; HYDRA_ACTION_SPACE]) {
+        let observe_start = Instant::now();
         let obs = self.state.observe(player);
+        if let Some(timing) = timing.as_deref_mut() {
+            timing.observe += observe_start.elapsed();
+        }
+        let encode_start = Instant::now();
         let encoded =
             encode_observation_ref(&mut self.encoder, &obs, &self.safety[player as usize]);
+        if let Some(timing) = timing.as_deref_mut() {
+            timing.encode += encode_start.elapsed();
+        }
+        let legal_pack_start = Instant::now();
         let legal_mask = build_legal_mask(&self.legal_buf, crate::action::ActionPhase::Normal);
+        if let Some(timing) = timing {
+            timing.legal_pack += legal_pack_start.elapsed();
+        }
         (encoded, legal_mask)
     }
 
@@ -368,7 +399,20 @@ impl GameRunner {
             .flatten()
     }
     pub fn pending_decisions(&mut self) -> Result<Vec<PendingDecision>, StepOutcome> {
+        self.pending_decisions_with_timing(None)
+    }
+
+    pub fn pending_decisions_with_timing(
+        &mut self,
+        mut timing: Option<&mut PendingDecisionTiming>,
+    ) -> Result<Vec<PendingDecision>, StepOutcome> {
+        if let Some(timing) = timing.as_deref_mut() {
+            timing.calls += 1;
+        }
         if self.state.is_done {
+            if let Some(timing) = timing.as_deref_mut() {
+                timing.complete += 1;
+            }
             return Err(StepOutcome::Complete);
         }
         if self.total_actions >= MAX_STEPS {
@@ -380,37 +424,59 @@ impl GameRunner {
             for s in &mut self.safety {
                 s.reset();
             }
-            return Err(if self.state.is_done {
-                StepOutcome::Complete
-            } else {
-                StepOutcome::Advanced
-            });
+            if self.state.is_done {
+                if let Some(timing) = timing.as_deref_mut() {
+                    timing.complete += 1;
+                }
+                return Err(StepOutcome::Complete);
+            }
+            if let Some(timing) = timing.as_deref_mut() {
+                timing.advanced += 1;
+            }
+            return Err(StepOutcome::Advanced);
         }
 
         let mut decisions = Vec::with_capacity(4);
         match self.state.phase {
             Phase::WaitAct => {
+                if let Some(timing) = timing.as_deref_mut() {
+                    timing.wait_act += 1;
+                }
                 let pid = self.state.current_player;
                 self.legal_buf.clear();
+                let legal_start = Instant::now();
                 self.state.get_legal_actions_into(pid, &mut self.legal_buf);
+                if let Some(timing) = timing.as_deref_mut() {
+                    timing.legal_actions += legal_start.elapsed();
+                }
                 if self.legal_buf.is_empty() {
                     return Err(StepOutcome::NoLegalAction { player: pid });
                 }
-                decisions.push(self.pending_decision_for_player(pid));
+                decisions.push(self.pending_decision_for_player(pid, timing.as_deref_mut()));
             }
             Phase::WaitResponse => {
+                if let Some(timing) = timing.as_deref_mut() {
+                    timing.wait_response += 1;
+                }
                 let n = self.state.active_player_count as usize;
                 let mut pids = [0u8; 4];
                 pids[..n].copy_from_slice(self.state.active_player_slice());
                 for &pid in &pids[..n] {
                     self.legal_buf.clear();
+                    let legal_start = Instant::now();
                     self.state.get_legal_actions_into(pid, &mut self.legal_buf);
+                    if let Some(timing) = timing.as_deref_mut() {
+                        timing.legal_actions += legal_start.elapsed();
+                    }
                     if self.legal_buf.is_empty() {
                         continue;
                     }
-                    decisions.push(self.pending_decision_for_player(pid));
+                    decisions.push(self.pending_decision_for_player(pid, timing.as_deref_mut()));
                 }
             }
+        }
+        if let Some(timing) = timing {
+            timing.decisions += decisions.len() as u64;
         }
         Ok(decisions)
     }
@@ -528,13 +594,26 @@ impl GameRunner {
         }
     }
 
-    fn pending_decision_for_player(&mut self, player: u8) -> PendingDecision {
-        let (obs, legal_mask) = self.encode_decision(player);
+    fn pending_decision_for_player(
+        &mut self,
+        player: u8,
+        mut timing: Option<&mut PendingDecisionTiming>,
+    ) -> PendingDecision {
+        let (obs, legal_mask) = self.encode_decision(player, timing.as_deref_mut());
+        let legal_pack_start = Instant::now();
         let legal_count = legal_mask
             .iter()
             .filter(|&&legal| legal)
             .count()
             .min(u8::MAX as usize) as u8;
+        let legal_actions = CachedLegalActions {
+            turn: self.total_actions,
+            player_id: player,
+            by_hydra_id: legal_action_map(&self.legal_buf),
+        };
+        if let Some(timing) = timing {
+            timing.legal_pack += legal_pack_start.elapsed();
+        }
         PendingDecision {
             obs,
             legal_mask,
@@ -542,11 +621,7 @@ impl GameRunner {
             player_id: player,
             seat_id: player,
             turn: self.total_actions,
-            legal_actions: CachedLegalActions {
-                turn: self.total_actions,
-                player_id: player,
-                by_hydra_id: legal_action_map(&self.legal_buf),
-            },
+            legal_actions,
         }
     }
 

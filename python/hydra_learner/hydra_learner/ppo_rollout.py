@@ -7,9 +7,10 @@ only diagnostic and not part of this training batch contract.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -28,6 +29,131 @@ if TYPE_CHECKING:
 
 PPO_ROLLOUT_SCHEMA_VERSION = 1
 PPO_ROLLOUT_CONTRACT_VERSION = "ppo_rollout_v1"
+PPO_SNAPSHOT_CONTRACT_VERSION = "ppo_snapshot_v1"
+PPO_POLICY_SNAPSHOT_SCHEMA_VERSION = 1
+
+
+@dataclass(frozen=True)
+class PpoPolicySnapshotArtifact:
+    schema_version: int
+    contract_version: str
+    snapshot_metadata: PpoSnapshotMetadata
+    model_config: ModelConfig
+    model_state: dict[str, torch.Tensor]
+    torch_version: str
+
+
+def save_ppo_policy_snapshot_artifact(
+    run_dir: Path, *, model: HydraPolicyNet, model_config: ModelConfig, snapshot: PpoSnapshotMetadata
+) -> tuple[Path, int]:
+    payload: dict[str, object] = {
+        "schema_version": PPO_POLICY_SNAPSHOT_SCHEMA_VERSION,
+        "contract_version": PPO_SNAPSHOT_CONTRACT_VERSION,
+        "snapshot_metadata": snapshot.to_payload(),
+        "model_config": asdict(model_config),
+        "model_state": {name: tensor.detach().cpu() for name, tensor in model.state_dict().items()},
+        "torch_version": str(torch.__version__),
+    }
+    snapshot_dir = run_dir / "snapshots"
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    final_path = snapshot_dir / f"snapshot_{snapshot.global_step:08d}_{snapshot.snapshot_id}.pt"
+    tmp_path = final_path.with_suffix(".pt.tmp")
+    torch.save(payload, tmp_path)
+    tmp_path.replace(final_path)
+    return final_path, final_path.stat().st_size
+
+
+def load_ppo_policy_snapshot_artifact(
+    path: Path, *, expected_snapshot: PpoSnapshotMetadata, expected_model_config: ModelConfig
+) -> PpoPolicySnapshotArtifact:
+    try:
+        payload = torch.load(path, map_location="cpu", weights_only=True)
+    except TypeError:
+        payload = torch.load(path, map_location="cpu")
+    except Exception as exc:
+        raise ValueError(f"failed to load PPO policy snapshot artifact {path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("PPO policy snapshot artifact root must be a dict")
+    schema_version = _require_int(payload.get("schema_version"), "schema_version")
+    if schema_version != PPO_POLICY_SNAPSHOT_SCHEMA_VERSION:
+        raise ValueError(f"unsupported PPO policy snapshot schema_version {schema_version!r}")
+    contract_version = _require_str(payload.get("contract_version"), "contract_version")
+    if contract_version != PPO_SNAPSHOT_CONTRACT_VERSION:
+        raise ValueError(f"unsupported PPO policy snapshot contract_version {contract_version!r}")
+    metadata_raw = payload.get("snapshot_metadata")
+    if not isinstance(metadata_raw, Mapping):
+        raise ValueError("PPO policy snapshot metadata must be a mapping")
+    metadata = snapshot_metadata_from_payload(metadata_raw)
+    if metadata != expected_snapshot:
+        raise ValueError("PPO policy snapshot metadata does not match expected snapshot")
+    model_config_raw = payload.get("model_config")
+    if not isinstance(model_config_raw, Mapping):
+        raise ValueError("PPO policy snapshot model_config must be a mapping")
+    model_config = _model_config_from_payload(model_config_raw)
+    if model_config != expected_model_config:
+        raise ValueError("PPO policy snapshot model_config does not match expected config")
+    model_state_raw = payload.get("model_state")
+    if not isinstance(model_state_raw, dict):
+        raise ValueError("PPO policy snapshot model_state must be a dict")
+    model_state: dict[str, torch.Tensor] = {}
+    for name, tensor in model_state_raw.items():
+        if not isinstance(name, str):
+            raise ValueError("PPO policy snapshot model_state keys must be strings")
+        model_state[name] = _require_tensor(tensor, f"model_state[{name}]")
+        if model_state[name].device.type != "cpu":
+            raise ValueError("PPO policy snapshot model_state tensors must be CPU tensors")
+    return PpoPolicySnapshotArtifact(
+        schema_version=schema_version,
+        contract_version=contract_version,
+        snapshot_metadata=metadata,
+        model_config=model_config,
+        model_state=model_state,
+        torch_version=_require_str(payload.get("torch_version"), "torch_version"),
+    )
+
+
+@dataclass(frozen=True)
+class PpoSnapshotMetadata:
+    snapshot_contract_version: str
+    snapshot_id: str
+    config_digest_sha256: str
+    global_step: int
+    samples_seen: int
+    completed_games: int
+    rollout_seed: int
+    temperature: float
+    inference_backend: str
+    hidden: int
+    blocks: int
+    bottleneck: int
+    residual_profile: str
+    backbone_profile: str
+    conv_memory_format: str
+    encoder_shape: tuple[int, int]
+    action_space: int
+    device: str | None = None
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "snapshot_contract_version": self.snapshot_contract_version,
+            "snapshot_id": self.snapshot_id,
+            "config_digest_sha256": self.config_digest_sha256,
+            "global_step": self.global_step,
+            "samples_seen": self.samples_seen,
+            "completed_games": self.completed_games,
+            "rollout_seed": self.rollout_seed,
+            "temperature": self.temperature,
+            "inference_backend": self.inference_backend,
+            "device": self.device,
+            "hidden": self.hidden,
+            "blocks": self.blocks,
+            "bottleneck": self.bottleneck,
+            "residual_profile": self.residual_profile,
+            "backbone_profile": self.backbone_profile,
+            "conv_memory_format": self.conv_memory_format,
+            "encoder_shape": list(self.encoder_shape),
+            "action_space": self.action_space,
+        }
 
 
 @dataclass(frozen=True)
@@ -36,6 +162,7 @@ class PpoRolloutMetadata:
     gae_gamma: float = DEFAULT_GAE_GAMMA
     gae_lambda: float = DEFAULT_GAE_LAMBDA
     reward_shaping: Mapping[str, object] | None = None
+    snapshot: PpoSnapshotMetadata | None = None
 
 
 @dataclass(frozen=True)
@@ -98,6 +225,7 @@ def save_ppo_rollout_artifact(path: Path, batch: PpoBatch, metadata: PpoRolloutM
             "gae_gamma": metadata.gae_gamma,
             "gae_lambda": metadata.gae_lambda,
             "reward_shaping": _rollout_reward_shaping_metadata(metadata),
+            "snapshot": None if metadata.snapshot is None else metadata.snapshot.to_payload(),
         },
     }
     _put_optional_tensor(payload, "player_id", batch.player_id)
@@ -136,6 +264,7 @@ def artifact_to_ppo_batch(artifact: PpoRolloutArtifact) -> PpoBatch:
         game_id=artifact.game_id,
         turn=artifact.turn,
         rank_utility_used=artifact.metadata.rank_utility_used,
+        snapshot_metadata=None if artifact.metadata.snapshot is None else artifact.metadata.snapshot.to_payload(),
     )
 
 
@@ -159,6 +288,7 @@ def train_step_from_rollout_artifact(
     metrics: dict[str, object] = dict(result.metrics)
     metrics["rollout_schema_version"] = artifact.schema_version
     metrics["rollout_contract_version"] = artifact.contract_version
+    _put_snapshot_metrics(metrics, artifact.metadata.snapshot)
     _validate_json_safe_metrics(metrics)
     return PpoArtifactTrainStepResult(
         metrics=metrics,
@@ -188,6 +318,7 @@ def train_ach_step_from_rollout_artifact(
     metrics["rollout_schema_version"] = artifact.schema_version
     metrics["rollout_contract_version"] = artifact.contract_version
     _validate_json_safe_metrics(metrics)
+    _put_snapshot_metrics(metrics, artifact.metadata.snapshot)
     return PpoArtifactTrainStepResult(
         metrics=metrics,
         entropy_controller=result.entropy_controller,
@@ -215,6 +346,7 @@ def train_drda_ach_step_from_rollout_artifact(
     metrics: dict[str, object] = dict(result.metrics)
     metrics["rollout_schema_version"] = artifact.schema_version
     metrics["rollout_contract_version"] = artifact.contract_version
+    _put_snapshot_metrics(metrics, artifact.metadata.snapshot)
     _validate_json_safe_metrics(metrics)
     return PpoArtifactTrainStepResult(
         metrics=metrics,
@@ -321,9 +453,153 @@ def _metadata_from_payload(payload: dict[str, object]) -> PpoRolloutMetadata:
     reward_shaping = _normalize_payload_reward_shaping(
         cast("Mapping[str, object] | None", reward_shaping_raw), gamma=float(gamma), gae_lambda=float(lam)
     )
+    snapshot_raw = payload.get("snapshot")
+    if snapshot_raw is not None and not isinstance(snapshot_raw, dict):
+        raise ValueError("snapshot metadata must be a dict")
+    snapshot = None if snapshot_raw is None else snapshot_metadata_from_payload(cast("dict[str, object]", snapshot_raw))
+    if payload.get("snapshot_required") is True and snapshot_raw is None:
+        raise ValueError("snapshot metadata is required")
     return PpoRolloutMetadata(
-        rank_utility_used=rank, gae_gamma=float(gamma), gae_lambda=float(lam), reward_shaping=reward_shaping
+        rank_utility_used=rank,
+        gae_gamma=float(gamma),
+        gae_lambda=float(lam),
+        reward_shaping=reward_shaping,
+        snapshot=snapshot,
     )
+
+
+def build_ppo_snapshot_metadata(
+    *,
+    config_digest_sha256: str,
+    global_step: int,
+    samples_seen: int,
+    completed_games: int,
+    rollout_seed: int,
+    temperature: float,
+    inference_backend: str,
+    hidden: int,
+    blocks: int,
+    bottleneck: int,
+    residual_profile: str,
+    backbone_profile: str,
+    conv_memory_format: str,
+    encoder_shape: tuple[int, int],
+    action_space: int,
+    device: str | None = None,
+) -> PpoSnapshotMetadata:
+    fields: dict[str, object] = {
+        "snapshot_contract_version": PPO_SNAPSHOT_CONTRACT_VERSION,
+        "config_digest_sha256": config_digest_sha256,
+        "global_step": global_step,
+        "samples_seen": samples_seen,
+        "completed_games": completed_games,
+        "rollout_seed": rollout_seed,
+        "temperature": temperature,
+        "inference_backend": inference_backend,
+        "device": device,
+        "hidden": hidden,
+        "blocks": blocks,
+        "bottleneck": bottleneck,
+        "residual_profile": residual_profile,
+        "backbone_profile": backbone_profile,
+        "conv_memory_format": conv_memory_format,
+        "encoder_shape": list(encoder_shape),
+        "action_space": action_space,
+    }
+    encoded = json.dumps(fields, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    snapshot_id = hashlib.sha256(encoded).hexdigest()
+    return PpoSnapshotMetadata(
+        snapshot_contract_version=cast("str", fields["snapshot_contract_version"]),
+        snapshot_id=snapshot_id,
+        config_digest_sha256=config_digest_sha256,
+        global_step=global_step,
+        samples_seen=samples_seen,
+        completed_games=completed_games,
+        rollout_seed=rollout_seed,
+        temperature=temperature,
+        inference_backend=inference_backend,
+        device=device,
+        hidden=hidden,
+        blocks=blocks,
+        bottleneck=bottleneck,
+        residual_profile=residual_profile,
+        backbone_profile=backbone_profile,
+        conv_memory_format=conv_memory_format,
+        encoder_shape=encoder_shape,
+        action_space=action_space,
+    )
+
+
+def snapshot_metadata_from_payload(payload: Mapping[str, object]) -> PpoSnapshotMetadata:
+    device_raw = payload.get("device")
+    if device_raw is not None and not isinstance(device_raw, str):
+        raise ValueError("device must be a string")
+    snapshot = PpoSnapshotMetadata(
+        snapshot_contract_version=_require_str(payload.get("snapshot_contract_version"), "snapshot_contract_version"),
+        snapshot_id=_require_str(payload.get("snapshot_id"), "snapshot_id"),
+        config_digest_sha256=_require_str(payload.get("config_digest_sha256"), "config_digest_sha256"),
+        global_step=_require_int(payload.get("global_step"), "global_step"),
+        samples_seen=_require_int(payload.get("samples_seen"), "samples_seen"),
+        completed_games=_require_int(payload.get("completed_games"), "completed_games"),
+        rollout_seed=_require_int(payload.get("rollout_seed"), "rollout_seed"),
+        temperature=_require_float(payload.get("temperature"), "temperature"),
+        inference_backend=_require_str(payload.get("inference_backend"), "inference_backend"),
+        device=cast("str | None", device_raw),
+        hidden=_require_int(payload.get("hidden"), "hidden"),
+        blocks=_require_int(payload.get("blocks"), "blocks"),
+        bottleneck=_require_int(payload.get("bottleneck"), "bottleneck"),
+        residual_profile=_require_str(payload.get("residual_profile"), "residual_profile"),
+        backbone_profile=_require_str(payload.get("backbone_profile"), "backbone_profile"),
+        conv_memory_format=_require_str(payload.get("conv_memory_format"), "conv_memory_format"),
+        encoder_shape=_require_int_pair(payload.get("encoder_shape"), "encoder_shape"),
+        action_space=_require_int(payload.get("action_space"), "action_space"),
+    )
+    if snapshot.snapshot_contract_version != PPO_SNAPSHOT_CONTRACT_VERSION:
+        raise ValueError(f"unsupported PPO snapshot_contract_version {snapshot.snapshot_contract_version!r}")
+    expected = build_ppo_snapshot_metadata(
+        config_digest_sha256=snapshot.config_digest_sha256,
+        global_step=snapshot.global_step,
+        samples_seen=snapshot.samples_seen,
+        completed_games=snapshot.completed_games,
+        rollout_seed=snapshot.rollout_seed,
+        temperature=snapshot.temperature,
+        inference_backend=snapshot.inference_backend,
+        device=snapshot.device,
+        hidden=snapshot.hidden,
+        blocks=snapshot.blocks,
+        bottleneck=snapshot.bottleneck,
+        residual_profile=snapshot.residual_profile,
+        backbone_profile=snapshot.backbone_profile,
+        conv_memory_format=snapshot.conv_memory_format,
+        encoder_shape=snapshot.encoder_shape,
+        action_space=snapshot.action_space,
+    )
+    if snapshot.snapshot_id != expected.snapshot_id:
+        raise ValueError("snapshot_id does not match snapshot metadata")
+    return snapshot
+
+
+def _model_config_from_payload(payload: Mapping[str, object]) -> ModelConfig:
+    return ModelConfig(
+        hidden=_require_int(payload.get("hidden"), "hidden"),
+        blocks=_require_int(payload.get("blocks"), "blocks"),
+        bottleneck=_require_int(payload.get("bottleneck"), "bottleneck"),
+        actions=_require_int(payload.get("actions"), "actions"),
+        residual_profile=_require_str(payload.get("residual_profile"), "residual_profile"),
+        backbone_profile=_require_str(payload.get("backbone_profile"), "backbone_profile"),
+        conv_memory_format=_require_str(payload.get("conv_memory_format"), "conv_memory_format"),
+        head_mode=_require_str(payload.get("head_mode"), "head_mode"),
+        encoder_shape=_require_int_pair(payload.get("encoder_shape"), "encoder_shape"),
+    )
+
+
+def _put_snapshot_metrics(metrics: dict[str, object], snapshot: PpoSnapshotMetadata | None) -> None:
+    if snapshot is None:
+        return
+    metrics["snapshot_id"] = snapshot.snapshot_id
+    metrics["snapshot_global_step"] = snapshot.global_step
+    metrics["snapshot_samples_seen"] = snapshot.samples_seen
+    metrics["snapshot_completed_games"] = snapshot.completed_games
 
 
 def _artifact_metadata_dict(artifact: PpoRolloutArtifact) -> dict[str, object]:
@@ -335,6 +611,7 @@ def _artifact_metadata_dict(artifact: PpoRolloutArtifact) -> dict[str, object]:
         "gae_lambda": artifact.metadata.gae_lambda,
         "reward_shaping": _rollout_reward_shaping_metadata(artifact.metadata),
         "batch_rows": artifact.obs.shape[0],
+        "snapshot": None if artifact.metadata.snapshot is None else artifact.metadata.snapshot.to_payload(),
     }
 
 
@@ -369,6 +646,27 @@ def _require_int(value: object, name: str) -> int:
     if not isinstance(value, int):
         raise ValueError(f"{name} must be an int")
     return value
+
+
+def _require_float(value: object, name: str) -> float:
+    if not isinstance(value, int | float):
+        raise ValueError(f"{name} must be numeric")
+    out = float(value)
+    if not torch.isfinite(torch.tensor(out)):
+        raise ValueError(f"{name} must be finite")
+    return out
+
+
+def _require_int_pair(value: object, name: str) -> tuple[int, int]:
+    if not isinstance(value, list) and not isinstance(value, tuple):
+        raise ValueError(f"{name} must contain two ints")
+    values = cast("tuple[object, ...] | list[object]", value)
+    if len(values) != 2:
+        raise ValueError(f"{name} must contain two ints")
+    first, second = values
+    if not isinstance(first, int) or not isinstance(second, int):
+        raise ValueError(f"{name} must contain two ints")
+    return (first, second)
 
 
 def _require_str(value: object, name: str) -> str:

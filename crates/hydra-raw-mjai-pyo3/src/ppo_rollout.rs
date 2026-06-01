@@ -6,12 +6,12 @@ use std::time::{Duration, Instant};
 use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::arena::compute_placements;
 use hydra_core::encoder::OBS_SIZE;
-use hydra_core::game_loop::{GameRunner, StepOutcome};
+use hydra_core::game_loop::{GameRunner, PendingDecisionTiming, StepOutcome};
 use hydra_model::onnx_policy::{OnnxPolicyDevice, OnnxPolicyRuntime};
-use pyo3::buffer::PyBuffer;
+use pyo3::buffer::{PyBuffer, PyUntypedBuffer};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyByteArray, PyBytes, PyDict, PyList};
+use pyo3::types::{PyByteArray, PyBytes, PyDict, PyList, PyTuple};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
@@ -43,6 +43,57 @@ struct RolloutShard {
 struct RolloutShardStep {
     requests: Vec<RolloutRequest>,
     completed: usize,
+    timing: PendingCollectionTiming,
+}
+
+#[derive(Clone, Copy)]
+struct RequestBatchStats {
+    active_games: usize,
+    shard_request_min: usize,
+    shard_request_max: usize,
+    shard_request_sum: usize,
+    unused_quota: usize,
+    request_deficit: usize,
+    collection_passes: usize,
+}
+
+#[derive(Default)]
+struct PendingCollectionTiming {
+    game_loop: PendingDecisionTiming,
+    request_push: Duration,
+}
+
+impl PendingCollectionTiming {
+    fn absorb(&mut self, other: Self) {
+        self.game_loop.calls += other.game_loop.calls;
+        self.game_loop.decisions += other.game_loop.decisions;
+        self.game_loop.advanced += other.game_loop.advanced;
+        self.game_loop.complete += other.game_loop.complete;
+        self.game_loop.wait_act += other.game_loop.wait_act;
+        self.game_loop.wait_response += other.game_loop.wait_response;
+        self.game_loop.legal_actions += other.game_loop.legal_actions;
+        self.game_loop.observe += other.game_loop.observe;
+        self.game_loop.encode += other.game_loop.encode;
+        self.game_loop.legal_pack += other.game_loop.legal_pack;
+        self.request_push += other.request_push;
+    }
+
+    fn absorb_parallel_shard(&mut self, other: Self) {
+        self.game_loop.calls += other.game_loop.calls;
+        self.game_loop.decisions += other.game_loop.decisions;
+        self.game_loop.advanced += other.game_loop.advanced;
+        self.game_loop.complete += other.game_loop.complete;
+        self.game_loop.wait_act += other.game_loop.wait_act;
+        self.game_loop.wait_response += other.game_loop.wait_response;
+        self.game_loop.legal_actions = self
+            .game_loop
+            .legal_actions
+            .max(other.game_loop.legal_actions);
+        self.game_loop.observe = self.game_loop.observe.max(other.game_loop.observe);
+        self.game_loop.encode = self.game_loop.encode.max(other.game_loop.encode);
+        self.game_loop.legal_pack = self.game_loop.legal_pack.max(other.game_loop.legal_pack);
+        self.request_push = self.request_push.max(other.request_push);
+    }
 }
 
 #[derive(Default)]
@@ -67,6 +118,69 @@ struct RolloutTiming {
     inference_batches: u64,
     min_requests_per_batch: u64,
     small_batches: u64,
+    batch_bucket_le_64: u64,
+    batch_bucket_le_128: u64,
+    batch_bucket_le_256: u64,
+    batch_bucket_le_512: u64,
+    batch_bucket_le_1024: u64,
+    batch_bucket_gt_1024: u64,
+    active_games_min: u64,
+    active_games_max: u64,
+    active_games_sum: u64,
+    shard_request_min_sum: u64,
+    shard_request_max_sum: u64,
+    shard_request_mean_sum: f64,
+    shard_unused_quota_sum: u64,
+    shard_request_deficit_sum: u64,
+    collection_passes: u64,
+    collection_steal_passes: u64,
+    duplicate_request_batches: u64,
+    pending_split: PendingCollectionTiming,
+}
+
+impl RolloutTiming {
+    fn record_request_batch(
+        &mut self,
+        requests: usize,
+        stats: RequestBatchStats,
+        batch_decisions: usize,
+        games: usize,
+    ) {
+        let requests_count = requests as u64;
+        self.requests += requests_count;
+        self.max_requests_per_batch = self.max_requests_per_batch.max(requests_count);
+        self.min_requests_per_batch = if self.min_requests_per_batch == 0 {
+            requests_count
+        } else {
+            self.min_requests_per_batch.min(requests_count)
+        };
+        if requests < batch_decisions.min(games) / 2 {
+            self.small_batches += 1;
+        }
+        match requests {
+            0..=64 => self.batch_bucket_le_64 += 1,
+            65..=128 => self.batch_bucket_le_128 += 1,
+            129..=256 => self.batch_bucket_le_256 += 1,
+            257..=512 => self.batch_bucket_le_512 += 1,
+            513..=1024 => self.batch_bucket_le_1024 += 1,
+            _ => self.batch_bucket_gt_1024 += 1,
+        }
+        let active_games = stats.active_games as u64;
+        self.active_games_min = if self.active_games_min == 0 {
+            active_games
+        } else {
+            self.active_games_min.min(active_games)
+        };
+        self.active_games_max = self.active_games_max.max(active_games);
+        self.active_games_sum += active_games;
+        self.shard_request_min_sum += stats.shard_request_min as u64;
+        self.shard_request_max_sum += stats.shard_request_max as u64;
+        self.shard_request_mean_sum +=
+            stats.shard_request_sum as f64 / stats.collection_passes as f64;
+        self.shard_unused_quota_sum += stats.unused_quota as u64;
+        self.shard_request_deficit_sum += stats.request_deficit as u64;
+        self.collection_passes += stats.collection_passes as u64;
+    }
 }
 
 struct RolloutRow {
@@ -80,6 +194,7 @@ struct RolloutRow {
     seat_id: u8,
     turn: u32,
     old_logits: Option<[f32; HYDRA_ACTION_SPACE]>,
+    old_legal_logits: Option<Vec<f32>>,
     value_old: Option<f32>,
     old_logprob: Option<f32>,
 }
@@ -98,6 +213,7 @@ struct RolloutTerminal {
 
 struct RolloutPolicyOutput {
     logits: Vec<[f32; HYDRA_ACTION_SPACE]>,
+    legal_logits: Option<Vec<f32>>,
     values: Option<Vec<f32>>,
 }
 
@@ -126,14 +242,15 @@ impl RolloutPolicyInfer for OnnxRolloutPolicy<'_> {
         }
         timing.gather += gather_start.elapsed();
         let python_start = Instant::now();
-        let logits = self
+        let batch = self
             .model
-            .policy_logits_batch(&obs)
+            .policy_value_batch(&obs)
             .map_err(|err| PyValueError::new_err(err.to_string()))?;
         timing.callback_python += python_start.elapsed();
         Ok(RolloutPolicyOutput {
-            logits,
-            values: None,
+            logits: batch.logits,
+            legal_logits: None,
+            values: Some(batch.values),
         })
     }
 }
@@ -151,28 +268,78 @@ impl RolloutPolicyInfer for CallbackRolloutPolicy<'_> {
     ) -> PyResult<RolloutPolicyOutput> {
         let gather_start = Instant::now();
         let mut obs = Vec::with_capacity(requests.len() * OBS_SIZE);
+        let mut legal = Vec::with_capacity(requests.len() * HYDRA_ACTION_SPACE);
+        let mut legal_total = 0usize;
         for request in requests {
             obs.extend_from_slice(&request.decision.obs);
+            legal_total += request.decision.legal_count as usize;
+            for &is_legal in &request.decision.legal_mask {
+                legal.push(u8::from(is_legal));
+            }
         }
         timing.gather += gather_start.elapsed();
         let bytes_start = Instant::now();
         let obs_bytes = PyByteArray::new(self.py, bytemuck::cast_slice(&obs));
+        let legal_bytes = PyByteArray::new(self.py, &legal);
         timing.callback_build += bytes_start.elapsed();
         let python_start = Instant::now();
-        let raw = self.infer.call1((obs_bytes, requests.len()))?;
+        let raw = self.infer.call1((obs_bytes, legal_bytes, requests.len()))?;
         timing.callback_python += python_start.elapsed();
         let parse_start = Instant::now();
-        let parsed = parse_policy_output(raw, requests.len());
+        let parsed = parse_policy_output(raw, requests.len(), Some((requests, legal_total)));
         timing.callback_parse += parse_start.elapsed();
         parsed
     }
 }
-fn parse_policy_output(raw: Bound<'_, PyAny>, rows: usize) -> PyResult<RolloutPolicyOutput> {
-    if let Ok(buffer) = PyBuffer::<f32>::get(&raw)
-        && let Some(values) = buffer.as_slice(raw.py())
+fn parse_policy_output(
+    raw: Bound<'_, PyAny>,
+    rows: usize,
+    legal_context: Option<(&[RolloutRequest], usize)>,
+) -> PyResult<RolloutPolicyOutput> {
+    let legal_expected = legal_context.map(|(_, legal_total)| legal_total + rows);
+    if let Ok(tuple) = raw.cast::<PyTuple>() {
+        if tuple.len() != 2 {
+            return Err(PyValueError::new_err(format!(
+                "PPO inference callback tuple output must contain logits and values, got {} items",
+                tuple.len()
+            )));
+        }
+        let logits = parse_logits(tuple.get_item(0)?, rows)?;
+        let values = parse_values(tuple.get_item(1)?, rows)?;
+        return Ok(RolloutPolicyOutput {
+            logits,
+            legal_logits: None,
+            values: Some(values),
+        });
+    }
+    if raw.cast::<PyBytes>().is_err()
+        && raw.cast::<PyByteArray>().is_err()
+        && let Ok(buffer) = PyUntypedBuffer::get(&raw)
     {
         let expected_with_values = rows * (HYDRA_ACTION_SPACE + 1);
-        if values.len() == expected_with_values {
+        if buffer.item_count() == expected_with_values {
+            if buffer.dimensions() == 2 && buffer.shape() != [rows, HYDRA_ACTION_SPACE + 1] {
+                return Err(PyValueError::new_err(format!(
+                    "PPO inference callback packed output shape must be ({rows}, {}), got {:?}",
+                    HYDRA_ACTION_SPACE + 1,
+                    buffer.shape()
+                )));
+            }
+            let buffer = buffer.as_typed::<f32>().map_err(|err| {
+                PyValueError::new_err(format!(
+                    "PPO inference callback packed output must be float32: {err}"
+                ))
+            })?;
+            if !buffer.is_c_contiguous() {
+                return Err(PyValueError::new_err(
+                    "PPO inference callback packed output must be C-contiguous",
+                ));
+            }
+            let values = buffer.as_slice(raw.py()).ok_or_else(|| {
+                PyValueError::new_err(
+                    "PPO inference callback packed output must expose contiguous f32 data",
+                )
+            })?;
             let mut logits = Vec::with_capacity(rows);
             let mut value_old = Vec::with_capacity(rows);
             for row_idx in 0..rows {
@@ -186,24 +353,68 @@ fn parse_policy_output(raw: Bound<'_, PyAny>, rows: usize) -> PyResult<RolloutPo
             }
             return Ok(RolloutPolicyOutput {
                 logits,
+                legal_logits: None,
                 values: Some(value_old),
             });
         }
-        let expected_logits = rows * HYDRA_ACTION_SPACE;
-        if values.len() == expected_logits {
+        if Some(buffer.item_count()) == legal_expected {
+            let (requests, legal_total) = legal_context.expect("checked legal context");
+            let buffer = buffer.as_typed::<f32>().map_err(|err| {
+                PyValueError::new_err(format!(
+                    "PPO inference callback legal-only packed output must be float32: {err}"
+                ))
+            })?;
+            if !buffer.is_c_contiguous() {
+                return Err(PyValueError::new_err(
+                    "PPO inference callback legal-only packed output must be C-contiguous",
+                ));
+            }
+            let values = buffer.as_slice(raw.py()).ok_or_else(|| {
+                PyValueError::new_err(
+                    "PPO inference callback legal-only output must expose contiguous f32 data",
+                )
+            })?;
             let mut logits = Vec::with_capacity(rows);
-            for row_idx in 0..rows {
-                let offset = row_idx * HYDRA_ACTION_SPACE;
+            let mut legal_logits = Vec::with_capacity(legal_total);
+            let mut cursor = 0usize;
+            for request in requests {
                 let mut row_logits = [0.0f32; HYDRA_ACTION_SPACE];
-                for action_idx in 0..HYDRA_ACTION_SPACE {
-                    row_logits[action_idx] = values[offset + action_idx].get();
+                for (action_idx, &is_legal) in request.decision.legal_mask.iter().enumerate() {
+                    if is_legal {
+                        let logit = values[cursor].get();
+                        row_logits[action_idx] = logit;
+                        legal_logits.push(logit);
+                        cursor += 1;
+                    }
                 }
                 logits.push(row_logits);
             }
+            if cursor != legal_total {
+                return Err(PyValueError::new_err(
+                    "PPO inference callback legal-only count mismatch",
+                ));
+            }
+            let mut value_old = Vec::with_capacity(rows);
+            for idx in 0..rows {
+                value_old.push(values[legal_total + idx].get());
+            }
             return Ok(RolloutPolicyOutput {
                 logits,
-                values: None,
+                legal_logits: Some(legal_logits),
+                values: Some(value_old),
             });
+        }
+        if buffer.item_count() != rows * HYDRA_ACTION_SPACE {
+            let legal_text = legal_expected.map_or(String::new(), |expected| {
+                format!(" or {expected} legal logits+values")
+            });
+            return Err(PyValueError::new_err(format!(
+                "PPO inference callback returned {} buffer items, expected {} packed logits+values or {} logits{}",
+                buffer.item_count(),
+                expected_with_values,
+                rows * HYDRA_ACTION_SPACE,
+                legal_text
+            )));
         }
     }
     if let Ok(torch) = raw.py().import("torch")
@@ -213,7 +424,7 @@ fn parse_policy_output(raw: Bound<'_, PyAny>, rows: usize) -> PyResult<RolloutPo
         let cpu = raw.call_method1("to", ("cpu",))?;
         let contiguous = cpu.call_method0("contiguous")?;
         let raw_bytes = contiguous.call_method0("numpy")?.call_method0("tobytes")?;
-        return parse_policy_output(raw_bytes, rows);
+        return parse_policy_output(raw_bytes, rows, legal_context);
     }
     if let Ok(bytes) = raw.extract::<&[u8]>() {
         let expected_with_values = rows * (HYDRA_ACTION_SPACE + 1) * std::mem::size_of::<f32>();
@@ -233,6 +444,7 @@ fn parse_policy_output(raw: Bound<'_, PyAny>, rows: usize) -> PyResult<RolloutPo
             }
             return Ok(RolloutPolicyOutput {
                 logits,
+                legal_logits: None,
                 values: Some(value_old),
             });
         }
@@ -240,11 +452,73 @@ fn parse_policy_output(raw: Bound<'_, PyAny>, rows: usize) -> PyResult<RolloutPo
     let logits = parse_logits(raw, rows)?;
     Ok(RolloutPolicyOutput {
         logits,
+        legal_logits: None,
         values: None,
     })
 }
 
+fn parse_values(raw: Bound<'_, PyAny>, rows: usize) -> PyResult<Vec<f32>> {
+    if let Ok(buffer) = PyBuffer::<f32>::get(&raw) {
+        if buffer.item_count() != rows {
+            return Err(PyValueError::new_err(format!(
+                "PPO inference callback returned {} values, expected {rows}",
+                buffer.item_count()
+            )));
+        }
+        return buffer.to_vec(raw.py());
+    }
+    if let Ok(torch) = raw.py().import("torch")
+        && let Ok(tensor_type) = torch.getattr("Tensor")
+        && raw.is_instance(&tensor_type)?
+    {
+        let cpu = raw.call_method1("to", ("cpu",))?;
+        let contiguous = cpu.call_method0("contiguous")?;
+        let raw_bytes = contiguous.call_method0("numpy")?.call_method0("tobytes")?;
+        return parse_values(raw_bytes, rows);
+    }
+    if let Ok(bytes) = raw.extract::<&[u8]>() {
+        let expected_bytes = rows * std::mem::size_of::<f32>();
+        if bytes.len() != expected_bytes {
+            return Err(PyValueError::new_err(format!(
+                "PPO inference callback returned {} value bytes, expected {expected_bytes}",
+                bytes.len()
+            )));
+        }
+        let values = bytemuck::try_cast_slice::<u8, f32>(bytes).map_err(|err| {
+            PyValueError::new_err(format!(
+                "PPO inference callback values must be f32 bytes: {err}"
+            ))
+        })?;
+        return Ok(values.to_vec());
+    }
+    let values = raw.extract::<Vec<f32>>()?;
+    if values.len() != rows {
+        return Err(PyValueError::new_err(format!(
+            "PPO inference callback returned {} values, expected {rows}",
+            values.len()
+        )));
+    }
+    Ok(values)
+}
+
 fn parse_logits(raw: Bound<'_, PyAny>, rows: usize) -> PyResult<Vec<[f32; HYDRA_ACTION_SPACE]>> {
+    if let Ok(buffer) = PyBuffer::<f32>::get(&raw) {
+        let expected_values = rows * HYDRA_ACTION_SPACE;
+        if buffer.item_count() != expected_values {
+            return Err(PyValueError::new_err(format!(
+                "PPO inference callback returned {} logits, expected {expected_values}",
+                buffer.item_count()
+            )));
+        }
+        let values = buffer.to_vec(raw.py())?;
+        let mut out = Vec::with_capacity(rows);
+        for row in values.chunks_exact(HYDRA_ACTION_SPACE) {
+            let mut logits = [0.0f32; HYDRA_ACTION_SPACE];
+            logits.copy_from_slice(row);
+            out.push(logits);
+        }
+        return Ok(out);
+    }
     if let Ok(bytes) = raw.extract::<&[u8]>() {
         let expected_bytes = rows * HYDRA_ACTION_SPACE * std::mem::size_of::<f32>();
         if bytes.len() != expected_bytes {
@@ -294,7 +568,7 @@ fn parse_logits(raw: Bound<'_, PyAny>, rows: usize) -> PyResult<Vec<[f32; HYDRA_
     reason = "PyO3 rollout API keeps explicit operator fields across language boundary"
 )]
 #[pyfunction]
-#[pyo3(signature = (games, seed, policy_model_path, batch_decisions, device = "cuda:0", worker_threads = 0, temperature = 1.0))]
+#[pyo3(signature = (games, seed, policy_model_path, batch_decisions, device = "cuda:0", worker_threads = 0, temperature = 1.0, snapshot_metadata = None))]
 pub(crate) fn collect_ppo_rollouts_rust_native<'py>(
     py: Python<'py>,
     games: usize,
@@ -304,6 +578,7 @@ pub(crate) fn collect_ppo_rollouts_rust_native<'py>(
     device: &str,
     worker_threads: usize,
     temperature: f32,
+    snapshot_metadata: Option<Bound<'py, PyAny>>,
 ) -> PyResult<Bound<'py, PyDict>> {
     hydra_model::ort_init::init_ort_from_env()
         .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
@@ -331,6 +606,9 @@ pub(crate) fn collect_ppo_rollouts_rust_native<'py>(
     timing
         .cast::<PyDict>()?
         .set_item("session_load_ms", duration_ms(session_load))?;
+    if let Some(metadata) = snapshot_metadata {
+        result.set_item("snapshot_metadata", metadata)?;
+    }
     Ok(result)
 }
 
@@ -392,35 +670,15 @@ fn collect_ppo_rollouts_native_inner<'py>(
     while active_games > 0 {
         timing.loops += 1;
         let pending_start = Instant::now();
-        let per_shard_limit = batch_decisions.div_ceil(worker_threads).max(1);
-        let shard_steps = shards
-            .par_iter_mut()
-            .enumerate()
-            .map(|(shard_idx, shard)| {
-                collect_rollout_shard_requests(shard_idx, shard, per_shard_limit)
-            })
-            .collect::<Vec<_>>();
-        let mut requests = Vec::with_capacity(batch_decisions);
-        for step in shard_steps {
-            let step = step?;
-            active_games = active_games.saturating_sub(step.completed);
-            requests.extend(step.requests);
-        }
+        let (new_active_games, requests, batch_stats, pending_split) =
+            collect_rollout_batch_requests(&mut shards, active_games, batch_decisions)?;
+        timing.pending_split.absorb(pending_split);
+        active_games = new_active_games;
         timing.pending += pending_start.elapsed();
         if requests.is_empty() {
             continue;
         }
-        let requests_count = requests.len() as u64;
-        timing.requests += requests_count;
-        timing.max_requests_per_batch = timing.max_requests_per_batch.max(requests_count);
-        timing.min_requests_per_batch = if timing.min_requests_per_batch == 0 {
-            requests_count
-        } else {
-            timing.min_requests_per_batch.min(requests_count)
-        };
-        if requests.len() < batch_decisions.min(games) / 2 {
-            timing.small_batches += 1;
-        }
+        timing.record_request_batch(requests.len(), batch_stats, batch_decisions, games);
         let infer_start = Instant::now();
         timing.inference_batches += 1;
         let policy_output = policy.logits_batch(&requests, &mut timing)?;
@@ -433,6 +691,7 @@ fn collect_ppo_rollouts_native_inner<'py>(
             .collect::<Vec<_>>();
         timing.action_alloc += action_alloc_start.elapsed();
         let action_sample_start = Instant::now();
+        let mut legal_cursor = 0usize;
         for (request_idx, (request, scores)) in
             requests.iter().zip(policy_output.logits.iter()).enumerate()
         {
@@ -442,6 +701,12 @@ fn collect_ppo_rollouts_native_inner<'py>(
                 temperature,
                 &mut shards[request.shard_idx].active[request.local_game_idx].rng,
             )?;
+            let old_legal_logits = policy_output.legal_logits.as_ref().map(|legal_logits| {
+                let start = legal_cursor;
+                let end = start + request.decision.legal_count as usize;
+                legal_cursor = end;
+                legal_logits[start..end].to_vec()
+            });
             actions_by_shard[request.shard_idx].push((request.local_game_idx, action));
             let game = &mut shards[request.shard_idx].active[request.local_game_idx];
             game.rows.push(RolloutRow {
@@ -454,7 +719,12 @@ fn collect_ppo_rollouts_native_inner<'py>(
                 player_id: request.decision.player_id,
                 seat_id: request.decision.seat_id,
                 turn: request.decision.turn,
-                old_logits: Some(*scores),
+                old_logits: if old_legal_logits.is_some() {
+                    None
+                } else {
+                    Some(*scores)
+                },
+                old_legal_logits,
                 value_old: policy_output
                     .values
                     .as_ref()
@@ -550,6 +820,38 @@ fn collect_ppo_rollouts_native_inner<'py>(
     py_timing.set_item("sample_ms", duration_ms(timing.sample))?;
     py_timing.set_item("step_ms", duration_ms(timing.step))?;
     py_timing.set_item("completed_ms", duration_ms(timing.completed))?;
+    py_timing.set_item("pending_calls", timing.pending_split.game_loop.calls)?;
+    py_timing.set_item(
+        "pending_decisions",
+        timing.pending_split.game_loop.decisions,
+    )?;
+    py_timing.set_item("pending_advanced", timing.pending_split.game_loop.advanced)?;
+    py_timing.set_item("pending_complete", timing.pending_split.game_loop.complete)?;
+    py_timing.set_item("pending_wait_act", timing.pending_split.game_loop.wait_act)?;
+    py_timing.set_item(
+        "pending_wait_response",
+        timing.pending_split.game_loop.wait_response,
+    )?;
+    py_timing.set_item(
+        "pending_legal_actions_ms",
+        duration_ms(timing.pending_split.game_loop.legal_actions),
+    )?;
+    py_timing.set_item(
+        "pending_observe_ms",
+        duration_ms(timing.pending_split.game_loop.observe),
+    )?;
+    py_timing.set_item(
+        "pending_encode_ms",
+        duration_ms(timing.pending_split.game_loop.encode),
+    )?;
+    py_timing.set_item(
+        "pending_legal_pack_ms",
+        duration_ms(timing.pending_split.game_loop.legal_pack),
+    )?;
+    py_timing.set_item(
+        "pending_request_push_ms",
+        duration_ms(timing.pending_split.request_push),
+    )?;
     py_timing.set_item("requests", timing.requests)?;
     py_timing.set_item("inference_batches", timing.inference_batches)?;
     py_timing.set_item("loops", timing.loops)?;
@@ -557,6 +859,54 @@ fn collect_ppo_rollouts_native_inner<'py>(
     py_timing.set_item("min_requests_per_batch", timing.min_requests_per_batch)?;
     py_timing.set_item("small_batches", timing.small_batches)?;
     py_timing.set_item("max_requests_per_batch", timing.max_requests_per_batch)?;
+    py_timing.set_item(
+        "mean_requests_per_batch",
+        if timing.inference_batches > 0 {
+            timing.requests as f64 / timing.inference_batches as f64
+        } else {
+            0.0
+        },
+    )?;
+    py_timing.set_item("batch_bucket_le_64", timing.batch_bucket_le_64)?;
+    py_timing.set_item("batch_bucket_le_128", timing.batch_bucket_le_128)?;
+    py_timing.set_item("batch_bucket_le_256", timing.batch_bucket_le_256)?;
+    py_timing.set_item("batch_bucket_le_512", timing.batch_bucket_le_512)?;
+    py_timing.set_item("batch_bucket_le_1024", timing.batch_bucket_le_1024)?;
+    py_timing.set_item("batch_bucket_gt_1024", timing.batch_bucket_gt_1024)?;
+    py_timing.set_item("active_games_min", timing.active_games_min)?;
+    py_timing.set_item("active_games_max", timing.active_games_max)?;
+    py_timing.set_item(
+        "active_games_mean",
+        if timing.inference_batches > 0 {
+            timing.active_games_sum as f64 / timing.inference_batches as f64
+        } else {
+            0.0
+        },
+    )?;
+    py_timing.set_item(
+        "shard_request_min_mean",
+        mean_u64(timing.shard_request_min_sum, timing.inference_batches),
+    )?;
+    py_timing.set_item(
+        "shard_request_max_mean",
+        mean_u64(timing.shard_request_max_sum, timing.inference_batches),
+    )?;
+    py_timing.set_item(
+        "shard_request_mean_mean",
+        if timing.inference_batches > 0 {
+            timing.shard_request_mean_sum / timing.inference_batches as f64
+        } else {
+            0.0
+        },
+    )?;
+    py_timing.set_item("shard_unused_quota", timing.shard_unused_quota_sum)?;
+    py_timing.set_item("shard_request_deficit", timing.shard_request_deficit_sum)?;
+    py_timing.set_item("collection_passes", timing.collection_passes)?;
+    py_timing.set_item("collection_steal_passes", timing.collection_steal_passes)?;
+    py_timing.set_item(
+        "duplicate_request_batches",
+        timing.duplicate_request_batches,
+    )?;
     result.set_item("timing", &py_timing)?;
     let pack_start = Instant::now();
     let row_count = row_refs.len();
@@ -586,8 +936,14 @@ fn collect_ppo_rollouts_native_inner<'py>(
         .iter()
         .all(|row| row.value_old.is_some() && row.old_logprob.is_some());
     let cached_policy_logits = row_refs.iter().all(|row| row.old_logits.is_some());
+    let cached_legal_policy_logits = row_refs.iter().all(|row| row.old_legal_logits.is_some());
     let mut old_logits_values = if cached_policy_logits {
         vec![0.0f32; row_count * HYDRA_ACTION_SPACE]
+    } else {
+        Vec::new()
+    };
+    let mut old_legal_logits_values = if cached_legal_policy_logits {
+        Vec::with_capacity(row_refs.iter().map(|row| row.legal_count as usize).sum())
     } else {
         Vec::new()
     };
@@ -674,6 +1030,15 @@ fn collect_ppo_rollouts_native_inner<'py>(
                 logits_out.copy_from_slice(&row.old_logits.expect("checked cached logits"));
             });
     }
+    if cached_legal_policy_logits {
+        for row in &row_refs {
+            old_legal_logits_values.extend_from_slice(
+                row.old_legal_logits
+                    .as_ref()
+                    .expect("checked cached legal logits"),
+            );
+        }
+    }
     result.set_item(
         "obs_f32_le",
         PyBytes::new(py, bytemuck::cast_slice(&obs_values)),
@@ -692,6 +1057,12 @@ fn collect_ppo_rollouts_native_inner<'py>(
         result.set_item(
             "old_logits_f32_le",
             PyBytes::new(py, bytemuck::cast_slice(&old_logits_values)),
+        )?;
+    }
+    if cached_legal_policy_logits {
+        result.set_item(
+            "old_legal_logits_f32_le",
+            PyBytes::new(py, bytemuck::cast_slice(&old_legal_logits_values)),
         )?;
     }
     if cached_policy_scalars {
@@ -824,6 +1195,69 @@ fn build_rollout_shards(games: usize, seed: u64, worker_threads: usize) -> Vec<R
     shards
 }
 
+fn mean_u64(sum: u64, count: u64) -> f64 {
+    if count > 0 {
+        sum as f64 / count as f64
+    } else {
+        0.0
+    }
+}
+
+fn collect_rollout_batch_requests(
+    shards: &mut [RolloutShard],
+    active_games: usize,
+    batch_decisions: usize,
+) -> PyResult<(
+    usize,
+    Vec<RolloutRequest>,
+    RequestBatchStats,
+    PendingCollectionTiming,
+)> {
+    let worker_threads = shards.len();
+    let per_shard_limit = batch_decisions.div_ceil(worker_threads).max(1);
+    let shard_steps = shards
+        .par_iter_mut()
+        .enumerate()
+        .map(|(shard_idx, shard)| collect_rollout_shard_requests(shard_idx, shard, per_shard_limit))
+        .collect::<Vec<_>>();
+    let mut requests = Vec::with_capacity(batch_decisions);
+    let mut next_active_games = active_games;
+    let mut shard_request_min = usize::MAX;
+    let mut shard_request_max = 0usize;
+    let mut shard_request_sum = 0usize;
+    let mut unused_quota = 0usize;
+    let mut request_deficit = 0usize;
+    let mut pending_timing = PendingCollectionTiming::default();
+    for step in shard_steps {
+        let step = step?;
+        next_active_games = next_active_games.saturating_sub(step.completed);
+        pending_timing.absorb_parallel_shard(step.timing);
+        let request_count = step.requests.len();
+        shard_request_min = shard_request_min.min(request_count);
+        shard_request_max = shard_request_max.max(request_count);
+        shard_request_sum += request_count;
+        unused_quota += per_shard_limit.saturating_sub(request_count);
+        if request_count == per_shard_limit {
+            request_deficit += 1;
+        }
+        requests.extend(step.requests);
+    }
+    let collection_passes = 1usize;
+    if shard_request_min == usize::MAX {
+        shard_request_min = 0;
+    }
+    let stats = RequestBatchStats {
+        active_games: next_active_games,
+        shard_request_min,
+        shard_request_max,
+        shard_request_sum,
+        unused_quota,
+        request_deficit,
+        collection_passes,
+    };
+    Ok((next_active_games, requests, stats, pending_timing))
+}
+
 fn collect_rollout_shard_requests(
     shard_idx: usize,
     shard: &mut RolloutShard,
@@ -835,8 +1269,10 @@ fn collect_rollout_shard_requests(
         return Ok(RolloutShardStep {
             requests,
             completed,
+            timing: PendingCollectionTiming::default(),
         });
     }
+    let mut timing = PendingCollectionTiming::default();
     let mut inspected = 0usize;
     shard.next_game_idx %= shard.active.len();
     while !shard.active.is_empty()
@@ -844,12 +1280,16 @@ fn collect_rollout_shard_requests(
         && inspected < shard.active.len()
     {
         let game_idx = shard.next_game_idx % shard.active.len();
-        match shard.active[game_idx].runner.pending_decisions() {
+        match shard.active[game_idx]
+            .runner
+            .pending_decisions_with_timing(Some(&mut timing.game_loop))
+        {
             Ok(decisions) => {
                 for decision in decisions {
                     if requests.len() >= max_requests {
                         break;
                     }
+                    let push_start = Instant::now();
                     requests.push(RolloutRequest {
                         shard_idx,
                         local_game_idx: game_idx,
@@ -857,6 +1297,7 @@ fn collect_rollout_shard_requests(
                         seed: shard.active[game_idx].seed,
                         decision,
                     });
+                    timing.request_push += push_start.elapsed();
                 }
                 shard.next_game_idx = (game_idx + 1) % shard.active.len();
                 inspected += 1;
@@ -892,6 +1333,7 @@ fn collect_rollout_shard_requests(
     Ok(RolloutShardStep {
         requests,
         completed,
+        timing,
     })
 }
 
@@ -1130,6 +1572,265 @@ mod tests {
     }
 
     #[test]
+    fn legal_only_parse_preserves_order_and_sampling_parity() {
+        Python::try_attach(|py| {
+            let mut runner = GameRunner::new(Some(20260601), 0);
+            let decisions = loop {
+                match runner.pending_decisions() {
+                    Ok(decisions) => break decisions,
+                    Err(StepOutcome::Advanced) => continue,
+                    Err(outcome) => panic!("unexpected startup outcome {outcome:?}"),
+                }
+            };
+            let requests = decisions
+                .into_iter()
+                .map(|decision| RolloutRequest {
+                    shard_idx: 0,
+                    local_game_idx: 0,
+                    game_id: 0,
+                    seed: 0,
+                    decision,
+                })
+                .collect::<Vec<_>>();
+            let legal_total = requests
+                .iter()
+                .map(|request| request.decision.legal_count as usize)
+                .sum::<usize>();
+            let mut full_scores = Vec::<[f32; HYDRA_ACTION_SPACE]>::with_capacity(requests.len());
+            let mut packed = Vec::<f32>::with_capacity(legal_total + requests.len());
+            for request in &requests {
+                let mut row_scores = [0.0f32; HYDRA_ACTION_SPACE];
+                for (idx, score) in row_scores.iter_mut().enumerate() {
+                    *score = (idx as f32 * 0.19).cos() * 2.0;
+                }
+                for (idx, &is_legal) in request.decision.legal_mask.iter().enumerate() {
+                    if is_legal {
+                        packed.push(row_scores[idx]);
+                    }
+                }
+                full_scores.push(row_scores);
+            }
+            packed.extend([0.25f32; 1]);
+            let bytes = PyBytes::new(py, bytemuck::cast_slice(&packed));
+
+            let parsed = parse_policy_output(
+                bytes.into_any(),
+                requests.len(),
+                Some((&requests, legal_total)),
+            )
+            .expect("parse legal-only output");
+
+            assert_eq!(
+                parsed.legal_logits.expect("legal logits"),
+                packed[..legal_total]
+            );
+            assert_eq!(parsed.values.expect("values"), vec![0.25]);
+            let mut full_rng = StdRng::seed_from_u64(991);
+            let mut legal_rng = StdRng::seed_from_u64(991);
+            let (full_action, full_logprob) = sample_action_and_logprob(
+                &full_scores[0],
+                &requests[0].decision.legal_mask,
+                0.8,
+                &mut full_rng,
+            )
+            .expect("full sample");
+            let (legal_action, legal_logprob) = sample_action_and_logprob(
+                &parsed.logits[0],
+                &requests[0].decision.legal_mask,
+                0.8,
+                &mut legal_rng,
+            )
+            .expect("legal sample");
+            assert_eq!(legal_action, full_action);
+            assert!((legal_logprob - full_logprob).abs() <= 1e-6);
+        })
+        .expect("Python attached");
+    }
+
+    #[test]
+    fn legal_only_parse_rejects_wrong_length() {
+        Python::try_attach(|py| {
+            let mut runner = GameRunner::new(Some(20260602), 0);
+            let decisions = loop {
+                match runner.pending_decisions() {
+                    Ok(decisions) => break decisions,
+                    Err(StepOutcome::Advanced) => continue,
+                    Err(outcome) => panic!("unexpected startup outcome {outcome:?}"),
+                }
+            };
+            let requests = decisions
+                .into_iter()
+                .map(|decision| RolloutRequest {
+                    shard_idx: 0,
+                    local_game_idx: 0,
+                    game_id: 0,
+                    seed: 0,
+                    decision,
+                })
+                .collect::<Vec<_>>();
+            let legal_total = requests
+                .iter()
+                .map(|request| request.decision.legal_count as usize)
+                .sum::<usize>();
+            let bad = vec![0.0f32; legal_total + requests.len() - 1];
+            let bytes = PyBytes::new(py, bytemuck::cast_slice(&bad));
+
+            let err = parse_policy_output(
+                bytes.into_any(),
+                requests.len(),
+                Some((&requests, legal_total)),
+            )
+            .err()
+            .expect("bad legal-only length");
+
+            assert!(err.to_string().contains("legal logits+values"));
+        })
+        .expect("Python attached");
+    }
+
+    #[test]
+    fn parse_policy_output_accepts_split_logits_and_values() {
+        Python::try_attach(|py| {
+            let rows = 2usize;
+            let mut logits = vec![0.0f32; rows * HYDRA_ACTION_SPACE];
+            for (idx, value) in logits.iter_mut().enumerate() {
+                *value = idx as f32 * 0.25;
+            }
+            let values = vec![1.25f32, -2.5f32];
+            let logits_bytes = PyBytes::new(py, bytemuck::cast_slice(&logits));
+            let values_bytes = PyBytes::new(py, bytemuck::cast_slice(&values));
+            let tuple =
+                PyTuple::new(py, [logits_bytes.as_any(), values_bytes.as_any()]).expect("tuple");
+
+            let parsed =
+                parse_policy_output(tuple.into_any(), rows, None).expect("parse split output");
+
+            assert_eq!(parsed.logits.len(), rows);
+            assert_eq!(parsed.logits[0][0], 0.0);
+            assert_eq!(
+                parsed.logits[1][HYDRA_ACTION_SPACE - 1],
+                (rows * HYDRA_ACTION_SPACE - 1) as f32 * 0.25
+            );
+            assert_eq!(parsed.values.expect("values"), values);
+        })
+        .expect("Python attached");
+    }
+
+    #[test]
+    fn parse_policy_output_accepts_packed_numpy_memoryview() {
+        Python::try_attach(|py| {
+            let rows = 2usize;
+            let mut packed = vec![0.0f32; rows * (HYDRA_ACTION_SPACE + 1)];
+            for row in 0..rows {
+                for action in 0..HYDRA_ACTION_SPACE {
+                    packed[row * (HYDRA_ACTION_SPACE + 1) + action] = (row * 100 + action) as f32;
+                }
+                packed[row * (HYDRA_ACTION_SPACE + 1) + HYDRA_ACTION_SPACE] = row as f32 - 0.5;
+            }
+            let numpy = py.import("numpy").expect("numpy import");
+            let dtype = numpy.getattr("float32").expect("float32 dtype");
+            let bytes = PyBytes::new(py, bytemuck::cast_slice(&packed));
+            let array = numpy
+                .call_method1("frombuffer", (bytes.as_any(), dtype))
+                .expect("frombuffer")
+                .call_method1("reshape", ((rows, HYDRA_ACTION_SPACE + 1),))
+                .expect("reshape");
+            let view = py
+                .import("builtins")
+                .expect("builtins")
+                .getattr("memoryview")
+                .expect("memoryview")
+                .call1((array.as_any(),))
+                .expect("make memoryview");
+
+            let parsed = parse_policy_output(view, rows, None).expect("parse packed output");
+
+            assert_eq!(parsed.logits.len(), rows);
+            assert_eq!(
+                parsed.logits[1][HYDRA_ACTION_SPACE - 1],
+                (100 + HYDRA_ACTION_SPACE - 1) as f32
+            );
+            assert_eq!(parsed.values.expect("values"), vec![-0.5, 0.5]);
+        })
+        .expect("Python attached");
+    }
+
+    #[test]
+    fn parse_policy_output_rejects_bad_packed_buffer_length() {
+        Python::try_attach(|py| {
+            let rows = 2usize;
+            let packed = vec![0.0f32; rows * (HYDRA_ACTION_SPACE + 1) - 1];
+            let array_module = py.import("array").expect("array import");
+            let array_type = array_module.getattr("array").expect("array type");
+            let values = PyList::new(py, packed).expect("packed list");
+            let array = array_type.call1(("f", values)).expect("array");
+            let view = py
+                .import("builtins")
+                .expect("builtins")
+                .getattr("memoryview")
+                .expect("memoryview")
+                .call1((array.as_any(),))
+                .expect("make memoryview");
+
+            let err = parse_policy_output(view, rows, None)
+                .err()
+                .expect("bad packed length");
+
+            assert!(err.to_string().contains("buffer items"));
+        })
+        .expect("Python attached");
+    }
+
+    #[test]
+    fn parse_policy_output_rejects_bad_packed_dtype() {
+        Python::try_attach(|py| {
+            let rows = 2usize;
+            let packed = vec![0.0f64; rows * (HYDRA_ACTION_SPACE + 1)];
+            let array_module = py.import("array").expect("array import");
+            let array_type = array_module.getattr("array").expect("array type");
+            let values = PyList::new(py, packed).expect("packed list");
+            let array = array_type.call1(("d", values)).expect("array");
+            let view = py
+                .import("builtins")
+                .expect("builtins")
+                .getattr("memoryview")
+                .expect("memoryview")
+                .call1((array.as_any(),))
+                .expect("make memoryview");
+
+            let err = parse_policy_output(view, rows, None)
+                .err()
+                .expect("bad packed dtype");
+
+            assert!(err.to_string().contains("must be float32"));
+        })
+        .expect("Python attached");
+    }
+
+    #[test]
+    fn parse_policy_output_rejects_bad_split_value_count() {
+        Python::try_attach(|py| {
+            let rows = 2usize;
+            let logits = vec![0.0f32; rows * HYDRA_ACTION_SPACE];
+            let values = vec![1.0f32];
+            let logits_bytes = PyBytes::new(py, bytemuck::cast_slice(&logits));
+            let values_bytes = PyBytes::new(py, bytemuck::cast_slice(&values));
+            let tuple =
+                PyTuple::new(py, [logits_bytes.as_any(), values_bytes.as_any()]).expect("tuple");
+
+            let err = parse_policy_output(tuple.into_any(), rows, None)
+                .err()
+                .expect("bad value count");
+
+            assert!(
+                err.to_string()
+                    .contains("returned 4 value bytes, expected 8")
+            );
+        })
+        .expect("Python attached");
+    }
+
+    #[test]
     fn first_legal_rollout_completes_without_model_inference() {
         let mut shards = build_rollout_shards(1, 2026052705, 1);
         let mut active_games = 1usize;
@@ -1153,6 +1854,35 @@ mod tests {
         }
         assert_eq!(shards[0].completed_games.len(), 1);
         assert!(loops > 20);
+    }
+
+    #[test]
+    fn rollout_batch_requests_respects_global_budget_and_has_no_duplicate_games() {
+        let mut shards = build_rollout_shards(8, 2026052706, 4);
+        let (_active_games, requests, stats, timing) =
+            collect_rollout_batch_requests(&mut shards, 8, 3).expect("batch requests");
+        assert!(requests.len() <= 3);
+        assert_eq!(stats.collection_passes, 1);
+        assert!(timing.game_loop.calls > 0);
+        assert!(timing.game_loop.decisions > 0);
+        let mut game_ids = requests
+            .iter()
+            .map(|request| request.game_id)
+            .collect::<Vec<_>>();
+        game_ids.sort_unstable();
+        game_ids.dedup();
+        assert_eq!(game_ids.len(), requests.len());
+    }
+
+    #[test]
+    fn rollout_batch_requests_reports_static_shard_underfill() {
+        let mut shards = build_rollout_shards(16, 2026052707, 4);
+        let (_active_games, requests, stats, _timing) =
+            collect_rollout_batch_requests(&mut shards, 16, 64).expect("batch requests");
+        assert!(requests.len() <= 16);
+        assert!(stats.unused_quota > 0);
+        assert_eq!(stats.shard_request_sum, requests.len());
+        assert_eq!(stats.request_deficit, 0);
     }
     #[test]
     fn wait_act_actions_advance_game_runner() {
@@ -1191,6 +1921,7 @@ mod tests {
             seat_id: player_id,
             turn,
             old_logits: None,
+            old_legal_logits: None,
             value_old: None,
             old_logprob: None,
         }

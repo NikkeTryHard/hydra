@@ -147,6 +147,14 @@ fn rl_mode_summary_formats_stage_runtime_and_steps() {
         exit_weight: None,
         aux_weight: None,
         microbatch_size: None,
+        epochs: None,
+        target_kl: None,
+        run_forever: false,
+        rollout_inference: None,
+        bc_kl_reverse_coef: None,
+        lr_warmup_samples: None,
+        lr_decay_samples: None,
+        arena_batch_decisions: None,
     };
 
     let summary = rl_mode_summary(&rl_config, 2048);
@@ -894,6 +902,14 @@ fn rl_mode_summary_formats_zero_temperature_and_zero_steps() {
         exit_weight: None,
         aux_weight: None,
         microbatch_size: None,
+        epochs: None,
+        target_kl: None,
+        run_forever: false,
+        rollout_inference: None,
+        bc_kl_reverse_coef: None,
+        lr_warmup_samples: None,
+        lr_decay_samples: None,
+        arena_batch_decisions: None,
     };
 
     let summary = rl_mode_summary(&rl_config, 0);

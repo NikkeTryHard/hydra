@@ -15,6 +15,7 @@ from hydra_learner.rl import DEFAULT_GAE_GAMMA, DEFAULT_GAE_LAMBDA
 
 if TYPE_CHECKING:
     from hydra_learner.losses import LossWeights
+    from hydra_learner.ppo_rollout import PpoSnapshotMetadata
 
 
 def _save_t1_checkpoint(
@@ -30,6 +31,7 @@ def _save_t1_checkpoint(
     samples_seen: int,
     completed_games: int,
     config_digest: str,
+    snapshot: PpoSnapshotMetadata | None = None,
 ) -> None:
     save_checkpoint(
         path,
@@ -42,7 +44,11 @@ def _save_t1_checkpoint(
         manifest_path=None,
         global_step=global_step,
         samples_seen=samples_seen,
-        raw_mjai_progress={"completed_games": completed_games, "rollout_seed_cursor": config.seed + completed_games},
+        raw_mjai_progress={
+            "completed_games": completed_games,
+            "rollout_seed_cursor": config.seed + completed_games,
+            "latest_snapshot": None if snapshot is None else snapshot.to_payload(),
+        },
         training_objective={
             "schema_version": 1,
             "objective": OBJECTIVE,
@@ -52,6 +58,7 @@ def _save_t1_checkpoint(
             "gae_lambda": DEFAULT_GAE_LAMBDA,
             "reward_shaping": default_reward_shaping_metadata(gamma=DEFAULT_GAE_GAMMA, gae_lambda=DEFAULT_GAE_LAMBDA),
             "config_digest_sha256": config_digest,
+            "latest_snapshot": None if snapshot is None else snapshot.to_payload(),
             "disabled_capabilities": {
                 "ach": True,
                 "drda": True,
@@ -63,14 +70,19 @@ def _save_t1_checkpoint(
     )
 
 
-def _validate_resume_metadata(path: Path, config_digest: str) -> None:
+def _validate_resume_metadata(
+    path: Path, config_digest: str, compatible_config_digests: set[str] | None = None
+) -> None:
     payload = torch.load(path, map_location="cpu", weights_only=True)
     objective = payload.get("training_objective") if isinstance(payload, dict) else None
     if not isinstance(objective, Mapping):
         raise ValueError("T1 PPO resume checkpoint missing training_objective")
     if objective.get("objective") != OBJECTIVE or objective.get("mode") != OBJECTIVE:
         raise ValueError("T1 PPO resume checkpoint objective mismatch")
-    if objective.get("config_digest_sha256") != config_digest:
+    allowed_digests = {config_digest}
+    if compatible_config_digests is not None:
+        allowed_digests.update(compatible_config_digests)
+    if objective.get("config_digest_sha256") not in allowed_digests:
         raise ValueError("T1 PPO resume config digest mismatch")
     if objective.get("rank_utility_used") != RANK_UTILITY:
         raise ValueError("T1 PPO resume rank utility mismatch")

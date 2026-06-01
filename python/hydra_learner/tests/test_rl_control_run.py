@@ -66,6 +66,8 @@ def test_n1_control_run_saves_isolated_ppo_and_ach_checkpoints_and_summary(tmp_p
             "value_coef": 0.5,
             "bc_kl_reverse_coef": 0.01,
             "grad_clip_norm": None,
+            "epochs": 1,
+            "target_kl": None,
             "advantage_epsilon": 1.0e-8,
         },
         "direct_sampled_ach": {

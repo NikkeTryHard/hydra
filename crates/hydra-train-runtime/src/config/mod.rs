@@ -415,9 +415,15 @@ pub struct RlTrainConfig {
     #[serde(default)]
     pub microbatch_size: Option<usize>,
     #[serde(default)]
+    pub epochs: Option<usize>,
+    #[serde(default)]
+    pub target_kl: Option<f64>,
+    #[serde(default)]
     pub run_forever: bool,
     #[serde(default)]
     pub rollout_inference: Option<String>,
+    #[serde(default)]
+    pub ppo_rollout_device: Option<String>,
     #[serde(default)]
     pub bc_kl_reverse_coef: Option<f64>,
     #[serde(default)]
@@ -426,6 +432,8 @@ pub struct RlTrainConfig {
     pub lr_decay_samples: Option<usize>,
     #[serde(default)]
     pub arena_batch_decisions: Option<usize>,
+    #[serde(default)]
+    pub ppo_pipeline_depth: Option<usize>,
 }
 
 impl Default for RlTrainConfig {
@@ -438,12 +446,16 @@ impl Default for RlTrainConfig {
             exit_weight: None,
             aux_weight: None,
             microbatch_size: None,
+            epochs: None,
+            target_kl: None,
             run_forever: false,
             lr_warmup_samples: None,
             lr_decay_samples: None,
             rollout_inference: None,
+            ppo_rollout_device: None,
             bc_kl_reverse_coef: None,
             arena_batch_decisions: None,
+            ppo_pipeline_depth: None,
         }
     }
 }
@@ -610,12 +622,15 @@ pub struct PythonPpoControlCliOptions {
     pub stage: Option<String>,
     pub run_name: Option<String>,
     pub device: String,
+    pub rollout_device: Option<String>,
     pub steps: Option<usize>,
     pub games_per_update: usize,
     pub seed: u64,
     pub temperature: f32,
     pub arena_batch_decisions: usize,
     pub microbatch_size: usize,
+    pub epochs: usize,
+    pub target_kl: Option<f64>,
     pub arena_threads: usize,
     pub hidden: usize,
     pub blocks: usize,
@@ -641,6 +656,7 @@ pub struct PythonPpoControlCliOptions {
     pub tensorboard_host: String,
     pub tensorboard_port: u16,
     pub rollout_inference: String,
+    pub ppo_pipeline_depth: usize,
     pub background: bool,
 }
 

@@ -158,6 +158,11 @@ pub fn python_ppo_control_options_from_config(
                 .to_string(),
         );
     }
+    if let Some(depth) = rl.ppo_pipeline_depth
+        && depth > 1
+    {
+        return Err("rl.ppo_pipeline_depth must be 0 or 1".to_string());
+    }
     let steps = if rl.run_forever {
         None
     } else {
@@ -177,12 +182,15 @@ pub fn python_ppo_control_options_from_config(
         stage: config.stage.clone(),
         run_name: config.run_name.clone(),
         device: config.device.clone(),
+        rollout_device: rl.ppo_rollout_device.clone(),
         steps,
         games_per_update: rl.games_per_batch,
         seed: config.seed,
         temperature: rl.temperature,
         arena_batch_decisions: rl.arena_batch_decisions.unwrap_or(config.batch_size),
         microbatch_size: rl.microbatch_size.unwrap_or(1024),
+        epochs: rl.epochs.unwrap_or(1),
+        target_kl: rl.target_kl,
         arena_threads: config.num_threads.unwrap_or(0),
         hidden: config.python_model_profile.hidden(),
         blocks: config.python_model_profile.blocks(),
@@ -211,6 +219,7 @@ pub fn python_ppo_control_options_from_config(
             .rollout_inference
             .clone()
             .unwrap_or_else(|| "torch-callback".to_owned()),
+        ppo_pipeline_depth: rl.ppo_pipeline_depth.unwrap_or(0),
         background: config.background,
     })
 }

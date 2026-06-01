@@ -27,11 +27,14 @@ from hydra_learner.model import (
     HydraPolicyNet,
 )
 
-EXPORT_SCHEMA_VERSION = 2
+POLICY_ONLY_SCHEMA_VERSION = 2
+PPO_POLICY_VALUE_SCHEMA_VERSION = 3
+EXPORT_SCHEMA_VERSION = POLICY_ONLY_SCHEMA_VERSION
 ARTIFACT_NAME = "policy.onnx"
 METADATA_NAME = "policy.json"
 FIXTURE_NAME = "parity_fixture.safetensors"
 WeightSource = Literal["raw", "ema"]
+ExportMode = Literal["policy_only", "ppo_policy_value"]
 
 
 @dataclass(frozen=True)
@@ -43,6 +46,8 @@ class ExportConfig:
     num_fixture_rows: int
     max_batch: int
     opset_version: int
+
+    export_mode: ExportMode = "policy_only"
 
 
 @dataclass(frozen=True)
@@ -66,6 +71,16 @@ class PolicyOnly(torch.nn.Module):
         return self.model(obs).policy_logits
 
 
+class PolicyValueOnly(torch.nn.Module):
+    def __init__(self, model: HydraPolicyNet) -> None:
+        super().__init__()
+        self.model = model
+
+    @override
+    def forward(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.model.policy_value(obs)
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path, required=True, help="Python .pt training checkpoint")
@@ -75,6 +90,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--num-fixture-rows", type=int, default=8)
     parser.add_argument("--max-batch", type=int, default=4096, help="maximum dynamic batch accepted by ONNX export")
     parser.add_argument("--opset-version", type=int, default=18)
+    parser.add_argument(
+        "--export-mode",
+        choices=("policy_only", "ppo_policy_value"),
+        default="policy_only",
+        help="policy_only keeps arena schema v2; ppo_policy_value writes PPO schema v3 logits+value",
+    )
     return parser.parse_args(argv)
 
 
@@ -93,10 +114,13 @@ def validate_args(args: argparse.Namespace) -> ExportConfig:
         num_fixture_rows=args.num_fixture_rows,
         max_batch=args.max_batch,
         opset_version=args.opset_version,
+        export_mode=cast(ExportMode, args.export_mode),
     )
 
 
-def load_export_policy(config: ExportConfig) -> tuple[PolicyOnly, torch.Tensor, Any, ModelConfig, dict[str, Any]]:
+def load_export_policy(
+    config: ExportConfig,
+) -> tuple[PolicyOnly | PolicyValueOnly, torch.Tensor, Any, ModelConfig, dict[str, Any]]:
     if config.checkpoint is None:
         raise ValueError("export checkpoint path is required")
     checkpoint = _torch_load(config.checkpoint)
@@ -122,8 +146,11 @@ def load_export_policy(config: ExportConfig) -> tuple[PolicyOnly, torch.Tensor, 
         weight_source=config.weight_source,
     )
     model.eval()
+    policy: PolicyOnly | PolicyValueOnly = (
+        PolicyValueOnly(model).eval() if config.export_mode == "ppo_policy_value" else PolicyOnly(model).eval()
+    )
     return (
-        PolicyOnly(model).eval(),
+        policy,
         _fixture_obs(config.fixture_obs, config.num_fixture_rows),
         init,
         model_config,
@@ -134,7 +161,7 @@ def load_export_policy(config: ExportConfig) -> tuple[PolicyOnly, torch.Tensor, 
 def write_exported_policy(
     config: ExportConfig,
     *,
-    policy: PolicyOnly,
+    policy: PolicyOnly | PolicyValueOnly,
     obs: torch.Tensor,
     init: Any,
     model_config: ModelConfig,
@@ -150,7 +177,15 @@ def write_exported_policy(
     source_hash = "" if config.checkpoint is None else _sha256_file(config.checkpoint)
     export_obs = obs.to(next(policy.parameters()).device)
     with torch.inference_mode():
-        expected = policy(export_obs).detach().cpu().contiguous()
+        expected_raw = policy(export_obs)
+        if config.export_mode == "ppo_policy_value":
+            policy_logits, value = cast("tuple[torch.Tensor, torch.Tensor]", expected_raw)
+            expected = {
+                "policy_logits": policy_logits.detach().cpu().contiguous(),
+                "value": value.detach().cpu().contiguous(),
+            }
+        else:
+            expected = {"policy_logits": cast("torch.Tensor", expected_raw).detach().cpu().contiguous()}
     _export_onnx(policy, export_obs, artifact_path, config)
     artifact_hash = _sha256_file(artifact_path)
     metadata = _metadata(
@@ -165,9 +200,9 @@ def write_exported_policy(
     )
     metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     save_file(
-        {"obs": obs.cpu().contiguous(), "policy_logits": expected},
+        {"obs": obs.cpu().contiguous(), **expected},
         fixture_path,
-        metadata={"hydra_fixture_schema_version": str(EXPORT_SCHEMA_VERSION)},
+        metadata={"hydra_fixture_schema_version": str(_schema_version(config.export_mode))},
     )
     return ExportResult(
         artifact_path=artifact_path,
@@ -199,7 +234,9 @@ def export_loaded_policy(
     try:
         return write_exported_policy(
             config,
-            policy=PolicyOnly(model).eval(),
+            policy=PolicyValueOnly(model).eval()
+            if config.export_mode == "ppo_policy_value"
+            else PolicyOnly(model).eval(),
             obs=obs,
             init=init,
             model_config=model_config,
@@ -238,7 +275,12 @@ def _reject_drda_checkpoint_export(checkpoint: dict[str, Any]) -> None:
         )
 
 
-def _export_onnx(policy: PolicyOnly, obs: torch.Tensor, artifact_path: Path, config: ExportConfig) -> None:
+def _export_onnx(
+    policy: PolicyOnly | PolicyValueOnly,
+    obs: torch.Tensor,
+    artifact_path: Path,
+    config: ExportConfig,
+) -> None:
     try:
         _ensure_onnxscript_torch_api_alias()
         batch_dim = torch.export.Dim("batch", min=1, max=config.max_batch)
@@ -248,12 +290,13 @@ def _export_onnx(policy: PolicyOnly, obs: torch.Tensor, artifact_path: Path, con
                 message=".*LeafSpec.*is deprecated.*",
                 category=FutureWarning,
             )
+            output_names = ["policy_logits", "value"] if config.export_mode == "ppo_policy_value" else ["policy_logits"]
             torch.onnx.export(
                 policy,
                 (obs,),
                 str(artifact_path),
                 input_names=["obs"],
-                output_names=["policy_logits"],
+                output_names=output_names,
                 dynamo=True,
                 dynamic_shapes={"obs": {0: batch_dim}},
                 opset_version=config.opset_version,
@@ -309,6 +352,12 @@ def _validate_supported_model_config(config: ModelConfig) -> None:
         raise ValueError(f"unsupported head_mode {config.head_mode!r}")
 
 
+def _schema_version(export_mode: ExportMode) -> int:
+    if export_mode == "ppo_policy_value":
+        return PPO_POLICY_VALUE_SCHEMA_VERSION
+    return POLICY_ONLY_SCHEMA_VERSION
+
+
 def _metadata(
     *,
     checkpoint: dict[str, Any],
@@ -320,8 +369,8 @@ def _metadata(
     config: ExportConfig,
     source_label: str | None = None,
 ) -> dict[str, Any]:
-    return {
-        "schema_version": EXPORT_SCHEMA_VERSION,
+    common = {
+        "schema_version": _schema_version(config.export_mode),
         "format": "onnx",
         "source_checkpoint_path": str(checkpoint_path) if checkpoint_path is not None else source_label,
         "source_checkpoint_sha256": checkpoint_sha256,
@@ -332,13 +381,10 @@ def _metadata(
         "model_config": asdict(model_config),
         "encoder_shape": [OBS_CHANNELS, TILE_WIDTH],
         "action_space": ACTION_SPACE,
-        "dtype": "float32",
         "artifact": ARTIFACT_NAME,
         "artifact_sha256": artifact_sha256,
         "input_name": "obs",
-        "output_name": "policy_logits",
         "input_shape": ["N", OBS_CHANNELS, TILE_WIDTH],
-        "output_shape": ["N", ACTION_SPACE],
         "max_batch": config.max_batch,
         "opset_version": config.opset_version,
         "base_heads": {"width": BASE_LINEAR_HEADS, "policy_logits": [0, ACTION_SPACE]},
@@ -348,6 +394,21 @@ def _metadata(
             "conv_memory_format": model_config.conv_memory_format,
         },
         "torch_version": checkpoint.get("torch_version"),
+    }
+    if config.export_mode == "ppo_policy_value":
+        return {
+            **common,
+            "artifact_kind": "ppo_policy_value",
+            "outputs": {
+                "policy_logits": {"name": "policy_logits", "dtype": "float32", "shape": ["N", ACTION_SPACE]},
+                "value": {"name": "value", "dtype": "float32", "shape": ["N", 1]},
+            },
+        }
+    return {
+        **common,
+        "dtype": "float32",
+        "output_name": "policy_logits",
+        "output_shape": ["N", ACTION_SPACE],
     }
 
 

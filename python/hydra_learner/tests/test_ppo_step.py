@@ -8,8 +8,8 @@ import pytest
 import torch
 
 from hydra_learner.model import ACTION_SPACE, HydraPolicyNet
-from hydra_learner.ppo_step import PpoBatch, PpoTrainStepConfig, ppo_train_step
-from hydra_learner.rl import EntropyController, masked_log_prob
+from hydra_learner.ppo_step import PpoBatch, PpoTrainStepConfig, _clip_grad_norm_for_ppo, ppo_train_step
+from hydra_learner.rl import EntropyController, masked_log_prob, masked_log_softmax
 
 
 def _replace_batch(batch: PpoBatch, **updates: torch.Tensor | str | None) -> PpoBatch:
@@ -141,6 +141,51 @@ def test_ppo_train_step_same_current_bc_logits_near_zero_kl_noop_policy_loss() -
     json.dumps(result.metrics, allow_nan=False)
 
 
+def test_ppo_train_step_legal_only_reconstructed_logits_match_full_logits() -> None:
+    torch.manual_seed(12)
+    base_model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
+    full_model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
+    legal_model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
+    full_model.load_state_dict(base_model.state_dict(), strict=True)
+    legal_model.load_state_dict(base_model.state_dict(), strict=True)
+    batch = _batch_from_model(base_model, raw_advantages=torch.tensor([0.75, -0.25], dtype=torch.float32))
+    reconstructed_logits = torch.zeros_like(batch.bc_logits)
+    reconstructed_logits[batch.legal_mask] = batch.bc_logits[batch.legal_mask]
+    legal_batch = _replace_batch(batch, bc_logits=reconstructed_logits)
+    torch.testing.assert_close(
+        masked_log_softmax(legal_batch.bc_logits, legal_batch.legal_mask),
+        masked_log_softmax(batch.bc_logits, batch.legal_mask),
+    )
+    legal_batch.validate()
+    full_optimizer = torch.optim.SGD(full_model.parameters(), lr=1.0e-4)
+    legal_optimizer = torch.optim.SGD(legal_model.parameters(), lr=1.0e-4)
+    config = PpoTrainStepConfig(value_coef=0.5, bc_kl_reverse_coef=0.01, grad_clip_norm=None)
+
+    full = ppo_train_step(
+        model=full_model,
+        optimizer=full_optimizer,
+        batch=batch,
+        entropy_controller=EntropyController(alpha=0.0, beta=0.0, alpha_max=0.0),
+        config=config,
+    )
+    legal = ppo_train_step(
+        model=legal_model,
+        optimizer=legal_optimizer,
+        batch=legal_batch,
+        entropy_controller=EntropyController(alpha=0.0, beta=0.0, alpha_max=0.0),
+        config=config,
+    )
+
+    for key in ("loss_total", "loss_policy", "loss_value", "bc_kl_reverse", "approx_kl_old"):
+        assert legal.metrics[key] == pytest.approx(full.metrics[key], rel=1.0e-6, abs=1.0e-7)
+    for name, tensor in full_model.state_dict().items():
+        other = legal_model.state_dict()[name]
+        if tensor.is_floating_point():
+            torch.testing.assert_close(other, tensor, rtol=1.0e-6, atol=1.0e-7)
+        else:
+            assert torch.equal(other, tensor), name
+
+
 def test_ppo_train_step_without_grad_clip_has_json_safe_grad_norm() -> None:
     torch.manual_seed(13)
     model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
@@ -198,31 +243,20 @@ def test_ppo_train_step_microbatch_matches_full_batch_update() -> None:
         ),
     )
 
-    for key in (
-        "loss_total",
-        "loss_policy",
-        "loss_value",
-        "entropy",
-        "bc_kl_reverse",
-        "approx_kl_old",
-        "clip_fraction",
-        "ratio_mean",
-        "explained_variance",
-        "advantage_raw_mean",
-        "advantage_raw_std",
-        "advantage_normalized_mean",
-        "advantage_normalized_std",
-        "grad_norm",
-        "entropy_alpha_after",
-    ):
-        assert micro.metrics[key] == pytest.approx(full.metrics[key], abs=1.0e-6)
     assert micro.metrics["microbatch_count"] == 3
-    assert micro.entropy_controller == full.entropy_controller
+    assert micro.metrics["optimizer_steps"] == 3
+    assert full.metrics["optimizer_steps"] == 1
+    assert micro.metrics["ppo_epochs"] == full.metrics["ppo_epochs"] == 1
+    assert micro.metrics["clip_fraction"] >= 0.0
+    assert math.isfinite(micro.metrics["approx_kl_old"])
+    diverged = False
     for name, tensor in full_model.state_dict().items():
+        other = micro_model.state_dict()[name]
         if tensor.is_floating_point():
-            assert torch.allclose(micro_model.state_dict()[name], tensor, atol=1.0e-7, rtol=1.0e-6), name
+            diverged = diverged or not torch.allclose(other, tensor, atol=1.0e-7, rtol=1.0e-6)
         else:
-            assert torch.equal(micro_model.state_dict()[name], tensor), name
+            assert torch.equal(other, tensor), name
+    assert diverged
 
 
 def test_ppo_train_step_extreme_old_logprob_hard_errors_before_metrics() -> None:
@@ -240,6 +274,67 @@ def test_ppo_train_step_extreme_old_logprob_hard_errors_before_metrics() -> None
             entropy_controller=EntropyController(alpha=0.0, beta=0.0, alpha_max=0.0),
             config=PpoTrainStepConfig(value_coef=0.5, bc_kl_reverse_coef=0.0, grad_clip_norm=None),
         )
+
+
+def test_ppo_grad_clip_fallback_matches_torch_with_cpu_and_none_grad() -> None:
+    ref_params, opt_params = _grad_clip_params("cpu")
+    ref_params[-1].grad = None
+    opt_params[-1].grad = None
+    ref_optimizer = torch.optim.SGD(ref_params, lr=0.125)
+    opt_optimizer = torch.optim.SGD(opt_params, lr=0.125)
+
+    ref_norm = torch.nn.utils.clip_grad_norm_(ref_params, 0.5)
+    opt_norm = _clip_grad_norm_for_ppo(opt_params, 0.5)
+    ref_optimizer.step()
+    opt_optimizer.step()
+
+    assert float(opt_norm) == pytest.approx(float(ref_norm), rel=1.0e-7, abs=1.0e-8)
+    for ref, opt in zip(ref_params, opt_params, strict=True):
+        assert torch.allclose(opt, ref, rtol=1.0e-7, atol=1.0e-8)
+        if ref.grad is None:
+            assert opt.grad is None
+        else:
+            assert opt.grad is not None
+            assert torch.allclose(opt.grad, ref.grad, rtol=1.0e-7, atol=1.0e-8)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA grad clip fast path requires CUDA")
+def test_ppo_grad_clip_cuda_fast_path_matches_torch_update() -> None:
+    ref_params, opt_params = _grad_clip_params("cuda")
+    ref_optimizer = torch.optim.SGD(ref_params, lr=0.125)
+    opt_optimizer = torch.optim.SGD(opt_params, lr=0.125)
+
+    ref_norm = torch.nn.utils.clip_grad_norm_(ref_params, 0.5)
+    opt_norm = _clip_grad_norm_for_ppo(opt_params, 0.5)
+    ref_optimizer.step()
+    opt_optimizer.step()
+    torch.cuda.synchronize()
+
+    assert float(opt_norm.detach().cpu()) == pytest.approx(float(ref_norm.detach().cpu()), rel=1.0e-6, abs=1.0e-7)
+    for ref, opt in zip(ref_params, opt_params, strict=True):
+        assert torch.allclose(opt, ref, rtol=1.0e-6, atol=1.0e-7)
+        assert opt.grad is not None
+        assert ref.grad is not None
+        assert torch.allclose(opt.grad, ref.grad, rtol=1.0e-6, atol=1.0e-7)
+
+
+def _grad_clip_params(device: str) -> tuple[list[torch.nn.Parameter], list[torch.nn.Parameter]]:
+    values = (
+        torch.linspace(-0.75, 0.75, 12, dtype=torch.float32, device=device).reshape(3, 4),
+        torch.linspace(-0.25, 0.5, 5, dtype=torch.float32, device=device),
+        torch.tensor([1.0], dtype=torch.float32, device=device),
+    )
+    grads = (
+        torch.linspace(-4.0, 3.0, 12, dtype=torch.float32, device=device).reshape(3, 4),
+        torch.linspace(2.0, -1.0, 5, dtype=torch.float32, device=device),
+        torch.tensor([0.25], dtype=torch.float32, device=device),
+    )
+    ref_params = [torch.nn.Parameter(value.clone()) for value in values]
+    opt_params = [torch.nn.Parameter(value.clone()) for value in values]
+    for ref, opt, grad in zip(ref_params, opt_params, grads, strict=True):
+        ref.grad = grad.clone()
+        opt.grad = grad.clone()
+    return ref_params, opt_params
 
 
 def _valid_batch() -> PpoBatch:

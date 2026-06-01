@@ -35,6 +35,9 @@ max_train_steps: null
 # - convnext_tile_k7+mish_se: policy_nll 0.9656, ~22.8k samples/s; strongest early candidate, much slower.
 # - global_pool_bias+mish_se: compile path hit NaN; do not use until debugged.
 # Keep backbone/residual production defaults unless longer equal-sample validation confirms strength.
+# PPO-only experiment: `python_residual_profile: relu_no_norm_no_se` is a faster
+# fresh-run profile for PPO training. It requires a fresh run or matching-profile
+# checkpoint, and cannot resume/init from current `mish_se` checkpoints.
 python_model_profile: large
 python_backbone_profile: conv2d_local3
 python_residual_profile: mish_se
@@ -131,6 +134,12 @@ rl: null
 #   temperature: 1.0
 #   learning_rate: 0.000025
 #   rollout_inference: torch-callback
+#   # Experimental update-level overlap. Default 0 preserves serial PPO.
+#   ppo_pipeline_depth: 0
+#   # Optional rollout device for process pipeline child. Unset means train `device`.
+#   # Use `cpu` to avoid same-GPU child OOM on 12GB cards, slower rollout expected.
+#   # Prefer a second GPU such as `cuda:1` when available.
+#   # ppo_rollout_device: cpu
 #   bc_kl_reverse_coef: 0.01
 #   lr_warmup_samples: 250000
 #   lr_decay_samples: null

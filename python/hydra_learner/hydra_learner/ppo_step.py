@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -44,6 +44,7 @@ class PpoBatch:
     game_id: torch.Tensor | None = None
     turn: torch.Tensor | None = None
     rank_utility_used: str | None = None
+    snapshot_metadata: Mapping[str, object] | None = None
 
     def validate(self) -> None:
         batch = _require_obs(self.obs)
@@ -86,6 +87,8 @@ class PpoTrainStepConfig:
     grad_clip_norm: float | None = 0.5
     advantage_epsilon: float = 1.0e-8
     microbatch_size: int | None = None
+    epochs: int = 1
+    target_kl: float | None = None
 
 
 @dataclass(frozen=True)
@@ -105,7 +108,6 @@ def ppo_train_step(
     if batch.obs.is_cuda:
         batch.validate()
     model.train()
-    optimizer.zero_grad(set_to_none=True)
     loss_config = PpoLossConfig(
         clip_epsilon=config.clip_epsilon,
         value_coef=config.value_coef,
@@ -117,6 +119,10 @@ def ppo_train_step(
     microbatch_size = config.microbatch_size or batch_rows
     if microbatch_size < 1:
         raise ValueError("microbatch_size must be >= 1")
+    if config.epochs < 1:
+        raise ValueError("epochs must be >= 1")
+    if config.target_kl is not None and config.target_kl <= 0.0:
+        raise ValueError("target_kl must be > 0")
     advantages = (
         normalize_advantages(batch.raw_advantages, config.advantage_epsilon)
         if batch.raw_advantages.numel() > 2
@@ -132,84 +138,138 @@ def ppo_train_step(
     return_sum_t = torch.zeros((), dtype=torch.float32, device=model_device)
     return_sq_sum_t = torch.zeros((), dtype=torch.float32, device=model_device)
     value_return_sum_t = torch.zeros((), dtype=torch.float32, device=model_device)
+    use_cuda_events = model_device.type == "cuda"
     forward_backward_ms = 0.0
+    forward_backward_wall_ms = 0.0
     h2d_ms = 0.0
-    for start in range(0, batch_rows, microbatch_size):
-        end = min(start + microbatch_size, batch_rows)
-        row_slice = slice(start, end)
-        row_count = end - start
-        chunk_weight = row_count / batch_rows
-        transfer_started = time.perf_counter()
-        if batch_on_model_device:
-            obs = batch.obs[row_slice]
-            actions = batch.actions[row_slice]
-            legal_mask = batch.legal_mask[row_slice]
-            old_logprob = batch.old_logprob[row_slice]
-            advantages_chunk = advantages[row_slice]
-            returns = batch.returns[row_slice]
-            bc_logits = batch.bc_logits[row_slice]
-        else:
-            obs = batch.obs[row_slice].to(model_device, non_blocking=True)
-            actions = batch.actions[row_slice].to(model_device, non_blocking=True)
-            legal_mask = batch.legal_mask[row_slice].to(model_device, non_blocking=True)
-            old_logprob = batch.old_logprob[row_slice].to(model_device, non_blocking=True)
-            advantages_chunk = advantages[row_slice].to(model_device, non_blocking=True)
-            returns = batch.returns[row_slice].to(model_device, non_blocking=True)
-            bc_logits = batch.bc_logits[row_slice].to(model_device, non_blocking=True)
-        h2d_ms += (time.perf_counter() - transfer_started) * 1000.0
-        chunk_started = time.perf_counter()
-        policy_logits, value = model.policy_value(obs)
-        values = value.squeeze(-1)
-        loss_out = _ppo_loss_for_advantages(
-            policy_logits,
-            values,
-            actions,
-            legal_mask,
-            old_logprob,
-            advantages_chunk,
-            returns,
-            bc_logits=bc_logits,
-            config=loss_config,
-        )
-        if not bool(torch.isfinite(loss_out["total"].detach()).item()):
-            raise RuntimeError("non-finite PPO loss")
-        (loss_out["total"] * chunk_weight).backward()
-        forward_backward_ms += (time.perf_counter() - chunk_started) * 1000.0
-        for key, value in loss_out.items():
-            weighted = value.detach() * row_count
-            loss_weighted[key] = weighted if key not in loss_weighted else loss_weighted[key] + weighted
-        with torch.no_grad():
-            entropy_sum = entropy_sum + loss_out["entropy"].detach() * row_count
-            clip_sum = clip_sum + loss_out["clip_fraction"].detach() * row_count
-            value_f = values.detach().to(dtype=torch.float32)
-            returns_f = returns.detach().to(dtype=torch.float32)
-            value_sum_t = value_sum_t + value_f.sum()
-            value_sq_sum_t = value_sq_sum_t + (value_f * value_f).sum()
-            return_sum_t = return_sum_t + returns_f.sum()
-            return_sq_sum_t = return_sq_sum_t + (returns_f * returns_f).sum()
-            value_return_sum_t = value_return_sum_t + (value_f * returns_f).sum()
-    grad_started = time.perf_counter()
-    if config.grad_clip_norm is not None and config.grad_clip_norm > 0.0:
-        grad_norm_tensor = torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip_norm)
-        grad_norm = float(grad_norm_tensor.detach())
-    else:
-        grad_norm = _total_grad_norm(model.parameters())
-    if not math.isfinite(grad_norm):
-        raise RuntimeError(f"non-finite PPO grad norm: {grad_norm}")
-    optimizer_started = time.perf_counter()
-    grad_clip_ms = (optimizer_started - grad_started) * 1000.0
-    optimizer.step()
-    optimizer_ms = (time.perf_counter() - optimizer_started) * 1000.0
+    grad_clip_ms = 0.0
+    grad_clip_wall_ms = 0.0
+    optimizer_ms = 0.0
+    grad_norm_sum = 0.0
+    grad_norm_max = 0.0
+    metric_rows = 0
+    optimizer_steps = 0
+    epochs_completed = 0
+    stopped_early = False
+
+    for epoch in range(config.epochs):
+        epoch_rows = 0
+        for start in range(0, batch_rows, microbatch_size):
+            end = min(start + microbatch_size, batch_rows)
+            row_slice = slice(start, end)
+            row_count = end - start
+            transfer_started = time.perf_counter()
+            if batch_on_model_device:
+                obs = batch.obs[row_slice]
+                actions = batch.actions[row_slice]
+                legal_mask = batch.legal_mask[row_slice]
+                old_logprob = batch.old_logprob[row_slice]
+                advantages_chunk = advantages[row_slice]
+                returns = batch.returns[row_slice]
+                bc_logits = batch.bc_logits[row_slice]
+            else:
+                obs = batch.obs[row_slice].to(model_device, non_blocking=True)
+                actions = batch.actions[row_slice].to(model_device, non_blocking=True)
+                legal_mask = batch.legal_mask[row_slice].to(model_device, non_blocking=True)
+                old_logprob = batch.old_logprob[row_slice].to(model_device, non_blocking=True)
+                advantages_chunk = advantages[row_slice].to(model_device, non_blocking=True)
+                returns = batch.returns[row_slice].to(model_device, non_blocking=True)
+                bc_logits = batch.bc_logits[row_slice].to(model_device, non_blocking=True)
+            h2d_ms += (time.perf_counter() - transfer_started) * 1000.0
+            optimizer.zero_grad(set_to_none=True)
+            chunk_started = time.perf_counter()
+            forward_start_event = torch.cuda.Event(enable_timing=True) if use_cuda_events else None
+            forward_end_event = torch.cuda.Event(enable_timing=True) if use_cuda_events else None
+            if forward_start_event is not None:
+                forward_start_event.record()
+            policy_logits, value = model.policy_value(obs)
+            values = value.squeeze(-1)
+            loss_out = _ppo_loss_for_advantages(
+                policy_logits,
+                values,
+                actions,
+                legal_mask,
+                old_logprob,
+                advantages_chunk,
+                returns,
+                bc_logits=bc_logits,
+                config=loss_config,
+            )
+            if not bool(torch.isfinite(loss_out["total"].detach()).item()):
+                raise RuntimeError("non-finite PPO loss")
+            loss_out["total"].backward()
+            if forward_end_event is not None:
+                forward_end_event.record()
+            forward_backward_wall_ms += (time.perf_counter() - chunk_started) * 1000.0
+            if not use_cuda_events:
+                forward_backward_ms += (time.perf_counter() - chunk_started) * 1000.0
+            grad_started = time.perf_counter()
+            grad_start_event = torch.cuda.Event(enable_timing=True) if use_cuda_events else None
+            grad_end_event = torch.cuda.Event(enable_timing=True) if use_cuda_events else None
+            if grad_start_event is not None:
+                grad_start_event.record()
+            if config.grad_clip_norm is not None and config.grad_clip_norm > 0.0:
+                grad_norm_tensor = _clip_grad_norm_for_ppo(model.parameters(), config.grad_clip_norm)
+                if grad_end_event is not None:
+                    grad_end_event.record()
+                grad_norm = float(grad_norm_tensor.detach())
+            else:
+                grad_norm = _total_grad_norm(model.parameters())
+                if grad_end_event is not None:
+                    grad_end_event.record()
+            if use_cuda_events:
+                if (
+                    forward_start_event is None
+                    or forward_end_event is None
+                    or grad_start_event is None
+                    or grad_end_event is None
+                ):
+                    raise RuntimeError("missing CUDA timing event")
+                grad_end_event.synchronize()
+                forward_backward_ms += forward_start_event.elapsed_time(forward_end_event)
+                grad_clip_ms += grad_start_event.elapsed_time(grad_end_event)
+            if not math.isfinite(grad_norm):
+                raise RuntimeError(f"non-finite PPO grad norm: {grad_norm}")
+            optimizer_started = time.perf_counter()
+            grad_clip_wall_ms += (optimizer_started - grad_started) * 1000.0
+            optimizer.step()
+            optimizer_ms += (time.perf_counter() - optimizer_started) * 1000.0
+            optimizer_steps += 1
+            grad_norm_sum += grad_norm
+            grad_norm_max = max(grad_norm_max, grad_norm)
+            metric_rows += row_count
+            epoch_rows += row_count
+            for key, value in loss_out.items():
+                weighted = value.detach() * row_count
+                loss_weighted[key] = weighted if key not in loss_weighted else loss_weighted[key] + weighted
+            with torch.no_grad():
+                entropy_sum = entropy_sum + loss_out["entropy"].detach() * row_count
+                clip_sum = clip_sum + loss_out["clip_fraction"].detach() * row_count
+                value_f = values.detach().to(dtype=torch.float32)
+                returns_f = returns.detach().to(dtype=torch.float32)
+                value_sum_t = value_sum_t + value_f.sum()
+                value_sq_sum_t = value_sq_sum_t + (value_f * value_f).sum()
+                return_sum_t = return_sum_t + returns_f.sum()
+                return_sq_sum_t = return_sq_sum_t + (returns_f * returns_f).sum()
+                value_return_sum_t = value_return_sum_t + (value_f * returns_f).sum()
+            if config.target_kl is not None and float(loss_out["approx_kl_old"].detach()) > config.target_kl:
+                stopped_early = True
+                break
+        if epoch_rows == batch_rows:
+            epochs_completed = epoch + 1
+        if stopped_early:
+            break
+    if metric_rows == 0:
+        raise RuntimeError("PPO train step produced no minibatches")
 
     metrics_started = time.perf_counter()
-
-    entropy_mean = float((entropy_sum / batch_rows).detach())
-    clip_fraction = float((clip_sum / batch_rows).detach())
-    values_mean = float((value_sum_t / batch_rows).detach())
-    returns_mean = float((return_sum_t / batch_rows).detach())
-    value_sq_mean = float((value_sq_sum_t / batch_rows).detach())
-    return_sq_mean = float((return_sq_sum_t / batch_rows).detach())
-    value_return_mean = float((value_return_sum_t / batch_rows).detach())
+    entropy_mean = float((entropy_sum / metric_rows).detach())
+    clip_fraction = float((clip_sum / metric_rows).detach())
+    values_mean = float((value_sum_t / metric_rows).detach())
+    returns_mean = float((return_sum_t / metric_rows).detach())
+    value_sq_mean = float((value_sq_sum_t / metric_rows).detach())
+    return_sq_mean = float((return_sq_sum_t / metric_rows).detach())
+    value_return_mean = float((value_return_sum_t / metric_rows).detach())
     values_var = max(0.0, value_sq_mean - values_mean * values_mean)
     returns_var = max(0.0, return_sq_mean - returns_mean * returns_mean)
     covariance = value_return_mean - values_mean * returns_mean
@@ -220,7 +280,7 @@ def ppo_train_step(
         torch.full((batch_rows,), entropy_mean, dtype=torch.float32, device=batch.legal_count.device),
         batch.legal_count,
     )
-    metric_means = {key: float((value / batch_rows).detach()) for key, value in loss_weighted.items()}
+    metric_means = {key: float((value / metric_rows).detach()) for key, value in loss_weighted.items()}
     raw_mean = batch.raw_advantages.mean()
     raw_std = torch.sqrt(((batch.raw_advantages - raw_mean) ** 2).mean())
     norm_mean = advantages.mean()
@@ -249,15 +309,23 @@ def ppo_train_step(
         "advantage_raw_std": float(raw_std.detach()),
         "advantage_normalized_mean": float(norm_mean.detach()),
         "advantage_normalized_std": float(norm_std.detach()),
-        "grad_norm": grad_norm,
+        "grad_norm": grad_norm_sum / optimizer_steps,
+        "grad_norm_max": grad_norm_max,
         "illegal_action_count": 0,
         "entropy_target_fraction_mean": float(default_entropy_target_fraction(batch.legal_count).mean()),
         "microbatch_size": microbatch_size,
         "forward_backward_ms": forward_backward_ms,
+        "forward_backward_wall_ms": forward_backward_wall_ms,
         "h2d_ms": h2d_ms,
         "grad_clip_ms": grad_clip_ms,
+        "grad_clip_wall_ms": grad_clip_wall_ms,
         "optimizer_ms": optimizer_ms,
         "microbatch_count": math.ceil(batch_rows / microbatch_size),
+        "optimizer_steps": optimizer_steps,
+        "ppo_epochs": config.epochs,
+        "ppo_epochs_completed": epochs_completed,
+        "ppo_target_kl": config.target_kl if config.target_kl is not None else 0.0,
+        "ppo_early_stop": stopped_early,
         "post_metrics_ms": (time.perf_counter() - metrics_started) * 1000.0,
     }
     _validate_json_safe_metrics(metrics)
@@ -375,6 +443,35 @@ def _require_optional_vector(
         raise ValueError(f"{name} below minimum")
     if maximum is not None and not bool((tensor <= maximum).all()):
         raise ValueError(f"{name} above maximum")
+
+
+def _clip_grad_norm_for_ppo(parameters: Iterable[torch.nn.Parameter], max_norm: float) -> torch.Tensor:
+    params = list(parameters)
+    grads = [parameter.grad for parameter in params if parameter.grad is not None]
+    if not grads:
+        return torch.tensor(0.0)
+    first = grads[0]
+    if (
+        first.device.type == "cuda"
+        and first.is_floating_point()
+        and not first.is_sparse
+        and hasattr(torch, "_foreach_norm")
+        and hasattr(torch, "_foreach_mul_")
+        and all(
+            grad.device == first.device
+            and grad.dtype == first.dtype
+            and grad.layout is torch.strided
+            and grad.is_floating_point()
+            and not grad.is_sparse
+            for grad in grads
+        )
+    ):
+        norms = torch._foreach_norm(grads, 2.0)
+        total_norm = torch.linalg.vector_norm(torch.stack(norms), 2.0)
+        clip_coef = float(max_norm) / (total_norm + 1.0e-6)
+        torch._foreach_mul_(grads, torch.clamp(clip_coef, max=1.0))
+        return total_norm
+    return torch.nn.utils.clip_grad_norm_(params, max_norm)
 
 
 def _total_grad_norm(parameters: Iterable[torch.nn.Parameter]) -> float:

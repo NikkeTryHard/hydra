@@ -273,12 +273,16 @@ fn rl_and_loader_runtime_configs_map_expected_fields() {
         exit_weight: Some(0.7),
         aux_weight: Some(0.2),
         microbatch_size: None,
+        epochs: None,
+        target_kl: None,
         run_forever: false,
         rollout_inference: None,
+        ppo_rollout_device: None,
         bc_kl_reverse_coef: None,
         lr_warmup_samples: None,
         lr_decay_samples: None,
         arena_batch_decisions: None,
+        ppo_pipeline_depth: None,
     };
 
     config.num_threads = None;

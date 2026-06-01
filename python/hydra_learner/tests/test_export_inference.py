@@ -8,7 +8,14 @@ import torch
 from safetensors.torch import load_file
 
 from hydra_learner import export_inference as export_inference_module
-from hydra_learner.checkpoint import EmaConfig, ModelConfig, OptimizerConfig, RuntimeConfig, save_checkpoint
+from hydra_learner.checkpoint import (
+    EmaConfig,
+    ModelConfig,
+    OptimizerConfig,
+    RuntimeConfig,
+    load_checkpoint_init_only,
+    save_checkpoint,
+)
 from hydra_learner.drda import DrdaResidualConfig, drda_training_objective_metadata
 from hydra_learner.export_inference import export_inference, parse_args, validate_args, write_exported_policy
 from hydra_learner.losses import LossWeights
@@ -68,6 +75,58 @@ def test_export_inference_writes_weights_metadata_and_fixture(tmp_path: Path) ->
     fixture = load_file(result.fixture_path)
     assert fixture["obs"].shape == (8, OBS_CHANNELS, TILE_WIDTH)
     assert fixture["policy_logits"].shape == (8, ACTION_SPACE)
+    assert "artifact_kind" not in metadata
+    assert "outputs" not in metadata
+
+
+def test_export_inference_ppo_policy_value_metadata_fixture_and_parity(tmp_path: Path) -> None:
+    checkpoint = _write_checkpoint(tmp_path)
+    output_dir = tmp_path / "ppo-export"
+
+    result = export_inference(
+        validate_args(
+            parse_args(
+                [
+                    "--checkpoint",
+                    str(checkpoint),
+                    "--output-dir",
+                    str(output_dir),
+                    "--export-mode",
+                    "ppo_policy_value",
+                ]
+            )
+        )
+    )
+
+    metadata = json.loads(result.metadata_path.read_text(encoding="utf-8"))
+    assert metadata["schema_version"] == 3
+    assert metadata["format"] == "onnx"
+    assert metadata["artifact_kind"] == "ppo_policy_value"
+    assert metadata["artifact"] == "policy.onnx"
+    assert metadata["input_name"] == "obs"
+    assert metadata["input_shape"] == ["N", OBS_CHANNELS, TILE_WIDTH]
+    assert metadata["outputs"] == {
+        "policy_logits": {"name": "policy_logits", "dtype": "float32", "shape": ["N", ACTION_SPACE]},
+        "value": {"name": "value", "dtype": "float32", "shape": ["N", 1]},
+    }
+    assert metadata["encoder_shape"] == [OBS_CHANNELS, TILE_WIDTH]
+    assert metadata["action_space"] == ACTION_SPACE
+    assert metadata["max_batch"] == 4096
+
+    fixture = load_file(result.fixture_path)
+    assert fixture["obs"].shape == (8, OBS_CHANNELS, TILE_WIDTH)
+    assert fixture["policy_logits"].shape == (8, ACTION_SPACE)
+    assert fixture["value"].shape == (8, 1)
+
+    model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
+    load_checkpoint_init_only(
+        checkpoint, model=model, expected_model_config=ModelConfig(hidden=8, blocks=1, bottleneck=4)
+    )
+    model.eval()
+    with torch.inference_mode():
+        expected_logits, expected_value = model.policy_value(fixture["obs"])
+    torch.testing.assert_close(fixture["policy_logits"], expected_logits, rtol=1.0e-5, atol=1.0e-5)
+    torch.testing.assert_close(fixture["value"], expected_value, rtol=1.0e-5, atol=1.0e-5)
 
 
 def test_export_inference_can_choose_ema_weights(tmp_path: Path) -> None:

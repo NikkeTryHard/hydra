@@ -1081,6 +1081,20 @@ fn python_ppo_control_options_from_config_maps_campaign_root_to_default_ppo_run_
         PathBuf::from("/tmp/out/stages/T1_ppo_control/runs/latest_run")
     );
     assert_eq!(options.microbatch_size, 321);
+    assert_eq!(options.ppo_pipeline_depth, 0);
+    assert_eq!(options.rollout_device, None);
+    config.rl.as_mut().expect("rl config").ppo_pipeline_depth = Some(1);
+    let options = python_ppo_control_options_from_config(&config)
+        .expect("PPO control pipeline depth should route to Python");
+    assert_eq!(options.ppo_pipeline_depth, 1);
+    config.rl.as_mut().expect("rl config").ppo_rollout_device = Some("cpu".to_string());
+    let options = python_ppo_control_options_from_config(&config)
+        .expect("PPO control rollout device should route to Python");
+    assert_eq!(options.rollout_device.as_deref(), Some("cpu"));
+    config.rl.as_mut().expect("rl config").ppo_pipeline_depth = Some(2);
+    let err = python_ppo_control_options_from_config(&config)
+        .expect_err("invalid pipeline depth should fail");
+    assert!(err.contains("ppo_pipeline_depth"));
 }
 
 #[test]

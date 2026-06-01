@@ -174,7 +174,15 @@ def test_compare_deterministic_for_same_cpu_fixture(tmp_path: Path) -> None:
         config=_comparison_config(),
     )
 
-    timing_keys = {"forward_backward_ms", "h2d_ms", "grad_clip_ms", "optimizer_ms", "post_metrics_ms"}
+    timing_keys = {
+        "forward_backward_ms",
+        "h2d_ms",
+        "grad_clip_ms",
+        "grad_clip_wall_ms",
+        "optimizer_ms",
+        "post_metrics_ms",
+        "forward_backward_wall_ms",
+    }
     first_metrics = {key: value for key, value in first.metrics.items() if key.removeprefix("ppo.") not in timing_keys}
     second_metrics = {
         key: value for key, value in second.metrics.items() if key.removeprefix("ppo.") not in timing_keys

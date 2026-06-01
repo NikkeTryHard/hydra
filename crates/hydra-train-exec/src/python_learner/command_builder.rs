@@ -256,6 +256,8 @@ pub(crate) fn build_python_ppo_control_command_for_run_dir(
         options.grad_clip_norm.to_string(),
         "--microbatch-size".to_string(),
         options.microbatch_size.to_string(),
+        "--epochs".to_string(),
+        options.epochs.to_string(),
         "--weight-decay".to_string(),
         options.weight_decay.to_string(),
         "--adamw-fused".to_string(),
@@ -270,11 +272,21 @@ pub(crate) fn build_python_ppo_control_command_for_run_dir(
         options.log_every_steps.to_string(),
         "--rollout-inference".to_string(),
         options.rollout_inference.clone(),
+        "--ppo-pipeline-depth".to_string(),
+        options.ppo_pipeline_depth.to_string(),
         "--quiet".to_string(),
     ];
+    if let Some(rollout_device) = options.rollout_device.as_ref() {
+        args.push("--ppo-rollout-device".to_string());
+        args.push(rollout_device.clone());
+    }
     if let Some(decay_samples) = options.lr_decay_samples {
         args.push("--lr-decay-samples".to_string());
         args.push(decay_samples.to_string());
+    }
+    if let Some(target_kl) = options.target_kl {
+        args.push("--target-kl".to_string());
+        args.push(target_kl.to_string());
     }
     if let Some(steps) = options.steps {
         args.push("--steps".to_string());

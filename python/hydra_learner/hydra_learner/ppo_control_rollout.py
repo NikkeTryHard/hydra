@@ -3,11 +3,12 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import torch
 
 from hydra_learner.ppo_control_config import RANK_UTILITY, PpoControlConfig
+from hydra_learner.ppo_rollout import PpoSnapshotMetadata, snapshot_metadata_from_payload
 from hydra_learner.ppo_smoke import RustDecisionRow, RustGameRollout, build_ppo_batch_from_rust_rollout
 from hydra_learner.ppo_step import PpoBatch
 from hydra_learner.rl import (
@@ -23,8 +24,16 @@ if TYPE_CHECKING:
     from hydra_learner.model import HydraPolicyNet
 
 
+class _PpoInferenceCallback(Protocol):
+    _timings: dict[str, float]
+    _packed_capacity: Callable[[], int]
+    _packed_buffer_ptr: Callable[[], int]
+
+    def __call__(self, obs_f32_le: bytearray, *args: object) -> object: ...
+
+
 def _collect_native_rollout(
-    extension: Any, config: PpoControlConfig, policy_dir: Path, seed: int
+    extension: Any, config: PpoControlConfig, policy_dir: Path, seed: int, snapshot_metadata: PpoSnapshotMetadata
 ) -> Mapping[str, object]:
     collect = getattr(extension, "collect_ppo_rollouts_rust_native", None)
     if not callable(collect):
@@ -34,9 +43,10 @@ def _collect_native_rollout(
         seed,
         str(policy_dir),
         config.arena_batch_decisions,
-        config.device,
+        config.rollout_device or config.device,
         config.arena_threads,
         config.temperature,
+        snapshot_metadata.to_payload(),
     )
     if not isinstance(payload, Mapping):
         raise TypeError("native PPO rollout collector must return a mapping")
@@ -44,12 +54,14 @@ def _collect_native_rollout(
 
 
 def _collect_callback_rollout(
-    extension: Any, config: PpoControlConfig, model: HydraPolicyNet, seed: int
+    extension: Any, config: PpoControlConfig, model: HydraPolicyNet, seed: int, snapshot_metadata: PpoSnapshotMetadata
 ) -> Mapping[str, object]:
     collect = getattr(extension, "collect_ppo_rollouts_with_callback", None)
     if not callable(collect):
         raise ValueError("arena extension missing collect_ppo_rollouts_with_callback")
-    callback = _make_ppo_inference_callback(model, torch.device(config.device))
+    callback = _make_ppo_inference_callback(
+        model, torch.device(config.rollout_device or config.device), config.arena_batch_decisions
+    )
     payload = collect(
         config.games_per_update,
         seed,
@@ -60,6 +72,8 @@ def _collect_callback_rollout(
     )
     if not isinstance(payload, Mapping):
         raise TypeError("native PPO rollout collector must return a mapping")
+    payload = dict(payload)
+    payload["snapshot_metadata"] = snapshot_metadata.to_payload()
     timings = getattr(callback, "_timings", None)
     if isinstance(timings, dict):
         native_timing = payload.get("timing")
@@ -68,8 +82,30 @@ def _collect_callback_rollout(
     return payload
 
 
-def _make_ppo_inference_callback(model: HydraPolicyNet, device: torch.device) -> Callable[[bytearray, int], object]:
-    def infer(obs_f32_le: bytearray, rows: int) -> object:
+def _make_ppo_inference_callback(
+    model: HydraPolicyNet, device: torch.device, initial_capacity: int = 0
+) -> Callable[..., object]:
+    packed_capacity = max(0, initial_capacity)
+    packed_device = torch.empty((packed_capacity, 47), dtype=torch.float32, device=device)
+    packed_cpu = torch.empty((packed_capacity, 47), dtype=torch.float32, device="cpu")
+    legal_capacity = 0
+    legal_cpu = torch.empty((0,), dtype=torch.float32, device="cpu")
+
+    def infer(obs_f32_le: bytearray, *args: object) -> object:
+        nonlocal packed_capacity, packed_cpu, packed_device, legal_capacity, legal_cpu
+        if len(args) == 1:
+            legal_mask_u8 = None
+            rows_raw = args[0]
+        elif len(args) == 2:
+            legal_mask_u8 = args[0]
+            rows_raw = args[1]
+        else:
+            raise TypeError("PPO inference callback expects obs, rows or obs, legal_mask, rows")
+        if not isinstance(rows_raw, int):
+            raise TypeError("PPO inference callback rows must be an int")
+        rows = rows_raw
+        if rows < 0:
+            raise ValueError(f"PPO inference callback rows must be non-negative, got {rows}")
         timings: dict[str, float] = {}
         t0 = time.perf_counter()
         obs = torch.frombuffer(obs_f32_le, dtype=torch.float32).reshape(rows, 192, 34).to(device)
@@ -81,24 +117,103 @@ def _make_ppo_inference_callback(model: HydraPolicyNet, device: torch.device) ->
                 t0 = time.perf_counter()
                 logits, values = model.policy_value(obs)
                 timings["callback_forward_ms"] = (time.perf_counter() - t0) * 1000.0
-                t0 = time.perf_counter()
-                policy = torch.cat((logits.detach(), values.detach().reshape(rows, 1)), dim=1)
-                policy = policy.to(dtype=torch.float32, device="cpu").numpy()
-                timings["callback_d2h_pack_ms"] = (time.perf_counter() - t0) * 1000.0
+                if logits.shape != (rows, 46):
+                    raise ValueError(f"PPO policy logits must have shape ({rows}, 46), got {tuple(logits.shape)}")
+                flat_values = values.reshape(rows)
+                if flat_values.dtype != torch.float32:
+                    flat_values = flat_values.to(dtype=torch.float32)
+                if logits.dtype != torch.float32:
+                    logits = logits.to(dtype=torch.float32)
+                if legal_mask_u8 is None:
+                    t0 = time.perf_counter()
+                    if rows > packed_capacity:
+                        packed_capacity = rows
+                        packed_device = torch.empty((packed_capacity, 47), dtype=torch.float32, device=device)
+                        packed_cpu = torch.empty((packed_capacity, 47), dtype=torch.float32, device="cpu")
+                    device_buffer = packed_device[:rows]
+                    device_buffer[:, :46].copy_(logits.detach())
+                    device_buffer[:, 46].copy_(flat_values.detach())
+                    row_buffer = packed_cpu[:rows]
+                    row_buffer.copy_(device_buffer, non_blocking=False)
+                    timings["callback_pack_copy_ms"] = (time.perf_counter() - t0) * 1000.0
+                    t0 = time.perf_counter()
+                    packed_view = memoryview(row_buffer.numpy())
+                    timings["callback_return_view_ms"] = (time.perf_counter() - t0) * 1000.0
+                    timings["callback_d2h_pack_ms"] = (
+                        timings["callback_pack_copy_ms"] + timings["callback_return_view_ms"]
+                    )
+                else:
+                    if not isinstance(legal_mask_u8, bytes | bytearray | memoryview):
+                        raise TypeError("PPO inference callback legal_mask must be bytes")
+                    legal_mask = torch.frombuffer(legal_mask_u8, dtype=torch.uint8).reshape(rows, 46).to(device=device)
+                    legal_mask = legal_mask.to(dtype=torch.bool)
+                    legal_count = sum(memoryview(legal_mask_u8))
+                    t0 = time.perf_counter()
+                    legal_logits = logits[legal_mask]
+                    timings["callback_legal_gather_ms"] = (time.perf_counter() - t0) * 1000.0
+                    total_count = legal_count + rows
+                    t0 = time.perf_counter()
+                    if total_count > legal_capacity:
+                        legal_capacity = total_count
+                        legal_cpu = torch.empty((legal_capacity,), dtype=torch.float32, device="cpu")
+                    packed_legal = torch.empty((total_count,), dtype=torch.float32, device=device)
+                    packed_legal[:legal_count].copy_(legal_logits.detach())
+                    packed_legal[legal_count:].copy_(flat_values.detach())
+                    row_buffer = legal_cpu[:total_count]
+                    row_buffer.copy_(packed_legal, non_blocking=False)
+                    timings["callback_legal_d2h_pack_ms"] = (time.perf_counter() - t0) * 1000.0
+                    t0 = time.perf_counter()
+                    packed_view = memoryview(row_buffer.numpy())
+                    timings["callback_return_view_ms"] = (time.perf_counter() - t0) * 1000.0
+                    timings["callback_d2h_pack_ms"] = (
+                        timings["callback_legal_d2h_pack_ms"] + timings["callback_return_view_ms"]
+                    )
+                    full_count = rows * (46 + 1)
+                    timings["callback_legal_transport_ratio"] = 0.0 if full_count == 0 else total_count / full_count
         finally:
             model.train(was_training)
         aggregate = getattr(infer, "_timings", None)
         if isinstance(aggregate, dict):
             for key, value in timings.items():
-                aggregate[key] = aggregate.get(key, 0.0) + value
-        return policy
+                if key == "callback_legal_transport_ratio":
+                    weighted_ratio = value * rows
+                    aggregate["callback_legal_transport_ratio_weighted_rows"] = (
+                        aggregate.get("callback_legal_transport_ratio_weighted_rows", 0.0) + weighted_ratio
+                    )
+                    aggregate["callback_legal_transport_ratio_rows"] = (
+                        aggregate.get("callback_legal_transport_ratio_rows", 0.0) + rows
+                    )
+                    total_rows = aggregate["callback_legal_transport_ratio_rows"]
+                    aggregate[key] = (
+                        0.0
+                        if total_rows == 0.0
+                        else aggregate["callback_legal_transport_ratio_weighted_rows"] / total_rows
+                    )
+                else:
+                    aggregate[key] = aggregate.get(key, 0.0) + value
+        return packed_view
 
-    infer._timings = {}  # type: ignore[attr-defined]
+    callback = cast("_PpoInferenceCallback", infer)
+    callback._timings = {}
+    callback._packed_capacity = lambda: max(packed_capacity, legal_capacity)
+    callback._packed_buffer_ptr = (
+        lambda: packed_cpu.data_ptr() if packed_capacity >= legal_capacity else legal_cpu.data_ptr()
+    )
     return infer
 
 
+def _snapshot_from_native_payload(payload: Mapping[str, object]) -> PpoSnapshotMetadata | None:
+    raw = payload.get("snapshot_metadata")
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise ValueError("native rollout snapshot_metadata must be a mapping")
+    return snapshot_metadata_from_payload(raw)
+
+
 def _batch_from_native_payload_fast(payload: Mapping[str, object], model: HydraPolicyNet) -> PpoBatch:
-    binary = _batch_from_native_binary_payload(payload, model)
+    snapshot_metadata = _snapshot_from_native_payload(payload)
+    binary = _batch_from_native_binary_payload(payload, model, snapshot_metadata)
     if binary is not None:
         return binary
     model_device = next(model.parameters()).device
@@ -141,10 +256,14 @@ def _batch_from_native_payload_fast(payload: Mapping[str, object], model: HydraP
     seat_id = torch.tensor([_int_field(row, "seat_id") for row in ordered_rows], dtype=torch.int64, device=model_device)
     game_id = torch.tensor([_int_field(row, "game_id") for row in ordered_rows], dtype=torch.int64, device=model_device)
     turn = torch.tensor([_int_field(row, "turn") for row in ordered_rows], dtype=torch.int64, device=model_device)
-    return _finish_batch(obs, legal_mask, legal_count, actions, player_id, seat_id, game_id, turn, game_spans, model)
+    return _finish_batch(
+        obs, legal_mask, legal_count, actions, player_id, seat_id, game_id, turn, game_spans, model, snapshot_metadata
+    )
 
 
-def _batch_from_native_binary_payload(payload: Mapping[str, object], model: HydraPolicyNet) -> PpoBatch | None:
+def _batch_from_native_binary_payload(
+    payload: Mapping[str, object], model: HydraPolicyNet, snapshot_metadata: PpoSnapshotMetadata | None
+) -> PpoBatch | None:
     obs_raw = payload.get("obs_f32_le")
     legal_raw = payload.get("legal_mask_u8")
     if obs_raw is None and legal_raw is None:
@@ -180,17 +299,18 @@ def _batch_from_native_binary_payload(payload: Mapping[str, object], model: Hydr
     else:
         turn = torch.tensor(_sequence_field(payload, "turns"), dtype=torch.int64, device=batch_device)
     old_logits_raw = payload.get("old_logits_f32_le")
+    old_legal_logits_raw = payload.get("old_legal_logits_f32_le")
     value_old_raw = payload.get("value_old_f32_le")
     old_logprob_raw = payload.get("old_logprob_f32_le")
     raw_advantages_raw = payload.get("raw_advantages_f32_le")
     returns_raw = payload.get("returns_f32_le")
-    if (
-        isinstance(old_logits_raw, bytes | bytearray | memoryview)
-        and isinstance(value_old_raw, bytes | bytearray | memoryview)
+    has_scalar_payload = (
+        isinstance(value_old_raw, bytes | bytearray | memoryview)
         and isinstance(old_logprob_raw, bytes | bytearray | memoryview)
         and isinstance(raw_advantages_raw, bytes | bytearray | memoryview)
         and isinstance(returns_raw, bytes | bytearray | memoryview)
-    ):
+    )
+    if isinstance(old_logits_raw, bytes | bytearray | memoryview) and has_scalar_payload:
         old_logits = _clone_cpu(
             torch.frombuffer(memoryview(old_logits_raw), dtype=torch.float32).reshape(row_count, 46), pin_memory
         )
@@ -198,6 +318,32 @@ def _batch_from_native_binary_payload(payload: Mapping[str, object], model: Hydr
         old_logprob = _clone_cpu(torch.frombuffer(memoryview(old_logprob_raw), dtype=torch.float32), pin_memory)
         raw_advantages = _clone_cpu(torch.frombuffer(memoryview(raw_advantages_raw), dtype=torch.float32), pin_memory)
         returns = _clone_cpu(torch.frombuffer(memoryview(returns_raw), dtype=torch.float32), pin_memory)
+        value_old = value_old_cpu
+    elif isinstance(old_legal_logits_raw, bytes | bytearray | memoryview) and has_scalar_payload:
+        legal_total = int(legal_count.sum().item())
+        old_legal_logits = torch.frombuffer(memoryview(old_legal_logits_raw), dtype=torch.float32)
+        if old_legal_logits.shape != (legal_total,):
+            actual_legal = old_legal_logits.shape[0]
+            raise ValueError(
+                "native rollout old_legal_logits_f32_le length must equal "
+                f"legal_count sum {legal_total}, got {actual_legal}"
+            )
+        old_logits = torch.zeros((row_count, 46), dtype=torch.float32, device=batch_device)
+        old_logits[legal_mask] = old_legal_logits
+        old_logits = _clone_cpu(old_logits, pin_memory)
+        value_old_cpu = _clone_cpu(
+            torch.frombuffer(memoryview(_bytes_field(payload, "value_old_f32_le")), dtype=torch.float32), pin_memory
+        )
+        old_logprob = _clone_cpu(
+            torch.frombuffer(memoryview(_bytes_field(payload, "old_logprob_f32_le")), dtype=torch.float32), pin_memory
+        )
+        raw_advantages = _clone_cpu(
+            torch.frombuffer(memoryview(_bytes_field(payload, "raw_advantages_f32_le")), dtype=torch.float32),
+            pin_memory,
+        )
+        returns = _clone_cpu(
+            torch.frombuffer(memoryview(_bytes_field(payload, "returns_f32_le")), dtype=torch.float32), pin_memory
+        )
         value_old = value_old_cpu
     else:
         old_logprob = None
@@ -272,6 +418,7 @@ def _batch_from_native_binary_payload(payload: Mapping[str, object], model: Hydr
         turn,
         game_spans,
         model,
+        snapshot_metadata,
         old_logits=old_logits,
         value_old=value_old,
         value_old_cpu=value_old_cpu,
@@ -294,7 +441,7 @@ def _finish_batch(
     turn: torch.Tensor,
     game_spans: list[tuple[int, int, tuple[int, int, int, int]]],
     model: HydraPolicyNet,
-    *,
+    snapshot_metadata: PpoSnapshotMetadata | None = None,
     old_logits: torch.Tensor | None = None,
     value_old: torch.Tensor | None = None,
     value_old_cpu: torch.Tensor | None = None,
@@ -359,6 +506,7 @@ def _finish_batch(
         game_id=game_id,
         turn=turn,
         rank_utility_used=RANK_UTILITY,
+        snapshot_metadata=None if snapshot_metadata is None else snapshot_metadata.to_payload(),
     )
     if validate:
         batch.validate()
@@ -399,11 +547,11 @@ def _terminal_gae_from_cpu_values(
     return raw_cpu.to(device), returns_cpu.to(device)
 
 
-def _bytes_field(payload: Mapping[str, object], key: str) -> bytes:
+def _bytes_field(payload: Mapping[str, object], key: str) -> bytes | bytearray | memoryview:
     value = payload.get(key)
     if not isinstance(value, bytes | bytearray | memoryview):
         raise TypeError(f"native rollout {key} must be bytes")
-    return bytes(value)
+    return value
 
 
 def _u8_column(payload: Mapping[str, object], key: str, row_count: int, device: torch.device) -> torch.Tensor:
@@ -554,4 +702,5 @@ def _batch_to_device(batch: PpoBatch, device: torch.device) -> PpoBatch:
         game_id=None if batch.game_id is None else batch.game_id.to(device, non_blocking=non_blocking),
         turn=None if batch.turn is None else batch.turn.to(device, non_blocking=non_blocking),
         rank_utility_used=batch.rank_utility_used,
+        snapshot_metadata=batch.snapshot_metadata,
     )

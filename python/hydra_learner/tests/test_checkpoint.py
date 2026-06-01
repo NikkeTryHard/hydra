@@ -103,6 +103,45 @@ def test_load_checkpoint_accepts_legacy_optimizer_config_without_target_games(tm
     assert state.global_step == 7
 
 
+def test_load_checkpoint_allows_adding_lr_decay_on_resume(tmp_path: Path) -> None:
+    model, optimizer = _model_optimizer()
+    ckpt = tmp_path / "ckpt.pt"
+    manifest = _write_manifest(tmp_path, b"manifest-a")
+    save_checkpoint(
+        ckpt,
+        model=model,
+        optimizer=optimizer,
+        model_config=_model_config(),
+        optimizer_config=_optimizer_config(),
+        runtime_config=_runtime_config(),
+        loss_weights=LossWeights(),
+        manifest_path=manifest,
+        global_step=7,
+        samples_seen=14,
+    )
+    expected = OptimizerConfig(
+        name="AdamW",
+        lr=1.0e-3,
+        min_lr=1.0e-6,
+        lr_schedule="cosine",
+        target_games=1_000_000_000,
+    )
+
+    loaded_model, loaded_optimizer = _model_optimizer()
+    state = load_checkpoint(
+        ckpt,
+        model=loaded_model,
+        optimizer=loaded_optimizer,
+        expected_model_config=_model_config(),
+        expected_optimizer_config=expected,
+        expected_runtime_config=_runtime_config(),
+        expected_loss_weights=LossWeights(),
+        expected_manifest_path=manifest,
+    )
+
+    assert state.global_step == 7
+
+
 def test_load_checkpoint_returns_raw_mjai_progress(tmp_path: Path) -> None:
     model, optimizer = _model_optimizer()
     ckpt = tmp_path / "ckpt.pt"
