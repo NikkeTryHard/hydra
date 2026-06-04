@@ -4,7 +4,6 @@
 
 <h1 align="left">Hydra</h1>
 
----
 
 <p align="center">
 href="https://github.com/NikkeTryHard/hydra/actions"><img alt="CI" src="https://github.com/NikkeTryHard/hydra/actions/workflows/ci.yml/badge.svg"></a>
