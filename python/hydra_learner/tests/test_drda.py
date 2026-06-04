@@ -9,9 +9,18 @@ from typing import cast
 import pytest
 import torch
 
-from hydra_learner.ach_step import AchTrainStepConfig
-from hydra_learner.checkpoint import ModelConfig, OptimizerConfig, RuntimeConfig
-from hydra_learner.drda import (
+from hydra_learner.checkpointing.core import ModelConfig, OptimizerConfig, RuntimeConfig
+from hydra_learner.model import ACTION_SPACE, OBS_CHANNELS, TILE_WIDTH, HydraPolicyNet
+from hydra_learner.model.losses import LossWeights
+from hydra_learner.ppo.rl import AchLossConfig, EntropyController, ach_loss, masked_kl, masked_probs
+from hydra_learner.ppo.rollout import (
+    PpoRolloutMetadata,
+    save_ppo_rollout_artifact,
+    train_drda_ach_step_from_rollout_artifact,
+)
+from hydra_learner.ppo.step import PpoBatch
+from hydra_learner.rl_experiments.ach_step import AchTrainStepConfig
+from hydra_learner.rl_experiments.drda import (
     DEFAULT_TAU_DRDA,
     DRDA_OPTIMIZER_SCOPE,
     DRDA_POLICY_PRESERVATION,
@@ -31,15 +40,6 @@ from hydra_learner.drda import (
     validate_drda_checkpoint_metadata,
     validate_tau_drda,
 )
-from hydra_learner.losses import LossWeights
-from hydra_learner.model import ACTION_SPACE, OBS_CHANNELS, TILE_WIDTH, HydraPolicyNet
-from hydra_learner.ppo_rollout import (
-    PpoRolloutMetadata,
-    save_ppo_rollout_artifact,
-    train_drda_ach_step_from_rollout_artifact,
-)
-from hydra_learner.ppo_step import PpoBatch
-from hydra_learner.rl import AchLossConfig, EntropyController, ach_loss, masked_kl, masked_probs
 
 
 def test_drda_combined_logits_formula() -> None:

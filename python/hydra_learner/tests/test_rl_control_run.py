@@ -10,16 +10,16 @@ import pytest
 import torch
 
 from hydra_learner import arena_eval
-from hydra_learner.ach_step import AchTrainStepConfig
-from hydra_learner.checkpoint import ModelConfig, OptimizerConfig, RuntimeConfig, load_checkpoint_init_only
-from hydra_learner.checkpoint_eval import PairedCheckpointEvalThresholds, build_paired_checkpoint_eval_summary
-from hydra_learner.losses import LossWeights
+from hydra_learner.checkpointing.core import ModelConfig, OptimizerConfig, RuntimeConfig, load_checkpoint_init_only
+from hydra_learner.checkpointing.eval import PairedCheckpointEvalThresholds, build_paired_checkpoint_eval_summary
 from hydra_learner.model import ACTION_SPACE, HydraPolicyNet
-from hydra_learner.ppo_rollout import PpoRolloutMetadata, save_ppo_rollout_artifact
-from hydra_learner.ppo_step import PpoBatch, PpoTrainStepConfig
-from hydra_learner.reward_shaping import default_reward_shaping_metadata
-from hydra_learner.rl import EntropyController, masked_log_prob
-from hydra_learner.rl_control_run import (
+from hydra_learner.model.losses import LossWeights
+from hydra_learner.ppo.rl import EntropyController, masked_log_prob
+from hydra_learner.ppo.rollout import PpoRolloutMetadata, save_ppo_rollout_artifact
+from hydra_learner.ppo.step import PpoBatch, PpoTrainStepConfig
+from hydra_learner.rl_experiments.ach_step import AchTrainStepConfig
+from hydra_learner.rl_experiments.reward_shaping import default_reward_shaping_metadata
+from hydra_learner.rl_experiments.rl_control_run import (
     RlCheckpointConfig,
     RlControlRunConfig,
     RlEvalConfig,

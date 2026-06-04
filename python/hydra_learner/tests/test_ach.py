@@ -9,17 +9,17 @@ from typing import cast
 import pytest
 import torch
 
-import hydra_learner.ach_step as ach_step_module
-import hydra_learner.rl as rl_module
-from hydra_learner.ach_step import AchTrainStepConfig, ach_train_step
+import hydra_learner.ppo.rl as rl_module
+import hydra_learner.rl_experiments.ach_step as ach_step_module
 from hydra_learner.model import ACTION_SPACE, HydraPolicyNet
-from hydra_learner.ppo_rollout import (
+from hydra_learner.ppo.rl import AchLossConfig, EntropyController, ach_loss, normalize_advantages
+from hydra_learner.ppo.rollout import (
     PpoRolloutMetadata,
     save_ppo_rollout_artifact,
     train_ach_step_from_rollout_artifact,
 )
-from hydra_learner.ppo_step import PpoBatch
-from hydra_learner.rl import AchLossConfig, EntropyController, ach_loss, normalize_advantages
+from hydra_learner.ppo.step import PpoBatch
+from hydra_learner.rl_experiments.ach_step import AchTrainStepConfig, ach_train_step
 
 
 def test_ach_formula_matches_rust_reference_fixture_centered_clamped() -> None:

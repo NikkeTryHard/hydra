@@ -176,9 +176,21 @@ pub fn python_ppo_control_options_from_config(
                 })?,
         )
     };
+    let output_dir = python_run_dir(config, rl_stage_for_config(config));
+    let resume = if config.resume_latest {
+        let latest = output_dir.join("checkpoints/latest.pt");
+        latest.is_file().then_some(latest)
+    } else {
+        None
+    };
+    let ppo_pipeline_depth = rl.ppo_pipeline_depth.unwrap_or(0);
+    let rollout_inference = rl
+        .rollout_inference
+        .clone()
+        .unwrap_or_else(|| "mahjax-gpu".to_owned());
     Ok(PythonPpoControlCliOptions {
         init_checkpoint: python_ppo_control_init_checkpoint(config)?,
-        output_dir: python_run_dir(config, rl_stage_for_config(config)),
+        output_dir,
         stage: config.stage.clone(),
         run_name: config.run_name.clone(),
         device: config.device.clone(),
@@ -207,7 +219,7 @@ pub fn python_ppo_control_options_from_config(
         adamw_fused: config.bc.adamw_fused,
         adamw_foreach: config.bc.adamw_foreach,
         bc_kl_reverse_coef: rl.bc_kl_reverse_coef.unwrap_or(0.01),
-        resume: None,
+        resume,
         checkpoint_every_steps: config.checkpoint_every_n_steps,
         log_every_steps: config.log_every_n_steps,
         keep_step_checkpoints: config.keep_step_checkpoints,
@@ -215,11 +227,8 @@ pub fn python_ppo_control_options_from_config(
         launch_tensorboard: config.launch_tensorboard,
         tensorboard_host: config.tensorboard_host.clone(),
         tensorboard_port: config.tensorboard_port,
-        rollout_inference: rl
-            .rollout_inference
-            .clone()
-            .unwrap_or_else(|| "torch-callback".to_owned()),
-        ppo_pipeline_depth: rl.ppo_pipeline_depth.unwrap_or(0),
+        rollout_inference,
+        ppo_pipeline_depth,
         background: config.background,
     })
 }

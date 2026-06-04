@@ -12,6 +12,29 @@ pub fn should_sample_replay_event(event: &MjaiEvent) -> bool {
     )
 }
 
+pub fn mjai_event_type_name(event: &MjaiEvent) -> &'static str {
+    match event {
+        MjaiEvent::StartGame { .. } => "start_game",
+        MjaiEvent::StartKyoku { .. } => "start_kyoku",
+        MjaiEvent::Tsumo { .. } => "tsumo",
+        MjaiEvent::Dahai { .. } => "dahai",
+        MjaiEvent::Reach { .. } => "reach",
+        MjaiEvent::ReachAccepted { .. } => "reach_accepted",
+        MjaiEvent::Pon { .. } => "pon",
+        MjaiEvent::Chi { .. } => "chi",
+        MjaiEvent::Kan { .. } => "kan",
+        MjaiEvent::Ankan { .. } => "ankan",
+        MjaiEvent::Kakan { .. } => "kakan",
+        MjaiEvent::Dora { .. } => "dora",
+        MjaiEvent::Kita { .. } => "kita",
+        MjaiEvent::Hora { .. } => "hora",
+        MjaiEvent::Ryukyoku { .. } => "ryukyoku",
+        MjaiEvent::EndKyoku => "end_kyoku",
+        MjaiEvent::EndGame => "end_game",
+        MjaiEvent::Other => "other",
+    }
+}
+
 fn replay_log_action_str<'a>(event: &'a MjaiEvent, env_action: &EngineAction) -> Cow<'a, str> {
     match event {
         MjaiEvent::Dahai { pai, .. }
@@ -26,7 +49,46 @@ fn replay_log_action_str<'a>(event: &'a MjaiEvent, env_action: &EngineAction) ->
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReplayDecisionKind {
+    ImplicitPass,
+    SampledEvent,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReplayDecisionPhase {
+    Normal,
+    RiichiSelect,
+    KanSelect,
+}
+
+impl From<ActionPhase> for ReplayDecisionPhase {
+    fn from(phase: ActionPhase) -> Self {
+        match phase {
+            ActionPhase::Normal => Self::Normal,
+            ActionPhase::RiichiSelect => Self::RiichiSelect,
+            ActionPhase::KanSelect => Self::KanSelect,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReplayDecisionTrace {
+    pub event_index: usize,
+    pub source_event_type: &'static str,
+    pub actor: usize,
+    pub kind: ReplayDecisionKind,
+    pub phase: ReplayDecisionPhase,
+    pub kyoku: u8,
+    pub honba: u8,
+    pub kyotaku: u32,
+    pub oya: u8,
+    pub round_wind: u8,
+    pub response_target: Option<u8>,
+}
+
 pub struct PreparedReplayDecision {
+    pub trace: ReplayDecisionTrace,
     pub actor: usize,
     pub obs: Observation,
     pub action_id: u8,
@@ -193,11 +255,35 @@ pub(super) fn analyze_replay_legal_actions(
     (legal_mask, legal_mask_f32, chosen_is_legal, had_ron)
 }
 
+pub(super) fn replay_decision_trace(
+    event_index: usize,
+    source_event_type: &'static str,
+    actor: usize,
+    kind: ReplayDecisionKind,
+    phase: ActionPhase,
+    state: &GameState,
+) -> ReplayDecisionTrace {
+    ReplayDecisionTrace {
+        event_index,
+        source_event_type,
+        actor,
+        kind,
+        phase: phase.into(),
+        kyoku: state.kyoku_idx,
+        honba: state.honba,
+        kyotaku: state.riichi_sticks,
+        oya: state.oya,
+        round_wind: state.round_wind,
+        response_target: state.last_discard.map(|(player, _)| player),
+    }
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "replay decision finalization needs the full state context"
 )]
 pub(super) fn finalize_prepared_replay_decision(
+    trace: ReplayDecisionTrace,
     actor: usize,
     env_action: EngineAction,
     obs: Observation,
@@ -245,6 +331,7 @@ pub(super) fn finalize_prepared_replay_decision(
     REPLAY_ENCODE_OBS_NS.fetch_add(t_encode.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
     Ok(Some(PreparedReplayDecision {
+        trace,
         actor,
         obs,
         action_id: hydra_action.id(),
@@ -261,6 +348,7 @@ pub(super) fn finalize_prepared_replay_decision(
     reason = "replay decision finalization needs the full state context"
 )]
 pub(super) fn finalize_prepared_replay_decision_ref(
+    trace: ReplayDecisionTrace,
     actor: usize,
     env_action: EngineAction,
     phase: ActionPhase,
@@ -305,6 +393,7 @@ pub(super) fn finalize_prepared_replay_decision_ref(
     REPLAY_ENCODE_OBS_NS.fetch_add(t_encode.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
     Ok(Some(PreparedReplayDecision {
+        trace,
         actor,
         obs: empty_replay_observation(actor),
         action_id: hydra_action.id(),
@@ -339,6 +428,7 @@ fn empty_replay_observation(actor: usize) -> Observation {
         None,
     )
 }
+
 fn observation_for_replay_event(
     state: &mut GameState,
     actor: usize,
@@ -351,6 +441,7 @@ fn observation_for_replay_event(
     REPLAY_OBSERVATION_NS.fetch_add(t_obs.elapsed().as_nanos() as u64, Ordering::Relaxed);
     Ok(obs)
 }
+
 #[cfg(test)]
 pub fn prepare_replay_decisions(
     event: &MjaiEvent,
@@ -359,6 +450,7 @@ pub fn prepare_replay_decisions(
     encoder: &mut ObservationEncoder,
 ) -> io::Result<Vec<PreparedReplayDecision>> {
     prepare_replay_decisions_with_options(
+        0,
         event,
         state,
         safety,
@@ -367,14 +459,47 @@ pub fn prepare_replay_decisions(
     )
 }
 
+fn validate_strict_replay_event(event: &MjaiEvent, state: &mut GameState) -> io::Result<()> {
+    if matches!(event, MjaiEvent::Hora { pai: None, .. }) {
+        return Ok(());
+    }
+
+    let env_action = state
+        .replay_action_for_mjai_event(event)
+        .map_err(|err| invalid_data(format!("strict replay action conversion failed: {err}")))?;
+    let (Some(actor), Some(env_action)) = (mjai_event_actor(event), env_action) else {
+        return Ok(());
+    };
+
+    let mut legal = Vec::new();
+    let log_action_str = replay_log_action_str(event, &env_action);
+    state
+        .get_replay_legal_actions_into(actor as u8, &env_action, &log_action_str, &mut legal)
+        .map_err(|err| invalid_data(format!("strict replay legality failed: {err}")))?;
+    Ok(())
+}
+
 pub(super) fn prepare_replay_decisions_with_options(
+    event_index: usize,
     event: &MjaiEvent,
     state: &mut GameState,
     safety: &[SafetyInfo; 4],
     encoder: &mut ObservationEncoder,
     options: ReplayDecisionOptions,
 ) -> io::Result<Vec<PreparedReplayDecision>> {
-    let mut decisions = prepare_implicit_pass_decisions(event, state, safety, encoder, options)?;
+    let source_event_type = mjai_event_type_name(event);
+    let mut decisions = prepare_implicit_pass_decisions(
+        event,
+        state,
+        safety,
+        encoder,
+        options,
+        event_index,
+        source_event_type,
+    )?;
+    if options.strict_replay_legality {
+        validate_strict_replay_event(event, state)?;
+    }
     if !should_sample_replay_event(event) {
         return Ok(decisions);
     }
@@ -394,10 +519,19 @@ pub(super) fn prepare_replay_decisions_with_options(
             .get_replay_legal_actions_into(actor as u8, &env_action, &log_action_str, &mut legal)
             .map_err(|err| invalid_data(format!("replay observation failed: {err}")))?;
         REPLAY_OBSERVATION_NS.fetch_add(t_obs.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        let phase = replay_action_phase_for_event(event, state, actor);
         if let Some(decision) = finalize_prepared_replay_decision_ref(
+            replay_decision_trace(
+                event_index,
+                source_event_type,
+                actor,
+                ReplayDecisionKind::SampledEvent,
+                phase,
+                state,
+            ),
             actor,
             env_action,
-            replay_action_phase_for_event(event, state, actor),
+            phase,
             state,
             safety,
             encoder,
@@ -409,11 +543,20 @@ pub(super) fn prepare_replay_decisions_with_options(
     }
 
     let obs = observation_for_replay_event(state, actor, &env_action)?;
+    let phase = replay_action_phase_for_event(event, state, actor);
     if let Some(decision) = finalize_prepared_replay_decision(
+        replay_decision_trace(
+            event_index,
+            source_event_type,
+            actor,
+            ReplayDecisionKind::SampledEvent,
+            phase,
+            state,
+        ),
         actor,
         env_action,
         obs,
-        replay_action_phase_for_event(event, state, actor),
+        phase,
         state,
         safety,
         encoder,
@@ -424,6 +567,7 @@ pub(super) fn prepare_replay_decisions_with_options(
 
     Ok(decisions)
 }
+
 pub fn prepare_replay_decision(
     event: &MjaiEvent,
     state: &mut GameState,
@@ -431,6 +575,7 @@ pub fn prepare_replay_decision(
     encoder: &mut ObservationEncoder,
 ) -> io::Result<Option<PreparedReplayDecision>> {
     Ok(prepare_replay_decisions_with_options(
+        0,
         event,
         state,
         safety,

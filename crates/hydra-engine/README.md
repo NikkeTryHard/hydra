@@ -4,7 +4,7 @@ Crate-local landing page for vendored engine. Runtime contracts using this engin
 
 ## Owns
 
-- Vendored `riichienv-core` v0.4.7 engine behavior from [smly/RiichiEnv](https://github.com/smly/RiichiEnv).
+- Vendored `riichienv-core` v0.4.8-derived engine behavior from [smly/RiichiEnv](https://github.com/smly/RiichiEnv), with Hydra fixed-array/perf fork patches retained.
 - Mahjong state progression, rule enforcement, scoring, legal action generation.
 - 4-player + 3-player/sanma engine paths, including Kita/BaBei support.
 - Hydra throughput patches in engine layer: stack allocs, zero-copy observation, buffer-reuse legal actions, unchecked self-play step path.
@@ -21,11 +21,11 @@ Crate-local landing page for vendored engine. Runtime contracts using this engin
 
 | Surface | Contract |
 |---|---|
-| Origin | `riichienv-core` v0.4.7, vendored |
+| Origin | `riichienv-core` v0.4.8-derived, vendored |
 | Upstream license | Apache-2.0 preserved |
-| Hydra additions | BSL-1.1 (`ObservationRef`, `MjaiEvent`, `step_unchecked`, etc.) |
+| Hydra additions | BSL-1.1 (`ObservationRef`, `MjaiEvent`, `step_unchecked`, fixed arrays, etc.) |
 | AGPL boundary | Mortal used only upstream as black-box MJAI correctness player; no Mortal/AGPL code in Hydra/RiichiEnv |
-| Correctness basis | upstream reports 1M+ hanchan with Mortal black-box MJAI player, zero errors |
+| Correctness basis | Tenhou/MJAI replay audit over Houou 2025 corpus: `178,897` files, `95,118,458` samples, `0` failures; plus upstream RiichiEnv correctness reports |
 | Engine API name | `riichienv_core` for internal imports/backcompat |
 | Publish status | workspace-internal; not crates.io surface |
 

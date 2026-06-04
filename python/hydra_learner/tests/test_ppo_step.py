@@ -8,8 +8,8 @@ import pytest
 import torch
 
 from hydra_learner.model import ACTION_SPACE, HydraPolicyNet
-from hydra_learner.ppo_step import PpoBatch, PpoTrainStepConfig, _clip_grad_norm_for_ppo, ppo_train_step
-from hydra_learner.rl import EntropyController, masked_log_prob, masked_log_softmax
+from hydra_learner.ppo.rl import EntropyController, masked_log_prob, masked_log_softmax
+from hydra_learner.ppo.step import PpoBatch, PpoTrainStepConfig, _clip_grad_norm_for_ppo, ppo_train_step
 
 
 def _replace_batch(batch: PpoBatch, **updates: torch.Tensor | str | None) -> PpoBatch:

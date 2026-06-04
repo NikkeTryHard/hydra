@@ -9,11 +9,12 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from tests.fixtures import TINY_SHARD_MANIFEST
 
-from hydra_learner.raw_mjai import RawMjaiBridgeStats, RawMjaiPinnedStream
-from hydra_learner.raw_mjai_codec import decode_batch
-from hydra_learner.raw_mjai_direct import build_raw_mjai_stream_command
-from hydra_learner.shard_contracts import (
+from hydra_learner.data.raw_mjai import RawMjaiBridgeStats, RawMjaiPinnedStream
+from hydra_learner.data.raw_mjai.codec import decode_batch
+from hydra_learner.data.raw_mjai.direct import build_raw_mjai_stream_command
+from hydra_learner.data.shard_contracts import (
     ACTION_SPACE,
     BC_BASE_RECORD_SIZE,
     BC_RECORD_SIZE_WITH_ALL_OPTIONALS,
@@ -33,9 +34,9 @@ from hydra_learner.shard_contracts import (
     SCORE_BIN_MIN,
     TILE_WIDTH,
 )
-from hydra_learner.shard_manifest import validate_manifest
-from hydra_learner.shard_reader import BcShardReader
-from hydra_learner.shards import BcShardReader as LegacyBcShardReader
+from hydra_learner.data.shard_manifest import validate_manifest
+from hydra_learner.data.shard_reader import BcShardReader
+from hydra_learner.data.shards import BcShardReader as LegacyBcShardReader
 
 
 def _empty_obs_facts() -> bytearray:
@@ -486,9 +487,8 @@ def test_compact_reader_rejects_illegal_action_record(tmp_path: Path) -> None:
         reader.batch_range(0, 1)
 
 
-def test_python_reader_matches_rust_parity_fixture() -> None:
-    manifest_path = Path("crates/hydra-bc-shards/target/python-parity-fixture/manifest.json")
-    assert manifest_path.exists(), "run Rust compact_reader_exports_python_parity_fixture first"
+def test_python_reader_matches_tiny_checked_in_fixture() -> None:
+    manifest_path = TINY_SHARD_MANIFEST
 
     with BcShardReader(manifest_path) as reader:
         batch = reader.batch_range(0, 1)
@@ -507,6 +507,10 @@ def test_python_reader_matches_rust_parity_fixture() -> None:
     assert batch.safety_mask is not None
     assert batch.safety_target.shape == (1, ACTION_SPACE)
     assert batch.safety_mask.shape == (1, ACTION_SPACE)
+    assert batch.exit_target is not None
+    assert batch.exit_mask is not None
+    assert batch.deltaq_target is not None
+    assert batch.deltaq_mask is not None
 
     np.testing.assert_array_equal(batch.actions, np.array([3], dtype=np.int64))
     assert bool(batch.legal_mask[0, 3])
@@ -528,3 +532,7 @@ def test_python_reader_matches_rust_parity_fixture() -> None:
     np.testing.assert_array_equal(batch.safety_target[0, 5], np.float32(0.05))
     assert float(batch.safety_mask[0, 4]) == 1.0
     assert float(batch.safety_mask[0, 5]) == 0.0
+    assert float(batch.exit_target[0, 6]) == pytest.approx(0.75)
+    assert float(batch.exit_mask[0, 6]) == 1.0
+    assert float(batch.deltaq_target[0, 7]) == pytest.approx(-1.25)
+    assert float(batch.deltaq_mask[0, 7]) == 1.0

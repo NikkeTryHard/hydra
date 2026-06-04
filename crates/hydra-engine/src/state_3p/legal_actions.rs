@@ -62,17 +62,39 @@ impl GameState3PLegalActions for GameState3P {
             }
 
             // 2. Discard / Riichi
-            let declaration_turn = if self.players[pid_us].riichi_declared {
-                if let Some(idx) = self.players[pid_us].riichi_declaration_index {
-                    self.players[pid_us].discard_len as usize <= idx
-                } else {
-                    false
+            if self.players[pid_us].riichi_declared {
+                if let Some(dt) = self.drawn_tile {
+                    legals.push(Action::new(ActionType::Discard, Some(dt), &[], Some(pid)));
+                }
+            } else if self.players[pid_us].riichi_stage {
+                let mut forbidden_set = [false; 34];
+                for &f in self.players[pid_us].forbidden_slice() {
+                    forbidden_set[(f / 4) as usize] = true;
+                }
+                let hand = self.players[pid_us].hand_slice();
+                for skip_idx in 0..hand.len() {
+                    let t = hand[skip_idx];
+                    if forbidden_set[(t / 4) as usize] {
+                        continue;
+                    }
+                    let mut check = [0u8; 13];
+                    let mut ci = 0;
+                    for (i, &candidate) in hand.iter().enumerate() {
+                        if i == skip_idx {
+                            continue;
+                        }
+                        check[ci] = candidate;
+                        ci += 1;
+                    }
+                    let calc = crate::hand_evaluator_3p::HandEvaluator3P::new(
+                        &check[..ci],
+                        self.players[pid_us].melds_slice(),
+                    );
+                    if calc.is_tenpai() {
+                        legals.push(Action::new(ActionType::Discard, Some(t), &[], Some(pid)));
+                    }
                 }
             } else {
-                false
-            };
-
-            if !self.players[pid_us].riichi_declared || declaration_turn {
                 let mut forbidden_set = [false; 34];
                 for &f in self.players[pid_us].forbidden_slice() {
                     forbidden_set[(f / 4) as usize] = true;
@@ -83,17 +105,13 @@ impl GameState3PLegalActions for GameState3P {
                     }
                 }
 
-                // Riichi check
-                if !self.players[pid_us].riichi_declared
-                    && self.players[pid_us].score >= 1000
+                if self.players[pid_us].score >= 1000
                     && self.wall.remaining() > 14
                     && self.players[pid_us].melds_slice().iter().all(|m| !m.opened)
-                    && !self.players[pid_us].riichi_stage
                 {
-                    let indices: Vec<usize> = (0..self.players[pid_us].hand_len as usize).collect();
                     let mut can_riichi = false;
 
-                    for &skip_idx in &indices {
+                    for skip_idx in 0..self.players[pid_us].hand_len as usize {
                         let mut temp_hand = self.players[pid_us].hand_slice().to_vec();
                         temp_hand.remove(skip_idx);
                         let calc = crate::hand_evaluator_3p::HandEvaluator3P::new(
@@ -109,8 +127,6 @@ impl GameState3PLegalActions for GameState3P {
                         legals.push(Action::new(ActionType::Riichi, None, &[], Some(pid)));
                     }
                 }
-            } else if let Some(dt) = self.drawn_tile {
-                legals.push(Action::new(ActionType::Discard, Some(dt), &[], Some(pid)));
             }
 
             // 3. Kan (Ankan / Kakan)
@@ -268,7 +284,7 @@ impl GameState3PLegalActions for GameState3P {
             let mut is_furiten = false;
             let waits = calc.get_waits_u8();
             let mut discard_set = [false; 34];
-            for &d in &self.players[i_us].discards {
+            for &d in self.players[i_us].discards_slice() {
                 discard_set[(d / 4) as usize] = true;
             }
             for &w in &waits {

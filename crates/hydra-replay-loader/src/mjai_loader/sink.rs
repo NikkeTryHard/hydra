@@ -1,7 +1,41 @@
 use super::*;
 
-/// Decoded training sample passed to streaming replay sinks.
+/// Replay-row provenance from the Hydra replay sampler.
+pub struct ReplayTraceRecord {
+    pub event_index: usize,
+    pub source_event_type: &'static str,
+    pub actor: usize,
+    pub kind: ReplayDecisionKind,
+    pub phase: ReplayDecisionPhase,
+    pub kyoku: u8,
+    pub honba: u8,
+    pub kyotaku: u32,
+    pub oya: u8,
+    pub round_wind: u8,
+    pub response_target: Option<u8>,
+}
+
+impl From<ReplayDecisionTrace> for ReplayTraceRecord {
+    fn from(trace: ReplayDecisionTrace) -> Self {
+        Self {
+            event_index: trace.event_index,
+            source_event_type: trace.source_event_type,
+            actor: trace.actor,
+            kind: trace.kind,
+            phase: trace.phase,
+            kyoku: trace.kyoku,
+            honba: trace.honba,
+            kyotaku: trace.kyotaku,
+            oya: trace.oya,
+            round_wind: trace.round_wind,
+            response_target: trace.response_target,
+        }
+    }
+}
+
 pub struct ReplaySampleRecord {
+    /// Replay-row provenance from the Hydra replay sampler.
+    pub trace: ReplayTraceRecord,
     /// Encoded observation planes flattened as `[NUM_CHANNELS * 34]`.
     pub obs: [f32; OBS_SIZE],
     /// Replay-derived compact facts for shard storage.

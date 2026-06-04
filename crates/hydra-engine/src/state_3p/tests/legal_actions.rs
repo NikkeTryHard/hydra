@@ -53,6 +53,35 @@ fn wait_act_offers_discards_and_kita_for_allowed_tiles() {
 }
 
 #[test]
+fn riichi_stage_only_offers_tenpai_maintaining_discards() {
+    let mut state = empty_state();
+    state.drawn_tile = Some(16);
+    state.players[0].riichi_stage = true;
+    state.players[0].push_forbidden(36);
+    for tile in [0, 4, 8, 12, 16, 36, 40, 44, 72, 76, 80, 112, 113, 116] {
+        state.players[0].push_hand(tile);
+    }
+
+    let legals = state._get_legal_actions_internal(0);
+    let discard_tiles: Vec<u8> = legals
+        .iter()
+        .filter(|action| action.action_type == ActionType::Discard)
+        .filter_map(|action| action.tile)
+        .collect();
+
+    assert_eq!(discard_tiles, vec![116]);
+    assert!(!legals
+        .iter()
+        .any(|action| action.action_type == ActionType::Riichi));
+    assert!(!legals
+        .iter()
+        .any(|action| action.action_type == ActionType::Tsumo));
+    assert!(!legals
+        .iter()
+        .any(|action| action.action_type == ActionType::Ankan));
+}
+
+#[test]
 fn wait_response_offers_claims_plus_pass() {
     let mut state = empty_state();
     state.phase = Phase::WaitResponse;
@@ -89,6 +118,22 @@ fn claim_actions_for_player_generate_pon_and_daiminkan_without_chi() {
     assert!(!legals
         .iter()
         .any(|action| action.action_type == ActionType::Chi));
+}
+
+#[test]
+fn claim_actions_ignore_unused_fixed_discard_slots_for_furiten() {
+    let mut state = empty_state();
+    state.wall.tile_count = 20;
+    state.players[1].riichi_declared = true;
+    for tile in [0, 1, 36, 37, 38, 40, 41, 42, 72, 73, 74, 112, 113] {
+        state.players[1].push_hand(tile);
+    }
+
+    let (legals, missed_agari) = state._get_claim_actions_for_player(1, 0, 2);
+    assert!(!missed_agari);
+    assert!(legals
+        .iter()
+        .any(|action| action.action_type == ActionType::Ron));
 }
 
 #[test]

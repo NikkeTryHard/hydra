@@ -25,6 +25,8 @@ pub(super) fn prepare_implicit_pass_decisions(
     safety: &[SafetyInfo; 4],
     encoder: &mut ObservationEncoder,
     options: ReplayDecisionOptions,
+    event_index: usize,
+    source_event_type: &'static str,
 ) -> io::Result<Vec<PreparedReplayDecision>> {
     let t_pass = Instant::now();
     let mut decisions = Vec::new();
@@ -79,10 +81,19 @@ pub(super) fn prepare_implicit_pass_decisions(
                     ActionPhase::Normal,
                     hydra_core::action::PASS,
                 );
+                let phase = ActionPhase::Normal;
                 if let Some(decision) = finalize_prepared_replay_decision_ref(
+                    replay_decision_trace(
+                        event_index,
+                        source_event_type,
+                        pid as usize,
+                        ReplayDecisionKind::ImplicitPass,
+                        phase,
+                        state,
+                    ),
                     pid as usize,
                     pass_action,
-                    ActionPhase::Normal,
+                    phase,
                     state,
                     safety,
                     encoder,
@@ -104,11 +115,20 @@ pub(super) fn prepare_implicit_pass_decisions(
                     );
                     had_ron
                 };
+                let phase = ActionPhase::Normal;
                 if let Some(decision) = finalize_prepared_replay_decision(
+                    replay_decision_trace(
+                        event_index,
+                        source_event_type,
+                        pid as usize,
+                        ReplayDecisionKind::ImplicitPass,
+                        phase,
+                        state,
+                    ),
                     pid as usize,
                     pass_action,
                     obs,
-                    ActionPhase::Normal,
+                    phase,
                     state,
                     safety,
                     encoder,

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from hydra_learner.checkpoint_eval import (
+from hydra_learner.checkpointing.eval import (
     PairedCheckpointEvalThresholds,
     append_paired_checkpoint_eval_jsonl,
     build_paired_checkpoint_eval_summary,

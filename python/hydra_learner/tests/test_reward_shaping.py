@@ -7,7 +7,8 @@ from typing import Any, cast
 import pytest
 import torch
 
-from hydra_learner.reward_shaping import (
+from hydra_learner.ppo.rl import DEFAULT_GAE_GAMMA, DEFAULT_GAE_LAMBDA, PLACEMENT_UTILITY_DEFAULT
+from hydra_learner.rl_experiments.reward_shaping import (
     GRP_PERM_TABLE,
     PHI_DEFINITION_GRP_EXPECTED_U_A_V1,
     REQUIRED_GATE_RESULT_CATEGORIES,
@@ -23,7 +24,6 @@ from hydra_learner.reward_shaping import (
     telescoping_terminal_residual,
     truncation_shaping_residual,
 )
-from hydra_learner.rl import DEFAULT_GAE_GAMMA, DEFAULT_GAE_LAMBDA, PLACEMENT_UTILITY_DEFAULT
 
 
 def test_grp_phi_one_hot_mixed_logits_probs_all_actors() -> None:

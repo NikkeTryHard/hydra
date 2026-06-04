@@ -15,6 +15,7 @@ name = "hydra_raw_mjai_pyo3"
 
 [dependencies]
 hydra-core = { path = "../hydra-core" }
+hydra-belief-search = { path = "../hydra-belief-search" }
 hydra-train-exec = { path = "../hydra-train-exec" }
 hydra-model = { path = "../hydra-model", default-features = false }
 riichienv-core = { path = "../hydra-engine", package = "hydra-engine" }

@@ -56,7 +56,10 @@ mod validation;
 pub use dataset::*;
 #[cfg(test)]
 pub use decisions::prepare_replay_decisions;
-pub use decisions::{PreparedReplayDecision, prepare_replay_decision, should_sample_replay_event};
+pub use decisions::{
+    PreparedReplayDecision, ReplayDecisionKind, ReplayDecisionPhase, ReplayDecisionTrace,
+    mjai_event_type_name, prepare_replay_decision, should_sample_replay_event,
+};
 pub use scores::final_scores;
 pub use sidecar::{ReplayLoadPolicy, ReplayTargetProfile, SidecarProvenance};
 pub use sink::{ReplaySampleRecord, ReplaySampleSink};
@@ -78,12 +81,14 @@ use validation::*;
 #[derive(Clone, Copy)]
 struct ReplayDecisionOptions {
     observation_profile: ReplayObservationProfile,
+    strict_replay_legality: bool,
 }
 
 impl Default for ReplayDecisionOptions {
     fn default() -> Self {
         Self {
             observation_profile: ReplayObservationProfile::BcMinimal,
+            strict_replay_legality: false,
         }
     }
 }
@@ -148,6 +153,7 @@ fn load_game_from_events_into_sink<S: ReplaySampleSink>(
     let needs_replay_key = source_hash.is_some() && (needs_exit_lookup || needs_delta_q_lookup);
     let decision_options = ReplayDecisionOptions {
         observation_profile,
+        strict_replay_legality: false,
     };
 
     if events.iter().any(|event| matches!(event, MjaiEvent::Other)) {
@@ -158,6 +164,7 @@ fn load_game_from_events_into_sink<S: ReplaySampleSink>(
         stats.event_count += 1;
         let t_prepare = Instant::now();
         let decisions = prepare_replay_decisions_with_options(
+            idx,
             event,
             &mut state,
             &safety,
@@ -260,6 +267,7 @@ fn load_game_from_events_into_sink<S: ReplaySampleSink>(
             stats.sidecar_lookup_ns += t_sidecar.elapsed().as_nanos();
             let t_push = Instant::now();
             sink.push_sample(ReplaySampleRecord {
+                trace: decision.trace.into(),
                 obs: decision.obs_encoded,
                 compact_facts: decision.compact_facts,
                 action: decision.action_id,

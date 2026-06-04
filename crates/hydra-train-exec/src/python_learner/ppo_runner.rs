@@ -7,6 +7,10 @@ use hydra_train_runtime::config::PythonPpoControlCliOptions;
 use super::command_builder::build_python_ppo_control_command_for_run_dir;
 use super::layout;
 use super::runner::{OsPythonLearnerRunner, PythonLearnerRunner};
+use super::tensorboard::{
+    supervised_background_command_for_ppo_run_dir, tensorboard_port_for_ppo_options,
+    tensorboard_url_for_ppo_options, write_tensorboard_pid_file_for_ppo_run_dir,
+};
 use super::{PythonLearnerReport, parse_python_learner_report};
 
 /// Runs the Python T1 PPO-control learner.
@@ -32,6 +36,14 @@ pub fn run_python_ppo_control_with_runner(
     if options.tensorboard {
         layout.ensure_tensorboard_dir()?;
     }
+    let selected_tensorboard_port = tensorboard_port_for_ppo_options(options, &layout.run_dir)?;
+    if !options.background {
+        write_tensorboard_pid_file_for_ppo_run_dir(
+            options,
+            &layout.run_dir,
+            selected_tensorboard_port,
+        )?;
+    }
     let command = build_python_ppo_control_command_for_run_dir(options, &layout.run_dir);
     if options.background {
         let stdout_path = layout.run_dir.join("logs/stdout.log");
@@ -48,6 +60,16 @@ pub fn run_python_ppo_control_with_runner(
                 stderr_path.display()
             )
         })?;
+        let command = if options.tensorboard && options.launch_tensorboard {
+            supervised_background_command_for_ppo_run_dir(
+                &command,
+                options,
+                &layout.run_dir,
+                selected_tensorboard_port,
+            )
+        } else {
+            command
+        };
         let pid = runner.spawn_background(&command, stdout, stderr)?;
         fs::write(layout.run_dir.join("train.pid"), format!("{pid}\n"))
             .map_err(|err| format!("failed to write train.pid: {err}"))?;
@@ -60,12 +82,9 @@ pub fn run_python_ppo_control_with_runner(
             tensorboard_dir: options
                 .tensorboard
                 .then(|| layout.run_dir.join("tensorboard")),
-            tensorboard_url: options.tensorboard.then(|| {
-                format!(
-                    "http://{}:{}/",
-                    options.tensorboard_host, options.tensorboard_port
-                )
-            }),
+            tensorboard_url: options
+                .tensorboard
+                .then(|| tensorboard_url_for_ppo_options(options, selected_tensorboard_port)),
             pid: Some(pid),
         });
     }

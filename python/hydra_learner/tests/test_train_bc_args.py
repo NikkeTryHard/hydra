@@ -11,27 +11,28 @@ import numpy as np
 import pytest
 import torch
 
-import hydra_learner.hydra_logging as hydra_logging
+import hydra_learner.telemetry.logging as hydra_logging
 import hydra_learner.train_bc as train_bc
-import hydra_learner.validation as validation
-from hydra_learner.checkpoint import ResumeState
-from hydra_learner.losses import LossWeights
-from hydra_learner.metrics import EvalStats, StepStats, summarize_eval, summarize_steps
-from hydra_learner.model import HydraPolicyNet
-from hydra_learner.raw_mjai import (
+import hydra_learner.training.validation as validation
+from hydra_learner.checkpointing.core import ResumeState
+from hydra_learner.data.raw_mjai import (
     BuildProgress,
     RawMjaiBridgeStats,
     RawMjaiPinnedQueueStats,
     validate_raw_mjai_source_args,
 )
-from hydra_learner.shard_contracts import PolicyBatch
+from hydra_learner.data.shard_contracts import PolicyBatch
+from hydra_learner.model import HydraPolicyNet
+from hydra_learner.model.losses import LossWeights
+from hydra_learner.telemetry.metrics import EvalStats, StepStats, summarize_eval, summarize_steps
 
 if TYPE_CHECKING:
     from _pytest.monkeypatch import MonkeyPatch
 from hydra_learner.checkpointing import RawMjaiResumeOffsets
 from hydra_learner.cli import parse_args, validate_args
 from hydra_learner.constants import PYTHON_VARIANT_DEFAULT
-from hydra_learner.hydra_logging import (
+from hydra_learner.model.optim import build_ema_config, ema_weights
+from hydra_learner.telemetry.logging import (
     JsonlLogger,
     ScalarEventWriter,
     add_scalars,
@@ -39,8 +40,7 @@ from hydra_learner.hydra_logging import (
     log_validation_scalars,
     raw_mjai_scalar_snapshot,
 )
-from hydra_learner.optim import build_ema_config, ema_weights
-from hydra_learner.validation import RawMjaiValidationSource, evaluate_raw_and_ema
+from hydra_learner.training.validation import RawMjaiValidationSource, evaluate_raw_and_ema
 
 
 def test_parse_args_defaults_to_compile_max_autotune() -> None:

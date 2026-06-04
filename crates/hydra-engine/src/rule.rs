@@ -22,8 +22,8 @@ pub struct GameRule {
     pub kuikae_forbidden: bool,
 
     /// Whether open kan (Daiminkan/Kakan) dora is revealed after the discard.
-    /// - `true`: dora revealed after discard (Tenhou / Mahjong Soul style)
-    /// - `false`: dora revealed before discard (Mortal mjai protocol style)
+    /// - `false`: dora event before dahai; Tenhou/Mahjong Soul/mjai-compatible order.
+    /// - `true`: legacy after-dahai order.
     ///
     /// Note: Ankan (closed kan) always reveals dora immediately (before rinshan tsumo),
     /// regardless of this flag.
@@ -50,7 +50,7 @@ impl GameRule {
             sanchaho_is_draw: true,
 
             kuikae_forbidden: true,
-            open_kan_dora_after_discard: true,
+            open_kan_dora_after_discard: false,
         }
     }
 
@@ -67,7 +67,7 @@ impl GameRule {
             sanchaho_is_draw: false,
 
             kuikae_forbidden: true,
-            open_kan_dora_after_discard: true,
+            open_kan_dora_after_discard: false,
         }
     }
 
@@ -101,7 +101,7 @@ impl GameRule {
             sanchaho_is_draw: false,
 
             kuikae_forbidden: true,
-            open_kan_dora_after_discard: true,
+            open_kan_dora_after_discard: false,
         }
     }
 
@@ -118,7 +118,7 @@ impl GameRule {
             sanchaho_is_draw: false,
 
             kuikae_forbidden: true,
-            open_kan_dora_after_discard: true,
+            open_kan_dora_after_discard: false,
         }
     }
 

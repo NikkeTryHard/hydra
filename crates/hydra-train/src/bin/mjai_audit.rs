@@ -7,7 +7,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use hydra_replay_loader::archive_helpers::is_mjai_archive_entry;
-use hydra_replay_loader::mjai_loader::{load_game_from_path, load_game_from_stream};
+use hydra_replay_loader::mjai_loader::{
+    load_game_from_path, load_game_from_path_strict, load_game_from_stream,
+    load_game_from_stream_strict,
+};
 use hydra_sample_cache::is_parsed_sample_cache_file;
 use hydra_train_exec::data_pipeline::{DataSource, scan_data_sources};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -17,6 +20,12 @@ use serde::{Deserialize, Serialize};
 
 const MJAI_AUDIT_THREAD_STACK_SIZE: usize = 8 * 1024 * 1024;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuditMode {
+    Default,
+    Strict,
+}
+
 #[derive(Debug)]
 struct AuditConfig {
     data_dir: PathBuf,
@@ -24,6 +33,7 @@ struct AuditConfig {
     failure_examples: usize,
     failure_inventory_dir: Option<PathBuf>,
     debug_first_failure: bool,
+    mode: AuditMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -152,7 +162,7 @@ impl AuditSharedState {
 
 fn usage(program: &str) -> String {
     format!(
-        "Usage: {program} <data-dir> [--threads N] [--failure-examples N] [--failure-inventory-dir DIR] [--debug-first-failure]"
+        "Usage: {program} <data-dir> [--strict] [--threads N] [--failure-examples N] [--failure-inventory-dir DIR] [--debug-first-failure]"
     )
 }
 
@@ -170,6 +180,7 @@ where
     let mut failure_examples = 20usize;
     let mut failure_inventory_dir = None;
     let mut debug_first_failure = false;
+    let mut mode = AuditMode::Default;
 
     while let Some(flag) = args.next() {
         match flag.as_str() {
@@ -201,6 +212,9 @@ where
             "--debug-first-failure" => {
                 debug_first_failure = true;
             }
+            "--strict" => {
+                mode = AuditMode::Strict;
+            }
             _ => return Err(format!("unknown argument {flag:?}\n{}", usage(&program))),
         }
     }
@@ -211,6 +225,7 @@ where
         failure_examples,
         failure_inventory_dir,
         debug_first_failure,
+        mode,
     })
 }
 
@@ -367,7 +382,11 @@ fn audit_loose_source(
     state: &AuditSharedState,
     inventory_writer: &mut Option<FailureInventoryWriter>,
 ) -> Result<(), String> {
-    match load_game_from_path(path) {
+    let result = match config.mode {
+        AuditMode::Default => load_game_from_path(path),
+        AuditMode::Strict => load_game_from_path_strict(path),
+    };
+    match result {
         Ok(game) => state.record_loaded(game.num_samples()),
         Err(err) => {
             record_failure(
@@ -470,7 +489,11 @@ fn audit_archive_source(
             continue;
         }
 
-        match load_game_from_stream(BufReader::new(entry)) {
+        let result = match config.mode {
+            AuditMode::Default => load_game_from_stream(BufReader::new(entry)),
+            AuditMode::Strict => load_game_from_stream_strict(BufReader::new(entry)),
+        };
+        match result {
             Ok(game) => state.record_loaded(game.num_samples()),
             Err(err) => {
                 record_failure(
@@ -519,6 +542,10 @@ fn summarize_error(err: &str) -> String {
     }
 }
 
+fn total_files(totals: &AuditTotals) -> usize {
+    totals.loaded + totals.skipped
+}
+
 fn throughput_per_second(units: usize, elapsed_secs: f64) -> f64 {
     if elapsed_secs > 0.0 {
         units as f64 / elapsed_secs
@@ -535,10 +562,6 @@ fn sort_error_buckets(error_buckets: HashMap<String, usize>) -> Vec<(String, usi
 
 fn should_record_failure_example(current_examples: usize, limit: usize) -> bool {
     current_examples < limit
-}
-
-fn total_files(totals: &AuditTotals) -> usize {
-    totals.loaded + totals.skipped
 }
 
 fn compute_audit_rates(totals: &AuditTotals, elapsed_secs: f64) -> AuditRates {
@@ -615,8 +638,12 @@ fn run() -> Result<(), String> {
         }
         return Ok(());
     }
+    let mode = match config.mode {
+        AuditMode::Default => "default",
+        AuditMode::Strict => "strict",
+    };
     println!(
-        "Auditing {} data sources from {} with {} threads",
+        "Auditing {} data sources from {} with {} threads ({mode} mode)",
         total,
         config.data_dir.display(),
         config.threads

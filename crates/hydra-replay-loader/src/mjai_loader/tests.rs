@@ -367,12 +367,14 @@ fn representative_replay_duplicate_fact_extraction_matches_single_extract_rows()
 
     for (event_idx, event) in events.iter().enumerate() {
         let decisions = prepare_replay_decisions_with_options(
+            event_idx,
             event,
             &mut state,
             &safety,
             &mut encoder,
             ReplayDecisionOptions {
                 observation_profile: ReplayObservationProfile::BcMinimal,
+                strict_replay_legality: false,
             },
         )
         .expect("prepare representative replay decision");
@@ -1545,6 +1547,43 @@ fn load_game_from_reader_rejects_fifth_start_tile_copy() {
 }
 
 #[test]
+fn strict_load_game_from_reader_rejects_unsampled_illegal_reach() {
+    let log = [
+        r#"{"type":"start_game","names":["a","b","c","d"]}"#,
+        r#"{"type":"start_kyoku","bakaze":"E","kyoku":1,"honba":0,"kyotaku":0,"oya":0,"scores":[25000,25000,25000,25000],"dora_marker":"1m","tehais":[["1m","2m","3m","4m","5m","6m","7m","8m","9m","1p","2p","3p","4p"],["1s","2s","3s","4s","5s","6s","7s","8s","9s","E","S","W","N"],["1m","1m","2m","2m","3m","3m","4m","4m","5m","5m","6m","6m","7m"],["1p","1p","2p","2p","3p","3p","4p","4p","5p","5p","6p","6p","7p"]]}"#,
+        r#"{"type":"reach","actor":0}"#,
+    ];
+
+    let err = match load_game_from_reader_strict(Cursor::new(log.join("\n"))) {
+        Ok(_) => panic!("strict mode should reject illegal reach"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.kind(), ErrorKind::InvalidData);
+    assert!(err.to_string().contains("strict replay legality failed"));
+}
+
+#[test]
+fn strict_load_game_from_reader_accepts_legal_alternative_mask() {
+    let log = [
+        r#"{"type":"start_game","names":["a","b","c","d"]}"#,
+        r#"{"type":"start_kyoku","bakaze":"E","kyoku":1,"honba":0,"kyotaku":0,"oya":0,"scores":[25000,25000,25000,25000],"dora_marker":"1m","tehais":[["1m","2m","3m","4m","5m","6m","7m","8m","9m","1p","2p","3p","4p"],["1s","2s","3s","4s","5s","6s","7s","8s","9s","E","S","W","N"],["1m","1m","2m","2m","3m","3m","4m","4m","5m","5m","6m","6m","7m"],["1p","1p","2p","2p","3p","3p","4p","4p","5p","5p","6p","6p","7p"]]}"#,
+        r#"{"type":"dahai","actor":0,"pai":"4p","tsumogiri":false}"#,
+        r#"{"type":"tsumo","actor":1,"pai":"P"}"#,
+        r#"{"type":"dahai","actor":1,"pai":"P","tsumogiri":true}"#,
+        r#"{"type":"ryukyoku"}"#,
+        r#"{"type":"end_kyoku"}"#,
+    ];
+
+    let game =
+        load_game_from_reader_strict(Cursor::new(log.join("\n"))).expect("strict valid replay");
+
+    assert!(!game.samples.is_empty());
+    assert!(game.samples[0].legal_mask[0] > 0.0);
+    assert_eq!(game.samples[0].action, 12);
+}
+
+#[test]
 fn load_game_from_reader_rejects_unsupported_event_type() {
     let log = [
         r#"{"type":"start_game","names":["a","b","c","d"]}"#,
@@ -1809,22 +1848,26 @@ fn implicit_pass_bc_minimal_matches_full_action_and_legal_mask() {
     let mut full_encoder = ObservationEncoder::new();
 
     let bc_decisions = prepare_replay_decisions_with_options(
+        0,
         &implicit_pass_hora_event(),
         &mut bc_state,
         &safety,
         &mut bc_encoder,
         ReplayDecisionOptions {
             observation_profile: ReplayObservationProfile::BcMinimal,
+            strict_replay_legality: false,
         },
     )
     .expect("prepare bc minimal implicit pass");
     let full_decisions = prepare_replay_decisions_with_options(
+        0,
         &implicit_pass_hora_event(),
         &mut full_state,
         &safety,
         &mut full_encoder,
         ReplayDecisionOptions {
             observation_profile: ReplayObservationProfile::Full,
+            strict_replay_legality: false,
         },
     )
     .expect("prepare full implicit pass");

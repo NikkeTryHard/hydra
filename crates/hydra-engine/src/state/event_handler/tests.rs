@@ -169,6 +169,7 @@ fn start_kyoku_replay_resets_round_scoped_state() {
     assert_eq!(state.wall.draw_cursor, 0);
     assert_eq!(state.wall.rinshan_draw_count, 0);
     assert_eq!(state.wall.pending_kan_dora_count, 0);
+    assert_eq!(state.wall.remaining(), 84);
     assert_eq!(state.pending_kan, None);
     assert!(!state.pending_oya_won);
     assert!(!state.pending_is_draw);
@@ -189,6 +190,27 @@ fn start_kyoku_replay_resets_round_scoped_state() {
     assert_eq!(state.players[1].score, 24_000);
     assert_eq!(state.players[2].score, 26_000);
     assert_eq!(state.players[3].score, 25_000);
+}
+
+#[test]
+fn riichi_handler_ignores_second_reach_while_declaration_pending() {
+    let rule = GameRule::default_tenhou();
+    let mut state = GameState::new(0, true, Some(7), 0, rule);
+    state.skip_mjai_logging = false;
+    state.phase = Phase::WaitAct;
+    state.current_player = 0;
+    state.active_players = [0; 4];
+    state.active_player_count = 1;
+    state.wall.tile_count = 40;
+    state.players[0].score = 25_000;
+
+    state._handle_riichi(0, Action::new(ActionType::Riichi, None, &[], Some(0)));
+    let event_count = state.mjai_log.len();
+    assert!(state.players[0].riichi_stage);
+
+    state._handle_riichi(0, Action::new(ActionType::Riichi, None, &[], Some(0)));
+    assert_eq!(state.mjai_log.len(), event_count);
+    assert!(state.players[0].riichi_stage);
 }
 
 #[test]
@@ -421,6 +443,35 @@ fn replay_start_kyoku_assigns_unique_tile_ids_for_duplicate_plain_tiles() {
         .collect();
     assert_eq!(six_m_tiles.len(), 3);
     assert_eq!(six_m_tiles.iter().copied().collect::<HashSet<_>>().len(), 3);
+}
+
+#[test]
+fn replay_start_kyoku_allows_three_plain_fives_and_red_five() {
+    let rule = GameRule::default_tenhou();
+    let mut state = GameState::new(0, true, Some(7), 0, rule);
+
+    state.apply_mjai_event(start_kyoku_with_tehais([
+        vec![
+            "4m", "5m", "5m", "5m", "5mr", "9m", "4p", "7p", "8p", "5s", "6s", "7s", "P",
+        ],
+        vec![
+            "1m", "3m", "6m", "5pr", "7p", "9p", "8s", "8s", "E", "E", "W", "N", "P",
+        ],
+        vec![
+            "1m", "1m", "2m", "6m", "8m", "8m", "1p", "3p", "5p", "6p", "4s", "5sr", "S",
+        ],
+        vec![
+            "2m", "2m", "4m", "1p", "2p", "3p", "5p", "6p", "9p", "2s", "4s", "6s", "C",
+        ],
+    ]));
+
+    let five_m_tiles: Vec<u8> = state.players[0]
+        .hand_slice()
+        .iter()
+        .copied()
+        .filter(|tile| tile / 4 == 4)
+        .collect();
+    assert_eq!(five_m_tiles, vec![16, 17, 18, 19]);
 }
 
 #[test]
@@ -1188,13 +1239,14 @@ fn no_tile_applies_nagashi_mangan_and_accepts_pending_riichi() {
     state.players[2].nagashi_eligible = false;
     state.players[3].nagashi_eligible = false;
     state.riichi_pending_acceptance = Some(3);
+    state.honba = 2;
 
     state.apply_log_action(&LogAction::NoTile);
 
-    assert_eq!(state.players[0].score, 37_000);
-    assert_eq!(state.players[1].score, 21_000);
-    assert_eq!(state.players[2].score, 21_000);
-    assert_eq!(state.players[3].score, 21_000);
+    assert_eq!(state.players[0].score, 37_600);
+    assert_eq!(state.players[1].score, 20_800);
+    assert_eq!(state.players[2].score, 20_800);
+    assert_eq!(state.players[3].score, 20_800);
     assert_eq!(state.riichi_pending_acceptance, None);
     assert_eq!(state.riichi_sticks, 1);
     assert!(state.is_done);

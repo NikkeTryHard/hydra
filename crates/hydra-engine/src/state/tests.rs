@@ -438,10 +438,13 @@ fn trigger_ryukyoku_handles_illegal_action_penalties_and_nagashi() {
     });
     nagashi.players[0].nagashi_eligible = true;
     nagashi.oya = 0;
+    nagashi.honba = 2;
     nagashi._trigger_ryukyoku("exhaustive_draw");
-    assert!(nagashi.players[0].score > 25_000);
-    assert!(nagashi.players[1].score < 25_000);
-    assert_eq!(nagashi.honba, 1);
+    assert_eq!(nagashi.players[0].score, 37_600);
+    assert_eq!(nagashi.players[1].score, 20_800);
+    assert_eq!(nagashi.players[2].score, 20_800);
+    assert_eq!(nagashi.players[3].score, 20_800);
+    assert_eq!(nagashi.honba, 3);
 }
 
 #[test]

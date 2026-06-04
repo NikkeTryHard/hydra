@@ -8,8 +8,8 @@ from typing import Literal, cast
 
 import pytest
 
-from hydra_learner.checkpoint_eval import PairedCheckpointEvalThresholds, build_paired_checkpoint_eval_summary
-from hydra_learner.population_registry import (
+from hydra_learner.checkpointing.eval import PairedCheckpointEvalThresholds, build_paired_checkpoint_eval_summary
+from hydra_learner.rl_experiments.population_registry import (
     CheckpointEntry,
     EvalSchedule,
     OpponentPool,

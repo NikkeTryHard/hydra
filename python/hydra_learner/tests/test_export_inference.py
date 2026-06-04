@@ -8,7 +8,7 @@ import torch
 from safetensors.torch import load_file
 
 from hydra_learner import export_inference as export_inference_module
-from hydra_learner.checkpoint import (
+from hydra_learner.checkpointing.core import (
     EmaConfig,
     ModelConfig,
     OptimizerConfig,
@@ -16,9 +16,7 @@ from hydra_learner.checkpoint import (
     load_checkpoint_init_only,
     save_checkpoint,
 )
-from hydra_learner.drda import DrdaResidualConfig, drda_training_objective_metadata
 from hydra_learner.export_inference import export_inference, parse_args, validate_args, write_exported_policy
-from hydra_learner.losses import LossWeights
 from hydra_learner.model import (
     ACTION_SPACE,
     BACKBONE_PROFILE_TILEFORMER_BIAS,
@@ -26,6 +24,8 @@ from hydra_learner.model import (
     TILE_WIDTH,
     HydraPolicyNet,
 )
+from hydra_learner.model.losses import LossWeights
+from hydra_learner.rl_experiments.drda import DrdaResidualConfig, drda_training_objective_metadata
 
 
 def test_export_parse_args_accepts_required_flags() -> None:

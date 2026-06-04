@@ -1,63 +1,82 @@
 # Hydra Compatibility Surface
 
-Compat contract for agents/devs touching runtime, training, model-shape-sensitive code.
+Current code wins if this file drifts. Primary runtime owner: [`GAME_ENGINE.md`](GAME_ENGINE.md).
 
-Change any row here -> review matching docs, tests, consumers.
+This page records hard contracts for code that touches runtime, training, model-shape-sensitive paths, replay, checkpoints, or rollout.
 
-Primary runtime owner: `docs/GAME_ENGINE.md`
+## Runtime Shapes
 
-## Compatibility table
+- Live encoder/model input is `192x34`.
+- Historical `85x34` means baseline-prefix channels `0..84`, not full live input.
+- Action space is fixed at `46`.
+- Legal mask shape is `[bool; 46]`.
+- Tile kind indices are `0..33`.
+- Aka/red fives stay distinct on 136-format/action surfaces where needed.
+- Suit augmentation has exactly 6 numbered-suit permutations; honors unchanged.
 
-| Surface | Current contract | Owner / source of truth | Notes |
-|---|---|---|---|
-| Encoder/model input shape | `192x34` | `docs/GAME_ENGINE.md`, `hydra-core/src/encoder.rs` | Live full contract |
-| Baseline prefix | `85x34` (`channels 0..84`) | `docs/GAME_ENGINE.md` | Historical baseline-prefix only; not full live encoder |
-| Action space | `46` actions | `hydra-core/src/action/mod.rs`, `hydra-runtime-types/src/action.rs`, `docs/GAME_ENGINE.md` | 4-player facade; `ActionType::Kita`/sanma is engine-only, not represented in Hydra compact actions |
-| Riichi handling | two-phase | `hydra-core/src/action/mod.rs`, `docs/GAME_ENGINE.md` | Declare riichi, then choose discard |
-| Kan handling | compact bridge | `hydra-core/src/action/mod.rs`, `docs/GAME_ENGINE.md` | Action `42`; bridge maps normal phase to `Ankan`, other phases to `Daiminkan`; inbound kan variants collapse to `42` |
-| Tile kind indices | `0..33` normalized tile indices | `hydra-runtime-types/src/tile/mod.rs`, `docs/GAME_ENGINE.md` | 34 tile kinds; `hydra_core::tile` is compat re-export |
-| Aka tile behavior | aka tiles stay distinct in 136-format/action handling where needed | `hydra-runtime-types/src/tile/mod.rs`, `hydra-core/src/action/mod.rs` | Red 5m/5p/5s stay special cases |
-| Legal action mask shape | `[bool; 46]` | `hydra-core/src/action/legal_mask.rs` | Training/inference must match mask semantics |
-| Game modes | core 4p simulator modes `0` hanchan, `1` east, `2` single; engine sanma modes `3` single, `4` east, `5` half | `hydra-core/src/simulator/mod.rs`, `hydra-engine/src/game_variant.rs` | Hydra 46-action bridge remains 4p; sanma/Kita stays engine surface |
-| BC shard storage | compact-only v3; old dense v2 hard-errors and must be rebuilt from replay; no alternate shard format is supported | `crates/hydra-bc-shards/src/manifest.rs`, `crates/hydra-bc-shards/src/reader.rs` | Training API remains `[batch, 192*34]` f32 obs + `[batch, 46]` legal mask. Shards store replay-fact baseline obs only; advanced/search/Hand-EV obs tail is absent/zero, not feature-gated. |
-| Runtime/train entrypoint | `crates/hydra-train/src/bin/train.rs` parses/env-dispatches/delegates through `hydra-train-runtime` + `hydra-train-exec`; `hydra-train` is package/binary entrypoint glue only | root `AGENTS.md`, `crates/hydra-train-runtime/src/lib.rs`, `crates/hydra-train-exec/src/lib.rs`, crate manifests | New CLI/config/preflight/probe/status contract code belongs in `hydra-train-runtime`; Python config conversion belongs in `hydra-train-runtime::config::python`; execution composition belongs in `hydra-train-exec`; keep train-bin code as entrypoint glue only |
-| BC runtime authority | YAML-derived only for normal training; epoch-boundary resume follows checkpoint/resume runtime contract | `crates/hydra-train-runtime/src/config_runtime.rs`, `crates/hydra-train-exec/src/bootstrap.rs`, `crates/hydra-train-exec/src/resume.rs` | Benchmark rows are evidence only; operators edit YAML fields by hand when accepting measured knobs. |
-| BC loader authority | YAML-derived only | `crates/hydra-train-runtime/src/config_runtime.rs`, `crates/hydra-train-exec/src/bootstrap.rs` | Loader knobs (`num_threads`, buffers, archive queue, shard prefetch/ring tuple) are not inferred by normal training. |
-| Python BC run UX | `output_dir` owns `logs/events.jsonl`, `logs/train_steps.jsonl`, `checkpoints/latest.pt`, optional `checkpoints/step_<global_step>.pt`, TensorBoard event files, `python_learner_result.json`, and background `train.pid`; TensorBoard port scans upward from configured port | `crates/hydra-train-runtime/src/config/python.rs`, `crates/hydra-train-exec/src/python_learner.rs`, `python/hydra_learner/hydra_learner/cli.py`, `docs/TRAINING_RUNBOOK.md` | Python owner is `hydra_learner.cli`; train loop/modules live under `hydra_learner`; `train_bc.py` is compatibility entrypoint only. Python BC `max_train_steps` is run length today; `num_epochs` remains Rust/Burn full-loop authority. Resume validates model/runtime/optimizer/loss/source/RNG metadata; raw-MJAI resume skips completed deterministic game prefix before streaming. |
-| Preflight benchmark contract | exact tuple input; markdown table output; no config, YAML, dataset, shard manifest, cache, winner, or YAML mutation | `crates/hydra-train-runtime/src/preflight.rs`, `crates/hydra-train-runtime/src/config.rs`, `crates/hydra-train-exec/src/preflight_runtime.rs`, `crates/hydra-train-exec/src/presentation.rs` | `--pf-candidate-tuples <batch:ring:threads:prefetch,...>` emits rows with numeric throughput/wait ratios. Non-applicable disk/GPU-only metrics are numeric `0.0`; current codec is `none`; compression remains gated by measurements. |
-| Shard workflow authority | build shards -> optional manifestless markdown preflight for runtime-shape evidence -> human edits YAML if desired -> train from `bc_shards_manifest_path` when explicitly requested | `docs/TRAINING_RUNBOOK.md`, `crates/hydra-train/src/bin/build_bc_shards.rs`, `crates/hydra-train/src/bin/train.rs` | Manifest is training dataset contract; YAML is training/runtime contract. Preflight reads neither. Raw-MJAI is default; resume skips deterministic completed games from checkpoint progress. |
-| Replay sidecar hydration | missing replay/action keys are absent labels; present records with source/version/legal-mask/schema/shape/provenance mismatch hard-error | `crates/hydra-replay-sidecar/src/error.rs`, `crates/hydra-replay-sidecar/src/exit.rs`, `crates/hydra-replay-sidecar/src/delta_q.rs`, `docs/TRAINING_RUNBOOK.md` | Valid JSONL alone is not enough; sidecars are bound to replay identity, checkpoint hash/version, legal-mask digest, and action contract. |
-| ONNX native arena | CUDA/native ONNX path default; accepts ONNX export dirs with `policy.onnx` + `policy.json` + `parity_fixture.safetensors`, or `.pt` checkpoints auto-exported to ONNX before run; legacy Python checkpoint inference only via `--python-checkpoints`; defaults 1024 games / 1024 arena decisions | `python/hydra_learner/hydra_learner/arena_eval.py`, `crates/hydra-model/src/onnx_policy.rs` | Python owns training/export. Rust owns arena/RL inference. |
-| Precision mode dispatch (BF16/AMP) | Omitted `precision_mode` resolves by mode/device: BC CUDA LibTorch defaults to requested `bf16_autocast` / effective `bf16_amp`; explicit `fp32` overrides; CPU omission stays FP32; RL training and DeltaQ promotion hard-error on BF16 | `crates/hydra-train-runtime/src/config.rs`, `crates/hydra-train-runtime/src/config_runtime.rs`, `crates/hydra-train-exec/src/preflight_runtime.rs`, `crates/hydra-train-exec/src/modes.rs`, `crates/hydra-model/src/amp.rs` | BF16 AMP wraps BC forward only. Loss/backward/optimizer/checkpoint/validation remain FP32. No CUDA graph BF16 claim. Proof-only `bf16-autocast-proof` diagnostics are not production plumbing. |
-| Experimental Burn-CUDA backend | Parked probe only: build feature `burn-cuda-probe` plus `--experimental-backend burn-cuda`; BC shards only; FP32 only; no BF16, CUDA graph, LibTorch tensor/optimizer mixing, or optimizer-state sharing | `crates/hydra-train/Cargo.toml`, `crates/hydra-train-exec/src/modes.rs`, `third_party/burn/README.hydra.md` | Feature-gated legacy/debug/advanced path only; not active/default throughput lane. |
-| Runtime truth on drift | current code wins | `docs/GAME_ENGINE.md`, root `AGENTS.md` | Docs aid compat, not stronger than code |
+## Action Semantics
 
-## Crate ownership quick reference
+- Riichi is two-phase: declare riichi, then choose discard.
+- Compact kan bridge uses action `42`.
+- Normal phase maps `42` to `Ankan`; other phases map it to `Daiminkan`.
+- Inbound kan variants collapse to `42`.
+- Compact Hydra action facade is 4-player. Sanma/Kita stays engine-level, not 46-action bridge.
+- Open-kan dora event order follows Tenhou/Mahjong Soul/MJAI: dora before `dahai`. Legacy after-discard order exists only behind `open_kan_dora_after_discard = true`.
 
-| Crate | Owns |
-|---|---|
-| `crates/hydra-engine` | vendored riichi rules engine |
-| `crates/hydra-runtime-types` | shared runtime rails/types |
-| `crates/hydra-safety` | safety rails |
-| `crates/hydra-belief-search` | belief/search primitives |
-| `crates/hydra-encoder` | observation encoder components |
-| `crates/hydra-core` | public runtime bridge, simulator, action/tile API, seeding |
-| `crates/hydra-data-core` | sample DTOs/scoring helpers |
-| `crates/hydra-replay-sidecar` | replay sidecar JSONL contracts |
-| `crates/hydra-replay-loader` | MJAI replay loading/sample conversion |
-| `crates/hydra-sample-cache` | parsed-sample cache format |
-| `crates/hydra-bc-shards` | backend-agnostic BC shard host format |
-| `crates/hydra-train-types` | training scalar coordination types |
-| `crates/hydra-model` | Burn neural model components |
-| `crates/hydra-train-algo` | pure Burn training algorithms/loss math |
-| `crates/hydra-selfplay` | self-play coordination primitives |
-| `crates/hydra-search-labels` | search-label generation |
-| `crates/hydra-train-runtime` | train CLI/config/preflight/probe/status contracts; Python config conversion in `config::python` |
-| `crates/hydra-train-exec` | training execution composition over runtime/model/algo/data crates |
-| `crates/hydra-train` | user-facing training binaries/package marker; bin code is glue |
+## Training Data
 
-## Read next
+- BC shards are compact-only v3.
+- Dense/v2 shard formats hard-error and must be rebuilt from replay.
+- Training API remains `[batch, 192*34]` f32 obs plus `[batch, 46]` legal mask.
+- Shards store replay-fact baseline obs. Advanced/search/Hand-EV tail is absent/zero, not feature-gated.
+- Replay sidecars fail closed on source, version, legal-mask, schema, shape, or provenance mismatch.
+- Missing sidecar replay/action keys mean absent labels. Present-but-mismatched records hard-error.
 
-- Need full runtime explanation? Read `docs/GAME_ENGINE.md`.
-- Need repo routing / trust map? Read `README.md`.
-- Need active-vs-staged status? Read `research/design/HYDRA_RECONCILIATION.md` and `docs/CURRENT_STATUS.md`.
+## Runtime Authority
+
+- `hydra-train` binary is entrypoint glue only.
+- Config/preflight/probe/status contracts live in `hydra-train-runtime`.
+- Python option conversion lives in `hydra-train-runtime::config::python`.
+- Execution composition lives in `hydra-train-exec`.
+- Normal BC runtime and loader authority are YAML-derived.
+- Benchmark/preflight rows are evidence only; operators edit YAML by hand when accepting measured knobs.
+- `example.yaml` is launch/config SSOT for intended training shape.
+
+## Python Training UX
+
+Python run owns run-local:
+
+- `logs/events.jsonl`
+- `logs/train_steps.jsonl`
+- `checkpoints/latest.pt`
+- optional `checkpoints/step_<global_step>.pt`
+- TensorBoard event files
+- `python_learner_result.json`
+- `train.pid` for background runs
+
+TensorBoard scans upward from configured port. Full layout and commands live in [`TRAINING_RUNBOOK.md`](TRAINING_RUNBOOK.md).
+
+## Evaluation And PPO
+
+- Native ONNX arena is default eval/arena path.
+- Inputs: ONNX export dir with `policy.onnx`, `policy.json`, `parity_fixture.safetensors`, or `.pt` checkpoint auto-exported first.
+- Legacy Python checkpoint arena requires `--python-checkpoints`.
+- Python owns training/export. Rust owns arena/RL inference.
+- MahJAX GPU is default T1 PPO rollout route for serial and depth-1 Python PPO.
+- MahJAX replay scanner is experimental validation infra and not GPU-throughput claim.
+
+## Precision And Experimental Backends
+
+- Omitted BC CUDA precision resolves to BF16 AMP when requested/effective by config.
+- Explicit `fp32` overrides.
+- CPU omission stays FP32.
+- RL training and DeltaQ promotion hard-error on BF16.
+- BF16 AMP wraps BC forward only; loss/backward/optimizer/checkpoint/validation remain FP32.
+- Burn-CUDA backend is probe-only: feature `burn-cuda-probe`, FP32, BC shards only. It is not active/default throughput lane.
+
+## Read Next
+
+- Runtime details: [`GAME_ENGINE.md`](GAME_ENGINE.md)
+- Current status: [`CURRENT_STATUS.md`](CURRENT_STATUS.md)
+- Training/operator flow: [`TRAINING_RUNBOOK.md`](TRAINING_RUNBOOK.md)
+- MahJAX PPO scope: [`MAHJAX_PPO.md`](MAHJAX_PPO.md)

@@ -811,7 +811,7 @@ fn deal_next_exhaustive_draw_with_oya_nagashi_keeps_renchan_and_scores() {
     state.mjai_log_per_player = Default::default();
     state.oya = 2;
     state.current_player = 1;
-    state.honba = 0;
+    state.honba = 2;
     state.round_wind = 0;
     state.wall.tile_count = 14;
     state.wall.draw_cursor = 0;
@@ -819,7 +819,7 @@ fn deal_next_exhaustive_draw_with_oya_nagashi_keeps_renchan_and_scores() {
     state.players[1].nagashi_eligible = false;
     state.players[2].nagashi_eligible = true;
 
-    let nagashi_score = crate::score::calculate_score(5, 30, true, true, 0, 3);
+    let nagashi_score = crate::score::calculate_score(5, 30, true, true, state.honba as u32, 3);
 
     state._deal_next();
 
@@ -836,7 +836,7 @@ fn deal_next_exhaustive_draw_with_oya_nagashi_keeps_renchan_and_scores() {
         35000 + 2 * nagashi_score.pay_tsumo_ko as i32
     );
     assert_eq!(state.oya, 2);
-    assert_eq!(state.honba, 1);
+    assert_eq!(state.honba, 3);
     assert_eq!(state.round_wind, 0);
     assert_eq!(state.current_player, 2);
     assert_eq!(state.phase, Phase::WaitAct);
@@ -869,7 +869,7 @@ fn trigger_ryukyoku_nagashi_with_multiple_winners_stacks_payments_and_renchan_de
     state.mjai_log.clear();
     state.mjai_log_per_player = Default::default();
     state.oya = 0;
-    state.honba = 0;
+    state.honba = 2;
     state.round_wind = 0;
     state.players.iter_mut().for_each(|player| {
         player.score = 35_000;
@@ -879,8 +879,8 @@ fn trigger_ryukyoku_nagashi_with_multiple_winners_stacks_payments_and_renchan_de
     state.players[0].nagashi_eligible = true;
     state.players[2].nagashi_eligible = true;
 
-    let oya_nagashi = crate::score::calculate_score(5, 30, true, true, 0, 3);
-    let ko_nagashi = crate::score::calculate_score(5, 30, false, true, 0, 3);
+    let oya_nagashi = crate::score::calculate_score(5, 30, true, true, state.honba as u32, 3);
+    let ko_nagashi = crate::score::calculate_score(5, 30, false, true, state.honba as u32, 3);
 
     state._trigger_ryukyoku("exhaustive_draw");
 
@@ -899,7 +899,7 @@ fn trigger_ryukyoku_nagashi_with_multiple_winners_stacks_payments_and_renchan_de
             + ko_nagashi.pay_tsumo_ko as i32
     );
     assert_eq!(state.oya, 0);
-    assert_eq!(state.honba, 1);
+    assert_eq!(state.honba, 3);
     assert_eq!(state.round_wind, 0);
     let ryukyoku_idx = state
         .mjai_log
@@ -3270,7 +3270,7 @@ fn resolve_discard_clears_stale_kan_state_and_enters_wait_response_for_claims() 
 }
 
 #[test]
-fn resolve_discard_mjsoul_reveals_pending_kan_dora_after_dahai_and_accepts_riichi() {
+fn resolve_discard_mjsoul_reveals_pending_kan_dora_before_dahai_and_accepts_riichi() {
     let mut state = test_state(false);
     state.mjai_log.clear();
     state.mjai_log_per_player = Default::default();
@@ -3339,7 +3339,7 @@ fn resolve_discard_mjsoul_reveals_pending_kan_dora_after_dahai_and_accepts_riich
         .iter()
         .position(|event| event.contains("\"type\":\"reach_accepted\""))
         .expect("riichi acceptance should be logged");
-    assert!(dahai_idx < dora_idx);
+    assert!(dora_idx < dahai_idx);
     assert!(dora_idx < accepted_idx);
 }
 

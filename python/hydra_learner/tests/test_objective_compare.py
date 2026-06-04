@@ -9,16 +9,16 @@ from typing import Any
 import pytest
 import torch
 
-from hydra_learner.ach_step import AchTrainStepConfig
 from hydra_learner.model import ACTION_SPACE, HydraPolicyNet
-from hydra_learner.objective_compare import (
+from hydra_learner.ppo.rl import EntropyController, masked_log_prob
+from hydra_learner.ppo.rollout import PpoRolloutMetadata, load_ppo_rollout_artifact, save_ppo_rollout_artifact
+from hydra_learner.ppo.step import PpoBatch, PpoTrainStepConfig
+from hydra_learner.rl_experiments.ach_step import AchTrainStepConfig
+from hydra_learner.rl_experiments.objective_compare import (
     ObjectiveComparisonConfig,
     append_objective_comparison_metrics_jsonl,
     compare_ppo_and_ach_on_rollout_artifact,
 )
-from hydra_learner.ppo_rollout import PpoRolloutMetadata, load_ppo_rollout_artifact, save_ppo_rollout_artifact
-from hydra_learner.ppo_step import PpoBatch, PpoTrainStepConfig
-from hydra_learner.rl import EntropyController, masked_log_prob
 
 
 def test_compare_runs_ppo_and_ach_same_artifact_initial_weights_json_safe(tmp_path: Path) -> None:

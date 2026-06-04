@@ -124,22 +124,26 @@ validation_gates:
 
 rl: null
 # T1 PPO control example. Uncomment this block, set `stage/run_name`, and set
-# `resume_checkpoint` to the BC checkpoint to seed from. With `run_forever: true`,
+# `resume_checkpoint` to the BC/PPO checkpoint to seed from. With `run_forever: true`,
 # no max step is passed; stop the background process manually.
+#
+# MahJAX GPU is the PPO rollout default. AOT is enabled by default in code
+# (`HYDRA_MAHJAX_AOT=1`); set `HYDRA_MAHJAX_AOT=0` only for diagnostics.
+# Current RTX 5070 long-run shape uses `games_per_batch: 512` to keep VRAM safe
+# while maintaining high rollout GPU utilization.
 # rl:
 #   phase: ppo_control
 #   run_forever: true
-#   games_per_batch: 1024
+#   games_per_batch: 512
 #   microbatch_size: 768
 #   temperature: 1.0
-#   learning_rate: 0.000025
-#   rollout_inference: torch-callback
-#   # Experimental update-level overlap. Default 0 preserves serial PPO.
-#   ppo_pipeline_depth: 0
-#   # Optional rollout device for process pipeline child. Unset means train `device`.
-#   # Use `cpu` to avoid same-GPU child OOM on 12GB cards, slower rollout expected.
-#   # Prefer a second GPU such as `cuda:1` when available.
-#   # ppo_rollout_device: cpu
-#   bc_kl_reverse_coef: 0.01
-#   lr_warmup_samples: 250000
+#   learning_rate: 0.0001
+#   min_learning_rate: 0.000001
+#   rollout_inference: mahjax-gpu
+#   ppo_pipeline_depth: 1
+#   # MahJAX runs in-process on the training CUDA device; leave rollout device unset.
+#   # ppo_rollout_device: null
+#   bc_kl_reverse_coef: 0.0
+#   lr_warmup_samples: 0
 #   lr_decay_samples: null
+#   target_kl: 0.005

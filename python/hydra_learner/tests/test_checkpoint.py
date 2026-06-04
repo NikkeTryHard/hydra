@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 import torch
 
-from hydra_learner.checkpoint import (
+from hydra_learner.checkpointing.core import (
     EmaConfig,
     ModelConfig,
     OptimizerConfig,
@@ -20,7 +20,6 @@ from hydra_learner.checkpoint import (
     save_checkpoint,
     target_contract_from_manifest,
 )
-from hydra_learner.losses import LossWeights
 from hydra_learner.model import (
     BACKBONE_PROFILE_CONVNEXT_TILE_K7,
     BACKBONE_PROFILE_GLOBAL_POOL_BIAS,
@@ -30,6 +29,7 @@ from hydra_learner.model import (
     RESIDUAL_PROFILE_RELU_SE,
     HydraPolicyNet,
 )
+from hydra_learner.model.losses import LossWeights
 
 
 def test_save_load_restores_model_params_exactly(tmp_path: Path) -> None:
@@ -175,6 +175,69 @@ def test_load_checkpoint_returns_raw_mjai_progress(tmp_path: Path) -> None:
     assert state.global_step == 7
     assert state.samples_seen == 14
     assert state.raw_mjai_progress == progress
+
+
+def test_load_checkpoint_ignores_nested_raw_mjai_progress_metadata(tmp_path: Path) -> None:
+    model, optimizer = _model_optimizer()
+    ckpt = tmp_path / "ckpt.pt"
+    manifest = _write_manifest(tmp_path, b"manifest-a")
+    save_checkpoint(
+        ckpt,
+        model=model,
+        optimizer=optimizer,
+        model_config=_model_config(),
+        optimizer_config=_optimizer_config(),
+        runtime_config=_runtime_config(),
+        loss_weights=LossWeights(),
+        manifest_path=manifest,
+        global_step=7,
+        samples_seen=14,
+        raw_mjai_progress={"completed_games": 12, "latest_snapshot": {"snapshot_id": "abc"}},
+    )
+    loaded_model, loaded_optimizer = _model_optimizer()
+    state = load_checkpoint(
+        ckpt,
+        model=loaded_model,
+        optimizer=loaded_optimizer,
+        expected_model_config=_model_config(),
+        expected_optimizer_config=_optimizer_config(),
+        expected_runtime_config=_runtime_config(),
+        expected_loss_weights=LossWeights(),
+        expected_manifest_path=manifest,
+    )
+
+    assert state.raw_mjai_progress == {"completed_games": 12}
+
+
+def test_load_checkpoint_rejects_non_integer_raw_mjai_progress_counter(tmp_path: Path) -> None:
+    model, optimizer = _model_optimizer()
+    ckpt = tmp_path / "ckpt.pt"
+    manifest = _write_manifest(tmp_path, b"manifest-a")
+    save_checkpoint(
+        ckpt,
+        model=model,
+        optimizer=optimizer,
+        model_config=_model_config(),
+        optimizer_config=_optimizer_config(),
+        runtime_config=_runtime_config(),
+        loss_weights=LossWeights(),
+        manifest_path=manifest,
+        global_step=7,
+        samples_seen=14,
+        raw_mjai_progress={"completed_games": "12"},
+    )
+    loaded_model, loaded_optimizer = _model_optimizer()
+    with pytest.raises(ValueError, match="completed_games"):
+        load_checkpoint(
+            ckpt,
+            model=loaded_model,
+            optimizer=loaded_optimizer,
+            expected_model_config=_model_config(),
+            expected_optimizer_config=_optimizer_config(),
+            expected_runtime_config=_runtime_config(),
+            expected_loss_weights=LossWeights(),
+            expected_manifest_path=manifest,
+        )
 
 
 def test_save_load_restores_ema_state_exactly(tmp_path: Path) -> None:

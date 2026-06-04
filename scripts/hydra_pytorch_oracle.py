@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PACKAGE = ROOT / "python" / "hydra_learner"
+PACKAGE = ROOT / "python" / "hydra_learner" / "src"
 sys.path.insert(0, str(PACKAGE))
 
 from hydra_learner.cli import main

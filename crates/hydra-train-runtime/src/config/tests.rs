@@ -1068,8 +1068,10 @@ fn python_options_from_config_rejects_unsupported_advanced_modes() {
 #[test]
 fn python_ppo_control_options_from_config_maps_campaign_root_to_default_ppo_run_dir() {
     let mut config = python_guard_config();
+    let root = unique_temp_dir("ppo-resume-latest");
     config.rl = Some(RlTrainConfig::default());
     config.python_backbone_profile = PythonBackboneProfileConfig::Conv2dLocal3;
+    config.output_dir = root.clone();
     config.resume_checkpoint = Some(PathBuf::from("/tmp/bc/checkpoints/latest.pt"));
     config.rl.as_mut().expect("rl config").microbatch_size = Some(321);
 
@@ -1078,15 +1080,26 @@ fn python_ppo_control_options_from_config_maps_campaign_root_to_default_ppo_run_
 
     assert_eq!(
         options.output_dir,
-        PathBuf::from("/tmp/out/stages/T1_ppo_control/runs/latest_run")
+        root.join("stages/T1_ppo_control/runs/latest_run")
     );
     assert_eq!(options.microbatch_size, 321);
     assert_eq!(options.ppo_pipeline_depth, 0);
     assert_eq!(options.rollout_device, None);
+    assert_eq!(options.rollout_inference, "mahjax-gpu");
+    assert_eq!(options.resume, None);
+    let latest = root.join("stages/T1_ppo_control/runs/latest_run/checkpoints/latest.pt");
+    std::fs::create_dir_all(latest.parent().expect("latest has parent"))
+        .expect("checkpoint dir should write");
+    std::fs::write(&latest, b"checkpoint").expect("latest checkpoint should write");
+    config.resume_latest = true;
+    let options = python_ppo_control_options_from_config(&config)
+        .expect("PPO control resume_latest should route to Python");
+    assert_eq!(options.resume, Some(latest));
     config.rl.as_mut().expect("rl config").ppo_pipeline_depth = Some(1);
     let options = python_ppo_control_options_from_config(&config)
         .expect("PPO control pipeline depth should route to Python");
     assert_eq!(options.ppo_pipeline_depth, 1);
+    assert_eq!(options.rollout_inference, "mahjax-gpu");
     config.rl.as_mut().expect("rl config").ppo_rollout_device = Some("cpu".to_string());
     let options = python_ppo_control_options_from_config(&config)
         .expect("PPO control rollout device should route to Python");

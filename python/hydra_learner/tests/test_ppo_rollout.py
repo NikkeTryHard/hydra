@@ -3,38 +3,65 @@ from __future__ import annotations
 import hashlib
 import json
 import random
-import subprocess
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Literal, cast, override
+from types import SimpleNamespace
+from typing import Any, Literal, Protocol, cast, override
 
 import numpy as np
 import pytest
 import torch
+from tests.fixtures import (
+    TINY_CHECKPOINT_CONFIG_DIGEST,
+    tiny_checkpoint_ppo_control_config,
+    tiny_ppo_rollout,
+    tiny_run_local_paths,
+)
 
+import hydra_learner.mahjax.ppo_rollout as mahjax_rollout
 from hydra_learner import ppo_control
-from hydra_learner.checkpoint import (
+from hydra_learner.checkpointing.core import (
     ModelConfig,
     OptimizerConfig,
     RuntimeConfig,
     load_checkpoint_init_only,
 )
-from hydra_learner.losses import LossWeights
+from hydra_learner.mahjax import observation as mahjax_observation_adapter
+from hydra_learner.mahjax.ppo_rollout import (
+    _completion_sync_interval,
+    _configure_jax_compilation_cache,
+    _final_score_metrics,
+    _jax_compilation_cache_dir,
+    _parts_to_batch,
+    _RowPart,
+    _use_jax_aot,
+)
+from hydra_learner.mahjax.ppo_rollout import _gae_for_slots as _mahjax_gae_for_slots
 from hydra_learner.model import ACTION_SPACE, HydraPolicyNet
-from hydra_learner.ppo_control_config import (
+from hydra_learner.model.losses import LossWeights
+from hydra_learner.ppo.config import (
     PpoControlConfig,
     _compatible_resume_config_digests,
     _config_digest,
     _json_config,
+    parse_args,
+    validate_args,
 )
-from hydra_learner.ppo_control_rollout import (
+from hydra_learner.ppo.control_rollout import (
     _batch_from_native_payload_fast,
     _batch_to_device,
     _make_ppo_inference_callback,
     _terminal_gae_from_cpu_values,
 )
-from hydra_learner.ppo_rollout import (
+from hydra_learner.ppo.rl import (
+    EntropyController,
+    PlayerDecisionStep,
+    compute_player_local_gae,
+    masked_log_prob,
+    masked_log_softmax,
+)
+from hydra_learner.ppo.rollout import (
     PpoRolloutMetadata,
     PpoSnapshotMetadata,
     append_ppo_metrics_jsonl,
@@ -47,22 +74,505 @@ from hydra_learner.ppo_rollout import (
     save_ppo_training_checkpoint,
     train_step_from_rollout_artifact,
 )
-from hydra_learner.ppo_smoke import (
+from hydra_learner.ppo.smoke import (
     RustDecisionRow,
     RustGameRollout,
     build_ppo_batch_from_rust_rollout,
-    load_rust_game_rollout_json,
     write_ppo_smoke_rollout_artifact,
 )
-from hydra_learner.ppo_step import PpoBatch, PpoTrainStepConfig
-from hydra_learner.reward_shaping import default_reward_shaping_metadata
-from hydra_learner.rl import (
-    EntropyController,
-    PlayerDecisionStep,
-    compute_player_local_gae,
-    masked_log_prob,
-    masked_log_softmax,
-)
+from hydra_learner.ppo.step import PpoBatch, PpoTrainStepConfig, ppo_train_step
+from hydra_learner.rl_experiments.reward_shaping import default_reward_shaping_metadata
+
+
+class _DebugPpoInferenceCallback(Protocol):
+    _timings: MutableMapping[str, float]
+
+    def __call__(self, obs_f32_le: bytearray, *args: object) -> object: ...
+
+    def _packed_buffer_ptr(self) -> int: ...
+
+    def _packed_capacity(self) -> int: ...
+
+
+def _debug_ppo_callback(callback: Callable[..., object]) -> _DebugPpoInferenceCallback:
+    return cast("_DebugPpoInferenceCallback", callback)
+
+
+def _minimal_valid_ppo_batch(rows: int = 2) -> PpoBatch:
+    legal_mask = torch.ones(rows, ACTION_SPACE, dtype=torch.bool)
+    return PpoBatch(
+        obs=torch.zeros(rows, 192, 34),
+        actions=torch.zeros(rows, dtype=torch.int64),
+        legal_mask=legal_mask,
+        old_logprob=torch.zeros(rows),
+        value_old=torch.zeros(rows),
+        raw_advantages=torch.zeros(rows),
+        returns=torch.zeros(rows),
+        bc_logits=torch.zeros(rows, ACTION_SPACE),
+        legal_count=legal_mask.sum(dim=1).to(torch.int64),
+    )
+
+
+def test_ppo_rollout_inference_accepts_opt_in_mahjax_gpu(tmp_path: Path) -> None:
+    init_checkpoint = tmp_path / "init.pt"
+    init_checkpoint.write_bytes(b"checkpoint")
+    args = parse_args(
+        [
+            "--init-checkpoint",
+            str(init_checkpoint),
+            "--out",
+            str(tmp_path / "out"),
+            "--steps",
+            "1",
+            "--device",
+            "cpu",
+            "--hidden",
+            "8",
+            "--blocks",
+            "1",
+            "--bottleneck",
+            "4",
+            "--residual-profile",
+            "tiny",
+            "--backbone-profile",
+            "conv2d_local3",
+            "--conv-memory-format",
+            "contiguous",
+            "--rollout-inference",
+            "mahjax-gpu",
+        ]
+    )
+
+    config = validate_args(args)
+
+    assert config.rollout_inference == "mahjax-gpu"
+
+
+def test_ppo_rollout_inference_defaults_to_mahjax_gpu_for_serial_ppo(tmp_path: Path) -> None:
+    init_checkpoint = tmp_path / "init.pt"
+    init_checkpoint.write_bytes(b"checkpoint")
+    args = parse_args(
+        [
+            "--init-checkpoint",
+            str(init_checkpoint),
+            "--out",
+            str(tmp_path / "out"),
+            "--steps",
+            "1",
+            "--device",
+            "cpu",
+            "--hidden",
+            "8",
+            "--blocks",
+            "1",
+            "--bottleneck",
+            "4",
+            "--residual-profile",
+            "tiny",
+            "--backbone-profile",
+            "conv2d_local3",
+            "--conv-memory-format",
+            "contiguous",
+        ]
+    )
+
+    config = validate_args(args)
+
+    assert config.rollout_inference == "mahjax-gpu"
+
+
+def test_ppo_rollout_inference_defaults_to_mahjax_gpu_for_pipeline_ppo(tmp_path: Path) -> None:
+    init_checkpoint = tmp_path / "init.pt"
+    init_checkpoint.write_bytes(b"checkpoint")
+    args = parse_args(
+        [
+            "--init-checkpoint",
+            str(init_checkpoint),
+            "--out",
+            str(tmp_path / "out"),
+            "--steps",
+            "1",
+            "--device",
+            "cpu",
+            "--hidden",
+            "8",
+            "--blocks",
+            "1",
+            "--bottleneck",
+            "4",
+            "--residual-profile",
+            "tiny",
+            "--backbone-profile",
+            "conv2d_local3",
+            "--conv-memory-format",
+            "contiguous",
+            "--ppo-pipeline-depth",
+            "1",
+        ]
+    )
+    config = validate_args(args)
+
+    assert config.rollout_inference == "mahjax-gpu"
+
+
+def test_mahjax_gpu_default_keeps_observation_contract_unblocked(tmp_path: Path) -> None:
+    init_checkpoint = tmp_path / "init.pt"
+    init_checkpoint.write_bytes(b"checkpoint")
+    args = parse_args(
+        [
+            "--init-checkpoint",
+            str(init_checkpoint),
+            "--out",
+            str(tmp_path / "out"),
+            "--steps",
+            "1",
+            "--device",
+            "cpu",
+            "--hidden",
+            "8",
+            "--blocks",
+            "1",
+            "--bottleneck",
+            "4",
+            "--residual-profile",
+            "tiny",
+            "--backbone-profile",
+            "conv2d_local3",
+            "--conv-memory-format",
+            "contiguous",
+        ]
+    )
+    config = validate_args(args)
+
+    assert mahjax_observation_adapter.MAHJAX_DEFAULT_BLOCKED_CHANNELS == ()
+    assert config.rollout_inference == "mahjax-gpu"
+
+
+def test_ppo_rollout_inference_accepts_mahjax_gpu_pipeline(tmp_path: Path) -> None:
+    init_checkpoint = tmp_path / "init.pt"
+    init_checkpoint.write_bytes(b"checkpoint")
+    args = parse_args(
+        [
+            "--init-checkpoint",
+            str(init_checkpoint),
+            "--out",
+            str(tmp_path / "out"),
+            "--steps",
+            "1",
+            "--device",
+            "cpu",
+            "--hidden",
+            "8",
+            "--blocks",
+            "1",
+            "--bottleneck",
+            "4",
+            "--residual-profile",
+            "tiny",
+            "--backbone-profile",
+            "conv2d_local3",
+            "--conv-memory-format",
+            "contiguous",
+            "--rollout-inference",
+            "mahjax-gpu",
+            "--ppo-pipeline-depth",
+            "1",
+        ]
+    )
+
+    config = validate_args(args)
+
+    assert config.rollout_inference == "mahjax-gpu"
+    assert config.ppo_pipeline_depth == 1
+
+
+def test_ppo_collect_rollout_dispatches_mahjax_gpu_without_onnx_or_arena(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    init_checkpoint = tmp_path / "init.pt"
+    init_checkpoint.write_bytes(b"checkpoint")
+    config = replace(
+        _ppo_control_config(tmp_path, init_checkpoint, steps=1, pipeline_depth=0), rollout_inference="mahjax-gpu"
+    )
+    batch = _minimal_valid_ppo_batch()
+    seen: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        ppo_control,
+        "export_loaded_policy",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("onnx export called")),
+    )
+    monkeypatch.setattr(
+        ppo_control,
+        "_collect_native_rollout",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("native arena called")),
+    )
+    monkeypatch.setattr(
+        ppo_control,
+        "_collect_callback_rollout",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("callback arena called")),
+    )
+
+    def fake_mahjax_collect(**kwargs: object) -> object:
+        seen.update(kwargs)
+        return SimpleNamespace(
+            batch=batch,
+            timing={"mahjax_total_ms": 1.0},
+            row_count=batch.obs.shape[0],
+            metrics={"episode_reward_mean": 0.25},
+        )
+
+    monkeypatch.setattr(ppo_control, "collect_mahjax_ppo_rollout", fake_mahjax_collect)
+
+    result = ppo_control._collect_rollout_batch(
+        config=config,
+        config_digest="digest",
+        model_config=_model_config(),
+        extension=None,
+        export_dir=tmp_path / "exports",
+        model=HydraPolicyNet(hidden=8, blocks=1, bottleneck=4),
+        global_step=3,
+        samples_seen=11,
+        completed_games=5,
+    )
+
+    assert seen["seed"] == 12
+    assert result.snapshot.inference_backend == "mahjax-gpu"
+    assert result.payload["snapshot_metadata"] == result.snapshot.to_payload()
+    assert result.batch is batch
+    assert result.outcome_metrics == {"episode_reward_mean": 0.25}
+
+
+def test_mahjax_final_score_metrics_report_seat_outcomes() -> None:
+    metrics = _final_score_metrics(torch.tensor([[35000, 25000, 15000, 5000], [5000, 15000, 25000, 35000]]))
+
+    assert metrics["episode_score_mean"] == 20000.0
+    assert metrics["episode_reward_mean"] == pytest.approx(0.0, abs=1.0e-7)
+    assert metrics["seat0_first_rate"] == 0.5
+    assert metrics["seat0_last_rate"] == 0.5
+    assert metrics["seat3_first_rate"] == 0.5
+    assert metrics["seat3_last_rate"] == 0.5
+
+
+def test_mahjax_rollout_batch_does_not_require_native_extension(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    init_checkpoint = tmp_path / "init.pt"
+    init_checkpoint.write_bytes(b"checkpoint")
+    config = replace(
+        _ppo_control_config(tmp_path, init_checkpoint, steps=1, pipeline_depth=0), rollout_inference="mahjax-gpu"
+    )
+    batch = _minimal_valid_ppo_batch()
+
+    monkeypatch.setattr(
+        ppo_control,
+        "_load_extension",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("native extension loaded")),
+    )
+    monkeypatch.setattr(
+        ppo_control,
+        "default_arena_pyo3_library_path",
+        lambda: (_ for _ in ()).throw(AssertionError("arena path resolved")),
+    )
+    monkeypatch.setattr(
+        ppo_control,
+        "collect_mahjax_ppo_rollout",
+        lambda **_kwargs: SimpleNamespace(
+            batch=batch, timing={"mahjax_total_ms": 1.0}, row_count=batch.obs.shape[0], metrics={}
+        ),
+    )
+
+    result = ppo_control._collect_rollout_batch(
+        config=config,
+        config_digest="digest",
+        model_config=_model_config(),
+        extension=None,
+        export_dir=tmp_path / "exports",
+        model=HydraPolicyNet(hidden=8, blocks=1, bottleneck=4),
+        global_step=3,
+        samples_seen=11,
+        completed_games=5,
+    )
+
+    assert result.batch is batch
+    assert result.snapshot.inference_backend == "mahjax-gpu"
+    assert result.payload["snapshot_metadata"] == result.snapshot.to_payload()
+
+
+def test_mahjax_compilation_cache_uses_env_or_local_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HYDRA_MAHJAX_JAX_CACHE_DIR", raising=False)
+    assert _jax_compilation_cache_dir() == "local/jax_cache/mahjax_ppo"
+
+    cache_dir = tmp_path / "jax-cache"
+    monkeypatch.setenv("HYDRA_MAHJAX_JAX_CACHE_DIR", str(cache_dir))
+    assert _jax_compilation_cache_dir() == str(cache_dir)
+
+
+def test_mahjax_aot_toggle_defaults_on_and_accepts_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HYDRA_MAHJAX_AOT", raising=False)
+    assert _use_jax_aot()
+
+    monkeypatch.setenv("HYDRA_MAHJAX_AOT", "0")
+    assert not _use_jax_aot()
+
+    monkeypatch.setenv("HYDRA_MAHJAX_AOT", "false")
+    assert not _use_jax_aot()
+
+    monkeypatch.setenv("HYDRA_MAHJAX_AOT", "on")
+    assert _use_jax_aot()
+
+
+def test_mahjax_aot_toggle_rejects_unknown_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HYDRA_MAHJAX_AOT", "maybe")
+
+    with pytest.raises(ValueError, match="HYDRA_MAHJAX_AOT"):
+        _use_jax_aot()
+
+
+def test_mahjax_compilation_cache_configures_once_and_ignores_optional_xla_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache_dir = tmp_path / "jax-cache"
+    updates: list[tuple[str, object]] = []
+
+    class FakeConfig:
+        def update(self, name: str, value: object) -> None:
+            updates.append((name, value))
+            if name == "jax_persistent_cache_enable_xla_caches":
+                raise ValueError("unsupported option")
+
+    fake_jax = SimpleNamespace(config=FakeConfig())
+    monkeypatch.setenv("HYDRA_MAHJAX_JAX_CACHE_DIR", str(cache_dir))
+    monkeypatch.setattr(mahjax_rollout, "_JAX_COMPILATION_CACHE_CONFIGURED_DIR", [])
+
+    _configure_jax_compilation_cache(fake_jax)
+    _configure_jax_compilation_cache(fake_jax)
+
+    assert cache_dir.is_dir()
+    assert updates == [
+        ("jax_compilation_cache_dir", str(cache_dir)),
+        ("jax_persistent_cache_min_compile_time_secs", 0),
+        ("jax_persistent_cache_min_entry_size_bytes", -1),
+        ("jax_persistent_cache_enable_xla_caches", "xla_gpu_per_fusion_autotune_cache_dir"),
+    ]
+
+
+def test_mahjax_compilation_cache_rejects_runtime_cache_dir_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FakeConfig:
+        def update(self, name: str, value: object) -> None:
+            pass
+
+    fake_jax = SimpleNamespace(config=FakeConfig())
+    first_cache_dir = tmp_path / "first-jax-cache"
+    monkeypatch.setattr(mahjax_rollout, "_JAX_COMPILATION_CACHE_CONFIGURED_DIR", [])
+    monkeypatch.setenv("HYDRA_MAHJAX_JAX_CACHE_DIR", str(first_cache_dir))
+    _configure_jax_compilation_cache(fake_jax)
+
+    monkeypatch.setenv("HYDRA_MAHJAX_JAX_CACHE_DIR", str(tmp_path / "second-jax-cache"))
+    with pytest.raises(ValueError, match="cannot change"):
+        _configure_jax_compilation_cache(fake_jax)
+
+
+def test_mahjax_slot_gae_matches_reference() -> None:
+    player_ids = torch.tensor([0, 1, 0, 2, 3, 1, 2, 3, 0, 1], dtype=torch.int64)
+    game_ids = torch.tensor([0, 0, 0, 0, 0, 0, 1, 1, 0, 1], dtype=torch.int64)
+    values = torch.tensor([0.2, -0.1, 0.4, 0.05, -0.2, 0.3, 0.1, -0.4, 0.0, 0.25], dtype=torch.float32)
+    final_scores = torch.tensor([[35000, 28000, 22000, 15000], [24000, 42000, 18000, 16000]], dtype=torch.int32)
+
+    actual_adv, actual_returns = _mahjax_gae_for_slots(
+        player_id=player_ids,
+        value_old=values,
+        game_id=game_ids,
+        final_scores=final_scores,
+        device=torch.device("cpu"),
+    )
+    expected_adv = torch.empty_like(values)
+    expected_returns = torch.empty_like(values)
+    for slot in (0, 1):
+        indices = [index for index, game in enumerate(game_ids.tolist()) if game == slot]
+        scores = final_scores[slot].tolist()
+        ordered = sorted(range(4), key=lambda player: (-scores[player], player))
+        placements = [0, 0, 0, 0]
+        for rank, player in enumerate(ordered):
+            placements[player] = rank
+        gae = compute_player_local_gae(
+            [PlayerDecisionStep(player_id=int(player_ids[index]), value_old=float(values[index])) for index in indices],
+            final_placements=placements,
+        )
+        expected_adv[indices] = gae.raw_advantages
+        expected_returns[indices] = gae.returns
+
+    torch.testing.assert_close(actual_adv, expected_adv)
+    torch.testing.assert_close(actual_returns, expected_returns)
+
+
+def test_mahjax_parts_to_batch_uses_detached_slot_game_ids_for_gae() -> None:
+    model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
+    snapshot = _snapshot_metadata()
+    legal_mask = torch.ones(4, ACTION_SPACE, dtype=torch.bool)
+    values = torch.tensor([0.2, -0.1, 0.4, 0.05], dtype=torch.float32)
+    final_scores = torch.tensor([[35000, 28000, 22000, 15000], [24000, 42000, 18000, 16000]], dtype=torch.int32)
+    game_ids = torch.tensor([0, 1, 0, 1], dtype=torch.int64)
+    player_ids = torch.tensor([0, 1, 2, 3], dtype=torch.int64)
+    part = _RowPart(
+        obs=torch.zeros(4, 192, 34, dtype=torch.float32),
+        legal_mask=legal_mask,
+        action=torch.tensor([0, 1, 2, 3], dtype=torch.int64),
+        old_logprob=torch.zeros(4, dtype=torch.float32),
+        value_old=values,
+        logits=torch.zeros(4, ACTION_SPACE, dtype=torch.float32),
+        player_id=player_ids,
+        game_id=game_ids,
+        turn=torch.tensor([0, 0, 1, 1], dtype=torch.int64),
+    )
+
+    batch = _parts_to_batch([part], final_scores=final_scores, model=model, snapshot_metadata=snapshot)
+    expected_adv, expected_returns = _mahjax_gae_for_slots(
+        player_id=player_ids,
+        value_old=values,
+        game_id=game_ids,
+        final_scores=final_scores,
+        device=torch.device("cpu"),
+    )
+
+    torch.testing.assert_close(batch.game_id, game_ids)
+    torch.testing.assert_close(batch.seat_id, player_ids)
+    torch.testing.assert_close(batch.raw_advantages, expected_adv)
+    torch.testing.assert_close(batch.returns, expected_returns)
+
+
+def test_mahjax_parts_to_batch_releases_row_parts_after_finalize() -> None:
+    model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
+    snapshot = _snapshot_metadata()
+    legal_mask = torch.ones(2, ACTION_SPACE, dtype=torch.bool)
+    obs = torch.zeros(2, 192, 34, dtype=torch.float32)
+    logits = torch.zeros(2, ACTION_SPACE, dtype=torch.float32)
+    parts = [
+        _RowPart(
+            obs=obs,
+            legal_mask=legal_mask,
+            action=torch.tensor([0, 1], dtype=torch.int64),
+            old_logprob=torch.zeros(2, dtype=torch.float32),
+            value_old=torch.tensor([0.2, -0.1], dtype=torch.float32),
+            logits=logits,
+            player_id=torch.tensor([0, 1], dtype=torch.int64),
+            game_id=torch.tensor([0, 0], dtype=torch.int64),
+            turn=torch.tensor([0, 1], dtype=torch.int64),
+        )
+    ]
+
+    batch = _parts_to_batch(
+        parts,
+        final_scores=torch.tensor([[35000, 28000, 22000, 15000]], dtype=torch.int32),
+        model=model,
+        snapshot_metadata=snapshot,
+    )
+
+    assert parts == []
+    assert batch.obs.data_ptr() != obs.data_ptr()
+    assert batch.bc_logits.data_ptr() != logits.data_ptr()
 
 
 def test_terminal_gae_fast_path_matches_reference() -> None:
@@ -350,6 +860,18 @@ def test_native_binary_legal_only_payload_reconstructs_masked_logits_and_validat
     torch.testing.assert_close(batch.old_logprob, old_logprob)
 
 
+def test_mahjax_completion_sync_interval_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HYDRA_MAHJAX_COMPLETION_SYNC_INTERVAL", raising=False)
+    assert _completion_sync_interval() == 32
+
+    monkeypatch.setenv("HYDRA_MAHJAX_COMPLETION_SYNC_INTERVAL", "64")
+    assert _completion_sync_interval() == 64
+
+    monkeypatch.setenv("HYDRA_MAHJAX_COMPLETION_SYNC_INTERVAL", "0")
+    with pytest.raises(ValueError, match="must be positive"):
+        _completion_sync_interval()
+
+
 def test_native_binary_legal_only_payload_rejects_bad_length() -> None:
     row_count = 1
     obs = torch.zeros(row_count, 192, 34, dtype=torch.float32)
@@ -584,7 +1106,7 @@ def test_native_payload_path_preserves_snapshot_metadata() -> None:
 def test_ppo_inference_callback_returns_packed_reusable_memoryview() -> None:
     torch.manual_seed(83)
     model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
-    callback = _make_ppo_inference_callback(model, torch.device("cpu"), initial_capacity=3)
+    callback = _debug_ppo_callback(_make_ppo_inference_callback(model, torch.device("cpu"), initial_capacity=3))
     obs = torch.randn(3, 192, 34, dtype=torch.float32)
 
     packed = callback(bytearray(obs.numpy().tobytes()), obs.shape[0])
@@ -594,7 +1116,7 @@ def test_ppo_inference_callback_returns_packed_reusable_memoryview() -> None:
     assert packed_array.shape == (3, ACTION_SPACE + 1)
     assert packed_array.dtype == np.float32
     assert packed_array.flags.c_contiguous
-    timings = callback._timings  # type: ignore[attr-defined]
+    timings = callback._timings
     assert timings["callback_obs_h2d_ms"] >= 0.0
     assert timings["callback_forward_ms"] >= 0.0
     assert timings["callback_d2h_pack_ms"] >= 0.0
@@ -605,22 +1127,22 @@ def test_ppo_inference_callback_returns_packed_reusable_memoryview() -> None:
     np.testing.assert_allclose(packed_array[:, :ACTION_SPACE], expected_logits.numpy(), rtol=0.0, atol=0.0)
     np.testing.assert_allclose(packed_array[:, ACTION_SPACE], expected_values.reshape(3).numpy(), rtol=0.0, atol=0.0)
 
-    initial_ptr = callback._packed_buffer_ptr()  # type: ignore[attr-defined]
-    initial_capacity = callback._packed_capacity()  # type: ignore[attr-defined]
+    initial_ptr = callback._packed_buffer_ptr()
+    initial_capacity = callback._packed_capacity()
     callback(bytearray(obs[:2].numpy().tobytes()), 2)
-    assert callback._packed_buffer_ptr() == initial_ptr  # type: ignore[attr-defined]
-    assert callback._packed_capacity() == initial_capacity  # type: ignore[attr-defined]
+    assert callback._packed_buffer_ptr() == initial_ptr
+    assert callback._packed_capacity() == initial_capacity
 
     larger_obs = torch.randn(5, 192, 34, dtype=torch.float32)
     callback(bytearray(larger_obs.numpy().tobytes()), 5)
-    assert callback._packed_capacity() == 5  # type: ignore[attr-defined]
-    assert callback._packed_buffer_ptr() != initial_ptr  # type: ignore[attr-defined]
+    assert callback._packed_capacity() == 5
+    assert callback._packed_buffer_ptr() != initial_ptr
 
 
 def test_ppo_inference_callback_returns_legal_only_packed_memoryview() -> None:
     torch.manual_seed(84)
     model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
-    callback = _make_ppo_inference_callback(model, torch.device("cpu"), initial_capacity=1)
+    callback = _debug_ppo_callback(_make_ppo_inference_callback(model, torch.device("cpu"), initial_capacity=1))
     obs = torch.randn(2, 192, 34, dtype=torch.float32)
     legal_mask = torch.zeros(2, ACTION_SPACE, dtype=torch.uint8)
     legal_mask[0, [0, 3, 5]] = 1
@@ -631,7 +1153,7 @@ def test_ppo_inference_callback_returns_legal_only_packed_memoryview() -> None:
 
     packed_array = np.frombuffer(packed, dtype=np.float32)
     assert packed_array.shape == (7,)
-    timings = callback._timings  # type: ignore[attr-defined]
+    timings = callback._timings
     assert timings["callback_legal_gather_ms"] >= 0.0
     assert timings["callback_legal_d2h_pack_ms"] >= 0.0
     assert timings["callback_d2h_pack_ms"] >= timings["callback_legal_d2h_pack_ms"]
@@ -863,6 +1385,42 @@ def test_noop_artifact_has_near_zero_bc_kl_and_no_policy_drift(tmp_path: Path) -
     json.dumps(result.metrics, allow_nan=False)
 
 
+def test_ppo_zero_bc_kl_skips_bad_reference_logits() -> None:
+    torch.manual_seed(371)
+    model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1.0e-3, weight_decay=0.0)
+    batch = _batch_from_model(model, raw_advantages=torch.tensor([0.5, -0.25], dtype=torch.float32))
+    batch = replace(batch, bc_logits=torch.full_like(batch.bc_logits, torch.nan))
+
+    result = ppo_train_step(
+        model=model,
+        optimizer=optimizer,
+        batch=batch,
+        entropy_controller=EntropyController(alpha=0.0, beta=0.0, alpha_max=0.0),
+        config=PpoTrainStepConfig(value_coef=0.0, bc_kl_reverse_coef=0.0, grad_clip_norm=None),
+    )
+
+    assert result.metrics["bc_kl_reverse"] == pytest.approx(0.0)
+    json.dumps(result.metrics, allow_nan=False)
+
+
+def test_ppo_positive_bc_kl_still_validates_reference_logits() -> None:
+    torch.manual_seed(372)
+    model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1.0e-3, weight_decay=0.0)
+    batch = _batch_from_model(model, raw_advantages=torch.tensor([0.5, -0.25], dtype=torch.float32))
+    batch = replace(batch, bc_logits=torch.full_like(batch.bc_logits, torch.nan))
+
+    with pytest.raises(ValueError, match="bc_logits"):
+        ppo_train_step(
+            model=model,
+            optimizer=optimizer,
+            batch=batch,
+            entropy_controller=EntropyController(alpha=0.0, beta=0.0, alpha_max=0.0),
+            config=PpoTrainStepConfig(value_coef=0.0, bc_kl_reverse_coef=0.01, grad_clip_norm=None),
+        )
+
+
 def test_append_ppo_metrics_jsonl_strict_two_rows(tmp_path: Path) -> None:
     path = tmp_path / "logs" / "ppo.jsonl"
     append_ppo_metrics_jsonl(path, {"b": 2.0, "a": {"x": 1}})
@@ -967,7 +1525,7 @@ def test_checkpoint_smoke_after_artifact_train_step_init_only_reload(tmp_path: P
 def test_ppo_rollout_smoke_artifact_update_metrics_checkpoint_and_init_reload(tmp_path: Path) -> None:
     torch.manual_seed(61)
     model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
-    rollout = _real_rust_rollout_fixture(tmp_path)
+    rollout = _tiny_rust_rollout_fixture()
     artifact_path = tmp_path / "ppo-rollout.pt"
 
     artifact_result = write_ppo_smoke_rollout_artifact(artifact_path, rollout, model=model, torch_seed=1234)
@@ -1053,7 +1611,7 @@ def test_ppo_rollout_smoke_artifact_is_deterministic_for_same_seed_and_model(tmp
     first_model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
     second_model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
     second_model.load_state_dict(first_model.state_dict())
-    rollout = _real_rust_rollout_fixture(tmp_path)
+    rollout = _tiny_rust_rollout_fixture()
 
     first = write_ppo_smoke_rollout_artifact(tmp_path / "first.pt", rollout, model=first_model, torch_seed=99).batch
     second = write_ppo_smoke_rollout_artifact(tmp_path / "second.pt", rollout, model=second_model, torch_seed=99).batch
@@ -1062,10 +1620,10 @@ def test_ppo_rollout_smoke_artifact_is_deterministic_for_same_seed_and_model(tmp
         torch.testing.assert_close(getattr(first, name), getattr(second, name), rtol=0.0, atol=0.0)
 
 
-def test_ppo_rollout_batch_uses_model_device_without_moving_model(tmp_path: Path) -> None:
+def test_ppo_rollout_batch_uses_model_device_without_moving_model() -> None:
     torch.manual_seed(69)
     model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
-    rollout = _real_rust_rollout_fixture(tmp_path)
+    rollout = _tiny_rust_rollout_fixture()
     before_device = next(model.parameters()).device
 
     batch = build_ppo_batch_from_rust_rollout(rollout, model=model, torch_seed=99, output_device=before_device)
@@ -1077,11 +1635,11 @@ def test_ppo_rollout_batch_uses_model_device_without_moving_model(tmp_path: Path
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for GPU rollout batch path")
-def test_ppo_rollout_batch_accepts_cuda_model_without_cpu_demote(tmp_path: Path) -> None:
+def test_ppo_rollout_batch_accepts_cuda_model_without_cpu_demote() -> None:
     torch.manual_seed(70)
     device = torch.device("cuda:0")
     model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4).to(device)
-    rollout = _real_rust_rollout_fixture(tmp_path)
+    rollout = _tiny_rust_rollout_fixture()
     before_device = next(model.parameters()).device
 
     batch = build_ppo_batch_from_rust_rollout(rollout, model=model, torch_seed=99, output_device=device)
@@ -1108,7 +1666,7 @@ def test_ppo_rollout_negative_boundary_errors(
 ) -> None:
     torch.manual_seed(71)
     model = HydraPolicyNet(hidden=8, blocks=1, bottleneck=4)
-    bad = mutate(_real_rust_rollout_fixture(tmp_path))
+    bad = mutate(_tiny_rust_rollout_fixture())
     with pytest.raises((TypeError, ValueError), match=match):
         write_ppo_smoke_rollout_artifact(tmp_path / "bad.pt", bad, model=model, torch_seed=5)
 
@@ -1210,27 +1768,8 @@ def _mutate_bad_bc_logits(payload: dict[str, object]) -> None:
     payload["bc_logits"] = bc_logits
 
 
-def _real_rust_rollout_fixture(tmp_path: Path, seed: int = 20260524) -> RustGameRollout:
-    output = tmp_path / f"rust-rollout-{seed}.json"
-    subprocess.run(
-        [
-            "pixi",
-            "run",
-            "cargo",
-            "run",
-            "--quiet",
-            "--package",
-            "hydra-core",
-            "--example",
-            "ppo_smoke_fixture",
-            "--no-default-features",
-            "--",
-            str(output),
-            str(seed),
-        ],
-        check=True,
-    )
-    rollout = load_rust_game_rollout_json(output)
+def _tiny_rust_rollout_fixture() -> RustGameRollout:
+    rollout = tiny_ppo_rollout()
     assert rollout.rows
     return rollout
 
@@ -1423,6 +1962,7 @@ def test_ppo_pipeline_depth_one_snapshot_order_and_batch_metrics(
             onnx_export_ms=0.0,
             native_rollout_ms=0.0,
             batch_build_ms=0.0,
+            outcome_metrics={},
             rollout_started=ppo_control.time.perf_counter(),
             future_rollout_ms=0.0,
         )
@@ -1440,6 +1980,7 @@ def test_ppo_pipeline_depth_one_snapshot_order_and_batch_metrics(
             onnx_export_ms=0.0,
             native_rollout_ms=0.0,
             batch_build_ms=0.0,
+            outcome_metrics={},
             rollout_started=ppo_control.time.perf_counter(),
             future_rollout_ms=25.0,
             child_start_load_ms=3.0,
@@ -1505,6 +2046,92 @@ def test_ppo_pipeline_depth_one_snapshot_order_and_batch_metrics(
     assert metrics["child_start_load_ms"] == 3.0
 
 
+def test_ppo_mahjax_pipeline_depth_uses_serial_gpu_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    init_checkpoint = tmp_path / "init.pt"
+    init_checkpoint.write_bytes(b"checkpoint")
+    submitted: bool | None = False
+
+    class _FakeModel(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.zeros(()))
+
+    class _FakeOptimizer:
+        def __init__(self) -> None:
+            self.param_groups = [{"lr": 0.0}]
+
+    class _FakeInit:
+        global_step = 0
+        samples_seen = 0
+
+    class _FakeResult:
+        def __init__(self) -> None:
+            self.metrics: dict[str, float] = {"loss_total": 0.0}
+            self.entropy_controller: None = None
+
+    class _FakeExecutor:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def submit(self, *_args: object, **_kwargs: object) -> object:
+            nonlocal submitted
+            submitted = True
+            raise AssertionError("mahjax-gpu must not spawn the process pipeline")
+
+        def shutdown(self, *, wait: bool, cancel_futures: bool) -> None:
+            del wait, cancel_futures
+
+    def collect(**kwargs: object) -> ppo_control._RolloutResult:
+        cfg = cast("PpoControlConfig", kwargs["config"])
+        snapshot = ppo_control._snapshot_metadata(
+            cfg,
+            cast("str", kwargs["config_digest"]),
+            cast("int", kwargs["global_step"]),
+            cast("int", kwargs["samples_seen"]),
+            cast("int", kwargs["completed_games"]),
+            cfg.seed + cast("int", kwargs["completed_games"]),
+        )
+        return ppo_control._RolloutResult(
+            payload={"snapshot_metadata": snapshot.to_payload(), "timing": {}},
+            batch=_valid_batch(snapshot_metadata=snapshot.to_payload()),
+            snapshot=snapshot,
+            rollout_seed=snapshot.rollout_seed,
+            onnx_export_ms=0.0,
+            native_rollout_ms=0.0,
+            batch_build_ms=0.0,
+            outcome_metrics={},
+            rollout_started=ppo_control.time.perf_counter(),
+            future_rollout_ms=0.0,
+        )
+
+    monkeypatch.setattr(ppo_control, "_model", lambda _config: _FakeModel())
+    monkeypatch.setattr(ppo_control, "build_optimizer", lambda _model, _optimizer_config: _FakeOptimizer())
+    monkeypatch.setattr(ppo_control, "load_checkpoint_init_only", lambda *_args, **_kwargs: _FakeInit())
+    monkeypatch.setattr(
+        ppo_control, "_load_extension", lambda _path: (_ for _ in ()).throw(AssertionError("extension loaded"))
+    )
+    monkeypatch.setattr(ppo_control, "_collect_rollout_batch", collect)
+    monkeypatch.setattr(ppo_control, "ppo_train_step", lambda **_kwargs: _FakeResult())
+    monkeypatch.setattr(ppo_control, "ProcessPoolExecutor", _FakeExecutor)
+    monkeypatch.setattr(
+        ppo_control,
+        "_save_t1_checkpoint",
+        lambda path, *_args, **_kwargs: path.parent.mkdir(parents=True, exist_ok=True)
+        or path.write_bytes(b"checkpoint"),
+    )
+    config = replace(
+        _ppo_control_config(tmp_path, init_checkpoint, steps=2, pipeline_depth=1), rollout_inference="mahjax-gpu"
+    )
+
+    summary = ppo_control.run_ppo_control(config)
+
+    assert not submitted
+    metrics = cast("dict[str, Any]", cast("dict[str, Any]", summary["summary"])["last_train_metrics"])
+    assert metrics["pipeline_depth"] == 1
+    assert metrics["pipeline_enabled"] is False
+    assert metrics["pipeline_mode"] == "mahjax_serial_gpu"
+
+
 def test_ppo_pipeline_failed_future_aborts_before_next_train(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     init_checkpoint = tmp_path / "init.pt"
     init_checkpoint.write_bytes(b"checkpoint")
@@ -1535,15 +2162,16 @@ def test_ppo_pipeline_failed_future_aborts_before_next_train(tmp_path: Path, mon
         cfg = cast("PpoControlConfig", kwargs["config"])
         snapshot = ppo_control._snapshot_metadata(cfg, cast("str", kwargs["config_digest"]), 0, 0, 0, cfg.seed)
         return ppo_control._RolloutResult(
-            {"snapshot_metadata": snapshot.to_payload()},
-            _valid_batch(snapshot_metadata=snapshot.to_payload()),
-            snapshot,
-            snapshot.rollout_seed,
-            0.0,
-            0.0,
-            0.0,
-            ppo_control.time.perf_counter(),
-            0.0,
+            payload={"snapshot_metadata": snapshot.to_payload()},
+            batch=_valid_batch(snapshot_metadata=snapshot.to_payload()),
+            snapshot=snapshot,
+            rollout_seed=snapshot.rollout_seed,
+            onnx_export_ms=0.0,
+            native_rollout_ms=0.0,
+            batch_build_ms=0.0,
+            outcome_metrics={},
+            rollout_started=ppo_control.time.perf_counter(),
+            future_rollout_ms=0.0,
         )
 
     def rollout_from_snapshot(**kwargs: object) -> ppo_control._RolloutResult:
@@ -1659,15 +2287,16 @@ def test_ppo_pipeline_in_flight_rollout_discarded_on_shutdown(tmp_path: Path, mo
         cfg = cast("PpoControlConfig", kwargs["config"])
         snapshot = ppo_control._snapshot_metadata(cfg, cast("str", kwargs["config_digest"]), 0, 0, 0, cfg.seed)
         return ppo_control._RolloutResult(
-            {"snapshot_metadata": snapshot.to_payload()},
-            _valid_batch(snapshot_metadata=snapshot.to_payload()),
-            snapshot,
-            snapshot.rollout_seed,
-            0.0,
-            0.0,
-            0.0,
-            ppo_control.time.perf_counter(),
-            0.0,
+            payload={"snapshot_metadata": snapshot.to_payload()},
+            batch=_valid_batch(snapshot_metadata=snapshot.to_payload()),
+            snapshot=snapshot,
+            rollout_seed=snapshot.rollout_seed,
+            onnx_export_ms=0.0,
+            native_rollout_ms=0.0,
+            batch_build_ms=0.0,
+            outcome_metrics={},
+            rollout_started=ppo_control.time.perf_counter(),
+            future_rollout_ms=0.0,
         )
 
     def save_checkpoint(_path: Path, *_args: object, **_kwargs: object) -> None:
@@ -1886,6 +2515,7 @@ def test_ppo_pipeline_child_receives_requested_rollout_device(tmp_path: Path, mo
             onnx_export_ms=0.0,
             native_rollout_ms=0.0,
             batch_build_ms=0.0,
+            outcome_metrics={},
             rollout_started=ppo_control.time.perf_counter(),
             future_rollout_ms=0.0,
         )
@@ -2003,23 +2633,62 @@ def test_ppo_resume_compatible_digests_include_combined_legacy_omissions(tmp_pat
 def test_ppo_resume_compatible_digests_include_checkpoint_fixture() -> None:
     config = _checkpoint_fixture_ppo_control_config()
 
-    assert CHECKPOINT_FIXTURE_CONFIG_DIGEST in _compatible_resume_config_digests(config)
+    assert TINY_CHECKPOINT_CONFIG_DIGEST in _compatible_resume_config_digests(config)
+
+
+def test_ppo_resume_compatible_digests_allow_torch_callback_to_mahjax_migration() -> None:
+    config = replace(_checkpoint_fixture_ppo_control_config(), rollout_inference="mahjax-gpu", ppo_pipeline_depth=1)
+
+    assert TINY_CHECKPOINT_CONFIG_DIGEST in _compatible_resume_config_digests(config)
+
+
+def test_ppo_resume_compatible_digests_do_not_allow_mahjax_backend_migration_with_changed_games() -> None:
+    config = replace(
+        _checkpoint_fixture_ppo_control_config(),
+        rollout_inference="mahjax-gpu",
+        ppo_pipeline_depth=1,
+        games_per_update=512,
+    )
+
+    assert TINY_CHECKPOINT_CONFIG_DIGEST not in _compatible_resume_config_digests(config)
+
+
+TINY_RETENTION_COMPAT_CONFIG_DIGEST = TINY_CHECKPOINT_CONFIG_DIGEST
+
+
+def test_ppo_resume_compatible_digests_allow_step_checkpoint_retention_change() -> None:
+    config = replace(
+        _checkpoint_fixture_ppo_control_config(),
+        keep_step_checkpoints=True,
+        rollout_inference="mahjax-gpu",
+        ppo_pipeline_depth=1,
+    )
+
+    assert TINY_RETENTION_COMPAT_CONFIG_DIGEST in _compatible_resume_config_digests(config)
+
+
+def test_ppo_resume_compatible_digests_do_not_allow_checkpoint_cadence_change() -> None:
+    config = replace(
+        _checkpoint_fixture_ppo_control_config(),
+        checkpoint_every_steps=1,
+        rollout_inference="mahjax-gpu",
+        ppo_pipeline_depth=1,
+    )
+
+    assert TINY_CHECKPOINT_CONFIG_DIGEST not in _compatible_resume_config_digests(config)
 
 
 def test_ppo_resume_compatible_digests_ignore_run_local_fields_for_fixture() -> None:
+    output_dir, resume, tensorboard_dir = tiny_run_local_paths()
     config = replace(
         _checkpoint_fixture_ppo_control_config(),
-        output_dir=Path("/home/cachybtw/dev/hydra/training/diagnostics/ppo_phase3i_resume_smoke_20260601T052845Z"),
+        output_dir=output_dir,
         steps=1,
-        resume=Path(
-            "/home/cachybtw/dev/hydra/training/diagnostics/ppo_phase3i_resume_smoke_20260601T052845Z/checkpoints/latest.pt"
-        ),
-        tensorboard_dir=Path(
-            "/home/cachybtw/dev/hydra/training/diagnostics/ppo_phase3i_resume_smoke_20260601T052845Z/tensorboard"
-        ),
+        resume=resume,
+        tensorboard_dir=tensorboard_dir,
     )
 
-    assert CHECKPOINT_FIXTURE_CONFIG_DIGEST in _compatible_resume_config_digests(config)
+    assert TINY_CHECKPOINT_CONFIG_DIGEST in _compatible_resume_config_digests(config)
 
 
 @pytest.mark.parametrize(
@@ -2035,110 +2704,49 @@ def test_ppo_resume_compatible_digests_ignore_run_local_fields_for_fixture() -> 
 def test_ppo_resume_compatible_digests_keep_safety_fields_for_fixture(
     field: Literal["microbatch_size", "epochs", "hidden", "lr", "games_per_update"], value: float
 ) -> None:
+    output_dir, resume, tensorboard_dir = tiny_run_local_paths()
     kwargs: dict[str, Any] = {
-        "output_dir": Path("/home/cachybtw/dev/hydra/training/diagnostics/ppo_phase3i_resume_smoke_20260601T052845Z"),
+        "output_dir": output_dir,
         "steps": 1,
-        "resume": Path(
-            "/home/cachybtw/dev/hydra/training/diagnostics/ppo_phase3i_resume_smoke_20260601T052845Z/checkpoints/latest.pt"
-        ),
-        "tensorboard_dir": Path(
-            "/home/cachybtw/dev/hydra/training/diagnostics/ppo_phase3i_resume_smoke_20260601T052845Z/tensorboard"
-        ),
+        "resume": resume,
+        "tensorboard_dir": tensorboard_dir,
         field: value,
     }
     config = replace(_checkpoint_fixture_ppo_control_config(), **kwargs)
 
-    assert CHECKPOINT_FIXTURE_CONFIG_DIGEST not in _compatible_resume_config_digests(config)
+    assert TINY_CHECKPOINT_CONFIG_DIGEST not in _compatible_resume_config_digests(config)
 
 
 def test_ppo_resume_compatible_digests_run_local_omission_does_not_omit_non_default_pipeline_depth() -> None:
+    output_dir, resume, tensorboard_dir = tiny_run_local_paths()
     config = replace(
         _checkpoint_fixture_ppo_control_config(),
-        output_dir=Path("/home/cachybtw/dev/hydra/training/diagnostics/ppo_phase3i_resume_smoke_20260601T052845Z"),
+        output_dir=output_dir,
         steps=1,
-        resume=Path(
-            "/home/cachybtw/dev/hydra/training/diagnostics/ppo_phase3i_resume_smoke_20260601T052845Z/checkpoints/latest.pt"
-        ),
-        tensorboard_dir=Path(
-            "/home/cachybtw/dev/hydra/training/diagnostics/ppo_phase3i_resume_smoke_20260601T052845Z/tensorboard"
-        ),
+        resume=resume,
+        tensorboard_dir=tensorboard_dir,
         ppo_pipeline_depth=1,
     )
 
-    assert CHECKPOINT_FIXTURE_CONFIG_DIGEST not in _compatible_resume_config_digests(config)
+    assert TINY_CHECKPOINT_CONFIG_DIGEST not in _compatible_resume_config_digests(config)
 
 
 def test_ppo_resume_compatible_digests_run_local_omission_does_not_omit_explicit_rollout_device() -> None:
+    output_dir, resume, tensorboard_dir = tiny_run_local_paths()
     config = replace(
         _checkpoint_fixture_ppo_control_config(),
-        output_dir=Path("/home/cachybtw/dev/hydra/training/diagnostics/ppo_phase3i_resume_smoke_20260601T052845Z"),
+        output_dir=output_dir,
         steps=1,
-        resume=Path(
-            "/home/cachybtw/dev/hydra/training/diagnostics/ppo_phase3i_resume_smoke_20260601T052845Z/checkpoints/latest.pt"
-        ),
-        tensorboard_dir=Path(
-            "/home/cachybtw/dev/hydra/training/diagnostics/ppo_phase3i_resume_smoke_20260601T052845Z/tensorboard"
-        ),
+        resume=resume,
+        tensorboard_dir=tensorboard_dir,
         rollout_device="cuda:0",
     )
 
-    assert CHECKPOINT_FIXTURE_CONFIG_DIGEST not in _compatible_resume_config_digests(config)
-
-
-CHECKPOINT_FIXTURE_CONFIG_DIGEST = "ff5e69914d5456db97dfec8270172f2887c8a087a4e87520f2202455744e34c9"
+    assert TINY_CHECKPOINT_CONFIG_DIGEST not in _compatible_resume_config_digests(config)
 
 
 def _checkpoint_fixture_ppo_control_config() -> PpoControlConfig:
-    output_dir = Path(
-        "/home/cachybtw/dev/hydra/training/2026-05-24-rtx5070-raw-mjai-large-6m-copy/stages/T1_ppo_control/runs/latest_run"
-    )
-    return PpoControlConfig(
-        init_checkpoint=Path(
-            "/home/cachybtw/dev/hydra/training/2026-05-24-rtx5070-raw-mjai-large-6m-copy/logs/checkpoints/best.pt"
-        ),
-        output_dir=output_dir,
-        steps=None,
-        games_per_update=1024,
-        seed=0,
-        device="cuda:0",
-        temperature=1.0,
-        arena_batch_decisions=3072,
-        arena_threads=0,
-        extension_path=None,
-        hidden=384,
-        blocks=16,
-        bottleneck=96,
-        residual_profile="mish_se",
-        backbone_profile="conv2d_local3",
-        conv_memory_format="contiguous",
-        lr=0.0001,
-        min_lr=1.0e-6,
-        lr_warmup_samples=0,
-        lr_decay_samples=1_000_000_000,
-        grad_clip_norm=1.0,
-        microbatch_size=768,
-        epochs=3,
-        target_kl=0.005,
-        weight_decay=9.999999747378752e-06,
-        adam_beta1=0.9,
-        adam_beta2=0.999,
-        adam_eps=1.0e-8,
-        adamw_fused="on",
-        adamw_foreach="auto",
-        bc_kl_reverse_coef=0.0,
-        entropy_alpha=1.0e-3,
-        entropy_beta=1.0e-2,
-        entropy_alpha_max=0.05,
-        log_every_steps=1,
-        checkpoint_every_steps=250,
-        keep_step_checkpoints=False,
-        resume=output_dir / "checkpoints" / "latest.pt",
-        tensorboard_dir=output_dir / "tensorboard",
-        quiet=True,
-        rollout_inference="torch-callback",
-        ppo_pipeline_depth=0,
-        rollout_device=None,
-    )
+    return tiny_checkpoint_ppo_control_config()
 
 
 def ppo_control_config_digest_for_payload(payload: dict[str, object]) -> str:

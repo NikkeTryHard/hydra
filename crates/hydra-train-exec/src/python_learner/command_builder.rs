@@ -210,11 +210,16 @@ pub(crate) fn build_python_ppo_control_command_for_run_dir(
     run_dir: &Path,
 ) -> PythonLearnerCommand {
     let result_path = run_dir.join(PYTHON_PPO_CONTROL_RESULT);
+    let pixi_env = if options.rollout_inference == "mahjax-gpu" {
+        "mahjax-train"
+    } else {
+        "py-train"
+    };
     let mut args = vec![
         "run".to_string(),
         "--frozen".to_string(),
         "-e".to_string(),
-        "py-train".to_string(),
+        pixi_env.to_string(),
         "python".to_string(),
         PYTHON_LEARNER_SCRIPT.to_string(),
         "ppo-control".to_string(),

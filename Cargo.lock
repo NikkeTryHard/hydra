@@ -3391,7 +3391,7 @@ dependencies = [
 
 [[package]]
 name = "hydra-engine"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "ahash",
  "base64 0.22.1",
@@ -3429,6 +3429,7 @@ name = "hydra-raw-mjai-pyo3"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "hydra-belief-search",
  "hydra-core",
  "hydra-engine",
  "hydra-model",

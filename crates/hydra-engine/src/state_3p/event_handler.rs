@@ -700,10 +700,17 @@ impl GameState3PEventHandler for GameState3P {
                 }
 
                 if !nagashi_winners.is_empty() {
-                    // Nagashi mangan: apply mangan tsumo payment (no honba)
+                    // Nagashi mangan replaces exhaustive-draw settlement; Tenhou honba still applies.
                     for &w in &nagashi_winners {
                         let is_oya = w == self.oya;
-                        let score_res = crate::score::calculate_score(5, 30, is_oya, true, 0, np);
+                        let score_res = crate::score::calculate_score(
+                            5,
+                            30,
+                            is_oya,
+                            true,
+                            self.honba as u32,
+                            np,
+                        );
                         if is_oya {
                             for i in 0..np as usize {
                                 if i as u8 != w {

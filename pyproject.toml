@@ -22,7 +22,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["python/hydra_learner/hydra_learner"]
+packages = ["python/hydra_learner/src/hydra_learner"]
 
 [tool.pixi.workspace]
 name = "hydra"
@@ -130,6 +130,44 @@ safetensors = ">=0.5,<0.7"
 onnx = ">=1.19,<2"
 onnxscript = ">=0.4,<0.5"
 onnxruntime-gpu = "==1.23.2"
+[tool.pixi.feature.mahjax.dependencies]
+python = ">=3.12,<3.13"
+
+[tool.pixi.feature.mahjax.pypi-options]
+index-url = "https://pypi.org/simple"
+index-strategy = "unsafe-best-match"
+
+[tool.pixi.feature.mahjax.pypi-dependencies]
+hydra-learner = { path = ".", editable = true }
+mahjax = "==0.1.2"
+jax = { version = ">=0.4.28", extras = ["cuda12"] }
+pytest = ">=8,<9"
+
+[tool.pixi.feature.mahjax-train.dependencies]
+python = ">=3.12,<3.13"
+
+[tool.pixi.feature.mahjax-train.pypi-options]
+index-url = "https://download.pytorch.org/whl/cu128"
+extra-index-urls = ["https://pypi.org/simple"]
+index-strategy = "unsafe-best-match"
+
+[tool.pixi.feature.mahjax-train.pypi-dependencies]
+hydra-learner = { path = ".", editable = true }
+hatchling = ">=1.27,<2"
+numpy = "==1.26.4"
+pyrefly = ">=1,<2"
+pytest = ">=8,<9"
+ruff = ">=0.11,<0.14"
+torch = "==2.11.0+cu128"
+tensorboard = ">=2.20,<3"
+safetensors = ">=0.5,<0.7"
+onnx = ">=1.19,<2"
+onnxscript = ">=0.4,<0.5"
+onnxruntime-gpu = "==1.23.2"
+mahjax = "==0.1.2"
+jax = { version = ">=0.4.28", extras = ["cuda12"] }
+
+
 
 
 [tool.pixi.activation]
@@ -144,6 +182,8 @@ default = { features = ["dev"], solve-group = "default" }
 py-train = { features = ["py-train"], solve-group = "py-train", no-default-feature = true }
 py-train-torch212-cu126 = { features = ["py-train-torch212-cu126"], solve-group = "py-train-torch212-cu126", no-default-feature = true }
 py-train-torch212-nightly-cu128 = { features = ["py-train-torch212-nightly-cu128"], solve-group = "py-train-torch212-nightly-cu128", no-default-feature = true }
+mahjax = { features = ["mahjax"], solve-group = "mahjax", no-default-feature = true }
+mahjax-train = { features = ["mahjax-train"], solve-group = "mahjax-train", no-default-feature = true }
 
 [tool.pixi.tasks]
 fmt = [{ task = "fmt-rust" }, { task = "fmt-python" }]
@@ -179,17 +219,20 @@ test-rust = { cmd = "scripts/nextest-quiet.sh run --workspace --all-targets --no
 test-python = { cmd = "scripts/pytest-quiet.sh python/hydra_learner", description = "Quiet Python learner tests" }
 test-python-cuda = { cmd = "scripts/pytest-quiet.sh python/hydra_learner -m 'cuda or compile'", description = "Run Python CUDA/compile tests" }
 python-bc-train = { cmd = "python scripts/hydra_pytorch_oracle.py", default-environment = "py-train", description = "Run stable Python BC learner; pass args after --" }
-python-ppo-control = { cmd = "python scripts/hydra_pytorch_oracle.py ppo-control", default-environment = "py-train", description = "Run stable Python T1 PPO-control learner; pass args after --" }
+python-ppo-control = { cmd = "python scripts/hydra_pytorch_oracle.py ppo-control", default-environment = "mahjax-train", description = "Run stable Python T1 PPO-control learner; pass args after --" }
 python-bc-train-cu126 = { cmd = "pixi run -e py-train-torch212-cu126 python scripts/hydra_pytorch_oracle.py", description = "Run Torch 2.12 cu126 probe; pass args after --" }
 python-bc-train-nightly = { cmd = "pixi run -e py-train-torch212-nightly-cu128 python scripts/hydra_pytorch_oracle.py", description = "Run Torch 2.12 nightly cu128 probe; pass args after --" }
 torch-check = { cmd = "python -c \"import torch, os; print(torch.__version__); print(torch.version.cuda); print(torch.cuda.is_available()); print(os.path.join(os.path.dirname(torch.__file__), 'lib'))\"", description = "Print default-env PyTorch info" }
 torch-check-cu126 = { cmd = "pixi run -e py-train-torch212-cu126 python -c \"import torch, torchvision; print(torch.__version__); print(torch.version.cuda); print(torchvision.__version__); print(torch.cuda.is_available())\"", description = "Print Torch 2.12 cu126 probe info" }
 torch-check-nightly = { cmd = "pixi run -e py-train-torch212-nightly-cu128 python -c \"import torch, torchvision; print(torch.__version__); print(torch.version.cuda); print(torchvision.__version__); print(torch.cuda.is_available())\"", description = "Print Torch 2.12 nightly cu128 probe info" }
+mahjax-smoke = { cmd = "pixi run -e mahjax python -m hydra_learner.mahjax.tools.probe", description = "Run MahJAX GPU simulator smoke/throughput probe; pass args after --" }
+mahjax-live-invariants = { cmd = "pixi run -e mahjax python -m hydra_learner.mahjax.tools.live_invariants", description = "Check live MahJAX red states against Hydra action-adapter invariants" }
+mahjax-replay-scan = { cmd = "pixi run -e mahjax python -m hydra_learner.mahjax.replay.scan", description = "Strict MahJAX/Hydra replay parity scanner; pass replay names or --replay-list after --" }
 
 [tool.ruff]
 target-version = "py312"
 line-length = 120
-src = ["python/hydra_learner", "scripts"]
+src = ["python/hydra_learner/src", "python/hydra_learner/tests", "scripts"]
 extend-exclude = ["third_party", "target", "output", "Mortal-Policy", "scripts/generate_*.py"]
 
 [tool.ruff.lint]
@@ -221,7 +264,6 @@ select = [
     "W",
 ]
 ignore = [
-    "ANN401",
     "B010",
     "BLE001",
     "E402",
@@ -240,17 +282,38 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "scripts/*.py" = ["T201"]
+"python/hydra_learner/src/hydra_learner/arena_eval.py" = ["ANN401"]
+"python/hydra_learner/src/hydra_learner/mahjax/**/*.py" = ["ANN401"]
+"python/hydra_learner/src/hydra_learner/ppo/control_rollout.py" = ["ANN401"]
+"python/hydra_learner/src/hydra_learner/ppo_control.py" = ["ANN401"]
+"python/hydra_learner/src/hydra_learner/raw_mjai_*.py" = ["ANN401"]
+"python/hydra_learner/src/hydra_learner/data/raw_mjai/*.py" = ["ANN401"]
+"python/hydra_learner/tests/test_arena_eval.py" = ["ANN401"]
+"python/hydra_learner/tests/test_mahjax_*.py" = ["ANN401"]
+"python/hydra_learner/tests/test_ppo_rollout.py" = ["ANN401"]
+"python/hydra_learner/tests/test_train_bc_args.py" = ["ANN401"]
 
 [tool.pyrefly]
-project-includes = ["python/hydra_learner", "scripts/hydra_pytorch_oracle.py"]
+project-includes = ["python/hydra_learner/src", "python/hydra_learner/tests", "scripts/hydra_pytorch_oracle.py"]
 project-excludes = ["scripts/generate_*.py"]
-search-path = ["python/hydra_learner"]
+search-path = ["python/hydra_learner/src", "python/hydra_learner"]
 python-version = "3.12"
 python-platform = "linux"
 check-unannotated-defs = true
 infer-return-types = "checked"
 min-severity = "warn"
 tensor-shapes = true
+
+[tool.pyrefly.errors]
+implicit-any = true
+implicit-any-attribute = true
+implicit-any-empty-container = true
+implicit-any-parameter = true
+implicit-any-type-argument = true
+unannotated-attribute = true
+unannotated-parameter = true
+unannotated-return = true
+unused-ignore = true
 
 [tool.pytest.ini_options]
 addopts = [
@@ -259,9 +322,10 @@ addopts = [
     "--color=yes",
 ]
 filterwarnings = ["error"]
-pythonpath = ["python/hydra_learner"]
+pythonpath = ["python/hydra_learner/src", "python/hydra_learner"]
 xfail_strict = true
 markers = [
     "cuda: requires CUDA-capable PyTorch runtime",
     "compile: exercises torch.compile path",
+    "slow: long-running correctness/parity checks",
 ]

@@ -118,6 +118,7 @@ fn start_kyoku_replay_resets_round_scoped_state() {
     assert_eq!(state.wall.draw_cursor, 0);
     assert_eq!(state.wall.rinshan_draw_count, 0);
     assert_eq!(state.wall.pending_kan_dora_count, 0);
+    assert_eq!(state.wall.remaining(), 69);
     assert_eq!(state.pending_kan, None);
     assert!(!state.pending_oya_won);
     assert!(!state.pending_is_draw);
@@ -137,6 +138,27 @@ fn start_kyoku_replay_resets_round_scoped_state() {
     assert_eq!(state.players[0].score, 35_000);
     assert_eq!(state.players[1].score, 30_000);
     assert_eq!(state.players[2].score, 35_000);
+}
+
+#[test]
+fn riichi_handler_ignores_second_reach_while_declaration_pending() {
+    let rule = GameRule::default_tenhou();
+    let mut state = GameState3P::new(4, true, Some(9), 0, rule);
+    state.skip_mjai_logging = false;
+    state.phase = Phase::WaitAct;
+    state.current_player = 0;
+    state.active_players = [0; 4];
+    state.active_player_count = 1;
+    state.wall.tile_count = 40;
+    state.players[0].score = 35_000;
+
+    state._handle_riichi(0, Action::new(ActionType::Riichi, None, &[], Some(0)));
+    let event_count = state.mjai_log.len();
+    assert!(state.players[0].riichi_stage);
+
+    state._handle_riichi(0, Action::new(ActionType::Riichi, None, &[], Some(0)));
+    assert_eq!(state.mjai_log.len(), event_count);
+    assert!(state.players[0].riichi_stage);
 }
 
 #[test]

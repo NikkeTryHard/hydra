@@ -211,6 +211,33 @@ fn wait_act_after_riichi_only_allows_drawn_discard_outside_declaration_turn() {
 }
 
 #[test]
+fn riichi_stage_only_offers_tenpai_maintaining_discards() {
+    let mut state = empty_state();
+    add_hand_from_text(&mut state, 0, "123456789m12p115s");
+    state.drawn_tile = Some(tile("5s"));
+    state.players[0].riichi_stage = true;
+    state.players[0].push_forbidden(tile("1p"));
+
+    let legals = assert_legals_match(&state, 0);
+    let discard_tiles: Vec<u8> = legals
+        .iter()
+        .filter(|action| action.action_type == ActionType::Discard)
+        .filter_map(|action| action.tile)
+        .collect();
+
+    assert_eq!(discard_tiles, vec![tile("5s")]);
+    assert!(!legals
+        .iter()
+        .any(|action| action.action_type == ActionType::Riichi));
+    assert!(!legals
+        .iter()
+        .any(|action| action.action_type == ActionType::Tsumo));
+    assert!(!legals
+        .iter()
+        .any(|action| action.action_type == ActionType::Ankan));
+}
+
+#[test]
 fn wait_act_offers_ankan_and_kakan_before_riichi() {
     let mut state = empty_state();
     set_wall_remaining(&mut state, 40);
@@ -276,6 +303,19 @@ fn wait_act_does_not_offer_kyushu_kyuhai_after_any_call_or_in_riichi_stage() {
 
 #[test]
 fn claim_actions_offer_ron_for_non_furiten_winning_tile() {
+    let mut state = empty_state();
+    set_wall_remaining(&mut state, 40);
+    add_hand_from_text(&mut state, 1, "12345m12223p123s");
+
+    let (legals, missed_agari) = assert_claim_actions_match(&mut state, 1, 0, tile("6m"));
+    assert!(!missed_agari);
+    assert!(legals
+        .iter()
+        .any(|action| action.action_type == ActionType::Ron));
+}
+
+#[test]
+fn claim_actions_ignore_unused_fixed_discard_slots_for_furiten() {
     let mut state = empty_state();
     set_wall_remaining(&mut state, 40);
     add_hand_from_text(&mut state, 1, "12345m12223p123s");

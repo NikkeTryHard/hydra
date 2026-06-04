@@ -107,31 +107,29 @@ fn alloc_replay_hand_tile_by_mjai(
     ))
 }
 
-fn alloc_start_kyoku_tile(tile_counts: &mut [u8; 34], tile_str: &str) -> RiichiResult<u8> {
+fn alloc_start_kyoku_tile(used_copies: &mut [u8; 34], tile_str: &str) -> RiichiResult<u8> {
     let tile = parse_mjai_tile(tile_str)?;
     let tile_type = (tile / 4) as usize;
 
-    if mjai_tile_has_explicit_copy(tile_str) {
-        if tile_counts[tile_type] >= 4 {
-            return Err(invalid_replay(
-                "start_kyoku contains more than four copies of a tile",
-            ));
+    let copy_order: &[u8] = if mjai_tile_has_explicit_copy(tile_str) {
+        &[tile % 4]
+    } else if matches!(tile_type, 4 | 13 | 22) {
+        &[1, 2, 3, 0]
+    } else {
+        &[0, 1, 2, 3]
+    };
+
+    for &copy in copy_order {
+        let bit = 1u8 << copy;
+        if used_copies[tile_type] & bit == 0 {
+            used_copies[tile_type] |= bit;
+            return Ok(tile_type as u8 * 4 + copy);
         }
-        tile_counts[tile_type] = tile_counts[tile_type].max(1);
-        return Ok(tile);
     }
 
-    let mut copy = tile_counts[tile_type];
-    if matches!(tile_type, 4 | 13 | 22) {
-        copy = copy.max(1);
-    }
-    if copy >= 4 {
-        return Err(invalid_replay(
-            "start_kyoku contains more than four copies of a tile",
-        ));
-    }
-    tile_counts[tile_type] = copy + 1;
-    Ok(tile_type as u8 * 4 + copy)
+    Err(invalid_replay(
+        "start_kyoku contains more than four copies of a tile",
+    ))
 }
 
 pub trait GameStateEventHandler {
@@ -867,11 +865,17 @@ impl GameStateEventHandler for GameState {
                 }
 
                 if !nagashi_winners.is_empty() {
-                    // Nagashi mangan: apply mangan tsumo payment (no honba)
+                    // Nagashi mangan replaces exhaustive-draw settlement; Tenhou honba still applies.
                     for &w in &nagashi_winners {
                         let is_oya = w == self.oya;
-                        let score_res =
-                            crate::score::calculate_score(5, 30, is_oya, true, 0, np as u8);
+                        let score_res = crate::score::calculate_score(
+                            5,
+                            30,
+                            is_oya,
+                            true,
+                            self.honba as u32,
+                            np as u8,
+                        );
                         if is_oya {
                             for i in 0..np {
                                 if i as u8 != w {

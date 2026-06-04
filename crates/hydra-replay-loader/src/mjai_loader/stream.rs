@@ -45,6 +45,97 @@ pub(super) fn load_game_from_events(events: Vec<MjaiEvent>) -> io::Result<MjaiGa
     )
 }
 
+fn load_game_from_events_into_sink_strict<S: ReplaySampleSink>(
+    events: Vec<MjaiEvent>,
+    sink: &mut S,
+) -> io::Result<[i32; 4]> {
+    let mut stats = ReplayProfileStats::default();
+    let t_precompute = Instant::now();
+    let final_scores = final_scores(&events)?;
+    stats.precompute_ns += t_precompute.elapsed().as_nanos();
+    let mut state = GameState::new(0, true, Some(0), 0, GameRule::default_tenhou());
+    let mut safety = array::from_fn(|_| SafetyInfo::default());
+    let mut encoder = ObservationEncoder::new();
+    let decision_options = ReplayDecisionOptions {
+        observation_profile: ReplayObservationProfile::BcMinimal,
+        strict_replay_legality: true,
+    };
+
+    if events.iter().any(|event| matches!(event, MjaiEvent::Other)) {
+        return Err(invalid_data("unsupported MJAI event type"));
+    }
+
+    for (idx, event) in events.iter().enumerate() {
+        stats.event_count += 1;
+        let t_prepare = Instant::now();
+        let decisions = prepare_replay_decisions_with_options(
+            idx,
+            event,
+            &mut state,
+            &safety,
+            &mut encoder,
+            decision_options,
+        )?;
+        stats.prepare_decisions_ns += t_prepare.elapsed().as_nanos();
+        for decision in decisions {
+            stats.decision_count += 1;
+            sink.push_sample(ReplaySampleRecord {
+                trace: decision.trace.into(),
+                obs: decision.obs_encoded,
+                compact_facts: decision.compact_facts,
+                action: decision.action_id,
+                legal_mask: decision.legal_mask_f32,
+                placement: 0,
+                score_delta: 0,
+                grp_label: 0,
+                oracle_target: None,
+                tenpai: [0.0; 3],
+                opp_next: [MISSING_TILE_TARGET; 3],
+                danger: [0.0; 102],
+                danger_mask: [0.0; 102],
+                safety_residual: None,
+                safety_residual_mask: None,
+                exit_target: None,
+                exit_mask: None,
+                delta_q_target: None,
+                delta_q_mask: None,
+                belief_fields: None,
+                mixture_weights: None,
+                belief_fields_present: false,
+                mixture_weights_present: false,
+            })?;
+        }
+        let t_safety = Instant::now();
+        update_safety(&mut safety, event)?;
+        stats.update_safety_ns += t_safety.elapsed().as_nanos();
+        validate_terminal_event(event, &state)?;
+        let t_apply = Instant::now();
+        state
+            .try_apply_mjai_event(event.clone())
+            .map_err(|err| invalid_data(format!("replay state update failed: {err}")))?;
+        stats.apply_event_ns += t_apply.elapsed().as_nanos();
+    }
+
+    record_replay_materialization_stats(ReplayMaterializationStats {
+        decompress_ns: 0,
+        json_parse_ns: 0,
+        replay_update_ns: stats.update_safety_ns.saturating_add(stats.apply_event_ns),
+        observation_encode_ns: stats
+            .replay_observation_ns
+            .saturating_add(stats.encode_observation_ns),
+        mask_build_ns: stats
+            .legal_mask_build_ns
+            .saturating_add(stats.legal_mask_convert_ns),
+        target_synthesis_ns: stats
+            .precompute_ns
+            .saturating_add(stats.prepare_decisions_ns),
+        event_count: stats.event_count,
+        decision_count: stats.decision_count,
+    });
+
+    Ok(final_scores)
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "public test/helper seam carries target and sidecar policy"
@@ -90,6 +181,30 @@ pub fn load_game_from_reader<R: BufRead>(reader: R) -> io::Result<MjaiGame> {
         maybe_print_replay_profile(&stats);
     }
     Ok(game)
+}
+fn load_game_from_reader_strict_into_sink<R: BufRead, S: ReplaySampleSink>(
+    reader: R,
+    sink: &mut S,
+) -> io::Result<[i32; 4]> {
+    let t_parse = Instant::now();
+    let events = read_mjai_events(reader)
+        .map_err(|err| invalid_data(format!("failed to parse MJAI events: {err}")))?;
+    let parse_ns = t_parse.elapsed().as_nanos();
+    let final_scores = load_game_from_events_into_sink_strict(events, sink)?;
+    record_replay_materialization_stats(ReplayMaterializationStats {
+        json_parse_ns: parse_ns,
+        ..ReplayMaterializationStats::default()
+    });
+    Ok(final_scores)
+}
+
+pub fn load_game_from_reader_strict<R: BufRead>(reader: R) -> io::Result<MjaiGame> {
+    let mut sink = VecReplaySampleSink::with_capacity(0);
+    let final_scores = load_game_from_reader_strict_into_sink(reader, &mut sink)?;
+    Ok(MjaiGame {
+        samples: sink.samples,
+        final_scores,
+    })
 }
 
 pub fn debug_first_replay_failure_from_reader<R: BufRead>(reader: R) -> io::Result<Option<String>> {
@@ -289,6 +404,39 @@ where
         }
     }
 }
+
+pub fn load_game_from_stream_into_sink_strict<R, S>(reader: R, sink: &mut S) -> io::Result<[i32; 4]>
+where
+    R: Read,
+    S: ReplaySampleSink,
+{
+    let mut reader = BufReader::new(reader);
+    let compression = inspect_stream_compression(&mut reader)?;
+    match compression {
+        StreamCompression::Plain => load_game_from_reader_into_sink_strict(reader, sink),
+        StreamCompression::Gzip => {
+            load_game_from_reader_into_sink_strict(BufReader::new(GzDecoder::new(reader)), sink)
+        }
+        StreamCompression::Zstd => {
+            load_game_from_reader_into_sink_strict(BufReader::new(ZstdDecoder::new(reader)?), sink)
+        }
+    }
+}
+
+pub fn load_game_from_reader_into_sink_strict<R, S>(reader: R, sink: &mut S) -> io::Result<[i32; 4]>
+where
+    R: BufRead,
+    S: ReplaySampleSink,
+{
+    let t_parse = Instant::now();
+    let events = read_mjai_events(reader)
+        .map_err(|err| invalid_data(format!("failed to parse MJAI events: {err}")))?;
+    record_replay_materialization_stats(ReplayMaterializationStats {
+        json_parse_ns: t_parse.elapsed().as_nanos(),
+        ..ReplayMaterializationStats::default()
+    });
+    load_game_from_events_into_sink_strict(events, sink)
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StreamCompression {
     Plain,
@@ -441,6 +589,43 @@ pub fn load_game_from_path(path: impl AsRef<Path>) -> io::Result<MjaiGame> {
     let file = fs::File::open(path)?;
     load_game_from_stream(file)
         .map_err(|err| invalid_data(format!("failed to load MJAI events: {err}")))
+}
+
+pub fn load_game_from_path_strict(path: impl AsRef<Path>) -> io::Result<MjaiGame> {
+    let file = fs::File::open(path)?;
+    load_game_from_stream_strict(file)
+        .map_err(|err| invalid_data(format!("failed to load MJAI events: {err}")))
+}
+
+pub fn load_game_from_stream_strict<R: Read>(reader: R) -> io::Result<MjaiGame> {
+    let mut reader = BufReader::new(reader);
+    let compression = inspect_stream_compression(&mut reader)?;
+    match compression {
+        StreamCompression::Plain => load_game_from_reader_strict(reader),
+        StreamCompression::Gzip => {
+            load_game_from_reader_strict(BufReader::new(GzDecoder::new(reader)))
+        }
+        StreamCompression::Zstd => {
+            load_game_from_reader_strict(BufReader::new(ZstdDecoder::new(reader)?))
+        }
+    }
+}
+
+pub fn load_game_from_stream_strict_into_sink<R: Read, S: ReplaySampleSink>(
+    reader: R,
+    sink: &mut S,
+) -> io::Result<[i32; 4]> {
+    let mut reader = BufReader::new(reader);
+    let compression = inspect_stream_compression(&mut reader)?;
+    match compression {
+        StreamCompression::Plain => load_game_from_reader_strict_into_sink(reader, sink),
+        StreamCompression::Gzip => {
+            load_game_from_reader_strict_into_sink(BufReader::new(GzDecoder::new(reader)), sink)
+        }
+        StreamCompression::Zstd => {
+            load_game_from_reader_strict_into_sink(BufReader::new(ZstdDecoder::new(reader)?), sink)
+        }
+    }
 }
 
 pub fn load_game_from_path_with_sidecar(

@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use hydra_belief_search::shanten_batch::batch_discard_shanten;
 use hydra_core::action::HYDRA_ACTION_SPACE;
 use hydra_core::encoder::OBS_SIZE;
 use hydra_train_exec::raw_mjai_stream::{
@@ -364,6 +365,28 @@ fn io_py_err(err: std::io::Error) -> PyErr {
     PyOSError::new_err(err.to_string())
 }
 
+#[pyfunction]
+fn batch_discard_shanten_masks(counts: Vec<u8>) -> PyResult<(i8, Vec<bool>, Vec<bool>)> {
+    if counts.len() != 34 {
+        return Err(PyValueError::new_err("counts must have length 34"));
+    }
+    let mut hand = [0u8; 34];
+    hand.copy_from_slice(&counts);
+    let total: u8 = hand.iter().copied().sum();
+    let result = batch_discard_shanten(&hand, total / 3);
+    let non_increase = result
+        .discard
+        .iter()
+        .map(|value| value.is_some_and(|shanten| shanten <= result.base))
+        .collect();
+    let decrease = result
+        .discard
+        .iter()
+        .map(|value| value.is_some_and(|shanten| shanten < result.base))
+        .collect();
+    Ok((result.base, non_increase, decrease))
+}
+
 #[pymodule]
 fn hydra_raw_mjai_pyo3(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyRawMjaiStream>()?;
@@ -377,6 +400,7 @@ fn hydra_raw_mjai_pyo3(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResul
         collect_ppo_rollouts_with_callback,
         module
     )?)?;
+    module.add_function(wrap_pyfunction!(batch_discard_shanten_masks, module)?)?;
     module.add_class::<PyRawMjaiNext>()?;
     Ok(())
 }

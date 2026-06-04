@@ -1,29 +1,14 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import override
 
 import pytest
 import torch
 import torch.nn.functional as F
+from tests.fixtures import TINY_SHARD_MANIFEST
 
-from hydra_learner.batches import targets_for_compiled_loss, targets_from_policy_batch, validate_base_targets
-from hydra_learner.losses import (
-    BaseTargets,
-    LossBreakdown,
-    LossWeights,
-    active_loss_heads,
-    base_loss,
-    danger_focal_bce,
-    exit_policy_loss,
-    masked_policy_ce,
-    masked_policy_ce_indices,
-    opp_next_ce,
-    oracle_critic_loss,
-    safety_residual_loss,
-    target_coverage_dict,
-    value_mse,
-)
+from hydra_learner.data.batches import targets_for_compiled_loss, targets_from_policy_batch, validate_base_targets
+from hydra_learner.data.shard_reader import BcShardReader
 from hydra_learner.model import (
     ACTION_SPACE,
     BACKBONE_PROFILE_CONV2D_LOCAL3,
@@ -42,9 +27,24 @@ from hydra_learner.model import (
     HydraBaseOutput,
     HydraPolicyNet,
 )
-from hydra_learner.optim import LrScheduler, LrSchedulerConfig
-from hydra_learner.shard_reader import BcShardReader
-from hydra_learner.step import HydraCompiledLossStep, loss_step_args, policy_diagnostics_from_logits, run_step
+from hydra_learner.model.losses import (
+    BaseTargets,
+    LossBreakdown,
+    LossWeights,
+    active_loss_heads,
+    base_loss,
+    danger_focal_bce,
+    exit_policy_loss,
+    masked_policy_ce,
+    masked_policy_ce_indices,
+    opp_next_ce,
+    oracle_critic_loss,
+    safety_residual_loss,
+    target_coverage_dict,
+    value_mse,
+)
+from hydra_learner.model.optim import LrScheduler, LrSchedulerConfig
+from hydra_learner.training.step import HydraCompiledLossStep, loss_step_args, policy_diagnostics_from_logits, run_step
 
 
 def test_model_outputs_base_head_shapes_and_finite() -> None:
@@ -315,10 +315,8 @@ def test_opp_next_ce_averages_over_opponents() -> None:
 
 
 def test_real_parity_batch_full_base_loss_optimizer_step() -> None:
-    manifest_path = Path("crates/hydra-bc-shards/target/python-parity-fixture/manifest.json")
-    if not manifest_path.exists():
-        pytest.skip("run Rust compact_reader_exports_python_parity_fixture first")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    manifest_path = TINY_SHARD_MANIFEST
+    device = torch.device("cpu")
     with BcShardReader(manifest_path) as reader:
         batch = reader.batch_range(0, 1)
     model = HydraPolicyNet(hidden=16, blocks=1, bottleneck=4).to(device)
@@ -360,10 +358,8 @@ def test_missing_safety_target_positive_weight_hard_errors() -> None:
 
 
 def test_real_parity_batch_safety_loss_positive_when_enabled() -> None:
-    manifest_path = Path("crates/hydra-bc-shards/target/python-parity-fixture/manifest.json")
-    if not manifest_path.exists():
-        pytest.skip("run Rust compact_reader_exports_python_parity_fixture first")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    manifest_path = TINY_SHARD_MANIFEST
+    device = torch.device("cpu")
     with BcShardReader(manifest_path) as reader:
         batch = reader.batch_range(0, 1)
     if batch.safety_target is None or batch.safety_mask is None:

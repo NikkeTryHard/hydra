@@ -7,13 +7,20 @@ use std::net::TcpListener;
 use std::path::Path;
 
 use super::command_builder::build_python_learner_command_for_run_dir;
-use hydra_train_runtime::config::PythonLearnerCliOptions;
+use hydra_train_runtime::config::{PythonLearnerCliOptions, PythonPpoControlCliOptions};
 
 use super::PythonLearnerCommand;
 
 pub(crate) const TENSORBOARD_PID_FILE: &str = "tensorboard.pid";
 
 pub(crate) fn tensorboard_url(options: &PythonLearnerCliOptions, port: u16) -> String {
+    format!("http://{}:{port}/", options.tensorboard_host)
+}
+
+pub(crate) fn tensorboard_url_for_ppo_options(
+    options: &PythonPpoControlCliOptions,
+    port: u16,
+) -> String {
     format!("http://{}:{port}/", options.tensorboard_host)
 }
 
@@ -76,6 +83,59 @@ pub(crate) fn write_tensorboard_pid_file_for_run_dir(
     Ok(())
 }
 
+pub(crate) fn write_tensorboard_pid_file_for_ppo_run_dir(
+    options: &PythonPpoControlCliOptions,
+    run_dir: &Path,
+    selected_port: u16,
+) -> Result<(), String> {
+    if !options.tensorboard || !options.launch_tensorboard {
+        return Ok(());
+    }
+    let pid_path = run_dir.join(TENSORBOARD_PID_FILE);
+    let mut pid_file = File::create(&pid_path).map_err(|err| {
+        format!(
+            "failed to create TensorBoard pid file {}: {err}",
+            pid_path.display()
+        )
+    })?;
+    writeln!(pid_file, "supervised:{selected_port}").map_err(|err| {
+        format!(
+            "failed to write TensorBoard pid file {}: {err}",
+            pid_path.display()
+        )
+    })?;
+    Ok(())
+}
+
+pub(crate) fn supervised_background_command_for_ppo_run_dir(
+    command: &PythonLearnerCommand,
+    options: &PythonPpoControlCliOptions,
+    run_dir: &Path,
+    selected_port: u16,
+) -> PythonLearnerCommand {
+    let mut args = vec![
+        "scripts/python_train_supervisor.py".to_string(),
+        "--tensorboard-pid-file".to_string(),
+        run_dir.join(TENSORBOARD_PID_FILE).display().to_string(),
+        "--tensorboard-logdir".to_string(),
+        run_dir.join("tensorboard").display().to_string(),
+        "--tensorboard-host".to_string(),
+        options.tensorboard_host.clone(),
+        "--tensorboard-port".to_string(),
+        selected_port.to_string(),
+        "--tensorboard-log".to_string(),
+        run_dir.join("logs/tensorboard.log").display().to_string(),
+        "--".to_string(),
+        command.program.clone(),
+    ];
+    args.extend(command.args.clone());
+    PythonLearnerCommand {
+        program: "python".to_string(),
+        args,
+        result_path: command.result_path.clone(),
+    }
+}
+
 pub(crate) fn supervised_background_command_for_run_dir(
     command: &PythonLearnerCommand,
     options: &PythonLearnerCliOptions,
@@ -107,6 +167,23 @@ pub(crate) fn supervised_background_command_for_run_dir(
 
 pub(crate) fn tensorboard_port_for_run_dir(
     options: &PythonLearnerCliOptions,
+    run_dir: &Path,
+) -> Result<u16, String> {
+    if options.tensorboard && options.launch_tensorboard {
+        let pid_path = run_dir.join(TENSORBOARD_PID_FILE);
+        if pid_path.is_file()
+            && let Ok(contents) = fs::read_to_string(&pid_path)
+            && let Ok(pid) = contents.trim().parse::<u32>()
+            && process_is_running(pid)
+        {
+            return Ok(options.tensorboard_port);
+        }
+    }
+    first_free_port(&options.tensorboard_host, options.tensorboard_port)
+}
+
+pub(crate) fn tensorboard_port_for_ppo_options(
+    options: &PythonPpoControlCliOptions,
     run_dir: &Path,
 ) -> Result<u16, String> {
     if options.tensorboard && options.launch_tensorboard {

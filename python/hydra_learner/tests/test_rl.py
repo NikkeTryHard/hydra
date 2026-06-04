@@ -7,8 +7,7 @@ import pytest
 import torch
 
 from hydra_learner.model import ACTION_SPACE
-from hydra_learner.reward_shaping import RewardShapingConfig
-from hydra_learner.rl import (
+from hydra_learner.ppo.rl import (
     EntropyController,
     PlayerDecisionStep,
     PpoLossConfig,
@@ -25,6 +24,7 @@ from hydra_learner.rl import (
     normalize_advantages,
     ppo_loss,
 )
+from hydra_learner.rl_experiments.reward_shaping import RewardShapingConfig
 
 
 def _mask_with_count(count: int) -> torch.Tensor:

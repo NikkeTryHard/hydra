@@ -5,7 +5,7 @@ use super::{
         PYTHON_LEARNER_SCRIPT, build_python_learner_command_for_run_dir,
         build_python_ppo_control_command_for_run_dir,
     },
-    run_python_learner_with_runner,
+    run_python_learner_with_runner, run_python_ppo_control_with_runner,
     runner::PythonLearnerRunner,
     tensorboard::{tensorboard_port_for_run_dir, tensorboard_url},
 };
@@ -18,22 +18,42 @@ use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[derive(Clone, Copy)]
-struct FakeRunner {
+use std::cell::RefCell;
+
+struct RecordingRunner {
     status: ExitStatus,
+    command: RefCell<Option<PythonLearnerCommand>>,
 }
 
-impl PythonLearnerRunner for FakeRunner {
-    fn run(&self, _command: &PythonLearnerCommand) -> Result<ExitStatus, String> {
+impl RecordingRunner {
+    fn success() -> Self {
+        Self {
+            status: ExitStatus::from_raw(0),
+            command: RefCell::new(None),
+        }
+    }
+
+    fn failure() -> Self {
+        Self {
+            status: ExitStatus::from_raw(1 << 8),
+            command: RefCell::new(None),
+        }
+    }
+}
+
+impl PythonLearnerRunner for RecordingRunner {
+    fn run(&self, command: &PythonLearnerCommand) -> Result<ExitStatus, String> {
+        *self.command.borrow_mut() = Some(command.clone());
         Ok(self.status)
     }
 
     fn spawn_background(
         &self,
-        _command: &PythonLearnerCommand,
+        command: &PythonLearnerCommand,
         _stdout: File,
         _stderr: File,
     ) -> Result<u32, String> {
+        *self.command.borrow_mut() = Some(command.clone());
         Ok(12345)
     }
 }
@@ -374,6 +394,148 @@ fn ppo_control_command_passes_pipeline_depth() {
             .windows(2)
             .any(|w| w == ["--ppo-rollout-device", "cpu"])
     );
+    assert_eq!(command.args[3], "py-train");
+}
+
+#[test]
+fn ppo_control_command_uses_mahjax_train_env_for_mahjax_gpu() {
+    let root = PathBuf::from("/tmp/hydra mahjax ppo launcher");
+    let opts = PythonPpoControlCliOptions {
+        init_checkpoint: root.join("init.pt"),
+        output_dir: root.join("out"),
+        stage: None,
+        run_name: None,
+        device: "cuda:0".to_string(),
+        rollout_device: None,
+        steps: Some(1),
+        games_per_update: 4,
+        seed: 7,
+        temperature: 1.0,
+        arena_batch_decisions: 8,
+        microbatch_size: 2,
+        epochs: 1,
+        target_kl: None,
+        arena_threads: 0,
+        hidden: 8,
+        blocks: 1,
+        bottleneck: 4,
+        residual_profile: hydra_train_runtime::config::PythonResidualProfileConfig::MishSe,
+        conv_memory_format: hydra_train_runtime::config::PythonConvMemoryFormatConfig::Contiguous,
+        backbone_profile: hydra_train_runtime::config::PythonBackboneProfileConfig::Conv2dLocal3,
+        learning_rate: 1.0e-3,
+        min_learning_rate: 0.0,
+        lr_warmup_samples: 0,
+        lr_decay_samples: None,
+        grad_clip_norm: 0.5,
+        weight_decay: 0.0,
+        adamw_fused: hydra_train_runtime::config::PythonAdamwFlagConfig::Off,
+        adamw_foreach: hydra_train_runtime::config::PythonAdamwFlagConfig::Off,
+        bc_kl_reverse_coef: 0.0,
+        resume: None,
+        checkpoint_every_steps: 1,
+        log_every_steps: 1,
+        keep_step_checkpoints: false,
+        tensorboard: false,
+        launch_tensorboard: false,
+        tensorboard_host: "127.0.0.1".to_string(),
+        tensorboard_port: 6006,
+        rollout_inference: "mahjax-gpu".to_string(),
+        ppo_pipeline_depth: 0,
+        background: false,
+    };
+    let command = build_python_ppo_control_command_for_run_dir(&opts, &root.join("run"));
+
+    assert_eq!(command.args[3], "mahjax-train");
+    assert!(
+        command
+            .args
+            .windows(2)
+            .any(|w| w == ["--rollout-inference", "mahjax-gpu"])
+    );
+}
+
+#[test]
+fn ppo_background_launch_uses_supervisor_for_tensorboard() {
+    let root = temp_dir("ppo-supervisor");
+    std::fs::create_dir_all(root.join("out")).expect("output dir should write");
+    let init = root.join("init.pt");
+    let resume = root.join("out/stages/T1_ppo_control/runs/latest_run/checkpoints/latest.pt");
+    std::fs::write(&init, b"checkpoint").expect("init checkpoint should write");
+    let opts = PythonPpoControlCliOptions {
+        init_checkpoint: init,
+        output_dir: root.join("out"),
+        stage: None,
+        run_name: None,
+        device: "cuda:0".to_string(),
+        rollout_device: None,
+        steps: None,
+        games_per_update: 1024,
+        seed: 0,
+        temperature: 1.0,
+        arena_batch_decisions: 3072,
+        microbatch_size: 768,
+        epochs: 3,
+        target_kl: Some(0.005),
+        arena_threads: 0,
+        hidden: 384,
+        blocks: 16,
+        bottleneck: 96,
+        residual_profile: hydra_train_runtime::config::PythonResidualProfileConfig::MishSe,
+        conv_memory_format: hydra_train_runtime::config::PythonConvMemoryFormatConfig::Contiguous,
+        backbone_profile: hydra_train_runtime::config::PythonBackboneProfileConfig::Conv2dLocal3,
+        learning_rate: 1.0e-4,
+        min_learning_rate: 1.0e-6,
+        lr_warmup_samples: 0,
+        lr_decay_samples: Some(1_000_000_000),
+        grad_clip_norm: 1.0,
+        weight_decay: 1.0e-5,
+        adamw_fused: hydra_train_runtime::config::PythonAdamwFlagConfig::On,
+        adamw_foreach: hydra_train_runtime::config::PythonAdamwFlagConfig::Auto,
+        bc_kl_reverse_coef: 0.0,
+        resume: Some(resume.clone()),
+        checkpoint_every_steps: 250,
+        log_every_steps: 1,
+        keep_step_checkpoints: true,
+        tensorboard: true,
+        launch_tensorboard: true,
+        tensorboard_host: "127.0.0.1".to_string(),
+        tensorboard_port: 6006,
+        rollout_inference: "mahjax-gpu".to_string(),
+        ppo_pipeline_depth: 1,
+        background: true,
+    };
+
+    let runner = RecordingRunner::success();
+    let report =
+        run_python_ppo_control_with_runner(&opts, &runner).expect("background PPO should launch");
+
+    assert_eq!(report.pid, Some(12345));
+    assert_eq!(
+        report.tensorboard_url.as_deref(),
+        Some("http://127.0.0.1:6006/")
+    );
+    let command = runner.command.borrow();
+    let command = command
+        .as_ref()
+        .expect("supervisor command should be captured");
+    assert_eq!(command.program, "python");
+    assert!(
+        command
+            .args
+            .contains(&"scripts/python_train_supervisor.py".to_string())
+    );
+    assert!(
+        command
+            .args
+            .windows(2)
+            .any(|w| w == ["--tensorboard-port", "6006"])
+    );
+    assert!(
+        command
+            .args
+            .windows(2)
+            .any(|w| w == ["--resume", resume.display().to_string().as_str()])
+    );
 }
 
 #[test]
@@ -508,13 +670,8 @@ fn command_passes_checkpoint_dir_when_checkpoint_out_absent() {
 fn missing_manifest_hard_errors_before_spawn() {
     let root = temp_dir("missing-manifest");
     let opts = options(&root);
-    let err = run_python_learner_with_runner(
-        &opts,
-        &FakeRunner {
-            status: ExitStatus::from_raw(0),
-        },
-    )
-    .expect_err("missing manifest should fail");
+    let err = run_python_learner_with_runner(&opts, &RecordingRunner::success())
+        .expect_err("missing manifest should fail");
     assert!(err.contains("manifest does not exist"));
 }
 
@@ -524,13 +681,8 @@ fn failure_status_becomes_hard_error_with_result_path() {
     fs::create_dir_all(&root).expect("temp root should be created");
     fs::write(root.join("manifest.json"), b"{}").expect("manifest fixture should write");
     let opts = options(&root);
-    let err = run_python_learner_with_runner(
-        &opts,
-        &FakeRunner {
-            status: ExitStatus::from_raw(1 << 8),
-        },
-    )
-    .expect_err("nonzero Python status should fail");
+    let err = run_python_learner_with_runner(&opts, &RecordingRunner::failure())
+        .expect_err("nonzero Python status should fail");
     assert!(err.contains("Python BC learner failed"));
     assert!(err.contains("stages/bc_baseline/runs/"));
     assert!(err.contains("python_learner_result.json"));
