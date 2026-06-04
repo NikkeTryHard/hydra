@@ -6,7 +6,6 @@
 
 
 <p align="center">
-href="https://github.com/NikkeTryHard/hydra/actions"><img alt="CI" src="https://github.com/NikkeTryHard/hydra/actions/workflows/ci.yml/badge.svg"></a>
 <img alt="Python 3.12" src="https://img.shields.io/badge/python-3.12-blue">
 <img alt="Rust 2024" src="https://img.shields.io/badge/rust-2024-orange">
 <img alt="License BSL 1.1" src="https://img.shields.io/badge/license-BSL--1.1-lightgrey">
