@@ -2,7 +2,7 @@
 <img src="assets/hydra.webp" alt="Hydra banner" width="720">
 </p>
 
-<h1 align="left">Hydra</h1>
+<h1 align="center">Hydra</h1>
 
 
 <p align="center">
