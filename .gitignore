@@ -10,6 +10,9 @@ target/
 .sisyphus/
 /pdf/
 /third_party/
+/research/pdf/
+/graphify-out/
+/.graphify_ast.json
 research/papers/
 __pycache__/
 *.pyc
