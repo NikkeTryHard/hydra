@@ -181,7 +181,7 @@ def default_raw_mjai_pyo3_library_path() -> Path:
     env_path = os.environ.get("HYDRA_RAW_MJAI_PYO3_LIB")
     if env_path:
         return Path(env_path)
-    repo_root = Path(__file__).resolve().parents[5]
+    repo_root = Path(__file__).resolve().parents[6]
     release_path = repo_root / "target" / "release" / "libhydra_raw_mjai_pyo3.so"
     if release_path.exists():
         return release_path
