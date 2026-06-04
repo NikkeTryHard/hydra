@@ -1,12 +1,9 @@
 //! Native GroupNorm+Mish fusion seam.
-//!
-//! This module is deliberately parity-first. The backend default keeps the
-//! exact Burn GroupNorm and Mish formulas; accelerated backends can override the
-//! narrow op after forward and gradient parity are proven.
+//! This module keeps the GroupNorm+Mish call site narrow. It uses upstream Burn
+//! ops directly so the model crate does not depend on a vendored Burn fork.
 
 use burn::nn::GroupNorm;
 use burn::prelude::*;
-use burn::tensor::TensorPrimitive;
 
 /// GroupNorm followed by Mish for the residual pre-conv activation pair.
 #[inline]
@@ -22,15 +19,6 @@ pub(crate) fn group_norm_mish<B: Backend, const D: usize>(
         input.shape()[1]
     );
 
-    let gamma = group_norm.gamma.as_ref().map(|param| param.val());
-    let beta = group_norm.beta.as_ref().map(|param| param.val());
-
-    Tensor::from_primitive(TensorPrimitive::Float(B::group_norm_mish::<D>(
-        input.into_primitive().tensor(),
-        gamma.map(|tensor| tensor.into_primitive().tensor()),
-        beta.map(|tensor| tensor.into_primitive().tensor()),
-        group_norm.num_groups,
-        group_norm.epsilon,
-        group_norm.affine,
-    )))
+    let output = group_norm.forward(input);
+    burn::tensor::activation::mish(output)
 }

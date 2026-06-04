@@ -8,6 +8,8 @@ RiichiEnv/
 AGENTS.md
 target/
 .sisyphus/
+/pdf/
+/third_party/
 research/papers/
 __pycache__/
 *.pyc
