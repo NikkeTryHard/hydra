@@ -1,8 +1,20 @@
-# Hydra
+<p align="center">
+<img src="assets/hydra.webp" alt="Hydra banner" width="720">
+</p>
 
-Hydra is Riichi Mahjong AI project focused on correct, reproducible train/eval.
+<h1 align="left">Hydra</h1>
 
-Current authority is Tenhou/MJAI rules plus `hydra-engine` as executable reference. Speed and throughput matter only after correctness is proven.
+---
+
+<p align="center">
+href="https://github.com/NikkeTryHard/hydra/actions"><img alt="CI" src="https://github.com/NikkeTryHard/hydra/actions/workflows/ci.yml/badge.svg"></a>
+<img alt="Python 3.12" src="https://img.shields.io/badge/python-3.12-blue">
+<img alt="Rust 2024" src="https://img.shields.io/badge/rust-2024-orange">
+<img alt="License BSL 1.1" src="https://img.shields.io/badge/license-BSL--1.1-lightgrey">
+<img alt="Training PyTorch + MahJAX" src="https://img.shields.io/badge/training-PyTorch%20%2B%20MahJAX-ee4c2c">
+</p>
+
+Hydra is Riichi Mahjong AI project focused on correct, reproducible train/eval. Its goal is to beat [LuckyJ](https://haobofu.github.io/) in strength.
 
 ## Setup
 
@@ -64,13 +76,21 @@ Use Pixi-owned commands from repo root. Avoid direct system `cargo` for normal w
 
 ## Training
 
-`example.yaml` is launch/config source of truth. Keep it current when runtime, resume, validation, model/profile, checkpoint, data, PPO, or backend behavior changes.
+Start from [`example.yaml`](example.yaml), then use [`docs/TRAINING_RUNBOOK.md`](docs/TRAINING_RUNBOOK.md) for launch, resume, checkpoint, validation, and T1 PPO details.
 
-Normal BC training uses Rust launcher and Python/PyTorch learner. Raw MJAI streaming is default; compact shards are optional cache/resume material.
+BC training:
 
-T1 PPO uses MahJAX GPU rollout by default, with `torch-callback` and `rust-ort` kept as reference/compat routes.
+```bash
+pixi run cargo run --quiet --package hydra-train --features training --bin train -- example.yaml
+```
 
-Operator detail lives in [`docs/TRAINING_RUNBOOK.md`](docs/TRAINING_RUNBOOK.md).
+T1 PPO uses same launcher after setting `rl.phase: ppo_control` in YAML:
+
+```bash
+pixi run cargo run --quiet --package hydra-train --features training --bin train -- example.yaml
+```
+
+When TensorBoard is enabled, launcher prints local TensorBoard URL. Run logs and checkpoints are written under `<output_dir>/stages/<stage>/runs/<run_id>/`, including `logs/train_steps.jsonl`, `logs/events.jsonl`, `logs/stdout.log`, `logs/stderr.log`, and `checkpoints/latest.pt`.
 
 ## Repository Map
 
@@ -89,8 +109,15 @@ Operator detail lives in [`docs/TRAINING_RUNBOOK.md`](docs/TRAINING_RUNBOOK.md).
 - [`docs/MAHJAX_PPO.md`](docs/MAHJAX_PPO.md): MahJAX PPO scope and limits.
 - [`AGENTS.md`](AGENTS.md): contributor rules for this repo.
 
+## Compute Support
+
+<p align="center">
+<img src="assets/delta.webp" alt="Delta GPU node" width="720">
+</p>
+
+This research used Delta advanced computing and data resource which is supported by National Science Foundation (award OAC 2005572) and State of Illinois. Delta is joint effort of University of Illinois Urbana-Champaign and its National Center for Supercomputing Applications.
+
 ## License Boundaries
 
 First-party crates use repo BSL 1.1 unless crate-specific license says otherwise. `hydra-engine` is vendored Apache-2.0.
 
-`Mortal-Policy/` is AGPL. Do not copy, adapt, derive, port, link, or translate it. Do not add AGPL/GPL/LGPL dependencies.
