@@ -536,57 +536,117 @@ fn materialize_persistent_archive_group(
     result_tx: &SyncSender<io::Result<MaterializedStreamGame>>,
     stop: &AtomicBool,
 ) -> io::Result<()> {
-    let wanted: BTreeMap<PathBuf, StreamPlanEntry> = entries
-        .iter()
-        .map(|entry| match &entry.source {
-            StreamPlanSource::ArchiveEntry { entry_path, .. } => {
-                (entry_path.clone(), (*entry).clone())
+    let pool = make_optional_pool(config.num_threads, "raw MJAI persistent archive stream")?;
+    let wanted = Arc::new(
+        entries
+            .iter()
+            .map(|entry| match &entry.source {
+                StreamPlanSource::ArchiveEntry { entry_path, .. } => {
+                    (entry_path.clone(), (*entry).clone())
+                }
+                StreamPlanSource::LooseFile { .. } => {
+                    unreachable!("archive group contains loose file")
+                }
+            })
+            .collect::<BTreeMap<PathBuf, StreamPlanEntry>>(),
+    );
+    let (job_tx, job_rx) = mpsc::sync_channel::<ArchiveStreamJob>(config.queue_bound);
+    let producer_job_tx = job_tx.clone();
+    let producer_wanted = Arc::clone(&wanted);
+    let (worker_result_tx, worker_result_rx) =
+        mpsc::sync_channel::<io::Result<MaterializedStreamGame>>(config.queue_bound);
+    let augment = config.augment;
+
+    thread::scope(|scope| -> io::Result<()> {
+        let producer = scope.spawn(move || -> io::Result<usize> {
+            let file = File::open(archive_path)?;
+            let reader = archive_reader(archive_path, file)?;
+            let mut archive = tar::Archive::new(reader);
+            let mut sent = 0usize;
+            let expected_count = producer_wanted.len();
+            for entry_result in archive.entries()? {
+                if stop.load(Ordering::Acquire) {
+                    break;
+                }
+                let mut entry = entry_result?;
+                let entry_path = entry.path()?.into_owned();
+                let Some(plan) = producer_wanted.get(&entry_path) else {
+                    continue;
+                };
+                let mut data = Vec::with_capacity(entry.size() as usize);
+                entry.read_to_end(&mut data)?;
+                if send_archive_job_cancelable(
+                    &producer_job_tx,
+                    stop,
+                    ArchiveStreamJob {
+                        plan: plan.clone(),
+                        data,
+                    },
+                )
+                .is_err()
+                {
+                    break;
+                }
+                sent += 1;
+                if sent == expected_count {
+                    break;
+                }
             }
-            StreamPlanSource::LooseFile { .. } => unreachable!("archive group contains loose file"),
-        })
-        .collect();
-    let file = File::open(archive_path)?;
-    let reader = archive_reader(archive_path, file)?;
-    let mut archive = tar::Archive::new(reader);
-    let mut sent = 0usize;
-    let expected_count = wanted.len();
-    for entry_result in archive.entries()? {
-        if stop.load(Ordering::Acquire) {
-            break;
+            Ok(sent)
+        });
+
+        let workers = scope.spawn(|| {
+            pool.install(|| {
+                job_rx.into_iter().par_bridge().for_each(|job| {
+                    let result = materialize_archive_stream_job(job, augment);
+                    let _ = worker_result_tx.send(Ok(result));
+                });
+            });
+        });
+
+        let expected_count = wanted.len();
+        let mut forwarded = 0usize;
+        for result in worker_result_rx {
+            if send_result_cancelable(result_tx, stop, result).is_err() {
+                break;
+            }
+            forwarded += 1;
+            if forwarded == expected_count {
+                break;
+            }
         }
-        let mut entry = entry_result?;
-        let entry_path = entry.path()?.into_owned();
-        let Some(plan) = wanted.get(&entry_path) else {
-            continue;
-        };
-        let mut data = Vec::with_capacity(entry.size() as usize);
-        entry.read_to_end(&mut data)?;
-        if send_result_cancelable(
-            result_tx,
-            stop,
-            Ok(materialize_archive_stream_job(
-                ArchiveStreamJob {
-                    plan: plan.clone(),
-                    data,
-                },
-                config.augment,
-            )),
-        )
-        .is_err()
-        {
-            break;
+        let sent = producer
+            .join()
+            .map_err(|_| io::Error::other("pinned archive producer thread panicked"))??;
+        drop(job_tx);
+        workers
+            .join()
+            .map_err(|_| io::Error::other("pinned archive worker thread panicked"))?;
+        if !stop.load(Ordering::Acquire) && (sent != expected_count || forwarded != expected_count) {
+            return Err(invalid_data(format!(
+                "pinned archive stream materialized {forwarded} games, expected {expected_count}"
+            )));
         }
-        sent += 1;
-        if sent == expected_count {
-            break;
+        Ok(())
+    })
+}
+
+fn send_archive_job_cancelable(
+    tx: &SyncSender<ArchiveStreamJob>,
+    stop: &AtomicBool,
+    mut job: ArchiveStreamJob,
+) -> Result<(), ()> {
+    while !stop.load(Ordering::Acquire) {
+        match tx.try_send(job) {
+            Ok(()) => return Ok(()),
+            Err(TrySendError::Full(returned)) => {
+                job = returned;
+                thread::sleep(Duration::from_millis(1));
+            }
+            Err(TrySendError::Disconnected(_)) => return Err(()),
         }
     }
-    if !stop.load(Ordering::Acquire) && sent != expected_count {
-        return Err(invalid_data(format!(
-            "pinned archive stream materialized {sent} games, expected {expected_count}"
-        )));
-    }
-    Ok(())
+    Err(())
 }
 
 fn send_result_cancelable(
