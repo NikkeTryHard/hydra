@@ -12,12 +12,6 @@ from typing import Any, Literal, Protocol, cast, override
 import numpy as np
 import pytest
 import torch
-from tests.fixtures import (
-    TINY_CHECKPOINT_CONFIG_DIGEST,
-    tiny_checkpoint_ppo_control_config,
-    tiny_ppo_rollout,
-    tiny_run_local_paths,
-)
 
 import hydra_learner.mahjax.ppo_rollout as mahjax_rollout
 from hydra_learner import ppo_control
@@ -82,6 +76,12 @@ from hydra_learner.ppo.smoke import (
 )
 from hydra_learner.ppo.step import PpoBatch, PpoTrainStepConfig, ppo_train_step
 from hydra_learner.rl_experiments.reward_shaping import default_reward_shaping_metadata
+from tests.fixtures import (
+    TINY_CHECKPOINT_CONFIG_DIGEST,
+    tiny_checkpoint_ppo_control_config,
+    tiny_ppo_rollout,
+    tiny_run_local_paths,
+)
 
 
 class _DebugPpoInferenceCallback(Protocol):
@@ -354,6 +354,17 @@ def test_mahjax_final_score_metrics_report_seat_outcomes() -> None:
     assert metrics["seat3_last_rate"] == 0.5
 
 
+def test_mahjax_final_score_metrics_split_tied_placement_credit() -> None:
+    metrics = _final_score_metrics(torch.full((2, 4), 25000))
+
+    assert metrics["episode_reward_mean"] == pytest.approx(0.0, abs=1.0e-7)
+    for seat in range(4):
+        assert metrics[f"seat{seat}_reward_mean"] == pytest.approx(0.0, abs=1.0e-7)
+        assert metrics[f"seat{seat}_placement_mean"] == 1.5
+        assert metrics[f"seat{seat}_first_rate"] == 0.25
+        assert metrics[f"seat{seat}_last_rate"] == 0.25
+
+
 def test_mahjax_rollout_batch_does_not_require_native_extension(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -506,6 +517,24 @@ def test_mahjax_slot_gae_matches_reference() -> None:
 
     torch.testing.assert_close(actual_adv, expected_adv)
     torch.testing.assert_close(actual_returns, expected_returns)
+
+
+def test_mahjax_slot_gae_splits_tied_final_score_rewards() -> None:
+    player_ids = torch.tensor([0, 1, 2, 3], dtype=torch.int64)
+    game_ids = torch.zeros(4, dtype=torch.int64)
+    values = torch.zeros(4, dtype=torch.float32)
+    final_scores = torch.full((1, 4), 25000, dtype=torch.int32)
+
+    actual_adv, actual_returns = _mahjax_gae_for_slots(
+        player_id=player_ids,
+        value_old=values,
+        game_id=game_ids,
+        final_scores=final_scores,
+        device=torch.device("cpu"),
+    )
+
+    torch.testing.assert_close(actual_adv, torch.zeros_like(values))
+    torch.testing.assert_close(actual_returns, torch.zeros_like(values))
 
 
 def test_mahjax_parts_to_batch_uses_detached_slot_game_ids_for_gae() -> None:

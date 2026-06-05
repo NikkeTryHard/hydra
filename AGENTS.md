@@ -12,6 +12,7 @@ Hydra = Riichi Mahjong AI. Goal: LuckyJ-level strength with reproducible train/e
 - Hydra engine strict audit target for that corpus: all valid, no errors, no false positives, and little to no false negatives. Do not broad list/glob that dataset; use exact paths or owner scanners.
 - Test wall time matters. If focused test/gate takes unexpectedly long, treat that as bug or bad test shape; investigate and fix cause.
 - `example.yaml` is training launch/config SSOT. Update it whenever runtime, launch, resume, validation, model/profile, checkpoint, data, PPO, or backend behavior changes and example can reasonably show current intended shape.
+- Delta hardware/setup note SSOT: `delta_docs/README.md`. Read it before Delta login, storage, Pixi/cache, dataset, Slurm, or A100 work.
 
 ## Rust Rules
 

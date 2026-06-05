@@ -422,16 +422,19 @@ def _final_score_metrics(final_scores: torch.Tensor) -> dict[str, float]:
     games = scores.shape[0]
     if games < 1:
         raise ValueError("mahjax final score metrics require at least one game")
-    ordered_players = torch.argsort(-scores, dim=1, stable=True)
-    placements = torch.empty_like(ordered_players)
-    rank_ids = torch.arange(4, dtype=ordered_players.dtype).expand_as(ordered_players)
-    placements.scatter_(1, ordered_players, rank_ids)
+    higher_counts = (scores.unsqueeze(2) < scores.unsqueeze(1)).sum(dim=2).to(dtype=torch.float32)
+    equal_counts = (scores.unsqueeze(2) == scores.unsqueeze(1)).sum(dim=2).to(dtype=torch.float32)
+    average_placements = higher_counts + (equal_counts - 1.0) * 0.5
     utility = torch.tensor(PLACEMENT_UTILITY_DEFAULT, dtype=torch.float32)
-    rewards = utility[placements]
+    utility_prefix = torch.cat([torch.zeros(1, dtype=torch.float32), torch.cumsum(utility, dim=0)])
+    tie_start = higher_counts.to(dtype=torch.int64)
+    tie_end = (higher_counts + equal_counts).to(dtype=torch.int64)
+    rewards = (utility_prefix[tie_end] - utility_prefix[tie_start]) / equal_counts
+    first_credit = torch.where(higher_counts == 0.0, 1.0 / equal_counts, torch.zeros_like(equal_counts))
+    last_credit = torch.where(higher_counts + equal_counts == 4.0, 1.0 / equal_counts, torch.zeros_like(equal_counts))
     score_mean = scores.mean(dim=0)
     reward_mean = rewards.mean(dim=0)
-    placement_counts = torch.stack([(placements == rank).sum(dim=0) for rank in range(4)]).to(dtype=torch.float32)
-    inv_games = 1.0 / float(games)
+    placement_mean = average_placements.mean(dim=0)
     metrics: dict[str, float] = {
         "episode_score_mean": float(scores.mean().item()),
         "episode_score_std": float(scores.std(unbiased=False).item()),
@@ -441,8 +444,9 @@ def _final_score_metrics(final_scores: torch.Tensor) -> dict[str, float]:
     for seat in range(4):
         metrics[f"seat{seat}_score_mean"] = float(score_mean[seat].item())
         metrics[f"seat{seat}_reward_mean"] = float(reward_mean[seat].item())
-        metrics[f"seat{seat}_first_rate"] = float((placement_counts[0, seat] * inv_games).item())
-        metrics[f"seat{seat}_last_rate"] = float((placement_counts[3, seat] * inv_games).item())
+        metrics[f"seat{seat}_placement_mean"] = float(placement_mean[seat].item())
+        metrics[f"seat{seat}_first_rate"] = float(first_credit[:, seat].mean().item())
+        metrics[f"seat{seat}_last_rate"] = float(last_credit[:, seat].mean().item())
     return metrics
 
 
@@ -475,15 +479,20 @@ def _gae_for_slots(
     values_dense = torch.zeros((group_count, max_count), dtype=value_old.dtype, device=target_device)
     values_dense[group_index, position] = sorted_value
 
-    ordered_players = torch.argsort(-final_scores, dim=1, stable=True)
-    placements = torch.empty_like(ordered_players)
-    rank_ids = torch.arange(4, device=target_device, dtype=ordered_players.dtype).expand_as(ordered_players)
-    placements.scatter_(1, ordered_players, rank_ids)
-
+    scores_float = final_scores.to(dtype=value_old.dtype)
+    higher_counts = (scores_float.unsqueeze(2) < scores_float.unsqueeze(1)).sum(dim=2).to(dtype=value_old.dtype)
+    equal_counts = (scores_float.unsqueeze(2) == scores_float.unsqueeze(1)).sum(dim=2).to(dtype=value_old.dtype)
     utility = torch.tensor(PLACEMENT_UTILITY_DEFAULT, dtype=value_old.dtype, device=target_device)
+    utility_prefix = torch.cat(
+        [torch.zeros(1, dtype=value_old.dtype, device=target_device), torch.cumsum(utility, dim=0)]
+    )
+    tie_start = higher_counts.to(dtype=torch.int64)
+    tie_end = (higher_counts + equal_counts).to(dtype=torch.int64)
+    placement_rewards = (utility_prefix[tie_end] - utility_prefix[tie_start]) / equal_counts
+
     group_game = unique_key // 4
     group_player = unique_key % 4
-    reward = utility[placements[group_game, group_player]]
+    reward = placement_rewards[group_game, group_player]
 
     discount = DEFAULT_GAE_GAMMA * DEFAULT_GAE_LAMBDA
     running = torch.zeros(group_count, dtype=value_old.dtype, device=target_device)
