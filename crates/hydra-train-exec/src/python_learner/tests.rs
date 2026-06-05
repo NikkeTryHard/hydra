@@ -113,6 +113,9 @@ fn options(root: &Path) -> PythonLearnerCliOptions {
         validation_max_samples: None,
         validation_every: 0,
         raw_mjai_validation_augment: false,
+        raw_mjai_worker_threads: 7,
+        raw_mjai_prefetch_batches: 5,
+        raw_mjai_queue_bound: 13,
         validation_source_mode: "fixed".to_string(),
         checkpoint_out: Some(root.join("ckpt.pt")),
         resume: Some(root.join("resume.pt")),
@@ -588,6 +591,24 @@ fn command_passes_raw_mjai_input_when_manifest_absent() {
             .args
             .windows(2)
             .any(|w| w == ["--raw-mjai-train-fraction", "0.8"])
+    );
+    assert!(
+        command
+            .args
+            .windows(2)
+            .any(|w| w == ["--raw-mjai-prefetch-batches", "5"])
+    );
+    assert!(
+        command
+            .args
+            .windows(2)
+            .any(|w| w == ["--raw-mjai-queue-bound", "13"])
+    );
+    assert!(
+        command
+            .args
+            .windows(2)
+            .any(|w| w == ["--raw-mjai-worker-threads", "7"])
     );
     assert!(
         command

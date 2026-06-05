@@ -125,8 +125,12 @@ pub(crate) fn build_python_learner_command_for_run_dir(
                 args.push("--raw-mjai-data-dir".to_string());
                 args.push(data_dir.display().to_string());
             }
+            args.push("--raw-mjai-prefetch-batches".to_string());
+            args.push(options.raw_mjai_prefetch_batches.to_string());
+            args.push("--raw-mjai-queue-bound".to_string());
+            args.push(options.raw_mjai_queue_bound.to_string());
             args.push("--raw-mjai-worker-threads".to_string());
-            args.push("20".to_string());
+            args.push(options.raw_mjai_worker_threads.to_string());
             args.push("--raw-mjai-train-fraction".to_string());
             args.push(train_fraction.to_string());
             args.push("--raw-mjai-transport".to_string());

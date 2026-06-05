@@ -92,6 +92,11 @@ pub fn python_options_from_config(config: &TrainConfig) -> Result<PythonLearnerC
         validation_max_samples: config.max_validation_samples,
         validation_every: config.validate_every_n_steps,
         raw_mjai_validation_augment: false,
+        raw_mjai_worker_threads: config
+            .num_threads
+            .unwrap_or_else(crate::config_runtime::default_num_threads_for_system),
+        raw_mjai_prefetch_batches: super::shard_prefetch_depth(config),
+        raw_mjai_queue_bound: config.archive_queue_bound,
         validation_source_mode: "fixed".to_string(),
         checkpoint_out: None,
         resume: python_resume_checkpoint(config)?,

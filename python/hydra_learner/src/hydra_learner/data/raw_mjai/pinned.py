@@ -330,16 +330,18 @@ class RawMjaiPinnedStream:
             )
             raise item
         self._stats = item.result.stats
-        print(
-            "raw_mjai_pinned_next "
-            f"wait_ms={fetch_ms:.3f} rows={item.result.rows} loaded_games={item.result.loaded_games} "
-            f"skipped_games={item.result.skipped_games} samples={item.result.samples} batches={item.result.batches} "
-            f"fill_ms={item.fill_ms:.3f} bridge_fill_ms={item.result.stats.last_next_fill_ms:.3f} "
-            f"queue_wait_ms={item.result.stats.last_queue_wait_ms:.3f} "
-            f"games_consumed={item.result.stats.last_games_consumed}",
-            file=sys.stderr,
-            flush=True,
-        )
+        if self._debug:
+            print(
+                "raw_mjai_pinned_next "
+                f"wait_ms={fetch_ms:.3f} rows={item.result.rows} loaded_games={item.result.loaded_games} "
+                f"skipped_games={item.result.skipped_games} samples={item.result.samples} "
+                f"batches={item.result.batches} "
+                f"fill_ms={item.fill_ms:.3f} bridge_fill_ms={item.result.stats.last_next_fill_ms:.3f} "
+                f"queue_wait_ms={item.result.stats.last_queue_wait_ms:.3f} "
+                f"games_consumed={item.result.stats.last_games_consumed}",
+                file=sys.stderr,
+                flush=True,
+            )
         self._progress = BuildProgress(
             manifest_path=None,
             complete=False,
@@ -427,17 +429,18 @@ class RawMjaiPinnedStream:
                 )
                 fill_ms = (time.perf_counter() - fill_started) * 1000.0
                 self._debug_log(f"producer filled slot={slot} rows={result.rows} fill_ms={fill_ms:.3f}")
-                print(
-                    "raw_mjai_pinned_producer_fill "
-                    f"slot={slot} rows={result.rows} fill_ms={fill_ms:.3f} "
-                    f"loaded_games={result.loaded_games} skipped_games={result.skipped_games} "
-                    f"samples={result.samples} batches={result.batches} "
-                    f"bridge_fill_ms={result.stats.last_next_fill_ms:.3f} "
-                    f"queue_wait_ms={result.stats.last_queue_wait_ms:.3f} "
-                    f"games_consumed={result.stats.last_games_consumed}",
-                    file=sys.stderr,
-                    flush=True,
-                )
+                if self._debug:
+                    print(
+                        "raw_mjai_pinned_producer_fill "
+                        f"slot={slot} rows={result.rows} fill_ms={fill_ms:.3f} "
+                        f"loaded_games={result.loaded_games} skipped_games={result.skipped_games} "
+                        f"samples={result.samples} batches={result.batches} "
+                        f"bridge_fill_ms={result.stats.last_next_fill_ms:.3f} "
+                        f"queue_wait_ms={result.stats.last_queue_wait_ms:.3f} "
+                        f"games_consumed={result.stats.last_games_consumed}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
                 self._stats = result.stats
                 self._queue_stats = RawMjaiPinnedQueueStats(
                     ready_wait_ms_total=self._queue_stats.ready_wait_ms_total,
