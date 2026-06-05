@@ -605,6 +605,65 @@ fn command_passes_raw_mjai_input_when_manifest_absent() {
 }
 
 #[test]
+fn foreground_raw_pinned_pyo3_builds_missing_extension_before_launch() {
+    let root = temp_dir("raw-pyo3-build");
+    let raw_dir = root.join("mjai");
+    fs::create_dir_all(&raw_dir).expect("raw dir should be created");
+    let mut opts = options(&root);
+    opts.input = PythonLearnerInput::RawMjai {
+        data_dirs: vec![raw_dir],
+        max_games: None,
+        max_samples: None,
+        skip_games: 0,
+        train_fraction: 0.9,
+        augment: false,
+        transport: hydra_train_runtime::config::PythonRawMjaiTransportConfig::PinnedPyo3,
+    };
+    let existing_lib = root.join("libhydra_raw_mjai_pyo3.so");
+    fs::write(&existing_lib, b"placeholder").expect("extension placeholder should be written");
+    unsafe {
+        std::env::set_var("HYDRA_RAW_MJAI_PYO3_LIB", &existing_lib);
+    }
+
+    let runner = ResultWritingRunner;
+    let report = run_python_learner_with_runner(&opts, &runner).expect("runner should succeed");
+
+    assert_eq!(report.global_step, 9);
+    unsafe {
+        std::env::remove_var("HYDRA_RAW_MJAI_PYO3_LIB");
+    }
+}
+
+#[test]
+fn foreground_raw_pinned_pyo3_fails_when_env_override_is_missing() {
+    let root = temp_dir("raw-pyo3-missing-env");
+    let raw_dir = root.join("mjai");
+    fs::create_dir_all(&raw_dir).expect("raw dir should be created");
+    let mut opts = options(&root);
+    opts.input = PythonLearnerInput::RawMjai {
+        data_dirs: vec![raw_dir],
+        max_games: None,
+        max_samples: None,
+        skip_games: 0,
+        train_fraction: 0.9,
+        augment: false,
+        transport: hydra_train_runtime::config::PythonRawMjaiTransportConfig::PinnedPyo3,
+    };
+    let missing_lib = root.join("missing.so");
+    unsafe {
+        std::env::set_var("HYDRA_RAW_MJAI_PYO3_LIB", &missing_lib);
+    }
+
+    let err = run_python_learner_with_runner(&opts, &ResultWritingRunner)
+        .expect_err("missing override should fail");
+
+    assert!(err.contains("HYDRA_RAW_MJAI_PYO3_LIB points to missing"));
+    unsafe {
+        std::env::remove_var("HYDRA_RAW_MJAI_PYO3_LIB");
+    }
+}
+
+#[test]
 fn command_passes_validation_source_controls() {
     let root = PathBuf::from("/tmp/hydra validation launcher");
     let mut opts = options(&root);

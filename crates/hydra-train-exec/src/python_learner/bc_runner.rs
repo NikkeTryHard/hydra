@@ -1,9 +1,13 @@
 //! Python BC learner run orchestration.
 
+use std::env;
 use std::fs::{self, File};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-use hydra_train_runtime::config::{PythonLearnerCliOptions, PythonLearnerInput};
+use hydra_train_runtime::config::{
+    PythonLearnerCliOptions, PythonLearnerInput, PythonRawMjaiTransportConfig,
+};
 
 use super::layout;
 use super::runner::{OsPythonLearnerRunner, PythonLearnerRunner};
@@ -50,6 +54,7 @@ pub fn run_python_learner_with_runner(
         }
         _ => {}
     }
+    ensure_raw_mjai_pyo3_extension(options)?;
     let layout = layout::for_bc(options);
     layout.ensure()?;
     if options.tensorboard {
@@ -138,6 +143,66 @@ pub fn run_python_learner_with_runner(
         ));
     }
     parse_python_learner_report(&command.result_path)
+}
+
+fn ensure_raw_mjai_pyo3_extension(options: &PythonLearnerCliOptions) -> Result<(), String> {
+    if !matches!(
+        &options.input,
+        PythonLearnerInput::RawMjai {
+            transport: PythonRawMjaiTransportConfig::PinnedPyo3,
+            ..
+        }
+    ) {
+        return Ok(());
+    }
+    if let Some(path) = env::var_os("HYDRA_RAW_MJAI_PYO3_LIB") {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return Ok(());
+        }
+        return Err(format!(
+            "HYDRA_RAW_MJAI_PYO3_LIB points to missing raw MJAI PyO3 extension: {}",
+            path.display()
+        ));
+    }
+    let extension_path = raw_mjai_pyo3_release_path()?;
+    if extension_path.is_file() {
+        return Ok(());
+    }
+    let status = Command::new("cargo")
+        .args(["build", "-p", "hydra-raw-mjai-pyo3", "--release", "--quiet"])
+        .status()
+        .map_err(|err| format!("failed to spawn raw MJAI PyO3 extension build: {err}"))?;
+    if !status.success() {
+        return Err(format!(
+            "raw MJAI PyO3 extension build failed with status {status}; run `cargo build -p hydra-raw-mjai-pyo3 --release` for details"
+        ));
+    }
+    if !extension_path.is_file() {
+        return Err(format!(
+            "raw MJAI PyO3 extension build completed but did not create {}",
+            extension_path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn raw_mjai_pyo3_release_path() -> Result<PathBuf, String> {
+    let cwd = env::current_dir().map_err(|err| format!("failed to resolve current dir: {err}"))?;
+    Ok(cwd
+        .join("target")
+        .join("release")
+        .join(raw_mjai_pyo3_library_name()))
+}
+
+fn raw_mjai_pyo3_library_name() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "libhydra_raw_mjai_pyo3.dylib"
+    } else if cfg!(target_os = "windows") {
+        "hydra_raw_mjai_pyo3.dll"
+    } else {
+        "libhydra_raw_mjai_pyo3.so"
+    }
 }
 
 /// Runs a Python BC learner benchmark for one batch/microbatch candidate.

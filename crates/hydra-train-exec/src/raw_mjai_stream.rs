@@ -622,7 +622,8 @@ fn materialize_persistent_archive_group(
         workers
             .join()
             .map_err(|_| io::Error::other("pinned archive worker thread panicked"))?;
-        if !stop.load(Ordering::Acquire) && (sent != expected_count || forwarded != expected_count) {
+        if !stop.load(Ordering::Acquire) && (sent != expected_count || forwarded != expected_count)
+        {
             return Err(invalid_data(format!(
                 "pinned archive stream materialized {forwarded} games, expected {expected_count}"
             )));
