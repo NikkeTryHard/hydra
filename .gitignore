@@ -43,6 +43,9 @@ dist/
 /training/
 /riichi-dev/
 
+
+# Locally mirrored NCSA Delta docs.
+/delta_docs/
 # Generated Kaggle runtime payloads are intentionally local-only.
 /notebooks/offline-bundle/*.bin
 /notebooks/offline-bundle/*.zip
