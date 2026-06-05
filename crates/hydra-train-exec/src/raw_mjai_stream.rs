@@ -437,7 +437,7 @@ fn spawn_persistent_workers(
     let workers = thread::Builder::new()
         .name("raw-mjai-pinned-persistent-workers".into())
         .spawn(move || {
-            for group in group_stream_entries_preserving_order(&entries) {
+            for group in group_persistent_entries_by_source(&entries) {
                 if worker_stop.load(Ordering::Acquire) {
                     break;
                 }
@@ -919,6 +919,33 @@ fn group_stream_entries_preserving_order(entries: &[StreamPlanEntry]) -> Vec<Str
                 });
             }
         }
+    }
+    groups
+}
+
+fn group_persistent_entries_by_source(entries: &[StreamPlanEntry]) -> Vec<StreamPlanGroup<'_>> {
+    let mut groups = Vec::new();
+    let mut loose = Vec::new();
+    let mut archives: BTreeMap<PathBuf, Vec<&StreamPlanEntry>> = BTreeMap::new();
+    for entry in entries {
+        match &entry.source {
+            StreamPlanSource::LooseFile { .. } => loose.push(entry),
+            StreamPlanSource::ArchiveEntry { archive_path, .. } => {
+                archives
+                    .entry(archive_path.clone())
+                    .or_default()
+                    .push(entry);
+            }
+        }
+    }
+    if !loose.is_empty() {
+        groups.push(StreamPlanGroup::Loose(loose));
+    }
+    for (archive_path, entries) in archives {
+        groups.push(StreamPlanGroup::Archive {
+            archive_path,
+            entries,
+        });
     }
     groups
 }
