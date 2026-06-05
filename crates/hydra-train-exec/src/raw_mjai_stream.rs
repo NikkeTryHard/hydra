@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
-    mpsc::{self, SyncSender, TrySendError},
+    mpsc::{self, RecvTimeoutError, SyncSender, TrySendError},
 };
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -407,8 +407,12 @@ impl Drop for RawMjaiPinnedStream {
         if let Some(producer) = self.producer.take() {
             let _ = producer.join();
         }
-        while self.result_rx.try_recv().is_ok() {}
         if let Some(workers) = self.workers.take() {
+            while !workers.is_finished() {
+                while self.result_rx.try_recv().is_ok() {}
+                thread::sleep(Duration::from_millis(1));
+            }
+            while self.result_rx.try_recv().is_ok() {}
             let _ = workers.join();
         }
     }
@@ -437,33 +441,52 @@ fn spawn_persistent_workers(
     let workers = thread::Builder::new()
         .name("raw-mjai-pinned-persistent-workers".into())
         .spawn(move || {
-            for group in group_persistent_entries_by_source(&entries) {
-                if worker_stop.load(Ordering::Acquire) {
-                    break;
+            let groups = group_persistent_entries_by_source(&entries);
+            thread::scope(|scope| {
+                let mut handles = Vec::with_capacity(groups.len());
+                for group in groups {
+                    let group_config = config.clone();
+                    let group_tx = result_tx.clone();
+                    let group_stop = Arc::clone(&worker_stop);
+                    handles.push(scope.spawn(move || match group {
+                        StreamPlanGroup::Loose(group_entries) => {
+                            materialize_persistent_loose_group(
+                                group_entries,
+                                &group_config,
+                                &group_tx,
+                                group_stop,
+                            )
+                        }
+                        StreamPlanGroup::Archive {
+                            archive_path,
+                            entries,
+                        } => materialize_persistent_archive_group(
+                            &archive_path,
+                            entries,
+                            &group_config,
+                            &group_tx,
+                            group_stop,
+                        ),
+                    }));
                 }
-                let group_result = match group {
-                    StreamPlanGroup::Loose(group_entries) => materialize_persistent_loose_group(
-                        group_entries,
-                        &config,
-                        &result_tx,
-                        &worker_stop,
-                    ),
-                    StreamPlanGroup::Archive {
-                        archive_path,
-                        entries,
-                    } => materialize_persistent_archive_group(
-                        &archive_path,
-                        entries,
-                        &config,
-                        &result_tx,
-                        &worker_stop,
-                    ),
-                };
-                if let Err(err) = group_result {
-                    let _ = send_result_cancelable(&result_tx, &worker_stop, Err(err));
-                    break;
+                for handle in handles {
+                    match handle.join() {
+                        Ok(Ok(())) => {}
+                        Ok(Err(err)) => {
+                            let _ = send_result_cancelable(&result_tx, &worker_stop, Err(err));
+                            break;
+                        }
+                        Err(_) => {
+                            let _ = send_result_cancelable(
+                                &result_tx,
+                                &worker_stop,
+                                Err(io::Error::other("persistent pinned worker thread panicked")),
+                            );
+                            break;
+                        }
+                    }
                 }
-            }
+            });
         })
         .map_err(|err| io::Error::other(format!("failed to spawn pinned workers: {err}")))?;
     Ok((result_rx, producer, workers, stop))
@@ -473,13 +496,14 @@ fn materialize_persistent_loose_group(
     entries: Vec<&StreamPlanEntry>,
     config: &RawMjaiBatchStreamConfig,
     result_tx: &SyncSender<io::Result<MaterializedStreamGame>>,
-    stop: &AtomicBool,
+    stop: Arc<AtomicBool>,
 ) -> io::Result<()> {
     let pool = make_optional_pool(config.num_threads, "raw MJAI persistent pinned stream")?;
     let (job_tx, job_rx) = mpsc::sync_channel::<StreamPlanEntry>(config.queue_bound);
     let (worker_result_tx, worker_result_rx) =
         mpsc::sync_channel::<io::Result<MaterializedStreamGame>>(config.queue_bound);
     let jobs: Vec<StreamPlanEntry> = entries.iter().map(|entry| (*entry).clone()).collect();
+    let expected_count = jobs.len();
     let producer = thread::Builder::new()
         .name("raw-mjai-pinned-loose-producer".into())
         .spawn(move || -> io::Result<()> {
@@ -494,6 +518,7 @@ fn materialize_persistent_loose_group(
             io::Error::other(format!("failed to spawn pinned stream producer: {err}"))
         })?;
     let augment = config.augment;
+    let worker_stop = Arc::clone(&stop);
     let workers = thread::Builder::new()
         .name("raw-mjai-pinned-loose-workers".into())
         .spawn(move || {
@@ -510,14 +535,22 @@ fn materialize_persistent_loose_group(
                             started.elapsed().as_secs_f64() * 1000.0
                         );
                     }
-                    let _ = worker_result_tx.send(Ok(result));
+                    let _ = send_result_cancelable(&worker_result_tx, &worker_stop, Ok(result));
                 });
             });
         })
         .map_err(|err| io::Error::other(format!("failed to spawn pinned stream workers: {err}")))?;
-    for result in worker_result_rx {
-        if send_result_cancelable(result_tx, stop, result).is_err() {
-            break;
+    let mut forwarded = 0usize;
+    while forwarded < expected_count && !stop.load(Ordering::Acquire) {
+        match worker_result_rx.recv_timeout(Duration::from_millis(1)) {
+            Ok(result) => {
+                if send_result_cancelable(result_tx, &stop, result).is_err() {
+                    break;
+                }
+                forwarded += 1;
+            }
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => break,
         }
     }
     producer
@@ -534,7 +567,7 @@ fn materialize_persistent_archive_group(
     entries: Vec<&StreamPlanEntry>,
     config: &RawMjaiBatchStreamConfig,
     result_tx: &SyncSender<io::Result<MaterializedStreamGame>>,
-    stop: &AtomicBool,
+    stop: Arc<AtomicBool>,
 ) -> io::Result<()> {
     let pool = make_optional_pool(config.num_threads, "raw MJAI persistent archive stream")?;
     let wanted = Arc::new(
@@ -556,6 +589,8 @@ fn materialize_persistent_archive_group(
     let (worker_result_tx, worker_result_rx) =
         mpsc::sync_channel::<io::Result<MaterializedStreamGame>>(config.queue_bound);
     let augment = config.augment;
+    let producer_stop = Arc::clone(&stop);
+    let worker_stop = Arc::clone(&stop);
 
     thread::scope(|scope| -> io::Result<()> {
         let producer = scope.spawn(move || -> io::Result<usize> {
@@ -565,7 +600,7 @@ fn materialize_persistent_archive_group(
             let mut sent = 0usize;
             let expected_count = producer_wanted.len();
             for entry_result in archive.entries()? {
-                if stop.load(Ordering::Acquire) {
+                if producer_stop.load(Ordering::Acquire) {
                     break;
                 }
                 let mut entry = entry_result?;
@@ -577,7 +612,7 @@ fn materialize_persistent_archive_group(
                 entry.read_to_end(&mut data)?;
                 if send_archive_job_cancelable(
                     &producer_job_tx,
-                    stop,
+                    &producer_stop,
                     ArchiveStreamJob {
                         plan: plan.clone(),
                         data,
@@ -599,20 +634,23 @@ fn materialize_persistent_archive_group(
             pool.install(|| {
                 job_rx.into_iter().par_bridge().for_each(|job| {
                     let result = materialize_archive_stream_job(job, augment);
-                    let _ = worker_result_tx.send(Ok(result));
+                    let _ = send_result_cancelable(&worker_result_tx, &worker_stop, Ok(result));
                 });
             });
         });
 
         let expected_count = wanted.len();
         let mut forwarded = 0usize;
-        for result in worker_result_rx {
-            if send_result_cancelable(result_tx, stop, result).is_err() {
-                break;
-            }
-            forwarded += 1;
-            if forwarded == expected_count {
-                break;
+        while forwarded < expected_count && !stop.load(Ordering::Acquire) {
+            match worker_result_rx.recv_timeout(Duration::from_millis(1)) {
+                Ok(result) => {
+                    if send_result_cancelable(result_tx, &stop, result).is_err() {
+                        break;
+                    }
+                    forwarded += 1;
+                }
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => break,
             }
         }
         let sent = producer
