@@ -1,0 +1,247 @@
+{
+  "id": "D-017",
+  "attestation_id": "D-017",
+  "dataset": "tenhou-houou-mjai-2009..2026",
+  "mount": "/mnt/samsung_nvme/samsung/mahjong_dataset",
+  "tenhou_only": true,
+  "packager_log": ".packager-logs/packager-20260728T004914Z.log",
+  "packager_log_sha256": "sha256:cc3062b31f9431036effbd4316bb83674991f10b60d7d42154bf380ce9b5d25e",
+  "packager_items": 6810629,
+  "packager_log_content": "Preflighting /home/cachybtw/dev/hydra2/dataset_bundle -> /mnt/samsung_nvme/samsung/mahjong_dataset\nmode=preflight, items=6810629, conservative_bytes=361223442270, available_bytes=460820434944, ignored_extracted_files=2792153, ignored_extracted_bytes=149134466340, output=/mnt/samsung_nvme/samsung/mahjong_dataset\nDestination free bytes after preflight: 460820434944\nStarting resumable conversion with 16 workers and 4 GiB payload cap\nmode=convert, items=6810629, conservative_bytes=361223442270, available_bytes=460820434944, ignored_extracted_files=2792153, ignored_extracted_bytes=149134466340, output=/mnt/samsung_nvme/samsung/mahjong_dataset\ncompleted=6810629, skipped=0",
+  "confidential_source_id": "tenhou-houou-corpus-v1",
+  "permitted_purpose": [
+    "research",
+    "training",
+    "internal_evaluation"
+  ],
+  "disclosure_class": "confidential",
+  "acquisition_metadata": {
+    "dataset": "tenhou-houou-mjai-2009..2026",
+    "mount": "/mnt/samsung_nvme/samsung/mahjong_dataset",
+    "tenhou_only": true,
+    "packager_log": ".packager-logs/packager-20260728T004914Z.log",
+    "packager_log_sha256": "sha256:cc3062b31f9431036effbd4316bb83674991f10b60d7d42154bf380ce9b5d25e",
+    "packager_items": 6810629,
+    "packager_mode": "convert with 16 workers, 6.8M items, skipped=0",
+    "file_counts_per_year": {
+      "tenhou-houou-mjai-2009": 6897,
+      "tenhou-houou-mjai-2010": 70228,
+      "tenhou-houou-mjai-2011": 100814,
+      "tenhou-houou-mjai-2012": 116985,
+      "tenhou-houou-mjai-2013": 131838,
+      "tenhou-houou-mjai-2014": 141132,
+      "tenhou-houou-mjai-2015": 152278,
+      "tenhou-houou-mjai-2016": 159663,
+      "tenhou-houou-mjai-2017": 169382,
+      "tenhou-houou-mjai-2018": 173546,
+      "tenhou-houou-mjai-2019": 171628,
+      "tenhou-houou-mjai-2020": 218816,
+      "tenhou-houou-mjai-2021": 187313,
+      "tenhou-houou-mjai-2022": 167627,
+      "tenhou-houou-mjai-2023": 168777,
+      "tenhou-houou-mjai-2024": 184424,
+      "tenhou-houou-mjai-2025": 178897,
+      "tenhou-houou-mjai-2026": 12188
+    },
+    "total_tenhou_files": 2512433,
+    "total_majsoul_files_excluded": 4298196,
+    "majsoul_excluded": true,
+    "majsoul_counts": {
+      "majsoul-jade-mjai-2019": 13581,
+      "majsoul-jade-mjai-2020": 55749,
+      "majsoul-jade-mjai-2021": 152801,
+      "majsoul-jade-mjai-2022": 426892,
+      "majsoul-jade-mjai-2023": 728090,
+      "majsoul-jade-mjai-2024": 933050,
+      "majsoul-jade-mjai-2025": 934144,
+      "majsoul-jade-mjai-2026": 86222,
+      "majsoul-throne-mjai-2019": 7603,
+      "majsoul-throne-mjai-2020": 20916,
+      "majsoul-throne-mjai-2021": 40805,
+      "majsoul-throne-mjai-2022": 158644,
+      "majsoul-throne-mjai-2023": 243752,
+      "majsoul-throne-mjai-2024": 288341,
+      "majsoul-throne-mjai-2025": 184424,
+      "majsoul-throne-mjai-2026": 23182
+    },
+    "sample_hashes": [
+      {
+        "path": "tenhou-houou-mjai-2014/2014041709gm-00a9-0000-0e33ce75.mjai.json.zst",
+        "compressed_sha256": "sha256:30f90ee3fffcb1b2e48e77d7e8cb91535c71a9cd81a660c227231c10b4f05c77",
+        "compressed_bytes": 4599,
+        "decoded_bytes": 45648,
+        "decoded_sha256": "sha256:5089d7e204e5718960ecb817d1b5136f7dc0931c245c0006a5036060d5e0bfb1"
+      },
+      {
+        "path": "tenhou-houou-mjai-2011/2011043013gm-00a9-0000-1afeed09.mjai.json.zst",
+        "compressed_sha256": "sha256:ac1748bfb67b87d79ae8ead8806d0bea4ea3c48229e51d96c71b1e38c78bc1b9",
+        "compressed_bytes": 4743,
+        "decoded_bytes": 46611,
+        "decoded_sha256": "sha256:1e5fc17b0a0aa61deddacf8e7a4032d6a756dd802136166d3b75ec1a8dce6c5e"
+      },
+      {
+        "path": "tenhou-houou-mjai-2018/2018080901gm-00a9-0000-17613a69.mjai.json.zst",
+        "compressed_sha256": "sha256:be6d8bd28de6a5d05fb0fd073f69dc28dd5dc0985c889e386e21d38226fb2640",
+        "compressed_bytes": 5368,
+        "decoded_bytes": 54577,
+        "decoded_sha256": "sha256:40a7d5799cf65e54cc6d964769bc72acd76b7b364e7b0f14ac00cddcda1964f9"
+      },
+      {
+        "path": "tenhou-houou-mjai-2017/2017111220gm-00a9-0000-5194d6e3.mjai.json.zst",
+        "compressed_sha256": "sha256:8b80fd5833fee809af73a87eff30c34a466d92bc8317ea415bda18aaa4edbcd9",
+        "compressed_bytes": 4677,
+        "decoded_bytes": 47126,
+        "decoded_sha256": "sha256:9ffcbc341107a6915dde1756ecaa23e08aab3b00ac667cdb1de6ec25c0976228"
+      },
+      {
+        "path": "tenhou-houou-mjai-2017/2017050519gm-00a9-0000-15ecf676.mjai.json.zst",
+        "compressed_sha256": "sha256:9cb37034ce2854ababd893a8c88a9bcce2cbfb00f43769eed9b4de545844f2de",
+        "compressed_bytes": 5354,
+        "decoded_bytes": 55596,
+        "decoded_sha256": "sha256:d35803bae035a64116978e08555328339db5ae340081c2c9399005b23690f99a"
+      },
+      {
+        "path": "tenhou-houou-mjai-2015/2015021408gm-00a9-0000-24653a51.mjai.json.zst",
+        "compressed_sha256": "sha256:229da810d243895e77e7815e3bf2e314276eb0b00f3669ddfe27e28fe7e9dcb7",
+        "compressed_bytes": 6225,
+        "decoded_bytes": 65272,
+        "decoded_sha256": "sha256:29a0803c8700b3c57b58035b04b19994e0430bc42d3f0dc4e60f8b0eaa0dd10f"
+      },
+      {
+        "path": "tenhou-houou-mjai-2014/2014010903gm-00a9-0000-2b6eb866.mjai.json.zst",
+        "compressed_sha256": "sha256:a699275fbb5482ee598f5c4bee11f428625dacb466a8c2c10a638441816784c8",
+        "compressed_bytes": 7355,
+        "decoded_bytes": 75247,
+        "decoded_sha256": "sha256:c98e8b0f90c240831364ba1356684147b4653018386e0a180e7bb6ab55f9730b"
+      },
+      {
+        "path": "tenhou-houou-mjai-2024/2024102700gm-00a9-0000-6db78e11.mjai.json.zst",
+        "compressed_sha256": "sha256:80599a047b5ee1de9976fe1d5a9ee06abae69eb17eebf85969914f30f125b48e",
+        "compressed_bytes": 5112,
+        "decoded_bytes": 51457,
+        "decoded_sha256": "sha256:2c249d8b99a3c71663b2961f17c35b9bf1e1c6bcde17d3b0491db3b6ae31fe15"
+      },
+      {
+        "path": "tenhou-houou-mjai-2013/2013071316gm-00a9-0000-61ebcc09.mjai.json.zst",
+        "compressed_sha256": "sha256:3241f0f8a20b8c2988346be889b68f89c4f1137f0bac0ec88ae28b4cb0f9054f",
+        "compressed_bytes": 6714,
+        "decoded_bytes": 69508,
+        "decoded_sha256": "sha256:6a583c04e7ecee192ea643c593b49d15b9414f96abb98319cde6e9d10c74e01c"
+      },
+      {
+        "path": "tenhou-houou-mjai-2025/2025111616gm-00a9-0000-4e1b4c24.mjai.json.zst",
+        "compressed_sha256": "sha256:4723a871a16142d69c1201f345c16b471f9714ecc39b34ed742fa541a8f92aa1",
+        "compressed_bytes": 4556,
+        "decoded_bytes": 44201,
+        "decoded_sha256": "sha256:1ece48b043a7f49c412ced21a6d1aac95bfc8b89289ab2a7b6d598831a8530b9"
+      }
+    ],
+    "manifest_path": "/home/cachybtw/tmp/hydra2-artifacts/manifests/tenhou-houou-sample-1000-2024.json",
+    "manifest_sha256": "sha256:ad17101d906d164f2b8a40a78e06f6ba03ecfb4b521f5e2b7f70c620288921c4",
+    "created_at": "2026-09-01T20:20:48Z",
+    "creator": "Wp04BReal",
+    "verification": "packager-log items=6810629 + sampling 10 files spot-check + manifest for 1000 sample",
+    "source": "tenhou-houou",
+    "authorized_use": "model training and internal evaluation per D-017"
+  },
+  "kind": "real",
+  "created_at": "2026-09-01T20:20:48Z",
+  "creator": "Wp04BReal",
+  "file_counts_per_year": {
+    "tenhou-houou-mjai-2009": 6897,
+    "tenhou-houou-mjai-2010": 70228,
+    "tenhou-houou-mjai-2011": 100814,
+    "tenhou-houou-mjai-2012": 116985,
+    "tenhou-houou-mjai-2013": 131838,
+    "tenhou-houou-mjai-2014": 141132,
+    "tenhou-houou-mjai-2015": 152278,
+    "tenhou-houou-mjai-2016": 159663,
+    "tenhou-houou-mjai-2017": 169382,
+    "tenhou-houou-mjai-2018": 173546,
+    "tenhou-houou-mjai-2019": 171628,
+    "tenhou-houou-mjai-2020": 218816,
+    "tenhou-houou-mjai-2021": 187313,
+    "tenhou-houou-mjai-2022": 167627,
+    "tenhou-houou-mjai-2023": 168777,
+    "tenhou-houou-mjai-2024": 184424,
+    "tenhou-houou-mjai-2025": 178897,
+    "tenhou-houou-mjai-2026": 12188
+  },
+  "total_tenhou_files": 2512433,
+  "total_majsoul_files_excluded": 4298196,
+  "sample_hashes": [
+    {
+      "path": "tenhou-houou-mjai-2014/2014041709gm-00a9-0000-0e33ce75.mjai.json.zst",
+      "compressed_sha256": "sha256:30f90ee3fffcb1b2e48e77d7e8cb91535c71a9cd81a660c227231c10b4f05c77",
+      "compressed_bytes": 4599,
+      "decoded_bytes": 45648,
+      "decoded_sha256": "sha256:5089d7e204e5718960ecb817d1b5136f7dc0931c245c0006a5036060d5e0bfb1"
+    },
+    {
+      "path": "tenhou-houou-mjai-2011/2011043013gm-00a9-0000-1afeed09.mjai.json.zst",
+      "compressed_sha256": "sha256:ac1748bfb67b87d79ae8ead8806d0bea4ea3c48229e51d96c71b1e38c78bc1b9",
+      "compressed_bytes": 4743,
+      "decoded_bytes": 46611,
+      "decoded_sha256": "sha256:1e5fc17b0a0aa61deddacf8e7a4032d6a756dd802136166d3b75ec1a8dce6c5e"
+    },
+    {
+      "path": "tenhou-houou-mjai-2018/2018080901gm-00a9-0000-17613a69.mjai.json.zst",
+      "compressed_sha256": "sha256:be6d8bd28de6a5d05fb0fd073f69dc28dd5dc0985c889e386e21d38226fb2640",
+      "compressed_bytes": 5368,
+      "decoded_bytes": 54577,
+      "decoded_sha256": "sha256:40a7d5799cf65e54cc6d964769bc72acd76b7b364e7b0f14ac00cddcda1964f9"
+    },
+    {
+      "path": "tenhou-houou-mjai-2017/2017111220gm-00a9-0000-5194d6e3.mjai.json.zst",
+      "compressed_sha256": "sha256:8b80fd5833fee809af73a87eff30c34a466d92bc8317ea415bda18aaa4edbcd9",
+      "compressed_bytes": 4677,
+      "decoded_bytes": 47126,
+      "decoded_sha256": "sha256:9ffcbc341107a6915dde1756ecaa23e08aab3b00ac667cdb1de6ec25c0976228"
+    },
+    {
+      "path": "tenhou-houou-mjai-2017/2017050519gm-00a9-0000-15ecf676.mjai.json.zst",
+      "compressed_sha256": "sha256:9cb37034ce2854ababd893a8c88a9bcce2cbfb00f43769eed9b4de545844f2de",
+      "compressed_bytes": 5354,
+      "decoded_bytes": 55596,
+      "decoded_sha256": "sha256:d35803bae035a64116978e08555328339db5ae340081c2c9399005b23690f99a"
+    },
+    {
+      "path": "tenhou-houou-mjai-2015/2015021408gm-00a9-0000-24653a51.mjai.json.zst",
+      "compressed_sha256": "sha256:229da810d243895e77e7815e3bf2e314276eb0b00f3669ddfe27e28fe7e9dcb7",
+      "compressed_bytes": 6225,
+      "decoded_bytes": 65272,
+      "decoded_sha256": "sha256:29a0803c8700b3c57b58035b04b19994e0430bc42d3f0dc4e60f8b0eaa0dd10f"
+    },
+    {
+      "path": "tenhou-houou-mjai-2014/2014010903gm-00a9-0000-2b6eb866.mjai.json.zst",
+      "compressed_sha256": "sha256:a699275fbb5482ee598f5c4bee11f428625dacb466a8c2c10a638441816784c8",
+      "compressed_bytes": 7355,
+      "decoded_bytes": 75247,
+      "decoded_sha256": "sha256:c98e8b0f90c240831364ba1356684147b4653018386e0a180e7bb6ab55f9730b"
+    },
+    {
+      "path": "tenhou-houou-mjai-2024/2024102700gm-00a9-0000-6db78e11.mjai.json.zst",
+      "compressed_sha256": "sha256:80599a047b5ee1de9976fe1d5a9ee06abae69eb17eebf85969914f30f125b48e",
+      "compressed_bytes": 5112,
+      "decoded_bytes": 51457,
+      "decoded_sha256": "sha256:2c249d8b99a3c71663b2961f17c35b9bf1e1c6bcde17d3b0491db3b6ae31fe15"
+    },
+    {
+      "path": "tenhou-houou-mjai-2013/2013071316gm-00a9-0000-61ebcc09.mjai.json.zst",
+      "compressed_sha256": "sha256:3241f0f8a20b8c2988346be889b68f89c4f1137f0bac0ec88ae28b4cb0f9054f",
+      "compressed_bytes": 6714,
+      "decoded_bytes": 69508,
+      "decoded_sha256": "sha256:6a583c04e7ecee192ea643c593b49d15b9414f96abb98319cde6e9d10c74e01c"
+    },
+    {
+      "path": "tenhou-houou-mjai-2025/2025111616gm-00a9-0000-4e1b4c24.mjai.json.zst",
+      "compressed_sha256": "sha256:4723a871a16142d69c1201f345c16b471f9714ecc39b34ed742fa541a8f92aa1",
+      "compressed_bytes": 4556,
+      "decoded_bytes": 44201,
+      "decoded_sha256": "sha256:1ece48b043a7f49c412ced21a6d1aac95bfc8b89289ab2a7b6d598831a8530b9"
+    }
+  ],
+  "manifest_path": "/home/cachybtw/tmp/hydra2-artifacts/manifests/tenhou-houou-sample-1000-2024.json",
+  "manifest_sha256": "sha256:ad17101d906d164f2b8a40a78e06f6ba03ecfb4b521f5e2b7f70c620288921c4",
+  "notes": "Real Tenhou Houou corpus at /mnt/samsung_nvme/samsung/mahjong_dataset/tenhou-houou-mjai-2009..2026 = 2,512,433 files (majsoul 4,298,196 correctly excluded as non-tenhou). Packager already ran (convert with 16 workers, 6.8M items) producing .mjai.json.zst files directly under that mount. Manifest for 1000-game 2024 sample generated via debug packager with --manifest."
+}

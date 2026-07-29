@@ -1,0 +1,1733 @@
+version: 7
+platforms:
+- name: linux-64
+environments:
+  default:
+    channels:
+    - url: https://conda.anaconda.org/conda-forge/
+    indexes:
+    - https://pypi.org/simple
+    packages:
+      linux-64:
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/bzip2-1.0.8-hda65f42_10.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/icu-78.3-py310h44b86e0_2.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/ld_impl_linux-64-2.46.1-default_hbd61a6d_102.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/libexpat-2.8.1-hecca717_1.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/libffi-3.7.0-h81df57d_1.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/libgcc-16.2.0-ha9f2e26_4.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/libgomp-16.2.0-he0feb66_4.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/liblzma-5.8.3-hb03c661_1.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/libnsl-2.0.1-hb9d3cd8_1.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/libsqlite-3.53.4-h13e7031_1.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/libstdcxx-16.2.0-h934c35e_4.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/libuuid-2.42.2-h5347b49_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/libxcrypt-4.4.38-h280c20c_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/libzlib-1.3.2-h25fd6f3_3.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/ncurses-6.6-hdb14827_1.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/openssl-3.6.4-h781a0a9_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/python-3.12.14-h8ab3286_1_cpython.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/readline-8.3-hd6e31c0_1.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/tk-8.6.13-noxft_h1df4ec4_4.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/zstd-1.5.7-hb78ec9c_7.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/ca-certificates-2026.7.22-hbd8a1cb_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/tzdata-2026c-h151e31d_0.conda
+      - pypi: .
+      - pypi: git+https://github.com/nissymori/mahjax.git?rev=52228723901a4ace44b745afd25141acc25405ec#52228723901a4ace44b745afd25141acc25405ec
+      - pypi: https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/05/41/07c259ea10a5eeb100a66222507e2ce3a01474fa8f13c250bf1a3559a5bb/jaxlib-0.11.1-cp312-cp312-manylinux_2_27_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/0f/36/104de52d6368f5b7f886e8fd252e0a438fe73a215e59b1b47f93a80ae2ea/nvidia_nccl_cu12-2.31.2-py3-none-manylinux_2_18_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/14/15/5574111ae50dd6e879456888c0eadd4c5a869959775854e18e18a6b345f3/propcache-0.5.2-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/15/71/49399acd41f750a906c686bd23c08a2001ccb8dd25f2971003c2ed89c1dd/torch-2.14.0-cp312-cp312-manylinux_2_28_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/18/2a/d4cd8506d2044e082f8cd921be57392e6a9b5ccd3ffdf050362430a3d5d5/nvidia_cuda_cccl_cu12-12.9.27-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/19/14/fe7b8670005fbdc2989f45a19192c979fb91334c80888147f0f34efaf19e/jax_cuda13_pjrt-0.11.1-py3-none-manylinux_2_27_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/22/a6/858897256d0deac81a172289110f31629fc4cee19b6f01283303e18c8db3/ptyprocess-0.7.0-py2.py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/23/cd/066e86230ae37ed0be70aae89aabf03ca8d9f39c8aea0dec8029455b5540/opt_einsum-3.4.0-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/24/25/1de2678b631f5a49215c6c96fff41ba892b0a34df68d6d80292b1b48aa7f/pytest-9.1.1-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/25/f4/ead6e0e37209b07c9baa3e984ccdb0348ca370b77cea3aaea8ddbb097e00/lightning_utilities-0.15.3-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/2d/1e/65b59cf518c106aa755e7f7da3099027738687a862ec785060702a481320/ipython-9.17.1-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/2e/24/d1558f3b68b1d26e706813b1d10aa1d785e4698c425af8db8edc3dced472/nvidia_cuda_runtime-13.0.96-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/33/6d/737d164b4837a9bbd202f5ae3078975f0525a55730fe871d8ed4e3b952b0/nvidia_cuda_cupti-13.0.85-py3-none-manylinux_2_25_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/34/7d/2661f2fb3ac4302f3a246f5fc030213ac60c1fe0bce84f9783dbd831dbb7/nvidia_cusparselt_cu13-0.8.1-py3-none-manylinux2014_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/36/d2/b70a31e13d04456d28493f31d2aa087e99eeb2767ef0293b2625727ccb8c/filelock-3.32.5-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/39/2a/6d2e9047d1fb243dbaa364b01e0297534b9ed7fd27dba1c9f361519cf69b/cuda_bindings-13.3.1-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/3a/5f/62d28cf019460c7f1394105b4d49d9911a9c444cb77ab0bd95a204c5a6de/numpy-2.5.2-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/3b/cd/154ca20c38269e05eff77c1464e6c1da89f50a6390b565e9d82e06bc11e1/nvidia_cublas-13.1.1.3-py3-none-manylinux_2_27_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/3c/2e/8d0c2ab90a8c1d9a24f0399058ab8519a3279d1bd4289511d74e909f060e/markupsafe-3.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/3c/35/a9bf80a609e74e3b000fef598933235c908fcefcef9026042b8e6dfde2a9/nvidia_nvshmem_cu13-3.4.5-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/3e/30/e900b21425a860e195f32e37657aa1f7c7f2b1bfb26f03ca209b90933c06/annotated_doc-0.0.5-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/3f/34/c500f90c7ae641b8e0f98965b36b8a7ac79cc8b296e8d251fe3eb592ee54/nvidia_nccl_cu13-2.30.7-py3-none-manylinux_2_18_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/3f/70/4f193de89a48b71714e74602ee14d04e4019ad36a5a9f20c425776e72cd6/nvidia_cufile-1.15.1.6-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/41/09/5b161152e2d90f7b87f781c2e1267494aef9c32498df793f73ad0a0a494a/matplotlib_inline-0.2.2-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/43/e3/7d92a15f894aa0c9c4b49b8ee9ac9850d6e63b03c9c32c0367a13ae62209/mpmath-1.3.0-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/52/b7/7cd31f29d6055bd711ae6e669367fba6f5ae9de463910a793e30556a8db7/aiohttp-3.14.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/53/60/7be26e610767316c028a2cbedb9a3beabdbe33e2182c373f71a1c0b88f36/zstandard-0.25.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/54/20/4d324d65cc6d9205fabedc306948156824eb9f0ee1633355a8f7ec5c66bf/pluggy-1.6.0-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/54/6f/84908cad2d6aa5144abcf7b42709fe4fdb459bc640ec7ac5786e7693dabc/prompt_toolkit-3.0.53-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/57/b0/0e52c878c53f245edd3a11020f20979b3f490f245af532c7cae3027754b5/idna-3.19-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/58/50/6c0d534c5f134586a8e1ba4e330569e32f057e33372ae556463212fb4cd3/click-8.5.0-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/5c/ba/791cffd048fe5b044e620df55267e3e95c0e6e07d50b41e377c03dfc910f/nvidia_cudnn_cu13-9.24.0.43-py3-none-manylinux_2_27_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/5f/67/cba3777620cdacb99102da4042883709c41c709f4b6323c10781a9c3aa34/nvidia_cusolver-12.0.4.66-py3-none-manylinux_2_27_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/60/c9/711ca85d79f1ec98f29a5eae2b051e25b4ecec5de3e3c0e2d5c5dcb15664/pyarrow-25.0.1-cp312-cp312-manylinux_2_28_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/62/a1/3d680cbfd5f4b8f15abc1d571870c5fc3e594bb582bc3b64ea099db13e56/jinja2-3.1.6-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/63/03/cde130e3ff706784f9efd47204f299b15113ea08203e98a556603dac245d/nvidia_nvshmem_cu12-3.7.2-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/63/34/ba1c580383c9eada3711951fef0795c80b829a078d72188184bcab9dd527/packaging-26.3-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/64/b4/17d4b0b2a2dc85a6df63d1157e028ed19f90d4cd97c36717afef2bc2f395/attrs-26.1.0-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/67/81/4add07e5172b7ac40d8ed5ff580409a7801a4fe26d529bdd915401dabfbe/typing_inspection-0.4.4-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/6a/bd/d91c5e39f490a49df14320f4e8c80161cfcce09f1e2cde1edd16a551abb3/frozenlist-1.8.0-cp312-cp312-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/71/43/1947f06babed6b3f1d7f38b0c767f52df66bfb2bc10b468c4a7de9eceff2/aiohappyeyeballs-2.7.1-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/71/46/17f022dd3e953bf20a04a028a21ec746d942f8d2af30fa0f124fa0e6a684/pygments-2.21.0-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/74/27/450c690b2ed878fd323dce0fcc6ed1746013210bc9c395f30eaf6fb03b09/nvidia_cudnn_cu12-9.25.1.1-py3-none-manylinux_2_27_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/7e/ce/16d76f4b5b3f7460f5ebd17516685495c149c66651ffdd381f90e4d4e65c/nvidia_cuda_crt-13.3.73-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/83/19/e46ef3597ba47a9f8a91ab24533db42a600b659fc418dbe4af0b630bcb41/nvidia_cuda_nvcc-13.3.73-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/84/15/640e399579024a6875918839454025bb1d5f850bb70d96a11eabb644d11c/svgwrite-1.4.3-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/8a/d1/0e6049cfefa335a21daa1f2ffeb14cd2c3017bb5909fed1ae7258ae48b60/lightning_fabric-2.6.5-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/8b/9d/b3589d3877982d4f2329302ef98a8026e7f4443c765c46cfecc8858c6b4b/pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/8e/37/efad0257dc6e593a18957422533ff0f87ede7c9c6ea010a2177d738fb82f/pure_eval-0.2.3-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/8f/f4/5f9a286e1eeca9faa8b83885edccf63ab2f1b22e17f6a5ea66ac86b1afe4/jax-0.11.1-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/94/80/1f361f432281f5d43d12960d78fc609abe51708903e26a00518f5a8566d3/jax_cuda13_plugin-0.11.1-cp312-cp312-manylinux_2_27_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/95/9c/c510029fc6ef33a6275cd2c5d3cecd6613dfd6aa401d57c54f1c18852ccf/setuptools-84.0.0-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/97/f7/f07087f3d185ad2eced0c56cef89ca5474dfb4ff25f146cd50a861c97553/pyrefly-1.2.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/99/5d/8268b644392ee874ee82a635cd0df1773de230bde356c38de28e298392cc/parso-0.8.7-py2.py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/99/91/8acff4f5e50511b911bbccb72b8628a49c68ce14148cd9f6431094859a90/annotated_types-0.8.0-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/9a/93/242e2eab5fe682ffcb8b0084bde703a41d51e17ee0f3a31ff0d9d813620a/jedi-0.20.0-py2.py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/9e/c3/059298687310d527a58bb01f3b1965787ee3b40dce76752eda8b44e9a2c5/pexpect-4.9.0-py2.py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/9e/c9/b2622292ea83fbb4ec318f5b9ab867d0a28ab43c5717bb85b0a5f6b3b0a4/networkx-3.6.1-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/a1/b1/ef21259ec74fe0b265ed201379de1d0ef7c14178313ee03705952f1b7093/cuda_pathfinder-1.8.0-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/a2/09/77d55d46fd61b4a135c444fc97158ef34a095e5681d0a6c10b75bf356191/sympy-1.14.0-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/a5/9f/be0a41ca4a4917abf5cb9ae0daff1a6060cc5de950aec0396de9f3b52bc5/nvidia_curand-10.4.0.35-py3-none-manylinux_2_27_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/a8/2f/7b57e29836ea8714f81e9898409196f47d772d5ddedddf1592eadb8ab743/nvidia_cufft-12.0.0.61-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/ad/66/0d785f0bc5e4315a96c989bb476d0fc07ea4f85132550c7b156ca2035d52/traitlets-5.16.1-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/b5/70/5d8df3b09e25bce090399cf48e452d25c935ab72dad19406c77f4e828045/psutil-7.2.2-cp36-abi3-manylinux2010_x86_64.manylinux_2_12_x86_64.manylinux_2_28_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/b8/85/e4af82cc9202023862090bfca4ea827d533329e925c758f0cde964cb54b7/nvidia_cuda_nvrtc_cu12-12.9.86-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/c0/a4/eb9409ec0736e50aa70a412f16c204ed149516846912f7e6724d4c73ee53/pydantic_core-2.46.5-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/c1/09/b7012e5bfae67640f268aa584caa80fe1674f6b0da949046b679972c33e3/triton-3.8.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/c1/ea/53f2148663b321f21b5a606bd5f191517cf40b7072c0497d3c92c4a13b1e/executing-2.2.1-py2.py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/c2/f3/d86c845465a2723ad7e1e5c36dcd75ddb82898b3f53be47ebd429fb2fa5d/nvidia_nvtx-13.0.85-py3-none-manylinux1_x86_64.manylinux_2_5_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/c3/68/483a78f5e8f31b08fb1bb671559968c0ca3a065ac7acabfc7cee55214fd6/nvidia_cuda_nvrtc-13.0.88-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/c4/0e/57f6bb3024a597b2e8ec4aee710ffe62ddc95af2e2bb1ee7a7abdc22c68c/wcwidth-0.8.3-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/c7/f9/7d76c1eae866f5d4636401b31b6d6dd90e4b4ced1fa7cfdfcca9c60e4bd3/ml_dtypes-0.6.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/c8/cb/6a6a47d5b464bd08695d254f3da6e7986cc70c9fa5d778eda57538edfe56/starlette-1.6.0-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/cb/03/10388a42375ee7e4ac9b94eb2c5c569c8b5795e377e701c9ac3ad63de890/fastapi-0.141.1-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/cb/b1/3846dd7f199d53cb17f49cba7e651e9ce294d8497c8c150530ed11865bb8/iniconfig-2.3.0-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/cb/c0/0a517bfe63ccd3b92eb254d264e28fca3c7cab75d07daea315250fb1bf73/nvidia_cublas_cu12-12.9.2.10-py3-none-manylinux_2_27_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/cd/1f/d58d44c203e5d1e63655cb47749a15a553e54bbb3f5f4bb7618ee7508ebd/riichienv-0.4.8-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/d1/c7/a79086a62c98befcdb8349656c6f114e2db3b8b2422f6e25c97a7f2a9a3c/cuda_toolkit-13.0.3.0-py2.py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/d4/2b/04b8a15f3a1c77bc79ddf5c73875327f34b4fa75982df2b76e45e402d364/asttokens-3.0.2-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/d6/d0/d56c859b8222116f5d68459199f48359e0bf121b6f65a69bf329b3602ba0/yarl-1.24.5-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/d9/33/1f075bf72b0b747cb3288d011319aaf64083cf2efef8354174e3ed4540e2/ipython_pygments_lexers-1.1.1-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/da/35/f2287558c17e29fafc8ef3daf819bb9834061cfa43bff8014f7df7f63bdc/anyio-4.14.2-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/df/64/ff35eb9e54894cf471ff4716abd3c81eb0a0626869217ce3e6ba4ccf17d7/scipy-1.18.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/eb/47/c95ffc2009878c7aac0c5e08528022dcb885933252a88b5f170058014464/pydantic-2.13.5-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/ee/34/ee245ca55f64443233034b3d02b03236b19242004281247c079390b7facd/ruff-0.16.5-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/f0/ee/580ca6f29dcab0221db8706badca1bbbb084f1975c4d4e83329c3a7e31f0/nvidia_nvjitlink-13.3.33-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/f1/79/4a20b54ab0491485ccd8c077db2d39187c7f12b3e15485d38a7be37c81b4/uvicorn-0.52.4-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/f1/7b/ce1eafaf1a76852e2ec9b22edecf1daa58175c090266e9f6c64afcd81d91/stack_data-0.6.3-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/f3/8d/5e5be3ced1d12966fefb5c4ea3b2a5b480afcea36406559442c6e31d4a48/multidict-6.7.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/f3/e7/ff646aa6015c7e6d12aad234e68925c87b6681d8d18c3ac40535994a3b0d/nvidia_nvvm-13.3.73-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/fa/18/623c77619c31d62efd55302939756966f3ecc8d724a14dab2b75f1508850/nvidia_cusparse-12.6.3.3-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/fb/76/641ae371508676492379f16e2fa48f4e2c11741bd63c48be4b12a6b09cba/aiosignal-1.4.0-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/fd/3c/6a2bf344106328fd04963664a60b9bb6496fc25df8e962fcdc1367285fb9/fsspec-2026.7.0-py3-none-any.whl
+packages:
+- conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
+  build_number: 20
+  sha256: 1dd3fffd892081df9726d7eb7e0dea6198962ba775bd88842135a4ddb4deb3c9
+  md5: a9f577daf3de00bca7c3c76c0ecbd1de
+  depends:
+  - __glibc >=2.17,<3.0.a0
+  - libgomp >=7.5.0
+  constrains:
+  - openmp_impl <0.0a0
+  license: BSD-3-Clause
+  license_family: BSD
+  purls: []
+  run_exports:
+    strong:
+    - _openmp_mutex >=4.5
+  size: 28948
+  timestamp: 1770939786096
+- conda: https://conda.anaconda.org/conda-forge/linux-64/bzip2-1.0.8-hda65f42_10.conda
+  sha256: 1a0d382c515ebf55f8ee1f38c8b81bc95af5c2acc42ad53b66bc5df932032f96
+  md5: e675fabcf81499adc7edf58124fb1e01
+  depends:
+  - __glibc >=2.17,<3.0.a0
+  - libgcc >=14
+  license: bzip2-1.0.6
+  license_family: BSD
+  purls: []
+  run_exports:
+    weak:
+    - bzip2 >=1.0.8,<2.0a0
+  size: 257808
+  timestamp: 1785906269155
+- conda: https://conda.anaconda.org/conda-forge/linux-64/icu-78.3-py310h44b86e0_2.conda
+  sha256: 9f07834f0c546ab14d885ce0366285f61f44e326c0edd1fc63b8294e113ae432
+  md5: 72a381cbad04f24b1c2a43ef707f45b4
+  depends:
+  - __glibc >=2.17,<3.0.a0
+  - libstdcxx >=14
+  - libgcc >=14
+  license: MIT
+  license_family: MIT
+  purls: []
+  run_exports:
+    weak:
+    - icu >=78.3,<79.0a0
+  size: 14459115
+  timestamp: 1786545741408
+- conda: https://conda.anaconda.org/conda-forge/linux-64/ld_impl_linux-64-2.46.1-default_hbd61a6d_102.conda
+  sha256: 27d83f1188cd19bcb7754a078b3fa7f4cfb8527f8eb2fde54dd01fc529d1adec
+  md5: 449500f2c089da11c40f5c21312e3e07
+  depends:
+  - __glibc >=2.17,<3.0.a0
+  - zstd >=1.5.7,<1.6.0a0
+  constrains:
+  - binutils_impl_linux-64 2.46.1
+  license: GPL-3.0-only
+  license_family: GPL
+  purls: []
+  run_exports: {}
+  size: 745303
+  timestamp: 1784214507189
+- conda: https://conda.anaconda.org/conda-forge/linux-64/libexpat-2.8.1-hecca717_1.conda
+  sha256: 16feffd9ddbbe5b718515d38ee376c685ba95491cd901244e24671d20b952a77
+  md5: b24d3c612f71e7aa74158d92106318b2
+  depends:
+  - __glibc >=2.17,<3.0.a0
+  - libgcc >=14
+  constrains:
+  - expat 2.8.1.*
+  license: MIT
+  license_family: MIT
+  purls: []
+  run_exports: {}
+  size: 77856
+  timestamp: 1781203599810
+- conda: https://conda.anaconda.org/conda-forge/linux-64/libffi-3.7.0-h81df57d_1.conda
+  sha256: c8c7583ef063bc3c430f1d48298e5ad24f796a35c22ed5b14183325825a61106
+  md5: 6525a0b06aa4fd390795f0740636a9dd
+  depends:
+  - __glibc >=2.17,<3.0.a0
+  - libgcc >=15
+  license: MIT
+  license_family: MIT
+  purls: []
+  run_exports:
+    weak:
+    - libffi >=3.7.0,<3.8.0a0
+  size: 68004
+  timestamp: 1787753412298
+- conda: https://conda.anaconda.org/conda-forge/linux-64/libgcc-16.2.0-ha9f2e26_4.conda
+  sha256: 24090e675d34403b4ee1cd4372d8f6c0937da7ecfd66a19a57cac2ed0f4ea793
+  md5: cba14d01083fc62ffd32c24d7d390633
+  depends:
+  - __glibc >=2.17,<3.0.a0
+  - _openmp_mutex >=4.5
+  constrains:
+  - libgcc-ng ==16.2.0=*_4
+  - libgomp 16.2.0 he0feb66_4
+  license: GPL-3.0-only WITH GCC-exception-3.1
+  license_family: GPL
+  purls: []
+  run_exports: {}
+  size: 1058083
+  timestamp: 1787618680111
+- conda: https://conda.anaconda.org/conda-forge/linux-64/libgomp-16.2.0-he0feb66_4.conda
+  sha256: 0fe5cb8e0752241ab55e11656ed1b9726248b522d23b929fe7c95b83eb55b9bb
+  md5: 89d2c1231f47bd818f5d624b9411459d
+  depends:
+  - __glibc >=2.17,<3.0.a0
+  license: GPL-3.0-only WITH GCC-exception-3.1
+  license_family: GPL
+  purls: []
+  run_exports:
+    strong:
+    - _openmp_mutex >=4.5
+  size: 639968
+  timestamp: 1787618616266
+- conda: https://conda.anaconda.org/conda-forge/linux-64/liblzma-5.8.3-hb03c661_1.conda
+  sha256: 9787df8c22a59c9a70d3e5a10db9ad663485e75e9ccc3f09bd092cb7b95e0dab
+  md5: 1390b7c5ac0b1d8e447bc5efa6d3c8c2
+  depends:
+  - __glibc >=2.17,<3.0.a0
+  - libgcc >=14
+  constrains:
+  - xz 5.8.3.*
+  license: 0BSD
+  purls: []
+  run_exports:
+    weak:
+    - liblzma >=5.8.3,<6.0a0
+  size: 112995
+  timestamp: 1786348617826
+- conda: https://conda.anaconda.org/conda-forge/linux-64/libnsl-2.0.1-hb9d3cd8_1.conda
+  sha256: 927fe72b054277cde6cb82597d0fcf6baf127dcbce2e0a9d8925a68f1265eef5
+  md5: d864d34357c3b65a4b731f78c0801dc4
+  depends:
+  - __glibc >=2.17,<3.0.a0
+  - libgcc >=13
+  license: LGPL-2.1-only
+  license_family: GPL
+  purls: []
+  run_exports:
+    weak:
+    - libnsl >=2.0.1,<2.1.0a0
+  size: 33731
+  timestamp: 1750274110928
+- conda: https://conda.anaconda.org/conda-forge/linux-64/libsqlite-3.53.4-h13e7031_1.conda
+  sha256: f20d70da54e5b31dd4a51fb1efeaafafd5ab6dd8d7ac9d1438eaa2526ac4ed3d
+  md5: e72bbec309c2b0f37823ee7d4fabfcd3
+  depends:
+  - __glibc >=2.17,<3.0.a0
+  - icu >=78.3,<79.0a0
+  - libgcc >=15
+  - libzlib >=1.3.2,<2.0a0
+  license: blessing
+  purls: []
+  run_exports:
+    weak:
+    - libsqlite >=3.53.4,<4.0a0
+  size: 974348
+  timestamp: 1787051145557
+- conda: https://conda.anaconda.org/conda-forge/linux-64/libstdcxx-16.2.0-h934c35e_4.conda
+  sha256: 40b792b0186c1e8859280a1f6f19a54fc50a11b32724fc7b637009c1a9bd302b
+  md5: 2f2ef0d96de5bdd8c1270ff22fdf9352
+  depends:
+  - __glibc >=2.17,<3.0.a0
+  - libgcc 16.2.0 ha9f2e26_4
+  constrains:
+  - libstdcxx-ng ==16.2.0=*_4
+  license: GPL-3.0-only WITH GCC-exception-3.1
+  license_family: GPL
+  purls: []
+  run_exports: {}
+  size: 6613148
+  timestamp: 1787618704262
+- conda: https://conda.anaconda.org/conda-forge/linux-64/libuuid-2.42.2-h5347b49_0.conda
+  sha256: 9b1bdce27a7e31f7d241aeecff67a1f3101d52a2b1e33ccc2cdf2613072bf81f
+  md5: 01bb81d12c957de066ea7362007df642
+  depends:
+  - libgcc >=14
+  - __glibc >=2.17,<3.0.a0
+  license: BSD-3-Clause
+  license_family: BSD
+  purls: []
+  run_exports:
+    weak:
+    - libuuid >=2.42.2,<3.0a0
+  size: 40017
+  timestamp: 1781625522462
+- conda: https://conda.anaconda.org/conda-forge/linux-64/libxcrypt-4.4.38-h280c20c_0.conda
+  sha256: f7e9292dd219a6435bbb1223da9586c3e70d66d169c5a92f08db3f2127df04e9
+  md5: f7a7ff5a6ab331e037abd34f379a631d
+  depends:
+  - libgcc >=14
+  - __glibc >=2.17,<3.0.a0
+  license: LGPL-2.1-or-later
+  purls: []
+  run_exports:
+    weak:
+    - libxcrypt >=4.4.38
+  size: 101957
+  timestamp: 1785887123445
+- conda: https://conda.anaconda.org/conda-forge/linux-64/libzlib-1.3.2-h25fd6f3_3.conda
+  sha256: eb8a0db0aa570124f7d2a93d7c7f596e3390df5e047818d873baad32985fc736
+  md5: 0de0122d9570a8ab637c6b73db268389
+  depends:
+  - __glibc >=2.17,<3.0.a0
+  constrains:
+  - zlib 1.3.2 *_3
+  license: Zlib
+  license_family: Other
+  purls: []
+  run_exports:
+    weak:
+    - libzlib >=1.3.2,<2.0a0
+  size: 63713
+  timestamp: 1785362952714
+- conda: https://conda.anaconda.org/conda-forge/linux-64/ncurses-6.6-hdb14827_1.conda
+  sha256: 5d46557214ed184381dafe835b7c94a474a1c3b307a08a250b1ea4779b44ffb3
+  md5: ee6c0cd80a60961a1f48aa3e0b91f986
+  depends:
+  - __glibc >=2.17,<3.0.a0
+  - libgcc >=14
+  license: X11 AND BSD-3-Clause
+  purls: []
+  run_exports:
+    weak:
+    - ncurses >=6.6,<7.0a0
+  size: 911196
+  timestamp: 1786355078102
+- conda: https://conda.anaconda.org/conda-forge/linux-64/openssl-3.6.4-h781a0a9_0.conda
+  sha256: 4747b2d6a8336f52343bceb8a1ebf41a9e6e665b9d2e3f989972de53a310599e
+  md5: 16e3034a330cc625f2c685edec60cf4e
+  depends:
+  - __glibc >=2.17,<3.0.a0
+  - ca-certificates
+  - libgcc >=15
+  license: Apache-2.0
+  license_family: Apache
+  purls: []
+  run_exports:
+    weak:
+    - openssl >=3.6.4,<4.0a0
+  size: 3202955
+  timestamp: 1787698780103
+- conda: https://conda.anaconda.org/conda-forge/linux-64/python-3.12.14-h8ab3286_1_cpython.conda
+  build_number: 1
+  sha256: 9ea40fd91c6e563cd4e128b1062b56ecbcdbfe4d87a45823999db280dd4dc4d2
+  md5: 610b1ca76efa5f0c73bec36db551005d
+  depends:
+  - __glibc >=2.17,<3.0.a0
+  - bzip2 >=1.0.8,<2.0a0
+  - ld_impl_linux-64 >=2.36.1
+  - libexpat >=2.8.1,<3.0a0
+  - libffi >=3.7.0,<3.8.0a0
+  - libgcc >=14
+  - liblzma >=5.8.3,<6.0a0
+  - libnsl >=2.0.1,<2.1.0a0
+  - libsqlite >=3.53.4,<4.0a0
+  - libuuid >=2.42.2,<3.0a0
+  - libxcrypt >=4.4.38
+  - libzlib >=1.3.2,<2.0a0
+  - ncurses >=6.6,<7.0a0
+  - openssl >=3.5.8,<4.0a0
+  - readline >=8.3,<9.0a0
+  - tk >=8.6.13,<8.7.0a0
+  - tzdata
+  constrains:
+  - python_abi 3.12.* *_cp312
+  license: Python-2.0
+  purls: []
+  run_exports:
+    weak:
+    - python_abi 3.12.* *_cp312
+    noarch:
+    - python
+  size: 31603988
+  timestamp: 1788279181353
+- conda: https://conda.anaconda.org/conda-forge/linux-64/readline-8.3-hd6e31c0_1.conda
+  sha256: 01b3fe073a66e321970d09e04b388708f8cbdca5cdfbfcb7c9eeb470ad10383d
+  md5: 69c01c781e7c8190bbdaf79e3848c5ca
+  depends:
+  - __glibc >=2.17,<3.0.a0
+  - libgcc >=15
+  - ncurses >=6.6,<7.0a0
+  license: GPL-3.0-only
+  license_family: GPL
+  purls: []
+  run_exports:
+    weak:
+    - readline >=8.3,<9.0a0
+  size: 348899
+  timestamp: 1787033801506
+- conda: https://conda.anaconda.org/conda-forge/linux-64/tk-8.6.13-noxft_h1df4ec4_4.conda
+  build_number: 104
+  sha256: a1a241d172c1ccab067ba245206dd048bc3c2d1b84504b53c9468e99adfc16a1
+  md5: 676a2f9b1c4fcf57b70aa5c65f6c60d0
+  depends:
+  - libgcc >=15
+  - __glibc >=2.17,<3.0.a0
+  - libzlib >=1.3.2,<2.0a0
+  constrains:
+  - xorg-libx11 >=1.8.13,<2.0a0
+  license: TCL
+  purls: []
+  run_exports:
+    weak:
+    - tk >=8.6.13,<8.7.0a0
+  size: 3566806
+  timestamp: 1787272857910
+- conda: https://conda.anaconda.org/conda-forge/linux-64/zstd-1.5.7-hb78ec9c_7.conda
+  sha256: 47d682b9f6d6ec9eb1a6e6c3e75ea6273e899e78fb7fc59f81d39745009fbc60
+  md5: aa459086047c0e5e27023ab19f8cb86a
+  depends:
+  - __glibc >=2.17,<3.0.a0
+  - libzlib >=1.3.2,<2.0a0
+  license: BSD-3-Clause
+  license_family: BSD
+  purls: []
+  run_exports:
+    weak:
+    - zstd >=1.5.7,<1.6.0a0
+  size: 601301
+  timestamp: 1786599621503
+- conda: https://conda.anaconda.org/conda-forge/noarch/ca-certificates-2026.7.22-hbd8a1cb_0.conda
+  sha256: 0a0544cf95f64394fe4959286f5c71f5444ad58feb0602e53becb27448d24da6
+  md5: 0f51e2391ade309db462a55611263e9c
+  depends:
+  - __unix
+  license: ISC
+  purls: []
+  run_exports: {}
+  size: 131780
+  timestamp: 1784754889428
+- conda: https://conda.anaconda.org/conda-forge/noarch/tzdata-2026c-h151e31d_0.conda
+  sha256: b928c30ddcb0e3f544c6eade8352737e6e610e263276b90232db6a578ef899d8
+  md5: fcb489df604d100968b737f2cb6076c6
+  license: LicenseRef-Public-Domain
+  purls: []
+  run_exports: {}
+  size: 118849
+  timestamp: 1784250406640
+- pypi: .
+  name: hydra2
+  requires_dist:
+  - pyarrow>=25.0.1,<26
+  - zstandard>=0.25.0,<0.26
+  - jax[cuda13]>=0.11.1,<0.12
+  - nvidia-cudnn-cu12>=9.25.1.1,<10
+  - nvidia-cudnn-cu13>=9.20.0.48,<10
+  - nvidia-nccl-cu12>=2.31.2,<3
+  - nvidia-nvshmem-cu12>=3.7.2,<4
+  requires_python: '>=3.12,<3.13'
+- pypi: git+https://github.com/nissymori/mahjax.git?rev=52228723901a4ace44b745afd25141acc25405ec#52228723901a4ace44b745afd25141acc25405ec
+  name: mahjax
+  version: 0.1.2
+  requires_dist:
+  - fastapi>=0.128.0
+  - jax>=0.4.28
+  - svgwrite>=1.4.3
+  - typing-extensions>=4.2.0
+  - uvicorn>=0.39.0
+  requires_python: '>=3.9'
+- pypi: https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl
+  name: h11
+  version: 0.16.0
+  sha256: 63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86
+  requires_python: '>=3.8'
+- pypi: https://files.pythonhosted.org/packages/05/41/07c259ea10a5eeb100a66222507e2ce3a01474fa8f13c250bf1a3559a5bb/jaxlib-0.11.1-cp312-cp312-manylinux_2_27_x86_64.whl
+  name: jaxlib
+  version: 0.11.1
+  sha256: c3dcec3bb33ebf5c76dc33f962c796652c077edb246464fa32cb1d8fcb6087e6
+  requires_dist:
+  - scipy>=1.14
+  - numpy>=2.0
+  - ml-dtypes>=0.5.0
+  requires_python: '>=3.12'
+- pypi: https://files.pythonhosted.org/packages/0f/36/104de52d6368f5b7f886e8fd252e0a438fe73a215e59b1b47f93a80ae2ea/nvidia_nccl_cu12-2.31.2-py3-none-manylinux_2_18_x86_64.whl
+  name: nvidia-nccl-cu12
+  version: 2.31.2
+  sha256: f9b1dc3c2a7e20176054144ebb3b32fea83b40402ee5d7ac7045cd11ecc956c0
+  requires_python: '>=3'
+- pypi: https://files.pythonhosted.org/packages/14/15/5574111ae50dd6e879456888c0eadd4c5a869959775854e18e18a6b345f3/propcache-0.5.2-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+  name: propcache
+  version: 0.5.2
+  sha256: 6f328175a2cde1f0ff2c4ed8ce968b9dcfb55f3a7153f39e2957ed994da13476
+  requires_python: '>=3.10'
+- pypi: https://files.pythonhosted.org/packages/15/71/49399acd41f750a906c686bd23c08a2001ccb8dd25f2971003c2ed89c1dd/torch-2.14.0-cp312-cp312-manylinux_2_28_x86_64.whl
+  name: torch
+  version: 2.14.0
+  sha256: fecffb58f51fd643d213acd68da21cc3fc19bea05a3bc64b4ee55128f47a4963
+  requires_dist:
+  - filelock
+  - typing-extensions>=4.10.0
+  - setuptools>=77.0.3
+  - sympy>=1.13.3
+  - networkx>=2.5.1
+  - jinja2
+  - fsspec>=0.8.5
+  - cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3 ; sys_platform == 'linux'
+  - cuda-bindings>=13.0.3,<14 ; python_full_version < '3.15' and sys_platform == 'linux'
+  - nvidia-cudnn-cu13==9.24.0.43 ; sys_platform == 'linux'
+  - nvidia-cusparselt-cu13==0.8.1 ; sys_platform == 'linux'
+  - nvidia-nccl-cu13==2.30.7 ; sys_platform == 'linux'
+  - nvidia-nvshmem-cu13==3.4.5 ; sys_platform == 'linux'
+  - triton~=3.8.0 ; python_full_version < '3.15' and sys_platform == 'linux'
+  - optree>=0.13.0 ; extra == 'optree'
+  - opt-einsum>=3.3 ; extra == 'opt-einsum'
+  - pyyaml ; extra == 'pyyaml'
+  requires_python: '>=3.10'
+- pypi: https://files.pythonhosted.org/packages/18/2a/d4cd8506d2044e082f8cd921be57392e6a9b5ccd3ffdf050362430a3d5d5/nvidia_cuda_cccl_cu12-12.9.27-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+  name: nvidia-cuda-cccl-cu12
+  version: 12.9.27
+  sha256: 37869e17ce2e1ecec6eddf1927cca0f8c34e64fd848d40453df559091e2d7117
+  requires_python: '>=3'
+- pypi: https://files.pythonhosted.org/packages/19/14/fe7b8670005fbdc2989f45a19192c979fb91334c80888147f0f34efaf19e/jax_cuda13_pjrt-0.11.1-py3-none-manylinux_2_27_x86_64.whl
+  name: jax-cuda13-pjrt
+  version: 0.11.1
+  sha256: 4ca8a261a5485adb852fde954e4b9145f542c0d8af4704a88e05faee3541af21
+- pypi: https://files.pythonhosted.org/packages/22/a6/858897256d0deac81a172289110f31629fc4cee19b6f01283303e18c8db3/ptyprocess-0.7.0-py2.py3-none-any.whl
+  name: ptyprocess
+  version: 0.7.0
+  sha256: 4b41f3967fce3af57cc7e94b888626c18bf37a083e3651ca8feeb66d492fef35
+- pypi: https://files.pythonhosted.org/packages/23/cd/066e86230ae37ed0be70aae89aabf03ca8d9f39c8aea0dec8029455b5540/opt_einsum-3.4.0-py3-none-any.whl
+  name: opt-einsum
+  version: 3.4.0
+  sha256: 69bb92469f86a1565195ece4ac0323943e83477171b91d24c35afe028a90d7cd
+  requires_python: '>=3.8'
+- pypi: https://files.pythonhosted.org/packages/24/25/1de2678b631f5a49215c6c96fff41ba892b0a34df68d6d80292b1b48aa7f/pytest-9.1.1-py3-none-any.whl
+  name: pytest
+  version: 9.1.1
+  sha256: 37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c
+  requires_dist:
+  - colorama>=0.4 ; sys_platform == 'win32'
+  - exceptiongroup>=1 ; python_full_version < '3.11'
+  - iniconfig>=1.0.1
+  - packaging>=22
+  - pluggy>=1.5,<2
+  - pygments>=2.7.2
+  - tomli>=1 ; python_full_version < '3.11'
+  - argcomplete ; extra == 'dev'
+  - attrs>=19.2 ; extra == 'dev'
+  - hypothesis>=3.56 ; extra == 'dev'
+  - mock ; extra == 'dev'
+  - requests ; extra == 'dev'
+  - setuptools ; extra == 'dev'
+  - xmlschema ; extra == 'dev'
+  requires_python: '>=3.10'
+- pypi: https://files.pythonhosted.org/packages/25/f4/ead6e0e37209b07c9baa3e984ccdb0348ca370b77cea3aaea8ddbb097e00/lightning_utilities-0.15.3-py3-none-any.whl
+  name: lightning-utilities
+  version: 0.15.3
+  sha256: 6c55f1bee70084a1cbeaa41ada96e4b3a0fea5909e844dd335bd80f5a73c5f91
+  requires_dist:
+  - packaging>=22
+  - typing-extensions
+  - mypy>=1.0.0 ; extra == 'typing'
+  - types-setuptools ; extra == 'typing'
+  - requests>=2.0.0 ; extra == 'docs'
+  - jsonargparse[signatures]>=4.38.0 ; extra == 'cli'
+  - tomlkit ; extra == 'cli'
+  requires_python: '>=3.10'
+- pypi: https://files.pythonhosted.org/packages/2d/1e/65b59cf518c106aa755e7f7da3099027738687a862ec785060702a481320/ipython-9.17.1-py3-none-any.whl
+  name: ipython
+  version: 9.17.1
+  sha256: 6d1645743cfd1a07eb695d85aa2b5fa66721f8cbae9431d4049f7084bbf06509
+  requires_dist:
+  - colorama>=0.4.4 ; sys_platform == 'win32'
+  - ipython-pygments-lexers>=1.0.0
+  - jedi>=0.18.2
+  - matplotlib-inline>=0.1.6
+  - pexpect>4.6 ; sys_platform != 'emscripten' and sys_platform != 'win32'
+  - prompt-toolkit>=3.0.41,<3.1.0
+  - psutil>=7 ; sys_platform != 'cygwin' and sys_platform != 'emscripten'
+  - pygments>=2.14.0
+  - stack-data>=0.6.0
+  - traitlets>=5.13.0
+  - typing-extensions>=4.6 ; python_full_version < '3.12'
+  - black ; extra == 'black'
+  - docrepr ; extra == 'doc'
+  - exceptiongroup ; extra == 'doc'
+  - intersphinx-registry ; extra == 'doc'
+  - ipykernel ; extra == 'doc'
+  - ipython[matplotlib,test] ; extra == 'doc'
+  - setuptools>=80.0 ; extra == 'doc'
+  - sphinx-toml==0.0.4 ; extra == 'doc'
+  - sphinx-rtd-theme>=0.1.8 ; extra == 'doc'
+  - sphinx>=8.0 ; extra == 'doc'
+  - typing-extensions ; extra == 'doc'
+  - pytest>=7.0.0 ; extra == 'test'
+  - pytest-asyncio>=1.0.0 ; extra == 'test'
+  - testpath>=0.2 ; extra == 'test'
+  - packaging>=23.0.0 ; extra == 'test'
+  - setuptools>=80.0 ; extra == 'test'
+  - ipython[test] ; extra == 'test-extra'
+  - curio ; extra == 'test-extra'
+  - jupyter-ai ; extra == 'test-extra'
+  - ipython[matplotlib] ; extra == 'test-extra'
+  - nbformat ; extra == 'test-extra'
+  - nbclient ; extra == 'test-extra'
+  - ipykernel>6.30 ; extra == 'test-extra'
+  - numpy>=2.0 ; extra == 'test-extra'
+  - pandas>2.1 ; extra == 'test-extra'
+  - trio>=0.22.0 ; extra == 'test-extra'
+  - matplotlib>3.9 ; extra == 'matplotlib'
+  - ipython[doc,matplotlib,test,test-extra] ; extra == 'all'
+  - argcomplete>=3.0 ; extra == 'all'
+  requires_python: '>=3.11'
+- pypi: https://files.pythonhosted.org/packages/2e/24/d1558f3b68b1d26e706813b1d10aa1d785e4698c425af8db8edc3dced472/nvidia_cuda_runtime-13.0.96-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+  name: nvidia-cuda-runtime
+  version: 13.0.96
+  sha256: 7f82250d7782aa23b6cfe765ecc7db554bd3c2870c43f3d1821f1d18aebf0548
+  requires_python: '>=3'
+- pypi: https://files.pythonhosted.org/packages/33/6d/737d164b4837a9bbd202f5ae3078975f0525a55730fe871d8ed4e3b952b0/nvidia_cuda_cupti-13.0.85-py3-none-manylinux_2_25_x86_64.whl
+  name: nvidia-cuda-cupti
+  version: 13.0.85
+  sha256: 4eb01c08e859bf924d222250d2e8f8b8ff6d3db4721288cf35d14252a4d933c8
+  requires_python: '>=3'
+- pypi: https://files.pythonhosted.org/packages/34/7d/2661f2fb3ac4302f3a246f5fc030213ac60c1fe0bce84f9783dbd831dbb7/nvidia_cusparselt_cu13-0.8.1-py3-none-manylinux2014_x86_64.whl
+  name: nvidia-cusparselt-cu13
+  version: 0.8.1
+  sha256: 786ce87568c303fadb5afcc7102d454cd3040d75f6f8626f5db460d1871f4dd0
+- pypi: https://files.pythonhosted.org/packages/36/d2/b70a31e13d04456d28493f31d2aa087e99eeb2767ef0293b2625727ccb8c/filelock-3.32.5-py3-none-any.whl
+  name: filelock
+  version: 3.32.5
+  sha256: 142cd9fa77a872c5e78c62329a0d15278fadc686eb89e760017968961a4fd6b2
+  requires_python: '>=3.10'
+- pypi: https://files.pythonhosted.org/packages/39/2a/6d2e9047d1fb243dbaa364b01e0297534b9ed7fd27dba1c9f361519cf69b/cuda_bindings-13.3.1-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl
+  name: cuda-bindings
+  version: 13.3.1
+  sha256: e32d08f71ebcdf00f0f41eab2eb37e8da94c8ed411cc9f7f7a019ce6b34abe3a
+  requires_dist:
+  - cuda-pathfinder>=1.4.2
+  - cuda-toolkit[nvfatbin,nvjitlink,nvrtc,nvvm]==13.* ; extra == 'all'
+  - cuda-toolkit[cufile]==13.* ; sys_platform == 'linux' and extra == 'all'
+  - cuda-toolkit==13.* ; extra == 'all'
+  - nvidia-cudla==13.* ; platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'all'
+  requires_python: '>=3.10'
+- pypi: https://files.pythonhosted.org/packages/3a/5f/62d28cf019460c7f1394105b4d49d9911a9c444cb77ab0bd95a204c5a6de/numpy-2.5.2-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+  name: numpy
+  version: 2.5.2
+  sha256: 3cdec01fa790a186d430433fdd4d4ffb70eed6f0eeb4bf05c8dbe2dce0a9bcb8
+  requires_python: '>=3.12'
+- pypi: https://files.pythonhosted.org/packages/3b/cd/154ca20c38269e05eff77c1464e6c1da89f50a6390b565e9d82e06bc11e1/nvidia_cublas-13.1.1.3-py3-none-manylinux_2_27_x86_64.whl
+  name: nvidia-cublas
+  version: 13.1.1.3
+  sha256: 37936a16db8fe4ac1f065c2139360608a543a09275cb1a1af612e08cfa065436
+  requires_dist:
+  - nvidia-cuda-nvrtc
+  requires_python: '>=3'
+- pypi: https://files.pythonhosted.org/packages/3c/2e/8d0c2ab90a8c1d9a24f0399058ab8519a3279d1bd4289511d74e909f060e/markupsafe-3.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+  name: markupsafe
+  version: 3.0.3
+  sha256: d6dd0be5b5b189d31db7cda48b91d7e0a9795f31430b7f271219ab30f1d3ac9d
+  requires_python: '>=3.9'
+- pypi: https://files.pythonhosted.org/packages/3c/35/a9bf80a609e74e3b000fef598933235c908fcefcef9026042b8e6dfde2a9/nvidia_nvshmem_cu13-3.4.5-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+  name: nvidia-nvshmem-cu13
+  version: 3.4.5
+  sha256: 290f0a2ee94c9f3687a02502f3b9299a9f9fe826e6d0287ee18482e78d495b80
+  requires_python: '>=3'
+- pypi: https://files.pythonhosted.org/packages/3e/30/e900b21425a860e195f32e37657aa1f7c7f2b1bfb26f03ca209b90933c06/annotated_doc-0.0.5-py3-none-any.whl
+  name: annotated-doc
+  version: 0.0.5
+  sha256: 117bac03a25ede5df5440e855b32d556049ca169ead221505badf432fed4b101
+  requires_python: '>=3.9'
+- pypi: https://files.pythonhosted.org/packages/3f/34/c500f90c7ae641b8e0f98965b36b8a7ac79cc8b296e8d251fe3eb592ee54/nvidia_nccl_cu13-2.30.7-py3-none-manylinux_2_18_x86_64.whl
+  name: nvidia-nccl-cu13
+  version: 2.30.7
+  sha256: cefa7fdb9710efd0f39c5f1be1d61ff6fc9a996c451265bd7fbdcf9455ed4b50
+  requires_python: '>=3'
+- pypi: https://files.pythonhosted.org/packages/3f/70/4f193de89a48b71714e74602ee14d04e4019ad36a5a9f20c425776e72cd6/nvidia_cufile-1.15.1.6-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+  name: nvidia-cufile
+  version: 1.15.1.6
+  sha256: 08a3ecefae5a01c7f5117351c64f17c7c62efa5fffdbe24fc7d298da19cd0b44
+  requires_python: '>=3'
+- pypi: https://files.pythonhosted.org/packages/41/09/5b161152e2d90f7b87f781c2e1267494aef9c32498df793f73ad0a0a494a/matplotlib_inline-0.2.2-py3-none-any.whl
+  name: matplotlib-inline
+  version: 0.2.2
+  sha256: 3c821cf1c209f59fb2d2d64abbf5b23b67bcb2210d663f9918dd851c6da1fcf6
+  requires_dist:
+  - traitlets
+  - flake8 ; extra == 'test'
+  - nbdime ; extra == 'test'
+  - nbval ; extra == 'test'
+  - notebook ; extra == 'test'
+  - pytest ; extra == 'test'
+  - matplotlib ; extra == 'test'
+  requires_python: '>=3.9'
+- pypi: https://files.pythonhosted.org/packages/43/e3/7d92a15f894aa0c9c4b49b8ee9ac9850d6e63b03c9c32c0367a13ae62209/mpmath-1.3.0-py3-none-any.whl
+  name: mpmath
+  version: 1.3.0
+  sha256: a0b2b9fe80bbcd81a6647ff13108738cfb482d481d826cc0e02f5b35e5c88d2c
+  requires_dist:
+  - pytest>=4.6 ; extra == 'develop'
+  - pycodestyle ; extra == 'develop'
+  - pytest-cov ; extra == 'develop'
+  - codecov ; extra == 'develop'
+  - wheel ; extra == 'develop'
+  - sphinx ; extra == 'docs'
+  - gmpy2>=2.1.0a4 ; platform_python_implementation != 'PyPy' and extra == 'gmpy'
+  - pytest>=4.6 ; extra == 'tests'
+- pypi: https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl
+  name: typing-extensions
+  version: 4.16.0
+  sha256: 481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
+  requires_python: '>=3.9'
+- pypi: https://files.pythonhosted.org/packages/52/b7/7cd31f29d6055bd711ae6e669367fba6f5ae9de463910a793e30556a8db7/aiohttp-3.14.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+  name: aiohttp
+  version: 3.14.3
+  sha256: 543906c127fb1d929b95076db19b83fa2d46751006ff1e23b093aa5ac4d8db42
+  requires_dist:
+  - aiohappyeyeballs>=2.5.0
+  - aiosignal>=1.4.0
+  - async-timeout>=4.0,<6.0 ; python_full_version < '3.11'
+  - attrs>=17.3.0
+  - frozenlist>=1.1.1
+  - multidict>=4.5,<7.0
+  - propcache>=0.2.0
+  - typing-extensions>=4.4 ; python_full_version < '3.13'
+  - yarl>=1.17.0,<2.0
+  - aiodns>=3.3.0 ; sys_platform != 'android' and sys_platform != 'ios' and extra == 'speedups'
+  - brotli>=1.2 ; platform_python_implementation == 'CPython' and sys_platform != 'android' and sys_platform != 'ios' and extra == 'speedups'
+  - brotlicffi>=1.2 ; platform_python_implementation != 'CPython' and extra == 'speedups'
+  - backports-zstd ; python_full_version < '3.14' and platform_python_implementation == 'CPython' and sys_platform != 'android' and sys_platform != 'ios' and extra == 'speedups'
+  requires_python: '>=3.10'
+- pypi: https://files.pythonhosted.org/packages/53/60/7be26e610767316c028a2cbedb9a3beabdbe33e2182c373f71a1c0b88f36/zstandard-0.25.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+  name: zstandard
+  version: 0.25.0
+  sha256: 5a56ba0db2d244117ed744dfa8f6f5b366e14148e00de44723413b2f3938a902
+  requires_dist:
+  - cffi~=1.17 ; python_full_version < '3.14' and platform_python_implementation != 'PyPy' and extra == 'cffi'
+  - cffi>=2.0.0b0 ; python_full_version >= '3.14' and platform_python_implementation != 'PyPy' and extra == 'cffi'
+  requires_python: '>=3.9'
+- pypi: https://files.pythonhosted.org/packages/54/20/4d324d65cc6d9205fabedc306948156824eb9f0ee1633355a8f7ec5c66bf/pluggy-1.6.0-py3-none-any.whl
+  name: pluggy
+  version: 1.6.0
+  sha256: e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746
+  requires_dist:
+  - pre-commit ; extra == 'dev'
+  - tox ; extra == 'dev'
+  - pytest ; extra == 'testing'
+  - pytest-benchmark ; extra == 'testing'
+  - coverage ; extra == 'testing'
+  requires_python: '>=3.9'
+- pypi: https://files.pythonhosted.org/packages/54/6f/84908cad2d6aa5144abcf7b42709fe4fdb459bc640ec7ac5786e7693dabc/prompt_toolkit-3.0.53-py3-none-any.whl
+  name: prompt-toolkit
+  version: 3.0.53
+  sha256: 01c0891d7f9237d5e339f7d3e42cdae80b7534abb1c7c0e3352efba6231492f2
+  requires_dist:
+  - wcwidth>=0.1.4
+  requires_python: '>=3.10'
+- pypi: https://files.pythonhosted.org/packages/57/b0/0e52c878c53f245edd3a11020f20979b3f490f245af532c7cae3027754b5/idna-3.19-py3-none-any.whl
+  name: idna
+  version: '3.19'
+  sha256: 815e7be7a7806d54abb586dc943addc79e8b2ee16915059658cbeff4b1b43bf4
+  requires_dist:
+  - ruff>=0.16.0 ; extra == 'all'
+  - mypy>=1.11.2 ; extra == 'all'
+  - ty>=0.0.37 ; extra == 'all'
+  - pytest>=8.3.2 ; extra == 'all'
+  - hypothesis>=6.141.1 ; extra == 'all'
+  - coverage>=7.10.0 ; extra == 'all'
+  requires_python: '>=3.9'
+- pypi: https://files.pythonhosted.org/packages/58/50/6c0d534c5f134586a8e1ba4e330569e32f057e33372ae556463212fb4cd3/click-8.5.0-py3-none-any.whl
+  name: click
+  version: 8.5.0
+  sha256: 255bc9599cf7748b4b1a446ccc735421bd08a2ae529a8b88597d3de5664ee360
+  requires_python: '>=3.10'
+- pypi: https://files.pythonhosted.org/packages/5c/ba/791cffd048fe5b044e620df55267e3e95c0e6e07d50b41e377c03dfc910f/nvidia_cudnn_cu13-9.24.0.43-py3-none-manylinux_2_27_x86_64.whl
+  name: nvidia-cudnn-cu13
+  version: 9.24.0.43
+  sha256: 71f181cd810e90f9b6023b01186fe82d13d65f0ec098581ee201d39fad769e4b
+  requires_dist:
+  - nvidia-cublas
+  requires_python: '>=3'
+- pypi: https://files.pythonhosted.org/packages/5f/67/cba3777620cdacb99102da4042883709c41c709f4b6323c10781a9c3aa34/nvidia_cusolver-12.0.4.66-py3-none-manylinux_2_27_x86_64.whl
+  name: nvidia-cusolver
+  version: 12.0.4.66
+  sha256: 0a759da5dea5c0ea10fd307de75cdeb59e7ea4fcb8add0924859b944babf1112
+  requires_dist:
+  - nvidia-cublas
+  - nvidia-nvjitlink
+  - nvidia-cusparse
+  requires_python: '>=3'
+- pypi: https://files.pythonhosted.org/packages/60/c9/711ca85d79f1ec98f29a5eae2b051e25b4ecec5de3e3c0e2d5c5dcb15664/pyarrow-25.0.1-cp312-cp312-manylinux_2_28_x86_64.whl
+  name: pyarrow
+  version: 25.0.1
+  sha256: 5389cdf79447ed1515c9e31620e6e1e2302249564d603f2ad727d4f6d313e4c3
+  requires_python: '>=3.10'
+- pypi: https://files.pythonhosted.org/packages/62/a1/3d680cbfd5f4b8f15abc1d571870c5fc3e594bb582bc3b64ea099db13e56/jinja2-3.1.6-py3-none-any.whl
+  name: jinja2
+  version: 3.1.6
+  sha256: 85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67
+  requires_dist:
+  - markupsafe>=2.0
+  - babel>=2.7 ; extra == 'i18n'
+  requires_python: '>=3.7'
+- pypi: https://files.pythonhosted.org/packages/63/03/cde130e3ff706784f9efd47204f299b15113ea08203e98a556603dac245d/nvidia_nvshmem_cu12-3.7.2-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+  name: nvidia-nvshmem-cu12
+  version: 3.7.2
+  sha256: 02b6d3482d90ea8ba214bc400362297f573257763990a98c9846ec5c786a7227
+  requires_dist:
+  - nvidia-cuda-cccl-cu12
+  requires_python: '>=3'
+- pypi: https://files.pythonhosted.org/packages/63/34/ba1c580383c9eada3711951fef0795c80b829a078d72188184bcab9dd527/packaging-26.3-py3-none-any.whl
+  name: packaging
+  version: '26.3'
+  sha256: d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
+  requires_python: '>=3.9'
+- pypi: https://files.pythonhosted.org/packages/64/b4/17d4b0b2a2dc85a6df63d1157e028ed19f90d4cd97c36717afef2bc2f395/attrs-26.1.0-py3-none-any.whl
+  name: attrs
+  version: 26.1.0
+  sha256: c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309
+  requires_python: '>=3.9'
+- pypi: https://files.pythonhosted.org/packages/67/81/4add07e5172b7ac40d8ed5ff580409a7801a4fe26d529bdd915401dabfbe/typing_inspection-0.4.4-py3-none-any.whl
+  name: typing-inspection
+  version: 0.4.4
+  sha256: 65b8397ba37ccbce054456aaccddfc91e6e3083c92824df348d96ca832f3f147
+  requires_dist:
+  - typing-extensions>=4.15.0
+  requires_python: '>=3.10'
+- pypi: https://files.pythonhosted.org/packages/6a/bd/d91c5e39f490a49df14320f4e8c80161cfcce09f1e2cde1edd16a551abb3/frozenlist-1.8.0-cp312-cp312-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl
+  name: frozenlist
+  version: 1.8.0
+  sha256: 494a5952b1c597ba44e0e78113a7266e656b9794eec897b19ead706bd7074383
+  requires_python: '>=3.9'
+- pypi: https://files.pythonhosted.org/packages/71/43/1947f06babed6b3f1d7f38b0c767f52df66bfb2bc10b468c4a7de9eceff2/aiohappyeyeballs-2.7.1-py3-none-any.whl
+  name: aiohappyeyeballs
+  version: 2.7.1
+  sha256: 9243213661e29250eb41368e5daa826fc017156c3b8a11440826b2e3ed376472
+  requires_python: '>=3.10'
+- pypi: https://files.pythonhosted.org/packages/71/46/17f022dd3e953bf20a04a028a21ec746d942f8d2af30fa0f124fa0e6a684/pygments-2.21.0-py3-none-any.whl
+  name: pygments
+  version: 2.21.0
+  sha256: 2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9
+  requires_dist:
+  - colorama>=0.4.6 ; extra == 'windows-terminal'
+  requires_python: '>=3.9'
+- pypi: https://files.pythonhosted.org/packages/74/27/450c690b2ed878fd323dce0fcc6ed1746013210bc9c395f30eaf6fb03b09/nvidia_cudnn_cu12-9.25.1.1-py3-none-manylinux_2_27_x86_64.whl
+  name: nvidia-cudnn-cu12
+  version: 9.25.1.1
+  sha256: 515df94e4060bb58c88588e46fb39a5df310659d2d98733d1697ed667b4895d1
+  requires_dist:
+  - nvidia-cublas-cu12
+  requires_python: '>=3'
+- pypi: https://files.pythonhosted.org/packages/7e/ce/16d76f4b5b3f7460f5ebd17516685495c149c66651ffdd381f90e4d4e65c/nvidia_cuda_crt-13.3.73-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+  name: nvidia-cuda-crt
+  version: 13.3.73
+  sha256: df14a17ae1c5c3171265411212246654d780f89344ea85344466c6b955247543
+  requires_python: '>=3'
+- pypi: https://files.pythonhosted.org/packages/83/19/e46ef3597ba47a9f8a91ab24533db42a600b659fc418dbe4af0b630bcb41/nvidia_cuda_nvcc-13.3.73-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+  name: nvidia-cuda-nvcc
+  version: 13.3.73
+  sha256: f483af83166c4fa356a21606076d553b0b4ceaebbd9912e537545080db695bdd
+  requires_dist:
+  - nvidia-nvvm
+  - nvidia-cuda-runtime
+  - nvidia-cuda-crt
+  requires_python: '>=3'
+- pypi: https://files.pythonhosted.org/packages/84/15/640e399579024a6875918839454025bb1d5f850bb70d96a11eabb644d11c/svgwrite-1.4.3-py3-none-any.whl
+  name: svgwrite
+  version: 1.4.3
+  sha256: bb6b2b5450f1edbfa597d924f9ac2dd099e625562e492021d7dd614f65f8a22d
+  requires_python: '>=3.6'
+- pypi: https://files.pythonhosted.org/packages/8a/d1/0e6049cfefa335a21daa1f2ffeb14cd2c3017bb5909fed1ae7258ae48b60/lightning_fabric-2.6.5-py3-none-any.whl
+  name: lightning-fabric
+  version: 2.6.5
+  sha256: 00168f50a46f1a550f20c787d7bd0264ddeebfd4a7e9343af70c031668f30a12
+  requires_dist:
+  - torch>=2.1.0
+  - fsspec[http]>=2022.5.0
+  - packaging>=23.0
+  - typing-extensions>4.5.0
+  - lightning-utilities>=0.10.0
+  - coverage==7.13.4 ; python_full_version >= '3.10' and extra == 'test'
+  - coverage==7.10.7 ; python_full_version < '3.10' and extra == 'test'
+  - numpy>1.21.0 ; python_full_version < '3.12' and extra == 'test'
+  - numpy>2.1.0 ; python_full_version >= '3.12' and extra == 'test'
+  - pytest==9.0.2 ; extra == 'test'
+  - pytest-cov==7.0.0 ; extra == 'test'
+  - pytest-timeout==2.4.0 ; extra == 'test'
+  - pytest-rerunfailures==16.0.1 ; python_full_version < '3.10' and extra == 'test'
+  - pytest-rerunfailures==16.1 ; python_full_version >= '3.10' and extra == 'test'
+  - pytest-random-order==1.2.0 ; extra == 'test'
+  - click==8.1.8 ; python_full_version < '3.11' and extra == 'test'
+  - click==8.3.1 ; python_full_version >= '3.11' and extra == 'test'
+  - tensorboardx>=2.6 ; extra == 'test'
+  - huggingface-hub ; extra == 'test'
+  - torchvision>=0.16.0 ; extra == 'examples'
+  - torchmetrics>=0.10.0 ; extra == 'examples'
+  - hydra-core>=1.2.0 ; extra == 'extra'
+  - deepspeed>=0.15.0,<0.17.0 ; sys_platform != 'darwin' and sys_platform != 'win32' and extra == 'strategies'
+  - bitsandbytes>=0.45.2 ; sys_platform != 'darwin' and extra == 'strategies'
+  - deepspeed>=0.15.0,<0.17.0 ; sys_platform != 'darwin' and sys_platform != 'win32' and extra == 'deepspeed'
+  - bitsandbytes>=0.45.2 ; sys_platform != 'darwin' and extra == 'bitsandbytes'
+  - hydra-core>=1.2.0 ; extra == 'all'
+  - deepspeed>=0.15.0,<0.17.0 ; sys_platform != 'darwin' and sys_platform != 'win32' and extra == 'all'
+  - bitsandbytes>=0.45.2 ; sys_platform != 'darwin' and extra == 'all'
+  - torchvision>=0.16.0 ; extra == 'all'
+  - torchmetrics>=0.10.0 ; extra == 'all'
+  - hydra-core>=1.2.0 ; extra == 'dev'
+  - deepspeed>=0.15.0,<0.17.0 ; sys_platform != 'darwin' and sys_platform != 'win32' and extra == 'dev'
+  - bitsandbytes>=0.45.2 ; sys_platform != 'darwin' and extra == 'dev'
+  - torchvision>=0.16.0 ; extra == 'dev'
+  - torchmetrics>=0.10.0 ; extra == 'dev'
+  - coverage==7.13.4 ; python_full_version >= '3.10' and extra == 'dev'
+  - coverage==7.10.7 ; python_full_version < '3.10' and extra == 'dev'
+  - numpy>1.21.0 ; python_full_version < '3.12' and extra == 'dev'
+  - numpy>2.1.0 ; python_full_version >= '3.12' and extra == 'dev'
+  - pytest==9.0.2 ; extra == 'dev'
+  - pytest-cov==7.0.0 ; extra == 'dev'
+  - pytest-timeout==2.4.0 ; extra == 'dev'
+  - pytest-rerunfailures==16.0.1 ; python_full_version < '3.10' and extra == 'dev'
+  - pytest-rerunfailures==16.1 ; python_full_version >= '3.10' and extra == 'dev'
+  - pytest-random-order==1.2.0 ; extra == 'dev'
+  - click==8.1.8 ; python_full_version < '3.11' and extra == 'dev'
+  - click==8.3.1 ; python_full_version >= '3.11' and extra == 'dev'
+  - tensorboardx>=2.6 ; extra == 'dev'
+  - huggingface-hub ; extra == 'dev'
+  requires_python: '>=3.10'
+- pypi: https://files.pythonhosted.org/packages/8b/9d/b3589d3877982d4f2329302ef98a8026e7f4443c765c46cfecc8858c6b4b/pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+  name: pyyaml
+  version: 6.0.3
+  sha256: ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc
+  requires_python: '>=3.8'
+- pypi: https://files.pythonhosted.org/packages/8e/37/efad0257dc6e593a18957422533ff0f87ede7c9c6ea010a2177d738fb82f/pure_eval-0.2.3-py3-none-any.whl
+  name: pure-eval
+  version: 0.2.3
+  sha256: 1db8e35b67b3d218d818ae653e27f06c3aa420901fa7b081ca98cbedc874e0d0
+  requires_dist:
+  - pytest ; extra == 'tests'
+- pypi: https://files.pythonhosted.org/packages/8f/f4/5f9a286e1eeca9faa8b83885edccf63ab2f1b22e17f6a5ea66ac86b1afe4/jax-0.11.1-py3-none-any.whl
+  name: jax
+  version: 0.11.1
+  sha256: 72ed60bf85a0b53d0f5b5cd61e37a8b25f369f6f88481feb98ab489894861a82
+  requires_dist:
+  - jaxlib<=0.11.1,>=0.11.1
+  - ml-dtypes>=0.5.0
+  - numpy>=2.1
+  - opt-einsum
+  - scipy>=1.15
+  - jaxlib==0.11.1 ; extra == 'minimum-jaxlib'
+  - jaxlib==0.11.0 ; extra == 'ci'
+  - jaxlib<=0.11.1,>=0.11.1 ; extra == 'tpu'
+  - libtpu==0.0.46.* ; extra == 'tpu'
+  - requests ; extra == 'tpu'
+  - jaxlib<=0.11.1,>=0.11.1 ; extra == 'cuda'
+  - jax-cuda12-plugin[with-cuda]<=0.11.1,>=0.11.1 ; extra == 'cuda'
+  - jaxlib<=0.11.1,>=0.11.1 ; extra == 'cuda12'
+  - jax-cuda12-plugin[with-cuda]<=0.11.1,>=0.11.1 ; extra == 'cuda12'
+  - jaxlib<=0.11.1,>=0.11.1 ; extra == 'cuda13'
+  - jax-cuda13-plugin[with-cuda]<=0.11.1,>=0.11.1 ; extra == 'cuda13'
+  - jaxlib<=0.11.1,>=0.11.1 ; extra == 'cuda12-local'
+  - jax-cuda12-plugin<=0.11.1,>=0.11.1 ; extra == 'cuda12-local'
+  - jaxlib<=0.11.1,>=0.11.1 ; extra == 'cuda13-local'
+  - jax-cuda13-plugin<=0.11.1,>=0.11.1 ; extra == 'cuda13-local'
+  - jaxlib<=0.11.1,>=0.11.1 ; extra == 'rocm7-local'
+  - jax-rocm7-plugin==0.11.1.* ; extra == 'rocm7-local'
+  - jaxlib<=0.11.1,>=0.11.1 ; extra == 'oneapi'
+  - jax-oneapi-plugin[with-oneapi]<=0.11.1,>=0.11.1 ; extra == 'oneapi'
+  - kubernetes ; extra == 'k8s'
+  - xprof ; extra == 'xprof'
+  requires_python: '>=3.12'
+- pypi: https://files.pythonhosted.org/packages/94/80/1f361f432281f5d43d12960d78fc609abe51708903e26a00518f5a8566d3/jax_cuda13_plugin-0.11.1-cp312-cp312-manylinux_2_27_x86_64.whl
+  name: jax-cuda13-plugin
+  version: 0.11.1
+  sha256: db348b9199810be5b5380c1139b4d4802d6dec6f0ca6bf19fcb818805341f590
+  requires_dist:
+  - jax-cuda13-pjrt==0.11.1
+  - nvidia-cublas>=13.0.0.19 ; sys_platform == 'linux' and extra == 'with-cuda'
+  - nvidia-cuda-cupti>=13.0.48 ; sys_platform == 'linux' and extra == 'with-cuda'
+  - nvidia-cuda-nvcc>=13.0.48 ; sys_platform == 'linux' and extra == 'with-cuda'
+  - nvidia-cuda-runtime>=13.0.48 ; sys_platform == 'linux' and extra == 'with-cuda'
+  - nvidia-cudnn-cu13>=9.12.0.46,<10.0 ; sys_platform == 'linux' and extra == 'with-cuda'
+  - nvidia-cufft>=12.0.0.15 ; sys_platform == 'linux' and extra == 'with-cuda'
+  - nvidia-cusolver>=12.0.3.29 ; sys_platform == 'linux' and extra == 'with-cuda'
+  - nvidia-cusparse>=12.6.2.49 ; sys_platform == 'linux' and extra == 'with-cuda'
+  - nvidia-nccl-cu13>=2.27.7 ; sys_platform == 'linux' and extra == 'with-cuda'
+  - nvidia-nvjitlink>=13.0.39 ; sys_platform == 'linux' and extra == 'with-cuda'
+  - nvidia-cuda-nvrtc>=13.0.48 ; sys_platform == 'linux' and extra == 'with-cuda'
+  - nvidia-nvshmem-cu13>=3.3.20 ; sys_platform == 'linux' and extra == 'with-cuda'
+  - nvidia-nvvm ; extra == 'with-cuda'
+  requires_python: '>=3.12'
+- pypi: https://files.pythonhosted.org/packages/95/9c/c510029fc6ef33a6275cd2c5d3cecd6613dfd6aa401d57c54f1c18852ccf/setuptools-84.0.0-py3-none-any.whl
+  name: setuptools
+  version: 84.0.0
+  sha256: 51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670
+  requires_dist:
+  - pytest>=6,!=8.1.* ; extra == 'test'
+  - virtualenv>=13.0.0 ; extra == 'test'
+  - wheel>=0.44.0 ; extra == 'test'
+  - pip>=19.1 ; extra == 'test'
+  - packaging>=24.2 ; extra == 'test'
+  - jaraco-envs>=2.2 ; extra == 'test'
+  - pytest-xdist>=3 ; extra == 'test'
+  - jaraco-path>=3.7.2 ; extra == 'test'
+  - build[virtualenv]>=1.0.3 ; extra == 'test'
+  - filelock>=3.4.0 ; extra == 'test'
+  - ini2toml[lite]>=0.14 ; extra == 'test'
+  - tomli-w>=1.0.0 ; extra == 'test'
+  - pytest-timeout ; extra == 'test'
+  - pytest-perf ; sys_platform != 'cygwin' and extra == 'test'
+  - jaraco-develop>=7.21 ; python_full_version >= '3.9' and sys_platform != 'cygwin' and extra == 'test'
+  - pytest-home>=0.5 ; extra == 'test'
+  - pytest-subprocess ; extra == 'test'
+  - pyproject-hooks!=1.1 ; extra == 'test'
+  - jaraco-test>=5.5 ; extra == 'test'
+  - sphinx>=3.5 ; extra == 'doc'
+  - jaraco-packaging>=9.3 ; extra == 'doc'
+  - rst-linker>=1.9 ; extra == 'doc'
+  - furo ; extra == 'doc'
+  - sphinx-lint ; extra == 'doc'
+  - jaraco-tidelift>=1.4 ; extra == 'doc'
+  - pygments-github-lexers==0.0.5 ; extra == 'doc'
+  - sphinx-favicon ; extra == 'doc'
+  - sphinx-inline-tabs ; extra == 'doc'
+  - sphinx-reredirects ; extra == 'doc'
+  - sphinxcontrib-towncrier ; extra == 'doc'
+  - sphinx-notfound-page>=1,<2 ; extra == 'doc'
+  - pyproject-hooks!=1.1 ; extra == 'doc'
+  - towncrier<24.7 ; extra == 'doc'
+  - packaging>=24.2 ; extra == 'core'
+  - more-itertools>=8.8 ; extra == 'core'
+  - jaraco-text>=3.7 ; extra == 'core'
+  - importlib-metadata>=6 ; python_full_version < '3.10' and extra == 'core'
+  - tomli>=2.0.1 ; python_full_version < '3.11' and extra == 'core'
+  - wheel>=0.43.0 ; extra == 'core'
+  - jaraco-functools>=4 ; extra == 'core'
+  - more-itertools ; extra == 'core'
+  - pytest-checkdocs>=2.14 ; extra == 'check'
+  - pytest-ruff>=0.2.1 ; sys_platform != 'cygwin' and extra == 'check'
+  - ruff>=0.13.0 ; sys_platform != 'cygwin' and extra == 'check'
+  - pytest-cov ; extra == 'cover'
+  - pytest-enabler>=3.4 ; extra == 'enabler'
+  - pytest-mypy>=1.0.1 ; platform_python_implementation != 'PyPy' and extra == 'type'
+  - mypy==1.18.* ; extra == 'type'
+  - importlib-metadata>=7.0.2 ; python_full_version < '3.10' and extra == 'type'
+  - jaraco-develop>=7.21 ; sys_platform != 'cygwin' and extra == 'type'
+  requires_python: '>=3.10'
+- pypi: https://files.pythonhosted.org/packages/97/f7/f07087f3d185ad2eced0c56cef89ca5474dfb4ff25f146cd50a861c97553/pyrefly-1.2.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+  name: pyrefly
+  version: 1.2.0
+  sha256: 90efe75e17491ef5d636e10469e9278d7d0256b3b4c5e1f4750069bf3ae0f5d1
+  requires_python: '>=3.8'
+- pypi: https://files.pythonhosted.org/packages/99/5d/8268b644392ee874ee82a635cd0df1773de230bde356c38de28e298392cc/parso-0.8.7-py2.py3-none-any.whl
+  name: parso
+  version: 0.8.7
+  sha256: a8926eb2a1b915486941fdbd31e86a4baf88fe8c210f25f2f35ecec5b574ca1c
+  requires_dist:
+  - flake8==5.0.4 ; extra == 'qa'
+  - types-setuptools==67.2.0.1 ; extra == 'qa'
+  - zuban==0.5.1 ; extra == 'qa'
+  - docopt ; extra == 'testing'
+  - pytest ; extra == 'testing'
+  requires_python: '>=3.6'
+- pypi: https://files.pythonhosted.org/packages/99/91/8acff4f5e50511b911bbccb72b8628a49c68ce14148cd9f6431094859a90/annotated_types-0.8.0-py3-none-any.whl
+  name: annotated-types
+  version: 0.8.0
+  sha256: f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0
+  requires_python: '>=3.10'
+- pypi: https://files.pythonhosted.org/packages/9a/93/242e2eab5fe682ffcb8b0084bde703a41d51e17ee0f3a31ff0d9d813620a/jedi-0.20.0-py2.py3-none-any.whl
+  name: jedi
+  version: 0.20.0
+  sha256: 7bdd9c2634f56713299976f4cbd59cb3fa92165cc5e05ea811fb253480728b67
+  requires_dist:
+  - parso>=0.8.6,<0.9.0
+  - django ; extra == 'dev'
+  - attrs ; extra == 'dev'
+  - colorama ; extra == 'dev'
+  - docopt ; extra == 'dev'
+  - flake8==7.1.2 ; extra == 'dev'
+  - pytest<9.0.0 ; extra == 'dev'
+  - types-setuptools==80.9.0.20250529 ; extra == 'dev'
+  - typing-extensions ; extra == 'dev'
+  - zuban==0.7.0 ; extra == 'dev'
+  - jinja2==3.1.6 ; extra == 'docs'
+  - markupsafe==3.0.3 ; extra == 'docs'
+  - pygments==2.20.0 ; extra == 'docs'
+  - sphinx==9.1.0 ; extra == 'docs'
+  - alabaster==1.0.0 ; extra == 'docs'
+  - babel==2.18.0 ; extra == 'docs'
+  - certifi==2026.4.22 ; extra == 'docs'
+  - charset-normalizer==3.4.7 ; extra == 'docs'
+  - docutils==0.22.4 ; extra == 'docs'
+  - idna==3.13 ; extra == 'docs'
+  - imagesize==2.0.0 ; extra == 'docs'
+  - iniconfig==2.3.0 ; extra == 'docs'
+  - packaging==26.2 ; extra == 'docs'
+  - pluggy==1.6.0 ; extra == 'docs'
+  - pytest==9.0.3 ; extra == 'docs'
+  - requests==2.33.1 ; extra == 'docs'
+  - roman-numerals==4.1.0 ; extra == 'docs'
+  - snowballstemmer==3.0.1 ; extra == 'docs'
+  - sphinx-rtd-theme==3.1.0 ; extra == 'docs'
+  - sphinxcontrib-applehelp==2.0.0 ; extra == 'docs'
+  - sphinxcontrib-devhelp==2.0.0 ; extra == 'docs'
+  - sphinxcontrib-htmlhelp==2.1.0 ; extra == 'docs'
+  - sphinxcontrib-jquery==4.1 ; extra == 'docs'
+  - sphinxcontrib-jsmath==1.0.1 ; extra == 'docs'
+  - sphinxcontrib-qthelp==2.0.0 ; extra == 'docs'
+  - sphinxcontrib-serializinghtml==2.0.0 ; extra == 'docs'
+  - urllib3==2.6.3 ; extra == 'docs'
+  requires_python: '>=3.10'
+- pypi: https://files.pythonhosted.org/packages/9e/c3/059298687310d527a58bb01f3b1965787ee3b40dce76752eda8b44e9a2c5/pexpect-4.9.0-py2.py3-none-any.whl
+  name: pexpect
+  version: 4.9.0
+  sha256: 7236d1e080e4936be2dc3e326cec0af72acf9212a7e1d060210e70a47e253523
+  requires_dist:
+  - ptyprocess>=0.5
+- pypi: https://files.pythonhosted.org/packages/9e/c9/b2622292ea83fbb4ec318f5b9ab867d0a28ab43c5717bb85b0a5f6b3b0a4/networkx-3.6.1-py3-none-any.whl
+  name: networkx
+  version: 3.6.1
+  sha256: d47fbf302e7d9cbbb9e2555a0d267983d2aa476bac30e90dfbe5669bd57f3762
+  requires_dist:
+  - asv ; extra == 'benchmarking'
+  - virtualenv ; extra == 'benchmarking'
+  - numpy>=1.25 ; extra == 'default'
+  - scipy>=1.11.2 ; extra == 'default'
+  - matplotlib>=3.8 ; extra == 'default'
+  - pandas>=2.0 ; extra == 'default'
+  - pre-commit>=4.1 ; extra == 'developer'
+  - mypy>=1.15 ; extra == 'developer'
+  - sphinx>=8.0 ; extra == 'doc'
+  - pydata-sphinx-theme>=0.16 ; extra == 'doc'
+  - sphinx-gallery>=0.18 ; extra == 'doc'
+  - numpydoc>=1.8.0 ; extra == 'doc'
+  - pillow>=10 ; extra == 'doc'
+  - texext>=0.6.7 ; extra == 'doc'
+  - myst-nb>=1.1 ; extra == 'doc'
+  - intersphinx-registry ; extra == 'doc'
+  - osmnx>=2.0.0 ; extra == 'example'
+  - momepy>=0.7.2 ; extra == 'example'
+  - contextily>=1.6 ; extra == 'example'
+  - seaborn>=0.13 ; extra == 'example'
+  - cairocffi>=1.7 ; extra == 'example'
+  - igraph>=0.11 ; extra == 'example'
+  - scikit-learn>=1.5 ; extra == 'example'
+  - iplotx>=0.9.0 ; extra == 'example'
+  - lxml>=4.6 ; extra == 'extra'
+  - pygraphviz>=1.14 ; extra == 'extra'
+  - pydot>=3.0.1 ; extra == 'extra'
+  - sympy>=1.10 ; extra == 'extra'
+  - build>=0.10 ; extra == 'release'
+  - twine>=4.0 ; extra == 'release'
+  - wheel>=0.40 ; extra == 'release'
+  - changelist==0.5 ; extra == 'release'
+  - pytest>=7.2 ; extra == 'test'
+  - pytest-cov>=4.0 ; extra == 'test'
+  - pytest-xdist>=3.0 ; extra == 'test'
+  - pytest-mpl ; extra == 'test-extras'
+  - pytest-randomly ; extra == 'test-extras'
+  requires_python: '>=3.11,!=3.14.1'
+- pypi: https://files.pythonhosted.org/packages/a1/b1/ef21259ec74fe0b265ed201379de1d0ef7c14178313ee03705952f1b7093/cuda_pathfinder-1.8.0-py3-none-any.whl
+  name: cuda-pathfinder
+  version: 1.8.0
+  sha256: c44e574dc997fae2814721d1ae97d0fd6db76db82decbe9b753bf75de53f515e
+  requires_python: '>=3.10'
+- pypi: https://files.pythonhosted.org/packages/a2/09/77d55d46fd61b4a135c444fc97158ef34a095e5681d0a6c10b75bf356191/sympy-1.14.0-py3-none-any.whl
+  name: sympy
+  version: 1.14.0
+  sha256: e091cc3e99d2141a0ba2847328f5479b05d94a6635cb96148ccb3f34671bd8f5
+  requires_dist:
+  - mpmath>=1.1.0,<1.4
+  - pytest>=7.1.0 ; extra == 'dev'
+  - hypothesis>=6.70.0 ; extra == 'dev'
+  requires_python: '>=3.9'
+- pypi: https://files.pythonhosted.org/packages/a5/9f/be0a41ca4a4917abf5cb9ae0daff1a6060cc5de950aec0396de9f3b52bc5/nvidia_curand-10.4.0.35-py3-none-manylinux_2_27_x86_64.whl
+  name: nvidia-curand
+  version: 10.4.0.35
+  sha256: 1aee33a5da6e1db083fe2b90082def8915f30f3248d5896bcec36a579d941bfc
+  requires_python: '>=3'
+- pypi: https://files.pythonhosted.org/packages/a8/2f/7b57e29836ea8714f81e9898409196f47d772d5ddedddf1592eadb8ab743/nvidia_cufft-12.0.0.61-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+  name: nvidia-cufft
+  version: 12.0.0.61
+  sha256: 6c44f692dce8fd5ffd3e3df134b6cdb9c2f72d99cf40b62c32dde45eea9ddad3
+  requires_dist:
+  - nvidia-nvjitlink
+  requires_python: '>=3'
+- pypi: https://files.pythonhosted.org/packages/ad/66/0d785f0bc5e4315a96c989bb476d0fc07ea4f85132550c7b156ca2035d52/traitlets-5.16.1-py3-none-any.whl
+  name: traitlets
+  version: 5.16.1
+  sha256: f775618166caa0396c8e337099240f2bd3e5e917d203b2e6fbe21a58d3cb1f6b
+  requires_dist:
+  - myst-parser ; extra == 'docs'
+  - pydata-sphinx-theme ; extra == 'docs'
+  - sphinx ; extra == 'docs'
+  - argcomplete>=3.0.3 ; python_full_version < '3.12' and extra == 'test'
+  - argcomplete>=3.5.2 ; python_full_version >= '3.12' and extra == 'test'
+  - mypy>=2.0 ; implementation_name != 'pypy' and extra == 'test'
+  - pre-commit ; extra == 'test'
+  - pytest-mock ; extra == 'test'
+  - pytest-mypy-testing ; implementation_name != 'pypy' and extra == 'test'
+  - pytest>=7.0,<10.0 ; extra == 'test'
+  requires_python: '>=3.10'
+- pypi: https://files.pythonhosted.org/packages/b5/70/5d8df3b09e25bce090399cf48e452d25c935ab72dad19406c77f4e828045/psutil-7.2.2-cp36-abi3-manylinux2010_x86_64.manylinux_2_12_x86_64.manylinux_2_28_x86_64.whl
+  name: psutil
+  version: 7.2.2
+  sha256: 076a2d2f923fd4821644f5ba89f059523da90dc9014e85f8e45a5774ca5bc6f9
+  requires_dist:
+  - psleak ; extra == 'dev'
+  - pytest ; extra == 'dev'
+  - pytest-instafail ; extra == 'dev'
+  - pytest-xdist ; extra == 'dev'
+  - setuptools ; extra == 'dev'
+  - abi3audit ; extra == 'dev'
+  - black ; extra == 'dev'
+  - check-manifest ; extra == 'dev'
+  - coverage ; extra == 'dev'
+  - packaging ; extra == 'dev'
+  - pylint ; extra == 'dev'
+  - pyperf ; extra == 'dev'
+  - pypinfo ; extra == 'dev'
+  - pytest-cov ; extra == 'dev'
+  - requests ; extra == 'dev'
+  - rstcheck ; extra == 'dev'
+  - ruff ; extra == 'dev'
+  - sphinx ; extra == 'dev'
+  - sphinx-rtd-theme ; extra == 'dev'
+  - toml-sort ; extra == 'dev'
+  - twine ; extra == 'dev'
+  - validate-pyproject[all] ; extra == 'dev'
+  - virtualenv ; extra == 'dev'
+  - vulture ; extra == 'dev'
+  - wheel ; extra == 'dev'
+  - colorama ; os_name == 'nt' and extra == 'dev'
+  - pyreadline3 ; os_name == 'nt' and extra == 'dev'
+  - pywin32 ; implementation_name != 'pypy' and os_name == 'nt' and extra == 'dev'
+  - wheel ; implementation_name != 'pypy' and os_name == 'nt' and extra == 'dev'
+  - wmi ; implementation_name != 'pypy' and os_name == 'nt' and extra == 'dev'
+  - psleak ; extra == 'test'
+  - pytest ; extra == 'test'
+  - pytest-instafail ; extra == 'test'
+  - pytest-xdist ; extra == 'test'
+  - setuptools ; extra == 'test'
+  - pywin32 ; implementation_name != 'pypy' and os_name == 'nt' and extra == 'test'
+  - wheel ; implementation_name != 'pypy' and os_name == 'nt' and extra == 'test'
+  - wmi ; implementation_name != 'pypy' and os_name == 'nt' and extra == 'test'
+  requires_python: '>=3.6'
+- pypi: https://files.pythonhosted.org/packages/b8/85/e4af82cc9202023862090bfca4ea827d533329e925c758f0cde964cb54b7/nvidia_cuda_nvrtc_cu12-12.9.86-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl
+  name: nvidia-cuda-nvrtc-cu12
+  version: 12.9.86
+  sha256: 210cf05005a447e29214e9ce50851e83fc5f4358df8b453155d5e1918094dcb4
+  requires_python: '>=3'
+- pypi: https://files.pythonhosted.org/packages/c0/a4/eb9409ec0736e50aa70a412f16c204ed149516846912f7e6724d4c73ee53/pydantic_core-2.46.5-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+  name: pydantic-core
+  version: 2.46.5
+  sha256: 0fc5be0abd4a407e200d844b404e33639a554e7bd0d448e7b9ae181be4789ac2
+  requires_dist:
+  - typing-extensions>=4.14.1
+  requires_python: '>=3.9'
+- pypi: https://files.pythonhosted.org/packages/c1/09/b7012e5bfae67640f268aa584caa80fe1674f6b0da949046b679972c33e3/triton-3.8.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+  name: triton
+  version: 3.8.0
+  sha256: e91ffa46d095b252248297292dd22bcbacd53a125a0c2eefbbbf74925a320bc3
+  requires_dist:
+  - importlib-metadata ; python_full_version < '3.10'
+  requires_python: '>=3.10,<3.15'
+- pypi: https://files.pythonhosted.org/packages/c1/ea/53f2148663b321f21b5a606bd5f191517cf40b7072c0497d3c92c4a13b1e/executing-2.2.1-py2.py3-none-any.whl
+  name: executing
+  version: 2.2.1
+  sha256: 760643d3452b4d777d295bb167ccc74c64a81df23fb5e08eff250c425a4b2017
+  requires_dist:
+  - asttokens>=2.1.0 ; extra == 'tests'
+  - ipython ; extra == 'tests'
+  - pytest ; extra == 'tests'
+  - coverage ; extra == 'tests'
+  - coverage-enable-subprocess ; extra == 'tests'
+  - littleutils ; extra == 'tests'
+  - rich ; python_full_version >= '3.11' and extra == 'tests'
+  requires_python: '>=3.8'
+- pypi: https://files.pythonhosted.org/packages/c2/f3/d86c845465a2723ad7e1e5c36dcd75ddb82898b3f53be47ebd429fb2fa5d/nvidia_nvtx-13.0.85-py3-none-manylinux1_x86_64.manylinux_2_5_x86_64.whl
+  name: nvidia-nvtx
+  version: 13.0.85
+  sha256: 4936d1d6780fbe68db454f5e72a42ff64d1fd6397df9f363ae786930fd5c1cd4
+  requires_python: '>=3'
+- pypi: https://files.pythonhosted.org/packages/c3/68/483a78f5e8f31b08fb1bb671559968c0ca3a065ac7acabfc7cee55214fd6/nvidia_cuda_nvrtc-13.0.88-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl
+  name: nvidia-cuda-nvrtc
+  version: 13.0.88
+  sha256: ad9b6d2ead2435f11cbb6868809d2adeeee302e9bb94bcf0539c7a40d80e8575
+  requires_python: '>=3'
+- pypi: https://files.pythonhosted.org/packages/c4/0e/57f6bb3024a597b2e8ec4aee710ffe62ddc95af2e2bb1ee7a7abdc22c68c/wcwidth-0.8.3-py3-none-any.whl
+  name: wcwidth
+  version: 0.8.3
+  sha256: d5b73dba6158a595ec9370350e7f2637bcac8d6c5e4fde34f30fcffb6103a5e4
+  requires_python: '>=3.8'
+- pypi: https://files.pythonhosted.org/packages/c7/f9/7d76c1eae866f5d4636401b31b6d6dd90e4b4ced1fa7cfdfcca9c60e4bd3/ml_dtypes-0.6.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+  name: ml-dtypes
+  version: 0.6.0
+  sha256: 3b4a480aa8fd54a1805b8ac10f3f91763926a74f73c0c364c10f9231854f4170
+  requires_dist:
+  - numpy>=2.0.0
+  - numpy>=2.1.0 ; python_full_version >= '3.13'
+  - numpy>=2.3.0 ; python_full_version >= '3.14'
+  - absl-py ; extra == 'dev'
+  - pytest ; extra == 'dev'
+  - pytest-xdist ; extra == 'dev'
+  - pylint>=2.6.0 ; extra == 'dev'
+  - pyink ; extra == 'dev'
+  requires_python: '>=3.10'
+- pypi: https://files.pythonhosted.org/packages/c8/cb/6a6a47d5b464bd08695d254f3da6e7986cc70c9fa5d778eda57538edfe56/starlette-1.6.0-py3-none-any.whl
+  name: starlette
+  version: 1.6.0
+  sha256: a86dd39d14bb45f85a3d18525215a9ef0cfd1f192ac793220e72598c90335f0c
+  requires_dist:
+  - anyio>=3.6.2,<5
+  - typing-extensions>=4.10.0 ; python_full_version < '3.13'
+  - httpx2>=2.0.0 ; extra == 'full'
+  - httpx>=0.27.0,<0.29.0 ; extra == 'full'
+  - itsdangerous ; extra == 'full'
+  - jinja2 ; extra == 'full'
+  - python-multipart>=0.0.18 ; extra == 'full'
+  - pyyaml ; extra == 'full'
+  requires_python: '>=3.10'
+- pypi: https://files.pythonhosted.org/packages/cb/03/10388a42375ee7e4ac9b94eb2c5c569c8b5795e377e701c9ac3ad63de890/fastapi-0.141.1-py3-none-any.whl
+  name: fastapi
+  version: 0.141.1
+  sha256: bfb91aa2d334c61cb35ba9a116fc123b3d3df31640b801cf57a7a78ec3f603b3
+  requires_dist:
+  - starlette>=0.46.0
+  - pydantic>=2.9.0
+  - typing-extensions>=4.8.0
+  - typing-inspection>=0.4.2
+  - annotated-doc>=0.0.2
+  - fastapi-cli[standard]>=0.0.32 ; extra == 'standard'
+  - fastar>=0.9.0 ; extra == 'standard'
+  - httpx>=0.23.0,<1.0.0 ; extra == 'standard'
+  - jinja2>=3.1.5 ; extra == 'standard'
+  - python-multipart>=0.0.18 ; extra == 'standard'
+  - email-validator>=2.0.0 ; extra == 'standard'
+  - uvicorn[standard]>=0.12.0 ; extra == 'standard'
+  - pydantic-settings>=2.0.0 ; extra == 'standard'
+  - pydantic-extra-types>=2.0.0 ; extra == 'standard'
+  - fastapi-cli[standard-no-fastapi-cloud-cli]>=0.0.32 ; extra == 'standard-no-fastapi-cloud-cli'
+  - httpx>=0.23.0,<1.0.0 ; extra == 'standard-no-fastapi-cloud-cli'
+  - jinja2>=3.1.5 ; extra == 'standard-no-fastapi-cloud-cli'
+  - python-multipart>=0.0.18 ; extra == 'standard-no-fastapi-cloud-cli'
+  - email-validator>=2.0.0 ; extra == 'standard-no-fastapi-cloud-cli'
+  - uvicorn[standard]>=0.12.0 ; extra == 'standard-no-fastapi-cloud-cli'
+  - pydantic-settings>=2.0.0 ; extra == 'standard-no-fastapi-cloud-cli'
+  - pydantic-extra-types>=2.0.0 ; extra == 'standard-no-fastapi-cloud-cli'
+  - fastapi-cli[standard]>=0.0.32 ; extra == 'all'
+  - httpx>=0.23.0,<1.0.0 ; extra == 'all'
+  - jinja2>=3.1.5 ; extra == 'all'
+  - python-multipart>=0.0.18 ; extra == 'all'
+  - itsdangerous>=1.1.0 ; extra == 'all'
+  - pyyaml>=5.3.1 ; extra == 'all'
+  - email-validator>=2.0.0 ; extra == 'all'
+  - uvicorn[standard]>=0.12.0 ; extra == 'all'
+  - pydantic-settings>=2.0.0 ; extra == 'all'
+  - pydantic-extra-types>=2.0.0 ; extra == 'all'
+  requires_python: '>=3.10'
+- pypi: https://files.pythonhosted.org/packages/cb/b1/3846dd7f199d53cb17f49cba7e651e9ce294d8497c8c150530ed11865bb8/iniconfig-2.3.0-py3-none-any.whl
+  name: iniconfig
+  version: 2.3.0
+  sha256: f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12
+  requires_python: '>=3.10'
+- pypi: https://files.pythonhosted.org/packages/cb/c0/0a517bfe63ccd3b92eb254d264e28fca3c7cab75d07daea315250fb1bf73/nvidia_cublas_cu12-12.9.2.10-py3-none-manylinux_2_27_x86_64.whl
+  name: nvidia-cublas-cu12
+  version: 12.9.2.10
+  sha256: e4f53a8ca8c5d6e8c492d0d0a3d565ecb59a751b19cfdaa4f6da0ab2104c1702
+  requires_dist:
+  - nvidia-cuda-nvrtc-cu12
+  requires_python: '>=3'
+- pypi: https://files.pythonhosted.org/packages/cd/1f/d58d44c203e5d1e63655cb47749a15a553e54bbb3f5f4bb7618ee7508ebd/riichienv-0.4.8-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+  name: riichienv
+  version: 0.4.8
+  sha256: 745650e71c146c36efe7ec3293cbd9b5aa76211cee4433a15b4da3679a3cb9cb
+  requires_dist:
+  - pyyaml>=6.0.3
+  - ipython
+  requires_python: '>=3.10,<3.15'
+- pypi: https://files.pythonhosted.org/packages/d1/c7/a79086a62c98befcdb8349656c6f114e2db3b8b2422f6e25c97a7f2a9a3c/cuda_toolkit-13.0.3.0-py2.py3-none-any.whl
+  name: cuda-toolkit
+  version: 13.0.3.0
+  sha256: d693caaa261214ddd7dbb60d68e71cbed884e68c2be7509778f3051da0b91c3f
+  requires_dist:
+  - nvidia-cublas==13.1.1.3.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'all') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'all') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'all')
+  - nvidia-cuda-cccl==13.0.85.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'all') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'all') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'all')
+  - nvidia-cuda-crt==13.0.88.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'all') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'all') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'all')
+  - nvidia-cuda-culibos==13.0.85.* ; (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'all') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'all')
+  - nvidia-cuda-cupti==13.0.85.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'all') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'all') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'all')
+  - nvidia-cuda-cuxxfilt==13.0.85.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'all') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'all') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'all')
+  - nvidia-cuda-nvcc==13.0.88.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'all') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'all') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'all')
+  - nvidia-cuda-nvrtc==13.0.88.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'all') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'all') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'all')
+  - nvidia-cuda-opencl==13.0.85.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'all') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'all')
+  - nvidia-cuda-profiler-api==13.0.85.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'all') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'all') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'all')
+  - nvidia-cuda-runtime==13.0.96.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'all') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'all') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'all')
+  - nvidia-cuda-sanitizer-api==13.0.85.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'all') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'all') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'all')
+  - nvidia-cufft==12.0.0.61.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'all') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'all') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'all')
+  - nvidia-cufile==1.15.1.6.* ; (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'all') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'all')
+  - nvidia-curand==10.4.0.35.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'all') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'all') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'all')
+  - nvidia-cusolver==12.0.4.66.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'all') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'all') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'all')
+  - nvidia-cusparse==12.6.3.3.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'all') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'all') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'all')
+  - nvidia-npp==13.0.1.2.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'all') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'all') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'all')
+  - nvidia-nvfatbin==13.0.85.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'all') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'all') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'all')
+  - nvidia-nvjitlink>=13.0.88,<14 ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'all') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'all') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'all')
+  - nvidia-nvjpeg==13.0.1.86.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'all') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'all') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'all')
+  - nvidia-nvml-dev==13.0.87.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'all') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'all') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'all')
+  - nvidia-nvptxcompiler==13.0.88.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'all') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'all') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'all')
+  - nvidia-nvtx==13.0.85.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'all') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'all') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'all')
+  - nvidia-nvvm==13.0.88.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'all') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'all') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'all')
+  - nvidia-cuda-cccl==13.0.85.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'cccl') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'cccl') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'cccl')
+  - nvidia-cuda-crt==13.0.88.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'crt') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'crt') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'crt')
+  - nvidia-cublas==13.1.1.3.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'cublas') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'cublas') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'cublas')
+  - nvidia-cuda-nvrtc==13.0.88.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'cublas') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'cublas') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'cublas')
+  - nvidia-cuda-runtime==13.0.96.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'cudart') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'cudart') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'cudart')
+  - nvidia-cufft==12.0.0.61.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'cufft') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'cufft') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'cufft')
+  - nvidia-nvjitlink>=13.0.88,<14 ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'cufft') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'cufft') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'cufft')
+  - nvidia-cufile==1.15.1.6.* ; (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'cufile') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'cufile')
+  - nvidia-cuda-culibos==13.0.85.* ; (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'culibos') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'culibos')
+  - nvidia-cuda-cupti==13.0.85.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'cupti') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'cupti') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'cupti')
+  - nvidia-curand==10.4.0.35.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'curand') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'curand') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'curand')
+  - nvidia-cublas==13.1.1.3.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'cusolver') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'cusolver') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'cusolver')
+  - nvidia-cusolver==12.0.4.66.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'cusolver') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'cusolver') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'cusolver')
+  - nvidia-cusparse==12.6.3.3.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'cusolver') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'cusolver') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'cusolver')
+  - nvidia-nvjitlink>=13.0.88,<14 ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'cusolver') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'cusolver') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'cusolver')
+  - nvidia-cusparse==12.6.3.3.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'cusparse') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'cusparse') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'cusparse')
+  - nvidia-nvjitlink>=13.0.88,<14 ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'cusparse') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'cusparse') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'cusparse')
+  - nvidia-cuda-cuxxfilt==13.0.85.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'cuxxfilt') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'cuxxfilt') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'cuxxfilt')
+  - nvidia-npp==13.0.1.2.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'npp') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'npp') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'npp')
+  - nvidia-cuda-crt==13.0.88.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'nvcc') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'nvcc') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'nvcc')
+  - nvidia-cuda-nvcc==13.0.88.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'nvcc') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'nvcc') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'nvcc')
+  - nvidia-cuda-runtime==13.0.96.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'nvcc') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'nvcc') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'nvcc')
+  - nvidia-nvvm==13.0.88.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'nvcc') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'nvcc') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'nvcc')
+  - nvidia-nvfatbin==13.0.85.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'nvfatbin') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'nvfatbin') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'nvfatbin')
+  - nvidia-nvjitlink>=13.0.88,<14 ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'nvjitlink') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'nvjitlink') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'nvjitlink')
+  - nvidia-nvjpeg==13.0.1.86.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'nvjpeg') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'nvjpeg') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'nvjpeg')
+  - nvidia-nvml-dev==13.0.87.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'nvml') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'nvml') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'nvml')
+  - nvidia-nvptxcompiler==13.0.88.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'nvptxcompiler') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'nvptxcompiler') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'nvptxcompiler')
+  - nvidia-cuda-nvrtc==13.0.88.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'nvrtc') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'nvrtc') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'nvrtc')
+  - nvidia-nvtx==13.0.85.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'nvtx') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'nvtx') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'nvtx')
+  - nvidia-nvvm==13.0.88.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'nvvm') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'nvvm') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'nvvm')
+  - nvidia-cuda-opencl==13.0.85.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'opencl') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'opencl')
+  - nvidia-cuda-profiler-api==13.0.85.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'profiler') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'profiler') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'profiler')
+  - nvidia-cuda-sanitizer-api==13.0.85.* ; (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'sanitizer') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'sanitizer') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'sanitizer')
+- pypi: https://files.pythonhosted.org/packages/d4/2b/04b8a15f3a1c77bc79ddf5c73875327f34b4fa75982df2b76e45e402d364/asttokens-3.0.2-py3-none-any.whl
+  name: asttokens
+  version: 3.0.2
+  sha256: 9da13157f5b28becde0bd374fc677dcd3c290614264eff096f167c469cd9f933
+  requires_dist:
+  - astroid>=2,<5 ; extra == 'astroid'
+  - astroid>=2,<5 ; extra == 'test'
+  - pytest<9.0 ; extra == 'test'
+  - pytest-cov ; extra == 'test'
+  - pytest-xdist ; extra == 'test'
+  requires_python: '>=3.8'
+- pypi: https://files.pythonhosted.org/packages/d6/d0/d56c859b8222116f5d68459199f48359e0bf121b6f65a69bf329b3602ba0/yarl-1.24.5-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+  name: yarl
+  version: 1.24.5
+  sha256: f08c7513ecef5aad65687bfdf6bc601ae9fccd04a42904501f8f7141abad9eb9
+  requires_dist:
+  - idna>=2.0
+  - multidict>=4.0
+  - propcache>=0.2.1
+  requires_python: '>=3.10'
+- pypi: https://files.pythonhosted.org/packages/d9/33/1f075bf72b0b747cb3288d011319aaf64083cf2efef8354174e3ed4540e2/ipython_pygments_lexers-1.1.1-py3-none-any.whl
+  name: ipython-pygments-lexers
+  version: 1.1.1
+  sha256: a9462224a505ade19a605f71f8fa63c2048833ce50abc86768a0d81d876dc81c
+  requires_dist:
+  - pygments
+  requires_python: '>=3.8'
+- pypi: https://files.pythonhosted.org/packages/da/35/f2287558c17e29fafc8ef3daf819bb9834061cfa43bff8014f7df7f63bdc/anyio-4.14.2-py3-none-any.whl
+  name: anyio
+  version: 4.14.2
+  sha256: 9f505dda5ac9f0c8309b5e8bd445a8c2bf7246f3ce950121e45ea15bc41d1494
+  requires_dist:
+  - exceptiongroup>=1.0.2 ; python_full_version < '3.11'
+  - idna>=2.8
+  - typing-extensions>=4.5 ; python_full_version < '3.13'
+  - trio>=0.32.0 ; extra == 'trio'
+  requires_python: '>=3.10'
+- pypi: https://files.pythonhosted.org/packages/df/64/ff35eb9e54894cf471ff4716abd3c81eb0a0626869217ce3e6ba4ccf17d7/scipy-1.18.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+  name: scipy
+  version: 1.18.1
+  sha256: f55fa87b6c612ecd6b058f167c53231b1d14e412efe361d3d6e38b3631c73218
+  requires_dist:
+  - numpy>=2.0.0,<2.8
+  - pytest>=8.0.0 ; extra == 'test'
+  - pytest-cov ; extra == 'test'
+  - pytest-timeout ; extra == 'test'
+  - pytest-xdist ; extra == 'test'
+  - asv ; extra == 'test'
+  - mpmath ; extra == 'test'
+  - gmpy2 ; extra == 'test'
+  - threadpoolctl ; extra == 'test'
+  - scikit-umfpack ; extra == 'test'
+  - pooch ; extra == 'test'
+  - hypothesis>=6.30 ; extra == 'test'
+  - array-api-strict>=2.3.1 ; extra == 'test'
+  - cython ; extra == 'test'
+  - meson ; extra == 'test'
+  - ninja ; sys_platform != 'emscripten' and extra == 'test'
+  - scipy-doctest>=2.0.0 ; extra == 'test'
+  - sphinx>=5.0.0,<8.2.0 ; extra == 'doc'
+  - intersphinx-registry ; extra == 'doc'
+  - pydata-sphinx-theme>=0.15.2 ; extra == 'doc'
+  - sphinx-copybutton ; extra == 'doc'
+  - sphinx-design>=0.4.0 ; extra == 'doc'
+  - matplotlib>=3.5 ; extra == 'doc'
+  - numpydoc ; extra == 'doc'
+  - jupytext ; extra == 'doc'
+  - myst-nb>=1.2.0 ; extra == 'doc'
+  - pooch ; extra == 'doc'
+  - jupyterlite-sphinx>=0.19.1 ; extra == 'doc'
+  - jupyterlite-pyodide-kernel ; extra == 'doc'
+  - linkify-it-py ; extra == 'doc'
+  - tabulate ; extra == 'doc'
+  - click<8.3.0 ; extra == 'dev'
+  - spin ; extra == 'dev'
+  - mypy==1.19.1 ; extra == 'dev'
+  - pyrefly==0.63.0 ; extra == 'dev'
+  - typing-extensions ; extra == 'dev'
+  - types-psutil ; extra == 'dev'
+  - pycodestyle ; extra == 'dev'
+  - ruff>=0.12.0 ; extra == 'dev'
+  - cython-lint>=0.12.2 ; extra == 'dev'
+  requires_python: '>=3.12'
+- pypi: https://files.pythonhosted.org/packages/eb/47/c95ffc2009878c7aac0c5e08528022dcb885933252a88b5f170058014464/pydantic-2.13.5-py3-none-any.whl
+  name: pydantic
+  version: 2.13.5
+  sha256: 346a034f080da3755d8e9cb5e00e8b07de1d39e4f6e2c87d8ab7cafa0b269a73
+  requires_dist:
+  - annotated-types>=0.6.0
+  - pydantic-core==2.46.5
+  - typing-extensions>=4.14.1
+  - typing-inspection>=0.4.2
+  - email-validator>=2.0.0 ; extra == 'email'
+  - tzdata ; python_full_version >= '3.9' and sys_platform == 'win32' and extra == 'timezone'
+  requires_python: '>=3.9'
+- pypi: https://files.pythonhosted.org/packages/ee/34/ee245ca55f64443233034b3d02b03236b19242004281247c079390b7facd/ruff-0.16.5-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+  name: ruff
+  version: 0.16.5
+  sha256: ef0f69e191a13a3c9816f63163c88790cb12cd157bbbb384e9c44745702ab105
+  requires_python: '>=3.7'
+- pypi: https://files.pythonhosted.org/packages/f0/ee/580ca6f29dcab0221db8706badca1bbbb084f1975c4d4e83329c3a7e31f0/nvidia_nvjitlink-13.3.33-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl
+  name: nvidia-nvjitlink
+  version: 13.3.33
+  sha256: 26a6de7fb4c8fdaa7703d3dad720d6d427ddfea5c48a528fd97c11733ad830e5
+  requires_python: '>=3'
+- pypi: https://files.pythonhosted.org/packages/f1/79/4a20b54ab0491485ccd8c077db2d39187c7f12b3e15485d38a7be37c81b4/uvicorn-0.52.4-py3-none-any.whl
+  name: uvicorn
+  version: 0.52.4
+  sha256: f86e41a149d7d05a9969337e3946a9c171c06a5d42680896daaba624aeac8da1
+  requires_dist:
+  - click>=7.0
+  - h11>=0.8
+  - typing-extensions>=4.0 ; python_full_version < '3.11'
+  - httptools>=0.8.0 ; extra == 'standard'
+  - python-dotenv>=0.13 ; extra == 'standard'
+  - pyyaml>=5.1 ; extra == 'standard'
+  - uvloop>=0.15.1 ; platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32' and extra == 'standard'
+  - watchfiles>=0.20 ; extra == 'standard'
+  - websockets>=13.0 ; extra == 'standard'
+  requires_python: '>=3.10'
+- pypi: https://files.pythonhosted.org/packages/f1/7b/ce1eafaf1a76852e2ec9b22edecf1daa58175c090266e9f6c64afcd81d91/stack_data-0.6.3-py3-none-any.whl
+  name: stack-data
+  version: 0.6.3
+  sha256: d5558e0c25a4cb0853cddad3d77da9891a08cb85dd9f9f91b9f8cd66e511e695
+  requires_dist:
+  - executing>=1.2.0
+  - asttokens>=2.1.0
+  - pure-eval
+  - pytest ; extra == 'tests'
+  - typeguard ; extra == 'tests'
+  - pygments ; extra == 'tests'
+  - littleutils ; extra == 'tests'
+  - cython ; extra == 'tests'
+- pypi: https://files.pythonhosted.org/packages/f3/8d/5e5be3ced1d12966fefb5c4ea3b2a5b480afcea36406559442c6e31d4a48/multidict-6.7.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+  name: multidict
+  version: 6.7.1
+  sha256: bfde23ef6ed9db7eaee6c37dcec08524cb43903c60b285b172b6c094711b3961
+  requires_dist:
+  - typing-extensions>=4.1.0 ; python_full_version < '3.11'
+  requires_python: '>=3.9'
+- pypi: https://files.pythonhosted.org/packages/f3/e7/ff646aa6015c7e6d12aad234e68925c87b6681d8d18c3ac40535994a3b0d/nvidia_nvvm-13.3.73-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl
+  name: nvidia-nvvm
+  version: 13.3.73
+  sha256: 0e28e0858a3475e11ac67d35301cd5bf82666a1c0dc4ec4e80ceaf3a5fd1dea8
+  requires_python: '>=3'
+- pypi: https://files.pythonhosted.org/packages/fa/18/623c77619c31d62efd55302939756966f3ecc8d724a14dab2b75f1508850/nvidia_cusparse-12.6.3.3-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+  name: nvidia-cusparse
+  version: 12.6.3.3
+  sha256: 2b3c89c88d01ee0e477cb7f82ef60a11a4bcd57b6b87c33f789350b59759360b
+  requires_dist:
+  - nvidia-nvjitlink
+  requires_python: '>=3'
+- pypi: https://files.pythonhosted.org/packages/fb/76/641ae371508676492379f16e2fa48f4e2c11741bd63c48be4b12a6b09cba/aiosignal-1.4.0-py3-none-any.whl
+  name: aiosignal
+  version: 1.4.0
+  sha256: 053243f8b92b990551949e63930a839ff0cf0b0ebbe0597b0f3fb19e1a0fe82e
+  requires_dist:
+  - frozenlist>=1.1.0
+  - typing-extensions>=4.2 ; python_full_version < '3.13'
+  requires_python: '>=3.9'
+- pypi: https://files.pythonhosted.org/packages/fd/3c/6a2bf344106328fd04963664a60b9bb6496fc25df8e962fcdc1367285fb9/fsspec-2026.7.0-py3-none-any.whl
+  name: fsspec
+  version: 2026.7.0
+  sha256: b57ddbafedfaef7018c1ecab32aa200a9d7ca26b77965f64e48b70061249d279
+  requires_dist:
+  - adlfs ; extra == 'abfs'
+  - adlfs ; extra == 'adl'
+  - pyarrow>=1 ; extra == 'arrow'
+  - dask ; extra == 'dask'
+  - distributed ; extra == 'dask'
+  - pre-commit ; extra == 'dev'
+  - ruff>=0.5 ; extra == 'dev'
+  - numpydoc ; extra == 'doc'
+  - sphinx ; extra == 'doc'
+  - sphinx-design ; extra == 'doc'
+  - sphinx-rtd-theme ; extra == 'doc'
+  - yarl ; extra == 'doc'
+  - dropbox ; extra == 'dropbox'
+  - dropboxdrivefs ; extra == 'dropbox'
+  - requests ; extra == 'dropbox'
+  - adlfs ; extra == 'full'
+  - aiohttp!=4.0.0a0,!=4.0.0a1 ; extra == 'full'
+  - dask ; extra == 'full'
+  - distributed ; extra == 'full'
+  - dropbox ; extra == 'full'
+  - dropboxdrivefs ; extra == 'full'
+  - fusepy ; extra == 'full'
+  - gcsfs>=2026.4.0 ; extra == 'full'
+  - libarchive-c ; extra == 'full'
+  - ocifs ; extra == 'full'
+  - panel ; extra == 'full'
+  - paramiko ; extra == 'full'
+  - pyarrow>=1 ; extra == 'full'
+  - pygit2 ; extra == 'full'
+  - requests ; extra == 'full'
+  - s3fs>=2026.6.0 ; extra == 'full'
+  - smbprotocol ; extra == 'full'
+  - tqdm ; extra == 'full'
+  - fusepy ; extra == 'fuse'
+  - gcsfs>=2026.4.0 ; extra == 'gcs'
+  - pygit2 ; extra == 'git'
+  - requests ; extra == 'github'
+  - gcsfs>=2026.4.0 ; extra == 'gs'
+  - panel ; extra == 'gui'
+  - pyarrow>=1 ; extra == 'hdfs'
+  - aiohttp!=4.0.0a0,!=4.0.0a1 ; extra == 'http'
+  - libarchive-c ; extra == 'libarchive'
+  - ocifs ; extra == 'oci'
+  - s3fs>=2026.6.0 ; extra == 's3'
+  - paramiko ; extra == 'sftp'
+  - smbprotocol ; extra == 'smb'
+  - paramiko ; extra == 'ssh'
+  - aiohttp!=4.0.0a0,!=4.0.0a1 ; extra == 'test'
+  - numpy ; extra == 'test'
+  - pytest ; extra == 'test'
+  - pytest-asyncio!=0.22.0 ; extra == 'test'
+  - pytest-benchmark ; extra == 'test'
+  - pytest-cov ; extra == 'test'
+  - pytest-mock ; extra == 'test'
+  - pytest-recording ; extra == 'test'
+  - pytest-rerunfailures ; extra == 'test'
+  - requests ; extra == 'test'
+  - aiobotocore>=2.5.4,<3.0.0 ; extra == 'test-downstream'
+  - dask[dataframe,test] ; extra == 'test-downstream'
+  - moto[server]>4,<5 ; extra == 'test-downstream'
+  - pytest-timeout ; extra == 'test-downstream'
+  - xarray ; extra == 'test-downstream'
+  - adlfs ; extra == 'test-full'
+  - aiohttp!=4.0.0a0,!=4.0.0a1 ; extra == 'test-full'
+  - backports-zstd ; python_full_version < '3.14' and extra == 'test-full'
+  - cloudpickle ; extra == 'test-full'
+  - dask ; extra == 'test-full'
+  - distributed ; extra == 'test-full'
+  - dropbox ; extra == 'test-full'
+  - dropboxdrivefs ; extra == 'test-full'
+  - fastparquet ; extra == 'test-full'
+  - fusepy ; extra == 'test-full'
+  - gcsfs>=2026.4.0 ; extra == 'test-full'
+  - jinja2 ; extra == 'test-full'
+  - kerchunk ; extra == 'test-full'
+  - libarchive-c ; extra == 'test-full'
+  - lz4 ; extra == 'test-full'
+  - notebook ; extra == 'test-full'
+  - numpy ; extra == 'test-full'
+  - ocifs ; extra == 'test-full'
+  - pandas<3.0.0 ; extra == 'test-full'
+  - panel ; extra == 'test-full'
+  - paramiko ; extra == 'test-full'
+  - pyarrow>=1 ; extra == 'test-full'
+  - pyftpdlib ; extra == 'test-full'
+  - pygit2 ; extra == 'test-full'
+  - pytest ; extra == 'test-full'
+  - pytest-asyncio!=0.22.0 ; extra == 'test-full'
+  - pytest-benchmark ; extra == 'test-full'
+  - pytest-cov ; extra == 'test-full'
+  - pytest-mock ; extra == 'test-full'
+  - pytest-recording ; extra == 'test-full'
+  - pytest-rerunfailures ; extra == 'test-full'
+  - python-snappy ; extra == 'test-full'
+  - requests ; extra == 'test-full'
+  - s3fs>=2026.6.0 ; extra == 'test-full'
+  - smbprotocol ; extra == 'test-full'
+  - tqdm ; extra == 'test-full'
+  - urllib3 ; extra == 'test-full'
+  - zarr<3.2.0 ; extra == 'test-full'
+  - zstandard ; python_full_version < '3.14' and extra == 'test-full'
+  - tqdm ; extra == 'tqdm'
+  requires_python: '>=3.10'

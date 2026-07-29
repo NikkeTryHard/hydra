@@ -1,0 +1,24 @@
+# Rust and editor-generated build state
+/target/
+**/target/
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.venv/
+.pixi/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local tooling and secrets
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+
+# Rival lockfile + agent litter (pixi is the sole env authority; see pyproject.toml:15-16)
+uv.lock
+.serena/
+ideas/
