@@ -182,6 +182,25 @@ theorem jointP_packaged_mul_Ze (b : Belief World) (K1 K2 : TransKernel World Pac
   refine Finset.sum_congr rfl fun x' _ => ?_
   rw [div_mul_eq_mul_div, div_mul_cancel₀ _ he1]
 
+/-- Iterate equals two-step joint (pointwise): two packaged updates collapse
+to one joint sum up to the `Ze` product. Closes the BeliefWin thread: tower
+gives the marginal law, `jointP_packaged_mul_Ze` the joint core, this the
+pointwise iterate equality — `successorBeliefPackaged` is genuinely
+iterable. `he2` discharges via `successor_Ze_pos_persistent` + `ne_of_gt`
+under full support. -/
+theorem successor_iterate_eq_twoStep (b : Belief World) (K1 K2 : TransKernel World Packet)
+    (e1 e2 : Packet) (he1 : Ze b K1 e1 ≠ 0)
+    (he2 : Ze (successorBeliefPackaged b K1 e1 he1) K2 e2 ≠ 0) (x'' : World) :
+    successorBelief (successorBeliefPackaged b K1 e1 he1) K2 e2 he2 x''
+      = (∑ x' : World, jointP b K1 x' e1 * K2.prob x' x'' e2)
+        / (Ze (successorBeliefPackaged b K1 e1 he1) K2 e2 * Ze b K1 e1) := by
+  have hJ := jointP_packaged_mul_Ze b K1 K2 e1 he1 x'' e2
+  have hJ2 : jointP (successorBeliefPackaged b K1 e1 he1) K2 x'' e2
+      = (∑ x' : World, jointP b K1 x' e1 * K2.prob x' x'' e2) / Ze b K1 e1 :=
+    (eq_div_iff he1).mpr hJ
+  unfold successorBelief
+  rw [hJ2, div_div, mul_comm (Ze b K1 e1)]
+
 theorem reweight_without_pushforward_is_wrong :
     ∃ (World2 : Type) (_ : Fintype World2) (_ : DecidableEq World2)
       (Packet2 : Type) (_ : Fintype Packet2) (_ : DecidableEq Packet2)
