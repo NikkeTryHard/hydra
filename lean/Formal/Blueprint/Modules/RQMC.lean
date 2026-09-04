@@ -238,6 +238,52 @@ theorem anova_variance_split {d : ℕ} (α : Finset (Fin d) → ℝ)
       (fun hcon => absurd hu hcon)
   rw [h1, pow_two]
 
+/-- Gain-weighted variance identity, finite core (S1 Eq.2.1 `Var = (1/n) Σ
+Γσ²`, Owen 1997b `https://doi.org/10.1214/aos/1031594731`; S2 §2.3
+`https://arxiv.org/html/2308.08035v1`; S4 Eq.2
+`https://arxiv.org/html/2502.02266v1`). Gain stays an explicit hypothesis
+function — zero/coarse/Thm.1 rules land as separate lemmas consuming the
+`hgain` shape. `S` is instantiated at `(powerset univ).erase ∅`: `∅` is the
+mean component, variance sums `u ≠ ∅`. -/
+theorem anova_weighted_variance_identity {d : ℕ}
+    (α σ2 gain : Finset (Fin d) → ℝ) (n : ℝ)
+    (S : Finset (Finset (Fin d)))
+    (hsq : ∀ u ∈ S, σ2 u = (α u) ^ 2) :
+    (1 / n) * ∑ u ∈ S, gain u * σ2 u
+      = (1 / n) * ∑ u ∈ S, gain u * (α u) ^ 2 := by
+  congr 1
+  refine Finset.sum_congr rfl fun u hu => ?_
+  rw [hsq u hu]
+
+/-- Gain-weighted variance bound: with `0 ≤ Γ ≤ C` pointwise, the weighted
+variance is at most `C/n` times the unweighted variance — via
+`anova_variance_split`, which consumes `hcross` (zero-marginal not needed,
+as recorded there). `C = 1+e` is the scrambled `(λ,0,m,s)`-net Thm.1 cap;
+`C = e` the 0-net cap; both arrive as `hgain` instances. -/
+theorem anova_weighted_variance_bound {d : ℕ}
+    (α σ2 gain : Finset (Fin d) → ℝ) (n C : ℝ) (hn : 0 < n)
+    (S : Finset (Finset (Fin d)))
+    (hsq : ∀ u ∈ S, σ2 u = (α u) ^ 2)
+    (hcross : ∀ u ∈ S, ∀ v ∈ S, u ≠ v → α u * α v = 0)
+    (hgain : ∀ u ∈ S, 0 ≤ gain u ∧ gain u ≤ C)
+    (hσ2nn : ∀ u ∈ S, 0 ≤ σ2 u) :
+    (1 / n) * ∑ u ∈ S, gain u * σ2 u ≤ (C / n) * (∑ u ∈ S, α u) ^ 2 := by
+  have hXC : ∑ u ∈ S, gain u * σ2 u ≤ C * ∑ u ∈ S, σ2 u := by
+    calc ∑ u ∈ S, gain u * σ2 u ≤ ∑ u ∈ S, C * σ2 u :=
+          Finset.sum_le_sum fun u hu =>
+            mul_le_mul_of_nonneg_right (hgain u hu).2 (hσ2nn u hu)
+      _ = C * ∑ u ∈ S, σ2 u := by rw [Finset.mul_sum]
+  have hvar : C * ∑ u ∈ S, σ2 u = C * (∑ u ∈ S, α u) ^ 2 := by
+    have hsqsum : ∑ u ∈ S, σ2 u = ∑ u ∈ S, (α u) ^ 2 :=
+      Finset.sum_congr rfl fun u hu => hsq u hu
+    rw [hsqsum, ← anova_variance_split α S hcross]
+  have h1n : (0 : ℝ) ≤ 1 / n := one_div_nonneg.mpr (le_of_lt hn)
+  calc (1 / n) * ∑ u ∈ S, gain u * σ2 u
+      ≤ (1 / n) * (C * ∑ u ∈ S, σ2 u) :=
+        mul_le_mul_of_nonneg_left hXC h1n
+    _ = (1 / n) * (C * (∑ u ∈ S, α u) ^ 2) := by rw [hvar]
+    _ = (C / n) * (∑ u ∈ S, α u) ^ 2 := by ring
+
 /-- Within one scramble, points are functionally dependent: they are all
 determined by the single shared `shift`. Finite witness: for `n ≥ 2` there are
 two distinct indices whose scrambled images are distinct (by injectivity), yet
