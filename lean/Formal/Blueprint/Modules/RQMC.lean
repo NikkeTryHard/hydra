@@ -3,6 +3,7 @@ import Mathlib.Data.Finset.Basic
 import Mathlib.Algebra.BigOperators.Group.Finset.Basic
 import Mathlib.Data.Finset.Powerset
 import Mathlib.Data.Real.Basic
+import Mathlib.Analysis.SpecialFunctions.Exponential
 import Mathlib.Tactic
 
 set_option linter.unusedSimpArgs false
@@ -283,6 +284,58 @@ theorem anova_weighted_variance_bound {d : ℕ}
         mul_le_mul_of_nonneg_left hXC h1n
     _ = (1 / n) * (C * (∑ u ∈ S, α u) ^ 2) := by rw [hvar]
     _ = (C / n) * (∑ u ∈ S, α u) ^ 2 := by ring
+
+/-- Faure gain-cap analytic step (S2 §1 corollary
+`Γ ≤ [b/(b-1)]^{d-1} ≤ e`, Owen–Pan `https://arxiv.org/html/2308.08035v1`:
+`Γ ≤ exp(1) ≐ 2.718` verified verbatim in abstract + §1, `[17]` = Owen 1997a
+SINUM). The paper elides `[b/(b-1)]^{d-1} ≤ e` as `it follows` — this pins
+it: `b ≥ d` gives `d-1 ≤ b-1`, so `(1+1/(b-1))^{d-1} ≤ (1+1/(b-1))^{b-1} ≤
+e` via `(1+1/n)^n ≤ e` from `x+1 ≤ exp x`. (Correction vs an earlier
+design angle: `b/(b-1) ≤ 2` is useless — it gives `2^{d-1}`; the deciding
+step is the exponent comparison, not the base bound.) Feeds the Thm.1 cap
+`C = e` as an `hgain` instance for `anova_weighted_variance_bound`; the
+`1+e` λ-net cap stays unverified (no open source). -/
+theorem faure_gain_cap_le_exp {b d : ℕ} (hb : 2 ≤ b) (hd : d ≤ b) :
+    ((b : ℝ) / ((b : ℝ) - 1)) ^ (d - 1) ≤ Real.exp 1 := by
+  have hbR : (2 : ℝ) ≤ (b : ℝ) := by exact_mod_cast hb
+  have h1b : (1 : ℕ) ≤ b := by omega
+  have hcast : (((b - 1 : ℕ)) : ℝ) = (b : ℝ) - 1 := by
+    calc (((b - 1 : ℕ)) : ℝ) = (b : ℝ) - (((1 : ℕ)) : ℝ) := Nat.cast_sub h1b
+      _ = (b : ℝ) - 1 := by simp
+  have hn0 : (0 : ℝ) < (b : ℝ) - 1 := by linarith
+  have hstep : ∀ m : ℕ, 0 < m → (1 + 1 / (m : ℝ)) ^ m ≤ Real.exp 1 := by
+    intro m hm
+    have hmR : (0 : ℝ) < (m : ℝ) := Nat.cast_pos.mpr hm
+    have h1 : (1 : ℝ) + 1 / (m : ℝ) ≤ Real.exp (1 / (m : ℝ)) := by
+      have h0 := Real.add_one_le_exp (1 / (m : ℝ))
+      linarith
+    have hnn : (0 : ℝ) ≤ 1 + 1 / (m : ℝ) := le_of_lt (by
+      have := one_div_pos.mpr hmR
+      linarith)
+    have h2 : (1 + 1 / (m : ℝ)) ^ m ≤ (Real.exp (1 / (m : ℝ))) ^ m :=
+      pow_le_pow_left₀ hnn h1 m
+    have h3 : (Real.exp (1 / (m : ℝ))) ^ m = Real.exp 1 := by
+      rw [← Real.exp_nat_mul]
+      congr 1
+      exact mul_one_div_cancel (ne_of_gt hmR)
+    rw [h3] at h2
+    exact h2
+  have hbase1 : (1 : ℝ) ≤ 1 + 1 / (((b - 1 : ℕ)) : ℝ) := by
+    have hpos : (0 : ℝ) < (((b - 1 : ℕ)) : ℝ) := by
+      rw [hcast]
+      exact hn0
+    have hle := le_of_lt (one_div_pos.mpr hpos)
+    linarith
+  have hexp : d - 1 ≤ b - 1 := Nat.sub_le_sub_right hd 1
+  have hbase : (b : ℝ) / ((b : ℝ) - 1) = 1 + 1 / ((b : ℝ) - 1) := by
+    have h := ne_of_gt hn0
+    field_simp
+    ring
+  calc ((b : ℝ) / ((b : ℝ) - 1)) ^ (d - 1)
+      = (1 + 1 / (((b - 1 : ℕ)) : ℝ)) ^ (d - 1) := by rw [hbase, ← hcast]
+    _ ≤ (1 + 1 / (((b - 1 : ℕ)) : ℝ)) ^ (b - 1) :=
+        pow_le_pow_right₀ hbase1 hexp
+    _ ≤ Real.exp 1 := hstep (b - 1) (by omega)
 
 /-- Within one scramble, points are functionally dependent: they are all
 determined by the single shared `shift`. Finite witness: for `n ≥ 2` there are
