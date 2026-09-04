@@ -1,6 +1,7 @@
 import Mathlib.Data.Fintype.Basic
 import Mathlib.Data.Finset.Basic
 import Mathlib.Algebra.BigOperators.Group.Finset.Basic
+import Mathlib.Data.Finset.Powerset
 import Mathlib.Data.Real.Basic
 import Mathlib.Tactic
 
@@ -196,6 +197,47 @@ theorem rqmcGainK_le_quarter (x : ℝ) (h0 : 0 ≤ x) (h1 : x ≤ 1) :
   have hsq : 0 ≤ (x - 1 / 2) ^ 2 := sq_nonneg _
   have heq : x * (1 - x) = 1 / 4 - (x - 1 / 2) ^ 2 := by ring
   linarith
+
+/-- ANOVA decomposition, finite Möbius core (Owen 1997b, Ann. Statist.
+25(4):1541–1562, `https://doi.org/10.1214/aos/1031594731`, §2.3: `f = Σ_{u⊆A}
+α_u` with `α_u` averaged over `A∖u`; identity/orthogonality in Sobol form at
+https://en.wikipedia.org/wiki/Variance-based_sensitivity_analysis and
+https://tntorch.readthedocs.io/en/latest/tutorials/anova.html). The analytic
+`∫` hypotheses become `Finset.sum` hypotheses; the recursion below IS the
+effect definition, so no separate `anovaEffect` def is needed. Step 1 of the
+chain in `ideas/rqmc-anova/design.md`: unblocks the Step-2 variance
+identity toward `axiom_RQMC_rate_smooth`. Placement (honest): axiom-chain
+only — no live Lean/src caller consumes RQMC symbols. -/
+theorem anova_identity_of_recursion {d : ℕ} (f α : Finset (Fin d) → ℝ)
+    (hrec : ∀ u ∈ Finset.powerset Finset.univ,
+      α u = f u - ∑ v ∈ (Finset.powerset u).erase u, α v)
+    (u : Finset (Fin d)) (hu : u ∈ Finset.powerset Finset.univ) :
+    f u = ∑ v ∈ Finset.powerset u, α v := by
+  have hrec_u := hrec u hu
+  have hmem : u ∈ Finset.powerset u :=
+    Finset.mem_powerset.mpr (Finset.Subset.refl u)
+  have hsplit : ∑ v ∈ Finset.powerset u, α v
+      = ∑ v ∈ (Finset.powerset u).erase u, α v + α u :=
+    (Finset.sum_erase_add _ _ hmem).symm
+  rw [hsplit, hrec_u]
+  ring
+
+/-- ANOVA variance split, finite core: with pairwise cross products zero
+(the finite mirror of `u ≠ v ⇒ ∫ α_u α_v = 0`), the squared sum is the sum
+of squares — no cross terms. This is the step Step 2 builds on
+(`Var = Σ Γσ²` needs the gain weights on top). Needs only the cross
+hypothesis, not zero-marginal. -/
+theorem anova_variance_split {d : ℕ} (α : Finset (Fin d) → ℝ)
+    (S : Finset (Finset (Fin d)))
+    (hcross : ∀ u ∈ S, ∀ v ∈ S, u ≠ v → α u * α v = 0) :
+    (∑ u ∈ S, α u) ^ 2 = ∑ u ∈ S, (α u) ^ 2 := by
+  rw [pow_two, Finset.sum_mul_sum]
+  refine Finset.sum_congr rfl fun u hu => ?_
+  have h1 : ∑ v ∈ S, α u * α v = α u * α u :=
+    Finset.sum_eq_single u (fun v hv hne => hcross u hu v hv hne.symm)
+      (fun hcon => absurd hu hcon)
+  rw [h1, pow_two]
+
 /-- Within one scramble, points are functionally dependent: they are all
 determined by the single shared `shift`. Finite witness: for `n ≥ 2` there are
 two distinct indices whose scrambled images are distinct (by injectivity), yet
