@@ -313,10 +313,6 @@ theorem total_counts_le_4 (obs : ActorObservation) (h : obs.IsValid) (ty : TileT
 -- 8. Permutation invariance — actor view invariant under concealed hand permutation
 -- ---------------------------------------------------------------------------
 
-/-- Helper: two finsets with same sort yield same sorted canonical view. -/
-theorem finset_sort_perm_invariant (s : Finset TileId) :
-    s.sort (· ≤ ·) = s.sort (· ≤ ·) := rfl
-
 /-- Actor view permutation invariance: reordering concealed tiles (permutation)
     yields identical Finset view and identical sorted canonicalization.
     Mirrors `concealed_hand must be ascending` canonicalization
@@ -336,10 +332,6 @@ theorem actor_view_permutation_invariance_sorted (obs : ActorObservation) (l1 l2
     (h2 : l2.toFinset = obs.concealed_hand) :
     l1.toFinset.sort (· ≤ ·) = l2.toFinset.sort (· ≤ ·) := by
   rw [h1, h2]
-
-theorem concealed_hand_perm_invariant (s : Finset TileId) (l : List TileId) (_h : l.toFinset = s) :
-    s.sort (· ≤ ·) = s.sort (· ≤ ·) := rfl
-
 
 
 -- ---------------------------------------------------------------------------

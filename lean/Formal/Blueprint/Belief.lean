@@ -142,7 +142,7 @@ theorem Ze_pos_of_packetMarginal_pos (b : Belief World) (K : TransKernel World P
     exact mul_nonneg (b.nonneg y) (packetMarginal_nonneg K y e)
   · exact ⟨x, Finset.mem_univ x, mul_pos hpx hmx⟩
 
-/-- Persistence (WINNER, BeliefScout): a packaged posterior followed by a
+/-- Persistence: a packaged posterior followed by a
 strictly-supported kernel keeps `Ze` positive — so `successor_tower`'s
 `∀ e, Ze ≠ 0` burden discharges for step two and updates iterate. The
 full-support hypothesis is sufficient, not necessary (documented, not

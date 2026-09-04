@@ -428,31 +428,6 @@ theorem resample_skip_budget (T skips cRes cCopy : ℕ) (h : skips ≤ T)
     _ = (skips + (T - skips)) * cRes := by ring
     _ = T * cRes := by rw [e2]
 
-/-- Adaptive-compute allocation costs (Lean mirror of py `ess_allocate`,
-evaluation-only, NOT planner-wired): fire tier 72 vs skip tier 24 sims at
-`{|A| = 4}` (closed form of telemetry `Σ_r ceil(4/2^r)·v_r`: deep
-`(12,12) → 4·12+2·12`, shallow `(4,4) → 4·4+2·4`, default 48). The debt
-owed by AdaptWin: py battery decided the tiers, these pins transport the
-envelope into Lean. -/
-noncomputable def essAllocCost (fire : Bool) : ℕ := if fire then 72 else 24
-
-/-- Fire tier costs at least the skip tier (direction the battery relies on). -/
-theorem essAlloc_fire_ge_skip : essAllocCost false ≤ essAllocCost true := by
-  decide
-
-/-- Envelope: the adaptive total beats always-default iff fires are at most
-half (`48F ≤ 24T`). On Dirichlet GOLDEN (`F=1579 ≤ 3500/2`) this is the
-`159792 ≤ 168000` the battery measured; the alt-(16,16) negative control
-fails exactly because it breaks this shape. -/
-theorem essAlloc_envelope {T F : ℕ} (h : F ≤ T / 2) :
-    F * 72 + (T - F) * 24 ≤ T * 48 := by
-  have hF2 : 2 * F ≤ T := by omega
-  omega
-
-/-- GOLDEN instance: `1579·72 + 1921·24 ≤ 3500·48` (fires `1579 ≤ 1750`). -/
-theorem essAlloc_golden : 1579 * 72 + (3500 - 1579) * 24 ≤ 3500 * 48 :=
-  essAlloc_envelope (by decide)
-
 end FeynmanKac
 
 end Hydra2.Blueprint.Modules.SMC

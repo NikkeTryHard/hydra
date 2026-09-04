@@ -33,9 +33,6 @@ structure BlockStat (Block : Type) where
 noncomputable def blockMean (s : BlockStat Block) : ℝ :=
   (∑ b : Block, s.value b) / (Fintype.card Block : ℝ)
 
-theorem blockMean_eq_sum_div_card (s : BlockStat Block) :
-    blockMean s = (∑ b : Block, s.value b) / (Fintype.card Block : ℝ) := rfl
-
 /-- Fixed-N variance of the block mean under i.i.d. blocks: Var(mean) = Var(block)/N. -/
 noncomputable def blockMeanVariance (varBlock : ℝ) (n : ℕ) (hn : 0 < n) : ℝ :=
   varBlock / (n : ℝ)

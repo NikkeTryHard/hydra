@@ -288,9 +288,6 @@ theorem misZhat_unbiased
 noncomputable def misRatio (bL g m : State → ℝ) : ℝ :=
   gammaHatMIS bL g m / misZhat bL m
 
-theorem misRatio_eq_div (bL g m : State → ℝ) :
-    misRatio bL g m = gammaHatMIS bL g m / misZhat bL m := rfl
-
 /-- Jensen for `1/X` (convex on `>0`): `E[1/X] ≠ 1/E[X]` generally, so a
 self-normalized ratio `γ̂/Ẑ` is finite-sample biased. Concrete `X∈{1,3}`
 uniform: `E[X]=2`, `1/E[X]=1/2` but `E[1/X]=2/3` — same mechanism as PBRF
