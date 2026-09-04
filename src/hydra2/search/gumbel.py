@@ -932,8 +932,20 @@ class GumbelSearchPlanner(Planner):  # type: ignore[misc]
             if len(survivors) <= 1:
                 break
             visits = self._config.visits_per_round[round_idx]
+            # Synthetic worlds are loop-invariant in visits (observation hash,
+            # candidate, aid only) and consume no rng/counters: build once per
+            # (aid, round). Bit-identical: _rollout never mutates start_world.
+            use_synth = not (self._belief is not None and epoch is not None and _HAS_BELIEF)
             # For each survivor, allocate visits rollouts
             for aid in survivors:
+                synth_world: Any = None
+                if use_synth:
+                    h0 = hashlib.sha256(
+                        f"{getattr(root_observation, 'observation_hash', '')}:{candidate_id}:{aid}".encode()
+                    ).digest()
+                    synth_world = self._world_for_particle(
+                        type("P", (), {"world_ref": h0.hex()[:16]})()
+                    )
                 for _ in range(visits):
                     # Budget checks before rollout
                     if (
@@ -970,13 +982,7 @@ class GumbelSearchPlanner(Planner):  # type: ignore[misc]
                                 type("P", (), {"world_ref": h.hex()[:16]})()
                             )
                     else:
-                        h = hashlib.sha256(
-                            f"{getattr(root_observation, 'observation_hash', '')}:{candidate_id}:{aid}".encode()
-                        ).digest()
-                        cur_world = self._world_for_particle(
-                            type("P", (), {"world_ref": h.hex()[:16]})()
-                        )
-
+                        cur_world = synth_world
                     _, vec = self._rollout(
                         start_world=cur_world, root_action_id=aid, root_seat=root_seat, rng=rng
                     )

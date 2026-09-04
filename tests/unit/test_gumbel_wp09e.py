@@ -14,6 +14,7 @@ plus hidden permutation, cache/full equality, vector preservation, determinism.
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 
 import pytest
@@ -469,3 +470,54 @@ def test_gumbel_search_candidate_checklist() -> None:
     assert "gumbels" in res["telemetry"]
     assert learned_rules_transition_rejected(_world_and_obs()[0], 0)
     assert cached_full_history_agreement(obs)
+
+
+def test_synth_world_hoist_golden() -> None:
+    # ProfWin Opt-1: synthetic cur_world is loop-invariant in visits, built
+    # once per (aid, round) instead of per rollout (~14% wall saved on the
+    # 8-action/visits-(64,64,64)/depth-6 battery, ratio 0.86 <= 0.95 gate).
+    # Bit-identical: _rollout never mutates start_world; synth branch
+    # consumes no rng/counters. Golden pins the synth path (payload digest
+    # + counters); re-freeze on purpose, never on drift.
+    _, obs = _world_and_obs()
+    legal = tuple(
+        CanonicalAction(
+            kind="discard",
+            actor=0,
+            tile=i * 4,
+            called_tile=None,
+            consumed_tiles=(),
+            source_seat=None,
+            declares_riichi=False,
+            metadata=(),
+        )
+        for i in range(8)
+    )
+    epoch = NaturalBelief().begin(obs)
+    spec = make_gumbel_candidate_spec(
+        halving_rounds=3,
+        visits_per_round=(64, 64, 64),
+        max_depth=6,
+        max_transitions=None,
+        max_model_calls=None,
+    )
+    planner = GumbelSearchPlanner(candidate_spec=spec, belief=None)
+    rng = RandomStream(hashlib.sha256(b"prof-v1:fixed").digest())
+    res = planner.search(
+        epoch=epoch, root_observation=obs, legal_actions=legal, rng=rng, case_id="prof"
+    )
+    assert res["completed"] is True
+    assert res["selected_action_id"] == 605770697
+    assert res["survivors"] == (605770697,)
+    tel = res["telemetry"]
+    assert (tel["simulations"], tel["transitions"], tel["model_calls"]) == (896, 3584, 0)
+    payload = {
+        "selected_action_id": res["selected_action_id"],
+        "value_vectors": [tuple(v) for v in res["value_vectors"]],
+        "survivors": list(res["survivors"]),
+        "gumbels": {str(k): v for k, v in res["gumbels"].items()},
+        "telemetry": tel if isinstance(tel, dict) else repr(tel),
+        "completed": res["completed"],
+    }
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+    assert digest == "e613fffa1dbc5fa6c6a4047893f1da149f7b36be229b313f5fbb2f552e0f481d"
