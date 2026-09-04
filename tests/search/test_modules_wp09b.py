@@ -30,10 +30,13 @@ from hydra2.contracts.common import ContractError
 from hydra2.contracts.randomness import RandomStream
 from hydra2.search.common import CandidateSpec, ResourceBudget, candidate_spec_hash
 from hydra2.search.modules import (
+    ESS_ALLOC_DEFAULT,
     MODULE_REGISTRY,
     VALID_MODULE_IDS,
     PbrfContext,
+    alloc_cost,
     apply_module,
+    ess_allocate,
     make_candidate4_spec,
     make_core_control_spec,
     module_evidence,
@@ -643,3 +646,54 @@ def test_resampling_scheme_ordering_golden() -> None:
     assert uniq["multi"] == 354
     assert mse["sys"] < mse["multi"]
     assert uniq["sys"] >= uniq["multi"]
+
+
+def test_ess_allocate_tiers_and_envelope() -> None:
+    # Adaptive-compute v1 (evaluation-only): ESS-gated visit schedule.
+    # fire (ESS<=N/2) -> deep (12,12) = 1.5x default; skip -> shallow
+    # (4,4) = 0.5x default. Deciding numbers on the Dirichlet GOLDEN
+    # distribution (fires=1579, skips=1921 of 3500 at N=4): adaptive total
+    # 1579*72+1921*24 = 159792 <= baseline 3500*48 = 168000 (saves 4.9%).
+    # Negative control: alt deep (16,16) totals 197688 > 168000, so the
+    # cap is not tautological. NOT wired into the planner (tripwire:
+    # live forests uniform) — asserts run on recomputed ESS curve.
+    assert ess_allocate(1.0, 4) == (12, 12)
+    assert ess_allocate(2.0, 4) == (12, 12)  # boundary fires (<=)
+    assert ess_allocate(4.0, 4) == (4, 4)
+    assert alloc_cost((12, 12), 4) == 72
+    assert alloc_cost((4, 4), 4) == 24
+    assert alloc_cost(ESS_ALLOC_DEFAULT, 4) == 48
+    with pytest.raises(ContractError):
+        ess_allocate(float("nan"), 4)
+    with pytest.raises(ContractError):
+        ess_allocate(2.0, 0)
+    with pytest.raises(ContractError):
+        ess_allocate(2.0, 4, rounds=3)
+    with pytest.raises(ContractError):
+        alloc_cost((0, 4), 4)
+    # Monotonicity + envelope over the recomputed Dirichlet ESS curve.
+    spec = make_candidate4_spec(module_id="controlled_smc")
+    costs: list[int] = []
+    ess_list: list[float] = []
+    for a in (0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0):
+        seed = int(hashlib.sha256(f"ess-curve:v1:{a}".encode()).hexdigest()[:16], 16) % (2**63 - 1)
+        rng = np.random.default_rng(seed)
+        for s in range(500):
+            w = rng.dirichlet([a] * 4)
+            ctx = PbrfContext(
+                candidate_id="candidate4_controlled_smc",
+                case_id=f"dir-a{a}-s{s:04d}",
+                particles=(0.0, 1.0, 2.0, 3.0),
+                weights=tuple(float(x) for x in w),
+                budget_calls=0,
+                budget_transitions=0,
+            )
+            out = apply_module(ctx, spec)
+            e = float(out.metadata["ess"])
+            ess_list.append(e)
+            costs.append(alloc_cost(ess_allocate(e, 4), 4))
+    assert len(costs) == 3500
+    for lo, hi in itertools.pairwise(sorted(ess_list)):
+        assert alloc_cost(ess_allocate(hi, 4), 4) <= alloc_cost(ess_allocate(lo, 4), 4)
+    assert sum(costs) == 159792
+    assert sum(costs) <= 3500 * 48

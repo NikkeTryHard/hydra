@@ -609,6 +609,43 @@ class PrimalDualPruningModule(_BaseModule):
 # ---------------------------------------------------------------------------
 
 
+# Adaptive-compute tiers v1 (evaluation-only): ESS-gated visit schedule.
+# fire (ESS <= N/2, degenerate, high resample variance) -> deep (12,12);
+# skip (ESS > N/2, near-uniform, copy path) -> shallow (4,4).
+# Baseline default (8,8). All tiers within GumbelSearchConfig bounds
+# (rounds 1..5, visits 1..64); rounds fixed at 2 so halving math holds.
+# NOT wired into GumbelSearchPlanner (tripwire: live forests uniform) —
+# evaluated on the Dirichlet GOLDEN distribution only.
+ESS_ALLOC_DEEP = (12, 12)
+ESS_ALLOC_SHALLOW = (4, 4)
+ESS_ALLOC_DEFAULT = (8, 8)
+
+
+def ess_allocate(ess: float, n: int, *, rounds: int = 2) -> tuple[int, ...]:
+    """Visit schedule from Kish ESS (pure function, no planner state)."""
+    if not isinstance(ess, float) or not math.isfinite(ess):
+        raise ContractError(f"ess must be finite float, got {ess!r}")
+    if not isinstance(n, int) or isinstance(n, bool) or n <= 0:
+        raise ContractError(f"n must be positive int, got {n!r}")
+    if rounds != 2:
+        raise ContractError("v1 supports rounds=2 only")
+    return ESS_ALLOC_DEEP if ess <= 0.5 * n else ESS_ALLOC_SHALLOW
+
+
+def alloc_cost(visits: tuple[int, ...], n_actions: int) -> int:
+    """Telemetry closed form: sum_r ceil(|A|/2^r) * v_r (gumbel.py)."""
+    if not isinstance(n_actions, int) or isinstance(n_actions, bool) or n_actions <= 0:
+        raise ContractError(f"n_actions must be positive int, got {n_actions!r}")
+    total = 0
+    remaining = n_actions
+    for v in visits:
+        if not isinstance(v, int) or isinstance(v, bool) or not 1 <= v <= 64:
+            raise ContractError(f"visits must be ints in 1..64, got {v!r}")
+        total += remaining * v
+        remaining = (remaining + 1) // 2
+    return total
+
+
 class ControlledSMCModule(_BaseModule):
     """Blueprint 11.8: unnormalized Feynman-Kac, independent populations uncertainty."""
 
