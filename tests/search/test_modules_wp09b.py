@@ -595,3 +595,51 @@ def test_controlled_smc_realpop_degenerate_pin() -> None:
                 skipped += out.metadata.get("resample_skipped") is True
     assert total > 0
     assert skipped == total
+
+
+def _systematic_counts(rng: np.random.Generator, w: np.ndarray) -> np.ndarray:
+    n = len(w)
+    points = rng.random() / n + np.arange(n) / n
+    return np.bincount(np.searchsorted(np.cumsum(w), points), minlength=n).astype(float)
+
+
+def _multinomial_counts(rng: np.random.Generator, w: np.ndarray) -> np.ndarray:
+    n = len(w)
+    return np.bincount(rng.choice(n, size=n, p=w), minlength=n).astype(float)
+
+
+def test_resampling_scheme_ordering_golden() -> None:
+    # Measured scheme ordering (NovelWin battery, ~/tmp/gumbel_wor_ab.py):
+    # systematic dominates multinomial on skewed pops — MSE 3.8x lower,
+    # higher diversity, 6x lower worst-bias. Pins the declared-scheme
+    # choice (SMC transform comment) beyond the exact N=2 witness
+    # (SMC.lean resampling_variance_stratified_le_multinomial_example).
+    # Kill-report from the same battery: Gumbel-WOR top-N offspring is
+    # DEGENERATE (top-N of N = full set, uniques stuck at N, MSE up to
+    # 185x worse — WOR inclusion is not weight-proportional, Kool
+    # 1903.06059 fn1); thin-on-uniform fails (top-half holds only 0.667
+    # mass at N=16 alpha=5.0, threshold leaks 68% at alpha=1.0);
+    # hysteresis drifts policy (fire drift 0.59 at fixed band). Do not
+    # revive any of the three without a new battery.
+    # Goldens exact (==/approx): sha256 seeds, PCG64 deterministic in-env
+    # (numpy 2.5.2). Re-freeze from ~/tmp/scheme_golden.py on numpy bump.
+    n = 16
+    w = np.array([16, 8, 4, 2] + [1] * 12, dtype=float)
+    w /= w.sum()
+    target = n * w
+    mse = {"sys": 0.0, "multi": 0.0}
+    uniq = {"sys": 0, "multi": 0}
+    for s in range(50):
+        for arm, fn in (("sys", _systematic_counts), ("multi", _multinomial_counts)):
+            seed = int(hashlib.sha256(f"scheme-gold:v1:{arm}:{s:04d}".encode()).hexdigest()[:16], 16)
+            seed %= 2**63 - 1
+            counts = fn(np.random.default_rng(seed), w)
+            assert abs(counts.sum() - n) < 1e-9
+            mse[arm] += float(np.mean((counts - target) ** 2))
+            uniq[arm] += int(np.count_nonzero(counts))
+    assert mse["sys"] == pytest.approx(10.7205215420, rel=1e-9)
+    assert mse["multi"] == pytest.approx(41.2145691610, rel=1e-9)
+    assert uniq["sys"] == 413
+    assert uniq["multi"] == 354
+    assert mse["sys"] < mse["multi"]
+    assert uniq["sys"] >= uniq["multi"]
