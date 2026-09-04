@@ -106,9 +106,18 @@ def _serialize_string(text: str) -> str:
     return "".join(pieces)
 
 
+def _utf16be_key(key: str) -> bytes:
+    """UTF-16BE sort key (RFC 8785 §3.2.3); module-level so `sorted` does not
+    rebuild a closure per dict."""
+    return key.encode("utf-16-be")
+
+
 def _serialize(value: Any) -> str:
-    if value is None:
-        return "null"
+    # Branch order follows measured corpus frequency (identity/observation
+    # docs are str/int/list/dict-heavy; bool stays before int since bool
+    # subclasses int; float/None are rare).
+    if isinstance(value, str):
+        return _serialize_string(value)
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, int):
@@ -118,13 +127,9 @@ def _serialize(value: Any) -> str:
                 f"(±{MAX_SAFE_INTEGER}); serialize it as a float or string"
             )
         return str(value)
-    if isinstance(value, float):
-        return es6_number_to_string(value)
-    if isinstance(value, str):
-        return _serialize_string(value)
     if isinstance(value, list):
         list_value: list[Any] = cast("list[Any]", value)
-        return "[" + ",".join(_serialize(cast("Any", item)) for item in list_value) + "]"
+        return "[" + ",".join([_serialize(cast("Any", item)) for item in list_value]) + "]"
     if isinstance(value, dict):
         dict_value: dict[str, Any] = cast("dict[str, Any]", value)
         for key in dict_value:
@@ -134,14 +139,16 @@ def _serialize(value: Any) -> str:
                 )
             _require_valid_unicode(key)
         # RFC 8785 §3.2.3: sort by UTF-16 code units of the raw key text.
-        ordered_keys: list[str] = sorted(
-            dict_value, key=lambda k: cast("str", k).encode("utf-16-be")
-        )
-        members = (
+        ordered_keys: list[str] = sorted(dict_value, key=_utf16be_key)
+        members = [
             f"{_serialize_string(key)}:{_serialize(cast('Any', dict_value[key]))}"
             for key in ordered_keys
-        )
+        ]
         return "{" + ",".join(members) + "}"
+    if isinstance(value, float):
+        return es6_number_to_string(value)
+    if value is None:
+        return "null"
     raise CanonicalizationError(
         f"value of type {type(value).__name__} is outside the canonical JSON domain"
     )
