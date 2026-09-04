@@ -4,35 +4,50 @@
 
 <h1 align="center">Hydra2</h1>
 
-Hydra2 is a Riichi Mahjong AI research project focused on correct, reproducible training, belief modeling, GPU search, and evaluation under Tenhou four-player hanchan rules. The long-term goal remains stronger play than LuckyJ.
+Riichi mahjong AI research, done carefully. Correct training, honest evaluation,
+no fake data in the records, everything reproducible. Tenhou 4-player hanchan
+rules. Long-term goal: outplay LuckyJ.
 
-## Project update
+Hydra1 never got as strong as Mortal, so Hydra2 started clean — only the
+validated infrastructure lessons carried over, plus the Rust MJAI packager.
 
-Hydra1 did not reach its initially anticipated strength relative to Mortal. Hydra2 is a clean research reset: it keeps only validated infrastructure lessons and explores new model and search architectures instead of treating Hydra1 experiments as proven improvements.
+## Status
 
-Current Hydra2 work is specification-first. No Hydra2 model, planner, belief system, or simulator adapter is implemented yet. The preserved Rust MJAI dataset packager is the only existing code component.
+Working tree, torch 2.14 on CUDA. Type checks pass, linter is clean, unit
+tests are 364 green with zero failing. The teacher pipeline refuses to run on
+synthetic stand-ins (it errors instead of inventing data), candidate hashes
+are bound to real digests, and the training-repeatability test actually
+trains twice again.
 
-Primary research directions:
+- `docs/PROJECT_PLAN.md` — where this is going
+- `docs/BUILD_EXECUTION_PLAN.md` — work order and what "done" means
+- `docs/IMPLEMENTATION_SPEC.md` — schemas, APIs, contracts
+- `docs/ALGORITHM_EXPERIMENT_BLUEPRINT.md` — candidates and promotion rules
+- `lean/` — formal specs sidecar (Lean 4 + mathlib)
 
-- actor-visible policy/value models with exact legal masking;
-- public-belief search using natural particles, ISMCTS, and DESPOT baselines;
-- public-belief reusable event forests for safe opponent-time pondering;
-- exact-rules Gumbel search, local resolving, and search distillation;
-- optional self-play RL and independently qualified architecture ablations.
+## Quick start
 
-No current result establishes superiority over LuckyJ or Mortal.
+```sh
+pixi install              # only supported env (don't use uv/venv here)
+pixi run pytest tests/unit -q   # fast gate, ~1 min
+pixi run ruff check src tests   # lint
+pixi run pyrefly check src      # types
+```
 
-## Repository map
+Full suite takes ~30 min (mostly conformance soak tests). `HYDRA2_SKIP_GPU_SOAK=1`
+skips the GPU soak on machines without CUDA.
 
-- [`docs/PROJECT_PLAN.md`](docs/PROJECT_PLAN.md): durable direction, milestones, dependencies, and current status.
-- [`docs/BUILD_EXECUTION_PLAN.md`](docs/BUILD_EXECUTION_PLAN.md): normative work-package order and completion gates.
-- [`docs/IMPLEMENTATION_SPEC.md`](docs/IMPLEMENTATION_SPEC.md): canonical schemas, APIs, algorithms, and fixtures.
-- [`docs/ALGORITHM_EXPERIMENT_BLUEPRINT.md`](docs/ALGORITHM_EXPERIMENT_BLUEPRINT.md): research candidates, equations, comparisons, and promotion rules.
-- [`tools/mjai-dataset-packager/`](tools/mjai-dataset-packager/): preserved restart-safe Rust MJAI dataset packager, including its tracked [`src/main.rs`](tools/mjai-dataset-packager/src/main.rs).
+```sh
+pixi run python -m hydra2.probe   # runtime environment report
+```
 
-## Current build boundary
+## Repo map
 
-Do not use Hydra1 setup or training commands here. Hydra2 has not yet implemented its Python/Pixi training environment. Execute only unblocked packages from the build execution plan; missing contracts or artifacts mean blocked, not permission to invent substitutes.
+- `src/hydra2/` — the stack: contracts, engines (RiichiEnv/MahJax), search,
+  belief, training, eval, artifacts
+- `configs/` — rules, contracts, model input specs, attestations
+- `tools/mjai-dataset-packager/` — restart-safe Rust MJAI packager
+- `tests/` — unit, contracts, search, integration, conformance
 
 ## Compute support
 
@@ -40,4 +55,5 @@ Do not use Hydra1 setup or training commands here. Hydra2 has not yet implemente
 <img src="assets/delta.webp" alt="Delta GPU node" width="720">
 </p>
 
-Hydra2 remains sponsored with compute support from Delta advanced computing and data resources, supported by the National Science Foundation (award OAC 2005572) and the State of Illinois. Delta is a joint effort of the University of Illinois Urbana-Champaign and its National Center for Supercomputing Applications.
+Compute from Delta (NCSA / UIUC), supported by the NSF (award OAC 2005572)
+and the State of Illinois.
