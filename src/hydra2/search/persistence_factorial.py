@@ -418,6 +418,24 @@ def commit_equals_rebuild(
     return rebuilt == packet.epoch_after
 
 
+def _distribute_quota(sorted_pids: list[str], quota: int) -> dict[str, int]:
+    """Deterministically spread quota units across sorted child ids.
+
+    Round-robin one unit per pid until quota exhausts. Pure function of its
+    inputs; the returned per-pid units sum to min(quota, distributed). Callers
+    charge every counter from the returned mapping so stats stay coherent.
+    """
+    dist: dict[str, int] = dict.fromkeys(sorted_pids, 0)
+    remaining = quota
+    while remaining > 0 and dist:
+        for pid in sorted_pids:
+            if remaining <= 0:
+                break
+            dist[pid] += 1
+            remaining -= 1
+    return dist
+
+
 @dataclass(slots=True)
 class ForestState:
     """Speculative forest retained by R/P arms.
@@ -964,13 +982,14 @@ class PersistencePlanner:
         # For tests: after hit, has_retained_state reflects committed child presence before next act
         # Next act will detect parent mismatch and correctly rebuild per-epoch.
 
-    def ponder(self, *, deadline_monotonic_ns: int) -> None:
+    def ponder(self, *, deadline_monotonic_ns: int, ponder_quota_total: int | None = None) -> None:
         """Opponent-time compute — allowed only for P, and only between action and next packet.
 
         - B/F/R: must do zero work and not mutate forest child_stats.
         - P: may perform bounded speculative work on each child uniformly; counts charged.
         - C: laboratory control never ponders (fresh).
         - Must respect deadline_monotonic_ns own budget; work stops at deadline.
+        - ponder_quota_total caps distributed units (None = legacy fixed behavior).
         """
         if self.arm.id in ("B", "F", "R", "C"):
             # Forbidden to do opponent-time work — enforce zero
@@ -998,9 +1017,22 @@ class PersistencePlanner:
         # Respect remaining_ms loosely: if remaining < 1 ms, still allow 1 call for test
         if remaining_ms < 0.5 and total_ponder > 1:
             total_ponder = 1
+        quota_dist: dict[str, int] | None = None
+        if ponder_quota_total is not None:
+            if (
+                isinstance(ponder_quota_total, bool)
+                or not isinstance(ponder_quota_total, int)
+                or ponder_quota_total <= 0
+            ):
+                raise ContractError("ponder_quota_total must be a positive int or None")
+            quota_dist = _distribute_quota(sorted(self._forest.children.keys()), ponder_quota_total)
+            total_ponder = sum(quota_dist.values())
         # Mutate child stats
         for pid in list(self._forest.child_stats.keys()):
-            self._forest.child_stats[pid] += ponder_per_child
+            if quota_dist is not None:
+                self._forest.child_stats[pid] += quota_dist.get(pid, 0)
+            else:
+                self._forest.child_stats[pid] += ponder_per_child
         self._forest.ponder_calls += total_ponder
         self._total_model_calls += total_ponder
         self._total_transitions += total_ponder // 2

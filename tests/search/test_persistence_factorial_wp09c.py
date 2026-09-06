@@ -777,3 +777,84 @@ def test_whole_block_factorial_report_frozen() -> None:
     notes_text = " ".join(report.notes)
     assert "laboratory" in notes_text.lower()
     assert "never deployable" in notes_text.lower() or "laboratory only" in notes_text.lower()
+
+
+# ---------------------------------------------------------------------------
+# 15 Ponder quota (PR1: additive cap, legacy default None)
+# ---------------------------------------------------------------------------
+
+
+def _ponder_planner() -> object:
+    arm = make_persistence_arm("P")
+    cand = make_persistence_candidate_spec(arm_id="P")
+    planner = PersistencePlanner(arm=arm, candidate_spec=cand)
+    obs = _obs_for(seq=90)
+    planner.act(_request(obs, _legal_pair(), cand))
+    assert planner.has_retained_state is True
+    return planner
+
+
+def test_ponder_quota_caps_total() -> None:
+    planner = _ponder_planner()
+    before = dict(planner.forest.child_stats)  # type: ignore[union-attr]
+    planner.ponder(deadline_monotonic_ns=time.monotonic_ns() + 100_000_000, ponder_quota_total=2)
+    after = planner.forest.child_stats  # type: ignore[union-attr]
+    assert sum(after.values()) - sum(before.values()) == 2
+    assert planner.forest.ponder_calls == 2  # type: ignore[union-attr]
+
+
+def test_ponder_quota_none_is_legacy() -> None:
+    planner = _ponder_planner()
+    n_children = len(planner.forest.children)  # type: ignore[union-attr]
+    planner.ponder(deadline_monotonic_ns=time.monotonic_ns() + 100_000_000, ponder_quota_total=None)
+    assert planner.forest.ponder_calls == 2 * n_children  # type: ignore[union-attr]
+
+
+def test_ponder_quota_distributes_sorted_round_robin() -> None:
+    planner = _ponder_planner()
+    pids = sorted(planner.forest.children.keys())  # type: ignore[union-attr]
+    assert len(pids) >= 2
+    before = dict(planner.forest.child_stats)  # type: ignore[union-attr]
+    planner.ponder(deadline_monotonic_ns=time.monotonic_ns() + 100_000_000, ponder_quota_total=2)
+    after = planner.forest.child_stats  # type: ignore[union-attr]
+    gained = {pid: after[pid] - before.get(pid, 0) for pid in pids}
+    assert gained[pids[0]] == 1 and gained[pids[1]] == 1
+    assert all(v == 0 for pid, v in gained.items() if pid not in pids[:2])
+
+
+def test_ponder_quota_charges_all_counters_coherently() -> None:
+    planner = _ponder_planner()
+    mc0 = planner._total_model_calls
+    tr0 = planner._total_transitions
+    j0 = planner._total_joules
+    planner.ponder(deadline_monotonic_ns=time.monotonic_ns() + 100_000_000, ponder_quota_total=3)
+    assert planner._total_model_calls - mc0 == 3
+    assert planner._total_transitions - tr0 == 3 // 2
+    assert planner._ponder_budget_used == 3
+    assert abs((planner._total_joules - j0) - 3 * 0.04) < 1e-9
+
+
+def test_ponder_quota_rejects_nonpositive() -> None:
+    from hydra2.contracts.common import ContractError
+
+    planner = _ponder_planner()
+    for bad in (0, -1, True):
+        with pytest.raises(ContractError):
+            planner.ponder(
+                deadline_monotonic_ns=time.monotonic_ns() + 100_000_000, ponder_quota_total=bad
+            )
+
+def test_ponder_quota_ignored_off_p_arm() -> None:
+    arm = make_persistence_arm("R")
+    cand = make_persistence_candidate_spec(arm_id="R")
+    planner = PersistencePlanner(arm=arm, candidate_spec=cand)
+    obs = _obs_for(seq=91)
+    planner.act(_request(obs, _legal_pair(), cand))
+    planner.ponder(deadline_monotonic_ns=time.monotonic_ns() + 100_000_000, ponder_quota_total=4)
+    assert planner.telemetry_snapshot()["ponder_calls"] == 0
+
+
+def test_ponder_quota_deadline_still_gates() -> None:
+    planner = _ponder_planner()
+    planner.ponder(deadline_monotonic_ns=time.monotonic_ns() - 1_000_000, ponder_quota_total=4)
+    assert planner.telemetry_snapshot()["ponder_calls"] == 0
