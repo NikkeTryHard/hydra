@@ -6,7 +6,7 @@ Implements SPEC 16.4 + Blueprint §10 PBRF core:
 - Natural immutable parent population via ``NaturalBelief.sample_natural`` (ratio 1).
 - Frozen root candidate generator before any packet enumeration evidence.
 - Exhaustive disjoint packet kernel per parent/action via ``NaturalPacketKernel``.
-- Child entries store ``parent_id, successor_world_ref, successor_delta, raw_weight, target_id, epoch``.
+- Child entries store ``parent_id, successor_world_ref, successor_delta, raw_weight, target_id, epoch, tile``.
 - Child normalizers partition one within ``kernel_tolerance`` (mass 1).
 - Fixed search batches allocated deterministically (``fixed_allocate``).
 - Candidates frozen before natural confirmation (confirmation always fresh natural).
@@ -150,6 +150,13 @@ class ChildEntry:
 
     Mirrors SPEC 16.4 pseudocode: parent_id, successor_world_ref, successor_delta,
     raw_weight (= probability/len(parents)), target_id, epoch.
+
+    ``tile`` is the originating transition tile (TileId 0..135) captured at
+    enumeration time from the successor packet events. It lets delta
+    verification reconstruct directly instead of brute-forcing the hash
+    preimage. ``None`` marks legacy/unknown provenance and keeps the
+    brute-force fallback available; new entries from ``build_pbrf`` always
+    carry it.
     """
 
     parent_id: str
@@ -158,6 +165,8 @@ class ChildEntry:
     raw_weight: float
     target_id: DigestText
     epoch: Any
+    ancestors: tuple[str, ...] = ()
+    tile: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.parent_id, str) or self.parent_id == "":
@@ -174,6 +183,19 @@ class ChildEntry:
         ):
             raise ContractError("raw_weight must be finite nonnegative float")
         object.__setattr__(self, "target_id", make_digest_text(self.target_id))
+        if not isinstance(self.ancestors, tuple) or any(
+            not isinstance(a, str) or a == "" for a in self.ancestors
+        ):
+            raise ContractError("ancestors must be a tuple of non-empty parent-id strings")
+        for a in self.ancestors:
+            _: Any = make_parent_id(a)
+        if self.tile is not None:
+            if isinstance(self.tile, bool) or not isinstance(self.tile, int):
+                raise ContractError("tile must be a TileId int or None")
+            try:
+                object.__setattr__(self, "tile", int(make_tile_id(self.tile)))
+            except ContractError:
+                raise ContractError("tile must be a TileId in 0..135 or None")
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,7 +229,7 @@ def validate_packet_partition(successors: Any, *, tolerance: float = 1e-9) -> No
     pairwise distinct packet_id. Mirrors DESPOT helper for cross-test consistency.
     """
     if not bool(successors):
-        raise PacketPartitionError("successors must be non-empty")
+        raise PacketPartitionError("successors must be non-empty [PBRF_PARTITION_EMPTY]")
     pids: list[str] = []
     total = 0.0
     for s_any in successors:
@@ -230,10 +252,12 @@ def validate_packet_partition(successors: Any, *, tolerance: float = 1e-9) -> No
             total += float(prob)
     if len(pids) != len(set(pids)):
         raise PacketPartitionError(
-            f"packet aliasing: duplicate packet_id in {[p[:12] for p in pids]}"
+            f"packet aliasing: duplicate packet_id in {[p[:12] for p in pids]} [PBRF_PARTITION_ALIAS]"
         )
     if any(hasattr(s, "probability") for s in successors) and abs(total - 1.0) > tolerance:
-        raise PacketPartitionError(f"packet mass {total} != 1 within {tolerance}")
+        raise PacketPartitionError(
+            f"packet mass {total} != 1 within {tolerance} [PBRF_PARTITION_MASS]"
+        )
 
 
 def _require_partition(successors: Any, tolerance: float) -> None:
@@ -314,28 +338,79 @@ def _ess_for_key(entries: tuple[ChildEntry, ...]) -> float | None:
     return 1.0 / s
 
 
+def _conditional_carry_logps(
+    entries: tuple[ChildEntry, ...],
+) -> tuple[float, ...]:
+    """Log densities of the action-and-packet-conditioned carry population.
+
+    Hit-commit promoted parents sample the conditional law ``b_{eta,a,e}^+``,
+    never fresh naturals: the emitted action and realized packet selected them,
+    and selection conditions the population. Densities are therefore the
+    normalized conditional weights ``log(raw_i / Z)`` with ``Z = sum(raw)``,
+    never uniform ``-log(N)``. Both density fields of each promoted parent take
+    this value so no hidden importance ratio is smuggled (ratio stays one by
+    construction).
+
+    Raises ``ContractError`` on zero/nonfinite total or entry mass: a zero-mass
+    conditioning supports no population and the caller must take the miss path.
+    """
+    z = sum(e.raw_weight for e in entries)
+    if not math.isfinite(z) or z <= 0:
+        raise ContractError(f"conditioned child has zero/nonfinite mass {z}: no carry population")
+    logps: list[float] = []
+    for e in entries:
+        w = e.raw_weight / z
+        if not math.isfinite(w) or w <= 0:
+            raise ContractError("conditioned entry has zero/nonfinite normalized mass")
+        logps.append(math.log(w))
+    return tuple(logps)
+
+
+def _tile_for_successor(succ: Any) -> int | None:
+    """Extract the originating transition tile from a kernel successor.
+
+    The tile rides in the successor packet's first event payload
+    (``EventPayload.tile``); the kernel sets it at enumeration time. Returns
+    ``None`` when the successor carries no decodable tile so callers fall back
+    to legacy handling instead of guessing.
+    """
+    try:
+        events: Any = getattr(getattr(succ, "packet", None), "events", ())
+        if not events:
+            return None
+        raw: Any = getattr(getattr(events[0], "payload", None), "tile", None)
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            return None
+        return int(make_tile_id(int(raw)))
+    except Exception:
+        return None
+
+
 def _verify_delta_reconstruction(
     *,
     parent_world_ref: str,
     successor_world_ref: str,
     successor_delta: str,
     action_id: int,
+    tile: int | None = None,
 ) -> bool:
     """Verify successor_world_ref reconstructs from parent+delta (digest-equal).
 
     Kernel generates successors as:
       succ = "world_succ:" + hash(parent_ref + ":" + tile + ":" + aid)[:16]
       delta = "delta:" + hash("delta:" + parent_ref + ":" + tile)[:16]
-    For verification we brute-force tile in 0..15 to check existence of a
-    tile that yields both hashes, since tile is not stored in ChildEntry.
+
+    When ``tile`` (the stored ``ChildEntry.tile``) is known, verification is a
+    single direct reconstruction — no search. When it is ``None``
+    (legacy/unknown provenance), fall back to the historical brute-force over
+    0..19 plus the canonical parent+delta check for synthetic tests.
     This satisfies ``reconstruction from parent+delta MUST digest-equal successor_world_ref``.
 
     For honest entries (tile 8 or 9) this passes; tampered delta will fail.
     """
     if parent_world_ref == "" or successor_world_ref == "" or successor_delta == "":
         return False
-    # brute-force tiny tile range that kernel uses (8,9 for 2-packet kernel, but search a bit wider)
-    for tile in range(0, 20):
+    if tile is not None and not isinstance(tile, bool) and isinstance(tile, int):
         exp_succ = (
             "world_succ:"
             + hashlib.sha256(f"{parent_world_ref}:{tile}:{action_id}".encode()).hexdigest()[:16]
@@ -345,6 +420,25 @@ def _verify_delta_reconstruction(
         )
         if exp_succ == successor_world_ref and exp_delta == successor_delta:
             return True
+        # Stored tile is authoritative: a mismatch is a genuine failure, but
+        # still honor the canonical parent+delta escape hatch for synthetic
+        # kernels that bypass tile hashing entirely.
+    else:
+        # Legacy path: tile was dropped at enumeration time, so probe the
+        # historical 0..19 window that covers the stub kernel's tiles 8/9.
+        for probe in range(0, 20):
+            exp_succ = (
+                "world_succ:"
+                + hashlib.sha256(f"{parent_world_ref}:{probe}:{action_id}".encode()).hexdigest()[
+                    :16
+                ]
+            )
+            exp_delta = (
+                "delta:"
+                + hashlib.sha256(f"delta:{parent_world_ref}:{probe}".encode()).hexdigest()[:16]
+            )
+            if exp_succ == successor_world_ref and exp_delta == successor_delta:
+                return True
     # also try the generic canonical reconstruction (parent+delta) fallback for synthetic tests
     # If kernel used generic hash, we also accept digest equality via canonical_bytes check
     try:
@@ -361,7 +455,19 @@ def _verify_delta_reconstruction(
     return False
 
 
-def _is_target_compatible(entries: tuple[ChildEntry, ...], epoch: Any) -> bool:
+def _is_target_compatible(
+    entries: tuple[ChildEntry, ...], epoch: Any, packet: Any | None = None
+) -> bool:
+    """Check a realized child is target-compatible with the authoritative epoch.
+
+    Three cumulative gates: entries share one forest target/epoch; the
+    authoritative epoch is exactly one increment past it; and — when the
+    realized ``packet`` is supplied — the authoritative epoch's observation
+    and recomputed target bind to that packet (observation equality plus
+    target re-derivation from packet observation + authoritative hashes).
+    Content gates degrade gracefully: missing attributes or helpers keep the
+    epoch-increment verdict instead of failing closed on synthetic epochs.
+    """
     if len(entries) == 0:
         return False
     first = entries[0]
@@ -369,30 +475,43 @@ def _is_target_compatible(entries: tuple[ChildEntry, ...], epoch: Any) -> bool:
     for e in entries:
         if e.target_id != first.target_id or e.epoch != first.epoch:
             return False
-    # Authoritative epoch target must match (or be epoch-incremented but same target derivation logic)
-    # For WP-07A, pushforward retains same rules but target derived from new observation hash,
-    # so target_id may differ? SPEC says target-compatible check should compare target_id?
-    # For PBRF, we require that entry target_id equals original forest epoch target_id, and
-    # authoritative epoch's target_id is derived from actual packet's observation_hash_after,
-    # which will differ. The spec's commit says: if matching is absent or not target-compatible(authoritative_epoch) -> miss_rebuild
-    # We implement target-compatible as: entries' target_id == forest epoch target_id, but
-    # authoritative epoch's observation_hash_after must correspond to packet's observation_hash_after.
-    # Since we don't have that mapping, we consider compatibility as requiring epoch increment == 1 and same rules.
-    # For deterministic tiny tests, we emulate: if authoritative epoch's epoch == entries[0].epoch + 1 (as ints) and entries target matches forest target, consider compatible if packet_id matches (which it does by lookup).
-    # We'll just check that all entries' target_id matches the most recent forest target (passed via forest.epoch.target_id) and that authoritative_epoch.epoch != entries epoch
-    # But to keep tests simple, we will consider target-compatible as: entries target equals original target (they do) and authoritative epoch is exactly one more than entries epoch
-    # If no epoch increment info, we treat as compatible when target matches.
+    # Authoritative epoch must be exactly one increment past the forest epoch:
+    # stale children (older forest epoch) are rejected here.
     try:
         forest_epoch_int = int(first.epoch)
         auth_epoch_int = int(getattr(epoch, "epoch", forest_epoch_int + 1))
         if auth_epoch_int != forest_epoch_int + 1:
-            # allow if target differs but epoch increments
-            # For some tests we want to simulate stale child where forest epoch is old, so we reject if auth epoch not forest+1
             return False
     except Exception:
         pass
-    # Also check target equality: for genuine commit, packet's observation hash should be consistent
-    # We can't check without world store, so we accept if above epoch check passes
+    if packet is not None:
+        try:
+            obs_after: Any = getattr(packet, "observation_hash_after", None)
+            auth_obs: Any = getattr(epoch, "observation_hash", None)
+            if (
+                obs_after is not None
+                and auth_obs is not None
+                and make_digest_text(obs_after) != make_digest_text(auth_obs)
+            ):
+                return False
+            # Target binding: the authoritative target must re-derive from the
+            # realized packet observation plus the authoritative hashes, proving
+            # the epoch was not forged or swapped under this packet. Without a
+            # packet observation there is nothing to bind: epoch check stands.
+            from hydra2.belief.natural import _target_id_for as _recompute_target
+
+            if obs_after is not None:
+                expected: Any = _recompute_target(
+                    observation_hash=make_digest_text(obs_after),
+                    rules_hash=make_digest_text(epoch.rules_hash),
+                    belief_model_hash=make_digest_text(epoch.belief_model_hash),
+                    event_model_hash=make_digest_text(epoch.event_model_hash),
+                    proposal_spec_hash=make_digest_text(epoch.proposal_spec_hash),
+                )
+                if make_digest_text(expected) != make_digest_text(epoch.target_id):
+                    return False
+        except Exception:
+            pass
     return True
 
 
@@ -409,6 +528,11 @@ class ImmutableForest:
     Children are indexed by ``(action_id, packet_id)`` and each holds a tuple of
     ``ChildEntry`` with raw weights summing to Z_hat per key.
     All fields are immutable; consumers must not mutate via aliasing.
+
+    A forest with empty children and empty allocations is the depleted state
+    produced by miss-rebuild: fresh parents sampled from the authoritative
+    epoch, no packet children enumerated yet. The next ``act()`` rebuilds a
+    full forest; nothing about the depleted state resembles search evidence.
     """
 
     epoch: Any
@@ -423,7 +547,9 @@ class ImmutableForest:
             raise ContractError("parents must be non-empty tuple")
         if not isinstance(self.frozen_candidates, tuple) or len(self.frozen_candidates) == 0:
             raise ContractError("frozen_candidates must be non-empty tuple")
-        # Verify parents are natural (ratio 1) when possible
+        # Verify parent sample law: natural (ratio 1) or carried conditional
+        # (ratio 1 by construction, densities pinned at commit). Anything else
+        # cannot be consumed as a belief population.
         for p_any in self.parents:
             p: Any = p_any
             lt: Any = getattr(p, "log_target_density", None)
@@ -433,7 +559,23 @@ class ImmutableForest:
                     "natural parent requires log_target == log_proposal (ratio one)"
                 )
             src: Any = getattr(p, "source", "natural")
-            if src != "natural":
+            if src == "carried":
+                # Hit-commit promotion: samples b_{eta,a,e}^+, never fresh
+                # naturals. Densities must be present, finite, and equal —
+                # otherwise the carry claim is unverifiable.
+                for tag, v in (("log_target_density", lt), ("log_proposal_density", lp)):
+                    if isinstance(v, bool) or not isinstance(v, (int, float)):
+                        raise ContractError(f"carried parent requires finite {tag}")
+                    if not math.isfinite(float(v)):
+                        raise ContractError(f"carried parent requires finite {tag}")
+                if lt != lp:
+                    raise ContractError(
+                        "carried parent requires log_target == log_proposal (ratio one)"
+                    )
+                chain: Any = getattr(p, "ancestors", ())
+                if not isinstance(chain, tuple) or len(chain) == 0:
+                    raise ContractError("carried parent requires a non-empty ancestor chain")
+            elif src != "natural":
                 raise ContractError("PBRF core requires natural parents only")
         # Verify children provenance matches epoch target
         for key, entries in self.children.items():
@@ -446,12 +588,18 @@ class ImmutableForest:
                     raise ContractError("child target_id must match forest epoch target_id")
                 if e.epoch != self.epoch.epoch:
                     raise ContractError("child epoch must match forest epoch")
-        # Verify allocations sum
-        if sum(self.allocations.values()) != self.config.max_search_batches:
-            raise ContractError("allocations must sum to max_search_batches")
-        # Ensure allocations keys match children keys exactly
-        if set(self.allocations.keys()) != set(self.children.keys()):
-            raise ContractError("allocations keys must equal children keys")
+        # Verify allocations sum. The depleted miss-rebuild state carries no
+        # children and no allocations; anything else must account for the full
+        # batch budget with keys exactly matching the children mapping.
+        if len(self.children) == 0:
+            if len(self.allocations) != 0:
+                raise ContractError("depleted forest must have empty allocations")
+        else:
+            if sum(self.allocations.values()) != self.config.max_search_batches:
+                raise ContractError("allocations must sum to max_search_batches")
+            # Ensure allocations keys match children keys exactly
+            if set(self.allocations.keys()) != set(self.children.keys()):
+                raise ContractError("allocations keys must equal children keys")
 
     def child(self, action: Any, packet_id: str) -> tuple[ChildEntry, ...] | None:
         aid = _action_id(action)
@@ -571,9 +719,9 @@ def build_pbrf(
             parent: Any = parent_any
             # Stale provenance check
             if int(getattr(parent, "epoch", epoch.epoch)) != int(epoch.epoch):  # type: ignore[attr-defined]
-                raise StaleBeliefError("stale particle epoch for kernel")
+                raise StaleBeliefError("stale particle epoch for kernel [PBRF_STALE_EPOCH]")
             if getattr(parent, "target_id", epoch.target_id) != epoch.target_id:  # type: ignore[attr-defined]
-                raise StaleBeliefError("stale particle target for kernel")
+                raise StaleBeliefError("stale particle target for kernel [PBRF_STALE_TARGET]")
             successors = kernel.enumerate_next(
                 epoch=epoch, particle=parent, action=action, policy_set=policy_set
             )
@@ -607,6 +755,8 @@ def build_pbrf(
                     raw_weight=raw_w,
                     target_id=epoch.target_id,  # type: ignore[attr-defined]
                     epoch=epoch.epoch,  # type: ignore[attr-defined]
+                    ancestors=(),
+                    tile=_tile_for_successor(succ),
                 )
                 key = (aid, pid)
                 children_accum.setdefault(key, []).append(entry)
@@ -619,7 +769,7 @@ def build_pbrf(
         total_z = sum(z_hats)
         if abs(total_z - 1.0) > cfg.kernel_tolerance:
             raise PacketPartitionError(
-                f"child normalizer partition {total_z} != 1 within {cfg.kernel_tolerance} for action {aid}"
+                f"child normalizer partition {total_z} != 1 within {cfg.kernel_tolerance} for action {aid} [PBRF_PARTITION_CHILD_NORM]"
             )
 
     # Convert to immutable tuples
@@ -655,14 +805,23 @@ def _fresh_rebuild(
     *,
     config: PbrfConfig | None = None,
     rng: Any | None = None,
+    frozen_candidates: tuple[Any, ...] | None = None,
 ) -> ImmutableForest:
-    """Recover from miss: sample new parents from authoritative epoch and return empty forest placeholder.
+    """Recover from miss: sample fresh parents, return the depleted forest.
 
-    For hard failure coverage, we return a forest with no children but with fresh parents
-    sampled naturally from the new epoch. This models ``fresh_rebuild(authoritative_epoch)``
-    without re-enumerating packet children (which would require candidates_fn).
+    The depleted forest carries naturally sampled parents from the
+    authoritative epoch, the committing forest's frozen candidates, and empty
+    children/allocations — no packet children are enumerated here (that needs
+    ``candidates_fn`` and belongs to the next ``act()``). No synthetic
+    particles, actions, or children are fabricated: a miss looks like a miss.
     """
     cfg: PbrfConfig = config if config is not None else PbrfConfig()
+    if (
+        frozen_candidates is None
+        or not isinstance(frozen_candidates, tuple)
+        or len(frozen_candidates) == 0
+    ):
+        raise ContractError("fresh rebuild requires the committing forest's frozen_candidates")
     # derive deterministic rng if not supplied
     if rng is None and _HAS_RANDOM:
         try:
@@ -679,83 +838,23 @@ def _fresh_rebuild(
                 authoritative_epoch, count=cfg.parent_count, rng=rng
             )
             new_parents = tuple(_new_parents_raw)
-        except Exception:
-            new_parents = ()
+        except Exception as exc:
+            raise ContractError(f"fresh rebuild requires belief sampling: {exc}") from exc
     else:
-        new_parents = ()
-    # If we have no parents (e.g., no belief), fabricate minimal placeholder
+        raise ContractError("fresh rebuild requires belief sampling")
     if len(new_parents) == 0:
-        # Create a synthetic epoch-compatible placeholder (used in unit tests that bypass belief)
-        new_parents = ()
-        # Need empty children case still valid? ImmutableForest requires non-empty parents, so we keep original epoch parents if we cannot resample
-        # For this fallback, just return a forest with same epoch but empty children? Instead we raise to signal blocked?
-        # We'll attempt to return a forest with one synthetic particle if needed
-        from hydra2.belief.world import make_full_world  # local import
-
-        try:
-            # synthetic world to make a parent
-            w = make_full_world(
-                concealed_hands=((0, 1), (2, 3), (4, 5), (6, 7)),
-                live_wall=(8, 9, 10, 11),
-                dead_wall=(),
-                latent_state={"fresh": 1},
-                rules_hash=str(authoritative_epoch.rules_hash),  # type: ignore[attr-defined]
-                observation_hash=str(authoritative_epoch.observation_hash),  # type: ignore[attr-defined]
-            )
-
-            # fabricate a particle with same epoch
-            @dataclass(frozen=True, slots=True)
-            class _FakeP:
-                parent_id: str = "fresh_dummy"
-                world_ref: str = w.world_id
-                epoch: Any = authoritative_epoch.epoch  # type: ignore[attr-defined]
-                target_id: Any = authoritative_epoch.target_id  # type: ignore[attr-defined]
-                source: str = "natural"
-                log_target_density: float = 0.0
-                log_proposal_density: float = 0.0
-                proposal_id: str = "sha256:" + "0" * 64
-
-            new_parents = (_FakeP(),)
-        except Exception:
-            raise ContractError("fresh rebuild requires belief sampling")
-
-    # For fresh rebuild we return a forest with same epoch but children recomputed as empty
-    # If we have new_parents, we need candidates; use a dummy single candidate to satisfy non-empty requirement
-    # The spec's fresh_rebuild is expected to produce a forest that can be used for subsequent act; we simplify to a placeholder
-    dummy_candidates: tuple[Any, ...] = ()  # will be filled if needed
-    # To satisfy ImmutableForest invariants we need at least one candidate and children mapping non-empty if parents non-empty?
-    # For simplicity, we will return a forest that represents an empty search state after miss: we reuse original config but children empty is not allowed (allocations mismatch)
-    # Instead we construct children as empty dict and allocations empty, but we relax invariant for rebuild case by constructing a new forest directly without validation?
-    # Workaround: construct forest with dummy child for validation then clear after
-    # Simpler: just return a new forest that mirrors authoritative epoch with one dummy parent and one dummy candidate and a single child
-    # This satisfies invariants and allows tests that check miss path returns different forest.
+        raise ContractError("fresh rebuild sampled no parents")
     try:
-        # Use a stub candidate id 0
-        class _DummyAction:
-            action_id = 0
-
-        dummy_candidates = (_DummyAction(),)
-        # Create a single child entry with weight 1
-        dummy_entry = ChildEntry(
-            parent_id=str(getattr(new_parents[0], "parent_id", "fresh_dummy")),
-            successor_world_ref=str(getattr(new_parents[0], "world_ref", "world_fresh")),
-            successor_delta="delta_fresh",
-            raw_weight=1.0,
-            target_id=authoritative_epoch.target_id,  # type: ignore[attr-defined]
-            epoch=authoritative_epoch.epoch,  # type: ignore[attr-defined]
-        )
-        dummy_children: dict[tuple[int, str], tuple[ChildEntry, ...]] = {
-            (0, "packet_fresh"): (dummy_entry,),
-        }
-        dummy_alloc = fixed_allocate(dummy_children, total_batches=cfg.max_search_batches)  # type: ignore[bad-argument-type]
         return ImmutableForest(
             epoch=authoritative_epoch,
             parents=tuple(new_parents),
-            frozen_candidates=tuple(dummy_candidates),
-            children=dummy_children,
+            frozen_candidates=tuple(frozen_candidates),
+            children={},
             config=cfg,
-            allocations=dummy_alloc,
+            allocations={},
         )
+    except ContractError:
+        raise
     except Exception as exc:
         raise ContractError(f"fresh_rebuild failed: {exc}") from exc
 
@@ -765,6 +864,7 @@ def rekey_and_verify(
     authoritative_epoch: Any,
     *,
     forest: ImmutableForest | None = None,
+    action_id: int | None = None,
 ) -> tuple[ChildEntry, ...]:
     """Rekey matching child entries to new epoch and verify delta reconstruction.
 
@@ -783,7 +883,7 @@ def rekey_and_verify(
         try:
             if int(e.epoch) + 1 != int(authoritative_epoch.epoch):  # type: ignore[attr-defined,arg-type]
                 raise StaleBeliefError(
-                    f"child epoch {e.epoch} stale for authoritative {authoritative_epoch.epoch}"
+                    f"child epoch {e.epoch} stale for authoritative {authoritative_epoch.epoch} [PBRF_STALE_EPOCH]"
                 )
         except StaleBeliefError:
             raise
@@ -797,37 +897,36 @@ def rekey_and_verify(
         for e in matching:
             parent_ref = parent_map.get(e.parent_id)
             if parent_ref is None:
-                raise StaleBeliefError(f"parent_id {e.parent_id} not in forest")
-            # Try to find action_id for verification (use first candidate's id if needed)
-            # We can extract action_id from the key? For now use 0 as fallback but prefer actual
-            # Since matching came from a specific action, we can brute-force action_ids across forest candidates
+                raise StaleBeliefError(f"parent_id {e.parent_id} not in forest [PBRF_STALE_PARENT]")
+            # The committing action is known to commit(): it passes its id so
+            # verification tries the exact aid first. The kernel derives aids
+            # by its own rule (getattr(action, "action_id", 0)), which can
+            # disagree with the planner-side _action_id hash fallback, so the
+            # legacy candidate sweep plus the 0..4 fallback stays as fallback.
+            # TODO(codec-aid): give CanonicalAction one codec-assigned id so
+            # both fallbacks die; kernel/contracts side owned by Forge track.
+            # Direct callers without an action keep the full sweep.
+            aids: list[int] = []
+            if action_id is not None and not isinstance(action_id, bool) and isinstance(action_id, int):
+                aids.append(action_id)
+            aids.extend(_action_id(cand) for cand in forest.frozen_candidates)
+            aids.extend(a for a in range(5) if a not in aids)
             verified = False
-            for cand in forest.frozen_candidates:
-                aid = _action_id(cand)
+            for aid in aids:
                 if _verify_delta_reconstruction(
                     parent_world_ref=parent_ref,
                     successor_world_ref=e.successor_world_ref,
                     successor_delta=e.successor_delta,
                     action_id=aid,
+                    tile=e.tile,
                 ):
                     verified = True
                     break
             if not verified:
-                # also try generic without action_id brute force across 0..5
-                for aid_try in range(5):
-                    if _verify_delta_reconstruction(
-                        parent_world_ref=parent_ref,
-                        successor_world_ref=e.successor_world_ref,
-                        successor_delta=e.successor_delta,
-                        action_id=aid_try,
-                    ):
-                        verified = True
-                        break
-            if not verified:
                 from hydra2.contracts.common import DigestMismatchError  # local
 
                 raise DigestMismatchError(
-                    f"delta reconstruction failed for parent {e.parent_id[:12]}"
+                    f"delta reconstruction failed for parent {e.parent_id[:12]} [PBRF_DIGEST_DELTA]"
                 )
 
     # Return rekeyed entries with authoritative epoch (but keep same target? authoritative target may differ)
@@ -842,6 +941,8 @@ def rekey_and_verify(
                 raw_weight=e.raw_weight,  # weight stays? Normalized later will recompute
                 target_id=authoritative_epoch.target_id,  # type: ignore[attr-defined]
                 epoch=authoritative_epoch.epoch,  # type: ignore[attr-defined]
+                ancestors=e.ancestors,
+                tile=e.tile,
             )
         )
     return tuple(rekeyed)
@@ -893,19 +994,36 @@ def commit(
     # Check target compatibility and presence
     if matching is None:
         # miss rebuild
-        fresh = _fresh_rebuild(authoritative_epoch, belief, config=forest.config)
+        fresh = _fresh_rebuild(
+            authoritative_epoch,
+            belief,
+            config=forest.config,
+            frozen_candidates=forest.frozen_candidates,
+        )
         return fresh, CommitDisposition("miss_rebuild")
     # verify target compatibility: if not compatible, miss
-    if not _is_target_compatible(matching, authoritative_epoch):
-        fresh = _fresh_rebuild(authoritative_epoch, belief, config=forest.config)
+    if not _is_target_compatible(matching, authoritative_epoch, packet=actual_packet):
+        fresh = _fresh_rebuild(
+            authoritative_epoch,
+            belief,
+            config=forest.config,
+            frozen_candidates=forest.frozen_candidates,
+        )
         return fresh, CommitDisposition("miss_rebuild")
 
     # Promote: rekey and verify delta reconstruction
     try:
-        rekeyed = rekey_and_verify(matching, authoritative_epoch, forest=forest)
+        rekeyed = rekey_and_verify(
+            matching, authoritative_epoch, forest=forest, action_id=_action_id(action)
+        )
     except (StaleBeliefError, ContractError):
         # verification failure -> miss rebuild (hard failure path but contract says rebuild)
-        fresh = _fresh_rebuild(authoritative_epoch, belief, config=forest.config)
+        fresh = _fresh_rebuild(
+            authoritative_epoch,
+            belief,
+            config=forest.config,
+            frozen_candidates=forest.frozen_candidates,
+        )
         return fresh, CommitDisposition("miss_rebuild")
     except Exception as exc:
         raise ContractError(f"rekey_and_verify failed: {exc}") from exc
@@ -919,9 +1037,24 @@ def commit(
     # Its parents are the successor worlds; its children are initially empty (will be rebuilt on next build)
     # We construct promoted parents as synthetic particles with same target as authoritative epoch
 
-    # Synthesize promoted parents from rekeyed entries
+    # Synthesize promoted parents from rekeyed entries.
+    # LAW: these are CARRIED conditionals sampling b_{eta,a,e}^+, never fresh
+    # naturals — the emitted action and realized packet selected them, and
+    # selection conditions the population. Densities are the normalized
+    # conditional weights (see _conditional_carry_logps), not uniform -log(N).
+    try:
+        carry_logps = _conditional_carry_logps(tuple(rekeyed))
+    except ContractError:
+        # Zero-mass conditioning supports no population: miss, don't fabricate.
+        fresh = _fresh_rebuild(
+            authoritative_epoch,
+            belief,
+            config=forest.config,
+            frozen_candidates=forest.frozen_candidates,
+        )
+        return fresh, CommitDisposition("miss_rebuild")
     promoted_parents: list[Any] = []
-    for e in rekeyed:
+    for e, logp in zip(rekeyed, carry_logps, strict=True):
         # Create synthetic particle representing successor world
         @dataclass(frozen=True, slots=True)
         class _PromotedParticle:
@@ -929,23 +1062,21 @@ def commit(
             world_ref: str = e.successor_world_ref
             epoch: Any = authoritative_epoch.epoch  # type: ignore[attr-defined]
             target_id: Any = authoritative_epoch.target_id  # type: ignore[attr-defined]
-            source: str = "natural"
-            log_target_density: float = e.raw_weight if e.raw_weight > 0 else 0.0  # placeholder
-            log_proposal_density: float = e.raw_weight if e.raw_weight > 0 else 0.0
+            source: str = "carried"
+            log_target_density: float = logp
+            log_proposal_density: float = logp
             proposal_id: str = "sha256:" + "0" * 64
-
-        # Correct log densities: for natural promoted, need finite and equal
-        # Use -log(N) where N = len(rekeyed)
-        logp = -math.log(len(rekeyed)) if len(rekeyed) > 1 else 0.0
+            ancestors: tuple[str, ...] = (*e.ancestors, e.parent_id)
         obj = _PromotedParticle(
             parent_id=e.parent_id,
             world_ref=e.successor_world_ref,
             epoch=authoritative_epoch.epoch,  # type: ignore[attr-defined]
             target_id=authoritative_epoch.target_id,  # type: ignore[attr-defined]
-            source="natural",
+            source="carried",
             log_target_density=logp,
             log_proposal_density=logp,
             proposal_id="sha256:" + "0" * 64,
+            ancestors=(*e.ancestors, e.parent_id),
         )
         promoted_parents.append(obj)
 
@@ -1266,6 +1397,11 @@ class PbrfPlanner(Planner):  # type: ignore[misc]
                 self._policy_set = None
         self._forest: ImmutableForest | None = None
         self._last_commit: CommitDisposition | None = None
+        # Last action emitted by act(). observe() commits exactly this action:
+        # packet ids collide across actions (kernel packets are action-free),
+        # so the action cannot be recovered from the packet. Consumed (reset
+        # to None) by observe() — one stored action per emitted decision.
+        self._last_selected_action: Any | None = None
         self._model_calls = 0
         self._transitions = 0
 
@@ -1598,6 +1734,7 @@ class PbrfPlanner(Planner):  # type: ignore[misc]
         if not completed:
             # Return fallback (Candidate 0 style: first legal)
             fallback = legal[0]
+            self._last_selected_action = fallback
             telemetry = self._make_telemetry(
                 start_ns=start_ns,
                 budget=budget,
@@ -1682,6 +1819,7 @@ class PbrfPlanner(Planner):  # type: ignore[misc]
 
         if not completed or len(value_by_action) != len(legal):
             fallback = legal[0]
+            self._last_selected_action = fallback
             telemetry = self._make_telemetry(
                 start_ns=start_ns,
                 budget=budget,
@@ -1803,6 +1941,7 @@ class PbrfPlanner(Planner):  # type: ignore[misc]
             value_vectors = tuple(wrapped)
         except Exception:
             value_vectors = tuple(value_by_action[a] for a in legal)
+        self._last_selected_action = selected
         return SearchResult(
             selected_action=selected,
             candidate_actions=legal,
@@ -1814,42 +1953,36 @@ class PbrfPlanner(Planner):  # type: ignore[misc]
         )
 
     def observe(self, packet: Any) -> None:  # type: ignore[override]
-        """PBRF observe: commit to authoritative child or rebuild.
+        """PBRF observe: commit the emitted action to its authoritative child.
 
-        Verifies packet epoch, promotes matching child, squashes siblings.
-        Spec says ponder can mutate only planner-owned speculative state; observe
-        verifies packet/epoch then commits or rebuilds.
+        Commits exactly ``self._last_selected_action`` from ``act()``. The
+        action is never recovered from the packet: kernel packet ids are
+        action-free and collide across actions, so any candidate sweep would
+        promote the wrong branch. Exactly one ``pushforward_condition`` runs
+        per observe (SPEC order, required for the miss path's rebuild epoch);
+        the old per-candidate loop is gone, along with its speculative writes.
+        The stored action is consumed one-shot; observing without a stored
+        action (no preceding act()) raises ``ContractError`` instead of
+        guessing a candidate.
         """
         if self._forest is None or self._belief is None:
             # No forest to commit; ignore (or rebuild if packet supplied)
             return
         if packet is None or not hasattr(packet, "packet_id"):
             raise ContractError("packet must have packet_id for observe")
-        # Find the action that produced this packet: we need to know which action was taken
-        # For PBRF, observe is called after act; we can infer action as the last selected action
-        # But planner state should store last action; for simplicity we try each candidate
-        # Try every action in forest; the one that has a matching child is the hit
-        for action in self._forest.frozen_candidates:
-            try:
-                # Attempt commit with each candidate; first hit wins
-                promoted, disp = commit(self._forest, action, packet, self._belief)
-                if disp.kind == "hit_commit":
-                    self._forest = promoted
-                    self._last_commit = disp
-                    return
-            except ContractError:
-                continue
-            except Exception:
-                continue
-        # If no hit, perform miss rebuild via commit with first candidate
-        try:
-            promoted, disp = commit(
-                self._forest, self._forest.frozen_candidates[0], packet, self._belief
-            )
-            self._forest = promoted
-            self._last_commit = disp
-        except Exception as exc:
-            raise ContractError(f"observe commit failed: {exc}") from exc
+        action = self._last_selected_action
+        self._last_selected_action = None
+        if action is None:
+            # No emitted action memory: act() never ran since the last
+            # observe (or a forest was injected directly). The action cannot
+            # be recovered from the packet — kernel packet ids are
+            # action-free and collide across actions — and defaulting to any
+            # candidate would reintroduce first-hit-wins miscommit, so this
+            # is a protocol violation, not a miss.
+            raise ContractError("observe requires an act()-emitted action: none stored")
+        promoted, disp = commit(self._forest, action, packet, self._belief)
+        self._forest = promoted
+        self._last_commit = disp
 
     def ponder(self, *, deadline_monotonic_ns: int) -> None:
         # PBRF core does not perform background ponder without commit; no-op
