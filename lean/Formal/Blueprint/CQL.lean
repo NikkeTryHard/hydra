@@ -97,5 +97,15 @@ theorem cql_scaled_nonneg (legal : LegalMask Action) (Q : Action → ℝ)
   linarith
 
 end MaskedLSE
+section LagrangeAlpha
+
+/-- Lagrange-vs-fixed alpha (Kumar Appx F Eq.30): the dual-constrained penalty
+`α·(penalty − τ) + α·τ` recovers the fixed penalty `α·penalty` (ring).
+Harness constrains `E[penalty] ≤ τ` and auto-tunes `α ≥ 0`; finite identity only. -/
+theorem cql_lagrangian_recovers_fixed (alpha pen tau : ℝ) :
+    alpha * (pen - tau) + alpha * tau = alpha * pen := by
+  ring
+
+end LagrangeAlpha
 
 end Hydra2.Blueprint.CQL

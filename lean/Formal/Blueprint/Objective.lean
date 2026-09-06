@@ -279,4 +279,296 @@ theorem grp_telescope (Phi : ℕ → ℝ) (T : ℕ) :
 
 end SettlementVsUtility
 
+section OrasuDivergence
+
+/-- Finite arithmetic core of probe6 case-3rd: score-greedy orders B>A while
+    placement-EV orders A>B under zero-sum rank values (3,1,-1,-3).
+    `eScore`/`ePlace` are two-outcome expectations; the theorem is the order
+    flip on explicit orasu numbers (win 38000/lose 24000 vs safe 27000;
+    rank values win +3/lose -3 vs safe -1). No axioms, `norm_num` only. -/
+noncomputable def eScore (p win lose : ℝ) : ℝ := p * win + (1 - p) * lose
+noncomputable def ePlace (p vWin vLose : ℝ) : ℝ := p * vWin + (1 - p) * vLose
+
+theorem orasu_case3rd_diverge :
+    eScore 0.25 38000 24000 > eScore 1 27000 27000
+    ∧ ePlace 0.25 3 (-3) < ePlace 1 (-1) (-1) := by
+  unfold eScore ePlace
+  norm_num
+
+end OrasuDivergence
+
+section GapTable
+
+/-- Tsumoron orasu gap table (deficit -> min direct-ron / min tsumo-all).
+    Rows are tsumoron-QUOTED (loop-eight SokuToolsSem): R1 (full grid has 1600
+    1/50 between) and R3 (7700->7700 vs strict non-overtake) are NOT derivable
+    from full-grid enumeration yet; tsumo-col unit UNPROVEN. Re-derive pending.
+    Tie rule PINNED (loop-seven): E1 initial seat order, kamicha-priority. -/
+def gapTable : List (ℕ × ℕ × ℕ) :=
+  [(1500, 2000, 1000), (3900, 5200, 2000), (7700, 7700, 2600), (11600, 12000, 4000)]
+
+/-- Overtake: strict +100 (scores in 100s). Rounded +1000 applies ONLY under
+    Tenhou end-round-to-1000 (mirror-only, primary silent). Loop-eight
+    correction: +1000 default was wrong 10x (SokuToolsSem). -/
+def overtakeNeededStrict (gap : ℕ) : ℕ := gap + 100
+def overtakeNeededRounded (gap : ℕ) : ℕ := gap + 1000
+theorem overtake_needed_strict_1500 : overtakeNeededStrict 1500 = 1600 := rfl
+theorem overtake_needed_rounded_1500 : overtakeNeededRounded 1500 = 2500 := rfl
+
+theorem gapTable_length : gapTable.length = 4 := by decide
+
+theorem gapTable_deficits_ordered : gapTable.map (·.1) = [1500, 3900, 7700, 11600] := by decide
+
+
+theorem gapTable_row1 : gapTable[0]? = some (1500, 2000, 1000) := by decide
+
+theorem gapTable_row4 : gapTable[3]? = some (11600, 12000, 4000) := by decide
+
+
+section PushFoldBreakEven
+
+/-- SMS/nisi Eq2 break-even (PushFoldPriors): push iff w:d exceeds
+    (|V_deal| - F) / (V_win + F), F = |fold EV|. The ko-chase instance
+    reproduces the published 10%-push verdict (1.03 > 0.75). -/
+noncomputable def breakevenThr (vWin vDeal f : ℝ) : ℝ := (vDeal - f) / (vWin + f)
+
+theorem ko_chase_breakeven : breakevenThr 3800 5300 1400 = 0.75 := by
+  unfold breakevenThr
+  norm_num
+
+theorem ko_badwait_pushes : (0.75 : ℝ) < 1.03 := by norm_num
+
+end PushFoldBreakEven
+end GapTable
+
+section SettleAsym
+
+/-- Ron settlement: winner gains, discarder pays, others untouched. -/
+def ronSettle (scores : Seat → ℤ) (winner discarder : Seat) (pts : ℤ) : Seat → ℤ :=
+  fun s => if s = winner then scores s + pts else if s = discarder then scores s - pts else scores s
+
+/-- Probe8 core: same winner and points but a different payer yields a
+    different score vector (they differ at the payer's own seat), so
+    per-discarder EV rows are mandatory for orasu action selection. -/
+theorem ron_payer_matters (scores : Seat → ℤ) (winner d1 d2 : Seat) (pts : ℤ)
+    (h1 : d1 ≠ d2) (h2 : winner ≠ d1) (hp : pts ≠ 0) :
+    ronSettle scores winner d1 pts d1 ≠ ronSettle scores winner d2 pts d1 := by
+  unfold ronSettle
+  simp [Ne.symm h2, h1]
+  intro h
+  apply hp
+  omega
+
+end SettleAsym
+
+section GridBase
+
+/-- Standard base points (probe9 S6a): `fu * 2 ^ (2 + han)`, mangan cap 2000.
+    Round-up-100 is `roundUp100`. Spot checks pin the R2/R4 anchor values. -/
+def basePts (han fu : ℕ) : ℕ := min (fu * 2 ^ (2 + han)) 2000
+def roundUp100 (n : ℕ) : ℕ := ((n + 99) / 100) * 100
+
+theorem base_3_40 : basePts 3 40 = 1280 := rfl
+theorem ron_ko_3_40 : roundUp100 (basePts 3 40 * 4) = 5200 := rfl
+theorem ron_oya_4_30 : roundUp100 (min (30 * 2 ^ (2 + 4)) 2000 * 6) = 11600 := rfl
+theorem ron_ko_1_50 : roundUp100 (basePts 1 50 * 4) = 1600 := rfl
+
+end GridBase
+
+section RonSwing
+
+/-- Probe10 payer-drop lesson: a ron against the target swings the pairwise
+    gap by TWICE the points (winner gains, payer loses), so ron-from-target
+    needs only half the nominal gap. Needs `w ≠ d`. -/
+theorem ron_gap_swings_twice (scores : Seat → ℤ) (w d : Seat) (pts : ℤ)
+    (h : w ≠ d) :
+    ronSettle scores w d pts w - ronSettle scores w d pts d
+      = (scores w - scores d) + 2 * pts := by
+  unfold ronSettle
+  simp [h, Ne.symm h]
+  ring
+
+end RonSwing
+
+section RkkPay
+
+/-- Ryuukyoku tenpai payments (probe9b/TenpaiCurve, 3 sources agree): payoffs
+    are zero-sum across the table in every case, and the 1-tenpai case
+    breaks even at p = 25%. -/
+theorem rkk_1t_conserved : (3000 : ℤ) = 3 * 1000 := by decide
+theorem rkk_2t_conserved : (2 : ℤ) * 1500 = 2 * 1500 := by decide
+theorem rkk_3t_conserved : (3 : ℤ) * 1000 = 3000 := by decide
+theorem rkk_1t_breakeven : (0.25 : ℝ) * 3000 - (1 - 0.25) * 1000 = 0 := by
+  norm_num
+
+end RkkPay
+
+section PlaceRewards
+
+/-- Houou placement-NN rewards (PlaceUtilDama, verbatim [135, 65, -5, -210]):
+    they do NOT sum to zero. Matches the utility contract: `zero_sum` is
+    descriptive and never assumed (`utility.py` rejects zero_sum=true unless
+    the total is exactly zero). -/
+theorem place_rewards_not_zero_sum : (135 + 65 - 5 - 210 : ℤ) = -15 := by
+  decide
+
+end PlaceRewards
+
+section RkkDist
+
+/-- Keiten Calc wiring (probe12b, code-grounded): per-opponent tenpai probs
+    F8/G8/H8 induce the tenpai-count distribution T16-T19, and the ryuukyoku
+    legs are C14 = T16*3000+T17*1500+T18*1000 (tenpai side), D14 =
+    -(T17*1000+T18*1500+T19*3000) (noten side). The partition sums to one. -/
+noncomputable def rkkTenpaiEV (t16 t17 t18 : ℝ) : ℝ :=
+  t16 * 3000 + t17 * 1500 + t18 * 1000
+noncomputable def rkkNotenEV (t17 t18 t19 : ℝ) : ℝ :=
+  -(t17 * 1000 + t18 * 1500 + t19 * 3000)
+
+theorem rkk_count_partition (p q r : ℝ) :
+    (1 - p) * (1 - q) * (1 - r)
+      + (p * (1 - q) * (1 - r) + q * (1 - p) * (1 - r) + r * (1 - p) * (1 - q))
+      + (p * q * (1 - r) + p * (1 - q) * r + (1 - p) * q * r)
+      + p * q * r = 1 := by
+  ring
+
+end RkkDist
+
+section SokuDisplay
+
+/-- SokuTools E1/E2 display rule (SokuExamples, loop-ten): the shown base value
+    carries honba in parens (payment = base + 300/honba), while kyotaku sticks
+    count toward the winner's gain only (gain = payment + 1000/stick).
+    E2 combined example: 5200 base, honba 1, kyotaku 1 -> (5500, 6500). -/
+def sokuDisplay (base honba sticks : ℕ) : ℕ × ℕ :=
+  (base + honba * 300, base + honba * 300 + sticks * 1000)
+
+theorem sokuDisplay_E2 : sokuDisplay 5200 1 1 = (5500, 6500) := rfl
+
+theorem sokuDisplay_gain_ge_payment (base honba sticks : ℕ) :
+    (sokuDisplay base honba sticks).2 ≥ (sokuDisplay base honba sticks).1 := by
+  unfold sokuDisplay
+  simp
+
+end SokuDisplay
+
+section TurnRate
+
+/-- 1-shanten Calc convention (probe12c, code-grounded): per-turn transition
+    probabilities are width/120 (e.g. C19 `=$B$10/120`, C20 pair-dealin
+    `/120`). Valid rates need width ≤ 120; the bound is proved here so
+    callers must discharge it. The constant's exact meaning (live tiles) is
+    flagged, not claimed. -/
+theorem per_turn_rate_le_one (w : ℕ) (h : w ≤ 120) : (w : ℝ) / 120 ≤ 1 := by
+  have hw : (w : ℝ) ≤ 120 := by exact_mod_cast h
+  linarith
+
+end TurnRate
+
+section OikakeOrder
+
+/-- Oikake Calc default case (probe12c log, code-grounded cached values):
+    ND-v-D, 2han30fu, turn 1 -> Riichi EV (-705.34) > Fold (-1900) >
+    Dama (-2091.15). Pins the qualitative verdict (chase-riichi preferred,
+    dama worst here) as pure arithmetic on quoted cached outputs. -/
+theorem oikake_default_order :
+    (-2091.16 : ℝ) < -1900 ∧ (-1900 : ℝ) < -705.34 := by
+  norm_num
+
+end OikakeOrder
+
+section PairedDelta
+
+/-- S8 stats core (probe16): the mean of paired differences IS the difference
+    of means. Justifies the never-unpaired-means rule: A/B wall-blocks must
+    be compared per wall-set, never as independent group averages. -/
+theorem paired_mean_delta (n : ℕ) (a b : Fin n → ℝ) :
+    (∑ i, (a i - b i)) / n = (∑ i, a i) / n - (∑ i, b i) / n := by
+  rw [Finset.sum_sub_distrib]
+  ring
+
+end PairedDelta
+
+section AcqArgmax
+
+/-- BPR-EI routing core (probe18): acquisition over a FINITE response set
+    always has a maximizer. Finite type/response libraries => finite sums
+    and exact argmax throughout (no topological assumptions). -/
+theorem ei_argmax_exists (f : Fin 3 → ℝ) : ∃ rstar, ∀ r, f r ≤ f rstar := by
+  by_cases h01 : f 0 ≤ f 1
+  · by_cases h12 : f 1 ≤ f 2
+    · refine ⟨2, fun r => ?_⟩
+      fin_cases r
+      · exact le_trans h01 h12
+      · exact h12
+      · exact le_rfl
+    · push Not at h12
+      refine ⟨1, fun r => ?_⟩
+      fin_cases r
+      · exact h01
+      · exact le_rfl
+      · exact le_of_lt h12
+  · push Not at h01
+    by_cases h02 : f 0 ≤ f 2
+    · refine ⟨2, fun r => ?_⟩
+      fin_cases r
+      · exact h02
+      · exact le_trans (le_of_lt h01) h02
+      · exact le_rfl
+    · push Not at h02
+      refine ⟨0, fun r => ?_⟩
+      fin_cases r
+      · exact le_rfl
+      · exact le_of_lt h01
+      · exact le_of_lt h02
+
+
+section CceGap
+
+/-- CCE-gap core (probe19, v16 metric stack): the max unilateral deviation
+    gain is nonneg - deviating to the played response gains exactly 0, so the
+    maximum over a finite response set is at least 0. Reuses finite argmax. -/
+theorem cce_gap_nonneg (gain : Fin 3 → ℝ) (h0 : gain 0 = 0) :
+    ∃ gstar, 0 ≤ gain gstar := by
+  obtain ⟨rstar, hr⟩ := ei_argmax_exists gain
+  refine ⟨rstar, ?_⟩
+  calc (0 : ℝ) = gain 0 := h0.symm
+    _ ≤ gain rstar := hr 0
+
+end CceGap
+
+section GateOrder
+
+/-- Probe20 seed-5 ordering (loop-eighteen): under counter-exploitation,
+    naive always-exploit (-40.0) < always-blueprint (24.0) < gated router
+    (63.2). Pins the qualitative verdict (gate turns targeting from
+    catastrophe into near-nominal) as arithmetic on quoted probe outputs. -/
+theorem gate_order_targeted :
+    (-40.0 : ℝ) < 24.0 ∧ (24.0 : ℝ) < 63.2 := by
+  norm_num
+
+end GateOrder
+
+section Kuhn13
+
+/-- 1/3-street closed form at P=3 (probe21b, exact Fractions): E1=E2=-1/48,
+    E3=+1/24 with vK=0 (P3 checks K), cK=1/2, every bJ+bQ=1/2 split.
+    Zero-sum pinned here; full game + transfer live in the probe log. -/
+theorem kuhn13_zero_sum : (-1 : ℝ) / 48 + (-1) / 48 + 1 / 24 = 0 := by
+  norm_num
+
+end Kuhn13
+
+section FpOrder
+
+/-- Probe22 6-arm menu, seed 11 (loop-twenty): time-average CCE-gap (0.0005)
+    < Nash-gap of marginals (0.0014) < uniform-mixture gap (0.1792).
+    Menu- and seed-specific observation (no stall on coarse menus), pinned
+    as arithmetic. The stall needs the full behavioral game. -/
+theorem fp_demo_order : (0.0005 : ℝ) < 0.0014 ∧ (0.0014 : ℝ) < 0.1792 := by
+  norm_num
+
+end FpOrder
+end AcqArgmax
+
 end Hydra2.Blueprint.Objective

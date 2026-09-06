@@ -80,4 +80,20 @@ theorem be_antitone_kappa (util ent : Pi → ℝ) (p : Pi)
 
 end AcqScores
 
+section HorizonKG
+variable {Pi : Type} [Fintype Pi]
+
+/-- KG horizon rule (BPR §3.1.3 eq6-7): `Ũ(π) + (K−t)·ν` — at horizon end
+(`K = t`) the probe premium vanishes and the score is pure exploitation.
+Finite identity only; VoI estimation stays harness-side. -/
+noncomputable def kgHorizonScore (util voi : Pi → ℝ) (K t : ℕ) (p : Pi) : ℝ :=
+  util p + ((K : ℝ) - (t : ℝ)) * voi p
+
+theorem kg_horizon_terminal (util voi : Pi → ℝ) (t : ℕ) (p : Pi) :
+    kgHorizonScore util voi t t p = util p := by
+  unfold kgHorizonScore
+  simp
+
+end HorizonKG
+
 end Hydra2.Blueprint.Acquisition

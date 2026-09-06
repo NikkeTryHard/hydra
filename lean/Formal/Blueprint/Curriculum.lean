@@ -29,14 +29,15 @@ namespace Hydra2.Blueprint.Curriculum
 
 section Stages
 
-inductive Stage | Imitate | RoundDelta | Grade | OfflineRL
+inductive Stage | Imitate | OfflineIQL | RoundDelta | Grade | OfflineRL
   deriving DecidableEq, Repr
 
 noncomputable def stageIdx : Stage → Nat
   | .Imitate => 0
-  | .RoundDelta => 1
-  | .Grade => 2
-  | .OfflineRL => 3
+  | .OfflineIQL => 1
+  | .RoundDelta => 2
+  | .Grade => 3
+  | .OfflineRL => 4
 
 def stageLt (a b : Stage) : Prop := stageIdx a < stageIdx b
 
@@ -50,6 +51,10 @@ theorem stageLt_irrefl (a : Stage) : ¬ stageLt a a := by
   exact Nat.lt_irrefl _
 
 theorem imitate_before_rl : stageLt .Imitate .OfflineRL := by unfold stageLt stageIdx; decide
+
+theorem imitate_before_iql : stageLt .Imitate .OfflineIQL := by unfold stageLt stageIdx; decide
+
+theorem iql_before_roundDelta : stageLt .OfflineIQL .RoundDelta := by unfold stageLt stageIdx; decide
 
 theorem roundDelta_before_grade : stageLt .RoundDelta .Grade := by unfold stageLt stageIdx; decide
 
@@ -77,14 +82,15 @@ section StagedLoss
 
 structure StageLoss where
   ce : ℝ
+  iql : ℝ
   mseRound : ℝ
   mseGrade : ℝ
   rl : ℝ
 
-theorem staged_decomposition (s : StageLoss) (w : Fin 4 → ℝ) :
-    w 0 * s.ce + w 1 * s.mseRound + w 2 * s.mseGrade + w 3 * s.rl
-      = ∑ i, w i * ![s.ce, s.mseRound, s.mseGrade, s.rl] i := by
-  simp [Fin.sum_univ_four]
+theorem staged_decomposition (s : StageLoss) (w : Fin 5 → ℝ) :
+    w 0 * s.ce + w 1 * s.iql + w 2 * s.mseRound + w 3 * s.mseGrade + w 4 * s.rl
+      = ∑ i, w i * ![s.ce, s.iql, s.mseRound, s.mseGrade, s.rl] i := by
+  simp [Fin.sum_univ_five]
 
 end StagedLoss
 
