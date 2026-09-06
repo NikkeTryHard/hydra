@@ -268,10 +268,10 @@ def validate_packet_partition(successors: Any, *, tolerance: float = 1e-9) -> No
     - each successor carries distinct packet identity (no aliasing).
     """
     if successors is None:
-        raise PacketPartitionError("successors must be non-empty")
+        raise PacketPartitionError("successors must be non-empty [PBRF_PARTITION_EMPTY]")
     try:
         if len(successors) == 0:  # type: ignore[arg-type]
-            raise PacketPartitionError("successors must be non-empty")
+            raise PacketPartitionError("successors must be non-empty [PBRF_PARTITION_EMPTY]")
     except TypeError:
         pass
     pids: list[str] = []
@@ -296,10 +296,12 @@ def validate_packet_partition(successors: Any, *, tolerance: float = 1e-9) -> No
             total += float(prob)
     if len(pids) != len(set(pids)):
         raise PacketPartitionError(
-            f"packet aliasing: duplicate packet_id in {[p[:12] for p in pids]}"
+            f"packet aliasing: duplicate packet_id in {[p[:12] for p in pids]} [PBRF_PARTITION_ALIAS]"
         )
     if any(hasattr(s, "probability") for s in successors) and abs(total - 1.0) > tolerance:
-        raise PacketPartitionError(f"packet mass {total} != 1 within {tolerance}")
+        raise PacketPartitionError(
+            f"packet mass {total} != 1 within {tolerance} [PBRF_PARTITION_MASS]"
+        )
 
 
 def packet_aliasing_rejected(successors: Any) -> bool:

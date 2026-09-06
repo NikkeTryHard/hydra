@@ -238,11 +238,15 @@ def info_key_for_observation(observation: Any) -> str:
     # Forbidden field check
     for bad in FORBIDDEN_IN_TREE_KEY:
         if bad in doc:
-            raise VisibilityViolationError(f"forbidden field {bad!r} in tree key document")
+            raise VisibilityViolationError(
+                f"forbidden field {bad!r} in tree key document [PBRF_VIS_TREE_KEY]"
+            )
         # also check values for accidental world_id leakage via string
         # (lightweight: if value is dict with world_id key)
         if isinstance(doc.get(bad), dict):
-            raise VisibilityViolationError(f"forbidden nested field {bad!r} in tree key")
+            raise VisibilityViolationError(
+                f"forbidden nested field {bad!r} in tree key [PBRF_VIS_TREE_KEY_NESTED]"
+            )
     payload = canonical_bytes(doc)
     return "sha256:" + hashlib.sha256(payload).hexdigest()
 
@@ -481,9 +485,13 @@ class UniformContinuationPolicy:
                 pass
             # forbid world_id field leak
             if hasattr(observation, "world_id"):
-                raise VisibilityViolationError("policy input contains world_id")
+                raise VisibilityViolationError(
+                    "policy input contains world_id [PBRF_VIS_POLICY_WORLD]"
+                )
             if hasattr(observation, "concealed_hands"):
-                raise VisibilityViolationError("policy input contains concealed_hands (FullWorld)")
+                raise VisibilityViolationError(
+                    "policy input contains concealed_hands (FullWorld) [PBRF_VIS_POLICY_HANDS]"
+                )
         return self._distribution_for(observation, legal)
 
     def sample(self, observation: Any, legal: tuple[int, ...], rng: Any) -> int:

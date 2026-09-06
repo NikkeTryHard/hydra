@@ -243,10 +243,10 @@ class NaturalBelief:
         eid = int(epoch.epoch)
         stored = self._epochs.get(eid)
         if stored is None or stored != epoch:
-            raise StaleBeliefError(f"stale epoch {eid}: not found or mismatched")
+            raise StaleBeliefError(f"stale epoch {eid}: not found or mismatched [PBRF_STALE_EPOCH]")
         # Target check is part of epoch equality, but also ensure target_id matches
         if stored.target_id != epoch.target_id:
-            raise StaleBeliefError("target_id mismatch for epoch")
+            raise StaleBeliefError("target_id mismatch for epoch [PBRF_STALE_TARGET]")
         return stored
 
     def _require_particle_epoch(self, particle: Particle) -> None:
@@ -254,10 +254,14 @@ class NaturalBelief:
         eid = int(particle.epoch)
         stored = self._epochs.get(eid)
         if stored is None or stored.target_id != particle.target_id:
-            raise StaleBeliefError(f"stale particle provenance epoch={eid} target mismatch")
+            raise StaleBeliefError(
+                f"stale particle provenance epoch={eid} target mismatch [PBRF_STALE_PROVENANCE]"
+            )
         # Also check that world_ref exists
         if particle.world_ref not in self._worlds:
-            raise StaleBeliefError(f"unknown world_ref {particle.world_ref!r}")
+            raise StaleBeliefError(
+                f"unknown world_ref {particle.world_ref!r} [PBRF_STALE_WORLDREF]"
+            )
 
     # -- public API ------------------------------------------------------------
 
@@ -353,7 +357,9 @@ class NaturalBelief:
         # Validate support: every target-positive (all K) must have proposal>0
         for p in proposal_probs:
             if p <= 0.0 or not math.isfinite(p):
-                raise ProposalSupportError("proposal lacks support for target-positive region")
+                raise ProposalSupportError(
+                    "proposal lacks support for target-positive region [PBRF_SUPPORT_REGION]"
+                )
         out: list[Particle] = []
         for _ in range(count):
             # Sample according to proposal_probs
@@ -372,7 +378,9 @@ class NaturalBelief:
             _ = _validate_finite(log_proposal, name="log_proposal_density")
             # Support check: target-positive must have proposal>0 (already)
             if math.exp(log_target) > 0 and math.exp(log_proposal) == 0:
-                raise ProposalSupportError("proposal density zero for target-positive world")
+                raise ProposalSupportError(
+                    "proposal density zero for target-positive world [PBRF_SUPPORT_POINT]"
+                )
             pid = make_parent_id(
                 world.world_id.split(":")[1][:16] if ":" in world.world_id else world.world_id[:16]
             )
@@ -502,7 +510,7 @@ class NaturalBelief:
             raise ContractError("world_ref must be non-empty str")
         world = self._worlds.get(world_ref)
         if world is None:
-            raise StaleBeliefError(f"unknown world_ref {world_ref!r}")
+            raise StaleBeliefError(f"unknown world_ref {world_ref!r} [PBRF_STALE_WORLDREF]")
         corpus = _build_tiny_corpus_for_epoch(epoch, registry=self._worlds)
         K = len(corpus)
         # Check if world is in corpus (i.e., consistent)

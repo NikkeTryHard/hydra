@@ -97,6 +97,31 @@ class DeadlineExceededError(Hydra2Error):
 class QualificationRequiredError(Hydra2Error):
     """Path requires a qualification token that is absent."""
 
+# ---------------------------------------------------------------------------
+# PR4 diagnostic codes (SPEC 3): bijective code -> error class for the semantic
+# search/belief raise sites. Routers match on these codes, never on message text.
+# Pure validation keeps byte-identical messages (no code suffix there).
+# ---------------------------------------------------------------------------
+PBRF_ERROR_CODES: dict[str, type[Hydra2Error]] = {
+    "PBRF_PARTITION_EMPTY": PacketPartitionError,
+    "PBRF_PARTITION_ALIAS": PacketPartitionError,
+    "PBRF_PARTITION_MASS": PacketPartitionError,
+    "PBRF_PARTITION_CHILD_NORM": PacketPartitionError,
+    "PBRF_STALE_EPOCH": StaleBeliefError,
+    "PBRF_STALE_TARGET": StaleBeliefError,
+    "PBRF_STALE_PARENT": StaleBeliefError,
+    "PBRF_STALE_PROVENANCE": StaleBeliefError,
+    "PBRF_STALE_WORLDREF": StaleBeliefError,
+    "PBRF_DIGEST_DELTA": DigestMismatchError,
+    "PBRF_DIGEST_WORLD_ID": DigestMismatchError,
+    "PBRF_VIS_TREE_KEY": VisibilityViolationError,
+    "PBRF_VIS_TREE_KEY_NESTED": VisibilityViolationError,
+    "PBRF_VIS_POLICY_WORLD": VisibilityViolationError,
+    "PBRF_VIS_POLICY_HANDS": VisibilityViolationError,
+    "PBRF_SUPPORT_REGION": ProposalSupportError,
+    "PBRF_SUPPORT_POINT": ProposalSupportError,
+}
+
 
 # ---------------------------------------------------------------------------
 # SPEC 2.1 - Primitive aliases.

@@ -52,6 +52,7 @@ class FullWorld:
             if self.world_id != expected:
                 raise DigestMismatchError(
                     f"world_id mismatch: recorded {self.world_id} != recomputed {expected}"
+                    " [PBRF_DIGEST_WORLD_ID]"
                 )
         # concealed_hands must be 4 seats
         if not isinstance(self.concealed_hands, tuple) or len(self.concealed_hands) != 4:
