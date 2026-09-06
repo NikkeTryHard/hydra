@@ -27,7 +27,7 @@ class TestEnvironmentManifest:
         assert manifest["python"]["implementation"] == "cpython"
         assert manifest["python"]["version"].startswith("3.12.")
         torch_block = manifest["torch"]
-        assert torch_block["version"].startswith("2.13.0")
+        assert torch_block["version"].startswith("2.14.0")
         assert torch_block["cuda"] is not None
         assert "sm_120" in torch_block["arch_list"], (
             f"Blackwell kernels missing from wheel: {torch_block['arch_list']}"

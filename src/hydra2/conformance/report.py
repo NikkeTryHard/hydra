@@ -56,6 +56,8 @@ def build_intersection_report(
                 "counterexample_path": result.counterexample_path,
                 "error_detail": result.error_detail,
             }
+        else:
+            cases[result.case_id] = result.status
     mismatches = sorted(cid for cid, status in cases.items() if status == "mismatch")
     resolved = sorted(cid for cid, status in cases.items() if status == "resolved-unsupported")
     blocked = sorted(cid for cid, status in cases.items() if status == "blocked")
