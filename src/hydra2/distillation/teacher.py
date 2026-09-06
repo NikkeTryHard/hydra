@@ -1494,6 +1494,28 @@ def evaluate_five_arms(
         "games_per_wall": TOTAL_GAMES_PER_WALL,
         "budget_charged": True,
     }
+    # PR4 additive sidecar: schedule commitment + exclusions beside (never instead
+    # of) the hand-rolled hashes above. Decision outputs stay byte-identical;
+    # failures here block loudly per the file's fail-closed ethos.
+    try:
+        from hydra2.eval.blocks import BlockAggregateResult
+        from hydra2.eval.duplicate import confirmation_sidecar
+
+        _sidecar_means = []
+        for _block in blocks_by_arm["student"]:
+            if len(_block.contrasts) == 0:
+                raise ContractError("WP-10 blocked: empty wall block in sidecar")
+            _sidecar_means.append(
+                (_block.wall_id, float(sum(_block.contrasts) / len(_block.contrasts)))
+            )
+        confirmation_sidecar_out = confirmation_sidecar(
+            schedule=schedule,
+            blocks=BlockAggregateResult(valid=tuple(_sidecar_means), excluded=()),
+            telemetry_report=None,
+            admission="not-run",
+        )
+    except Exception as exc:
+        raise ContractError(f"WP-10 blocked: confirmation sidecar failed: {exc}") from exc
     return {
         "arms": arms,
         "wall_ids": wall_id_list,
@@ -1506,6 +1528,7 @@ def evaluate_five_arms(
         "promotion_record": promotion,
         "promotion_digest": str(promotion_digest(promotion)),
         "calibration": calibration,
+        "confirmation_sidecar": confirmation_sidecar_out,
         "telemetry": telemetry,
         "teacher_spec_hash": justification.candidate_spec_hash,
         "num_blocks": num_blocks,

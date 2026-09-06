@@ -14,6 +14,7 @@ from typing import Literal
 
 from hydra2.artifacts.digest import of_canonical, validate_digest
 from hydra2.contracts.common import ContractError, DigestText
+from hydra2.eval.blocks import ExcludedBlock
 
 __all__ = [
     "UNCERTAINTY_UNITS",
@@ -60,6 +61,9 @@ class PromotionRecord:
     confidence_bounds: tuple[float, float]
     gates: Mapping[str, Literal["passed", "failed", "not_applicable"]]
     disposition: Literal["promoted", "rejected", "blocked"]
+    schedule_hash: str | None = None
+    environment_hash: str | None = None
+    excluded_blocks: tuple[ExcludedBlock, ...] = ()
 
 
 def _require_digest(name: str, value: object) -> str:
@@ -75,6 +79,8 @@ def make_promotion_record(**kwargs: object) -> PromotionRecord:
     if len(unknown) != 0:
         raise ContractError(f"unknown PromotionRecord fields: {sorted(unknown)}")
     missing = [name for name in names if name not in kwargs]
+    optional = {"schedule_hash", "environment_hash", "excluded_blocks"}
+    missing = [name for name in missing if name not in optional]
     if len(missing) != 0:
         raise ContractError(f"missing PromotionRecord fields: {missing}")
 
@@ -132,6 +138,17 @@ def make_promotion_record(**kwargs: object) -> PromotionRecord:
     disposition = kwargs["disposition"]
     if disposition not in _DISPOSITIONS:
         raise ContractError(f"disposition {disposition!r} not in {_DISPOSITIONS}")
+    schedule_hash = kwargs.get("schedule_hash")
+    if schedule_hash is not None:
+        schedule_hash = _require_digest("schedule_hash", schedule_hash)
+    environment_hash = kwargs.get("environment_hash")
+    if environment_hash is not None:
+        environment_hash = _require_digest("environment_hash", environment_hash)
+    excluded_blocks = kwargs.get("excluded_blocks", ())
+    if not isinstance(excluded_blocks, tuple) or not all(
+        isinstance(item, ExcludedBlock) for item in excluded_blocks
+    ):
+        raise ContractError("excluded_blocks must be a tuple of ExcludedBlock")
 
     return PromotionRecord(
         candidate_spec_hash=_require_digest("candidate_spec_hash", kwargs["candidate_spec_hash"]),
@@ -148,6 +165,9 @@ def make_promotion_record(**kwargs: object) -> PromotionRecord:
         confidence_bounds=(low, high),
         gates=dict(gates),
         disposition=disposition,
+        schedule_hash=schedule_hash,
+        environment_hash=environment_hash,
+        excluded_blocks=excluded_blocks,
     )
 
 
@@ -166,6 +186,12 @@ def record_to_json(record: PromotionRecord) -> dict[str, object]:
         "confidence_bounds": list(record.confidence_bounds),
         "gates": dict(sorted(record.gates.items())),
         "disposition": record.disposition,
+        "schedule_hash": record.schedule_hash,
+        "environment_hash": record.environment_hash,
+        "excluded_blocks": [
+            {"wall_id": item.wall_id, "reason": item.reason, "detail": item.detail}
+            for item in record.excluded_blocks
+        ],
     }
 
 

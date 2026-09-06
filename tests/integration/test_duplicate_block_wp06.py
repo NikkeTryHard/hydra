@@ -493,3 +493,48 @@ def test_block_manifest_and_balance_digest_determinism() -> None:
     telemetry[blocks[0].game_ids[0]] = _telemetry(wall_id=blocks[0].wall_id, illegal_action=True)
     strict_report = report_telemetry_completeness(blocks, telemetry)
     assert strict_report["blocks_excluded"] == 1
+
+
+def test_confirmation_sidecar_binds_commitment_and_exclusions() -> None:
+    from hydra2.eval.duplicate import confirmation_sidecar
+    from hydra2.eval.schedule import schedule_commitment_hash
+
+    schedule = _schedule(wall_ids=("w-01", "w-02", "w-03"))
+    contrasts = {
+        f"{wid}:g{slot}": 1.0
+        for wid in schedule.wall_ids  # type: ignore[attr-defined]
+        for slot in range(10)
+    }
+    blocks = build_wall_blocks(schedule=schedule, contrasts_by_game=contrasts)
+    telemetry = {gid: _telemetry(wall_id=blk.wall_id) for blk in blocks for gid in blk.game_ids}
+    telemetry[blocks[0].game_ids[0]] = _telemetry(wall_id=blocks[0].wall_id, illegal_action=True)
+    result = aggregate_blocks(blocks, telemetry_by_game=telemetry)
+    assert len(result.excluded) == 1
+    sidecar = confirmation_sidecar(schedule=schedule, blocks=result, telemetry_report=None)
+    assert sidecar["schedule_commitment_hash"] == str(schedule_commitment_hash(schedule))
+    assert sidecar["admission"] == "full"
+    assert [row["wall_id"] for row in sidecar["excluded"]] == [
+        exc.wall_id for exc in result.excluded
+    ]
+    assert sidecar["telemetry_completeness_digest"] is None
+
+
+def test_confirmation_sidecar_marks_unadmitted_paths() -> None:
+    from hydra2.eval.blocks import BlockAggregateResult
+    from hydra2.eval.duplicate import confirmation_sidecar
+
+    schedule = _schedule(wall_ids=("w-01",))
+    sidecar = confirmation_sidecar(
+        schedule=schedule,
+        blocks=BlockAggregateResult(valid=(("w-01", 0.5),), excluded=()),
+        telemetry_report=None,
+        admission="not-run",
+    )
+    assert sidecar["admission"] == "not-run"
+    assert sidecar["excluded"] == []
+    with pytest.raises(ContractError):
+        confirmation_sidecar(
+            schedule=schedule,
+            blocks=BlockAggregateResult(valid=(("w-01", 0.5),), excluded=()),
+            admission="sometimes",
+        )

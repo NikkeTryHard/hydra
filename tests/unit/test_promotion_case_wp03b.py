@@ -74,6 +74,13 @@ def test_promotion_record_rejects_invalid_payloads(overrides: dict[str, object])
         make_promotion_record(**_record(**overrides))
 
 
+def test_promotion_record_missing_required_field_raises() -> None:
+    record = _record()
+    del record["disposition"]
+    with pytest.raises(ContractError, match="missing"):
+        make_promotion_record(**record)
+
+
 def test_case_declaration_binds_primary_metric_and_unit() -> None:
     case = make_eval_case(
         case_id="confirm-a-vs-b",
@@ -118,3 +125,48 @@ def test_game_cluster_reserved_for_diagnostics() -> None:
         diagnostic_only=True,
     )
     assert diagnostic.diagnostic_only is True
+
+
+def test_promotion_record_additive_bindings_default() -> None:
+    # PR4: 12-kwarg construction still verifies; new keys default and project.
+    from hydra2.eval.promotion import record_to_json
+
+    record = make_promotion_record(**_record())
+    assert record.schedule_hash is None
+    assert record.environment_hash is None
+    assert record.excluded_blocks == ()
+    projected = record_to_json(record)
+    assert projected["schedule_hash"] is None
+    assert projected["environment_hash"] is None
+    assert projected["excluded_blocks"] == []
+    assert promotion_digest(record) == promotion_digest(make_promotion_record(**_record()))
+
+
+def test_promotion_record_additive_bindings_bound() -> None:
+    # PR4: bound schedule/env hashes + exclusions verify and digest-bind.
+    from hydra2.eval.blocks import ExcludedBlock
+    from hydra2.eval.promotion import record_to_json
+
+    excluded = (ExcludedBlock(wall_id="w0001", reason="timeout", detail="t>budget"),)
+    record = make_promotion_record(
+        **_record(
+            schedule_hash=_H,
+            environment_hash=_H,
+            excluded_blocks=excluded,
+        )
+    )
+    assert record.schedule_hash == _H
+    assert record.environment_hash == _H
+    assert record.excluded_blocks == excluded
+    projected = record_to_json(record)
+    assert projected["excluded_blocks"] == [
+        {"wall_id": "w0001", "reason": "timeout", "detail": "t>budget"}
+    ]
+    assert promotion_digest(record) != promotion_digest(make_promotion_record(**_record()))
+
+
+def test_promotion_record_rejects_bad_bindings() -> None:
+    with pytest.raises(ContractError):
+        make_promotion_record(**_record(schedule_hash="sha256:XYZ"))
+    with pytest.raises(ContractError):
+        make_promotion_record(**_record(excluded_blocks=("not-a-block",)))

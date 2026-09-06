@@ -46,6 +46,7 @@ __all__ = [
     "balance_audit",
     "block_manifest_digest",
     "build_wall_blocks",
+    "confirmation_sidecar",
     "find_exact_duplicates",
     "find_near_duplicates",
     "make_block_manifest",
@@ -522,6 +523,47 @@ def report_telemetry_completeness(
         ),
     }
     return report
+
+
+def confirmation_sidecar(
+    *,
+    schedule: MatchSchedule,
+    blocks: BlockAggregateResult,
+    telemetry_report: Mapping[str, Any] | None = None,
+    admission: str = "full",
+) -> dict[str, Any]:
+    """Additive confirmation sidecar (SPEC 18.4 PR4).
+
+    Binds schedule commitment + wall-block exclusions + telemetry completeness
+    beside (never instead of) a confirmation path's own hashes. Pure function;
+    decision outputs are untouched. `admission="not-run"` marks callers that
+    hand-roll hashes without admission (e.g. teacher five-arms); their empty
+    exclusion list MUST NOT be read as a clean bill. Full admission migration
+    is WP-10-owned.
+    """
+    from hydra2.eval.schedule import schedule_commitment_hash
+
+    if not isinstance(schedule, MatchSchedule):
+        raise ContractError("schedule must be MatchSchedule")
+    if not isinstance(blocks, BlockAggregateResult):
+        raise ContractError("blocks must be BlockAggregateResult")
+    if admission not in ("full", "not-run"):
+        raise ContractError("admission must be 'full' or 'not-run'")
+    telemetry_digest: str | None = None
+    if telemetry_report is not None:
+        if not isinstance(telemetry_report, Mapping):
+            raise ContractError("telemetry_report must be a mapping or None")
+        telemetry_digest = str(of_canonical(dict(telemetry_report)))
+    return {
+        "schedule_commitment_hash": str(schedule_commitment_hash(schedule)),
+        "admission": admission,
+        "excluded": [
+            {"wall_id": exc.wall_id, "reason": exc.reason, "detail": exc.detail}
+            for exc in blocks.excluded
+        ],
+        "valid_wall_ids": sorted(wall_id for wall_id, _ in blocks.valid),
+        "telemetry_completeness_digest": telemetry_digest,
+    }
 
 
 # ---------------------------------------------------------------------------
