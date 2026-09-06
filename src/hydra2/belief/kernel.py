@@ -154,7 +154,7 @@ class NaturalPacketKernel:
     ) -> tuple[PacketSuccessor, ...]:
         # Stale checks
         if int(particle.epoch) != int(epoch.epoch) or particle.target_id != epoch.target_id:
-            raise StaleBeliefError("particle epoch/target stale for kernel")
+            raise StaleBeliefError("particle epoch/target stale for kernel [PBRF_STALE_EPOCH]")
         if particle.world_ref is None:
             raise ContractError("particle world_ref missing")
         # Resolve world via a singleton belief registry? Instead we reconstruct via packet logic

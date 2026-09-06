@@ -107,6 +107,7 @@ RandomPurpose = Literal[
     "training_dropout",
     "evaluation_schedule",
     "gumbel_root",
+    "kernel_sample",
 ]
 
 RANDOM_PURPOSES: tuple[str, ...] = (
@@ -127,6 +128,7 @@ RANDOM_PURPOSES: tuple[str, ...] = (
     "training_dropout",
     "evaluation_schedule",
     "gumbel_root",
+    "kernel_sample",
 )
 
 #: Purposes whose seeds are final-evaluation material only (SPEC 13: final
@@ -144,6 +146,7 @@ _GAME_SCOPED: frozenset[str] = frozenset(
         "confirmation",
         "coupling_primitive",
         "gumbel_root",
+        "kernel_sample",
     }
 )
 
@@ -169,6 +172,7 @@ _REQUIRED_BY_PURPOSE: dict[str, tuple[str, ...]] = {
     "training_shuffle": (),
     "training_dropout": (),
     "gumbel_root": ("candidate_id", "action_id"),
+    "kernel_sample": ("candidate_id", "parent_id", "action_id", "belief_epoch"),
 }
 
 
@@ -190,6 +194,7 @@ _OPTIONAL_BY_PURPOSE: dict[str, frozenset[str]] = {
     "training_shuffle": frozenset({"candidate_id"}),
     "training_dropout": frozenset({"candidate_id"}),
     "gumbel_root": frozenset({"visit_index"}),
+    "kernel_sample": frozenset(),
 }
 
 

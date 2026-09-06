@@ -299,4 +299,11 @@ def test_schema_class_exposes_matrix() -> None:
     assert RandomStreamSchema.required_by_purpose["mlmc_level"] == ("fidelity_level",)
     assert RandomStreamSchema.required_by_purpose["wall"] == ("wall_id",)
     assert "candidate_id" not in RandomStreamSchema.optional_by_purpose["coupling_primitive"]
-    assert len(RANDOM_PURPOSES) == 17
+    assert len(RANDOM_PURPOSES) == 18
+    assert RandomStreamSchema.required_by_purpose["kernel_sample"] == (
+        "candidate_id",
+        "parent_id",
+        "action_id",
+        "belief_epoch",
+    )
+    assert RandomStreamSchema.optional_by_purpose["kernel_sample"] == frozenset()

@@ -1026,3 +1026,85 @@ def test_deterministic_confirmation_replay() -> None:
     # Our runner mixes rng.random_below and random_float, so different seeds should give different selected_action with high prob
     # To be robust, just check that replay with same seed is identical (already above)
     assert r1 == r2
+
+
+# ---------------------------------------------------------------------------
+# Sampled kernel mode (SPEC 14.3.1 PR2: sibling, never replacement)
+# ---------------------------------------------------------------------------
+
+
+def _sampled_epoch():
+    _w, obs = _make_world_and_obs()
+    belief = _make_belief()
+    return belief, belief.begin(obs)
+
+
+def test_sampled_mode_identity_separate() -> None:
+    from hydra2.belief.sampled_kernel import SAMPLED_KERNEL_MODE, SampledKernelConfig
+
+    assert SAMPLED_KERNEL_MODE == "natural_trace_sample_v1"
+    cfg = SampledKernelConfig(samples_per_parent_action=4)
+    assert cfg.samples_per_parent_action == 4
+    with pytest.raises(ContractError):
+        SampledKernelConfig(samples_per_parent_action=0)
+    with pytest.raises(ContractError):
+        SampledKernelConfig(samples_per_parent_action=True)  # type: ignore[arg-type]
+
+
+def test_sampled_determinism_and_provenance() -> None:
+    from hydra2.belief.sampled_kernel import (
+        SAMPLED_KERNEL_MODE,
+        SampledKernelConfig,
+        enumerate_sampled,
+    )
+
+    belief, epoch = _sampled_epoch()
+    parent = belief.sample_natural(epoch, count=1, rng=_rng(b"sampled_det"))[0]
+    cfg = SampledKernelConfig(samples_per_parent_action=4)
+    first = enumerate_sampled(epoch=epoch, particle=parent, action=0, config=cfg, rng=_rng(b"sampled_det"))
+    second = enumerate_sampled(epoch=epoch, particle=parent, action=0, config=cfg, rng=_rng(b"sampled_det"))
+    assert len(first) == 4
+    assert [(s.successor_world_ref, s.raw_weight) for s in first] == [
+        (s.successor_world_ref, s.raw_weight) for s in second
+    ]
+    for entry in first:
+        assert entry.provenance["mode"] == SAMPLED_KERNEL_MODE
+        assert entry.provenance["samples_per_parent_action"] == 4
+
+
+def test_sampled_no_mass_one_claim() -> None:
+    # Counterexample-2 regression: L=1 single draw carries half the frame mass,
+    # never a renormalized exact partition.
+    from hydra2.belief.sampled_kernel import SampledKernelConfig, enumerate_sampled
+
+    belief, epoch = _sampled_epoch()
+    parent = belief.sample_natural(epoch, count=1, rng=_rng(b"sampled_mass"))[0]
+    batch = enumerate_sampled(
+        epoch=epoch, particle=parent, action=0, config=SampledKernelConfig(samples_per_parent_action=1), rng=_rng(b"sampled_mass")
+    )
+    assert len(batch) == 1
+    assert batch[0].raw_weight == pytest.approx(0.5)
+    assert sum(s.raw_weight for s in batch) != pytest.approx(1.0)
+
+
+def test_sampled_stale_rejection() -> None:
+    import types
+
+    from hydra2.belief.sampled_kernel import SampledKernelConfig, enumerate_sampled
+    from hydra2.contracts.common import StaleBeliefError
+
+    _, epoch = _sampled_epoch()
+    bad = types.SimpleNamespace(epoch=9999, target_id=epoch.target_id, world_ref="x")
+    with pytest.raises(StaleBeliefError):
+        enumerate_sampled(epoch=epoch, particle=bad, action=0, config=SampledKernelConfig(samples_per_parent_action=2), rng=_rng(b"sampled_stale"))
+
+
+def test_sampled_exhaustive_untouched() -> None:
+    # Tripwire: the WP-09A certificate path still enumerates exactly 2 mass-1 packets.
+    from hydra2.belief.kernel import NaturalPacketKernel
+
+    belief, epoch = _sampled_epoch()
+    parent = belief.sample_natural(epoch, count=1, rng=_rng(b"sampled_trip"))[0]
+    succs = NaturalPacketKernel().enumerate_next(epoch=epoch, particle=parent, action=0)
+    assert len(succs) == 2
+    assert abs(sum(float(s.probability) for s in succs) - 1.0) < 1e-9
