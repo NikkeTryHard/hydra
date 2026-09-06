@@ -152,6 +152,16 @@ with contextlib.suppress(ImportError):
     )
 
 with contextlib.suppress(ImportError):
+    from hydra2.search.profiles import (
+        PROFILES,
+        CandidateProfile,
+        admit,
+        compare_gumbel_puct,
+        jobs_for,
+        transitions_bound,
+    )
+
+with contextlib.suppress(ImportError):
     from hydra2.search.joint_type_world import (
         JointParticle,
         JointPosterior,
@@ -176,7 +186,9 @@ __all__ = [
     "ARM_DEFS",
     "MODULE_REGISTRY",
     "PERSISTENCE_GATE_MODULE",
+    "PROFILES",
     "VALID_MODULE_IDS",
+    "CandidateProfile",
     "CandidateSpec",
     "ChildEntry",
     "CommitDisposition",
@@ -225,6 +237,7 @@ __all__ = [
     "UniformContinuationPolicy",
     "VOCRoutingModule",
     "abstraction_round_trip",
+    "admit",
     "apply_module",
     "build_pbrf",
     "build_public_subgame",
@@ -235,6 +248,7 @@ __all__ = [
     "coherent_trajectory",
     "commit",
     "commit_equals_rebuild",
+    "compare_gumbel_puct",
     "compute_packet_id",
     "detect_cycle",
     "deterministic_gumbel",
@@ -255,6 +269,7 @@ __all__ = [
     "info_key_for_observation",
     "is_equilibrium_claimed",
     "is_redeterminization_enabled",
+    "jobs_for",
     "joint_info_key_for_observation",
     "leaf_vector_replay",
     "learned_rules_transition_rejected",
@@ -279,6 +294,7 @@ __all__ = [
     "sequential_joint_update",
     "stratify_surprise_miss_recovery",
     "terminal_vector_for_world",
+    "transitions_bound",
     "validate_deadline_and_fallback",
     "validate_hidden_permutation_invariance",
     "validate_one_at_a_time",

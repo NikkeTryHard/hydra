@@ -767,6 +767,31 @@ class PersistentForestModule(_BaseModule):
 # ---------------------------------------------------------------------------
 
 
+def _largest_remainder(scores: tuple[float, ...], units: int) -> list[int]:
+    """Largest-remainder shares of units proportional to scores (deterministic).
+
+    Canonical cell-ID (lowest-index) order breaks remainder ties. Zero-total
+    scores split evenly. Returns per-cell ints summing exactly to units.
+    """
+    count = len(scores)
+    if count == 0 or units <= 0:
+        return [0] * count
+    total = math.fsum(scores)
+    if not math.isfinite(total) or total <= 0:
+        base, leftover = divmod(units, count)
+        shares = [base] * count
+        for idx in range(leftover):
+            shares[idx] += 1
+        return shares
+    exact = [value / total * units for value in scores]
+    shares = [math.floor(part) for part in exact]
+    leftover = units - sum(shares)
+    order = sorted(range(count), key=lambda idx: (exact[idx] - shares[idx], -idx), reverse=True)
+    for rank in range(leftover):
+        shares[order[rank % count]] += 1
+    return shares
+
+
 class VOCRoutingModule(_BaseModule):
     """Blueprint 11.10: floor/cap/exact budget/charged overhead; frozen routing."""
 
@@ -787,22 +812,101 @@ class VOCRoutingModule(_BaseModule):
             raise ContractError("voc_floor must be <= voc_cap")
 
     def transform(self, context: PbrfContext) -> PbrfContext:
-        # Reserve floor for every live child, cap any child, allocate remaining via frozen score,
-        # total work == budget, overhead charged, missed branches logged.
-        # harness ensures each child >= floor and <= cap and total == budget via normalization
+        # Exact frozen routing (SPEC 16.5 PR3): floor, 20/20/60 pools, cap,
+        # largest-remainder quantization, unused retention, charged overhead.
+        # Modules are stateless singletons: routing params ride in
+        # context.metadata (validated here, same rules as validate_spec);
+        # absent keys fall back to pilot-frozen defaults.
+        meta = context.metadata if isinstance(context.metadata, dict) else {}
+        floor = meta.get("voc_floor", 1)
+        cap = meta.get("voc_cap", 6)
+        budget = meta.get("voc_budget", 12)
+        if not isinstance(floor, int) or isinstance(floor, bool) or floor < 0:
+            raise ContractError("voc_floor must be a non-negative int")
+        if not isinstance(cap, int) or isinstance(cap, bool) or cap <= 0:
+            raise ContractError("voc_cap must be a positive int")
+        if not isinstance(budget, int) or isinstance(budget, bool) or budget <= 0:
+            raise ContractError("voc_budget must be a positive int")
+        if floor > cap:
+            raise ContractError("voc_floor must be <= voc_cap")
+        scores_raw = meta.get("voc_scores", None)
+        if scores_raw is None:
+            scores = tuple(context.weights)
+        else:
+            if (
+                not isinstance(scores_raw, tuple)
+                or len(scores_raw) != len(context.particles)
+                or any(
+                    not isinstance(v, (int, float))
+                    or isinstance(v, bool)
+                    or not math.isfinite(float(v))
+                    or float(v) < 0
+                    for v in scores_raw
+                )
+            ):
+                raise ContractError(
+                    "voc_scores must be a tuple of finite nonnegative numbers matching particles"
+                )
+            scores = tuple(float(v) for v in scores_raw)
+        cells = list(range(len(context.particles)))
+        if not cells:
+            raise ContractError("voc routing needs at least one cell")
+        count = len(cells)
+        floor_eff = min(floor, budget // count) if count > 0 else 0
+        relaxed = floor_eff < floor
+        alloc = [floor_eff] * count
+        remaining = budget - floor_eff * count
+        support_pool = min(budget // 5, remaining)
+        remaining -= support_pool
+        robin_pool = min(budget // 5, remaining)
+        # Round-robin: at most one unit per allocated cell until the pool exhausts.
+        robin_order = list(range(count))
+        spent_robin = 0
+        while spent_robin < robin_pool:
+            progressed = False
+            for idx in robin_order:
+                if spent_robin >= robin_pool:
+                    break
+                alloc[idx] += 1
+                spent_robin += 1
+                progressed = True
+            if not progressed:
+                break
+        remaining -= spent_robin
+        # VOC pool: largest-remainder shares of frozen scores.
+        voc_pool = remaining
+        shares = _largest_remainder(scores, voc_pool)
+        for idx, extra in enumerate(shares):
+            alloc[idx] += extra
+        # Cap each cell at max(0.25, 1/m) of the budget; truncate surplus to unused.
+        cap_frac = max(0.25, 1.0 / count)
+        cap_units = math.ceil(cap_frac * budget)
+        cap_units = min(cap_units, cap)
+        dropped = 0
+        for idx in range(count):
+            if alloc[idx] > cap_units:
+                dropped += alloc[idx] - cap_units
+                alloc[idx] = cap_units
+        unused = budget - sum(alloc)
+        assert unused >= 0
+        overhead = count
         return PbrfContext(
             candidate_id=context.candidate_id,
             case_id=context.case_id,
             particles=context.particles,
             weights=context.weights,
-            budget_calls=context.budget_calls + 3,
-            budget_transitions=context.budget_transitions + 3,
+            budget_calls=context.budget_calls + overhead,
+            budget_transitions=context.budget_transitions + overhead,
             metadata={
                 **context.metadata,
                 "voc_applied": True,
-                "voc_floor_respected": True,
+                "voc_allocation": tuple(alloc),
+                "voc_unused": unused,
+                "voc_dropped_by_cap": dropped,
+                "voc_relaxed": relaxed,
+                "voc_floor_respected": not relaxed,
                 "voc_cap_respected": True,
-                "voc_total_equals_budget": True,
+                "voc_total_equals_budget": sum(alloc) + unused == budget,
             },
         )
 

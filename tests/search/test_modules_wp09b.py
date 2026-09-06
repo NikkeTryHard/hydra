@@ -43,6 +43,14 @@ from hydra2.search.modules import (
     validate_one_at_a_time,
 )
 from hydra2.search.pbrf import PbrfConfig, build_pbrf
+from hydra2.search.profiles import (
+    PROFILES,
+    CandidateProfile,
+    admit,
+    compare_gumbel_puct,
+    jobs_for,
+    transitions_bound,
+)
 
 pytestmark = pytest.mark.contract_package("WP-09B")
 
@@ -697,3 +705,139 @@ def test_ess_allocate_tiers_and_envelope() -> None:
         assert alloc_cost(ess_allocate(hi, 4), 4) <= alloc_cost(ess_allocate(lo, 4), 4)
     assert sum(costs) == 159792
     assert sum(costs) <= 3500 * 48
+
+
+# ---------------------------------------------------------------------------
+# Profiles + admission + VOC exact routing (PR3, provisional priors)
+# ---------------------------------------------------------------------------
+
+
+def test_profile_jobs_formula() -> None:
+    assert [(p.name, jobs_for(p), transitions_bound(p)) for p in PROFILES] == [
+        ("small", 256, 512),
+        ("medium", 640, 2560),
+        ("large", 1536, 6144),
+    ]
+    with pytest.raises(ContractError):
+        jobs_for("small")  # type: ignore[arg-type]
+
+def test_profile_validation() -> None:
+    with pytest.raises(ContractError):
+        CandidateProfile(name="bad", candidate_cap=20, horizon=2, carry_quota=1, halving_rounds=4)
+    with pytest.raises(ContractError):
+        CandidateProfile(name="bad", candidate_cap=16, horizon=2, carry_quota=1, halving_rounds=3)
+    with pytest.raises(ContractError):
+        CandidateProfile(name="", candidate_cap=16, horizon=2, carry_quota=1, halving_rounds=4)
+
+
+def test_admit_selects_largest_fitting_else_c0() -> None:
+    chosen = admit(
+        PROFILES, deadline_ms=5000, fallback_margin_ms=200, seconds_per_transition=0.0001
+    )
+
+    # Generous transition budget + fast transitions: largest fitting wins.
+    chosen = admit(PROFILES, deadline_ms=5000, fallback_margin_ms=200, seconds_per_transition=0.0001)
+    assert chosen.name == "large"
+    # Impossible budget: C0, never an error, never forced.
+    assert (
+        admit(PROFILES, deadline_ms=5000, fallback_margin_ms=200, seconds_per_transition=100.0)
+        == "candidate0"
+    )
+    # Transition cap binds before deadline does.
+    chosen = admit(
+        PROFILES,
+        deadline_ms=5000,
+        fallback_margin_ms=200,
+        seconds_per_transition=0.0001,
+        max_transitions=600,
+    )
+    assert chosen.name == "small"
+    with pytest.raises(ContractError):
+        admit((), deadline_ms=5000, fallback_margin_ms=200, seconds_per_transition=0.0001)
+
+
+def test_compare_gumbel_puct_accounting() -> None:
+    out = compare_gumbel_puct(n_actions=16, gumbel_visits=(8, 8), puct_simulations=64)
+    assert out["gumbel_jobs"] == 16 * 8 + 8 * 8
+    assert out["puct_jobs"] == 64
+    assert out["cheaper"] == "puct"
+    tied = compare_gumbel_puct(n_actions=4, gumbel_visits=(2,), puct_simulations=8)
+    assert tied["gumbel_jobs"] == 8 and tied["cheaper"] == "tie"
+    with pytest.raises(ContractError):
+        compare_gumbel_puct(n_actions=0, gumbel_visits=(8,), puct_simulations=1)
+
+
+def test_voc_routing_exact_math() -> None:
+    from hydra2.search.modules import MODULE_REGISTRY
+
+    mod = MODULE_REGISTRY["voc_routing"]
+    ctx = PbrfContext(
+        candidate_id="candidate4_voc_routing",
+        case_id="case-voc-exact",
+        particles=(0.1, 0.2, 0.3, 0.4, 0.5),
+        weights=(0.2, 0.2, 0.2, 0.2, 0.2),
+        budget_calls=0,
+        budget_transitions=0,
+        metadata={"voc_floor": 1, "voc_cap": 6, "voc_budget": 12},
+    )
+    out = mod.transform(ctx)
+    alloc = out.metadata["voc_allocation"]
+    # floor 1 x 5 cells = 5; support min(12//5, 7) = 2; robin min(12//5, 5) = 2 (cells 0,1);
+    # voc rest 12-5-2-2 = 3 by largest remainder of uniform weights -> cells 0,1,2.
+    assert alloc == (3, 3, 2, 1, 1)
+    assert sum(alloc) + out.metadata["voc_unused"] == 12
+    assert out.metadata["voc_relaxed"] is False
+    assert out.metadata["voc_cap_respected"] is True
+    assert out.metadata["voc_total_equals_budget"] is True
+    assert out.particles == ctx.particles and out.weights == ctx.weights
+    assert (out.budget_calls, out.budget_transitions) == (5, 5)
+
+
+def test_voc_routing_relaxation_and_caps() -> None:
+    from hydra2.search.modules import MODULE_REGISTRY
+
+    mod = MODULE_REGISTRY["voc_routing"]
+
+    def run(floor: int, cap: int, budget: int, n: int = 4) -> object:
+        ctx = PbrfContext(
+            candidate_id="candidate4_voc_routing",
+            case_id="case-voc-relax",
+            particles=tuple(float(i) for i in range(n)),
+            weights=tuple(1.0 / n for _ in range(n)),
+            budget_calls=0,
+            budget_transitions=0,
+            metadata={"voc_floor": floor, "voc_cap": cap, "voc_budget": budget},
+        )
+        return mod.transform(ctx)
+
+    # Infeasible floor relaxes deterministically and logs it.
+    relaxed = run(5, 6, 12)
+    assert sum(relaxed.metadata["voc_allocation"]) + relaxed.metadata["voc_unused"] == 12
+    # Malformed params fail closed.
+    for bad in (
+        {"voc_floor": -1},
+        {"voc_cap": 0},
+        {"voc_budget": 0},
+        {"voc_floor": 7, "voc_cap": 6},
+    ):
+        ctx = PbrfContext(
+            candidate_id="candidate4_voc_routing",
+            case_id="case-voc-bad",
+            particles=(0.1, 0.2),
+            weights=(0.5, 0.5),
+            budget_calls=0,
+            budget_transitions=0,
+            metadata={"voc_floor": 1, "voc_cap": 6, "voc_budget": 12, **bad},
+        )
+        with pytest.raises(ContractError):
+            mod.transform(ctx)
+    with pytest.raises(ContractError):
+        empty = PbrfContext(
+            candidate_id="candidate4_voc_routing",
+            case_id="case-voc-empty",
+            particles=(),
+            weights=(),
+            budget_calls=0,
+            budget_transitions=0,
+        )
+        mod.transform(empty)
