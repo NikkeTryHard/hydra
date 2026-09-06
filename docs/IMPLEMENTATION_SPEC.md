@@ -159,6 +159,18 @@ Rules:
 - Corruption/visibility/rules/legality/stale-state errors NEVER fall back silently.
 > Caveat 2026-09-04 (non-normative): synthetic-path hardening verified — teacher/loop/replay/completion WP-10..WP-12 paths now raise hard errors, never synthetic fallback. See `## Status 2026-09-04` §A. Normative §§3:156-159 unchanged.
 
+Diagnostic codes (normative, PR4): semantic search/belief raise sites append
+a ` [{CODE}]` suffix to their messages from the list below; error CLASSES are unchanged.
+Codes exist so routers (ponder, halving/VOC, exclusion-report) branch on failure kind without fragile
+substring matching owned anywhere else; the single bijective table `PBRF_ERROR_CODES`
+lives beside the search package. Pure caller-input/config validation (the ContractError
+long tail) keeps byte-identical messages. Codes: `PBRF_PARTITION_EMPTY`,
+`PBRF_PARTITION_ALIAS`, `PBRF_PARTITION_MASS`, `PBRF_PARTITION_CHILD_NORM`,
+`PBRF_STALE_EPOCH`, `PBRF_STALE_TARGET`, `PBRF_STALE_PARENT`, `PBRF_STALE_PROVENANCE`,
+`PBRF_STALE_WORLDREF`, `PBRF_DIGEST_DELTA`, `PBRF_DIGEST_WORLD_ID`,
+`PBRF_VIS_TREE_KEY`, `PBRF_VIS_TREE_KEY_NESTED`, `PBRF_VIS_POLICY_WORLD`,
+`PBRF_VIS_POLICY_HANDS`, `PBRF_SUPPORT_REGION`, `PBRF_SUPPORT_POINT`.
+
 ## 4. Tile Contract
 
 ### 4.1 Physical encoding
@@ -928,7 +940,7 @@ All formal stochastic work uses purpose-discriminated named labels:
 ```python
 @dataclass(frozen=True, slots=True)
 class RandomStreamKey:
-    purpose: Literal["wall", "belief_natural_sample", "belief_proposal_sample", "actor_policy_sample", "root_tree_selection", "rollout_transition", "rollout_advantage", "confirmation", "coupling_primitive", "mlmc_level", "rqmc_scramble", "smc_propagation", "smc_resampling", "training_shuffle", "training_dropout", "evaluation_schedule", "gumbel_root"]
+    purpose: Literal["wall", "belief_natural_sample", "belief_proposal_sample", "actor_policy_sample", "root_tree_selection", "rollout_transition", "rollout_advantage", "confirmation", "coupling_primitive", "mlmc_level", "rqmc_scramble", "smc_propagation", "smc_resampling", "training_shuffle", "training_dropout", "evaluation_schedule", "gumbel_root", "kernel_sample"]
     experiment_id: str
     split_id: str
     candidate_id: str | None
@@ -952,7 +964,7 @@ def semantic_seed(master_seed: bytes, *, key: RandomStreamKey) -> bytes:
 ```
 
 Rules:
-- `RandomStreamSchema` declares required/forbidden fields for every literal purpose: exactly one of case/wall where relevant; natural/proposal/actor-policy/root-selection/transition/confirmation streams are distinct; coupling uses branch-independent primitive identity; MLMC requires fidelity; RQMC requires scramble; SMC propagation and resampling are distinct and require population; Gumbel requires action; retries increment `attempt_id`; unused fields MUST be null.
+- `RandomStreamSchema` declares required/forbidden fields for every literal purpose: exactly one of case/wall where relevant; natural/proposal/actor-policy/root-selection/transition/confirmation streams are distinct; coupling uses branch-independent primitive identity; MLMC requires fidelity; RQMC requires scramble; SMC propagation and resampling are distinct and require population; Gumbel requires action; kernel sampling requires candidate/parent/action/epoch; retries increment `attempt_id`; unused fields MUST be null.
 
 - Never derive by call order.
 - Never reuse one stream for distinct purposes.
@@ -1041,6 +1053,19 @@ Candidate 3 requires finite exhaustive enumeration. For each parent/action:
 - packet fields satisfy root actor visibility;
 - no parent-only reweight qualifies as successor posterior.
 > Caveat 2026-09-04 (non-normative): `PolicySet` verdict — `src/hydra2/belief/natural.py:86-95` remains a WP-07A placeholder (`policies` provenance tuple; `log_prob` returns `0.0` uniform). Kernel supplies deterministic likelihood; no per-policy evaluation. Normative §14.3 enumeration requirements unchanged; a real policy set is future work gated by §24.
+
+### 14.3.1 Sampled kernel mode (non-exhaustive, versioned)
+
+Beside exhaustive enumeration lives mode `natural_trace_sample_v1`: per (parent,
+action), a frozen count L of draws from the SAME frame law (zero new policy
+semantics), each carrying (packet, successor refs, raw weight, provenance with mode
+string + L + seed material). NO finite-sample mass-one claim: raw weighted estimates
+only; unsampled children are unobserved support, never zero-probability events
+(renormalizing a sampled batch does not recover an exact partition). Exhaustive
+`enumerate_next` is untouched and remains the only WP-09A certificate path. Sampled
+batches carry the mode string in every downstream key/hash so the modes never mix.
+Sampling streams use purpose `kernel_sample` (never a live purpose: ledger
+collisions fail closed).
 
 ## 15. Candidate Specification and Search API
 
@@ -1186,9 +1211,21 @@ def commit(forest, action, actual_packet):
     if matching is absent or not target-compatible(authoritative_epoch):
         return fresh_rebuild(authoritative_epoch), CommitDisposition("miss_rebuild")
     promoted = rekey_and_verify(matching, authoritative_epoch)
+    carry_logps = conditional_carry_logps(matching)  # log(raw_i / Z); zero-mass -> miss
     squash_all_sibling_values_visits_posteriors_pairings(forest)
-    return promoted, CommitDisposition("hit_commit")
+    return promoted_carried_forest, CommitDisposition("hit_commit")
 ```
+
+Sample law (normative): hit-commit promoted parents are CARRIED conditionals sampling `b_{eta,a,e}^+`, never fresh naturals — the emitted action and realized packet selected them, and selection conditions the population. Their densities are the normalized conditional weights `log(raw_i / Z)`, never uniform `-log(N)`; both density fields take this value so no hidden importance ratio is smuggled. Zero-mass conditioning supports no population and takes the miss path. Forests accept parent source in `{natural, carried}`; `carried` requires finite equal densities. Natural-only samplers MUST never consume carried parents as fresh draws.
+
+Ancestry disclosure (normative, PR4): `ChildEntry` and promoted/rebuilt parent
+particles carry `ancestors: tuple[str, ...] = ()` (parent-id chain, oldest-first).
+Fresh roots carry `()`; commit appends the conditioning parent
+(`e.ancestors + (e.parent_id,)`); rekey passes chains through unchanged; miss-path
+dummies carry `()` (the provenance break IS the miss semantics). Weight, ESS,
+normalizer, and allocation math MUST NOT read ancestry. Ancestry exists so shared-parent
+populations can never be mistaken for independent draws: any population-level
+variance MUST use covariance form, never ESS/N, wherever ancestors are shared.
 
 A child view computes normalized weights only when normalizer > 0. ESS is diagnostic. Confirmation always fresh natural full fidelity after candidate freeze.
 `successor_world_ref` is mandatory and resolves to the exact transitioned world in the privileged sandbox. `successor_delta` is a cache optimization only; reconstruction from parent+delta MUST digest-equal `successor_world_ref` before use.
@@ -1219,6 +1256,14 @@ One enabled module per qualification CandidateSpec. Required invariants:
 - Controlled SMC: unnormalized estimator; independent populations uncertainty; no unbiased ratio claim.
 - Persistence: target-compatible commit only; all siblings squashed.
 - VOC: every live child floor, cap, exact total budget, charged overhead; frozen routing.
+  Exact routing (normative, PR3): 20% of ponder units to support/recovery work, 20%
+  round-robin over retained positive-mass cells (at most one floor unit per allocated
+  cell until the pool exhausts), 60% by frozen predicted-value scores; no cell exceeds
+  `max(0.25, 1/m)` of total units for m eligible cells; largest-remainder quantization
+  with canonical cell-ID ties; infeasible floors/caps take a deterministic predeclared
+  relaxation, logged; unallocatable units stay unused, never force-assigned. Overhead
+  charged to context budgets. Scores route exploratory work only, never confirmatory
+  evidence.
 
 ### 16.6 Candidate 5 local resolving
 
@@ -1228,6 +1273,14 @@ Tables key `(actor, information_node_hash)`, never root world. Every actor updat
 ### 16.7 Candidate 6 Gumbel search
 
 Root Gumbels derive from `(case_id, root_seat, candidate_id, action_id)`. Sequential-halving rounds and visit allocations are CandidateSpec-supplied. Every transition exact. Model supplies priors, opponent policy, belief, leaf vector only. Backup vector; scalarize at root. Matched comparator counts model calls and exact transitions.
+
+Candidate profiles (normative status: provisional priors, PR3): frozen
+`CandidateProfile` rows (candidate cap M, horizon H, carry quota, halving rounds;
+jobs = 4M·log2M, transitions ≤ jobs×H) with a pure admission gate selecting the
+largest profile passing the synchronized cost gate on disjoint pilot states; nothing
+fits → Candidate 0 (always reachable; never an error, never a forced profile). Profile
+numbers promote to capacities only via the RTX pilot fixture. Gate selection from
+held-out win rates is prohibited.
 > Caveat 2026-09-04 (non-normative): Gumbel hash authority — `src/hydra2/search/gumbel.py:1677-1714` derives model/utility from the live model (raising on failure at `gumbel.py:1702`) and rng/stream/case verbatim from candidate0 descriptors; `_load_default_hashes` (`gumbel.py:1630-1666`) is file-backed-only. Normative §16.7 unchanged.
 
 ### 16.8 Candidate 7 distillation
@@ -1262,6 +1315,17 @@ Exact definitions:
 - C: fresh at next own observation; no retained state; receives predeclared own deadline + assigned wait-window allowance; laboratory only.
 
 B/F/R/P share deployable own deadline. Standard table planner deadline <= 5,000 ms minus frozen fallback margin. Every arm logs actual model calls, transitions, synchronized duration, peak memory, and joules when available.
+
+Ponder quota (normative, PR1): P-arm `ponder()` takes optional
+`ponder_quota_total: int | None = None`. `None` reproduces legacy behavior bit-for-bit
+(fixed 2 units per child, sub-0.5ms fallback to 1). When set (positive int, bool
+rejected), at most that many ponder units distribute deterministically across sorted
+child ids, round-robin one unit per child until quota exhausts; every counter
+(child_stats, ponder_calls, model calls, transitions, budget, joules) charges exactly
+the distributed units. Deadline still gates all work. B/F/R/C paths ignore the quota
+entirely (R-zero assertion unchanged). Ponder-derived statistics are working
+statistics, never confirmatory evidence; population variance uses covariance form,
+never ESS/N.
 
 ## 18. Evaluation and Statistical Contract
 
@@ -1348,6 +1412,23 @@ class PromotionRecord:
 
 All Candidates 0-6 retain records, including failure/rejection. Search-derived candidate selection and natural confirmation must use disjoint semantic streams.
 Use `case` for independent decision cases, `iid_pair` for paired natural confirmations, `wall_block` for duplicate matches, `smc_population` for independent controlled-SMC populations, `rqmc_scramble` for independent scrambles, and `game_cluster` only for held-out model/calibration metrics. CandidateSpec and result schema reject mismatched units.
+
+Additive provenance bindings (normative, PR4): `PromotionRecord` gains three OPTIONAL
+fields with defaults — `schedule_hash: DigestText | None = None`,
+`environment_hash: DigestText | None = None`,
+`excluded_blocks: tuple[ExcludedBlock, ...] = ()`. The factory accepts missing keys
+(defaults apply); unknown keys still raise. `record_to_json` includes them
+(`None` serializes null); `promotion_digest` covers them. Migration: digests change
+going forward; no production record exists (WP-10 blocked by design), so no backfill
+is owed. A promotion that cannot name its schedule, machine, and excluded walls is
+not reproducible and MUST NOT issue `disposition="promoted"`.
+
+Confirmation sidecar (normative, PR4): pure function `confirmation_sidecar(*,
+schedule, blocks: BlockAggregateResult, telemetry_report) -> dict` returning
+`{schedule_commitment_hash, excluded: [{wall_id, reason, detail}],
+telemetry_completeness_digest}`. Confirmation paths that hand-roll hashes (e.g. the
+teacher five-arms) call it BESIDE — never instead of — their existing hashes; their
+decision outputs stay byte-identical. Full admission migration belongs to a WP-10-owned change.
 
 ## 19. Performance Qualification
 
