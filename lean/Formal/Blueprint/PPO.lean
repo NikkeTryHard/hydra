@@ -5,6 +5,8 @@ import Mathlib.Algebra.BigOperators.Ring.Finset
 import Mathlib.Data.Real.Basic
 import Mathlib.Analysis.Calculus.Deriv.Basic
 import Mathlib.Tactic
+import Mathlib.Algebra.Order.Chebyshev
+import Mathlib.Analysis.Real.Sqrt
 
 set_option linter.unusedSimpArgs false
 set_option linter.unreachableTactic false
@@ -417,5 +419,67 @@ theorem vlog_total_ge_rl (rl logBeta kld : ℝ) (hk : 0 ≤ kld) :
   linarith
 
 end VLOG
+
+section ValueMSEBound
+
+variable {State : Type}
+
+/-- Wave-3 Python consumer: value branch (`batchValueLoss`): mean-prediction error
+    controlled by root-MSE (finite Jensen / Cauchy-Schwarz over the batch).
+    Needs `0 < states.card` so division by the batch size is valid. -/
+theorem valueMSE_controls_mean_error
+    (states : Finset State) (v_target v_pred : State → ℝ)
+    (hpos : 0 < states.card) :
+    |(∑ s ∈ states, v_pred s) / (states.card : ℝ)
+      - (∑ s ∈ states, v_target s) / (states.card : ℝ)|
+      ≤ Real.sqrt (batchValueLoss states v_target v_pred) := by
+  have hn_pos : (0 : ℝ) < (states.card : ℝ) := Nat.cast_pos.mpr hpos
+  have hn_ne : (states.card : ℝ) ≠ 0 := ne_of_gt hn_pos
+  have hCS : (∑ s ∈ states, (v_pred s - v_target s)) ^ 2
+      ≤ (states.card : ℝ) * ∑ s ∈ states, (v_pred s - v_target s) ^ 2 :=
+    sq_sum_le_card_mul_sum_sq
+  have hmean : (∑ s ∈ states, v_pred s) / (states.card : ℝ)
+      - (∑ s ∈ states, v_target s) / (states.card : ℝ)
+      = (∑ s ∈ states, (v_pred s - v_target s)) / (states.card : ℝ) := by
+    rw [← sub_div, ← Finset.sum_sub_distrib]
+  have hMSE : batchValueLoss states v_target v_pred
+      = (∑ s ∈ states, (v_pred s - v_target s) ^ 2) / (states.card : ℝ) := by
+    unfold batchValueLoss valueLoss
+    rfl
+  have hsq : ((∑ s ∈ states, (v_pred s - v_target s)) / (states.card : ℝ)) ^ 2
+      ≤ (∑ s ∈ states, (v_pred s - v_target s) ^ 2) / (states.card : ℝ) := by
+    calc ((∑ s ∈ states, (v_pred s - v_target s)) / (states.card : ℝ)) ^ 2
+        = (∑ s ∈ states, (v_pred s - v_target s)) ^ 2 / (states.card : ℝ) ^ 2 := by
+          rw [div_pow]
+      _ ≤ ((states.card : ℝ) * ∑ s ∈ states, (v_pred s - v_target s) ^ 2)
+          / (states.card : ℝ) ^ 2 :=
+          div_le_div_of_nonneg_right hCS (by positivity)
+      _ = (∑ s ∈ states, (v_pred s - v_target s) ^ 2) / (states.card : ℝ) := by
+          field_simp
+  rw [hmean, hMSE]
+  exact Real.abs_le_sqrt hsq
+
+end ValueMSEBound
+
+section AdvantageStdSanity
+
+/-- Wave-3 Python consumer: standardization sanity (advantage branch):
+    standardizing at the mean gives exactly zero. -/
+theorem advantageStd_zero_at_mean (mean var_eps : ℝ) :
+    advantageStd mean mean var_eps = 0 := by
+  unfold advantageStd
+  simp
+
+/-- Wave-3 Python consumer: standardization sanity (advantage branch):
+    standardized advantage is monotone in the raw advantage for fixed
+    `mean` and `var_eps > 0` (positive denominator preserves order). -/
+theorem advantageStd_monotone (mean var_eps : ℝ) (hvar : 0 < var_eps)
+    {a₁ a₂ : ℝ} (h : a₁ ≤ a₂) :
+    advantageStd a₁ mean var_eps ≤ advantageStd a₂ mean var_eps := by
+  unfold advantageStd
+  have hsqrt : (0 : ℝ) < Real.sqrt var_eps := Real.sqrt_pos.mpr hvar
+  exact div_le_div_of_nonneg_right (by linarith) (le_of_lt hsqrt)
+
+end AdvantageStdSanity
 
 end Hydra2.Blueprint.PPO

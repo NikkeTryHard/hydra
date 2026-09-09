@@ -343,7 +343,9 @@ class StructuralCRNModule(_BaseModule):
         mean_a = sum(za) / len(za) if len(za) > 0 else 0
         mean_b = sum(zb) / len(zb) if len(zb) > 0 else 0
         cov = (
-            sum(a * b for a, b in zip(za, zb, strict=True)) / len(za) - mean_a * mean_b if len(za) > 0 else 0
+            sum(a * b for a, b in zip(za, zb, strict=True)) / len(za) - mean_a * mean_b
+            if len(za) > 0
+            else 0
         )
         # Transform keeps particles but tags covariance; never forces opponent equality
         return PbrfContext(
@@ -524,11 +526,15 @@ class ScenarioCoresetModule(_BaseModule):
     def transform(self, context: PbrfContext) -> PbrfContext:
         k = 2  # small subset for harness
         # select top-k weighted particles (deterministic), renormalize weights summing to one, keep original IDs
-        paired: list[tuple[float, float]] = sorted(zip(context.weights, context.particles, strict=True), reverse=True)[:k]
+        paired: list[tuple[float, float]] = sorted(
+            zip(context.weights, context.particles, strict=True), reverse=True
+        )[:k]
         ws: tuple[float, ...] = tuple(w for w, _ in paired) if len(paired) > 0 else ()
         ps: tuple[float, ...] = tuple(p for _, p in paired) if len(paired) > 0 else ()
         s: float = sum(ws)
-        new_ws: tuple[float, ...] = tuple(w / s for w in ws) if s > 0 else tuple(1.0 / len(ws) for _ in ws)
+        new_ws: tuple[float, ...] = (
+            tuple(w / s for w in ws) if s > 0 else tuple(1.0 / len(ws) for _ in ws)
+        )
         # weighted replay equals selected empirical objective (by construction)
         return PbrfContext(
             candidate_id=context.candidate_id,
@@ -786,7 +792,11 @@ def _largest_remainder(scores: tuple[float, ...], units: int) -> list[int]:
     exact = [value / total * units for value in scores]
     shares = [math.floor(part) for part in exact]
     leftover = units - sum(shares)
-    order = sorted(range(count), key=lambda idx: (exact[idx] - shares[idx], -idx), reverse=True)
+
+    def _remainder_key(idx: int) -> tuple[float, int]:
+        return (exact[idx] - shares[idx], -idx)
+
+    order = sorted(range(count), key=_remainder_key, reverse=True)
     for rank in range(leftover):
         shares[order[rank % count]] += 1
     return shares
@@ -847,9 +857,17 @@ class VOCRoutingModule(_BaseModule):
                 raise ContractError(
                     "voc_scores must be a tuple of finite nonnegative numbers matching particles"
                 )
-            scores = tuple(float(v) for v in scores_raw)
+            validated_scores: list[float] = []
+            for raw_value in scores_raw:
+                value_obj: object = raw_value
+                if isinstance(value_obj, bool) or not isinstance(value_obj, (int, float)):
+                    raise ContractError(
+                        "voc_scores must be a tuple of finite nonnegative numbers matching particles"
+                    )
+                validated_scores.append(float(value_obj))
+            scores = tuple(validated_scores)
         cells = list(range(len(context.particles)))
-        if not cells:
+        if len(cells) == 0:
             raise ContractError("voc routing needs at least one cell")
         count = len(cells)
         floor_eff = min(floor, budget // count) if count > 0 else 0
@@ -1013,7 +1031,9 @@ def make_candidate4_spec(
     dummy = "sha256:" + "a" * 64
     rules_hash = rules_hash if rules_hash is not None else dummy
     action_table_hash = action_table_hash if action_table_hash is not None else dummy
-    observation_schema_hash = observation_schema_hash if observation_schema_hash is not None else dummy
+    observation_schema_hash = (
+        observation_schema_hash if observation_schema_hash is not None else dummy
+    )
     packet_boundary_hash = packet_boundary_hash if packet_boundary_hash is not None else dummy
     model_hash = model_hash if model_hash is not None else dummy
     case_manifest_hash = case_manifest_hash if case_manifest_hash is not None else dummy
@@ -1093,7 +1113,9 @@ def make_core_control_spec(
         utility_id="tenhou_placement",
         utility_manifest_hash=dummy,
         action_table_hash=action_table_hash if action_table_hash is not None else dummy,
-        observation_schema_hash=observation_schema_hash if observation_schema_hash is not None else dummy,
+        observation_schema_hash=observation_schema_hash
+        if observation_schema_hash is not None
+        else dummy,
         packet_boundary_hash=packet_boundary_hash if packet_boundary_hash is not None else dummy,
         model_hash=model_hash if model_hash is not None else dummy,
         belief_model_hash=None,

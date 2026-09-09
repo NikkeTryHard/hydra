@@ -214,6 +214,7 @@ def build_runtime(
                 cast("Any", m),
                 **compile_kwargs,
             )
+
     if spec.precision != "fp32" and spec.compile_mode != "eager":
         if spec.backward_pass_autocast != "off":
             raise ContractError(
@@ -250,6 +251,7 @@ def build_runtime(
             return adapter.setup(model=model, optimizer=optimizer, spec=spec)
     model = compile_once(model)
     return adapter.setup(model=model, optimizer=optimizer, spec=spec)
+
 
 def normalize_digest(value: str) -> DigestText:
     return make_digest_text(value)

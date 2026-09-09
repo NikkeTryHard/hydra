@@ -14,12 +14,23 @@ from hydra2.data.loader import load_batch_in_fresh_process, verify_and_load_batc
 from hydra2.data.parquet import (
     DecisionRow,
     PrivilegedRow,
+    validate_privileged_ranks,
     write_actor_shards,
+    write_privileged_ranks,
     write_privileged_shards,
 )
 from hydra2.data.partition import GameIdentity, SplitManifest, SplitSpec, assign_partitions
 from hydra2.data.quarantine import QuarantinedRecord, quarantine_invalid
 from hydra2.data.rows import PackagedObjectRow, RawObjectRow, make_raw_object_row
+from hydra2.data.stream import (
+    GameStream,
+    StreamCursor,
+    StreamGame,
+    StreamManifest,
+    assign_split,
+    build_manifest,
+    check_wall_disjoint,
+)
 from hydra2.data.validate import ValidationOutcome, validate_game
 
 __all__ = [
@@ -29,6 +40,7 @@ __all__ = [
     "DecisionRow",
     "GameIdentity",
     "GameRecord",
+    "GameStream",
     "IngestedObject",
     "PackagedObjectRow",
     "PrivilegedRow",
@@ -36,10 +48,16 @@ __all__ = [
     "RawObjectRow",
     "SplitManifest",
     "SplitSpec",
+    "StreamCursor",
+    "StreamGame",
+    "StreamManifest",
     "ValidationOutcome",
     "assign_partitions",
+    "assign_split",
     "build_cache",
+    "build_manifest",
     "cache_key_digest",
+    "check_wall_disjoint",
     "decode_game_object",
     "ingest_packaged_objects",
     "load_batch_in_fresh_process",
@@ -47,7 +65,9 @@ __all__ = [
     "make_raw_object_row",
     "quarantine_invalid",
     "validate_game",
+    "validate_privileged_ranks",
     "verify_and_load_batch",
     "write_actor_shards",
+    "write_privileged_ranks",
     "write_privileged_shards",
 ]

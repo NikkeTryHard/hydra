@@ -642,7 +642,9 @@ def test_resampling_scheme_ordering_golden() -> None:
     uniq = {"sys": 0, "multi": 0}
     for s in range(50):
         for arm, fn in (("sys", _systematic_counts), ("multi", _multinomial_counts)):
-            seed = int(hashlib.sha256(f"scheme-gold:v1:{arm}:{s:04d}".encode()).hexdigest()[:16], 16)
+            seed = int(
+                hashlib.sha256(f"scheme-gold:v1:{arm}:{s:04d}".encode()).hexdigest()[:16], 16
+            )
             seed %= 2**63 - 1
             counts = fn(np.random.default_rng(seed), w)
             assert abs(counts.sum() - n) < 1e-9
@@ -721,6 +723,7 @@ def test_profile_jobs_formula() -> None:
     with pytest.raises(ContractError):
         jobs_for("small")  # type: ignore[arg-type]
 
+
 def test_profile_validation() -> None:
     with pytest.raises(ContractError):
         CandidateProfile(name="bad", candidate_cap=20, horizon=2, carry_quota=1, halving_rounds=4)
@@ -736,7 +739,9 @@ def test_admit_selects_largest_fitting_else_c0() -> None:
     )
 
     # Generous transition budget + fast transitions: largest fitting wins.
-    chosen = admit(PROFILES, deadline_ms=5000, fallback_margin_ms=200, seconds_per_transition=0.0001)
+    chosen = admit(
+        PROFILES, deadline_ms=5000, fallback_margin_ms=200, seconds_per_transition=0.0001
+    )
     assert chosen.name == "large"
     # Impossible budget: C0, never an error, never forced.
     assert (

@@ -207,19 +207,13 @@ def _parse_packaged_row(raw: object) -> PackagedObjectRow:
     packager_cfg_raw: Any = raw_dict["packager_config_hash"]
     return PackagedObjectRow(
         packaged_object_id=(
-            _norm_packaged
-            if _norm_packaged is not None
-            else str(cast("object", packaged_id_raw))
+            _norm_packaged if _norm_packaged is not None else str(cast("object", packaged_id_raw))
         ),
         source_kind=cast("SourceKind", raw_dict["source_kind"]),
         source_container_sha256=norm(cast("object", raw_dict["source_container_sha256"])),
-        source_member_path=cast(
-            "str | None", raw_dict["source_member_path"]
-        ),
+        source_member_path=cast("str | None", raw_dict["source_member_path"]),
         source_bytes_sha256=(
-            _norm_source
-            if _norm_source is not None
-            else str(cast("object", source_bytes_raw))
+            _norm_source if _norm_source is not None else str(cast("object", source_bytes_raw))
         ),
         source_bytes_length=int(cast("str | int", raw_dict["source_bytes_length"])),
         compressed_path=str(cast("object", raw_dict["compressed_path"])),
@@ -228,29 +222,22 @@ def _parse_packaged_row(raw: object) -> PackagedObjectRow:
             if _norm_compressed is not None
             else str(cast("object", compressed_bytes_raw))
         ),
-        compressed_bytes_length=int(
-            cast("str | int", raw_dict["compressed_bytes_length"])
-        ),
+        compressed_bytes_length=int(cast("str | int", raw_dict["compressed_bytes_length"])),
         decoded_bytes_sha256=(
-            _norm_decoded
-            if _norm_decoded is not None
-            else str(cast("object", decoded_bytes_raw))
+            _norm_decoded if _norm_decoded is not None else str(cast("object", decoded_bytes_raw))
         ),
         decoded_bytes_length=int(cast("str | int", raw_dict["decoded_bytes_length"])),
         record_count=int(cast("str | int", raw_dict["record_count"])),
         canonical_jsonl=bool(cast("object", raw_dict["canonical_jsonl"])),
         packager_identity=(
-            _norm_packager
-            if _norm_packager is not None
-            else str(cast("object", packager_id_raw))
+            _norm_packager if _norm_packager is not None else str(cast("object", packager_id_raw))
         ),
         packager_config_hash=(
-            _norm_config
-            if _norm_config is not None
-            else str(cast("object", packager_cfg_raw))
+            _norm_config if _norm_config is not None else str(cast("object", packager_cfg_raw))
         ),
         created_at_utc=str(cast("object", raw_dict["created_at_utc"])),
     )
+
 
 def load_packaged_manifest(path: Path) -> list[PackagedObjectRow]:
     if not path.is_file():

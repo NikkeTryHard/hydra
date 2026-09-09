@@ -47,7 +47,14 @@ _DISPOSITIONS = ("promoted", "rejected", "blocked")
 
 @dataclass(frozen=True, slots=True)
 class PromotionRecord:
-    """SPEC 18.4 promotion record; field order matches the specification."""
+    """SPEC 18.4 promotion record; field order matches the specification.
+
+    ``schedule_hash`` is the schedule commitment hash
+    (:func:`hydra2.eval.schedule.schedule_commitment_hash`, binding every
+    schedule facet — walls, seats, latency, rules, seed protocol), never a
+    bare ``walls_hash``. ``make_block_manifest`` schedule hashes are
+    consumed as-is for wall provenance; promotion binding is the commitment.
+    """
 
     candidate_spec_hash: str
     utility_manifest_hash: str
@@ -73,7 +80,14 @@ def _require_digest(name: str, value: object) -> str:
 
 
 def make_promotion_record(**kwargs: object) -> PromotionRecord:
-    """Validate and construct a :class:`PromotionRecord`."""
+    """Validate and construct a :class:`PromotionRecord`.
+
+    ``promoted`` is fail-closed: every gate must be ``"passed"`` (nonempty
+    gate set) and ``schedule_hash`` must bind the schedule commitment
+    (:func:`hydra2.eval.schedule.schedule_commitment_hash`, never a bare
+    ``walls_hash``). ``rejected`` and ``blocked`` stay loose so failures
+    remain recordable without a binding.
+    """
     names = [item.name for item in fields(PromotionRecord)]
     unknown = set(kwargs) - set(names)
     if len(unknown) != 0:
@@ -85,10 +99,7 @@ def make_promotion_record(**kwargs: object) -> PromotionRecord:
         raise ContractError(f"missing PromotionRecord fields: {missing}")
 
     comparators = kwargs["comparator_spec_hashes"]
-    if not isinstance(comparators, tuple) or not all(
-        isinstance(item, str)
-        for item in comparators
-    ):
+    if not isinstance(comparators, tuple) or not all(isinstance(item, str) for item in comparators):
         raise ContractError("comparator_spec_hashes must be a tuple of digest strings")
     comparators_t = tuple(_require_digest("comparator entry", item) for item in comparators)  # type: ignore[arg-type]
 
@@ -106,9 +117,7 @@ def make_promotion_record(**kwargs: object) -> PromotionRecord:
     if (
         isinstance(estimate, bool)
         or not isinstance(estimate, (int, float))
-        or not math.isfinite(
-            float(estimate)
-        )
+        or not math.isfinite(float(estimate))
     ):
         raise ContractError("observed_estimate must be a finite number")
     bounds = kwargs["confidence_bounds"]
@@ -141,6 +150,17 @@ def make_promotion_record(**kwargs: object) -> PromotionRecord:
     schedule_hash = kwargs.get("schedule_hash")
     if schedule_hash is not None:
         schedule_hash = _require_digest("schedule_hash", schedule_hash)
+    if disposition == "promoted":
+        failed = {name: value for name, value in gates.items() if value != "passed"}
+        if len(gates) == 0 or len(failed) != 0:
+            raise ContractError(
+                f"promoted disposition requires all gates passed, got failures: {sorted(failed)}"
+            )
+        if schedule_hash is None:
+            raise ContractError(
+                "promoted disposition requires a non-None schedule_hash binding "
+                "(schedule commitment hash)"
+            )
     environment_hash = kwargs.get("environment_hash")
     if environment_hash is not None:
         environment_hash = _require_digest("environment_hash", environment_hash)

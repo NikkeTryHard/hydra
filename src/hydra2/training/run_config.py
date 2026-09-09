@@ -191,14 +191,13 @@ class DataConfig:
     drop_last: bool = True
     num_workers: int = 0
     world_size: int = 1
-    #: Replay backend (Slice 8 cutover): ``"rust_json"`` is the default and
+    #: Replay backend (Slice 5, flag-gated): ``"python"`` is the default and
+    #: preserves the pre-flag behavior byte-identically; ``"rust_json"``
     #: routes wall-less games through the ``rust_stream`` JSON handoff
-    #: (serial ``workers=0``; ``workers>0`` stays fail-closed). ``"python"``
-    #: preserves the pre-cutover drained-oracle path (thin shim over the
-    #: same Rust stream since Slice 8) for byte-identical fallback. The value
-    #: is part of the run digest, so cross-backend resume refuses fail-closed
+    #: (serial ``workers=0``; ``workers>0`` stays fail-closed). The value is
+    #: part of the run digest, so cross-backend resume refuses fail-closed
     #: (digest mismatch, as does the dataset buffer backend tag).
-    replay_backend: str = "rust_json"
+    replay_backend: str = "python"
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,6 +228,11 @@ class WeightsConfig:
     w_event: dict[str, float] | None = None
     w_belief: dict[str, float] | None = None
     privileged_source_hash: str | None = None
+    #: Legal-only label-smoothing mass ``eps`` in ``[0, 1)`` (default
+    #: ``0.0`` = disabled, byte-identical plain masked CE).  The ``eps``
+    #: mass spreads over the LEGAL set only (illegal mass stays exactly
+    #: zero); the r1 recipe sets ``0.03`` (SOTA-quoted default).
+    label_smoothing: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,6 +243,13 @@ class OptimizerConfig:
     lr: float = 3e-4
     betas: tuple[float, float] = (0.9, 0.999)
     weight_decay: float = 0.01
+    #: Head-specific LR multipliers ``{head_name: mult}`` (SOTA Mortal
+    #: decay/no-decay per-group precedent; dominant policy head may run
+    #: ``0.1``-``0.3``x).  ``None`` (default) is a uniform ``lr`` for all
+    #: parameters.  Registry + validation in this slice; the optimizer
+    #: build consumes these in a follow-up (``stream_train``
+    #: ``_build_optimizer`` is read-only here).
+    head_lr_mult: dict[str, float] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,6 +259,14 @@ class SchedulerConfig:
     name: str = "cosine"
     warmup_updates: int = 100
     parameters: dict[str, Any] = field(default_factory=dict)
+    #: Final LR as a fraction of peak (Mortal
+    #: ``LinearWarmUpCosineAnnealingLR`` ``final`` mirror): ``0.0``
+    #: (default) decays to zero, ``1.0`` holds peak.  Must lie in ``[0, 1]``.
+    final_factor: float = 0.0
+    #: Warmup init LR as a fraction of peak (current ``LinearLR``
+    #: ``start_factor`` ``0.01`` preserved as the default).  Must lie in
+    #: ``(0, 1]``.
+    warmup_start_factor: float = 0.01
 
 
 @dataclass(frozen=True, slots=True)
@@ -284,6 +303,22 @@ class LoopConfig:
     checkpoint_frequency_updates: int = 500
     precision: str = "fp32"
     keep_last_checkpoints: int | None = None
+    #: Stratified rare-action sampling (SOTA R5): when ``True`` the sampler
+    #: oversamples rare kinds (kan/ron families) per ``sampling_ratios`` so
+    #: every optimizer minibatch sees them.  ``False`` (default) preserves
+    #: the canonical cursor order bit-identically.
+    stratified_sampling: bool = False
+    #: Per-kind oversample multipliers, e.g.
+    #: ``{daiminkan: 3.0, ankan: 3.0, kakan: 3.0, ron: 3.0}`` (starter
+    #: ``2``-``4``x).  ``None`` (default) means uniform (no oversampling).
+    #: Values MUST be positive and finite; keys MUST be non-empty strings.
+    sampling_ratios: dict[str, float] | None = None
+    #: Log flattened per-type ``per_type/<kind>/{n,nll,top1,top3,ece}``
+    #: scorecards in train history and eval reports (default ``True``).
+    log_per_type_metrics: bool = True
+    #: Fit post-hoc temperature on eval reports (default ``True``).
+    #: Validation-only, never touches training.
+    fit_temperature: bool = True
 
     @property
     def optimizer_minibatch_size(self) -> int:
@@ -630,6 +665,64 @@ def _weight_map(raw: dict[str, Any], key: str, *, where: str) -> dict[str, float
     return out
 
 
+def _require_bounded_float(
+    raw: dict[str, Any],
+    key: str,
+    *,
+    where: str,
+    lo: float,
+    hi: float,
+    lo_open: bool = False,
+    hi_open: bool = False,
+) -> float:
+    """Strict ``[lo, hi]`` float (``lo_open``/``hi_open`` select open ends)."""
+    value = raw.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ContractError(f"{where}.{key} must be a number, got {value!r}")
+    number = float(value)
+    if not (number == number and number not in (float("inf"), float("-inf"))):
+        raise ContractError(f"{where}.{key} must be finite, got {value!r}")
+    lo_ok = lo < number if lo_open else lo <= number
+    hi_ok = number < hi if hi_open else number <= hi
+    if not (lo_ok and hi_ok):
+        bound = f"{'(' if lo_open else '['}{lo}, {hi}{')' if hi_open else ']'}"
+        raise ContractError(f"{where}.{key} must lie in {bound}, got {value!r}")
+    return number
+
+
+def _positive_float_map(raw: dict[str, Any], key: str, *, where: str) -> dict[str, float] | None:
+    """Optional ``{name: positive-finite-mult}`` map (null when absent)."""
+    value = raw.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ContractError(f"{where}.{key} must be a mapping or null, got {type(value).__name__}")
+    out: dict[str, float] = {}
+    for head, mult in value.items():
+        if not isinstance(head, str) or head == "":
+            raise ContractError(f"{where}.{key} keys must be non-empty strings")
+        if (
+            isinstance(mult, bool)
+            or not isinstance(mult, (int, float))
+            or not (float(mult) == float(mult))
+            or float(mult) in (float("inf"), float("-inf"))
+            or float(mult) <= 0.0
+        ):
+            raise ContractError(f"{where}.{key}[{head!r}] must be positive and finite")
+        out[head] = float(mult)
+    return out
+
+
+def _require_loop_bool(raw: dict[str, Any], key: str, *, default: bool) -> bool:
+    """Strict bool knob (absent/null → ``default``; non-bool raises)."""
+    value = raw.get(key, default)
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise ContractError(f"loop.{key} must be a bool, got {value!r}")
+    return value
+
+
 _DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
 
@@ -709,7 +802,7 @@ def _parse_data(raw: Any) -> DataConfig:
     drop_last = fields.get("drop_last", True)
     if not isinstance(drop_last, bool):
         raise ContractError(f"data.drop_last must be a bool, got {drop_last!r}")
-    replay_backend = fields.get("replay_backend", "rust_json")
+    replay_backend = fields.get("replay_backend", "python")
     if replay_backend not in ("python", "rust_json"):
         raise ContractError(
             f"data.replay_backend must be one of ['python', 'rust_json'], got {replay_backend!r}"
@@ -766,7 +859,15 @@ def _parse_model(raw: Any) -> ModelConfig:
 def _parse_weights(raw: Any) -> WeightsConfig:
     fields = _reject_unknown(
         raw,
-        ("w_policy", "w_placement", "w_value", "w_event", "w_belief", "privileged_source_hash"),
+        (
+            "w_policy",
+            "w_placement",
+            "w_value",
+            "w_event",
+            "w_belief",
+            "privileged_source_hash",
+            "label_smoothing",
+        ),
         where="weights",
     )
     return WeightsConfig(
@@ -784,11 +885,18 @@ def _parse_weights(raw: Any) -> WeightsConfig:
         privileged_source_hash=_digest_pin_or_none(
             fields, "privileged_source_hash", where="weights"
         ),
+        label_smoothing=_require_bounded_float(
+            fields, "label_smoothing", where="weights", lo=0.0, hi=1.0, hi_open=True
+        )
+        if "label_smoothing" in fields and fields.get("label_smoothing") is not None
+        else 0.0,
     )
 
 
 def _parse_optimizer(raw: Any) -> OptimizerConfig:
-    fields = _reject_unknown(raw, ("id", "lr", "betas", "weight_decay"), where="optimizer")
+    fields = _reject_unknown(
+        raw, ("id", "lr", "betas", "weight_decay", "head_lr_mult"), where="optimizer"
+    )
     name = fields.get("id", "adamw")
     if name not in _OPTIMIZER_IDS:
         raise ContractError(f"optimizer.id must be one of {list(_OPTIMIZER_IDS)}, got {name!r}")
@@ -817,11 +925,21 @@ def _parse_optimizer(raw: Any) -> OptimizerConfig:
         or float(decay) < 0.0
     ):
         raise ContractError(f"optimizer.weight_decay must be finite non-negative, got {decay!r}")
-    return OptimizerConfig(name=str(name), lr=float(lr), betas=betas, weight_decay=float(decay))
+    return OptimizerConfig(
+        name=str(name),
+        lr=float(lr),
+        betas=betas,
+        weight_decay=float(decay),
+        head_lr_mult=_positive_float_map(fields, "head_lr_mult", where="optimizer"),
+    )
 
 
 def _parse_scheduler(raw: Any) -> SchedulerConfig:
-    fields = _reject_unknown(raw, ("id", "warmup_updates", "parameters"), where="scheduler")
+    fields = _reject_unknown(
+        raw,
+        ("id", "warmup_updates", "parameters", "final_factor", "warmup_start_factor"),
+        where="scheduler",
+    )
     name = fields.get("id", "cosine")
     if name not in _SCHEDULER_IDS:
         raise ContractError(f"scheduler.id must be one of {list(_SCHEDULER_IDS)}, got {name!r}")
@@ -831,7 +949,21 @@ def _parse_scheduler(raw: Any) -> SchedulerConfig:
     parameters = fields.get("parameters", {})
     if not isinstance(parameters, dict):
         raise ContractError("scheduler.parameters must be a mapping")
-    return SchedulerConfig(name=str(name), warmup_updates=warmup, parameters=dict(parameters))
+    return SchedulerConfig(
+        name=str(name),
+        warmup_updates=warmup,
+        parameters=dict(parameters),
+        final_factor=_require_bounded_float(
+            fields, "final_factor", where="scheduler", lo=0.0, hi=1.0
+        )
+        if "final_factor" in fields and fields.get("final_factor") is not None
+        else 0.0,
+        warmup_start_factor=_require_bounded_float(
+            fields, "warmup_start_factor", where="scheduler", lo=0.0, hi=1.0, lo_open=True
+        )
+        if "warmup_start_factor" in fields and fields.get("warmup_start_factor") is not None
+        else 0.01,
+    )
 
 
 def _parse_runtime(raw: Any) -> RuntimeConfig:
@@ -891,6 +1023,10 @@ def _parse_loop(raw: Any) -> LoopConfig:
             "checkpoint_frequency_updates",
             "precision",
             "keep_last_checkpoints",
+            "stratified_sampling",
+            "sampling_ratios",
+            "log_per_type_metrics",
+            "fit_temperature",
         ),
         where="loop",
     )
@@ -928,6 +1064,10 @@ def _parse_loop(raw: Any) -> LoopConfig:
         keep_last_checkpoints=None
         if fields.get("keep_last_checkpoints") is None
         else _require_positive_int(fields, "keep_last_checkpoints", where="loop"),
+        stratified_sampling=_require_loop_bool(fields, "stratified_sampling", default=False),
+        sampling_ratios=_positive_float_map(fields, "sampling_ratios", where="loop"),
+        log_per_type_metrics=_require_loop_bool(fields, "log_per_type_metrics", default=True),
+        fit_temperature=_require_loop_bool(fields, "fit_temperature", default=True),
     )
 
 
@@ -1266,17 +1406,23 @@ def run_config_to_dict(config: RunConfig) -> dict[str, Any]:
             "w_event": None if config.weights.w_event is None else dict(config.weights.w_event),
             "w_belief": None if config.weights.w_belief is None else dict(config.weights.w_belief),
             "privileged_source_hash": config.weights.privileged_source_hash,
+            "label_smoothing": config.weights.label_smoothing,
         },
         "optimizer": {
             "id": config.optimizer.name,
             "lr": config.optimizer.lr,
             "betas": [config.optimizer.betas[0], config.optimizer.betas[1]],
             "weight_decay": config.optimizer.weight_decay,
+            "head_lr_mult": None
+            if config.optimizer.head_lr_mult is None
+            else dict(config.optimizer.head_lr_mult),
         },
         "scheduler": {
             "id": config.scheduler.name,
             "warmup_updates": config.scheduler.warmup_updates,
             "parameters": dict(config.scheduler.parameters),
+            "final_factor": config.scheduler.final_factor,
+            "warmup_start_factor": config.scheduler.warmup_start_factor,
         },
         "runtime": {
             "adapter_id": config.runtime.adapter_id,
@@ -1292,6 +1438,12 @@ def run_config_to_dict(config: RunConfig) -> dict[str, Any]:
             "checkpoint_frequency_updates": config.loop.checkpoint_frequency_updates,
             "precision": config.loop.precision,
             "keep_last_checkpoints": config.loop.keep_last_checkpoints,
+            "stratified_sampling": config.loop.stratified_sampling,
+            "sampling_ratios": None
+            if config.loop.sampling_ratios is None
+            else dict(config.loop.sampling_ratios),
+            "log_per_type_metrics": config.loop.log_per_type_metrics,
+            "fit_temperature": config.loop.fit_temperature,
         },
         "seeds": {
             "data_seed": config.seeds.data_seed,
@@ -1753,17 +1905,22 @@ def format_plan(
         f"workers={config.data.num_workers}x{config.data.world_size}",
         f"model: {config.model.architecture_id} actions={config.model.action_count}",
         f"weights: policy={config.weights.w_policy} placement={config.weights.w_placement} "
-        f"value={config.weights.w_value}",
+        f"value={config.weights.w_value} smoothing={config.weights.label_smoothing}",
         f"optimizer: {config.optimizer.name} lr={config.optimizer.lr} "
-        f"betas={list(config.optimizer.betas)} decay={config.optimizer.weight_decay}",
-        f"scheduler: {config.scheduler.name} warmup={config.scheduler.warmup_updates}",
+        f"betas={list(config.optimizer.betas)} decay={config.optimizer.weight_decay} "
+        f"head_lr_mult={config.optimizer.head_lr_mult}",
+        f"scheduler: {config.scheduler.name} warmup={config.scheduler.warmup_updates} "
+        f"final-x{config.scheduler.final_factor} "
+        f"warmup-start-x{config.scheduler.warmup_start_factor}",
         f"runtime: {config.runtime.adapter_id} {config.runtime.device} "
         f"{config.runtime.precision} {config.runtime.compile_mode}",
         f"loop: microbatch={config.loop.microbatch_size} accum={config.loop.accumulation_steps} "
         f"minibatch={minibatch} clip={config.loop.gradient_clip_norm} "
         f"max_updates={config.loop.max_updates}",
         f"ckpt_every={config.loop.checkpoint_frequency_updates}",
-        f"keep={config.loop.keep_last_checkpoints}",
+        f"keep={config.loop.keep_last_checkpoints} "
+        f"stratified={config.loop.stratified_sampling} ratios={config.loop.sampling_ratios} "
+        f"per_type={config.loop.log_per_type_metrics} fit_temp={config.loop.fit_temperature}",
         f"seeds: data={config.seeds.data_seed} train={config.seeds.train_seed} "
         f"selection={config.seeds.selection_seed}",
         f"selection: N={config.selection.N} design={config.selection.design} "

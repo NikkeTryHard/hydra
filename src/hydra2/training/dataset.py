@@ -28,23 +28,32 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pyarrow.parquet as pq
 import torch
 
-from hydra2.contracts.common import ContractError, CorruptArtifactError
+from hydra2.contracts.common import ContractError, CorruptArtifactError, make_digest_text
+from hydra2.contracts.event import EventEnvelope, EventPayload, PublicStateDelta
+from hydra2.contracts.observation import ActorObservation, VisibleMeld
 from hydra2.data.parquet import (
     ACTOR_FIELDS,
     FORBIDDEN_IN_ACTOR,
     verify_no_privileged_leakage,
 )
+from hydra2.models.encoder import ActorTensorBatch, encode_observations
+from hydra2.models.schema import BASELINE_ACTION_COUNT
 
 __all__ = [
+    "DEFAULT_STRATIFIED_RATIOS",
+    "RARE_ACTION_KINDS",
     "AuthoritativeParquetDataset",
     "SamplerState",
+    "build_stratified_order",
+    "encode_observation_rows",
     "tensorize_actor_row",
 ]
 
@@ -107,6 +116,8 @@ def _verify_shards(shards: list[Path]) -> None:
                 )
         if num_rows == 0:
             raise ContractError(f"actor shard {shard.name} contains zero rows")
+
+
 def _lexicographic_hash(s: str) -> int:
     return int(hashlib.sha256(s.encode()).hexdigest()[:8], 16)
 
@@ -163,6 +174,662 @@ def tensorize_actor_row(
         "chosen_action_id": torch.tensor(chosen, dtype=torch.long),
         "decision_id": decision_id,
     }
+
+
+def _visible_meld_from_json(raw: Any, *, where: str) -> VisibleMeld:
+    """Rebuild one :class:`VisibleMeld` from its ``to_json`` document."""
+    if not isinstance(raw, dict):
+        raise ContractError(f"unparseable visible_meld for {where!r}: not a mapping")
+    try:
+        tiles_raw: Any = raw.get("tiles", ())
+        tiles: tuple[int, ...] = tuple(int(t) for t in tiles_raw)  # type: ignore[union-attr]
+        return VisibleMeld(
+            meld_id=raw.get("meld_id"),  # type: ignore[arg-type]
+            kind=raw.get("kind"),  # type: ignore[arg-type]
+            owner=raw.get("owner"),  # type: ignore[arg-type]
+            source_seat=raw.get("source_seat"),  # type: ignore[arg-type]
+            called_tile=raw.get("called_tile"),  # type: ignore[arg-type]
+            tiles=tiles,  # type: ignore[arg-type]
+        )
+    except ContractError:
+        raise
+    except Exception as exc:
+        raise ContractError(f"unparseable visible_meld for {where!r}: {exc}") from exc
+
+
+def _delta_from_json(raw: Any, *, where: str) -> PublicStateDelta:
+    if not isinstance(raw, dict):
+        raise ContractError(f"unparseable public_delta for {where!r}: not a mapping")
+    try:
+        path_raw: Any = raw.get("path", [])
+        path: tuple[str | int, ...] = tuple(path_raw)  # type: ignore[arg-type]
+        return PublicStateDelta(
+            path=path,  # type: ignore[arg-type]
+            operation=raw.get("operation"),  # type: ignore[arg-type]
+            value=raw.get("value"),
+        )
+    except ContractError:
+        raise
+    except Exception as exc:
+        raise ContractError(f"unparseable public_delta for {where!r}: {exc}") from exc
+
+
+def _payload_from_json(raw: Any, *, where: str) -> EventPayload:
+    if not isinstance(raw, dict):
+        raise ContractError(f"unparseable event payload for {where!r}: not a mapping")
+    try:
+        scores_raw: Any = raw.get("scores")
+        scores: tuple[int, int, int, int] | None = (
+            None if scores_raw is None else tuple(int(s) for s in scores_raw)  # type: ignore[union-attr]
+        )
+        return EventPayload(
+            kind=raw.get("kind"),  # type: ignore[arg-type]
+            actor=raw.get("actor"),  # type: ignore[arg-type]
+            tile=raw.get("tile"),  # type: ignore[arg-type]
+            action_id=raw.get("action_id"),  # type: ignore[arg-type]
+            source_seat=raw.get("source_seat"),  # type: ignore[arg-type]
+            consumed_tiles=tuple(raw.get("consumed_tiles", ())),  # type: ignore[arg-type]
+            offered_action_ids=tuple(raw.get("offered_action_ids", ())),  # type: ignore[arg-type]
+            accepted_action_ids=tuple(raw.get("accepted_action_ids", ())),  # type: ignore[arg-type]
+            round_index=raw.get("round_index"),  # type: ignore[arg-type]
+            scores=scores,  # type: ignore[arg-type]
+            reason=raw.get("reason"),  # type: ignore[arg-type]
+        )
+    except ContractError:
+        raise
+    except Exception as exc:
+        raise ContractError(f"unparseable event payload for {where!r}: {exc}") from exc
+
+
+def _envelope_from_json(raw: Any, *, where: str) -> EventEnvelope:
+    if not isinstance(raw, dict):
+        raise ContractError(f"unparseable history event for {where!r}: not a mapping")
+    try:
+        payload = _payload_from_json(raw.get("payload"), where=where)
+        deltas_raw: Any = raw.get("public_delta", ())
+        deltas: tuple[PublicStateDelta, ...] = tuple(
+            _delta_from_json(d, where=where)
+            for d in deltas_raw  # type: ignore[union-attr]
+        )
+        return EventEnvelope(
+            game_id=str(raw.get("game_id")),
+            sequence=int(raw.get("sequence")),  # type: ignore[arg-type]
+            kind=raw.get("kind"),  # type: ignore[arg-type]
+            actor=raw.get("actor"),  # type: ignore[arg-type]
+            visibility=raw.get("visibility"),  # type: ignore[arg-type]
+            visible_to=tuple(raw.get("visible_to", ())),  # type: ignore[arg-type]
+            payload=payload,
+            public_delta=deltas,
+            rules_hash=make_digest_text(str(raw.get("rules_hash"))),
+            schema_hash=make_digest_text(str(raw.get("schema_hash"))),
+        )
+    except Exception as exc:
+        raise ContractError(f"unparseable history event for {where!r}: {exc}") from exc
+
+
+def _actor_observation_from_json_dict(doc: Any, *, decision_id: str) -> ActorObservation:
+    """Rebuild one :class:`ActorObservation` from its ``to_json`` document.
+
+    Raises :class:`ContractError` on any unparseable content — never falls
+    back to hashing.  The stored ``observation_hash`` (when present) is
+    revalidated by :class:`ActorObservation` itself.
+    """
+    if not isinstance(doc, dict):
+        raise ContractError(f"unparseable actor_observation for {decision_id!r}: not a mapping")
+    # Bridge ingress (W3-A): the Rust JSON handoff emits a 13-key string
+    # projection (marked by its ``projection`` tag) as bridge INPUT, never as
+    # encoder input. Full docs are the 35-field engine ``to_json`` documents
+    # assembled by ``rust_observations.assemble_game_rows``. An unexpanded
+    # projection reaching the encoder path fails closed here (named reason,
+    # never synthesized into a full doc).
+    if "projection" in doc:
+        raise ContractError(
+            f"unexpanded-projection-row for {decision_id!r}: "
+            f"projection tag {doc.get('projection')!r} must be expanded via "
+            "rust_observations.assemble_game_rows before encoding"
+        )
+    where = decision_id
+    try:
+        meld_rows_raw: Any = doc.get("visible_melds", ())
+        meld_rows: tuple[tuple[VisibleMeld, ...], ...] = tuple(
+            tuple(_visible_meld_from_json(m, where=where) for m in row)  # type: ignore[union-attr]
+            for row in meld_rows_raw  # type: ignore[union-attr]
+        )
+        history_raw: Any = doc.get("visible_history", ())
+        history: tuple[EventEnvelope, ...] = tuple(
+            _envelope_from_json(e, where=where)
+            for e in history_raw  # type: ignore[union-attr]
+        )
+    except ContractError:
+        raise
+    except Exception as exc:
+        raise ContractError(f"unparseable actor_observation for {decision_id!r}: {exc}") from exc
+    kwargs: dict[str, Any] = dict(doc)
+    kwargs["visible_melds"] = meld_rows
+    kwargs["visible_history"] = history
+    try:
+        return ActorObservation(**kwargs)  # type: ignore[arg-type]
+    except ContractError:
+        raise
+    except Exception as exc:
+        raise ContractError(f"unparseable actor_observation for {decision_id!r}: {exc}") from exc
+
+
+def _parse_actor_observation(row: dict[str, Any]) -> ActorObservation:
+    decision_id = str(row.get("decision_id", ""))
+    raw: Any = row.get("actor_observation")
+    if isinstance(raw, dict):
+        doc: Any = raw
+    elif isinstance(raw, str):
+        try:
+            doc = json.loads(raw)
+        except Exception as exc:
+            raise ContractError(
+                f"unparseable actor_observation for {decision_id!r}: not JSON"
+            ) from exc
+    else:
+        raise ContractError(
+            f"unparseable actor_observation for {decision_id!r}: "
+            f"expected str/dict, got {type(raw).__name__}"
+        )
+    return _actor_observation_from_json_dict(doc, decision_id=decision_id)
+
+
+_REAL_COUNT_KEYS: tuple[str, ...] = (
+    "hand_number",
+    "honba",
+    "riichi_sticks",
+    "kan_count",
+    "round_index",
+)
+
+
+def _real_features_from_encoder_batch(batch: Any, *, feature_dim: int) -> torch.Tensor:
+    """Fold real encoder tensors into a fixed ``[B, feature_dim]`` float matrix.
+
+    Every column derives from actor-visible encoder content (tile counts,
+    dora, scores, seats, scalars, history kinds); no decision_id hash enters.
+    Folding is a strided sum scaled by the bin fill so any single wide-column
+    change moves exactly one output bin.
+    """
+    feats: dict[str, torch.Tensor] = batch.features
+    parts: list[torch.Tensor] = []
+    parts.append(feats["concealed_hand_counts"].to(torch.float32) / 4.0)
+    parts.append(feats["visible_discards_counts"].to(torch.float32) / 4.0)
+    parts.append(feats["dora_indicators"].to(torch.float32) / 34.0)
+    parts.append(feats["scores"].to(torch.float32) / 40000.0)
+    parts.append(feats["seat_winds"].to(torch.float32) / 3.0)
+    parts.append(feats["ippatsu_active"].to(torch.float32))
+    parts.append(feats["riichi_states"].to(torch.float32) / 2.0)
+    parts.append(((feats["own_drawn_tile"].to(torch.float32) + 1.0) / 136.0).unsqueeze(1))
+    for key, scale in (
+        ("actor", 3.0),
+        ("dealer", 3.0),
+        ("turn_actor", 3.0),
+        ("phase", 8.0),
+        ("actor_furiten", 3.0),
+        ("round_wind", 3.0),
+    ):
+        parts.append((feats[key].to(torch.float32) / scale).unsqueeze(1))
+    parts.extend((feats[key].to(torch.float32) / 8.0).unsqueeze(1) for key in _REAL_COUNT_KEYS)
+    parts.append((feats["live_wall_tiles_remaining"].to(torch.float32) / 136.0).unsqueeze(1))
+    parts.append(feats["actor_can_riichi"].to(torch.float32).unsqueeze(1))
+    parts.append(feats["actor_can_tsumo"].to(torch.float32).unsqueeze(1))
+    parts.append(feats["history_event_kind"].to(torch.float32) / 16.0)
+    parts.append(feats["history_mask"].to(torch.float32))
+    wide = torch.cat([p.reshape(p.shape[0], -1) for p in parts], dim=1)
+    batch_size = wide.shape[0]
+    if feature_dim <= 0:
+        raise ContractError(f"feature_dim must be positive, got {feature_dim}")
+    out = torch.zeros((batch_size, feature_dim), dtype=torch.float32)
+    width = wide.shape[1]
+    if width == 0:
+        return out
+    idx = torch.arange(width) % feature_dim
+    out.scatter_add_(1, idx.unsqueeze(0).expand(batch_size, width), wide)
+    denom = (width + feature_dim - 1) // feature_dim
+    return out / float(denom)
+
+
+# ---------------------------------------------------------------------------
+# Encode-side redundancy deletion (Phase 2A/B.1): digest-versioned batch
+# tensor cache + live-object fast path.
+#
+# ``encode_observation_rows`` parses each row's ``actor_observation`` JSON
+# into validated contract objects and re-hashes the full visible history per
+# row (~88% of encode time on history-bearing rows). String rows (the
+# parquet column shape) are byte-identical across repeat encodes, so a batch
+# over the same raw bytes, chosen ids, code, and config encodes
+# byte-identical tensors. The cache memoizes those tensors: repeat encodes
+# (multi-epoch parquet training, re-verification) skip parsing, validation,
+# hashing, and encoding entirely. Misses run the unchanged validating path,
+# so firewall/quarantine behavior is identical; any tampered or corrupted
+# byte misses. Non-string rows bypass the cache and use the
+# direct/stash/parse paths.
+# ---------------------------------------------------------------------------
+
+#: Resident batch-tensor entries (each ~9KB/row encoded planes; 32 batches
+#: of 1024 ≈ 300MB worst case, well under training-box headroom).
+_BATCH_TENSOR_CACHE_CAP = 32
+
+#: Key ``(marker, code_digest, feature_dim, num_actions, rows)`` where
+#: ``rows`` is ``((decision_id, raw_sha256, chosen_raw), ...)`` in batch
+#: order. Values hold unpinned cloned tensors (pinned on serve, same
+#: conditions as the miss path); every served batch is a fresh clone so
+#: downstream mutation can never poison the cache.
+_BATCH_TENSOR_CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
+
+#: Digest of the module sources whose behavior cached tensors memoize.
+#: Any edit to the parse/validate/encode chain invalidates every entry
+#: (mismatch → recompute, never serve stale).
+_ENCODE_CODE_DIGEST: str | None = None
+
+
+def _encode_code_digest() -> str:
+    """Process-once digest over the encode chain's module sources."""
+    global _ENCODE_CODE_DIGEST
+    cached = _ENCODE_CODE_DIGEST
+    if cached is not None:
+        return cached
+    try:
+        import sys
+
+        parts: list[bytes] = []
+        for name in (
+            "hydra2.training.dataset",
+            "hydra2.contracts.observation",
+            "hydra2.contracts.event",
+            "hydra2.contracts.canonical",
+            "hydra2.contracts.common",
+            "hydra2.models.encoder",
+            "hydra2.models.schema",
+        ):
+            path = sys.modules[name].__file__
+            if path is None:
+                raise ImportError(f"module {name} has no source path")
+            with open(path, "rb") as handle:
+                parts.append(handle.read())
+        cached = "sha256:" + hashlib.sha256(b"\x00".join(parts)).hexdigest()
+    except Exception:
+        cached = "unknown"
+    _ENCODE_CODE_DIGEST = cached
+    return cached
+
+
+def _row_raw_fingerprint(row: dict[str, Any]) -> str | None:
+    """sha256 of a string row's raw JSON bytes, or ``None`` if not cachable.
+
+    Only string rows (the parquet column shape) participate in the batch
+    tensor cache: byte-identity of the raw document binds the content
+    exactly, so any tampered or corrupted byte misses and takes the
+    validating parse path. Live objects and dict rows bypass the cache and
+    use the direct/stash/parse paths. Reads nothing but the raw bytes;
+    never validates.
+    """
+    raw: Any = row.get("actor_observation")
+    if not isinstance(raw, str) or raw == "":
+        return None
+    return "sha256:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _batch_cache_key(
+    row_list: list[dict[str, Any]],
+    chosen_raws: list[int],
+    fingerprints: list[str | None],
+    *,
+    feature_dim: int,
+    num_actions: int,
+) -> tuple[Any, ...] | None:
+    """Cache key for an all-string batch, else ``None`` (bypass, no store)."""
+    if any(fingerprint is None for fingerprint in fingerprints):
+        return None
+    return (
+        "encode-v1",
+        _encode_code_digest(),
+        feature_dim,
+        num_actions,
+        tuple(
+            (str(row.get("decision_id", "")), fingerprint, chosen)
+            for row, fingerprint, chosen in zip(row_list, fingerprints, chosen_raws, strict=True)
+        ),
+    )
+
+
+def _clone_cached_batch(stored: dict[str, Any]) -> dict[str, Any]:
+    """Fresh-tensor copy of a cached batch (callers may mutate the return)."""
+    actor = stored["actor_batch"]
+    if not isinstance(actor, ActorTensorBatch):
+        raise ContractError("cached batch holds no ActorTensorBatch")
+    memo: dict[int, torch.Tensor] = {}
+
+    def _clone(tensor: torch.Tensor) -> torch.Tensor:
+        known = memo.get(id(tensor))
+        if known is None:
+            known = tensor.clone()
+            memo[id(tensor)] = known
+        return known
+
+    features = {name: _clone(tensor) for name, tensor in actor.features.items()}
+    fresh_actor = ActorTensorBatch(
+        features=features,
+        history_mask=features["history_mask"],
+        legal_mask=features["legal_mask"],
+        observation_hashes=actor.observation_hashes,
+        actor_seats=features["actor_seats"],
+    )
+    return {
+        "features": stored["features"].clone(),
+        "legal_mask": stored["legal_mask"].clone(),
+        "chosen_action_id": stored["chosen_action_id"].clone(),
+        "actor_batch": fresh_actor,
+    }
+
+
+def _pin_cloned_batch(batch: dict[str, Any]) -> dict[str, Any]:
+    """Apply the miss-path CUDA pinning to cloned tensors (same conditions)."""
+    if not torch.cuda.is_available():
+        return batch
+    actor = batch["actor_batch"]
+    try:
+        pinned = {name: tensor.pin_memory() for name, tensor in actor.features.items()}
+    except Exception:
+        return batch
+    batch = dict(batch)
+    batch["actor_batch"] = ActorTensorBatch(
+        features=pinned,
+        history_mask=pinned["history_mask"],
+        legal_mask=pinned["legal_mask"],
+        observation_hashes=actor.observation_hashes,
+        actor_seats=pinned["actor_seats"],
+    )
+    try:
+        batch["features"] = batch["features"].pin_memory()
+        batch["legal_mask"] = batch["legal_mask"].pin_memory()
+        batch["chosen_action_id"] = batch["chosen_action_id"].pin_memory()
+    except Exception:
+        pass
+    return batch
+
+
+def _batch_cache_store(key: tuple[Any, ...], batch: dict[str, Any]) -> None:
+    """Store unpinned clones of a freshly encoded batch (bounded, FIFO)."""
+    if len(_BATCH_TENSOR_CACHE) >= _BATCH_TENSOR_CACHE_CAP:
+        drop = max(1, _BATCH_TENSOR_CACHE_CAP // 4)
+        for old in list(_BATCH_TENSOR_CACHE)[:drop]:
+            del _BATCH_TENSOR_CACHE[old]
+    _BATCH_TENSOR_CACHE[key] = _clone_cached_batch(batch)
+
+
+def _resolve_live_or_parse(row: dict[str, Any]) -> ActorObservation:
+    """Return the row's live observation when stashed, else parse+validate.
+
+    Perf-C P1a: replay capture stashes the already-validated
+    :class:`ActorObservation` out of band keyed by ``decision_id`` (see
+    :mod:`hydra2.data.replay_expand`). A cache hit whose digest matches the
+    row's recorded ``observation_hash`` skips the serialize/re-parse/
+    re-validate round trip entirely; anything else (parquet rows, cache
+    misses, digest mismatch) takes the unchanged validating parse path, so
+    the returned object is always identical either way.
+
+    Phase 2A/B.1: rows already carrying the live :class:`ActorObservation`
+    (replay handoff without a JSON boundary) are consumed directly — no
+    stash lookup, no parse, no revalidation, no re-hash. As with the JSON
+    path (which builds the object from the document, ignoring the row's
+    own ``decision_id``), content wins: the sim-replay path stamps a
+    stream-local ``decision_id`` inside the observation that differs from
+    the row's canonical id by construction. When the row carries a
+    top-level ``observation_hash`` it must match the object (same rule as
+    the stash handoff — a divergent attachment never silently wins);
+    anything else falls through to the validating parse path, which owns
+    the error.
+    """
+    from hydra2.data.replay_expand import pop_live_observation
+
+    raw: Any = row.get("actor_observation")
+    if isinstance(raw, ActorObservation):
+        recorded = row.get("observation_hash")
+        if raw.observation_hash is not None and (
+            not isinstance(recorded, str) or str(raw.observation_hash) == recorded
+        ):
+            return raw
+    if isinstance(raw, dict):
+        live = pop_live_observation(str(row.get("decision_id", "")))
+        if (
+            isinstance(live, ActorObservation)
+            and live.observation_hash is not None
+            and str(live.observation_hash) == str(raw.get("observation_hash"))
+        ):
+            return live
+        if live is not None:
+            # Key collision with divergent content must never silently win:
+            # fall through to the validating parse (which owns the error).
+            pass
+    return _parse_actor_observation(row)
+
+
+def encode_observation_rows(
+    rows: Sequence[dict[str, Any]],
+    *,
+    num_actions: int,
+    feature_dim: int = 16,
+) -> dict[str, Any]:
+    """Tensorize rows through the real actor-visible encoder.
+
+    Parses each row's ``actor_observation`` JSON into an
+    :class:`ActorObservation` and encodes the batch with
+    :func:`encode_observations`.  ``features`` folds real encoder content
+    (never a decision_id hash), ``legal_mask`` is the observation's own mask
+    (sliced to ``num_actions`` when testing with a small vocab), and
+    ``chosen_action_id`` is the record's choice modulo ``num_actions``,
+    validated legal.  The encoded :class:`ActorTensorBatch` is also carried
+    under ``actor_batch`` for the real-model input bridge (loop routes
+    ``model.evaluate(batch['actor_batch'])``); flat keys stay byte-identical
+    for compat.  Rows whose validated observation was stashed live at
+    capture time skip the re-parse (identical objects either way); rows
+    already carrying the live object skip it outright.  Repeat string
+    batches over identical raw bytes are served from the digest-versioned
+    tensor cache (tensor-equal, freshly cloned).  Any unparseable row raises
+    :class:`ContractError` — never falls back to the synthetic hash
+    stand-in.
+    """
+    if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+        raise ContractError(f"rows must be a sequence of mappings, got {type(rows).__name__}")
+    row_list: list[dict[str, Any]] = list(rows)
+    if len(row_list) == 0:
+        raise ContractError("encode_observation_rows requires at least one row")
+    if num_actions <= 0:
+        raise ContractError(f"num_actions must be positive, got {num_actions}")
+    if num_actions > BASELINE_ACTION_COUNT:
+        raise ContractError(
+            f"num_actions {num_actions} exceeds baseline {BASELINE_ACTION_COUNT} in real mode"
+        )
+    if feature_dim <= 0:
+        raise ContractError(f"feature_dim must be positive, got {feature_dim}")
+    chosen_raws: list[int] = []
+    fingerprints: list[str | None] = []
+    for row in row_list:
+        if not isinstance(row, dict):
+            raise ContractError(f"row must be a mapping, got {type(row).__name__}")
+        try:
+            chosen_raw = int(row["chosen_action_id"])
+        except (KeyError, TypeError, ValueError) as exc:
+            did = row.get("decision_id")
+            raise ContractError(f"unparseable chosen_action_id for {did!r}") from exc
+        chosen_raws.append(chosen_raw)
+        fingerprints.append(_row_raw_fingerprint(row))
+    cache_key = _batch_cache_key(
+        row_list, chosen_raws, fingerprints, feature_dim=feature_dim, num_actions=num_actions
+    )
+    if cache_key is not None:
+        stored = _BATCH_TENSOR_CACHE.get(cache_key)
+        if stored is not None:
+            return _pin_cloned_batch(_clone_cached_batch(stored))
+    observations: list[ActorObservation] = [_resolve_live_or_parse(row) for row in row_list]
+    try:
+        encoded = encode_observations(observations)
+    except ContractError:
+        raise
+    except Exception as exc:
+        raise ContractError(f"unparseable actor_observation batch: {exc}") from exc
+    full_legal = encoded.legal_mask
+    if full_legal.dim() != 2 or full_legal.shape[0] != len(row_list):
+        raise ContractError(f"encoder legal_mask batch mismatch {tuple(full_legal.shape)}")
+    if num_actions == BASELINE_ACTION_COUNT:
+        legal_mask = full_legal.to(torch.bool).contiguous()
+    else:
+        legal_mask = full_legal[:, :num_actions].to(torch.bool).contiguous()
+    for i in range(len(row_list)):
+        if not bool(legal_mask[i].any().item()):
+            raise ContractError(
+                f"real legal_mask has no legal action for {observations[i].decision_id!r} "
+                f"(sliced to {num_actions})"
+            )
+    chosen_ids: list[int] = []
+    for i, raw in enumerate(chosen_raws):
+        chosen = raw % num_actions
+        if not bool(legal_mask[i, chosen].item()):
+            raise ContractError(
+                f"chosen action {chosen} (raw {raw}) illegal for {observations[i].decision_id!r}"
+            )
+        chosen_ids.append(chosen)
+    features = _real_features_from_encoder_batch(encoded, feature_dim=feature_dim)
+    chosen_action_id = torch.tensor(chosen_ids, dtype=torch.long)
+    if torch.cuda.is_available():
+        try:
+            features = features.pin_memory()
+            legal_mask = legal_mask.pin_memory()
+            chosen_action_id = chosen_action_id.pin_memory()
+        except Exception:
+            pass
+    result = {
+        "features": features,
+        "legal_mask": legal_mask,
+        "chosen_action_id": chosen_action_id,
+        "actor_batch": encoded,
+    }
+    if cache_key is not None:
+        _batch_cache_store(cache_key, result)
+    return result
+
+
+#: Rare-action families oversampled by the stratified sampler (SOTA R5).
+#: ``kan`` covers the daiminkan/ankan/kakan kinds; ``ron``/``tsumo`` are the
+#: winning-call kinds.  Ratios are caller-supplied; the r1 recipe uses 3x.
+RARE_ACTION_KINDS: tuple[str, ...] = ("daiminkan", "ankan", "kakan", "ron", "tsumo")
+
+#: Starter oversample ratios (SOTA R5 quotes ``2``-``4``x for rare kan/ron;
+#: mechanism default when the caller enables stratification without ratios).
+DEFAULT_STRATIFIED_RATIOS: dict[str, float] = {
+    "daiminkan": 3.0,
+    "ankan": 3.0,
+    "kakan": 3.0,
+    "ron": 3.0,
+}
+
+
+def _row_action_kind(row: dict[str, Any]) -> str:
+    """Best-effort action kind for one raw row (sampler bucketing only).
+
+    Explicit ``action_kind``/``decision_kind`` string fields win (the stream
+    layer threads these in a follow-up); otherwise the bucket is
+    ``"unknown"``.  Never parses observations and never touches the
+    ingress/encode path — bucketing labels only.
+    """
+    for key in ("action_kind", "decision_kind", "kind"):
+        value = row.get(key)
+        if isinstance(value, str) and value != "":
+            return value
+    return "unknown"
+
+
+def _validate_sampling_ratios(ratios: Mapping[str, Any] | None) -> dict[str, float] | None:
+    """Strict ``{kind: positive-finite-mult}`` validation (null stays null)."""
+    if ratios is None:
+        return None
+    if not isinstance(ratios, Mapping):
+        raise ContractError(
+            f"sampling_ratios must be a mapping or null, got {type(ratios).__name__}"
+        )
+    out: dict[str, float] = {}
+    for kind, mult in ratios.items():
+        if not isinstance(kind, str) or kind == "":
+            raise ContractError("sampling_ratios keys must be non-empty strings")
+        if (
+            isinstance(mult, bool)
+            or not isinstance(mult, (int, float))
+            or not (float(mult) == float(mult))
+            or float(mult) in (float("inf"), float("-inf"))
+            or float(mult) <= 0.0
+        ):
+            raise ContractError(f"sampling_ratios[{kind!r}] must be positive and finite")
+        out[kind] = float(mult)
+    return out
+
+
+def _validate_kind_by_id(kind_by_id: Mapping[str, str] | None) -> dict[str, str] | None:
+    """Strict ``{decision_id: kind}`` validation (null stays null)."""
+    if kind_by_id is None:
+        return None
+    if not isinstance(kind_by_id, Mapping):
+        raise ContractError(
+            f"kind_by_id must be a mapping or null, got {type(kind_by_id).__name__}"
+        )
+    out: dict[str, str] = {}
+    for did, kind in kind_by_id.items():
+        if not isinstance(did, str) or did == "":
+            raise ContractError("kind_by_id keys must be non-empty decision ids")
+        if not isinstance(kind, str) or kind == "":
+            raise ContractError(f"kind_by_id[{did!r}] must be a non-empty kind string")
+        out[did] = kind
+    return out
+
+
+def build_stratified_order(
+    kinds: Sequence[str],
+    ratios: Mapping[str, float] | None,
+    *,
+    seed: int = 0,
+) -> list[int]:
+    """Deterministic stratified/oversampled row order over ``range(len(kinds))``.
+
+    Each kind ``k`` with count ``c`` and ratio ``r`` (default ``1.0``)
+    contributes ``max(1, round(c * r))`` positions (cycled deterministically
+    through its rows when ``r > 1``); kinds interleave round-robin in sorted
+    kind order so rare kinds spread evenly through the epoch instead of
+    clustering.  ``seed`` is accepted for API symmetry with the cursor
+    sampler (the construction is fully determined by ``(kinds, ratios)``;
+    the caller's base permutation already carries the seed entropy).
+    """
+    kind_list = list(kinds)
+    for kind in kind_list:
+        if not isinstance(kind, str) or kind == "":
+            raise ContractError(f"stratified kinds must be non-empty strings, got {kind!r}")
+    resolved = _validate_sampling_ratios(ratios if ratios is not None else {})
+    by_kind: dict[str, list[int]] = {}
+    for pos, kind in enumerate(kind_list):
+        by_kind.setdefault(kind, []).append(pos)
+    expanded: dict[str, list[int]] = {}
+    for kind in sorted(by_kind):
+        members = by_kind[kind]
+        ratio = float((resolved or {}).get(kind, 1.0))
+        target = max(1, round(len(members) * ratio))
+        expanded[kind] = [members[i % len(members)] for i in range(target)]
+    order: list[int] = []
+    pending = True
+    cursor = 0
+    ordered_kinds = sorted(expanded)
+    while pending:
+        pending = False
+        for kind in ordered_kinds:
+            members = expanded[kind]
+            if cursor < len(members):
+                order.append(members[cursor])
+                pending = True
+        cursor += 1
+    _ = seed  # documented no-op: determinism comes from (kinds, ratios)
+    return order
+
+
 class AuthoritativeParquetDataset:
     """Deterministic authoritative parquet dataset for WP-05B.
 
@@ -170,10 +837,12 @@ class AuthoritativeParquetDataset:
         parquet_dir: directory containing ``actor-*.parquet`` shards written
             by :func:`hydra2.data.parquet.write_actor_shards`.
         feature_dim: synthetic feature dimensionality (used when observation
-            is not pre-tensorized).
+            is not pre-tensorized).  In ``'real'`` mode it sets the folded
+            real-feature width.
         num_actions: canonical action vocab size.  Defaults to the frozen
             action table size (6792) when ``None`` is passed; tests may use
-            a smaller value for speed by passing e.g. ``16``.
+            a smaller value for speed by passing e.g. ``16``.  In ``'real'``
+            mode a smaller value slices the observation's own legal mask.
         seed: deterministic shuffle seed.  ``None`` disables shuffling
             (canonical lexicographic order).  When set, the permutation is
             computed once from the seed and the cursor tracks offset into
@@ -181,6 +850,23 @@ class AuthoritativeParquetDataset:
         verify: when ``True`` (default) shard verification runs on init;
             ``False`` skips verification for unit probes that inject bad rows
             directly.
+        tensorize: ``'synthetic'`` (default) keeps the deterministic
+            decision_id-hash stand-in; ``'real'`` parses ``actor_observation``
+            JSON through :func:`encode_observations` and raises
+            :class:`ContractError` on unparseable rows (never hash-falls-back).
+        stratified: when ``True`` the sampler oversamples rare action kinds
+            per ``sampling_ratios`` (deterministic interleaved order, same
+            cursor/epoch resume contract over the expanded order).
+            ``False`` (default) preserves the canonical cursor order
+            bit-identically.
+        sampling_ratios: ``{kind: multiplier}`` oversample map (values MUST
+            be positive and finite); ``None`` with ``stratified=True`` uses
+            :data:`DEFAULT_STRATIFIED_RATIOS` (kan/ron families ``3x``).
+        kind_by_id: optional ``{decision_id: kind}`` bucket labels (explicit
+            wins; rows missing from the map fall back to the row's own
+            ``action_kind``/``decision_kind`` field, else ``"unknown"``).
+            Batches carry the resolved labels under ``"_action_kinds"`` for
+            per-type scorecards.
     """
 
     def __init__(
@@ -191,7 +877,14 @@ class AuthoritativeParquetDataset:
         num_actions: int | None = 6792,
         seed: int | None = 0,
         verify: bool = True,
+        tensorize: Literal["synthetic", "real"] = "synthetic",
+        stratified: bool = False,
+        sampling_ratios: Mapping[str, float] | None = None,
+        kind_by_id: Mapping[str, str] | None = None,
     ) -> None:
+        if tensorize not in ("synthetic", "real"):
+            raise ContractError(f"tensorize must be 'synthetic' or 'real', got {tensorize!r}")
+        self.tensorize: Literal["synthetic", "real"] = tensorize
         self.parquet_dir = Path(parquet_dir)
         self.feature_dim = feature_dim
         self.num_actions = num_actions if num_actions is not None else 6792
@@ -292,7 +985,45 @@ class AuthoritativeParquetDataset:
             perm_any: Any = torch.randperm(len(self._rows), generator=gen).tolist()
             perm: list[int] = [int(x) for x in perm_any]
             self._rows = [self._canonical_rows[i] for i in perm]
-        self._total = len(self._rows)
+        if not isinstance(stratified, bool):
+            raise ContractError(f"stratified must be a bool, got {stratified!r}")
+        self._stratified: bool = stratified
+        self._sampling_ratios: dict[str, float] | None = _validate_sampling_ratios(sampling_ratios)
+        self._kind_by_id: dict[str, str] | None = _validate_kind_by_id(kind_by_id)
+        self._kinds: list[str] | None = None
+        self._order: list[int] = []
+        self._total: int = 0
+        self._rebuild_sampler_order()
+
+    def _rebuild_sampler_order(self) -> None:
+        """(Re)build kinds + order after (re)permutation; total follows order.
+
+        Default (non-stratified, no labels): identity order, kinds ``None``,
+        total ``len(rows)`` — bit-identical to the pre-stratification path.
+        Stratified: kinds resolve per row (``kind_by_id`` wins, else the
+        row's own kind field, else ``"unknown"``) and the order expands per
+        ``sampling_ratios`` (or :data:`DEFAULT_STRATIFIED_RATIOS`).
+        """
+        if self._kind_by_id is not None or self._stratified:
+            by_id = self._kind_by_id
+            self._kinds = [
+                by_id.get(str(r.get("decision_id", "")), _row_action_kind(r))
+                if by_id is not None
+                else _row_action_kind(r)
+                for r in self._rows
+            ]
+        else:
+            self._kinds = None
+        if self._stratified:
+            assert self._kinds is not None
+            ratios = self._sampling_ratios or dict(DEFAULT_STRATIFIED_RATIOS)
+            self._order = build_stratified_order(
+                self._kinds, ratios, seed=self.seed if self.seed is not None else 0
+            )
+        else:
+            self._order = list(range(len(self._rows)))
+        self._total = len(self._order)
+
     # ------------------------------------------------------------------
     # Cursor / sampler state
     # ------------------------------------------------------------------
@@ -303,6 +1034,10 @@ class AuthoritativeParquetDataset:
             "seed": -1 if self.seed is None else self.seed,
             "total": self._total,
             "epoch": self._epoch,
+            "stratified": self._stratified,
+            "sampling_ratios": None
+            if self._sampling_ratios is None
+            else dict(self._sampling_ratios),
         }
 
     def set_sampler_state(self, state: dict[str, Any] | SamplerState) -> None:
@@ -314,10 +1049,7 @@ class AuthoritativeParquetDataset:
             offset = state.offset
             epoch = state.epoch
             seed_raw = state.seed
-        # Handle seed restoration for bitwise resume: if checkpoint carries a seed
-        # different from the dataset's construction seed, re-derive the
-        # permutation so that subsequent next_batch slices are identical to the
-        # original ordering.  Seed -1 encodes None.
+        reseeded = False
         if seed_raw is not None:
             try:
                 s_int = int(seed_raw)
@@ -336,8 +1068,25 @@ class AuthoritativeParquetDataset:
                         ).tolist()
                         perm: list[int] = [int(x) for x in perm_any]
                         self._rows = [self._canonical_rows[i] for i in perm]
-                    # total is invariant
-                    self._total = len(self._rows)
+                    reseeded = True
+        if isinstance(state, dict):
+            # Checkpoints written with stratification carry it; older states
+            # (or SamplerState) keep this object's construction settings.
+            if "stratified" in state and state["stratified"] is not None:
+                s_new = state["stratified"]
+                if not isinstance(s_new, bool):
+                    raise ContractError(f"sampler stratified must be a bool, got {s_new!r}")
+                if s_new != self._stratified:
+                    self._stratified = s_new
+                    reseeded = True
+            if "sampling_ratios" in state:
+                r_new = _validate_sampling_ratios(state["sampling_ratios"])
+                if r_new != self._sampling_ratios:
+                    self._sampling_ratios = r_new
+                    reseeded = True
+        if reseeded:
+            # Order (and total) follows rows + stratified settings
+            self._rebuild_sampler_order()
         if not (0 <= offset <= self._total):
             raise ContractError(f"sampler offset {offset} out of range [0,{self._total}]")
         self._cursor = offset
@@ -358,7 +1107,21 @@ class AuthoritativeParquetDataset:
     # ------------------------------------------------------------------
 
     def _tensorize_rows(self, rows: list[dict[str, Any]]) -> dict[str, Any]:
-        """Batch tensorization — deterministic, no privileged inputs."""
+        """Batch tensorization — deterministic, no privileged inputs.
+
+        ``'synthetic'`` (default) uses the decision_id-hash stand-in and never
+        carries ``actor_batch``; ``'real'`` parses ``actor_observation`` JSON
+        through the real encoder (fail-closed :class:`ContractError`, never
+        hash-falls-back) and also carries the encoded
+        :class:`ActorTensorBatch` under ``actor_batch`` (flat keys
+        byte-identical for compat).
+        """
+        if self.tensorize == "real":
+            return encode_observation_rows(
+                rows,
+                num_actions=self.num_actions,
+                feature_dim=self.feature_dim,
+            )
         batch_features: list[torch.Tensor] = []
         batch_legal: list[torch.Tensor] = []
         batch_chosen: list[torch.Tensor] = []
@@ -397,9 +1160,10 @@ class AuthoritativeParquetDataset:
     def next_batch(self, batch_size: int) -> dict[str, Any] | None:
         """Return next microbatch and advance cursor; wraps to next epoch.
 
-        Deterministic: batches are slices of the permuted order.  At end of
-        epoch the cursor wraps to 0 and epoch increments.  Returns ``None``
-        only when the dataset is empty (never for non-empty).
+        Deterministic: batches are slices of the sampler order (the seeded
+        permutation, or the stratified interleaved order when enabled).  At
+        end of epoch the cursor wraps to 0 and epoch increments.
+        Returns ``None`` only when the dataset is empty (never for non-empty).
         """
         if batch_size <= 0:
             raise ContractError(f"batch_size must be positive, got {batch_size}")
@@ -408,12 +1172,17 @@ class AuthoritativeParquetDataset:
             self._cursor = 0
             self._epoch += 1
         end = min(self._cursor + batch_size, self._total)
-        rows = self._rows[self._cursor : end]
+        order_slice = self._order[self._cursor : end]
+        rows = [self._rows[i] for i in order_slice]
         # Short tail batch is allowed; caller handles drop_last if desired
         batch: dict[str, Any] = self._tensorize_rows(rows)
         # Attach metadata for debugging (not used by model)
         batch["_decision_ids"] = [str(r["decision_id"]) for r in rows]
         batch["_epoch"] = torch.tensor(self._epoch)
+        if self._kinds is not None:
+            # Per-type scorecard labels: "_" prefix keeps the loop's H2D
+            # mover passing them through untouched (never tensorized).
+            batch["_action_kinds"] = [self._kinds[i] for i in order_slice]
         self._cursor = end
         # If we consumed exactly total, next call will wrap at top
         if self._cursor == self._total:
@@ -425,8 +1194,12 @@ class AuthoritativeParquetDataset:
         """Non-advancing peek — useful for tests without mutating cursor."""
         cur = self._cursor if cursor is None else cursor
         end = min(cur + batch_size, self._total)
-        rows = self._rows[cur:end]
-        return self._tensorize_rows(rows)
+        order_slice = self._order[cur:end]
+        rows = [self._rows[i] for i in order_slice]
+        batch = self._tensorize_rows(rows)
+        if self._kinds is not None:
+            batch["_action_kinds"] = [self._kinds[i] for i in order_slice]
+        return batch
 
     def iter_batches(self, batch_size: int, max_batches: int | None = None):
         """Generator yielding up to max_batches batches, advancing cursor."""

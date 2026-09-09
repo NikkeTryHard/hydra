@@ -89,8 +89,14 @@ def frozen_choice(
         tempered = tempered / tempered.sum().clamp(min=1e-12)
         # Deterministic sampling derived from observation_hash
         seed_material = (
-            observation_hash if observation_hash is not None and observation_hash != "" else "no_hash"
-        ) + ":" + tie_break
+            (
+                observation_hash
+                if observation_hash is not None and observation_hash != ""
+                else "no_hash"
+            )
+            + ":"
+            + tie_break
+        )
         seed_hex = hashlib.sha256(seed_material.encode()).hexdigest()[:16]
         seed = int(seed_hex, 16) % HASH63_MOD
         gen = torch.Generator(device=probs.device)
@@ -103,9 +109,7 @@ def frozen_choice(
         max_prob = float(probs.max().item())  # pyrefly: ignore[pytorch-efficiency-lint-item-call]
         eps = 1e-9
         probs_list: list[float] = cast("list[float]", probs.tolist())
-        candidates: list[int] = [
-            i for i, p in enumerate(probs_list) if abs(p - max_prob) <= eps
-        ]
+        candidates: list[int] = [i for i, p in enumerate(probs_list) if abs(p - max_prob) <= eps]
         if len(candidates) == 1:
             return candidates[0]
         # value_vector may be [4] per seat or [A] per action; handle both
@@ -163,7 +167,14 @@ def _load_default_hashes() -> dict[str, str]:
 
         tbl = load_action_table(repo / "configs/contracts/action_table_v1.json")
         out["action_table_hash"] = str(tbl.digest)
-    except (ImportError, AttributeError, OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+    except (
+        ImportError,
+        AttributeError,
+        OSError,
+        ValueError,
+        TypeError,
+        json.JSONDecodeError,
+    ) as exc:
         logger.debug("candidate0: load_action_table fallback", exc_info=exc)
         pass
     try:
@@ -182,7 +193,14 @@ def _load_default_hashes() -> dict[str, str]:
         digest: Any = tmp_digest if tmp_digest is not None and tmp_digest != "" else tmp_payload
         if digest is not None and digest != "":
             out["event_schema_hash"] = str(digest)
-    except (ImportError, AttributeError, OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+    except (
+        ImportError,
+        AttributeError,
+        OSError,
+        ValueError,
+        TypeError,
+        json.JSONDecodeError,
+    ) as exc:
         logger.debug("candidate0: load_event_schema fallback", exc_info=exc)
         pass
     return out
@@ -270,7 +288,14 @@ def make_candidate0_spec(
             manifest_digest: Any = getattr(manifest, "digest", None)
             if manifest_digest is not None:
                 rules_hash = str(manifest_digest)  # type: ignore[attr-defined]
-        except (AttributeError, ValueError, TypeError, OSError, ImportError, json.JSONDecodeError) as exc:
+        except (
+            AttributeError,
+            ValueError,
+            TypeError,
+            OSError,
+            ImportError,
+            json.JSONDecodeError,
+        ) as exc:
             logger.debug("candidate0: rules_hash fallback", exc_info=exc)
             pass
         action_table_hash = defaults["action_table_hash"]
@@ -287,7 +312,15 @@ def make_candidate0_spec(
             payload2: Any = doc2["payload"]
             digest_val: Any = payload2["digest"]
             packet_boundary_hash = str(digest_val)
-        except (AttributeError, ValueError, TypeError, OSError, ImportError, json.JSONDecodeError, KeyError) as exc:
+        except (
+            AttributeError,
+            ValueError,
+            TypeError,
+            OSError,
+            ImportError,
+            json.JSONDecodeError,
+            KeyError,
+        ) as exc:
             logger.debug("candidate0: packet_boundary_hash fallback", exc_info=exc)
             packet_boundary_hash = defaults["packet_boundary_hash"]
         model_hash = str(_model_hash_from_identity(model))
@@ -405,12 +438,22 @@ def _action_context_from_obs(observation: Any) -> Any:
             for ev in reversed(visible_history_raw):
                 ev_typed: Any = ev
                 payload_obj: Any = getattr(ev_typed, "payload", None)
-                kind_from_payload: Any = getattr(payload_obj, "kind", None) if payload_obj is not None else None
+                kind_from_payload: Any = (
+                    getattr(payload_obj, "kind", None) if payload_obj is not None else None
+                )
                 kind_from_ev: Any = getattr(ev_typed, "kind", None)
-                kind: Any = kind_from_payload if kind_from_payload is not None and kind_from_payload != "" else kind_from_ev
+                kind: Any = (
+                    kind_from_payload
+                    if kind_from_payload is not None and kind_from_payload != ""
+                    else kind_from_ev
+                )
                 if kind == "discard":
-                    tile_from_payload: Any = getattr(payload_obj, "tile", None) if payload_obj is not None else None
-                    actor_from_payload: Any = getattr(payload_obj, "actor", None) if payload_obj is not None else None
+                    tile_from_payload: Any = (
+                        getattr(payload_obj, "tile", None) if payload_obj is not None else None
+                    )
+                    actor_from_payload: Any = (
+                        getattr(payload_obj, "actor", None) if payload_obj is not None else None
+                    )
                     if tile_from_payload is not None:
                         offered_tile = tile_from_payload
                         offered_by = (
@@ -517,9 +560,7 @@ def candidate0(
     policy_shape_1: Any = policy_logits.shape[1] if hasattr(policy_logits, "shape") else 0
     legal_shape_1: Any = legal_mask_tensor.shape[1] if hasattr(legal_mask_tensor, "shape") else 0
     if policy_shape_1 != legal_shape_1:
-        raise ContractError(
-            f"policy_logits A {policy_shape_1} != legal_mask A {legal_shape_1}"
-        )
+        raise ContractError(f"policy_logits A {policy_shape_1} != legal_mask A {legal_shape_1}")
     probs_1: Any = masked_policy(policy_logits, legal_mask_tensor)  # [1, A]
     probs: Any = probs_1[0]  # [A]
     value_vec: Any = out.value_vector[0]  # [4]

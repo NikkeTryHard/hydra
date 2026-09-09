@@ -704,7 +704,11 @@ class NaturalISMCTSPlanner(Planner):  # type: ignore[misc]
             _max_model_raw: Any = params.get("max_model_calls", 48)  # pyrefly: ignore[explicit-any]
             _tie_break_raw: Any = params.get("tie_break", "lowest_action_id")  # pyrefly: ignore[explicit-any]
             _resource_view_raw: Any = params.get("resource_view", "calls")  # pyrefly: ignore[explicit-any]
-            _cand_id_val: Any = getattr(candidate_spec, "candidate_id", "candidate1") if candidate_spec is not None else "candidate1"  # pyrefly: ignore[explicit-any]
+            _cand_id_val: Any = (
+                getattr(candidate_spec, "candidate_id", "candidate1")
+                if candidate_spec is not None
+                else "candidate1"
+            )  # pyrefly: ignore[explicit-any]
             self._config = NaturalISMCTSConfig(
                 uct_c=float(_uct_c_raw),  # pyrefly: ignore[explicit-any]
                 max_depth=int(_max_depth_raw),  # pyrefly: ignore[explicit-any]
@@ -1278,12 +1282,16 @@ def double_weighting_oracle_detects_correction(
 
     def _key_natural(k: int) -> float:
         return natural_mean[k]
+
     def _key_prop(k: int) -> float:
         return prop_unweighted[k]
+
     def _key_once(k: int) -> float:
         return weighted_once[k]
+
     def _key_double(k: int) -> float:
         return double_weighted[k]
+
     natural_choice: int = max(natural_mean, key=_key_natural)
     prop_choice: int = max(prop_unweighted, key=_key_prop)
     once_choice: int = max(weighted_once, key=_key_once)

@@ -26,6 +26,7 @@ import torch.nn as nn
 
 from hydra2.contracts.common import ContractError
 from hydra2.data.parquet import DecisionRow, write_actor_shards
+from hydra2.eval.blocks import WallBlock
 from hydra2.runtime.checkpoint import hash_state_tree
 from hydra2.training.dataset import AuthoritativeParquetDataset
 from hydra2.training.replay import (
@@ -96,6 +97,7 @@ def _write_synthetic_parquet(
     )
     return dest
 
+
 @pytest.fixture(scope="session")
 def actor_parquet_factory(tmp_path_factory):
     """Build each (num_rows, num_actions) synthetic variant ONCE per session.
@@ -111,7 +113,9 @@ def actor_parquet_factory(tmp_path_factory):
         key = (num_rows, num_actions)
         hit = cache.get(key)
         if hit is None:
-            dest = tmp_path_factory.mktemp("actor_parquet") / f"rows-{num_rows}-actions-{num_actions}"
+            dest = (
+                tmp_path_factory.mktemp("actor_parquet") / f"rows-{num_rows}-actions-{num_actions}"
+            )
             rows = _make_actor_rows(num_rows=num_rows, num_actions=num_actions)
             write_actor_shards(
                 destination=dest,
@@ -446,7 +450,11 @@ def test_privileged_store_separation(tmp_path: Path, actor_parquet_factory) -> N
         store.add("dec-wp11-0000", {"return_vector": [0, 0, 0, 1]})
     # Ensure batch never contains privileged content
     replay, _, _ = _build_replay(
-        tmp_path, num_rows=8, seed=0, privileged_store=store, parquet_dir=actor_parquet_factory(num_rows=8)
+        tmp_path,
+        num_rows=8,
+        seed=0,
+        privileged_store=store,
+        parquet_dir=actor_parquet_factory(num_rows=8),
     )
     batch = replay.dataset.next_batch(4)
     assert batch is not None
@@ -530,7 +538,9 @@ def test_wall_ledger_isolation(tmp_path: Path, actor_parquet_factory) -> None:
     # Simulate by manually checking contains
 
 
-def test_checkpoint_manifest_verified_before_mutation(tmp_path: Path, actor_parquet_factory) -> None:
+def test_checkpoint_manifest_verified_before_mutation(
+    tmp_path: Path, actor_parquet_factory
+) -> None:
     parquet_dir = actor_parquet_factory(num_rows=12)
     dataset = AuthoritativeParquetDataset(
         parquet_dir=parquet_dir, feature_dim=FEATURE_DIM, num_actions=NUM_ACTIONS_SMALL, seed=0
@@ -581,3 +591,344 @@ def test_forbidden_keys_constant() -> None:
     assert "privileged" in FORBIDDEN_REPLAY_KEYS
     assert "wall" in FORBIDDEN_REPLAY_KEYS
     assert "full_world" in FORBIDDEN_REPLAY_KEYS
+
+
+def _gated_selection_fixture():  # type: ignore[no-untyped-def]
+    """Two valid wall blocks (mean 3.0) + telemetry + frozen fixed_n config."""
+    from hydra2.eval.statistics import SelectionConfig
+    from hydra2.eval.telemetry import make_resource_telemetry
+
+    def _row(wall_id: str):  # type: ignore[no-untyped-def]
+        return make_resource_telemetry(
+            mode="cuda_eager",
+            wall_id=wall_id,
+            case_id=None,
+            candidate_spec_hash="sha256:" + "11" * 32,
+            hardware_hash="sha256:" + "22" * 32,
+            environment_hash="sha256:" + "33" * 32,
+            cold_start=False,
+            synchronized_elapsed_ms=12.5,
+            model_calls=3,
+            exact_transitions=40,
+            particles=0,
+            fallback_used=False,
+            timeout=False,
+            illegal_action=False,
+            cuda_peak_allocated_bytes=1024,
+            cuda_peak_reserved_bytes=2048,
+            host_peak_bytes=None,
+            energy_joules=None,
+            graph_breaks=None,
+            recompiles=None,
+            invalid_reason=None,
+        )
+
+    blocks = (
+        WallBlock(wall_id="w0", game_ids=("w0-g0",), contrasts=(2.0,)),
+        WallBlock(wall_id="w1", game_ids=("w1-g0",), contrasts=(4.0,)),
+    )
+    telemetry = {"w0-g0": _row("w0"), "w1-g0": _row("w1")}
+    config = SelectionConfig(
+        N=2,
+        pilot_s=1.5,
+        delta=0.5,
+        alpha=0.05,
+        beta=0.2,
+        design="fixed_n",
+        declared_peeks=(2,),
+        resamples=200,
+        seed=7,
+    )
+    return blocks, telemetry, config
+
+
+def test_selection_promotes_only_on_improvement(tmp_path: Path, actor_parquet_factory) -> None:
+    replay, _, _ = _build_replay(
+        tmp_path, num_rows=16, seed=11, parquet_dir=actor_parquet_factory(num_rows=16)
+    )
+    blocks, telemetry, config = _gated_selection_fixture()
+    assert replay.evaluate_selection(blocks, telemetry, config, 2) == pytest.approx(3.0)
+    ckpt = tmp_path / "ckpt.pt"
+    ckpt.write_bytes(b"replay-bytes")
+    assert (
+        replay.maybe_promote_best(
+            3.0, ckpt, config=config, blocks=blocks, telemetry_by_game=telemetry, peek_index=2
+        )
+        is True
+    )
+    assert replay.state.best_selection_metric == pytest.approx(3.0)
+    assert replay.state.best_ckpt_digest == "sha256:" + hashlib.sha256(b"replay-bytes").hexdigest()
+    assert (tmp_path / "ckpt-11" / "best-ckpt.pt").read_bytes() == b"replay-bytes"
+    assert not (tmp_path / "ckpt-11" / "best-ckpt.pt.tmp").exists()
+    # Worse gated score does not promote: separate evidence scoring 5.0.
+    worse_blocks = (
+        WallBlock(wall_id="w0", game_ids=("w0-g0",), contrasts=(4.0,)),
+        WallBlock(wall_id="w1", game_ids=("w1-g0",), contrasts=(6.0,)),
+    )
+    assert replay.evaluate_selection(worse_blocks, telemetry, config, 2) == pytest.approx(5.0)
+    assert (
+        replay.maybe_promote_best(
+            5.0,
+            ckpt,
+            config=config,
+            blocks=worse_blocks,
+            telemetry_by_game=telemetry,
+            peek_index=2,
+        )
+        is False
+    )
+    assert (tmp_path / "ckpt-11" / "best-ckpt.pt").read_bytes() == b"replay-bytes"
+    with pytest.raises(ContractError, match="finite"):
+        replay.maybe_promote_best(
+            float("inf"),
+            ckpt,
+            config=config,
+            blocks=blocks,
+            telemetry_by_game=telemetry,
+            peek_index=2,
+        )
+    with pytest.raises(ContractError, match="!= gated score"):
+        replay.maybe_promote_best(
+            999.0, ckpt, config=config, blocks=blocks, telemetry_by_game=telemetry, peek_index=2
+        )
+    single = (blocks[0],)
+    single_telemetry = {"w0-g0": telemetry["w0-g0"]}
+    with pytest.raises(ContractError, match="extra look"):
+        replay.evaluate_selection(single, single_telemetry, config, 1)
+    with pytest.raises(ContractError, match="no valid wall blocks"):
+        replay.evaluate_selection((), {}, config, 2)
+
+
+def test_selection_requires_gated_args(tmp_path: Path, actor_parquet_factory) -> None:
+    """Unguarded direct call is impossible: the old bare signature is gone."""
+    replay, _, _ = _build_replay(
+        tmp_path, num_rows=16, seed=13, parquet_dir=actor_parquet_factory(num_rows=16)
+    )
+    blocks, _, _ = _gated_selection_fixture()
+    ckpt = tmp_path / "ckpt.pt"
+    ckpt.write_bytes(b"x")
+    with pytest.raises(TypeError):
+        replay.evaluate_selection(blocks)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        replay.maybe_promote_best(3.0, ckpt)  # type: ignore[call-arg]
+
+
+def test_resume_verifies_best_ckpt(tmp_path: Path, actor_parquet_factory) -> None:
+    replay, _, _ = _build_replay(
+        tmp_path, num_rows=16, seed=14, parquet_dir=actor_parquet_factory(num_rows=16)
+    )
+    blocks, telemetry, config = _gated_selection_fixture()
+    metric = replay.evaluate_selection(blocks, telemetry, config, 2)
+    ckpt = tmp_path / "ckpt.pt"
+    ckpt.write_bytes(b"resume-bytes")
+    assert (
+        replay.maybe_promote_best(
+            metric, ckpt, config=config, blocks=blocks, telemetry_by_game=telemetry, peek_index=2
+        )
+        is True
+    )
+    saved = replay.save_checkpoint()
+    digest = replay.state.best_ckpt_digest
+    assert digest is not None
+    replay2, _, _ = _build_replay(
+        tmp_path, num_rows=16, seed=14, parquet_dir=actor_parquet_factory(num_rows=16)
+    )
+    replay2.checkpoint_dir = replay.checkpoint_dir
+    replay2.load_checkpoint(saved)
+    assert replay2.state.best_selection_metric == pytest.approx(metric)
+    assert replay2.state.best_ckpt_digest == digest
+
+
+def test_tampered_best_ckpt_raises(tmp_path: Path, actor_parquet_factory) -> None:
+    from hydra2.contracts.common import CorruptArtifactError
+
+    replay, _, _ = _build_replay(
+        tmp_path, num_rows=16, seed=15, parquet_dir=actor_parquet_factory(num_rows=16)
+    )
+    blocks, telemetry, config = _gated_selection_fixture()
+    metric = replay.evaluate_selection(blocks, telemetry, config, 2)
+    ckpt = tmp_path / "ckpt.pt"
+    ckpt.write_bytes(b"honest-bytes")
+    assert (
+        replay.maybe_promote_best(
+            metric, ckpt, config=config, blocks=blocks, telemetry_by_game=telemetry, peek_index=2
+        )
+        is True
+    )
+    saved = replay.save_checkpoint()
+    best = replay.checkpoint_dir / "best-ckpt.pt"
+    best.write_bytes(b"tampered-bytes")
+    replay2, _, _ = _build_replay(
+        tmp_path, num_rows=16, seed=15, parquet_dir=actor_parquet_factory(num_rows=16)
+    )
+    replay2.checkpoint_dir = replay.checkpoint_dir
+    with pytest.raises(CorruptArtifactError, match="digest mismatch"):
+        replay2.load_checkpoint(saved)
+    best.unlink()
+    replay3, _, _ = _build_replay(
+        tmp_path, num_rows=16, seed=15, parquet_dir=actor_parquet_factory(num_rows=16)
+    )
+    replay3.checkpoint_dir = replay.checkpoint_dir
+    with pytest.raises(CorruptArtifactError, match="missing"):
+        replay3.load_checkpoint(saved)
+
+
+def test_train_never_touches_selection(tmp_path: Path, actor_parquet_factory) -> None:
+    replay, _, _ = _build_replay(
+        tmp_path, num_rows=16, seed=12, parquet_dir=actor_parquet_factory(num_rows=16)
+    )
+    replay.train()
+    assert replay.state.best_selection_metric is None
+    assert replay.state.best_ckpt_digest is None
+    assert not (replay.checkpoint_dir / "best-ckpt.pt").exists()
+
+
+# ---------------------------------------------------------------------------
+# Wave C1 — BC+placement+value join (w_value default 0.0, explicit enable only)
+# ---------------------------------------------------------------------------
+
+
+class StubValueModel(nn.Module):
+    """Policy + value heads for w_value>0 replay (synthetic, deterministic)."""
+
+    def __init__(
+        self, feature_dim: int = FEATURE_DIM, num_actions: int = NUM_ACTIONS_SMALL
+    ) -> None:
+        super().__init__()
+        self.linear = nn.Linear(feature_dim, num_actions, bias=True)
+        self.value = nn.Linear(feature_dim, 4, bias=True)
+        torch.manual_seed(0)
+        nn.init.normal_(self.linear.weight, std=0.1)
+        nn.init.zeros_(self.linear.bias)
+        nn.init.normal_(self.value.weight, std=0.1)
+        nn.init.zeros_(self.value.bias)
+
+    def forward(self, batch: dict) -> dict:  # type: ignore[override]
+        feats = batch["features"].float()
+        logits = self.linear(feats)
+        mask = batch["legal_mask"]
+        logits = logits.masked_fill(~mask, -1e9)
+        return {"policy_logits": logits, "value_vector": self.value(feats)}
+
+
+def test_join_oracle_targets_known_ranks() -> None:
+    from hydra2.belief.oracle_loader import join_oracle_targets
+
+    store = PrivilegedLabelStore()
+    store.add("dec-join-0000", {"ranks": [2, 1, 4, 3]})
+    store.add("dec-join-0001", {"ranks": [1, 2, 3, 4]})
+    joined = join_oracle_targets(["dec-join-0000", "dec-join-0001"], store)
+    placement = joined["placement_target"]
+    value = joined["value_target"]
+    assert tuple(placement.shape) == (2, 4)
+    assert tuple(value.shape) == (2, 4)
+    # 0-based placement: -1 bridge to utility() 1..4.
+    assert placement.tolist() == [[1, 0, 3, 2], [0, 1, 2, 3]]
+    # Value via utility(): ranks -> rank_values -> values (zero-sum, not a dist).
+    assert torch.allclose(
+        value, torch.tensor([[10.0, 20.0, -20.0, -10.0], [20.0, 10.0, -10.0, -20.0]])
+    )
+    # 0-based seat convention accepted on the same path.
+    store0 = PrivilegedLabelStore()
+    store0.add("dec-join-0002", {"ranks": [1, 0, 3, 2]})
+    joined0 = join_oracle_targets(["dec-join-0002"], store0)
+    assert joined0["placement_target"].tolist() == [[1, 0, 3, 2]]
+    assert torch.allclose(joined0["value_target"], torch.tensor([[10.0, 20.0, -20.0, -10.0]]))
+
+
+def test_join_oracle_targets_missing_raises() -> None:
+    from hydra2.belief.oracle_loader import join_oracle_targets
+
+    store = PrivilegedLabelStore()
+    store.add("dec-present", {"ranks": [1, 2, 3, 4]})
+    with pytest.raises(ContractError, match="missing oracle label"):
+        join_oracle_targets(["dec-present", "dec-absent"], store)
+    # Invalid ranks raise as well: never hash-synthesize on this path.
+    store_bad = PrivilegedLabelStore()
+    store_bad.add("dec-bad", {"no_ranks": [0.0]})
+    with pytest.raises(ContractError, match="missing ranks"):
+        join_oracle_targets(["dec-bad"], store_bad)
+    # Opaque decision_id only.
+    with pytest.raises(ContractError):
+        join_oracle_targets([""], store)
+
+
+def test_replay_w_value_train_joins_value_targets(tmp_path: Path, actor_parquet_factory) -> None:
+    import math
+
+    # Defaults unchanged: w_value is explicit-enable only.
+    assert ReplayConfig().w_value == 0.0
+    assert ReplayConfig().objective_weights()["w_value"] == 0.0
+    assert ReplayConfig(w_value=1.0).objective_weights()["w_value"] == 1.0
+    parquet_dir = actor_parquet_factory(num_rows=8)
+    dataset = AuthoritativeParquetDataset(
+        parquet_dir=parquet_dir, feature_dim=FEATURE_DIM, num_actions=NUM_ACTIONS_SMALL, seed=0
+    )
+    store = PrivilegedLabelStore()
+    for i in range(8):
+        did = f"dec-wp11-{i:04d}"
+        ranks = [1, 2, 3, 4] if i % 2 == 0 else [2, 1, 4, 3]
+        store.add(did, {"ranks": ranks})
+    model = StubValueModel(feature_dim=FEATURE_DIM, num_actions=NUM_ACTIONS_SMALL)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    config = ReplayConfig(
+        microbatch_size=4, accumulation_steps=1, max_updates=2, seed=0, w_value=1.0
+    )
+    ckpt_dir = tmp_path / "ckpt-w-value"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    replay = ActorLearnerReplay(
+        model=model,
+        optimizer=optimizer,
+        dataset=dataset,
+        config=config,
+        checkpoint_dir=ckpt_dir,
+        manifest_hashes=make_test_manifest_hashes(),
+        privileged_store=store,
+    )
+    history = replay.train(max_updates=2)
+    assert len(history) == 2
+    assert all(math.isfinite(h["total"]) for h in history)
+
+
+def test_replay_join_leakage_still_rejected(tmp_path: Path, actor_parquet_factory) -> None:
+    from hydra2.belief.oracle_loader import join_oracle_targets
+
+    parquet_dir = actor_parquet_factory(num_rows=8)
+    dataset = AuthoritativeParquetDataset(
+        parquet_dir=parquet_dir, feature_dim=FEATURE_DIM, num_actions=NUM_ACTIONS_SMALL, seed=0
+    )
+    store = PrivilegedLabelStore()
+    for i in range(8):
+        store.add(f"dec-wp11-{i:04d}", {"ranks": [1, 2, 3, 4]})
+    model = StubValueModel(feature_dim=FEATURE_DIM, num_actions=NUM_ACTIONS_SMALL)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    config = ReplayConfig(
+        microbatch_size=4, accumulation_steps=1, max_updates=2, seed=0, w_value=1.0
+    )
+    ckpt_dir = tmp_path / "ckpt-join-leak"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    replay = ActorLearnerReplay(
+        model=model,
+        optimizer=optimizer,
+        dataset=dataset,
+        config=config,
+        checkpoint_dir=ckpt_dir,
+        manifest_hashes=make_test_manifest_hashes(),
+        privileged_store=store,
+    )
+    batch = replay.dataset.next_batch(4)
+    assert batch is not None
+    # Privileged payload in the actor batch is still a hard failure (pre-join).
+    bad = dict(batch)
+    bad["hidden_tiles"] = torch.zeros(4, 4)  # type: ignore[dict-item]
+    with pytest.raises(ContractError, match="privileged"):
+        replay.train_step(bad)  # type: ignore[arg-type]
+    # Joined targets merge cleanly and stay privileged-free post-merge.
+    joined = join_oracle_targets(list(batch["_decision_ids"]), store)
+    assert "placement_target" in joined and "value_target" in joined
+    for key in joined:
+        assert key not in FORBIDDEN_REPLAY_KEYS
+    merged = replay._maybe_join_oracle_targets(dict(batch))
+    assert "value_target" in merged
+    for key in merged:
+        assert key not in FORBIDDEN_REPLAY_KEYS

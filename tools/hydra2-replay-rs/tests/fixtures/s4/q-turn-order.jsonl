@@ -1,0 +1,3 @@
+{"type":"start_game"}
+{"type":"tsumo","actor":0,"pai":"1m"}
+{"type":"end_game"}

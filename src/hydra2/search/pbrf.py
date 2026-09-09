@@ -375,13 +375,16 @@ def _tile_for_successor(succ: Any) -> int | None:
     to legacy handling instead of guessing.
     """
     try:
-        events: Any = getattr(getattr(succ, "packet", None), "events", ())
-        if not events:
+        packet_obj: object = getattr(succ, "packet", None)
+        events_obj: object = getattr(packet_obj, "events", ())
+        if not isinstance(events_obj, (tuple, list)) or len(events_obj) == 0:
             return None
-        raw: Any = getattr(getattr(events[0], "payload", None), "tile", None)
-        if isinstance(raw, bool) or not isinstance(raw, int):
+        first: object = events_obj[0]
+        payload_obj: object = getattr(first, "payload", None)
+        raw_obj: object = getattr(payload_obj, "tile", None)
+        if isinstance(raw_obj, bool) or not isinstance(raw_obj, int):
             return None
-        return int(make_tile_id(int(raw)))
+        return int(make_tile_id(raw_obj))
     except Exception:
         return None
 
@@ -501,14 +504,19 @@ def _is_target_compatible(
             from hydra2.belief.natural import _target_id_for as _recompute_target
 
             if obs_after is not None:
-                expected: Any = _recompute_target(
+                rules_raw: object = getattr(epoch, "rules_hash", "")
+                belief_raw: object = getattr(epoch, "belief_model_hash", "")
+                event_raw: object = getattr(epoch, "event_model_hash", "")
+                proposal_raw: object = getattr(epoch, "proposal_spec_hash", "")
+                target_raw: object = getattr(epoch, "target_id", "")
+                expected: DigestText = _recompute_target(
                     observation_hash=make_digest_text(obs_after),
-                    rules_hash=make_digest_text(epoch.rules_hash),
-                    belief_model_hash=make_digest_text(epoch.belief_model_hash),
-                    event_model_hash=make_digest_text(epoch.event_model_hash),
-                    proposal_spec_hash=make_digest_text(epoch.proposal_spec_hash),
+                    rules_hash=make_digest_text(str(rules_raw)),
+                    belief_model_hash=make_digest_text(str(belief_raw)),
+                    event_model_hash=make_digest_text(str(event_raw)),
+                    proposal_spec_hash=make_digest_text(str(proposal_raw)),
                 )
-                if make_digest_text(expected) != make_digest_text(epoch.target_id):
+                if make_digest_text(expected) != make_digest_text(str(target_raw)):
                     return False
         except Exception:
             pass
@@ -907,7 +915,11 @@ def rekey_and_verify(
             # both fallbacks die; kernel/contracts side owned by Forge track.
             # Direct callers without an action keep the full sweep.
             aids: list[int] = []
-            if action_id is not None and not isinstance(action_id, bool) and isinstance(action_id, int):
+            if (
+                action_id is not None
+                and not isinstance(action_id, bool)
+                and isinstance(action_id, int)
+            ):
                 aids.append(action_id)
             aids.extend(_action_id(cand) for cand in forest.frozen_candidates)
             aids.extend(a for a in range(5) if a not in aids)
@@ -1067,6 +1079,7 @@ def commit(
             log_proposal_density: float = logp
             proposal_id: str = "sha256:" + "0" * 64
             ancestors: tuple[str, ...] = (*e.ancestors, e.parent_id)
+
         obj = _PromotedParticle(
             parent_id=e.parent_id,
             world_ref=e.successor_world_ref,
@@ -1092,7 +1105,10 @@ def commit(
     # For determinism, we will reallocate fixed batches across remaining children (just one)
     try:
         promoted_alloc = fixed_allocate(
-            cast("dict[tuple[int, str], tuple[ChildEntry, ...] | list[ChildEntry]]", promoted_children),
+            cast(
+                "dict[tuple[int, str], tuple[ChildEntry, ...] | list[ChildEntry]]",
+                promoted_children,
+            ),
             total_batches=forest.config.max_search_batches,
         )
     except Exception:
@@ -1187,7 +1203,8 @@ def _derive_utility_manifest_hash(model: Any | None) -> str:
         from hydra2.models.model import Hydra2BaselineModel
 
         probe: Any = Hydra2BaselineModel() if model is None else model
-        return str(make_digest_text(str(probe.utility_manifest_hash)))
+        manifest_raw: object = probe.utility_manifest_hash
+        return str(make_digest_text(str(manifest_raw)))
     except (ImportError, AttributeError, ValueError, TypeError, OSError) as exc:
         logger.debug("pbrf: utility_manifest_hash derivation failed", exc_info=exc)
         raise ContractError("pbrf: cannot derive utility_manifest_hash from model") from exc
@@ -1238,7 +1255,9 @@ def make_pbrf_candidate_spec(
     """
     defaults = _load_default_hashes()
     canonical = _canonical_hashes()
-    rh: DigestText = make_digest_text(rules_hash if rules_hash is not None and rules_hash != "" else defaults["rules_hash"])
+    rh: DigestText = make_digest_text(
+        rules_hash if rules_hash is not None and rules_hash != "" else defaults["rules_hash"]
+    )
     ah: DigestText = make_digest_text(defaults["action_table_hash"])
     oh: DigestText = make_digest_text(defaults["observation_schema_hash"])
     ph: DigestText = make_digest_text(defaults["packet_boundary_hash"])
@@ -1365,7 +1384,11 @@ class PbrfPlanner(Planner):  # type: ignore[misc]
         else:
             try:
                 _params_raw: Any = getattr(candidate_spec, "parameters", None)
-                if _params_raw is None or not isinstance(_params_raw, dict) or len(_params_raw) == 0:
+                if (
+                    _params_raw is None
+                    or not isinstance(_params_raw, dict)
+                    or len(_params_raw) == 0
+                ):
                     params: dict[str, Any] = {}
                 else:
                     params = _params_raw  # type: ignore[assignment]
@@ -1622,7 +1645,9 @@ class PbrfPlanner(Planner):  # type: ignore[misc]
         candidate_id: str = str(getattr(cand_spec, "candidate_id", "candidate3"))
         _case_id_raw: Any = getattr(request, "case_id", None)
         _cand_case_raw: Any = getattr(cand_spec, "candidate_id", "case")
-        case_id: str = str(_case_id_raw if _case_id_raw is not None and _case_id_raw != "" else _cand_case_raw)
+        case_id: str = str(
+            _case_id_raw if _case_id_raw is not None and _case_id_raw != "" else _cand_case_raw
+        )
         belief_epoch: Any = getattr(request, "belief_epoch", None)
         if belief_epoch is None:
             # Need epoch; create synthetic from request observation if possible

@@ -215,7 +215,9 @@ class NaturalBelief:
         event_model_hash: DigestText | None = None,
         proposal_spec_hash: DigestText | None = None,
     ) -> None:
-        self._rules_hash: DigestText = make_digest_text(rules_hash if rules_hash is not None else ("sha256:" + "a" * 64))
+        self._rules_hash: DigestText = make_digest_text(
+            rules_hash if rules_hash is not None else ("sha256:" + "a" * 64)
+        )
         self._belief_model_hash: DigestText = make_digest_text(
             belief_model_hash if belief_model_hash is not None else ("sha256:" + "b" * 64)
         )

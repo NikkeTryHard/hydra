@@ -192,7 +192,7 @@ def wall_to_mahjax_deck(wall: tuple[int, ...]) -> tuple[int, ...]:
         role[52 + k] = _MAHJAX_FIRST_DRAW_IDX - k
     # identity fallback (corrected: values are tile ids,
     # not indices; previously wall[index] re-indexed)
-    deck: list[int] = [type_id(int(t)) for t in wall]
+    deck: list[int] = [type_id(t) for t in wall]
     for hydra_index, deck_index in role.items():
         deck[deck_index] = type_id(wall[hydra_index])
     counts = np.bincount(np.asarray(deck, dtype=np.int64), minlength=34)
@@ -1016,15 +1016,12 @@ def _reference_find_action(sim: Any, actor: int, decision: ScriptedDecision) -> 
         legals = [
             (
                 cast("Any", a).kind,
-                int(cast("Any", cast("Any", a).tile))
-                if cast("Any", a).tile is not None
-                else None,
+                int(cast("Any", cast("Any", a).tile)) if cast("Any", a).tile is not None else None,
             )
             for a in cast("Any", actions)
         ]
         raise TraceRunnerError(
-            f"seat {actor}: scripted {decision.kind} not offered "
-            f"(legals {legals})"
+            f"seat {actor}: scripted {decision.kind} not offered (legals {legals})"
         )
     if decision.tile is not None:
         exact = [
@@ -1065,8 +1062,7 @@ def _reference_find_action(sim: Any, actor: int, decision: ScriptedDecision) -> 
                 for a in candidates
             ]
             raise TraceRunnerError(
-                f"seat {actor}: scripted {decision.kind} tile {decision.tile}"
-                f" not among {seen}"
+                f"seat {actor}: scripted {decision.kind} tile {decision.tile} not among {seen}"
             )
         return exact[0]
     return candidates[0]
@@ -1784,13 +1780,17 @@ def gpu_soak_probe(
             wall: tuple[int, ...] = _wall_for_scenario(scenario)
             deck: tuple[int, ...] = wall_to_mahjax_deck(wall)
             env: Any = make_single_round_env()  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+            # One compiled step per scenario (same kernels as the eager call
+            # below; cpu_soak already uses this pattern): per-step cost drops
+            # from full dispatch to a single XLA launch, decisions identical.
+            jit_step: Any = jax.jit(env.step)  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
             state: Any = build_seeded_round_state(cast("Any", env), cast("Any", deck), dealer=0)  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
             _rng: Any = jax.random.PRNGKey(1)  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
             for _ in range(steps):
                 prim: int = int(cast("Any", _mahjax_auto_policy(cast("Any", state))))
                 _rng, _sub = jax.random.split(cast("Any", _rng))  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
                 _sub_any: Any = cast("Any", _sub)  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-                state = env.step(
+                state = jit_step(
                     cast("Any", state),
                     jax.numpy.asarray(cast("Any", prim), dtype=jax.numpy.int32),
                     cast("Any", _sub_any),
@@ -1814,8 +1814,7 @@ def gpu_soak_probe(
                 "status": "passed",
                 "steps": steps * len(SCENARIO_REGISTRY),
                 "note": (
-                    f"GPU soak OOM fallback to CPU determinism passed: "
-                    f"{type(exc).__name__}: {exc}"
+                    f"GPU soak OOM fallback to CPU determinism passed: {type(exc).__name__}: {exc}"
                 ),
             }
         return {
@@ -1949,6 +1948,10 @@ def _run_one_scenario(
                 return env.step(state, _mahjax_modules()["jnp"].int32(prim), sub)
         return env.step(state, _mahjax_modules()["jnp"].int32(prim), sub)
 
+    # One compiled step per scenario (same kernels as eager; decisions
+    # identical). Closure is built once per scenario, so one compile each.
+    _jit_step_cpu: Any = _mahjax_modules()["jax"].jit(_step_cpu)  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+
     failures: list[CheckpointFailure] = []
     step_log: list[dict[str, Any]] = []
     init_fail = _compare_projections(scenario, -1, sim, mj_state)
@@ -2071,14 +2074,13 @@ def _run_one_scenario(
                         step_index=idx,
                         dimension="mahjax_illegal",
                         detail=(
-                            f"mahjax illegal action {prim} at step {idx} "
-                            f"(ref {ref_action.kind})"
+                            f"mahjax illegal action {prim} at step {idx} (ref {ref_action.kind})"
                         ),
                     )
                 )
                 break
             _rng, _sub = _mahjax_modules()["jax"].random.split(_rng)
-            mj_state: Any = _step_cpu(mj_state, prim, cast("Any", _sub))  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+            mj_state: Any = _jit_step_cpu(mj_state, prim, cast("Any", _sub))  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
         # log
         step_log.append(
             {

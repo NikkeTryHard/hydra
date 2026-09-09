@@ -163,6 +163,7 @@ class DuplicateReport:
     def is_clean(self) -> bool:
         return len(self.exact_duplicates) == 0 and len(self.near_duplicates) == 0
 
+
 def validate_walls_disjoint(*wall_collections: Iterable[str]) -> None:
     """Raise :class:`ContractError` when a wall id appears in more than one collection.
 
@@ -292,8 +293,9 @@ def make_block_manifest(
         raise ContractError("schedule must be a MatchSchedule")
     if not isinstance(blocks, tuple) or len(blocks) == 0:
         raise ContractError("blocks must be nonempty tuple of WallBlock")
-    schedule_hash = schedule.walls_hash
-    _ = make_digest_text(schedule_hash)
+    from hydra2.eval.schedule import schedule_commitment_hash
+
+    schedule_hash = schedule_commitment_hash(schedule)
     manifest_wall_ids = tuple(block.wall_id for block in blocks)
     if tuple(schedule.wall_ids) != manifest_wall_ids:
         # Allow subset: blocks may be a held-out slice, but every block wall must
@@ -302,6 +304,7 @@ def make_block_manifest(
         for block in blocks:
             if block.wall_id not in schedule_order:
                 raise ContractError(f"block wall {block.wall_id!r} not in schedule")
+
         def _wall_order(b: WallBlock) -> int:
             return schedule_order[b.wall_id]
 

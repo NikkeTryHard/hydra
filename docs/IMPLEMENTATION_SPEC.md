@@ -31,8 +31,9 @@ src/hydra2/
   train/{state.py,objective.py,supervised/,distill/,rl/}
   eval/{schedule.py,case.py,runner.py,blocks.py,statistics.py,telemetry.py,promotion.py}
   performance/{candidate.py,qualify.py,ledger.py}
-  tracking/{protocol.py,wandb_mirror.py}
+  tracking/{__init__.py,clearml_mirror.py}
 ```
+Tracking is an observer-only ClearML mirror (offline-capable, hermetic session dir under the artifact root), disabled by default; local artifacts stay authoritative.
 
 Rules:
 

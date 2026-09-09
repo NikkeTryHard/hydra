@@ -1278,7 +1278,10 @@ class JointTypeWorldPlanner(Planner):  # type: ignore[misc]
             # Build finite vector broadcast: root score and complement
             raw_vals_0 = (score, -score / 3, -score / 3, -score / 3)
             # Clamp to finite range for utility contract
-            raw_vals = cast("tuple[float, float, float, float]", tuple(max(min(v, 3.0), -3.0) for v in raw_vals_0))
+            raw_vals = cast(
+                "tuple[float, float, float, float]",
+                tuple(max(min(v, 3.0), -3.0) for v in raw_vals_0),
+            )
             assert len(raw_vals) == 4
             try:
                 from hydra2.contracts.utility import (
@@ -1287,13 +1290,19 @@ class JointTypeWorldPlanner(Planner):  # type: ignore[misc]
 
                 uv = _UV(
                     values=raw_vals,
-                    utility_id=str(getattr(
-                        self.candidate_spec, "utility_id", "expected_final_placement"
-                    )),
-                    utility_manifest_hash=make_digest_text(str(getattr(
-                        self.candidate_spec, "utility_manifest_hash", "sha256:" + "b" * 64
-                    ))),
-                    rules_hash=make_digest_text(str(getattr(self.candidate_spec, "rules_hash", "sha256:" + "a" * 64))),
+                    utility_id=str(
+                        getattr(self.candidate_spec, "utility_id", "expected_final_placement")
+                    ),
+                    utility_manifest_hash=make_digest_text(
+                        str(
+                            getattr(
+                                self.candidate_spec, "utility_manifest_hash", "sha256:" + "b" * 64
+                            )
+                        )
+                    ),
+                    rules_hash=make_digest_text(
+                        str(getattr(self.candidate_spec, "rules_hash", "sha256:" + "a" * 64))
+                    ),
                 )
             except Exception:
                 # Fallback to raw tuple if utility contract unavailable (test fallback path)

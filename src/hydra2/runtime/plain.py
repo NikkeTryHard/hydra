@@ -5,10 +5,9 @@ exact same objects for subsequent operations. Owns no loop, checkpoint,
 optimizer policy, or compilation.
 """
 
-from __future__ import annotations
-
 from typing import Any, cast
 
+from hydra2.contracts.common import ContractError
 from hydra2.runtime.protocol import (
     RuntimeHandle,
     RuntimeSpec,
@@ -38,7 +37,7 @@ def _is_accelerator_available() -> bool:
             return bool(torch.accelerator.is_available())  # type: ignore[attr-defined]
         except Exception:
             pass
-    return bool(torch.cuda.is_available())
+    return torch.cuda.is_available()
 
 
 def _synchronize_accelerator() -> None:
@@ -62,6 +61,13 @@ class PlainPytorchAdapter:
     def setup(self, *, model: Any, optimizer: Any, spec: RuntimeSpec) -> RuntimeHandle:
         import torch
 
+        # Plain is fp32-only by contract: any non-fp32 request fails closed
+        # here, before device binding, so CPU-only runs still reject lies.
+        if spec.precision != "fp32":
+            raise ContractError(
+                f"PlainPytorchAdapter requires precision 'fp32', got {spec.precision!r} "
+                "(plain is fp32-only; use fabric_2.6.5 for bf16_mixed)"
+            )
         require_device_available(spec.device)
         device: Any = cast("Any", torch.device(spec.device))
         model_any: Any = cast("Any", model.to(cast("Any", device)))
@@ -101,7 +107,5 @@ def _move_optimizer_state(optimizer: Any, device: Any) -> None:
         for key, value in list(cast("list[tuple[Any, Any]]", state_dict.items())):
             value_any: Any = cast("Any", value)
             if hasattr(value_any, "to"):
-                moved = cast("Any", value_any).to(
-                    cast("Any", device), non_blocking=is_cuda
-                )
+                moved: Any = cast("Any", value_any).to(cast("Any", device), non_blocking=is_cuda)
                 state_dict[key] = cast("Any", moved)

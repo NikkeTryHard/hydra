@@ -64,6 +64,7 @@ def _pixi_lock_hash() -> str:
         return "MISSING: pixi.lock not found (set HYDRA2_REQUIRE_PIXI_LOCK=1 to require)"
     return sha256_file(lock)
 
+
 def _nvidia_smi_gpus() -> list[dict[str, Any]]:
     """Query GPUs via nvidia-smi with graceful degrade (portable).
 
@@ -96,7 +97,7 @@ def _nvidia_smi_gpus() -> list[dict[str, Any]]:
         return []
     gpus: list[dict[str, Any]] = []
     for line in proc.stdout.strip().splitlines():
-        if not line.strip():
+        if line.strip() == "":
             continue
         parts = [part.strip() for part in line.split(",")]
         if len(parts) != 4:

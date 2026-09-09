@@ -157,7 +157,7 @@ def _require_replay_backend(backend: str) -> str:
 
 
 def _expand_game_rows(
-    game: GameRecord, split: str, backend: str = "rust_json"
+    game: GameRecord, split: str, backend: str = "python"
 ) -> tuple[list[DecisionRow], bool]:
     """Expand one game to actor rows on the selected backend.
 
@@ -199,7 +199,6 @@ def _expand_game_rust_json(game: GameRecord, split: str) -> list[DecisionRow]:
     import tempfile
     from pathlib import Path
 
-    from hydra2.data.parquet import DecisionRow
     from hydra2.training.rust_stream import RustJsonStream
 
     try:
@@ -300,12 +299,56 @@ def _split_ratios(config: RunConfig) -> dict[str, float]:
     return {train_split: SPLIT_RATIOS["train"], val_split: SPLIT_RATIOS["validation"]}
 
 
+_ACTION_KINDS_BY_ID: list[str] | None = None
+
+
+def _action_kind_for_id(chosen_id: int) -> str:
+    """Honest kind for one table index (``"unknown"`` when unmapped).
+
+    The 6792 action table is authoritative (``configs/contracts/
+    action_table_v1.json`` index == action id); out-of-range or unloadable
+    tables fall back to ``"unknown"`` (never synthesized, never raised) so
+    per-type scorecards stay honest until the table binds.
+    """
+    global _ACTION_KINDS_BY_ID
+    cached = _ACTION_KINDS_BY_ID
+    if cached is None:
+        try:
+            import json as _json
+            from pathlib import Path as _Path
+
+            _table_path = (
+                _Path(__file__).resolve().parents[3]
+                / "configs"
+                / "contracts"
+                / "action_table_v1.json"
+            )
+            raw = _json.loads(_table_path.read_bytes().decode("utf-8"))
+            actions = raw.get("payload", {}).get("actions", [])
+            cached = [
+                str(a.get("kind", "unknown")) if isinstance(a, dict) else "unknown" for a in actions
+            ]
+            if len(cached) == 0:
+                return "unknown"
+            _ACTION_KINDS_BY_ID = cached
+        except Exception:
+            return "unknown"
+    if isinstance(chosen_id, bool) or not isinstance(chosen_id, int):
+        return "unknown"
+    if 0 <= chosen_id < len(cached):
+        kind = cached[chosen_id]
+        return kind if isinstance(kind, str) and kind != "" else "unknown"
+    return "unknown"
+
+
 def _row_to_dict(row: Any) -> dict[str, Any]:
     """Project a :class:`DecisionRow` onto the real-encoder input shape."""
+    chosen = int(row.chosen_action_id)
     return {
         "decision_id": str(row.decision_id),
-        "chosen_action_id": int(row.chosen_action_id),
+        "chosen_action_id": chosen,
         "actor_observation": dict(row.actor_observation),
+        "action_kind": _action_kind_for_id(chosen),
     }
 
 
@@ -401,7 +444,7 @@ class _StreamDataset:
         seed: int,
         drop_last: bool,
         need_privileged: bool = True,
-        replay_backend: str = "rust_json",
+        replay_backend: str = "python",
         expand_workers: int = 0,
     ) -> None:
         if drop_last is not True:
@@ -730,6 +773,16 @@ class _StreamDataset:
         )
         batch["_decision_ids"] = [str(row["decision_id"]) for row in taken]
         batch["_epoch"] = torch.tensor(self._epoch)
+        # Wave-3C: explicit per-row kinds for per-type scorecards (honest
+        # "unknown" fallback when the table misses; never parsed/encoded).
+        kinds: list[str] = []
+        for row in taken:
+            raw_kind = row.get("action_kind", "unknown")
+            if isinstance(raw_kind, str) and raw_kind != "":
+                kinds.append(raw_kind)
+            else:
+                kinds.append("unknown")
+        batch["_action_kinds"] = kinds
         return batch
 
     def get_sampler_state(self) -> dict[str, Any]:
@@ -1288,21 +1341,112 @@ def _build_model(config: RunConfig) -> Any:
     return Hydra2BaselineModel(action_count=config.model.action_count, **params)
 
 
+_HEAD_PARAM_PREFIXES: dict[str, tuple[str, ...]] = {
+    "policy": ("policy_head.",),
+    "placement": ("placement_head.",),
+    "value": ("value_head.",),
+    "event": ("event_head.",),
+    "belief": ("belief_head.",),
+}
+
+
+def _optimizer_param_groups(config: RunConfig, model: Any) -> list[dict[str, Any]] | None:
+    """Param groups for ``head_lr_mult`` (``None`` = uniform single group).
+
+    Known heads map to ``<head>_head.`` parameter prefixes; ``"trunk"``
+    scales every remaining parameter. Unknown keys fail closed. Empty
+    groups are omitted (stub models without heads train at the base lr).
+    """
+    mult = config.optimizer.head_lr_mult
+    if mult is None:
+        return None
+    known = set(_HEAD_PARAM_PREFIXES) | {"trunk"}
+    unknown = sorted(k for k in mult if k not in known)
+    if unknown:
+        raise ContractError(f"optimizer.head_lr_mult unknown heads {unknown}")
+    base_lr = float(config.optimizer.lr)
+    try:
+        named = list(model.named_parameters())
+    except Exception:
+        return None
+    buckets: dict[str, list[Any]] = {head: [] for head in mult}
+    trunk: list[Any] = []
+    for name, param in named:
+        placed = False
+        for head, prefixes in _HEAD_PARAM_PREFIXES.items():
+            if head in mult and any(name.startswith(p) for p in prefixes):
+                buckets[head].append(param)
+                placed = True
+                break
+        if not placed:
+            trunk.append(param)
+    groups: list[dict[str, Any]] = []
+    for head, params in buckets.items():
+        if len(params) == 0:
+            continue
+        groups.append({"params": params, "lr": base_lr * float(mult[head])})
+    trunk_mult = float(mult.get("trunk", 1.0)) if "trunk" in mult else 1.0
+    if len(trunk) > 0:
+        # Trunk at base lr unless an explicit trunk multiplier rides along.
+        groups.append({"params": trunk, "lr": base_lr * trunk_mult})
+    if len(groups) == 0:
+        return None
+    return groups
+
+
+def _optimizer_fused_kwargs() -> dict[str, Any]:
+    """Foreach/fused selection (fused > foreach > for-loop ordering).
+
+    CUDA uses the stable fused kernel; CPU uses foreach (fused CPU is beta).
+    Both preserve numerics (parity-gated); the for-loop fallback is gone.
+    """
+    try:
+        import torch as _torch
+
+        if _torch.cuda.is_available():
+            return {"fused": True}
+    except Exception:
+        pass
+    return {"foreach": True}
+
+
 def _build_optimizer(config: RunConfig, model: Any) -> Any:
     """Registered optimizer id plus the config battery (no silent defaults)."""
     if config.optimizer.name == "adamw":
+        groups = _optimizer_param_groups(config, model)
+        kwargs = _optimizer_fused_kwargs()
+        if groups is None:
+            return torch.optim.AdamW(
+                model.parameters(),
+                lr=config.optimizer.lr,
+                betas=config.optimizer.betas,
+                weight_decay=config.optimizer.weight_decay,
+                **kwargs,
+            )
         return torch.optim.AdamW(
-            model.parameters(),
+            groups,
             lr=config.optimizer.lr,
             betas=config.optimizer.betas,
             weight_decay=config.optimizer.weight_decay,
+            **kwargs,
         )
     if config.optimizer.name == "adam":
+        groups = _optimizer_param_groups(config, model)
+        kwargs = _optimizer_fused_kwargs()
+        if groups is None:
+            return torch.optim.Adam(
+                model.parameters(),
+                lr=config.optimizer.lr,
+                betas=config.optimizer.betas,
+                weight_decay=config.optimizer.weight_decay,
+                **kwargs,
+            )
         return torch.optim.Adam(
-            model.parameters(),
+            groups,
             lr=config.optimizer.lr,
             betas=config.optimizer.betas,
             weight_decay=config.optimizer.weight_decay,
+            **kwargs,
         )
     if config.optimizer.name == "sgd":
         # v1 config carries no momentum knob: plain SGD (momentum 0).
@@ -1320,12 +1464,25 @@ def _build_scheduler(config: RunConfig, optimizer: Any) -> Any:
     warmup = config.scheduler.warmup_updates
     horizon = config.loop.max_updates
     parameters = dict(config.scheduler.parameters)
+    final_factor = float(config.scheduler.final_factor)
+    warmup_start = float(config.scheduler.warmup_start_factor)
     if name == "cosine":
         unknown = sorted(k for k in parameters if k != "T_max")
         if unknown:
             raise ContractError(f"scheduler.parameters unknown keys {unknown}")
         main_span = max(1, horizon - warmup) if warmup < horizon else horizon
-        main = CosineAnnealingLR(optimizer, T_max=int(parameters.get("T_max", main_span)))
+        # Peak/final mapping: eta_min is final_factor fraction of peak.
+        # Single-group exact; multi-group uses the first group's peak (all
+        # r1 groups share the same final_factor ratio; absolute minima then
+        # scale with their peaks, preserving the ratio per group only when
+        # peaks are uniform — documented approximation, exact at 0.0).
+        try:
+            _peak = float(optimizer.param_groups[0]["lr"])
+        except Exception:
+            _peak = float(config.optimizer.lr)
+        main = CosineAnnealingLR(
+            optimizer, T_max=int(parameters.get("T_max", main_span)), eta_min=_peak * final_factor
+        )
     elif name == "constant":
         if parameters:
             raise ContractError(f"scheduler.parameters unknown keys {sorted(parameters)}")
@@ -1334,7 +1491,9 @@ def _build_scheduler(config: RunConfig, optimizer: Any) -> Any:
         unknown = sorted(k for k in parameters if k != "end_factor")
         if unknown:
             raise ContractError(f"scheduler.parameters unknown keys {unknown}")
-        end_factor = float(parameters.get("end_factor", 0.0))
+        # Canonical final_factor wins; legacy parameters end_factor preserved
+        # when explicitly set (back-compat for pre-factor configs).
+        end_factor = float(parameters["end_factor"]) if "end_factor" in parameters else final_factor
         if not 0.0 <= end_factor <= 1.0:
             raise ContractError(f"scheduler end_factor must lie in [0, 1], got {end_factor}")
         span = max(1, horizon - warmup) if warmup < horizon else horizon
@@ -1345,8 +1504,8 @@ def _build_scheduler(config: RunConfig, optimizer: Any) -> Any:
         if warmup <= 0:
             return main
         # Warmup covers the whole horizon: single warmup ramp, no decay tail.
-        return LinearLR(optimizer, start_factor=0.01, total_iters=horizon)
-    warm = LinearLR(optimizer, start_factor=0.01, total_iters=warmup)
+        return LinearLR(optimizer, start_factor=warmup_start, total_iters=horizon)
+    warm = LinearLR(optimizer, start_factor=warmup_start, total_iters=warmup)
     return SequentialLR(optimizer, schedulers=[warm, main], milestones=[warmup])
 
 
@@ -2131,6 +2290,13 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
         checkpoint_frequency_updates=config.loop.checkpoint_frequency_updates,
         seed=config.seeds.train_seed,
         precision=config.loop.precision,  # type: ignore[arg-type]
+        label_smoothing=config.weights.label_smoothing,
+        stratified_sampling=config.loop.stratified_sampling,
+        sampling_ratios=dict(config.loop.sampling_ratios)
+        if config.loop.sampling_ratios is not None
+        else None,
+        log_per_type_metrics=config.loop.log_per_type_metrics,
+        fit_temperature=config.loop.fit_temperature,
     )
     from hydra2.tracking.clearml_mirror import make_mirror
 

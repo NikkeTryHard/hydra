@@ -572,6 +572,7 @@ def test_candidate_spec_result_promotion_bound() -> None:
             "analysis": "passed",
         },
         disposition="promoted",
+        schedule_hash="sha256:" + "ab" * 32,
     )
     assert record.candidate_spec_hash == candidate_spec_hash(spec)
     assert record.disposition == "promoted"

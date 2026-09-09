@@ -1,14 +1,16 @@
-"""WP-14 replay backend flag: python default, rust_json opt-in (Slice 5).
+"""WP-14 replay backend flag: rust_json default, python shim fallback (Slice 8).
 
-Covers the flag surface only (no replay logic, no default flip): the
-``data.replay_backend`` default + strict parsing + run-digest identity, the
-``_expand_game_rows`` dispatch parity on the python path (byte-identical to
-the direct ``replay_game``/``expand_game`` calls it replaces), the rust_json
+Covers the flag surface only (no replay logic): the ``data.replay_backend``
+default (rust_json since the Slice-8 cutover) + strict parsing + run-digest
+identity, the ``_expand_game_rows`` dispatch parity on the python path (thin
+shim over the same Rust stream since Slice 8, byte-identical to the direct
+``replay_game``/``expand_game`` calls it replaces), the rust_json
 decision-sequence/quarantine parity on synthetic golden games, the
-cross-backend resume refusal (run digest + dataset buffer), and the row-cache
-backend tag. Rust draining tests build the Slice-4 extension once per session
-(same recipe as ``test_rust_stream_wp14``) and run in the serial lane; the
-rest is lane-default CPU with fixed seeds.
+cross-backend resume refusal (run digest + dataset buffer), the
+rust_json+workers fail-closed gate, and the row-cache backend tag. Rust
+draining tests build the Slice-4 extension once per session (same recipe as
+``test_rust_stream_wp14``) and run in the serial lane; the rest is
+lane-default CPU with fixed seeds.
 """
 
 from __future__ import annotations
@@ -179,14 +181,12 @@ def _write_mapping(tmp_path: Path, name: str, mapping: dict[str, Any]) -> Path:
     path.write_text(yaml.safe_dump(mapping, sort_keys=True), encoding="utf-8")
     return path
 
-
-class TestFlagPlumbing:
-    def test_default_backend_is_python(self, tmp_path: Path) -> None:
+    def test_default_backend_is_rust_json(self, tmp_path: Path) -> None:
         config = load_run_config(
             _write_mapping(tmp_path, "run.yaml", _minimal_mapping(tmp_path)), environ={}
         )
-        assert config.data.replay_backend == "python"
-        assert run_config_to_dict(config)["data"]["replay_backend"] == "python"
+        assert config.data.replay_backend == "rust_json"
+        assert run_config_to_dict(config)["data"]["replay_backend"] == "rust_json"
 
     def test_unknown_backend_rejected(self, tmp_path: Path) -> None:
         mapping = _minimal_mapping(tmp_path)
@@ -198,13 +198,14 @@ class TestFlagPlumbing:
         base = load_run_config(
             _write_mapping(tmp_path, "a.yaml", _minimal_mapping(tmp_path)), environ={}
         )
+        assert base.data.replay_backend == "rust_json"
         mapping = _minimal_mapping(tmp_path)
-        mapping["data"]["replay_backend"] = "rust_json"
-        rust = load_run_config(_write_mapping(tmp_path, "b.yaml", mapping), environ={})
-        assert rust.data.replay_backend == "rust_json"
+        mapping["data"]["replay_backend"] = "python"
+        shim = load_run_config(_write_mapping(tmp_path, "b.yaml", mapping), environ={})
+        assert shim.data.replay_backend == "python"
         # Backend is pinned in the run identity: old checkpoints never
         # silently resume cross-backend (digest mismatch refuses fail-closed).
-        assert run_config_digest(rust) != run_config_digest(base)
+        assert run_config_digest(shim) != run_config_digest(base)
         again = load_run_config(
             _write_mapping(tmp_path, "c.yaml", _minimal_mapping(tmp_path)), environ={}
         )
@@ -217,8 +218,7 @@ class TestFlagPlumbing:
         walled = _decode_game("flag-unknown-be-w", wall=WALL)
         with pytest.raises(ContractError, match="replay_backend"):
             driver._expand_game_rows(walled, "train", "bogus")
-
-    def test_python_backend_matches_direct_calls(self) -> None:
+    def test_python_backend_matches_direct_calls(self, rust_extension: Any) -> None:
         from hydra2.data.replay_expand import expand_game
         from hydra2.engines.riichienv.log_replay import replay_game
 
@@ -245,6 +245,29 @@ class TestFlagPlumbing:
         assert driver._quarantine_class(ru) == driver._quarantine_class(py)
         assert "<id>" in driver._quarantine_class(ru)
         assert "g1" not in driver._quarantine_class(ru)
+
+    def test_rust_json_workers_fail_closed(self, tmp_path: Path) -> None:
+        """Slice-8 serial first: rust_json + expand_workers>0 refuses (pool lands later)."""
+        corpus = tmp_path / "corpus" / "tenhou"
+        corpus.mkdir(parents=True, exist_ok=True)
+        manifest = build_manifest(corpus)
+        with pytest.raises(ContractError, match="fail-closed"):
+            driver._StreamDataset(
+                stream_factory=lambda: GameStream(
+                    manifest,
+                    seed=DATA_SEED,
+                    ratios=dict(driver.SPLIT_RATIOS),
+                    epoch=0,
+                    split="train",
+                    shuffle_buffer=0,
+                ),
+                num_actions=6792,
+                feature_dim=64,
+                seed=DATA_SEED,
+                drop_last=True,
+                replay_backend="rust_json",
+                expand_workers=2,
+            )
 
 
 @pytest.fixture(scope="session")
@@ -447,6 +470,7 @@ class TestCrossBackendResume:
                 artifact_root=tmp_path / "artifacts",
                 max_updates=1,
                 run_id=run_id,
+                backend="python",
             ),
             environ={},
         )

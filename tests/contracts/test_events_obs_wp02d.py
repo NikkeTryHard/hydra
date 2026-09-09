@@ -464,6 +464,28 @@ class TestPublicEventsAllSeats:
         assert any(meld.kind == "chi" for meld in dealer_view.visible_melds[3])
         assert dealer_view.riichi_states == ("accepted", "none", "none", "none")
 
+    def test_kan_count_counts_only_kans(self, action_table):
+        s0, s1 = Seat(0), Seat(1)
+        scores = (25000, 25000, 25000, 25000)
+        rnd = Round()
+        rnd.add("game_start", ridx=0, scores=scores)
+        rnd.add("round_start", actor=s0, ridx=0, scores=scores)
+        rnd.add("chi", actor=s0, tile=24, action=20, source=s1, consumed=(20, 28))
+        rnd.add("pon", actor=s0, tile=41, action=21, source=s1, consumed=(40, 42))
+        rnd.add("daiminkan", actor=s0, tile=60, action=22, source=s1, consumed=(61, 62, 63))
+        rnd.add("ankan", actor=s0, action=23, consumed=(108, 109, 110, 111))
+        rnd.add("kakan", actor=s0, tile=43, action=24)
+        builder = _make_builder(len(action_table.actions))
+        _feed_round(builder, rnd.events)
+        observation = builder.build(actor=s0, legal_mask=_true_mask(len(action_table.actions)))
+        assert observation.kan_count == 3
+        assert [m.kind for m in observation.visible_melds[0]] == [
+            "chi",
+            "kakan",
+            "daiminkan",
+            "ankan",
+        ]
+
 
 # ---------------------------------------------------------------------------
 # BUILD: server-private rejection everywhere + SPEC 22 OBS-CANARY-001.

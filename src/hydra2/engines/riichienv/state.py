@@ -164,9 +164,7 @@ def build_state_digest_document(
             from_who_val: Any = meld.from_who
             tile_list: list[int] = sorted(int(cast("Any", t)) for t in cast("Any", tiles_val))
             from_who_idx: int = int(cast("Any", from_who_val))
-            from_who_mapped: int | None = (
-                None if from_who_idx < 0 else permutation[from_who_idx]
-            )
+            from_who_mapped: int | None = None if from_who_idx < 0 else permutation[from_who_idx]
             melds.append(
                 {
                     "owner": permutation[pid],
@@ -197,9 +195,7 @@ def build_state_digest_document(
     rinshan_val: Any = engine.rinshan_draw_count
     is_done_val: Any = engine.is_done
     current_idx: int = int(cast("Any", current))
-    current_player_field: int | None = (
-        None if current_idx < 0 else permutation[current_idx]
-    )
+    current_player_field: int | None = None if current_idx < 0 else permutation[current_idx]
     drawn_tile_field: int | None = None if drawn is None else int(cast("Any", drawn))
     return {
         "hand_index": hand_index,

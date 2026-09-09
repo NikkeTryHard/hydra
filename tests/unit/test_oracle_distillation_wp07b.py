@@ -47,7 +47,9 @@ def _synthetic_legal_mask(num: int, num_actions: int, seed: int) -> torch.Tensor
         # Deterministic: choose first k legal where k = 2 + (hash % (A-2))
         # Use gen to pick random legal subset
         perm = torch.randperm(num_actions, generator=gen)
-        k = 2 + (int(hashlib.sha256(f"row-{i}-{seed}".encode()).hexdigest()[:2], 16) % (num_actions - 2))
+        k = 2 + (
+            int(hashlib.sha256(f"row-{i}-{seed}".encode()).hexdigest()[:2], 16) % (num_actions - 2)
+        )
         mask[i, perm[:k]] = True
     return mask
 
@@ -81,8 +83,17 @@ def test_separate_privileged_loader_namespace_process_boundary(tmp_path: Path) -
     with pytest.raises(ContractError, match=r"only load split.*train"):
         PrivilegedOracleLoader(tmp_path, split="test", verify=False)
 
+    # Fail closed by default: unknown ids raise without explicit synthetic opt-in.
+    with pytest.raises(ContractError, match="allow_synthetic"):
+        load_oracle_batch_in_subprocess(tmp_path, decision_ids=["dec-0001"], split="train")
     # Process boundary: spawn subprocess and verify pid isolation
-    payload, child_pid = load_oracle_batch_in_subprocess(tmp_path, decision_ids=["dec-0001", "dec-0002"], split="train")
+    # (synthetic-only opt-in: empty dir has no privileged shards/labels).
+    payload, child_pid = load_oracle_batch_in_subprocess(
+        tmp_path,
+        decision_ids=["dec-0001", "dec-0002"],
+        split="train",
+        allow_synthetic=True,
+    )
     assert child_pid != os.getpid()
     assert len(payload) == 2
     assert payload[0]["decision_id"] == "dec-0001"
@@ -123,8 +134,20 @@ def test_train_belief_value_targets_only_from_authorized_train_split(tmp_path: P
     dest = tmp_path / "privileged_train_test"
     dest.mkdir()
     rows = [
-        {"decision_id": "dec-train-001", "wall_id": "wall-1", "split": "train", "privileged_label": json.dumps({"hidden_tiles": [1] * 34}), "observation_hash": "sha256:" + "a" * 64},
-        {"decision_id": "dec-held-001", "wall_id": "wall-2", "split": "held_out", "privileged_label": json.dumps({"hidden_tiles": [1] * 34}), "observation_hash": "sha256:" + "b" * 64},
+        {
+            "decision_id": "dec-train-001",
+            "wall_id": "wall-1",
+            "split": "train",
+            "privileged_label": json.dumps({"hidden_tiles": [1] * 34, "ranks": [2, 1, 4, 3]}),
+            "observation_hash": "sha256:" + "a" * 64,
+        },
+        {
+            "decision_id": "dec-held-001",
+            "wall_id": "wall-2",
+            "split": "held_out",
+            "privileged_label": json.dumps({"hidden_tiles": [1] * 34}),
+            "observation_hash": "sha256:" + "b" * 64,
+        },
     ]
     table = pa.table({k: [r[k] for r in rows] for k in rows[0]})
     pq.write_table(table, dest / "privileged-000.parquet")
@@ -146,13 +169,55 @@ def test_train_belief_value_targets_only_from_authorized_train_split(tmp_path: P
     assert len(target.belief_target) == 34
     assert abs(sum(target.belief_target) - 1.0) < 1e-6
     assert len(target.value_target) == 4
-    assert abs(sum(target.value_target) - 1.0) < 1e-6
+    # Day-one: value path pinned to utility() (ranks->rank_values->values),
+    # zero-sum NOT a distribution (20/10/-10/-20 permuted).
+    from hydra2.belief.oracle_loader import _oracle_utility_manifest
+    from hydra2.contracts.utility import RawOutcome, utility
+
+    manifest = _oracle_utility_manifest()
+    outcome = RawOutcome(
+        final_scores=(30000, 40000, 10000, 20000),
+        ranks=(2, 1, 4, 3),
+        point_deltas=(5000, 15000, -15000, -5000),
+        settlements=(),
+        rules_id=manifest.rules_id,
+        rules_hash=manifest.rules_hash,
+    )
+    expected_value = tuple(utility(outcome, manifest).values)
+    assert tuple(target.value_target) == pytest.approx(expected_value)
+    assert tuple(target.value_target) == pytest.approx((10.0, 20.0, -20.0, -10.0))
     assert target.event_target in range(20)
 
-    # Ensure distillation training validates split: try to use held_out decision_id falls back to synthetic but still marked train
-    # (loader fallback is deterministic synthetic train)
-    synthetic_target = loader.get_oracle_target("dec-unknown-999")
-    assert synthetic_target.split == "train"
+    # Fail closed by default: unknown decision_id raises without synthetic opt-in.
+    with pytest.raises(ContractError, match="allow_synthetic"):
+        loader.get_oracle_target("dec-unknown-999")
+    with pytest.raises(ContractError, match="allow_synthetic"):
+        loader.load_batch(["dec-unknown-999"])
+    # Explicit synthetic opt-in: deterministic hash fallback, byte-identical to
+    # the pre-flag behavior (recomputed here from first principles via hashlib).
+    import hashlib as _hashlib
+
+    synth_a = loader.get_oracle_target("dec-unknown-999", allow_synthetic=True)
+    synth_b = loader.get_oracle_target("dec-unknown-999", allow_synthetic=True)
+    assert synth_a == synth_b
+    assert synth_a.split == "train"
+    # Belief golden: sha256 digest is 32 bytes (< 34), so the legacy branch
+    # repeats the digest (h * 3)[:34], adds 1.0, and normalizes.
+    _h = _hashlib.sha256(b"dec-unknown-999").digest()
+    assert len(_h) < 34
+    _raw = [float(b) + 1.0 for b in (_h * 3)[:34]]
+    _total = sum(_raw)
+    assert tuple(synth_a.belief_target) == pytest.approx([v / _total for v in _raw])
+    # Value golden: low nibbles of sha256(decision_id + "_value")[:8], normalized.
+    _hv = int(_hashlib.sha256(b"dec-unknown-999_value").hexdigest()[:8], 16)
+    _scores = [((_hv >> (i * 4)) & 0xF) / 15.0 for i in range(4)]
+    _vtotal = sum(_scores) or 1.0
+    assert tuple(synth_a.value_target) == pytest.approx([s / _vtotal for s in _scores])
+    # Instance-level opt-in agrees with per-call opt-in (threading check).
+    loader_synth = PrivilegedOracleLoader(dest2, split="train", verify=True, allow_synthetic=True)
+    assert loader_synth.get_oracle_target("dec-unknown-999") == synth_a
+    assert loader_synth.load_batch(["dec-unknown-999"]) == [synth_a]
+    assert [t.decision_id for t in loader_synth.iter_targets()] == ["dec-train-001"]
 
 
 # ---------------------------------------------------------------------------
@@ -172,7 +237,10 @@ def test_never_expose_privileged_fields_to_inference_encoder() -> None:
     legal_mask = _synthetic_legal_mask(4, 16, seed=1)
 
     # Clean batch passes
-    clean_batch = {"actor_observation": {"hand_counts": [0] * 34, "legal_mask_bits": [1] * 16}, "legal_mask": legal_mask}
+    clean_batch = {
+        "actor_observation": {"hand_counts": [0] * 34, "legal_mask_bits": [1] * 16},
+        "legal_mask": legal_mask,
+    }
     validate_actor_batch_no_privileged(clean_batch)
     out = model(actor_features, legal_mask=legal_mask, batch_dict=clean_batch)
     assert "belief_logits" in out
@@ -193,7 +261,13 @@ def test_never_expose_privileged_fields_to_inference_encoder() -> None:
         model(actor_features, legal_mask=legal_mask, batch_dict=bad_obs_batch)
 
     # Verify FORBIDDEN set does not include actor-visible fields
-    for allowed in ["actor_observation", "legal_mask", "hand_counts", "dora_indicators", "observation_hash"]:
+    for allowed in [
+        "actor_observation",
+        "legal_mask",
+        "hand_counts",
+        "dora_indicators",
+        "observation_hash",
+    ]:
         assert allowed not in FORBIDDEN_IN_ACTOR_KEYS
 
     # Teacher may see privileged (no validation on teacher forward)
@@ -223,7 +297,9 @@ def test_report_proper_scores_calibration_on_held_out_data() -> None:
     legal_mask = _synthetic_legal_mask(B, K, seed=10)
     # Ensure targets are legal
     # Pick first legal action per row for deterministic
-    targets = torch.tensor([int(torch.where(legal_mask[i])[0][0].item()) for i in range(B)], dtype=torch.long)
+    targets = torch.tensor(
+        [int(torch.where(legal_mask[i])[0][0].item()) for i in range(B)], dtype=torch.long
+    )
     # Also test with random legal targets
     # Use compute_proper_scores
     result = compute_proper_scores(logits, targets, legal_mask=legal_mask)
@@ -266,7 +342,9 @@ def test_report_proper_scores_calibration_on_held_out_data() -> None:
 
     # Proper: uniform baseline vs model comparison (held-out calibration concept)
     # Model with higher confidence at target should have lower NLL than uniform
-    float(torch.tensor([torch.log(torch.tensor(K, dtype=torch.float32)).item()]).mean().item())  # approx
+    float(
+        torch.tensor([torch.log(torch.tensor(K, dtype=torch.float32)).item()]).mean().item()
+    )  # approx
     # Not asserting improvement, just that both are finite and comparable
     assert result.nll < 10
     assert brier < 2
@@ -299,7 +377,9 @@ def test_report_proper_scores_calibration_on_held_out_data() -> None:
         af = _synthetic_features(4, 8, seed=100 + i)
         pf = _synthetic_features(4, 4, seed=200 + i)
         lm = _synthetic_legal_mask(4, 8, seed=300 + i)
-        tg = torch.tensor([int(torch.where(lm[j])[0][0].item()) for j in range(4)], dtype=torch.long)
+        tg = torch.tensor(
+            [int(torch.where(lm[j])[0][0].item()) for j in range(4)], dtype=torch.long
+        )
         train_batches.append((af, pf, lm, tg))
     held_logits = _synthetic_features(16, 8, seed=999)
     # Map to logits shape [16,8]
@@ -308,8 +388,12 @@ def test_report_proper_scores_calibration_on_held_out_data() -> None:
     torch.ones(16, 8, dtype=torch.bool)
     held_targets = _synthetic_targets(16, 8, seed=555)
     # Need to ensure distillation's held_out determinism: run twice, same digest
-    metrics1 = run_synthetic_distillation_for_metrics(config, train_batches, (held_logits_expanded, held_targets), seed=42)
-    metrics2 = run_synthetic_distillation_for_metrics(config, train_batches, (held_logits_expanded, held_targets), seed=42)
+    metrics1 = run_synthetic_distillation_for_metrics(
+        config, train_batches, (held_logits_expanded, held_targets), seed=42
+    )
+    metrics2 = run_synthetic_distillation_for_metrics(
+        config, train_batches, (held_logits_expanded, held_targets), seed=42
+    )
     assert metrics1.digest == metrics2.digest
     assert metrics1.held_out_nll == pytest.approx(metrics2.held_out_nll, rel=1e-6)
     assert 0 <= metrics1.held_out_nll < 10
@@ -317,8 +401,6 @@ def test_report_proper_scores_calibration_on_held_out_data() -> None:
     assert 0 <= metrics1.held_out_ece <= 1
     assert len(metrics1.train_losses) == 5
     assert all(math.isfinite(v) for v in metrics1.train_losses)
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -343,7 +425,11 @@ def test_compare_duplicate_blocks_without_changing_frozen_supervised_gate() -> N
     blocks_baseline = [FakeBlock(f"wall-{i:03d}", (0.08 * i, 0.10 * i, 0.04 * i)) for i in range(6)]
 
     result = compare_duplicate_blocks(
-        blocks_student, blocks_teacher, blocks_baseline, baseline_checkpoint_hash_before=baseline_hash, baseline_checkpoint_hash_after=baseline_hash
+        blocks_student,
+        blocks_teacher,
+        blocks_baseline,
+        baseline_checkpoint_hash_before=baseline_hash,
+        baseline_checkpoint_hash_after=baseline_hash,
     )
     assert result.num_wall_blocks == 6
     assert result.baseline_unchanged is True
@@ -354,7 +440,11 @@ def test_compare_duplicate_blocks_without_changing_frozen_supervised_gate() -> N
     assert math.isfinite(result.mean_baseline)
     # Determinism: same inputs -> same digest
     result2 = compare_duplicate_blocks(
-        blocks_student, blocks_teacher, blocks_baseline, baseline_checkpoint_hash_before=baseline_hash, baseline_checkpoint_hash_after=baseline_hash
+        blocks_student,
+        blocks_teacher,
+        blocks_baseline,
+        baseline_checkpoint_hash_before=baseline_hash,
+        baseline_checkpoint_hash_after=baseline_hash,
     )
     assert result.digest == result2.digest
 
@@ -362,36 +452,65 @@ def test_compare_duplicate_blocks_without_changing_frozen_supervised_gate() -> N
     blocks_student_shuffled = list(reversed(blocks_student))
     # Wall ids same set but order same length still same digest? Our digest uses order; so reversed order changes digest
     compare_duplicate_blocks(
-        blocks_student_shuffled, blocks_teacher, blocks_baseline, baseline_checkpoint_hash_before=baseline_hash, baseline_checkpoint_hash_after=baseline_hash
+        blocks_student_shuffled,
+        blocks_teacher,
+        blocks_baseline,
+        baseline_checkpoint_hash_before=baseline_hash,
+        baseline_checkpoint_hash_after=baseline_hash,
     )
     assert True  # order matters; at least not equal if contrasts permuted
 
     # Frozen gate mutation must fail
     with pytest.raises(ContractError, match="frozen supervised gate mutated"):
         compare_duplicate_blocks(
-            blocks_student, blocks_teacher, blocks_baseline, baseline_checkpoint_hash_before=baseline_hash, baseline_checkpoint_hash_after="sha256:" + "b" * 64
+            blocks_student,
+            blocks_teacher,
+            blocks_baseline,
+            baseline_checkpoint_hash_before=baseline_hash,
+            baseline_checkpoint_hash_after="sha256:" + "b" * 64,
         )
 
     # Duplicate wall_id within one condition must fail
     dup_blocks = [*blocks_student[:5], blocks_student[0]]  # duplicate wall-000, length stays 6
     with pytest.raises(ContractError, match="duplicate wall_id"):
         compare_duplicate_blocks(
-            dup_blocks, blocks_teacher, blocks_baseline, baseline_checkpoint_hash_before=baseline_hash, baseline_checkpoint_hash_after=baseline_hash
+            dup_blocks,
+            blocks_teacher,
+            blocks_baseline,
+            baseline_checkpoint_hash_before=baseline_hash,
+            baseline_checkpoint_hash_after=baseline_hash,
         )
 
     # Empty lists must fail
     with pytest.raises(ContractError, match="non-empty"):
-        compare_duplicate_blocks([], [], [], baseline_checkpoint_hash_before=baseline_hash, baseline_checkpoint_hash_after=baseline_hash)
+        compare_duplicate_blocks(
+            [],
+            [],
+            [],
+            baseline_checkpoint_hash_before=baseline_hash,
+            baseline_checkpoint_hash_after=baseline_hash,
+        )
 
     # Unequal lengths must fail
     with pytest.raises(ContractError, match="equal length"):
-        compare_duplicate_blocks(blocks_student[:3], blocks_teacher, blocks_baseline, baseline_checkpoint_hash_before=baseline_hash, baseline_checkpoint_hash_after=baseline_hash)
+        compare_duplicate_blocks(
+            blocks_student[:3],
+            blocks_teacher,
+            blocks_baseline,
+            baseline_checkpoint_hash_before=baseline_hash,
+            baseline_checkpoint_hash_after=baseline_hash,
+        )
 
     # Verify whole-wall-block is independent unit: test via eval.blocks aggregation
     from hydra2.eval.blocks import WallBlock, aggregate_wall_block
 
     # Create real WallBlocks and ensure our compare aligns with eval.blocks semantics
-    wall_blocks = [WallBlock(wall_id=f"w{i}", game_ids=(f"g{i}-0", f"g{i}-1"), contrasts=(float(i), float(i + 1))) for i in range(3)]
+    wall_blocks = [
+        WallBlock(
+            wall_id=f"w{i}", game_ids=(f"g{i}-0", f"g{i}-1"), contrasts=(float(i), float(i + 1))
+        )
+        for i in range(3)
+    ]
     # Our function would compute mean per wall wall
     # aggregate_wall_block collapses one wall to mean
     for wb in wall_blocks:
@@ -433,14 +552,22 @@ def test_hidden_permutation_and_split_wall_leakage() -> None:
     legal = _synthetic_legal_mask(8, 8, seed=8)
     priv = _synthetic_features(8, 4, seed=9)
     # Student invariance should pass (privileged is ignored)
-    assert hidden_permutation_invariance_check(model, actor, legal, privileged_features=priv, num_permutations=3, seed=0) is True
+    assert (
+        hidden_permutation_invariance_check(
+            model, actor, legal, privileged_features=priv, num_permutations=3, seed=0
+        )
+        is True
+    )
 
     # Teacher sensitivity: permuting privileged should change teacher output (at least not identical)
     from hydra2.belief.oracle_distillation import OracleTeacher
 
     teacher = OracleTeacher(feature_dim=8, privileged_dim=4, hidden_dim=16, num_actions=8)
     # Teacher invariance check is actually sensitivity check; we just ensure no crash and returns True
-    assert hidden_permutation_invariance_check(teacher, actor, legal, privileged_features=priv, seed=1) is True
+    assert (
+        hidden_permutation_invariance_check(teacher, actor, legal, privileged_features=priv, seed=1)
+        is True
+    )
 
     # Deterministic replay: same seed privileged permutation gives same privileged ordering
 
@@ -494,17 +621,25 @@ def test_teacher_student_deterministic() -> None:
     af = _synthetic_features(4, 8, seed=42)
     pf = _synthetic_features(4, 4, seed=43)
     lm = _synthetic_legal_mask(4, 8, seed=44)
-    opt1 = torch.optim.AdamW(student1.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
-    opt2 = torch.optim.AdamW(student2.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
+    opt1 = torch.optim.AdamW(
+        student1.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay
+    )
+    opt2 = torch.optim.AdamW(
+        student2.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay
+    )
 
     losses1 = deterministic_distillation_step(student1, teacher, opt1, af, pf, lm, config)
     losses2 = deterministic_distillation_step(student2, teacher2, opt2, af, pf, lm, config)
     assert losses1["total"] == pytest.approx(losses2["total"], rel=1e-6, abs=1e-8)
     assert losses1["belief"] == pytest.approx(losses2["belief"], rel=1e-6)
     # State after step should be identical
-    for (n1, p1), (n2, p2) in zip(student1.named_parameters(), student2.named_parameters(), strict=False):
+    for (n1, p1), (n2, p2) in zip(
+        student1.named_parameters(), student2.named_parameters(), strict=False
+    ):
         assert n1 == n2
-        assert torch.allclose(p1, p2, atol=1e-6, rtol=1e-6), f"param {n1} differs after deterministic step"
+        assert torch.allclose(p1, p2, atol=1e-6, rtol=1e-6), (
+            f"param {n1} differs after deterministic step"
+        )
 
     # Different seed -> different init -> different loss (probabilistic)
     torch.manual_seed(999)
@@ -617,8 +752,18 @@ def test_end_to_end_synthetic_split_deterministic_and_no_leakage(tmp_path: Path)
     ]
     train_dir = tmp_path / "actor_train"
     held_dir = tmp_path / "actor_held"
-    write_actor_shards(destination=train_dir, rows=train_rows, dataset_hash="sha256:" + "e" * 64, split_manifest_hash="sha256:" + "f" * 64)
-    write_actor_shards(destination=held_dir, rows=held_rows, dataset_hash="sha256:" + "e" * 64, split_manifest_hash="sha256:" + "f" * 64)
+    write_actor_shards(
+        destination=train_dir,
+        rows=train_rows,
+        dataset_hash="sha256:" + "e" * 64,
+        split_manifest_hash="sha256:" + "f" * 64,
+    )
+    write_actor_shards(
+        destination=held_dir,
+        rows=held_rows,
+        dataset_hash="sha256:" + "e" * 64,
+        split_manifest_hash="sha256:" + "f" * 64,
+    )
 
     # Wall leakage: game_ids are disjoint, so no leakage
     check_wall_leakage([r.game_id for r in train_rows], [r.game_id for r in held_rows])
@@ -631,8 +776,21 @@ def test_end_to_end_synthetic_split_deterministic_and_no_leakage(tmp_path: Path)
     priv_dir = tmp_path / "priv_train"
     priv_dir.mkdir()
     priv_rows = [
-        {"decision_id": r.decision_id, "wall_id": r.game_id, "split": "train", "privileged_label": json.dumps({"hidden_tiles": [1] * 34}), "observation_hash": r.observation_hash}
-        for r in train_rows
+        {
+            "decision_id": r.decision_id,
+            "wall_id": r.game_id,
+            "split": "train",
+            # Fully real labels (belief counts + ranks permutation): no synthetic
+            # opt-in needed; rotation keeps placements varied across rows.
+            "privileged_label": json.dumps(
+                {
+                    "hidden_tiles": [1] * 34,
+                    "ranks": [((i + s) % 4) + 1 for s in range(4)],
+                }
+            ),
+            "observation_hash": r.observation_hash,
+        }
+        for i, r in enumerate(train_rows)
     ]
     table = pa.table({k: [rr[k] for rr in priv_rows] for k in priv_rows[0]})
     pq.write_table(table, priv_dir / "privileged-000.parquet")
@@ -661,13 +819,114 @@ def test_end_to_end_synthetic_split_deterministic_and_no_leakage(tmp_path: Path)
         af = _synthetic_features(4, 8, seed=1000 + i)
         pf = _synthetic_features(4, 4, seed=2000 + i)
         lm = _synthetic_legal_mask(4, 8, seed=3000 + i)
-        tg = torch.tensor([int(torch.where(lm[j])[0][0].item()) for j in range(4)], dtype=torch.long)
+        tg = torch.tensor(
+            [int(torch.where(lm[j])[0][0].item()) for j in range(4)], dtype=torch.long
+        )
         batches.append((af, pf, lm, tg))
     held_logits = _synthetic_features(8, 8, seed=9999)
-    held_targets = torch.tensor([int(torch.where(torch.ones(8, dtype=torch.bool))[0][0].item()) for _ in range(8)], dtype=torch.long)  # all 0, legal
+    held_targets = torch.tensor(
+        [int(torch.where(torch.ones(8, dtype=torch.bool))[0][0].item()) for _ in range(8)],
+        dtype=torch.long,
+    )  # all 0, legal
     # Actually need legal mask all true
     # Use proper held targets random but legal
     held_targets = _synthetic_targets(8, 8, seed=1234)
-    m1 = run_synthetic_distillation_for_metrics(config, batches, (held_logits, held_targets), seed=7)
-    m2 = run_synthetic_distillation_for_metrics(config, batches, (held_logits, held_targets), seed=7)
+    m1 = run_synthetic_distillation_for_metrics(
+        config, batches, (held_logits, held_targets), seed=7
+    )
+    m2 = run_synthetic_distillation_for_metrics(
+        config, batches, (held_logits, held_targets), seed=7
+    )
     assert m1.digest == m2.digest
+
+
+# ---------------------------------------------------------------------------
+# 8. Synthetic flag gates + legacy single-rank utility scale (Wave F)
+# ---------------------------------------------------------------------------
+
+
+def test_oracle_synthetic_helpers_fail_closed_and_legacy_rank_utility_scale(
+    tmp_path: Path,
+) -> None:
+    import json
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from hydra2.belief.oracle_loader import (
+        PrivilegedOracleLoader,
+        _belief_target_from_privileged,
+        _oracle_utility_manifest,
+        _value_target_from_privileged,
+    )
+
+    # Direct helpers: missing labels raise by default, synthesize when opted in.
+    with pytest.raises(ContractError, match="allow_synthetic"):
+        _belief_target_from_privileged(None, "dec-x")
+    with pytest.raises(ContractError, match="allow_synthetic"):
+        _value_target_from_privileged(None, "dec-x")
+    assert len(_belief_target_from_privileged(None, "dec-x", allow_synthetic=True)) == 34
+    assert len(_value_target_from_privileged(None, "dec-x", allow_synthetic=True)) == 4
+
+    # Legacy single-int rank 0..3 maps through the utility manifest (rank+1 ->
+    # rank_values entry), never 0/1 one-hot.
+    manifest = _oracle_utility_manifest()
+    for rank0, expected in enumerate(manifest.rank_values):
+        got = _value_target_from_privileged({"final_placement": rank0}, "dec-r")
+        assert got == pytest.approx(tuple(expected if i == rank0 else 0.0 for i in range(4)))
+        assert _value_target_from_privileged({"rank": rank0}, "dec-r") == got
+    assert _value_target_from_privileged({"final_placement": 0}, "dec-r") == pytest.approx(
+        (20.0, 0.0, 0.0, 0.0)
+    )
+    assert _value_target_from_privileged({"rank": 2}, "dec-r") == pytest.approx(
+        (0.0, 0.0, -10.0, 0.0)
+    )
+    # bool is not a rank (even though isinstance(True, int)): fail closed.
+    with pytest.raises(ContractError, match="allow_synthetic"):
+        _value_target_from_privileged({"rank": True}, "dec-r")
+
+    # Loader-level: row with a legacy single-int label materializes utility-scale.
+    dest = tmp_path / "priv_legacy_rank"
+    dest.mkdir()
+    rows = [
+        {
+            "decision_id": "dec-legacy-001",
+            "wall_id": "wall-1",
+            "split": "train",
+            "privileged_label": json.dumps({"hidden_tiles": [1] * 34, "rank": 2}),
+            "observation_hash": "sha256:" + "c" * 64,
+        }
+    ]
+    table = pa.table({k: [r[k] for r in rows] for k in rows[0]})
+    pq.write_table(table, dest / "privileged-000.parquet")
+    loader = PrivilegedOracleLoader(dest, split="train", verify=True)
+    target = loader.get_oracle_target("dec-legacy-001")
+    assert tuple(target.value_target) == pytest.approx((0.0, 0.0, -10.0, 0.0))
+
+
+def test_value_passthrough_validated_against_manifest_bounds() -> None:
+    """Explicit 4-list value claims are checked finite + within manifest
+    value_min/value_max (+ zero-sum where declared); violations raise."""
+    from hydra2.belief.oracle_loader import (
+        _oracle_utility_manifest,
+        _value_target_from_privileged,
+    )
+
+    manifest = _oracle_utility_manifest()
+    assert (float(manifest.value_min), float(manifest.value_max)) == (-100.0, 100.0)
+    assert bool(manifest.zero_sum) is True
+    with pytest.raises(ContractError):
+        _value_target_from_privileged(
+            {"value_vector": [1000.0, 0.0, 0.0, -1000.0]}, "dec-off-scale"
+        )
+    with pytest.raises(ContractError):
+        _value_target_from_privileged(
+            {"utility_vector": [float("inf"), 0.0, 0.0, 0.0]}, "dec-nonfinite"
+        )
+    with pytest.raises(ContractError):
+        _value_target_from_privileged({"value_vector": [True, 10.0, -10.0, 0.0]}, "dec-bool")
+    with pytest.raises(ContractError):
+        _value_target_from_privileged({"value_vector": [20.0, 10.0, -10.0, 0.0]}, "dec-nonsum")
+    assert _value_target_from_privileged(
+        {"value_vector": [20.0, 10.0, -10.0, -20.0]}, "dec-ok"
+    ) == pytest.approx((20.0, 10.0, -10.0, -20.0))

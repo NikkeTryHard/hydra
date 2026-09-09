@@ -16,6 +16,7 @@ Latency classes are derived per game from an ``evaluation_schedule``
 semantic stream so simulated latency is part of the committed protocol, not
 an afterthought.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -91,6 +92,7 @@ class MatchSchedule:
         for row in self.seat_allocations:
             if len(set(row)) != 4:
                 raise ContractError(f"allocation row {row} is not a 4-label permutation")
+
     def to_json(self) -> dict[str, object]:
         return {
             "wall_ids": list(self.wall_ids),

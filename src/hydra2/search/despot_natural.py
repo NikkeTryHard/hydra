@@ -340,9 +340,7 @@ def proposal_reversal_fixture() -> dict[str, Any]:
     proposal_probs = (0.1, 0.9)  # heavily favors world 1
     values = ({0: 0.9, 1: 0.0}, {0: 0.0, 1: 0.6})
 
-    def expected(
-        probs: tuple[float, ...], vals: tuple[dict[int, float], ...]
-    ) -> dict[int, float]:
+    def expected(probs: tuple[float, ...], vals: tuple[dict[int, float], ...]) -> dict[int, float]:
         acc: dict[int, float] = {0: 0.0, 1: 0.0}
         for p, v in zip(probs, vals, strict=False):
             for a in acc:
@@ -359,12 +357,15 @@ def proposal_reversal_fixture() -> dict[str, Any]:
         # but for fixture illustration we compute reweighted mean
         for a in weighted:
             weighted[a] = weighted[a] + proposal_probs[i] * w * values[i][a]
+
     # natural chooses a0 (0.45 > 0.30)
     def _max_key_mean(d: dict[int, float], k: int) -> float:
         return d[k]
 
     natural_choice: int = max(natural_mean, key=lambda k: natural_mean[cast("int", k)])
-    proposal_choice: int = max(proposal_unweighted, key=lambda k: proposal_unweighted[cast("int", k)])
+    proposal_choice: int = max(
+        proposal_unweighted, key=lambda k: proposal_unweighted[cast("int", k)]
+    )
     weighted_choice: int = max(weighted, key=lambda k: weighted[cast("int", k)])
     return {
         "natural_mean": natural_mean,
@@ -577,7 +578,14 @@ class NaturalDespotPlanner(Planner):  # type: ignore[misc]
                         )
                     )
                 return tuple(scenarios)
-            except (AttributeError, ValueError, TypeError, OSError, ImportError, RuntimeError) as exc:
+            except (
+                AttributeError,
+                ValueError,
+                TypeError,
+                OSError,
+                ImportError,
+                RuntimeError,
+            ) as exc:
                 logger.debug("despot: belief path fallback to synthetic", exc_info=exc)
                 pass  # fall through to synthetic
         # Synthetic deterministic path (unit-test self-contained)
@@ -682,6 +690,7 @@ class NaturalDespotPlanner(Planner):  # type: ignore[misc]
         # For uniform weight 1/K, mean = sum val * 1/K
         # Our total after loop is sum val * weight * K = sum val, so mean = total / K
         return total / len(scenarios) if len(scenarios) > 0 else 0.0
+
     def _priority_proxy_for(self, action: Any, lower_value: float, visits: int) -> float:
         """Heuristic search priority — explicitly NOT an upper bound.
 
@@ -812,7 +821,9 @@ class NaturalDespotPlanner(Planner):  # type: ignore[misc]
                     max_particles=16,
                     max_memory_bytes=None,
                 )
-        deadline_ns: int | None = cast("int | None", getattr(request, "deadline_monotonic_ns", None))
+        deadline_ns: int | None = cast(
+            "int | None", getattr(request, "deadline_monotonic_ns", None)
+        )
         start_ns: int = time.monotonic_ns()
         # -- sample natural scenarios (deterministic) ------------------------
         k: int = self._config.num_scenarios
@@ -892,6 +903,7 @@ class NaturalDespotPlanner(Planner):  # type: ignore[misc]
                 f"{candidate_id}:{getattr(act, 'action_id', act)}".encode()
             ).hexdigest()
             return (-node.priority_proxy, h)
+
         # Expand in priority order until budget exhausted or depth limit
         expansions = 0
         for action, node in sorted(nodes.items(), key=sort_key):
@@ -957,7 +969,9 @@ class NaturalDespotPlanner(Planner):  # type: ignore[misc]
         selected: Any
         if len(lower_by_action) > 0:
             max_val: float = max(lower_by_action.values())
-            candidates: list[Any] = [a for a, v in lower_by_action.items() if abs(v - max_val) < 1e-12]
+            candidates: list[Any] = [
+                a for a, v in lower_by_action.items() if abs(v - max_val) < 1e-12
+            ]
             if len(candidates) == 1:
                 selected = cast("Any", candidates[0])
             else:
@@ -971,10 +985,13 @@ class NaturalDespotPlanner(Planner):  # type: ignore[misc]
                             return aid_raw
                         return hash(str(a)) & 0xFFFFFFFF
 
-                    selected = cast("Any", min(  # type: ignore[no-matching-overload]  # pyrefly: ignore[no-matching-overload]
-                        candidates,
-                        key=_lex_key,
-                    ))
+                    selected = cast(
+                        "Any",
+                        min(  # type: ignore[no-matching-overload]  # pyrefly: ignore[no-matching-overload]
+                            candidates,
+                            key=_lex_key,
+                        ),
+                    )
         else:
             selected = cast("Any", legal[0])
         if cast("Any", selected) not in legal:
@@ -1013,7 +1030,9 @@ class NaturalDespotPlanner(Planner):  # type: ignore[misc]
                 logger.debug("despot: csh fallback", exc_info=exc)
                 pass
             params_raw: Any = getattr(cand_spec, "parameters", None)
-            params_val: dict[Any, Any] = cast("dict[Any, Any]", params_raw) if isinstance(params_raw, dict) else {}
+            params_val: dict[Any, Any] = (
+                cast("dict[Any, Any]", params_raw) if isinstance(params_raw, dict) else {}
+            )
             payload = canonical_bytes(
                 {
                     "candidate_id": str(getattr(cand_spec, "candidate_id", "")),
@@ -1025,6 +1044,7 @@ class NaturalDespotPlanner(Planner):  # type: ignore[misc]
         except (AttributeError, ValueError, TypeError, OSError) as exc:
             logger.debug("despot: spec_hash fallback to zero", exc_info=exc)
             return "sha256:" + "0" * 64
+
     def _make_telemetry(
         self,
         *,
@@ -1087,6 +1107,7 @@ class NaturalDespotPlanner(Planner):  # type: ignore[misc]
             "resource_view": self._config.resource_view,
             "particles": self._config.num_scenarios,
         }
+
     def _make_result(
         self,
         *,
@@ -1146,11 +1167,17 @@ class NaturalDespotPlanner(Planner):  # type: ignore[misc]
                 if isinstance(telemetry, dict):
                     # Use already computed spec_hash and case_id from request
                     cid_raw: Any = getattr(request, "case_id", None)
-                    cid_alt: Any = getattr(getattr(request, "observation", None), "decision_id", None)
+                    cid_alt: Any = getattr(
+                        getattr(request, "observation", None), "decision_id", None
+                    )
                     cid_val: Any = cid_raw if cid_raw is not None else cid_alt
                     if isinstance(cid_val, str) and cid_val == "":
                         cid_val = cid_alt
-                    cid: str | None = cast("str | None", cid_val) if isinstance(cid_val, str) and cid_val != "" else None
+                    cid: str | None = (
+                        cast("str | None", cid_val)
+                        if isinstance(cid_val, str) and cid_val != ""
+                        else None
+                    )
                     # Recompute with proper hashes inside _make_telemetry
                     # Use stored model_calls/transitions
                     telemetry_dict: dict[str, Any] = cast("dict[str, Any]", telemetry)
@@ -1223,6 +1250,7 @@ class NaturalDespotPlanner(Planner):  # type: ignore[misc]
             evidence_refs=evidence,
             completed=completed,
         )
+
     def observe(self, packet: Any) -> None:  # type: ignore[override]
         """Commit or rebuild after a real actor-visible packet.
 

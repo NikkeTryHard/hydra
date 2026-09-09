@@ -56,7 +56,9 @@ class NaturalConfirmationRunner:
     """Deterministic full-fidelity confirmation runner (natural)."""
 
     def __init__(self, *, seed_material: bytes | None = None) -> None:
-        self._seed_material = seed_material if seed_material is not None else b"hydra2_wp07a_confirmation_v1"
+        self._seed_material = (
+            seed_material if seed_material is not None else b"hydra2_wp07a_confirmation_v1"
+        )
 
     def confirm(
         self,

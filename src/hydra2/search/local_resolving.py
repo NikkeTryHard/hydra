@@ -1003,10 +1003,13 @@ def _derive_utility_manifest_hash(model: Any | None) -> str:
         from hydra2.models.model import Hydra2BaselineModel
 
         probe: Any = Hydra2BaselineModel() if model is None else model
-        return str(make_digest_text(str(probe.utility_manifest_hash)))
+        manifest_raw: object = probe.utility_manifest_hash
+        return str(make_digest_text(str(manifest_raw)))
     except (ImportError, AttributeError, ValueError, TypeError, OSError) as exc:
         logger.debug("local_resolving: utility_manifest_hash derivation failed", exc_info=exc)
-        raise ContractError("local_resolving: cannot derive utility_manifest_hash from model") from exc
+        raise ContractError(
+            "local_resolving: cannot derive utility_manifest_hash from model"
+        ) from exc
 
 
 def make_candidate5_spec(
@@ -1102,11 +1105,21 @@ def make_candidate5_spec(
                 doc: dict[str, Any] = json.loads(real.read_text())
                 payload: Any = doc.get("payload", {})
                 from hydra2.contracts.rules import rules_manifest_from_payload
+
                 manifest = rules_manifest_from_payload(payload)  # type: ignore[no-untyped-call]
                 # RulesManifest has no digest attr; synthesize via file hash (avoids missing-attribute)
                 _ = manifest  # silence unused
                 rules_hash = _file_sha256(p)
-        except (ImportError, AttributeError, ValueError, TypeError, OSError, ContractError, json.JSONDecodeError, KeyError) as exc:
+        except (
+            ImportError,
+            AttributeError,
+            ValueError,
+            TypeError,
+            OSError,
+            ContractError,
+            json.JSONDecodeError,
+            KeyError,
+        ) as exc:
             logger.debug("local_resolving: rules_hash verified-manifest fallback", exc_info=exc)
         pass
     if action_table_hash is None:
@@ -1128,7 +1141,16 @@ def make_candidate5_spec(
             packet_boundary_hash = (
                 str(digest_val) if digest_val else defaults["packet_boundary_hash"]
             )
-        except (ImportError, AttributeError, ValueError, TypeError, OSError, ContractError, json.JSONDecodeError, KeyError) as exc:
+        except (
+            ImportError,
+            AttributeError,
+            ValueError,
+            TypeError,
+            OSError,
+            ContractError,
+            json.JSONDecodeError,
+            KeyError,
+        ) as exc:
             logger.debug("local_resolving: packet_boundary_hash fallback", exc_info=exc)
             packet_boundary_hash = defaults["packet_boundary_hash"]
     if model_hash is None:
@@ -1292,8 +1314,16 @@ class LocalResolvingPlanner(Planner):  # type: ignore[misc]
                         ws = False
                         try:
                             cand_spec: Any = self.candidate_spec
-                            params: Any = getattr(cand_spec, "parameters", {}) if cand_spec is not None else {}
-                            ws_val: Any = params.get("warm_start", False) if isinstance(params, dict) else False
+                            params: Any = (
+                                getattr(cand_spec, "parameters", {})
+                                if cand_spec is not None
+                                else {}
+                            )
+                            ws_val: Any = (
+                                params.get("warm_start", False)
+                                if isinstance(params, dict)
+                                else False
+                            )
                             ws = bool(ws_val)
                         except Exception:
                             ws = False
@@ -1399,9 +1429,7 @@ class LocalResolvingPlanner(Planner):  # type: ignore[misc]
         # Prepare RNG
         if rng is None:
             seat = (
-                root_seat
-                if root_seat is not None
-                else int(getattr(root_observation, "actor", 0))  # type: ignore[arg-type]
+                root_seat if root_seat is not None else int(getattr(root_observation, "actor", 0))  # type: ignore[arg-type]
             )
             rng = self._deterministic_rng(case_id, seat)
         # Strategy tables
@@ -1446,7 +1474,9 @@ class LocalResolvingPlanner(Planner):  # type: ignore[misc]
                             # synthetic tiny world consistent with epoch
                             from hydra2.belief.world import make_full_world
 
-                            obs_h: str = str(getattr(epoch, "observation_hash", "sha256:" + "b" * 64))
+                            obs_h: str = str(
+                                getattr(epoch, "observation_hash", "sha256:" + "b" * 64)
+                            )
                             rules_h: str = str(getattr(epoch, "rules_hash", "sha256:" + "a" * 64))
                             # deterministic synthetic hand
                             h_bytes: bytes = hashlib.sha256((obs_h + str(p_any)).encode()).digest()
@@ -1460,7 +1490,9 @@ class LocalResolvingPlanner(Planner):  # type: ignore[misc]
                                 live_wall=(8, 9, 10, 11),
                                 dead_wall=(),
                                 latent_state={
-                                    "iter_world": hashlib.sha256(str(p_any).encode()).hexdigest()[:8]
+                                    "iter_world": hashlib.sha256(str(p_any).encode()).hexdigest()[
+                                        :8
+                                    ]
                                 },
                                 rules_hash=rules_h,
                                 observation_hash=obs_h,
@@ -1710,7 +1742,11 @@ class LocalResolvingPlanner(Planner):  # type: ignore[misc]
             max_p = max(root_avg)
             cand: list[int] = [i for i, p in enumerate(root_avg) if abs(p - max_p) < 1e-9]
             selected_abstract_idx = cand[0] if len(cand) > 0 else 0
-            best_util: float = utilities[selected_abstract_idx] if len(utilities) > selected_abstract_idx else float("-inf")
+            best_util: float = (
+                utilities[selected_abstract_idx]
+                if len(utilities) > selected_abstract_idx
+                else float("-inf")
+            )
             for idx_c in cand[1:]:
                 if utilities[idx_c] > best_util:
                     best_util = utilities[idx_c]
@@ -1760,7 +1796,9 @@ class LocalResolvingPlanner(Planner):  # type: ignore[misc]
             "resource_view": self.config.resource_view,
             "warm_start": (
                 bool(
-                    cast("Any", getattr(cast("Any", self.candidate_spec), "parameters", {})).get("warm_start", False)
+                    cast("Any", getattr(cast("Any", self.candidate_spec), "parameters", {})).get(
+                        "warm_start", False
+                    )
                     if isinstance(getattr(cast("Any", self.candidate_spec), "parameters", {}), dict)
                     else False
                 )
@@ -1823,7 +1861,11 @@ class LocalResolvingPlanner(Planner):  # type: ignore[misc]
         except Exception:
             pass
         obs_any: Any = obs
-        case_id_val: str = str(getattr(obs_any, "decision_id", "case_unknown")) if obs is not None else "case_unknown"
+        case_id_val: str = (
+            str(getattr(obs_any, "decision_id", "case_unknown"))
+            if obs is not None
+            else "case_unknown"
+        )
         res = self.search(
             epoch=epoch,
             root_observation=obs,
@@ -1871,10 +1913,12 @@ class LocalResolvingPlanner(Planner):  # type: ignore[misc]
                 UtilityVector(
                     values=cast("tuple[float, float, float, float]", tuple(float(x) for x in v)),
                     utility_id=utility_id,
-                    utility_manifest_hash=make_digest_text(str(  # pyrefly: ignore[bad-argument-type]
-                        getattr(spec_for_util, "utility_manifest_hash", "sha256:" + "0" * 64)
-                    )),
-                    rules_hash=make_digest_text(str(getattr(spec_for_util, "rules_hash", "sha256:" + "a" * 64))),  # pyrefly: ignore[bad-argument-type]
+                    utility_manifest_hash=make_digest_text(  # pyrefly: ignore[bad-argument-type]
+                        str(getattr(spec_for_util, "utility_manifest_hash", "sha256:" + "0" * 64))
+                    ),
+                    rules_hash=make_digest_text(  # pyrefly: ignore[bad-argument-type]
+                        str(getattr(spec_for_util, "rules_hash", "sha256:" + "a" * 64))
+                    ),
                 )
                 for v in raw_vectors
             )
@@ -1980,11 +2024,17 @@ def exhaustive_tiny_game_values(
             )
             # Apply offset to actor 0 component only for distinguishability (keep zero-sum via re-center)
             # Add off to first seat then re-center
-            vec = cast("tuple[float, float, float, float]", tuple(v[i] + (off if i == 0 else -off / 3) for i in range(4)))
+            vec = cast(
+                "tuple[float, float, float, float]",
+                tuple(v[i] + (off if i == 0 else -off / 3) for i in range(4)),
+            )
             assert len(vec) == 4
             vecs.append(vec)
         # average across worlds
-        avg = cast("tuple[float, float, float, float]", tuple(sum(vec[i] for vec in vecs) / len(vecs) for i in range(4)))
+        avg = cast(
+            "tuple[float, float, float, float]",
+            tuple(sum(vec[i] for vec in vecs) / len(vecs) for i in range(4)),
+        )
         assert len(avg) == 4
         out[path] = avg
     return out

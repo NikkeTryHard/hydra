@@ -1,0 +1,97 @@
+# Calibration run, fast subset variant (supersedes cal-001 per multithreading order).
+# 1000-file 2024 subset (symlinks, corpus untouched), 16 decode workers,
+# 500 updates, ckpt/eval every 100. Own id, own spec. Rates transfer to S1;
+# quarantine SHARE re-measured on full corpus in S1 (subset share is noisy).
+run:
+  id: tenhou2024-cal-sub016
+  kind: supervised
+  description: "Calibration fast subset: 1000-file 2024 slice, 16 workers, 500 updates."
+
+data:
+  root: ${HYDRA2_DATA_ROOT}/cal-subset-2024
+  scope: tenhou-4p-hanchan
+  train_split: train
+  val_split: validation
+  wall_disjoint: true
+  leakage_check: true
+  dora_width: 5
+  actor_privileged_split: true
+  dataset_manifest_hash: null
+  shuffle_buffer_size: 10000
+  drop_last: true
+  num_workers: 16
+  world_size: 1
+
+model:
+  architecture_id: hydra2_baseline_transformer_v1
+  action_count: 6792
+  parameters: {}
+
+weights:
+  w_policy: 1.0
+  w_placement: 0.0
+  w_value: 0.0
+  w_event: null
+  w_belief: null
+  privileged_source_hash: null
+
+optimizer:
+  id: adamw
+  lr: 0.0003
+  betas: [0.9, 0.999]
+  weight_decay: 0.01
+
+scheduler:
+  id: cosine
+  warmup_updates: 25
+  parameters: {}
+
+runtime:
+  adapter_id: plain_pytorch
+  device: cuda
+  precision: fp32
+  compile_mode: eager
+
+loop:
+  microbatch_size: 4
+  accumulation_steps: 8
+  gradient_clip_norm: 1.0
+  max_updates: 500
+  checkpoint_frequency_updates: 100
+  precision: fp32
+  keep_last_checkpoints: null
+
+seeds:
+  data_seed: 0
+  train_seed: 0
+  selection_seed: 0
+
+selection:
+  N: 30
+  pilot_s: 1.5
+  delta: 0.5
+  alpha: 0.05
+  beta: 0.2
+  design: fixed_n
+  declared_peeks: [30]
+  margin: 0.0
+  resamples: 2000
+  seed: 0
+
+mirror:
+  enabled: false
+  project: hydra2-tenhou-4p
+  task_name: null
+  offline_dir: null
+
+eval:
+  frequency_updates: 100
+  num_batches: 10
+  walls_dir: null
+  microbatch_size: null
+
+output:
+  artifact_root: null
+  run_id: null
+
+rl: null

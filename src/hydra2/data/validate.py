@@ -247,10 +247,14 @@ def validate_game(record: GameRecord) -> ValidationOutcome:
                     import importlib.resources as _ir2
 
                     rules_path = Path(
-                        str(_ir2.files("hydra2") / "configs" / "rules" / "tenhou_4p_hanchan_v1.json")  # noqa: E501
+                        str(
+                            _ir2.files("hydra2") / "configs" / "rules" / "tenhou_4p_hanchan_v1.json"
+                        )
                     )
                 except Exception:
-                    rules_path = _validate_repo_root() / "configs" / "rules" / "tenhou_4p_hanchan_v1.json"  # noqa: E501
+                    rules_path = (
+                        _validate_repo_root() / "configs" / "rules" / "tenhou_4p_hanchan_v1.json"
+                    )
             rules_doc_obj: object = _json.loads(rules_path.read_bytes())
             if not isinstance(rules_doc_obj, dict):
                 raise ValueError("rules doc must be object")

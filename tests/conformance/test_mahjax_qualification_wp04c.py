@@ -108,6 +108,7 @@ def test_wall_translation_and_surgery_deterministic() -> None:
     assert deck[9] == wall[131] // 4
 
 
+@pytest.mark.serial
 def test_execution_mode_sweep_deterministic_cpu_documented() -> None:
     result = execution_mode_sweep()
     assert "deterministic" in result
@@ -118,6 +119,7 @@ def test_execution_mode_sweep_deterministic_cpu_documented() -> None:
     assert result["eager_digest"] == result["jit_digest"]
 
 
+@pytest.mark.serial
 def test_gpu_soak_probe_blocked_on_cpu() -> None:
     result = gpu_soak_probe()
     if result["gpu_available"]:
@@ -130,6 +132,7 @@ def test_gpu_soak_probe_blocked_on_cpu() -> None:
         assert "CPU-only" in result["reason"]
 
 
+@pytest.mark.gpu
 @pytest.mark.xfail(
     strict=False,
     reason="GPU jaxlib not installed at pin 0.11.1 - GPU soak blocked with evidence (CPU-only)",
@@ -148,6 +151,7 @@ def test_cpu_soak_bounded_and_deterministic() -> None:
     assert result["steps"] == 20 * len(SCENARIO_REGISTRY)
 
 
+@pytest.mark.serial
 def test_differential_zero_mismatch_and_token_issued() -> None:
     root = artifact_root()
     result: DifferentialResult = run_differential(artifact_root=root)
@@ -189,6 +193,7 @@ def test_differential_zero_mismatch_and_token_issued() -> None:
         shell2.qualify(tampered, rules_id=make_digest_text(payload["token"]["rules_id"]))
 
 
+@pytest.mark.serial
 def test_token_not_issued_without_full_env_binding() -> None:
     root = artifact_root()
     token_path = root / "tokens" / "WP-04C" / "mahjax-qualification-token.json"
@@ -219,6 +224,7 @@ def test_first_counterexample_persistence_path() -> None:
             assert "failure" in data
 
 
+@pytest.mark.serial
 def test_observation_mode_and_adapter_version_bound() -> None:
     root = artifact_root()
     token_path = root / "tokens" / "WP-04C" / "mahjax-qualification-token.json"
@@ -228,6 +234,7 @@ def test_observation_mode_and_adapter_version_bound() -> None:
     assert token["observation_mode"] == OBSERVATION_MODE
 
 
+@pytest.mark.serial
 def test_execution_mode_sweep_covers_all_scenarios() -> None:
     for scenario in SCENARIO_REGISTRY:
         result = execution_mode_sweep(scenario)

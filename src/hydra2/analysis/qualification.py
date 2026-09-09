@@ -327,7 +327,11 @@ def _derive_generic_analysis_budget(gp: Any) -> Any:
         return max(v * 4, fallback)
 
     _fallback_raw: Any = getattr(gp, "fallback_margin_ms", None)
-    _fallback_val: int = _fallback_raw if isinstance(_fallback_raw, int) and not isinstance(_fallback_raw, bool) else 500
+    _fallback_val: int = (
+        _fallback_raw
+        if isinstance(_fallback_raw, int) and not isinstance(_fallback_raw, bool)
+        else 500
+    )
     _fallback_capped: int = min(_fallback_val, 500) if hasattr(gp, "fallback_margin_ms") else 500
     _max_particles_raw: Any = getattr(gp, "max_particles", 0)
     _max_particles_val: int = cast(int, _max_particles_raw) if bool(_max_particles_raw) else 0
@@ -659,12 +663,26 @@ def compare_gameplay_analysis(
     # fallback margin semantics. Analysis has larger deadline but same margin.
     fallback_same: bool = gameplay_spec.fallback_candidate_id == analysis_spec.fallback_candidate_id
     _analysis_budget: Any = getattr(cast(Any, analysis_spec), "resource_budget", None)
-    _fallback_margin_raw: Any = getattr(_analysis_budget, "fallback_margin_ms", 0) if _analysis_budget is not None else 0
-    fallback_margin_ok: bool = _fallback_margin_raw >= 0 if isinstance(_fallback_margin_raw, int) and not isinstance(_fallback_margin_raw, bool) else False
+    _fallback_margin_raw: Any = (
+        getattr(_analysis_budget, "fallback_margin_ms", 0) if _analysis_budget is not None else 0
+    )
+    fallback_margin_ok: bool = (
+        _fallback_margin_raw >= 0
+        if isinstance(_fallback_margin_raw, int) and not isinstance(_fallback_margin_raw, bool)
+        else False
+    )
     _gp_aid_raw: Any = getattr(gp_action, "action_id", 0)
-    _gp_aid: int = _gp_aid_raw if isinstance(_gp_aid_raw, int) and not isinstance(_gp_aid_raw, bool) and bool(_gp_aid_raw) else 0
+    _gp_aid: int = (
+        _gp_aid_raw
+        if isinstance(_gp_aid_raw, int) and not isinstance(_gp_aid_raw, bool) and bool(_gp_aid_raw)
+        else 0
+    )
     _an_aid_raw: Any = getattr(an_action, "action_id", 0)
-    _an_aid: int = _an_aid_raw if isinstance(_an_aid_raw, int) and not isinstance(_an_aid_raw, bool) and bool(_an_aid_raw) else 0
+    _an_aid: int = (
+        _an_aid_raw
+        if isinstance(_an_aid_raw, int) and not isinstance(_an_aid_raw, bool) and bool(_an_aid_raw)
+        else 0
+    )
     return {
         "gameplay_spec_hash": _spec_hash(gameplay_spec),
         "analysis_spec_hash": _spec_hash(analysis_spec),
@@ -788,15 +806,11 @@ def _load_default_hashes_for_spec() -> dict[str, str]:
         from hydra2.models.model import Hydra2BaselineModel
 
         probe = Hydra2BaselineModel()
-        defaults["utility_manifest_hash"] = str(
-            make_digest_text(str(probe.utility_manifest_hash))
-        )
+        defaults["utility_manifest_hash"] = str(make_digest_text(str(probe.utility_manifest_hash)))
         defaults["model_hash"] = str(make_digest_text(str(probe.model_identity)))
     except (ImportError, AttributeError, ValueError, TypeError, OSError, ContractError) as exc:
         logger.debug("qualification: model-derived hash fallback", exc_info=exc)
-        raise ContractError(
-            "qualification: cannot derive utility/model hashes from model"
-        ) from exc
+        raise ContractError("qualification: cannot derive utility/model hashes from model") from exc
     # RNG / stream / case — candidate0 canonical descriptors verbatim
     defaults["rng_protocol_hash"] = (
         "sha256:"
@@ -878,7 +892,9 @@ def _make_gameplay_spec_for(candidate_id: str) -> Any:
     budget = ResourceBudget(
         mode="gameplay_5s",
         deadline_ms=gp_cfg["deadline_ms"] if gp_cfg["deadline_ms"] is not None else 5000,
-        fallback_margin_ms=gp_cfg["fallback_margin_ms"] if gp_cfg["fallback_margin_ms"] is not None else 200,
+        fallback_margin_ms=gp_cfg["fallback_margin_ms"]
+        if gp_cfg["fallback_margin_ms"] is not None
+        else 200,
         max_model_calls=gp_cfg["max_model_calls"],
         max_transitions=gp_cfg["max_transitions"],
         max_particles=gp_cfg["max_particles"],
@@ -929,7 +945,9 @@ def build_gate_record(
     """Build a single candidate's analysis gate record, synthesizing fixtures if needed."""
     from hydra2.contracts.action import CanonicalAction
 
-    gp_spec: Any = gameplay_spec if gameplay_spec is not None else _make_gameplay_spec_for(candidate_id)
+    gp_spec: Any = (
+        gameplay_spec if gameplay_spec is not None else _make_gameplay_spec_for(candidate_id)
+    )
     an_spec: Any = make_analysis_spec(gp_spec)
 
     # Synthesize minimal actor-visible observation + legal actions if not supplied
@@ -1078,7 +1096,9 @@ def generate_hashed_analysis_report(
     from hydra2.config import artifact_root as cfg_artifact_root
 
     art = Path(artifact_root) if artifact_root is not None else cfg_artifact_root()
-    candidates: tuple[str, ...] = candidate_ids if candidate_ids is not None else ANALYSIS_CANDIDATE_IDS
+    candidates: tuple[str, ...] = (
+        candidate_ids if candidate_ids is not None else ANALYSIS_CANDIDATE_IDS
+    )
     gates: list[AnalysisGateRecord] = []
     for cid in candidates:
         gates.append(build_gate_record(cid))
@@ -1178,7 +1198,9 @@ def analysis_gate_for(
     _gates_raw: Any = doc.get("gates", [])
     _gates: list[Any] = cast(list[Any], _gates_raw) if isinstance(_gates_raw, list) else []
     for _gate_raw in _gates:
-        gate: dict[str, Any] = cast(dict[str, Any], _gate_raw) if isinstance(_gate_raw, dict) else {}
+        gate: dict[str, Any] = (
+            cast(dict[str, Any], _gate_raw) if isinstance(_gate_raw, dict) else {}
+        )
         if gate.get("candidate_id") == candidate_id:
             return {
                 "candidate_id": candidate_id,

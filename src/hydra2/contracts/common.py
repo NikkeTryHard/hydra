@@ -97,6 +97,7 @@ class DeadlineExceededError(Hydra2Error):
 class QualificationRequiredError(Hydra2Error):
     """Path requires a qualification token that is absent."""
 
+
 # ---------------------------------------------------------------------------
 # PR4 diagnostic codes (SPEC 3): bijective code -> error class for the semantic
 # search/belief raise sites. Routers match on these codes, never on message text.

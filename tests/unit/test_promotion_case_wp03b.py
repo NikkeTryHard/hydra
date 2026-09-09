@@ -31,6 +31,7 @@ def _record(**overrides: object) -> dict[str, object]:
         "confidence_bounds": (0.05, 0.79),
         "gates": {"seat_balance": "passed", "coverage": "passed"},
         "disposition": "promoted",
+        "schedule_hash": _H,
     }
     base.update(overrides)
     return base
@@ -128,18 +129,22 @@ def test_game_cluster_reserved_for_diagnostics() -> None:
 
 
 def test_promotion_record_additive_bindings_default() -> None:
-    # PR4: 12-kwarg construction still verifies; new keys default and project.
+    # PR4: promoted requires schedule binding; rejected stays loose.
     from hydra2.eval.promotion import record_to_json
 
     record = make_promotion_record(**_record())
-    assert record.schedule_hash is None
+    assert record.schedule_hash == _H
     assert record.environment_hash is None
     assert record.excluded_blocks == ()
     projected = record_to_json(record)
-    assert projected["schedule_hash"] is None
+    assert projected["schedule_hash"] == _H
     assert projected["environment_hash"] is None
     assert projected["excluded_blocks"] == []
     assert promotion_digest(record) == promotion_digest(make_promotion_record(**_record()))
+    loose = make_promotion_record(**_record(disposition="rejected", schedule_hash=None))
+    assert loose.schedule_hash is None
+    with pytest.raises(ContractError, match="schedule_hash"):
+        make_promotion_record(**_record(schedule_hash=None))
 
 
 def test_promotion_record_additive_bindings_bound() -> None:
@@ -170,3 +175,52 @@ def test_promotion_record_rejects_bad_bindings() -> None:
         make_promotion_record(**_record(schedule_hash="sha256:XYZ"))
     with pytest.raises(ContractError):
         make_promotion_record(**_record(excluded_blocks=("not-a-block",)))
+
+
+def test_promoted_without_schedule_commitment_raises() -> None:
+    """Promotion binding: promoted needs a schedule commitment; rejected stays loose."""
+    with pytest.raises(ContractError, match="schedule_hash"):
+        make_promotion_record(**_record(schedule_hash=None))
+    missing = _record()
+    del missing["schedule_hash"]
+    with pytest.raises(ContractError, match="schedule_hash"):
+        make_promotion_record(**missing)
+    loose = make_promotion_record(**_record(disposition="rejected", schedule_hash=None))
+    assert loose.schedule_hash is None
+    missing_loose = _record(disposition="rejected")
+    del missing_loose["schedule_hash"]
+    assert make_promotion_record(**missing_loose).schedule_hash is None
+
+
+def test_promotion_schedule_hash_binds_commitment_not_walls_hash() -> None:
+    """Binding: commitment covers every schedule facet; walls_hash does not."""
+    from hydra2.eval.schedule import build_match_schedule, schedule_commitment_hash
+
+    wall_ids = ("w-01", "w-02", "w-03")
+    schedule = build_match_schedule(
+        wall_ids=wall_ids,
+        labels=("candidate-a", "partner-a", "baseline-b", "field-c"),
+        rules_hash="sha256:" + "ab" * 32,
+        master_seed=bytes(range(48, 80)),
+        experiment_id="exp-wp03b",
+        split_id="split-wp03b",
+    )
+    commitment = str(schedule_commitment_hash(schedule))
+    walls_hash = str(schedule.walls_hash)
+    assert commitment != walls_hash
+    # Same walls, different rules: walls_hash is blind, commitment binds.
+    drifted = build_match_schedule(
+        wall_ids=wall_ids,
+        labels=("candidate-a", "partner-a", "baseline-b", "field-c"),
+        rules_hash="sha256:" + "cd" * 32,
+        master_seed=bytes(range(48, 80)),
+        experiment_id="exp-wp03b",
+        split_id="split-wp03b",
+    )
+    assert str(drifted.walls_hash) == walls_hash
+    drifted_commitment = str(schedule_commitment_hash(drifted))
+    assert drifted_commitment != commitment
+    record = make_promotion_record(**_record(schedule_hash=commitment))
+    assert record.schedule_hash == commitment
+    drifted_record = make_promotion_record(**_record(schedule_hash=drifted_commitment))
+    assert promotion_digest(record) != promotion_digest(drifted_record)

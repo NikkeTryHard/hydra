@@ -3,8 +3,8 @@
 Owns optimizer / scheduler / accumulation / checkpoint / RNG / sampler
 state.  Plain PyTorch and Lightning-Fabric adapters share *identical* loop
 state — only the ``backward`` call is delegated to the ``RuntimeHandle``.
-Local artifacts are authoritative; a W&B mirror (if present) never
-overwrites them.
+Local artifacts are authoritative; an observer mirror (see tracking/)
+never overwrites them.
 
 Checkpoints are published via :mod:`hydra2.runtime.checkpoint` (atomic
 ``torch.save`` + manifest), so resume restores model, optimizer, scheduler,
@@ -19,27 +19,48 @@ forward pass (see :data:`FORBIDDEN_BATCH_KEYS`).
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import json
+import math
+import os
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable, Mapping
+
+    from hydra2.eval.blocks import BlockTolerance, WallBlock
+    from hydra2.eval.telemetry import ResourceTelemetry
+    from hydra2.tracking.clearml_mirror import ClearmlMirror
 
 import torch
 import torch.nn as nn
 
 from hydra2.contracts.common import ContractError, CorruptArtifactError
+from hydra2.eval.statistics import SelectionConfig, score_selection
 from hydra2.runtime.checkpoint import (
     build_manifest,
     capture_rng_state,
     load_checkpoint,
     save_checkpoint,
 )
-from hydra2.training.objectives import compute_metrics, compute_supervised_loss
+from hydra2.training.objectives import (
+    compute_metrics,
+    compute_per_type_metrics,
+    compute_supervised_loss,
+    fit_temperature_scaling,
+    global_grad_norm_is_finite,
+)
 
 __all__ = [
     "FORBIDDEN_BATCH_KEYS",
+    "MicrobatchTelemetry",
     "SupervisedLoop",
     "TrainingLoopConfig",
     "TrainingState",
+    "summarize_telemetry",
 ]
 
 FORBIDDEN_BATCH_KEYS = frozenset(
@@ -77,6 +98,53 @@ def _require_sha256(name: str, value: str) -> str:
     return value
 
 
+def _best_ckpt_digest_for(data: bytes) -> str:
+    return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def _atomic_publish_best(source: Path, dest: Path) -> str:
+    """Atomically publish ``source`` bytes to ``dest``; return its digest."""
+    src = Path(source)
+    dst = Path(dest)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if not src.is_file():
+        raise ContractError(f"selection ckpt missing: {src}")
+    data = src.read_bytes()
+    digest = _best_ckpt_digest_for(data)
+    tmp = dst.with_name(dst.name + ".tmp")
+    with open(tmp, "wb") as fh:
+        fh.write(data)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, dst)
+    try:
+        dir_fd = os.open(dst.parent, os.O_DIRECTORY)
+    except Exception:
+        return digest
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+    return digest
+
+
+def _verify_best_ckpt(checkpoint_dir: Path, *, metric: float | None, digest: str | None) -> None:
+    """Fail closed when a promoted best has no matching ``best-ckpt.pt``."""
+    if metric is None and digest is None:
+        return
+    dest = Path(checkpoint_dir) / "best-ckpt.pt"
+    if not dest.is_file():
+        raise CorruptArtifactError(
+            f"best-ckpt.pt missing for best_selection_metric={metric!r} in {dest.parent}"
+        )
+    if digest is not None:
+        actual = _best_ckpt_digest_for(dest.read_bytes())
+        if actual != digest:
+            raise CorruptArtifactError(
+                f"best-ckpt.pt digest mismatch: expected {digest}, got {actual}"
+            )
+
+
 @dataclass(slots=True)
 class TrainingState:
     global_update: int = 0
@@ -84,8 +152,15 @@ class TrainingState:
     epoch: int = 0
     examples_seen: int = 0
     best_selection_metric: float | None = None
+    best_ckpt_digest: str | None = None
     sampler_cursor: Any = None  # JSON value — dict with offset/seed/total
     semantic_rng_state: Any = None
+    # Precision regime this state was produced under (persisted so resume
+    # cannot silently cross fp32<->bf16). Bound into training_state_hash via
+    # the checkpoint payload; run_spec_hash binds it at the manifest level.
+    precision: str = "fp32"
+    # Per-update finite-grad skip counter (non-finite grad norm skipped step).
+    skipped_updates: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -98,8 +173,11 @@ class TrainingState:
             epoch=int(raw.get("epoch", 0)),
             examples_seen=int(raw.get("examples_seen", 0)),
             best_selection_metric=raw.get("best_selection_metric"),
+            best_ckpt_digest=raw.get("best_ckpt_digest"),
             sampler_cursor=raw.get("sampler_cursor"),
             semantic_rng_state=raw.get("semantic_rng_state"),
+            precision=str(raw.get("precision", "fp32")),
+            skipped_updates=int(raw.get("skipped_updates", 0)),
         )
 
 
@@ -115,6 +193,7 @@ class TrainingLoopConfig:
     # Objective weights (explicit)
     w_policy: float = 1.0
     w_placement: float = 0.0
+    w_value: float = 0.0
     w_event: dict[str, float] | None = None
     w_belief: dict[str, float] | None = None
 
@@ -130,6 +209,21 @@ class TrainingLoopConfig:
     # Determinism
     seed: int = 0
 
+    # Mixed precision — loop-owned bf16 autocast around forward+loss only.
+    # fp32 default preserves byte-identical behavior; bf16_mixed opts into
+    # torch.autocast(cuda, bfloat16) with fp32 master weights, fp32
+    # accumulate/optimizer/clip and NO GradScaler. fp16 excluded by design.
+    precision: Literal["fp32", "bf16_mixed"] = "fp32"
+    # Wave-3B recipe threading (defaults preserve byte-identical behavior):
+    # legal-only label-smoothing eps in [0, 1) (0.0 = disabled, plain CE);
+    # sampler/scorecard knobs carried for observability (stream single-pass
+    # keeps stream order; parquet dataset honors stratification).
+    label_smoothing: float = 0.0
+    stratified_sampling: bool = False
+    sampling_ratios: dict[str, float] | None = None
+    log_per_type_metrics: bool = True
+    fit_temperature: bool = True
+
     @property
     def optimizer_minibatch_size(self) -> int:
         return self.microbatch_size * self.accumulation_steps
@@ -138,8 +232,10 @@ class TrainingLoopConfig:
         return {
             "w_policy": self.w_policy,
             "w_placement": self.w_placement,
+            "w_value": self.w_value,
             "w_event": dict(self.w_event if self.w_event is not None else {}),
             "w_belief": dict(self.w_belief if self.w_belief is not None else {}),
+            "label_smoothing": float(self.label_smoothing),
         }
 
     def validate(self) -> None:
@@ -149,17 +245,74 @@ class TrainingLoopConfig:
             raise ContractError("checkpoint_frequency_updates must be positive")
         if self.optimizer_minibatch_size <= 0:
             raise ContractError("optimizer_minibatch_size must be positive")
+        if self.w_policy < 0.0 or self.w_placement < 0.0 or self.w_value < 0.0:
+            raise ContractError("w_policy/w_placement/w_value must be nonnegative")
+        for _w in list((self.w_event or {}).values()) + list((self.w_belief or {}).values()):
+            if _w < 0.0:
+                raise ContractError("w_event/w_belief values must be nonnegative")
+        if self.precision not in ("fp32", "bf16_mixed"):
+            raise ContractError(f"precision must be 'fp32' or 'bf16_mixed', got {self.precision!r}")
+        _eps = self.label_smoothing
+        if (
+            isinstance(_eps, bool)
+            or not isinstance(_eps, (int, float))
+            or not (0.0 <= float(_eps) < 1.0)
+            or float(_eps) != float(_eps)
+        ):
+            raise ContractError(f"label_smoothing must lie in [0, 1), got {self.label_smoothing!r}")
+        if not isinstance(self.stratified_sampling, bool):
+            raise ContractError(
+                f"stratified_sampling must be a bool, got {self.stratified_sampling!r}"
+            )
+        if self.sampling_ratios is not None:
+            if not isinstance(self.sampling_ratios, dict):
+                raise ContractError("sampling_ratios must be a mapping or null")
+            for _k, _v in self.sampling_ratios.items():
+                if not isinstance(_k, str) or _k == "":
+                    raise ContractError("sampling_ratios keys must be non-empty strings")
+                if (
+                    isinstance(_v, bool)
+                    or not isinstance(_v, (int, float))
+                    or not (float(_v) == float(_v))
+                    or float(_v) in (float("inf"), float("-inf"))
+                    or float(_v) <= 0.0
+                ):
+                    raise ContractError(f"sampling_ratios[{_k!r}] must be positive and finite")
+        if not isinstance(self.log_per_type_metrics, bool):
+            raise ContractError(
+                f"log_per_type_metrics must be a bool, got {self.log_per_type_metrics!r}"
+            )
+        if not isinstance(self.fit_temperature, bool):
+            raise ContractError(f"fit_temperature must be a bool, got {self.fit_temperature!r}")
 
 
 def _model_forward(model: nn.Module, batch: dict[str, Any]) -> dict[str, Any]:
-    # Support both forward(batch_dict) and evaluate(batch_dict) style (Wp05A)
+    # Real-model input bridge: real-mode dataset batches carry the encoded
+    # ActorTensorBatch under 'actor_batch' (flat features/legal_mask/chosen
+    # keys stay byte-identical for compat). When present AND the model
+    # exposes evaluate (real Hydra2BaselineModel; stubs use forward(dict)),
+    # route model.evaluate(actor_batch) then map ModelOutput onto the
+    # supervised-loss dict contract. Else the legacy dict path below runs
+    # byte-identical (forward/evaluate(dict) + identical-object dict return).
+    # Replay stays stub/dict path by design (replay.py untouched): replay
+    # replays synthetic flat batches with stub models, so it never carries
+    # actor_batch and never needs this bridge.
+    from hydra2.training.adapters import model_output_to_loss_dict
+
+    actor_batch: Any = batch.get("actor_batch")
+    if actor_batch is not None and hasattr(model, "evaluate") and callable(model.evaluate):
+        # Route through __call__ (not .evaluate directly): torch.compile wraps forward,
+        # and forward() delegates to evaluate() — calling .evaluate bypasses compilation
+        # (0 dynamo graphs). Uncompiled models behave identically (forward→evaluate).
+        return model_output_to_loss_dict(model(actor_batch))
+    # Legacy dict path (Wp05A): evaluate(dict) when present else forward(dict).
     if hasattr(model, "evaluate") and callable(model.evaluate):
         out = model.evaluate(batch)
     else:
         out = model(batch)
-    if not isinstance(out, dict):
-        raise ContractError(f"model forward must return dict, got {type(out).__name__}")
-    return out
+    if isinstance(out, dict):
+        return out
+    return model_output_to_loss_dict(out)
 
 
 def _validate_batch_no_privileged(batch: dict[str, Any]) -> None:
@@ -208,8 +361,220 @@ def _move_batch_to_device(batch: dict[str, Any], device: torch.device) -> dict[s
                     inner[sk] = sv
             moved[k] = inner
         else:
-            moved[k] = v
+            # Real-model bridge: 'actor_batch' ActorTensorBatch value. Prefer
+            # its .to(device) when present; otherwise rebuild field-wise
+            # (frozen dataclass has no .to today) — flat keys never touched.
+            # Replay stays stub/dict path (no actor_batch there).
+            try:
+                from hydra2.models.encoder import ActorTensorBatch
+            except Exception:
+                moved[k] = v
+                continue
+            if isinstance(v, ActorTensorBatch):
+                _to = getattr(v, "to", None)
+                if callable(_to):
+                    try:
+                        moved[k] = _to(device)
+                    except Exception:
+                        moved[k] = v
+                else:
+                    try:
+                        _moved_features: dict[str, Any] = {
+                            _fk: (
+                                _ft.to(device, non_blocking=True)
+                                if isinstance(_ft, torch.Tensor)
+                                else _ft
+                            )
+                            for _fk, _ft in dict(v.features).items()
+                        }
+                        _hm = (
+                            v.history_mask.to(device, non_blocking=True)
+                            if isinstance(v.history_mask, torch.Tensor)
+                            else v.history_mask
+                        )
+                        _lm = (
+                            v.legal_mask.to(device, non_blocking=True)
+                            if isinstance(v.legal_mask, torch.Tensor)
+                            else v.legal_mask
+                        )
+                        _seats = (
+                            v.actor_seats.to(device, non_blocking=True)
+                            if isinstance(v.actor_seats, torch.Tensor)
+                            else v.actor_seats
+                        )
+                        moved[k] = ActorTensorBatch(
+                            features=_moved_features,
+                            history_mask=_hm,
+                            legal_mask=_lm,
+                            observation_hashes=v.observation_hashes,
+                            actor_seats=_seats,
+                        )
+                    except Exception:
+                        moved[k] = v
+            else:
+                _v_to = getattr(v, "to", None)
+                if callable(_v_to):
+                    try:
+                        moved[k] = _v_to(device)
+                    except Exception:
+                        moved[k] = v
+                else:
+                    moved[k] = v
     return moved
+
+
+# ------------------------------------------------------------------
+# Phase-3 wait telemetry (hooks only; the ring is sibling-owned).
+# ------------------------------------------------------------------
+#
+# Per-microbatch wall-clock split written to JSONL: queue_wait_ms (time
+# blocked waiting for a ready slot — 0.0 when no ring feed is attached
+# because the synchronous dataset has no queue), fetch_decode_ms
+# (dataset.next_batch wall time), h2d_ms (host-to-device copy wall time,
+# or the ring's event-timed h2d_ms_last when a feed is attached),
+# compute_ms (forward + loss + backward wall time), producer_wait_s
+# (best-effort from feed.stats(), 0.0 when unreported).
+#
+# Scaling rule: scale the side that waits. Sustained queue_wait_ms means
+# the consumer starves (add feed parallelism / ring depth); sustained
+# fetch_decode_ms with an empty queue means the producer lags (add decode
+# workers); h2d_ms above the overlapped budget means the transfer path
+# lags (pinning / depth). Wall-clock waits only — utilization ratios are
+# never derived here.
+#
+# PROVISIONAL integration: the pinned-ring module
+# (hydra2.training.pinned_ring, sibling-owned, not yet landed) exposes
+# PinnedRing.open(shapes, ...) -> handle with handle.next(cpu_batch),
+# handle.stats() and handle.close(). The loop consumes that contract
+# duck-typed (no import; the handle arrives caller-owned via feed=) so
+# these hooks land and verify before the ring does.
+
+_TELEMETRY_METRICS: tuple[str, ...] = (
+    "queue_wait_ms",
+    "fetch_decode_ms",
+    "h2d_ms",
+    "compute_ms",
+    "forward_ms",
+    "loss_ms",
+    "backward_ms",
+)
+
+#: Per-update optimizer/logging stage metrics (summary-only, no extra JSONL
+#: rows: update timings ride the file summary so the existing
+#: microbatch+summary row contract stays byte-identical for readers).
+_UPDATE_TELEMETRY_METRICS: tuple[str, ...] = (
+    "optimizer_ms",
+    "logging_ms",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class MicrobatchTelemetry:
+    """One microbatch wait split (all waits wall-clock milliseconds)."""
+
+    microstep: int
+    global_update: int
+    queue_wait_ms: float
+    fetch_decode_ms: float
+    h2d_ms: float
+    compute_ms: float
+    producer_wait_s: float = 0.0
+    # Wave-3C stage split: forward/loss/backward partition of compute_ms
+    # (sum ≈ compute_ms; defaults preserve old construction call sites).
+    forward_ms: float = 0.0
+    loss_ms: float = 0.0
+    backward_ms: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": "microbatch",
+            "microstep": int(self.microstep),
+            "global_update": int(self.global_update),
+            "queue_wait_ms": float(self.queue_wait_ms),
+            "fetch_decode_ms": float(self.fetch_decode_ms),
+            "h2d_ms": float(self.h2d_ms),
+            "compute_ms": float(self.compute_ms),
+            "producer_wait_s": float(self.producer_wait_s),
+            "forward_ms": float(self.forward_ms),
+            "loss_ms": float(self.loss_ms),
+            "backward_ms": float(self.backward_ms),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class UpdateTelemetry:
+    """One optimizer-update stage split (summary-only, no JSONL rows)."""
+
+    global_update: int
+    optimizer_ms: float
+    logging_ms: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": "update",
+            "global_update": int(self.global_update),
+            "optimizer_ms": float(self.optimizer_ms),
+            "logging_ms": float(self.logging_ms),
+        }
+
+
+def _quantile_sorted(sorted_values: list[float], q: float) -> float:
+    """Linear-interpolation quantile over an ascending-sorted list."""
+    if len(sorted_values) == 0:
+        raise ContractError("quantile requires at least one value")
+    if not 0.0 <= q <= 1.0:
+        raise ContractError(f"quantile q must be in [0, 1], got {q!r}")
+    pos = q * (len(sorted_values) - 1)
+    lo = math.floor(pos)
+    hi = math.ceil(pos)
+    if lo == hi:
+        return float(sorted_values[lo])
+    frac = pos - lo
+    return float(sorted_values[lo] + frac * (sorted_values[hi] - sorted_values[lo]))
+
+
+def summarize_telemetry(records: list[MicrobatchTelemetry]) -> dict[str, float]:
+    """p50/p99 per wait metric over microbatch records ({} when empty)."""
+    summary: dict[str, float] = {}
+    if len(records) == 0:
+        return summary
+    for metric in _TELEMETRY_METRICS:
+        ordered = sorted(float(getattr(record, metric)) for record in records)
+        summary[f"{metric}_p50"] = _quantile_sorted(ordered, 0.50)
+        summary[f"{metric}_p99"] = _quantile_sorted(ordered, 0.99)
+    return summary
+
+
+def summarize_update_telemetry(records: list[UpdateTelemetry]) -> dict[str, float]:
+    """p50/p99 per update-stage metric ({} when empty; summary-only)."""
+    summary: dict[str, float] = {}
+    if len(records) == 0:
+        return summary
+    for metric in _UPDATE_TELEMETRY_METRICS:
+        ordered = sorted(float(getattr(record, metric)) for record in records)
+        summary[f"{metric}_p50"] = _quantile_sorted(ordered, 0.50)
+        summary[f"{metric}_p99"] = _quantile_sorted(ordered, 0.99)
+    return summary
+
+
+def _batch_action_kinds(batch: dict[str, Any], targets: torch.Tensor) -> list[str] | None:
+    """Per-row action-kind labels for scorecard logging (``None`` when absent).
+
+    Reads the sampler-attached ``"_action_kinds"`` (or ``"action_kinds"``)
+    list; returns ``None`` unless it is a length-matching list of non-empty
+    strings.  Logging-only: never affects loss, stepping, or checkpoints.
+    """
+    raw: Any = batch.get("_action_kinds", batch.get("action_kinds"))
+    if raw is None:
+        return None
+    if not isinstance(raw, (list, tuple)):
+        return None
+    kinds = [str(k) for k in list(raw)]
+    if len(kinds) != int(targets.shape[0]):
+        return None
+    if any(k == "" for k in kinds):
+        return None
+    return kinds
 
 
 class SupervisedLoop:
@@ -241,8 +606,8 @@ class SupervisedLoop:
     config:
         Explicit training hyperparameters and objective weights.
     checkpoint_dir:
-        Local artifact directory.  This directory is authoritative; a W&B
-        mirror may read but MUST NOT overwrite it (no code path does).
+        Local artifact directory.  This directory is authoritative; an observer
+        mirror (see tracking/) may read but MUST NOT overwrite it (no code path does).
     manifest_hashes:
         Real identity digests required by the checkpoint manifest
         (``run_spec_hash``, ``model_spec_hash``, ``optimizer_spec_hash``,
@@ -255,6 +620,19 @@ class SupervisedLoop:
     device:
         Target device (e.g. ``cuda`` or ``cpu``).  Defaults to inferred
         from ``handle`` or ``cpu``.
+    privileged_source:
+        Optional privileged target source joined by opaque ``decision_id``
+        only (``PrivilegedOracleLoader`` / ``PrivilegedLabelStore`` / label
+        ``dict`` mapping ``decision_id`` -> label dict with ``ranks``).
+        The join runs after the privileged firewall check and only when
+        ``w_placement``/``w_value`` require targets; ``None`` (default)
+        preserves the current ``ContractError``-on-missing-target behavior.
+    evaluation_wall_ids:
+        Set of wall_ids reserved for evaluation that must never enter
+        training. Stored as a frozenset ledger (mirroring replay) and
+        forwarded into ``join_oracle_targets`` at both join sites; any
+        joined row overlapping the set fails closed. ``None`` (default)
+        leaves the join unchecked.
     """
 
     def __init__(
@@ -269,21 +647,62 @@ class SupervisedLoop:
         scheduler: Any | None = None,
         handle: Any | None = None,
         device: torch.device | str | None = None,
+        privileged_source: Any | None = None,
+        evaluation_wall_ids: set[str] | frozenset[str] | None = None,
+        mirror: ClearmlMirror | None = None,
+        runtime_spec: Any | None = None,
+        telemetry_path: Path | str | None = None,
+        feed: Any | None = None,
     ) -> None:
         config.validate()
+        # Precision agreement: RuntimeSpec vs TrainingLoopConfig must match
+        # exactly. A fp32 runtime with a bf16 loop (or the reverse) would
+        # silently lie about numerics — both directions are unconstructible.
+        # Loop-owned autocast stays keyed on config+CUDA (see
+        # _forward_autocast); this gate only prevents disagreement.
+        if runtime_spec is not None:
+            rt_precision = getattr(runtime_spec, "precision", None)
+            if rt_precision != config.precision:
+                raise ContractError(
+                    f"RuntimeSpec precision {rt_precision!r} disagrees with "
+                    f"TrainingLoopConfig precision {config.precision!r}; "
+                    "runtime and loop precisions must match exactly"
+                )
+            rt_adapter = getattr(runtime_spec, "adapter_id", None)
+            if rt_adapter == "plain_pytorch" and rt_precision != "fp32":
+                raise ContractError(
+                    f"PlainPytorchAdapter requires precision 'fp32', got {rt_precision!r} "
+                    "(plain is fp32-only)"
+                )
+        # Handle-carried precision (forward-compat): adapters bind precision
+        # into the handle path via runtime_spec; when present it must agree.
+        if handle is not None:
+            h_precision = getattr(handle, "precision", None)
+            if h_precision is not None and h_precision != config.precision:
+                raise ContractError(
+                    f"RuntimeHandle precision {h_precision!r} disagrees with "
+                    f"TrainingLoopConfig precision {config.precision!r}"
+                )
         self.model: nn.Module = model
         self.optimizer = optimizer
         self.scheduler = scheduler
         self.dataset = dataset
         self.config = config
         self.handle = handle
+        self.runtime_spec = runtime_spec
+        self.privileged_source: Any | None = privileged_source
+        # Evaluation wall ledger — mirrors replay; forwarded at both join sites.
+        self.evaluation_wall_ids: frozenset[str] = frozenset(
+            evaluation_wall_ids if evaluation_wall_ids is not None else ()
+        )
         self.checkpoint_dir = Path(checkpoint_dir)
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
         if device is not None:
             self.device = torch.device(device)
         elif handle is not None and hasattr(handle, "device"):
-            self.device = torch.device(str(handle.device))
+            _device_attr: object = handle.device
+            self.device = torch.device(str(_device_attr))
         else:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -310,14 +729,29 @@ class SupervisedLoop:
             best_selection_metric=None,
             sampler_cursor=self._sampler_state_snapshot(),
             semantic_rng_state=None,
+            precision=str(config.precision),
+            skipped_updates=0,
         )
         # Loss logging: per-global-update history
         self.loss_history: list[dict[str, float]] = []
         self._global_metrics_history: list[dict[str, float]] = []
+        # Phase-3 wait telemetry: JSONL sink (None disables file output;
+        # in-memory records are always collected, reset per train() run)
+        # plus the optional caller-owned ring feed (PROVISIONAL
+        # pinned_ring.py contract, duck-typed: next/stats; the loop never
+        # opens or closes the handle — lifecycle stays with the caller).
+        self.telemetry_path: Path | None = (
+            Path(telemetry_path) if telemetry_path is not None else None
+        )
+        self.feed: Any | None = feed
+        self.telemetry_records: list[MicrobatchTelemetry] = []
+        # Wave-3C update-stage timings (optimizer/logging per global update;
+        # summary-only, reset per train() alongside microbatch records).
+        self.update_records: list[UpdateTelemetry] = []
 
         # Ensure model is on device
         with contextlib.suppress(Exception):
-            self.model.to(self.device)
+            _ = self.model.to(self.device)
         # Perf-B torch.compile — dynamic shapes, guarded determinism
         # + availability (cite docs).
         # Evidence:
@@ -332,7 +766,7 @@ class SupervisedLoop:
         # 32/64/128/256 (SDPA bool mask).
         if self.device.type == "cuda":
             try:
-                _is_compiling = bool(torch.compiler.is_compiling())
+                _is_compiling = torch.compiler.is_compiling()
             except Exception:
                 _is_compiling = False
             if not _is_compiling and not torch.are_deterministic_algorithms_enabled():
@@ -346,7 +780,27 @@ class SupervisedLoop:
                     if isinstance(_compiled, nn.Module):
                         self.model = _compiled
         _ = self.model.train()
-        self.optimizer.zero_grad(set_to_none=True)
+        # Observer mirror (see hydra2.tracking): disabled by default; when
+        # enabled it copies allowlisted scalars + digests, never feeds back.
+        if mirror is None:
+            from hydra2.tracking.clearml_mirror import make_mirror
+
+            mirror = make_mirror(
+                manifest_hashes=dict(validated),
+                loop_config={
+                    "microbatch_size": config.microbatch_size,
+                    "accumulation_steps": config.accumulation_steps,
+                    "max_updates": config.max_updates,
+                    "checkpoint_frequency_updates": config.checkpoint_frequency_updates,
+                    "seed": config.seed,
+                    "w_policy": config.w_policy,
+                    "w_placement": config.w_placement,
+                    "w_value": config.w_value,
+                    "precision": config.precision,
+                },
+            )
+            _ = mirror.start_run()
+        self._mirror: ClearmlMirror = mirror
 
     # ------------------------------------------------------------------
     # Sampler state helpers
@@ -366,17 +820,179 @@ class SupervisedLoop:
         else:
             # Fallback best-effort: set cursor attribute
             with contextlib.suppress(Exception):
-                self.dataset.cursor = int(state.get("offset", 0))
+                _raw_offset: object = state.get("offset", 0) if isinstance(state, dict) else 0
+                if isinstance(_raw_offset, bool):
+                    _offset = int(_raw_offset)
+                elif isinstance(_raw_offset, int):
+                    _offset = _raw_offset
+                else:
+                    _offset = int(str(_raw_offset))
+                self.dataset.cursor = _offset
+
+    # ------------------------------------------------------------------
+    # Phase-3 wait-telemetry hooks
+    # ------------------------------------------------------------------
+
+    def _acquire_cpu_batch(self, microbatch_size: int) -> tuple[dict[str, Any], float]:
+        """Fetch one CPU batch; return ``(batch, fetch_decode_ms)``."""
+        t0 = time.perf_counter()
+        raw_any: Any = self.dataset.next_batch(microbatch_size)
+        fetch_decode_ms = (time.perf_counter() - t0) * 1000.0
+        if raw_any is None:
+            raise CorruptArtifactError("authoritative dataset returned None batch")
+        return dict(raw_any), fetch_decode_ms
+
+    def _h2d_batch(self, batch: dict[str, Any]) -> tuple[dict[str, Any], float, float]:
+        """Move one batch host-to-device; return ``(moved, queue_wait_ms, h2d_ms)``.
+
+        With a caller-owned ring feed the transfer runs through
+        ``feed.next`` (PROVISIONAL pinned_ring.py contract): ``h2d_ms`` is
+        the ring's event-timed ``h2d_ms_last`` when reported, and
+        ``queue_wait_ms`` is the remaining wall time (slot-recycle wait).
+        Without a feed the synchronous move runs and ``queue_wait_ms`` is
+        0.0 — no queue exists to wait on.
+        """
+        feed: Any | None = self.feed
+        if feed is not None:
+            t0 = time.perf_counter()
+            moved_any: Any = feed.next(batch)
+            wall_ms = (time.perf_counter() - t0) * 1000.0
+            h2d_ms = wall_ms
+            stats_any: Any = feed.stats() if hasattr(feed, "stats") else {}
+            if isinstance(stats_any, dict):
+                last_any: Any = stats_any.get("h2d_ms_last")
+                if isinstance(last_any, (int, float)) and not isinstance(last_any, bool):
+                    h2d_ms = float(last_any)
+            queue_wait_ms = max(0.0, wall_ms - h2d_ms)
+            return dict(moved_any), queue_wait_ms, h2d_ms
+        t0 = time.perf_counter()
+        moved = _move_batch_to_device(batch, self.device)
+        h2d_ms = (time.perf_counter() - t0) * 1000.0
+        return moved, 0.0, h2d_ms
+
+    def _producer_wait_s(self) -> float:
+        """Best-effort producer wait from ``feed.stats()`` (0.0 when unreported)."""
+        feed: Any | None = self.feed
+        if feed is None or not hasattr(feed, "stats"):
+            return 0.0
+        stats_any: Any = feed.stats()
+        if not isinstance(stats_any, dict):
+            return 0.0
+        wait_any: Any = stats_any.get("producer_wait_s")
+        if isinstance(wait_any, (int, float)) and not isinstance(wait_any, bool):
+            return float(wait_any)
+        return 0.0
+
+    def _record_microbatch_telemetry(
+        self,
+        *,
+        queue_wait_ms: float,
+        fetch_decode_ms: float,
+        h2d_ms: float,
+        compute_ms: float,
+        forward_ms: float = 0.0,
+        loss_ms: float = 0.0,
+        backward_ms: float = 0.0,
+    ) -> None:
+        """Append one microbatch record (memory always; JSONL when configured)."""
+        record = MicrobatchTelemetry(
+            microstep=self.state.microstep,
+            global_update=self.state.global_update,
+            queue_wait_ms=queue_wait_ms,
+            fetch_decode_ms=fetch_decode_ms,
+            h2d_ms=h2d_ms,
+            compute_ms=compute_ms,
+            producer_wait_s=self._producer_wait_s(),
+            forward_ms=forward_ms,
+            loss_ms=loss_ms,
+            backward_ms=backward_ms,
+        )
+        self.telemetry_records.append(record)
+        telemetry_path = self.telemetry_path
+        if telemetry_path is not None:
+            telemetry_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(telemetry_path, "a", encoding="utf-8") as sink:
+                sink.write(json.dumps(record.to_dict(), sort_keys=True) + "\n")
+
+    def _record_update_telemetry(self, *, optimizer_ms: float, logging_ms: float) -> None:
+        """Append one update-stage record (memory only; rides file summary)."""
+        self.update_records.append(
+            UpdateTelemetry(
+                global_update=self.state.global_update,
+                optimizer_ms=optimizer_ms,
+                logging_ms=logging_ms,
+            )
+        )
+
+    def telemetry_summary(self) -> dict[str, float]:
+        """p50/p99 per wait metric over microbatches + update stages."""
+        summary = summarize_telemetry(self.telemetry_records)
+        summary.update(summarize_update_telemetry(self.update_records))
+        return summary
 
     # ------------------------------------------------------------------
     # Core step
     # ------------------------------------------------------------------
+
+    def _forward_autocast(self) -> Any:
+        """Loop-owned bf16 autocast scope for forward+loss only.
+
+        Returns ``torch.autocast(device_type="cuda", dtype=torch.bfloat16)``
+        when ``precision == "bf16_mixed"`` on a CUDA device; otherwise a
+        no-op ``nullcontext`` (fp32 default is byte-identical, CPU path
+        never autocasts). Backward/clip/step always stay outside in fp32
+        with fp32 master weights and NO GradScaler.
+        """
+        if self.config.precision == "bf16_mixed" and self.device.type == "cuda":
+            return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+        return contextlib.nullcontext()
 
     def _backward(self, loss: torch.Tensor) -> None:
         if self.handle is not None and hasattr(self.handle, "backward"):
             self.handle.backward(loss)
         else:
             _ = loss.backward()
+
+    def _maybe_join_oracle_targets(
+        self, batch: dict[str, Any], evaluation_wall_ids: Any | None = None
+    ) -> dict[str, Any]:
+        # Join privileged placement/value targets by opaque decision_id only.
+        # Called AFTER _validate_batch_no_privileged; merged batch is
+        # re-validated so the actor batch stays privileged-free
+        # (FORBIDDEN_BATCH_KEYS assert post-merge). Defaults unchanged:
+        # absent/empty source or zero auxiliary weights is a no-op (the loss
+        # then raises ContractError on missing targets, as before). Belief
+        # 34-dist distribution support explicitly DEFERRED: belief heads keep
+        # the index-CE contract and are never joined here.
+        src: Any | None = self.privileged_source
+        # Default to the ctor ledger so both join sites fail closed without
+        # requiring an explicit arg; explicit arg still wins (tests + replay mirror).
+        if evaluation_wall_ids is None:
+            evaluation_wall_ids = getattr(self, "evaluation_wall_ids", None)
+        if src is None:
+            return batch
+        if hasattr(src, "__len__"):
+            try:
+                if len(src) == 0:  # type: ignore[arg-type]
+                    return batch
+            except TypeError:
+                pass
+        if float(self.config.w_placement) == 0.0 and float(self.config.w_value) == 0.0:
+            return batch
+        decision_ids_any: Any = batch.get("_decision_ids", [])
+        if not isinstance(decision_ids_any, (list, tuple)) or len(decision_ids_any) == 0:
+            return batch
+        decision_ids: list[str] = [str(x) for x in list(decision_ids_any)]
+        from hydra2.belief.oracle_loader import join_oracle_targets
+
+        joined = join_oracle_targets(decision_ids, src, evaluation_wall_ids=evaluation_wall_ids)
+        merged: dict[str, Any] = dict(batch)
+        if float(self.config.w_placement) != 0.0 and "placement_target" in joined:
+            merged["placement_target"] = joined["placement_target"]
+        if float(self.config.w_value) != 0.0 and "value_target" in joined:
+            merged["value_target"] = joined["value_target"]
+        _validate_batch_no_privileged(merged)
+        return merged
 
     def train_step(self, batch: dict[str, Any]) -> dict[str, float]:
         """Single microbatch forward/backward without optimizer stepping.
@@ -385,22 +1001,28 @@ class SupervisedLoop:
         exposed for tests that want formula parity.
         """
         _validate_batch_no_privileged(batch)
+        batch = self._maybe_join_oracle_targets(batch, evaluation_wall_ids=self.evaluation_wall_ids)
         batch = _move_batch_to_device(batch, self.device)
-        model_out = _model_forward(self.model, batch)
-        losses = compute_supervised_loss(model_out, batch, self.config.objective_weights())
+        # AMP: autocast covers forward+loss only; backward below stays fp32.
+        with self._forward_autocast():
+            model_out = _model_forward(self.model, batch)
+            losses = compute_supervised_loss(model_out, batch, self.config.objective_weights())
         # Caller scales for accumulation; we return the unscaled total for logging
-        total_unscaled: float = float(losses["total"].detach().cpu().item())  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for logging scalar; alternative (keep on device) loses logging. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
+        total_tensor: torch.Tensor = losses["total"]
+        total_unscaled: float = float(total_tensor.detach().cpu().item())  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for logging scalar; alternative (keep on device) loses logging. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
         # Backward is caller-owned when accumulating; this helper does backward with scale 1
         # For direct use, backward here; for accumulate loop the caller re-scales.
         # We expose both: this does immediate backward of total
-        self._backward(losses["total"])
+        self._backward(total_tensor)
+        aux_scalars: dict[str, float] = {}
+        for _aux_key, _aux_value in losses.items():
+            if _aux_key in ("_event_per_head", "_belief_per_head", "total"):
+                continue
+            _aux_tensor: torch.Tensor = _aux_value
+            aux_scalars[_aux_key] = float(_aux_tensor.detach().cpu().item())  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for logging scalars; alternative loses logging. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
         return {
             "total": total_unscaled,
-            **{
-                k: float(v.detach().cpu().item())  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for logging scalars; alternative loses logging. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
-                for k, v in losses.items()
-                if k not in ("_event_per_head", "_belief_per_head", "total")
-            },
+            **aux_scalars,
         }
 
     def train(self, *, max_updates: int | None = None) -> list[dict[str, float]]:
@@ -421,32 +1043,151 @@ class SupervisedLoop:
         target_global = self.state.global_update + max_u
 
         _ = self.model.train()
+        # Fresh run owns its telemetry: reset records, truncate the JSONL file.
+        self.telemetry_records = []
+        self.update_records = []
+        telemetry_path = self.telemetry_path
+        if telemetry_path is not None:
+            telemetry_path.parent.mkdir(parents=True, exist_ok=True)
+            telemetry_path.write_text("", encoding="utf-8")
 
         while self.state.global_update < target_global:
-            # Accumulation window
-            micro_losses: list[float] = []
+            # Accumulation window — Wave-3C: loss scalars stay on-device as
+            # tensors (no per-microbatch .item() syncs); logging aggregates
+            # once per update in the logging phase below.
+            micro_total_tensors: list[torch.Tensor] = []
+            micro_policy_tensors: list[torch.Tensor] = []
+            micro_placement_tensors: list[torch.Tensor] = []
+            micro_value_tensors: list[torch.Tensor] = []
+            micro_event_tensors: list[torch.Tensor] = []
+            micro_belief_tensors: list[torch.Tensor] = []
+            micro_event_head_tensors: dict[str, list[torch.Tensor]] = {}
+            micro_belief_head_tensors: dict[str, list[torch.Tensor]] = {}
             batch: dict[str, Any] = {}
             model_out: dict[str, Any] = {}
             # Zero grad at start of accumulation window
             # (already zeroed after previous update)
             for _acc_step in range(self.config.accumulation_steps):
-                raw_batch_any: Any = self.dataset.next_batch(self.config.microbatch_size)
-                if raw_batch_any is None:
-                    raise CorruptArtifactError("authoritative dataset returned None batch")
-                raw_batch: dict[str, Any] = raw_batch_any
+                raw_batch, fetch_decode_ms = self._acquire_cpu_batch(self.config.microbatch_size)
                 _validate_batch_no_privileged(raw_batch)
-                batch = _move_batch_to_device(raw_batch, self.device)
-                model_out = _model_forward(self.model, batch)
-                losses = compute_supervised_loss(model_out, batch, self.config.objective_weights())
+                raw_batch = self._maybe_join_oracle_targets(
+                    raw_batch, evaluation_wall_ids=self.evaluation_wall_ids
+                )
+                batch, queue_wait_ms, h2d_ms = self._h2d_batch(raw_batch)
+                # AMP: autocast covers forward+loss only; backward/clip/step below stay fp32.
+                # Wave-3C stage split: forward vs loss timed separately inside
+                # the shared autocast scope; backward outside; compute_ms keeps
+                # the total wall for back-compat.
+                compute_t0 = time.perf_counter()
+                with self._forward_autocast():
+                    _fwd_t0 = time.perf_counter()
+                    model_out = _model_forward(self.model, batch)
+                    forward_ms = (time.perf_counter() - _fwd_t0) * 1000.0
+                    _loss_t0 = time.perf_counter()
+                    losses = compute_supervised_loss(
+                        model_out, batch, self.config.objective_weights()
+                    )
+                    loss_ms = (time.perf_counter() - _loss_t0) * 1000.0
                 # Accumulation: scale loss so that sum over accumulation_steps
                 # equals mean over optimizer minibatch (exact numerator/count).
-                scaled = losses["total"] / self.config.accumulation_steps
+                step_total: torch.Tensor = losses["total"]
+                scaled: torch.Tensor = step_total / self.config.accumulation_steps
+                _bwd_t0 = time.perf_counter()
                 self._backward(scaled)
-                micro_losses.append(float(losses["total"].detach().cpu().item()))  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for logging scalar; alternative loses logging. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
-                self.state.microstep += 1
-                self.state.examples_seen += self.config.microbatch_size
-                # sampler cursor lives in dataset; snapshot after each microbatch
+                backward_ms = (time.perf_counter() - _bwd_t0) * 1000.0
+                compute_ms = (time.perf_counter() - compute_t0) * 1000.0
+                self._record_microbatch_telemetry(
+                    queue_wait_ms=queue_wait_ms,
+                    fetch_decode_ms=fetch_decode_ms,
+                    h2d_ms=h2d_ms,
+                    compute_ms=compute_ms,
+                    forward_ms=forward_ms,
+                    loss_ms=loss_ms,
+                    backward_ms=backward_ms,
+                )
+                micro_total_tensors.append(step_total.detach())
+                micro_placement_tensors.append(losses["placement"].detach())
+                micro_value_tensors.append(losses["value"].detach())
+                micro_event_tensors.append(losses["event"].detach())
+                micro_belief_tensors.append(losses["belief"].detach())
+                micro_policy_tensors.append(losses["policy"].detach())
+                _event_heads_any: Any = losses.get("_event_per_head", {})
+                if isinstance(_event_heads_any, dict):
+                    for _head_id, _head_loss in _event_heads_any.items():
+                        if isinstance(_head_loss, torch.Tensor):
+                            _dst = micro_event_head_tensors.setdefault(str(_head_id), [])
+                            _dst.append(_head_loss.detach())
+                _belief_heads_any: Any = losses.get("_belief_per_head", {})
+                if isinstance(_belief_heads_any, dict):
+                    for _head_id, _head_loss in _belief_heads_any.items():
+                        if isinstance(_head_loss, torch.Tensor):
+                            _dst = micro_belief_head_tensors.setdefault(str(_head_id), [])
+                            _dst.append(_head_loss.detach())
                 self.state.sampler_cursor = self._sampler_state_snapshot()
+            # Fail-closed finite-grad skip: per-update global grad-norm finite
+            # check BEFORE clip/step. Non-finite grads skip the optimizer (and
+            # scheduler) step, zero grads, and count the skip — weights are
+            # never poisoned. Mid-window non-finite *loss* still raises
+            # ContractError inside compute_supervised_loss (before backward),
+            # so there is no double-count: this gate only sees grads.
+            # Wave-3C: optimizer phase timed (probe+clip+step+scheduler+zero);
+            # logging phase timed separately below (deferred single-sync means).
+            _opt_t0 = time.perf_counter()
+            _grads_finite, _grad_norm = global_grad_norm_is_finite(self.model)
+            if not _grads_finite:
+                self.optimizer.zero_grad(set_to_none=True)
+                _optimizer_ms = (time.perf_counter() - _opt_t0) * 1000.0
+                _log_t0 = time.perf_counter()
+                self.state.skipped_updates += 1
+                self.state.global_update += 1
+                self.state.epoch = int(self._sampler_state_snapshot().get("epoch", 0))
+                self.state.semantic_rng_state = None
+
+                # Deferred single-sync means over the on-device window tensors.
+                def _mean_tensors(_tensors: list[torch.Tensor]) -> float:
+                    if len(_tensors) == 0:
+                        return 0.0
+                    stacked = torch.stack([t.detach().float().reshape(()) for t in _tensors])
+                    return float(stacked.mean().cpu().item())
+
+                _skip_avg = _mean_tensors(micro_total_tensors)
+                _skip_entry: dict[str, float] = {
+                    "global_update": float(self.state.global_update),
+                    "total": _skip_avg,
+                    "policy": _mean_tensors(micro_policy_tensors),
+                    "placement": _mean_tensors(micro_placement_tensors),
+                    "value": _mean_tensors(micro_value_tensors),
+                    "event": _mean_tensors(micro_event_tensors),
+                    "belief": _mean_tensors(micro_belief_tensors),
+                    "masked_nll": _skip_avg,
+                    "top1": 0.0,
+                    "top3": 0.0,
+                    "top5": 0.0,
+                    "calibration_ece": 0.0,
+                    "legal_uniform_nll": 0.0,
+                    "legal_uniform_gap": 0.0,
+                    "skipped_updates": float(self.state.skipped_updates),
+                    "skipped_this_update": 1.0,
+                }
+                self.loss_history.append(_skip_entry)
+                self._global_metrics_history.append({"masked_nll": _skip_avg})
+                _logging_ms = (time.perf_counter() - _log_t0) * 1000.0
+                self._record_update_telemetry(optimizer_ms=_optimizer_ms, logging_ms=_logging_ms)
+                if (
+                    self.state.global_update % self.config.checkpoint_frequency_updates == 0
+                    or self.state.global_update == target_global
+                ):
+                    dest = self.save_checkpoint()
+                    self._mirror.log_update(_skip_entry, step=int(self.state.global_update))
+                    self._mirror.log_checkpoint(
+                        checkpoint_path=dest,
+                        manifest_json={
+                            "checkpoint_file": dest.name,
+                            "global_update": int(self.state.global_update),
+                            "manifest_hashes": dict(self.manifest_hashes),
+                        },
+                    )
+                continue
             if self.config.gradient_clip_norm is not None:
                 _ = torch.nn.utils.clip_grad_norm_(
                     self.model.parameters(), self.config.gradient_clip_norm
@@ -457,23 +1198,44 @@ class SupervisedLoop:
                 with contextlib.suppress(Exception):
                     self.scheduler.step()
             self.optimizer.zero_grad(set_to_none=True)
+            _optimizer_ms = (time.perf_counter() - _opt_t0) * 1000.0
 
             self.state.global_update += 1
             self.state.epoch = int(self._sampler_state_snapshot().get("epoch", 0))
             self.state.semantic_rng_state = None  # populated at checkpoint via capture_rng_state
 
             # Logging: mean over accumulation window + per-head metrics on last microbatch
+            # Wave-3C: single-sync means over the deferred window tensors (one
+            # host sync per head per update, not per microbatch); metrics on
+            # the last microbatch stay lawful peeks. Checkpoint save stays
+            # outside logging_ms (cadence stall reviewed separately).
+            _log_t0 = time.perf_counter()
+
             # Recompute metrics for reporting (masked NLL, top-k, etc.) on last logits
             # We reuse last batch/model_out already in scope; recompute with stored batch
-            # Here we use micro_losses mean as total
-            avg_loss = sum(micro_losses) / len(micro_losses) if len(micro_losses) > 0 else 0.0
+            def _mean_tensors(_tensors: list[torch.Tensor]) -> float:
+                if len(_tensors) == 0:
+                    return 0.0
+                stacked = torch.stack([t.detach().float().reshape(()) for t in _tensors])
+                return float(stacked.mean().cpu().item())
+
+            avg_loss = _mean_tensors(micro_total_tensors)
+            avg_policy = _mean_tensors(micro_policy_tensors)
+            avg_placement = _mean_tensors(micro_placement_tensors)
+            avg_value = _mean_tensors(micro_value_tensors)
+            avg_event = _mean_tensors(micro_event_tensors)
+            avg_belief = _mean_tensors(micro_belief_tensors)
             # Compute richer diagnostics on the last microbatch (lawful to peek)
             # We have batch/model_out from last iteration in scope — recompute metrics there
             try:
+                train_logits: torch.Tensor = model_out["policy_logits"]
+                train_targets: torch.Tensor = batch["chosen_action_id"]
+                train_mask: torch.Tensor = batch["legal_mask"]
                 metrics = compute_metrics(
-                    model_out["policy_logits"].detach(),
-                    batch["chosen_action_id"].detach(),
-                    batch["legal_mask"].detach(),
+                    train_logits.detach(),
+                    train_targets.detach(),
+                    train_mask.detach(),
+                    action_kinds=_batch_action_kinds(batch, train_targets),
                 )
             except Exception:
                 metrics = {
@@ -493,7 +1255,11 @@ class SupervisedLoop:
             entry: dict[str, float] = {
                 "global_update": float(self.state.global_update),
                 "total": avg_loss,
-                "policy": sum(micro_losses) / len(micro_losses) if len(micro_losses) > 0 else 0.0,
+                "policy": avg_policy,
+                "placement": avg_placement,
+                "value": avg_value,
+                "event": avg_event,
+                "belief": avg_belief,
                 "masked_nll": metrics.get("masked_nll", avg_loss),
                 "top1": metrics.get("top1", 0.0),
                 "top3": metrics.get("top3", 0.0),
@@ -501,16 +1267,56 @@ class SupervisedLoop:
                 "calibration_ece": metrics.get("calibration_ece", 0.0),
                 "legal_uniform_nll": metrics.get("legal_uniform_nll", 0.0),
                 "legal_uniform_gap": metrics.get("legal_uniform_gap", 0.0),
+                "skipped_updates": float(self.state.skipped_updates),
+                "skipped_this_update": 0.0,
             }
+            # Per-type scorecards (Wave 3-B): flattened per_type/<kind>/*
+            # floats from the last-microbatch metrics ride the entry when the
+            # recipe enables them (default True preserves current entries).
+            if self.config.log_per_type_metrics:
+                entry.update(
+                    {
+                        _mkey: _mval
+                        for _mkey, _mval in metrics.items()
+                        if _mkey.startswith("per_type/") and isinstance(_mval, float)
+                    }
+                )
+            for _event_head in sorted(micro_event_head_tensors):
+                _event_vals = micro_event_head_tensors[_event_head]
+                entry[f"event_{_event_head}"] = _mean_tensors(_event_vals)
+            for _belief_head in sorted(micro_belief_head_tensors):
+                _belief_vals = micro_belief_head_tensors[_belief_head]
+                entry[f"belief_{_belief_head}"] = _mean_tensors(_belief_vals)
             self.loss_history.append(entry)
             self._global_metrics_history.append(metrics)
+            _logging_ms = (time.perf_counter() - _log_t0) * 1000.0
+            self._record_update_telemetry(optimizer_ms=_optimizer_ms, logging_ms=_logging_ms)
 
-            # Checkpointing: local authoritative artifact, atomic publish
+            # Checkpointing: local authoritative artifact, atomic publish.
+            # Mirror hook fires only after a successful save (observer-only).
             if (
                 self.state.global_update % self.config.checkpoint_frequency_updates == 0
                 or self.state.global_update == target_global
             ):
-                _ = self.save_checkpoint()
+                dest = self.save_checkpoint()
+                self._mirror.log_update(entry, step=int(self.state.global_update))
+                self._mirror.log_checkpoint(
+                    checkpoint_path=dest,
+                    manifest_json={
+                        "checkpoint_file": dest.name,
+                        "global_update": int(self.state.global_update),
+                        "manifest_hashes": dict(self.manifest_hashes),
+                    },
+                )
+
+        if self.telemetry_path is not None:
+            summary_line: dict[str, Any] = {
+                "kind": "summary",
+                "microbatches": len(self.telemetry_records),
+                **self.telemetry_summary(),
+            }
+            with open(self.telemetry_path, "a", encoding="utf-8") as sink:
+                sink.write(json.dumps(summary_line, sort_keys=True) + "\n")
 
         return list(self.loss_history)
 
@@ -521,9 +1327,9 @@ class SupervisedLoop:
     def save_checkpoint(self, destination: Path | None = None) -> Path:
         """Atomically publish a checkpoint (local authoritative).
 
-        The W&B mirror, if configured, may ``shutil.copy`` from this path but
-        MUST NOT overwrite it — no code path in this module writes through a
-        mirror.
+        An observer mirror (see tracking/), if configured, may ``shutil.copy``
+        from this path but MUST NOT overwrite it — no code path in this module
+        writes through a mirror.
 
         Returns the destination path published.
         """
@@ -591,8 +1397,8 @@ class SupervisedLoop:
             )
         # Apply after verification (order matters per SPEC 10)
         # Restore model / optimizer / scheduler from payload (these are device-agnostic CPU tensors)
-        self.model.load_state_dict(payload["model_state"])
-        self.optimizer.load_state_dict(payload["optimizer_state"])
+        _ = self.model.load_state_dict(payload["model_state"])
+        _ = self.optimizer.load_state_dict(payload["optimizer_state"])
         if (
             self.scheduler is not None
             and "scheduler_state" in payload
@@ -605,7 +1411,15 @@ class SupervisedLoop:
         # Restore training state and sampler/RNG
         raw_training = payload.get("training_state")
         if isinstance(raw_training, dict):
-            self.state = TrainingState.from_dict(raw_training)
+            restored = TrainingState.from_dict(raw_training)
+            # Precision regime must match: a fp32 checkpoint resumed under a
+            # bf16 loop (or reverse) would silently change numerics.
+            if str(restored.precision) != str(self.config.precision):
+                raise CorruptArtifactError(
+                    f"checkpoint precision {restored.precision!r} != "
+                    f"loop precision {self.config.precision!r}; refusing cross-regime resume"
+                )
+            self.state = restored
         else:
             raise CorruptArtifactError("training_state missing or malformed in checkpoint")
         sampler_state = payload.get("sampler_state")
@@ -619,8 +1433,14 @@ class SupervisedLoop:
             from hydra2.runtime.checkpoint import _restore_rng_state
 
             _restore_rng_state(rng_state)
-        self.model.to(self.device)
+        _ = self.model.to(self.device)
         _ = self.model.train()
+        # Best-ckpt binding: a restored best must still match its published file.
+        _verify_best_ckpt(
+            self.checkpoint_dir,
+            metric=self.state.best_selection_metric,
+            digest=self.state.best_ckpt_digest,
+        )
         # Note: optimizer state tensors remain on CPU after load; the adapter's
         # handle would have moved them on setup.  For plain loop we keep CPU
         # and let next step handle device transfer via model's device.
@@ -638,8 +1458,14 @@ class SupervisedLoop:
         """Compute report over eval batches (no grad) with the frozen model.
 
         Returns dict with keys: ``masked_nll``, ``top1``/``top3``/``top5``,
-        ``calibration_ece``, ``support_min``/``max``, ``legal_uniform_gap``,
-        ``strata`` (per-seat breakdown placeholder) and ``confusion``.
+        ``calibration_ece``, ``support_min``/``max``,
+        ``legal_uniform_nll``/``legal_uniform_gap``,
+        ``legal_uniform_comparison`` (checklist alias),
+        ``strata`` (kinds present when batches carry ``"_action_kinds"``)
+        and ``confusion`` (legacy ``0.0``), plus flattened
+        ``per_type/<kind>/{n,nll,top1,top3,ece}`` when kinds are complete,
+        and post-hoc ``temperature``/``calibrated_nll``/``calibrated_ece``
+        fit on the pooled eval rows (validation-only, never training).
         """
         _ = self.model.eval()
         total_nll = 0.0
@@ -647,11 +1473,22 @@ class SupervisedLoop:
         total_top3 = 0.0
         total_top5 = 0.0
         total_ece = 0.0
+        total_uniform_nll = 0.0
+        total_uniform_gap = 0.0
         n = 0
+        # Pooled eval tensors for per-type scorecards + temperature (Wave 3-B
+        # logging): overall means below stay mean-of-batch-means for
+        # checklist comparability; per-type/temperature pool rows.
+        pooled_logits: list[torch.Tensor] = []
+        pooled_targets: list[torch.Tensor] = []
+        pooled_masks: list[torch.Tensor] = []
+        pooled_kinds: list[str] = []
+        kinds_complete = True
 
         # eval_batches may be iterable of batch dicts or a dataset with iter_batches
         if hasattr(eval_batches, "iter_batches"):
-            batches = list(eval_batches.iter_batches(4, max_batches=5))
+            _iter_batches: Callable[..., Iterable[dict[str, Any]]] = eval_batches.iter_batches
+            batches = list(_iter_batches(4, max_batches=5))
         elif isinstance(eval_batches, list):
             batches = eval_batches
         else:
@@ -661,26 +1498,41 @@ class SupervisedLoop:
             for raw in batches:
                 _validate_batch_no_privileged(raw)
                 batch = _move_batch_to_device(raw, self.device)
-                out = _model_forward(self.model, batch)
-                metrics = compute_metrics(
-                    out["policy_logits"], batch["chosen_action_id"], batch["legal_mask"]
-                )
+                # AMP: forward runs under bf16 autocast when enabled; metrics stay fp32.
+                with self._forward_autocast():
+                    out = _model_forward(self.model, batch)
+                eval_logits: torch.Tensor = out["policy_logits"]
+                eval_targets: torch.Tensor = batch["chosen_action_id"]
+                eval_mask: torch.Tensor = batch["legal_mask"]
+                metrics = compute_metrics(eval_logits, eval_targets, eval_mask)
                 total_nll += metrics["masked_nll"]
                 total_top1 += metrics["top1"]
                 total_top3 += metrics["top3"]
                 total_top5 += metrics["top5"]
                 total_ece += metrics["calibration_ece"]
+                total_uniform_nll += metrics["legal_uniform_nll"]
+                total_uniform_gap += metrics["legal_uniform_gap"]
                 n += 1
+                pooled_logits.append(eval_logits.detach().to("cpu"))
+                pooled_targets.append(eval_targets.detach().to("cpu"))
+                pooled_masks.append(eval_mask.detach().to("cpu"))
+                batch_kinds = _batch_action_kinds(batch, eval_targets)
+                if batch_kinds is None:
+                    kinds_complete = False
+                else:
+                    pooled_kinds.extend(batch_kinds)
 
         if n == 0:
             raise ContractError("evaluate_report requires at least one eval batch")
 
-        report = {
+        report: dict[str, Any] = {
             "masked_nll": total_nll / n,
             "top1": total_top1 / n,
             "top3": total_top3 / n,
             "top5": total_top5 / n,
             "calibration_ece": total_ece / n,
+            "legal_uniform_nll": total_uniform_nll / n,
+            "legal_uniform_gap": total_uniform_gap / n,
             "support_min": 0.0,
             "support_max": 0.0,
             "confusion": 0.0,
@@ -688,6 +1540,114 @@ class SupervisedLoop:
             "legal_uniform_comparison": total_nll / n,  # alias for checklist
             "num_eval_batches": float(n),
         }
+        # Pooled per-type scorecards + post-hoc temperature (logging only;
+        # failures degrade to legacy keys, never fail the report).
+        try:
+            flat_logits = torch.cat(pooled_logits, dim=0)
+            flat_targets = torch.cat(pooled_targets, dim=0)
+            flat_masks = torch.cat(pooled_masks, dim=0)
+            flat_masked = flat_logits.to(torch.float32).masked_fill(~flat_masks, float("-inf"))
+            flat_probs = torch.softmax(flat_masked, dim=-1)
+            _, flat_pred = flat_probs.max(dim=1)
+            counts: dict[int, int] = {}
+            for _p in flat_pred.tolist():
+                _pi = int(_p)
+                counts[_pi] = counts.get(_pi, 0) + 1
+            if len(counts) > 0:
+                report["support_min"] = float(min(counts.values()))
+                report["support_max"] = float(max(counts.values()))
+            _kinds_ok = kinds_complete and len(pooled_kinds) == flat_targets.shape[0]
+            if _kinds_ok and self.config.log_per_type_metrics:
+                per_type = compute_per_type_metrics(
+                    flat_logits, flat_targets, flat_masks, pooled_kinds
+                )
+                for _kind in sorted(per_type):
+                    _km = per_type[_kind]
+                    report[f"per_type/{_kind}/n"] = float(_km["n"])
+                    report[f"per_type/{_kind}/nll"] = float(_km["nll"])
+                    report[f"per_type/{_kind}/top1"] = float(_km["top1"])
+                    report[f"per_type/{_kind}/top3"] = float(_km["top3"])
+                    report[f"per_type/{_kind}/ece"] = float(_km["ece"])
+                report["strata"] = float(len(per_type))
+            if self.config.fit_temperature:
+                temp = fit_temperature_scaling(flat_logits, flat_targets, flat_masks)
+                report["temperature"] = float(temp["temperature"])
+                report["calibrated_nll"] = float(temp["nll_after"])
+                report["calibrated_ece"] = float(temp["ece_after"])
+            else:
+                report["temperature"] = 1.0
+                report["calibrated_nll"] = float(report["masked_nll"])
+                report["calibrated_ece"] = float(report["calibration_ece"])
+        except Exception:
+            report.setdefault("temperature", 1.0)
+            report.setdefault("calibrated_nll", float(report["masked_nll"]))
+            report.setdefault("calibrated_ece", float(report["calibration_ece"]))
         # Also store last metrics for resume comparison
         _ = self.model.train()
         return report
+
+    # ------------------------------------------------------------------
+    # Held-out placement selection — best_selection_metric + best-ckpt
+    # ------------------------------------------------------------------
+
+    def evaluate_selection(
+        self,
+        blocks: tuple[WallBlock, ...],
+        telemetry_by_game: Mapping[str, ResourceTelemetry],
+        config: SelectionConfig,
+        peek_index: int,
+        tolerance: BlockTolerance | None = None,
+    ) -> float:
+        """Gated selection score over VALID wall blocks only (lower-better S1).
+
+        Delegates to :func:`score_selection` (telemetry policy + frozen
+        peek-discipline guard enforced); returns the metric only. Not called
+        by :meth:`train`; the caller scores a wall-disjoint held-out split
+        by hand, then promotes by hand via :meth:`maybe_promote_best`.
+        """
+        metric, _, _ = score_selection(
+            blocks, telemetry_by_game, config, peek_index, tolerance=tolerance
+        )
+        return float(metric)
+
+    def maybe_promote_best(
+        self,
+        metric: float,
+        ckpt: Path,
+        *,
+        config: SelectionConfig,
+        blocks: tuple[WallBlock, ...],
+        telemetry_by_game: Mapping[str, ResourceTelemetry],
+        peek_index: int,
+        tolerance: BlockTolerance | None = None,
+    ) -> bool:
+        """Atomically publish ``ckpt`` to ``best-ckpt.pt`` iff gated score improves.
+
+        Re-scores ``blocks``/``telemetry_by_game`` through :func:`score_selection`
+        (guard + telemetry policy re-enforced) and requires ``metric`` to equal
+        the gated score — unguarded promotion is impossible. Best is the
+        running minimum. Publish is atomic (temp + ``os.replace`` + fsync)
+        and records the published-file digest in
+        ``state.best_ckpt_digest``. Never called by :meth:`train`.
+        """
+        if isinstance(metric, bool) or not isinstance(metric, (int, float)):
+            raise ContractError(f"selection metric must be finite, got {metric!r}")
+        if not math.isfinite(float(metric)):
+            raise ContractError(f"selection metric must be finite, got {metric!r}")
+        if not isinstance(config, SelectionConfig):
+            raise ContractError(f"config must be a SelectionConfig, got {type(config).__name__}")
+        expected, _, _ = score_selection(
+            blocks, telemetry_by_game, config, peek_index, tolerance=tolerance
+        )
+        if float(metric) != float(expected):
+            raise ContractError(
+                f"promotion metric {float(metric)!r} != gated score {float(expected)!r} "
+                "for this blocks/telemetry/peek (score first via evaluate_selection)"
+            )
+        best = self.state.best_selection_metric
+        if best is not None and not (float(metric) < float(best)):
+            return False
+        digest = _atomic_publish_best(Path(ckpt), self.checkpoint_dir / "best-ckpt.pt")
+        self.state.best_selection_metric = float(metric)
+        self.state.best_ckpt_digest = digest
+        return True

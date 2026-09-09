@@ -1,0 +1,1161 @@
+"""Streaming-first game reader: train straight from ``.mjai.json.zst``.
+
+Ephemeral rows, identical contracts: every framed game passes through
+:func:`decode_game_object` (strict line rules) and :func:`validate_game`
+((5,) dora, tile conservation, red identity); decode failures, invalid
+games, and exact-hash duplicates are quarantined and counted, never
+silently skipped. Split assignment reuses the :mod:`partition.py`
+``sha256(seed|group_key)`` math identically — never path hashing, never
+FNV — with the default ``(source, time)`` grouping (player grouping is
+attested-weak, so it is not a default).
+
+Scale honesty (SplitScalePlan): real Tenhou MJAI carries no wall field,
+so ``wall_hash`` is null across the corpus and wall-disjointness reduces
+to game-disjointness (filename-stem identity, one game per file) plus
+exact decoded-hash dedup. :func:`check_wall_disjoint` still enforces the
+cross-split wall predicate wherever walls exist (synthetic fixtures).
+``FileEntry.game_count`` / ``wall_hashes`` stay ``None`` here: populating
+them at 6.8M-file scale is the header-scan pass's job, not the reader's.
+
+Actor/privileged firewall: :func:`actor_payload` projects the safe subset
+(no events — ``tehais`` are private hands) and
+:func:`verify_no_privileged_leakage` enforces ``FORBIDDEN_IN_ACTOR`` from
+:mod:`parquet.py` on any actor-bound mapping.
+
+Determinism: file order is the sha256-hex of the relative path (uniform,
+stable; ordering only — split assignment never sees the path). Shuffle
+uses a ``random.Random`` keyed by ``sha256(seed|epoch)`` — counter-derived,
+no wall-clock. ``StreamCursor`` records the emitted frontier; resume
+replays the un-emitted tail idempotently, and shuffle resume replays the
+prefix (uncounted) to rebuild buffer/RNG state, so same seed + cursor is
+the same sequence. Cursor checkpoints are only consistent at emission
+boundaries or origin; a shuffle fill-phase cursor raises on resume.
+
+Throughput sizing (ThroughputPlan): the dominant downstream cost is the
+per-row Python encode plus the per-event inner loop, so rows must arrive
+pre-batched — :meth:`GameStream.iter_batches` yields fixed-size game
+lists (one stack + ``pin_memory`` per batch downstream, per the
+``dataset.py`` idiom) and :func:`slice_microbatches` cuts microbatches as
+shallow slices with no re-decode. :class:`PrefetchGameStream` decodes in
+background threads, yields strictly in sequence-number order (never
+completion order), and counts consumer ``waits`` as the starvation signal.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import random
+import re
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Literal
+
+import zstandard as zstd
+
+from hydra2.artifacts.canonical import canonical_bytes
+from hydra2.contracts.common import ContractError, CorruptArtifactError
+from hydra2.data.decode import GameRecord, decode_game_object
+from hydra2.data.parquet import FORBIDDEN_IN_ACTOR
+from hydra2.data.validate import validate_game
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Iterator, Mapping, Sequence
+    from concurrent.futures import Future
+
+__all__ = [
+    "DEFAULT_GROUPING_KEYS",
+    "PARTITION_ORDER",
+    "SCAN_CACHE_VERSION",
+    "FileEntry",
+    "GameStream",
+    "PrefetchGameStream",
+    "StreamCursor",
+    "StreamGame",
+    "StreamManifest",
+    "StreamStats",
+    "ZstdLineStream",
+    "actor_payload",
+    "assign_split",
+    "build_manifest",
+    "check_wall_disjoint",
+    "compute_wall_hash",
+    "count_decisions",
+    "fetch_game_at",
+    "group_key_for",
+    "group_key_for_path",
+    "load_scan_cache",
+    "manifest_digest",
+    "parse_shuffle_rng",
+    "save_scan_cache",
+    "scan_cache_path",
+    "serialize_shuffle_rng",
+    "slice_microbatches",
+    "stem_of",
+    "verify_no_privileged_leakage",
+]
+
+#: Partition names in :mod:`partition.py` cumulative-threshold order.
+PARTITION_ORDER: tuple[str, ...] = ("train", "validation", "test", "decision_eval", "block_eval")
+
+#: Default grouping; mirrors ``grouping_keys=("source", "time")``.
+DEFAULT_GROUPING_KEYS: tuple[str, ...] = ("source", "time")
+
+SplitName = Literal["train", "validation", "test", "decision_eval", "block_eval"]
+
+_START_TYPES = frozenset({"start_game", "startGame", "game_start", "start"})
+_END_TYPES = frozenset({"end_game", "endGame", "game_end", "end"})
+_CHUNK_SIZE = 65536
+_DIGIT_RUN = re.compile(r"[0-9]+")
+
+
+@dataclass(frozen=True, slots=True)
+class FileEntry:
+    """One corpus file: path + compressed bytes; counts populated by scan pass."""
+
+    path: Path
+    bytes: int
+    game_count: int | None = None
+    wall_hashes: tuple[str, ...] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StreamManifest:
+    """Deterministic file list; order is sha256-hex of the relative path."""
+
+    files: tuple[FileEntry, ...]
+    root: Path
+
+    def __len__(self) -> int:
+        return len(self.files)
+
+    def paths(self) -> tuple[Path, ...]:
+        """File paths in stream order."""
+        return tuple(entry.path for entry in self.files)
+
+
+def build_manifest(root: Path | str, pattern: str = "*.mjai.json.zst") -> StreamManifest:
+    """Collect files under ``root`` in sha256-hex relative-path order.
+
+    The hash orders (never splits): split assignment uses
+    :func:`assign_split` exclusively.
+    """
+    base = Path(root)
+    if not base.is_dir():
+        raise ContractError(f"stream root not a directory: {base}")
+    found = [path for path in base.rglob(pattern) if path.is_file()]
+
+    def _order_key(path: Path) -> str:
+        return hashlib.sha256(path.relative_to(base).as_posix().encode()).hexdigest()
+
+    found.sort(key=_order_key)
+    entries = tuple(FileEntry(path=path, bytes=path.stat().st_size) for path in found)
+    return StreamManifest(files=entries, root=base)
+
+
+def manifest_digest(manifest: StreamManifest) -> str:
+    """Bind the file list for RunSpec provenance."""
+    payload = [{"bytes": entry.bytes, "path": entry.path.as_posix()} for entry in manifest.files]
+    return "sha256:" + hashlib.sha256(canonical_bytes(payload)).hexdigest()
+
+
+#: Scan-cache envelope version (bump on schema change; mismatch → miss).
+SCAN_CACHE_VERSION = 1
+
+
+def scan_cache_path(run_dir: Path | str) -> Path:
+    """Cache file for the manifest/split pre-scan under ``run_dir``."""
+    return Path(run_dir) / "cache" / "scan-cache.json"
+
+
+def _ratios_match(cached: object, expected: Mapping[str, float]) -> bool:
+    """Exact-ish ratio comparison (JSON round-trip safe, fail-closed to miss)."""
+    if not isinstance(cached, dict):
+        return False
+    if set(cached) != set(expected):
+        return False
+    for key, value in expected.items():
+        raw = cached.get(key)
+        if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+            return False
+        try:
+            if abs(float(raw) - float(value)) > 1e-9:
+                return False
+        except (TypeError, ValueError):
+            return False
+    return True
+
+
+def load_scan_cache(
+    path: Path | str,
+    *,
+    manifest_digest: str,
+    seed: int,
+    ratios: Mapping[str, float],
+    train_split: str,
+    val_split: str,
+) -> dict[str, object] | None:
+    """Load a cached scan report on exact key match, else ``None`` (miss).
+    Corrupt/stale entries fail closed to miss (full scan), never raise.
+    """
+    try:
+        raw_text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        raw: object = json.loads(raw_text)
+    except ValueError:
+        return None
+    if not isinstance(raw, dict):
+        return None
+    try:
+        if int(raw.get("version", -1)) != SCAN_CACHE_VERSION:
+            return None
+        if raw.get("manifest_digest") != manifest_digest:
+            return None
+        if raw.get("data_seed") != seed:
+            return None
+        if raw.get("train_split") != train_split or raw.get("val_split") != val_split:
+            return None
+        if not _ratios_match(raw.get("ratios"), ratios):
+            return None
+        scan = raw.get("scan")
+        if not isinstance(scan, dict):
+            return None
+        train_walls = scan.get("train_walls")
+        val_walls = scan.get("val_walls")
+        if not isinstance(train_walls, list) or not isinstance(val_walls, list):
+            return None
+        if any(not isinstance(w, str) for w in train_walls):
+            return None
+        if any(not isinstance(w, str) for w in val_walls):
+            return None
+        if set(train_walls) & set(val_walls):
+            return None
+        counts: dict[str, object] = {}
+        for key in (
+            "train_games",
+            "val_games",
+            "train_sim_games",
+            "val_sim_games",
+            "framed",
+            "emitted",
+            "quarantined",
+            "duplicates",
+        ):
+            value = scan.get(key)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                return None
+            counts[key] = value
+        return {
+            "train_walls": sorted(train_walls),
+            "val_walls": sorted(val_walls),
+            **counts,
+        }
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def save_scan_cache(
+    path: Path | str,
+    *,
+    manifest_digest: str,
+    seed: int,
+    ratios: Mapping[str, float],
+    train_split: str,
+    val_split: str,
+    scan: Mapping[str, object],
+) -> None:
+    """Best-effort atomic cache write (never fails training on I/O error)."""
+    try:
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "version": SCAN_CACHE_VERSION,
+            "manifest_digest": manifest_digest,
+            "data_seed": seed,
+            "ratios": dict(ratios),
+            "train_split": train_split,
+            "val_split": val_split,
+            "scan": {
+                "train_walls": sorted(scan["train_walls"]),  # type: ignore[arg-type]
+                "val_walls": sorted(scan["val_walls"]),  # type: ignore[arg-type]
+                "train_games": int(scan["train_games"]),  # type: ignore[arg-type]
+                "val_games": int(scan["val_games"]),  # type: ignore[arg-type]
+                "train_sim_games": int(scan["train_sim_games"]),  # type: ignore[arg-type]
+                "val_sim_games": int(scan["val_sim_games"]),  # type: ignore[arg-type]
+                "framed": int(scan["framed"]),  # type: ignore[arg-type]
+                "emitted": int(scan["emitted"]),  # type: ignore[arg-type]
+                "quarantined": int(scan["quarantined"]),  # type: ignore[arg-type]
+                "duplicates": int(scan["duplicates"]),  # type: ignore[arg-type]
+            },
+        }
+        tmp = target.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        tmp.replace(target)
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return
+
+
+def serialize_shuffle_rng(rng: random.Random) -> dict[str, object]:
+    """JSON-safe snapshot of a shuffle ``random.Random`` (fail-closed on misuse)."""
+    state = rng.getstate()
+    version, internal, gauss_next = state[0], state[1], state[2]
+    if not isinstance(version, int) or not isinstance(internal, tuple):
+        raise ContractError("shuffle RNG state malformed")
+    if gauss_next is not None and not isinstance(gauss_next, float):
+        raise ContractError("shuffle RNG gauss state malformed")
+    return {"version": version, "state": [int(x) for x in internal], "gauss_next": gauss_next}
+
+
+def parse_shuffle_rng(raw: object) -> tuple[int, tuple[int, ...], float | None]:
+    """Inverse of :func:`serialize_shuffle_rng`; raises on any mismatch."""
+    if not isinstance(raw, dict):
+        raise ContractError("shuffle buffer_rng_state must be a mapping")
+    version = raw.get("version")
+    internal = raw.get("state")
+    gauss_next = raw.get("gauss_next")
+    unknown = sorted(k for k in raw if k not in ("version", "state", "gauss_next"))
+    if unknown:
+        raise ContractError(f"shuffle buffer_rng_state unknown keys {unknown}")
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise ContractError("shuffle buffer_rng_state.version must be an int")
+    if not isinstance(internal, list) or len(internal) == 0:
+        raise ContractError("shuffle buffer_rng_state.state must be a non-empty int list")
+    for value in internal:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ContractError("shuffle buffer_rng_state.state must hold non-negative ints")
+    if gauss_next is not None and (
+        isinstance(gauss_next, bool) or not isinstance(gauss_next, (int, float))
+    ):
+        raise ContractError("shuffle buffer_rng_state.gauss_next must be a float or null")
+    gauss: float | None = None if gauss_next is None else float(gauss_next)
+    return (version, tuple(int(x) for x in internal), gauss)
+
+
+def fetch_game_at(
+    path: Path | str,
+    game_offset: int,
+    *,
+    seed: int,
+    ratios: Mapping[str, float],
+    expected_sha: str | None = None,
+) -> StreamGame:
+    """Fetch one game by decompressed-byte ``game_offset`` (fail-closed).
+    Verifies ``expected_sha`` (raw_bytes_sha256) when given; split assignment
+    uses ``seed``/``ratios`` identically to the live stream.
+    """
+    from hydra2.data.decode import decode_game_object as _decode
+    from hydra2.data.validate import validate_game as _validate
+
+    fpath = Path(path)
+    if type(game_offset) is not int or game_offset < 0:
+        raise ContractError(f"game offset must be a non-negative int, got {game_offset!r}")
+    found: bytes | None = None
+    for offset, game_bytes in ZstdLineStream(fpath).iter_games():
+        if offset == game_offset:
+            found = game_bytes
+            break
+        if offset > game_offset:
+            break
+    if found is None:
+        raise ContractError(f"game offset {game_offset} not on a game boundary: {fpath}")
+    try:
+        game = _decode(
+            object_id=stem_of(fpath),
+            packaged_object_id=stem_of(fpath),
+            decoded_bytes=found,
+        )
+    except (ContractError, CorruptArtifactError, ValueError) as exc:
+        raise ContractError(f"buffered game undecodable at {fpath}:{game_offset} ({exc})") from exc
+    try:
+        validation_hash: str | None = _validate(game).validation_hash
+    except (ContractError, CorruptArtifactError, ValueError) as exc:
+        raise ContractError(f"buffered game invalid at {fpath}:{game_offset} ({exc})") from exc
+    if expected_sha is not None and game.raw_bytes_sha256 != expected_sha:
+        raise ContractError(f"buffered game key mismatch at {fpath}:{game_offset}")
+    wall_hash = compute_wall_hash(game)
+    assigned = assign_split(group_key=group_key_for_path(fpath), seed=seed, ratios=ratios)
+    return StreamGame(
+        path=fpath,
+        offset=game_offset,
+        game=game,
+        wall_hash=wall_hash,
+        validation_hash=validation_hash,
+        split=assigned,
+    )
+
+
+def stem_of(path: Path) -> str:
+    """Game identity stem: ``<stem>.mjai.json.zst`` -> ``<stem>``."""
+    name = path.name
+    for suffix in (".mjai.json.zst", ".mjai.json", ".zst"):
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return path.stem
+
+
+def group_key_for(*, source: str, time: str) -> str:
+    """Group key identical to partition ``(source, time)`` grouping join."""
+    return f"{source}|{time}"
+
+
+def group_key_for_path(path: Path) -> str:
+    """Derive the ``(source, time)`` group from a corpus path.
+
+    Source is the parent directory name (mount-independent); time is the
+    leading digit run of the filename stem (Tenhou ``YYYYMMDDHH...``),
+    else ``"unknown"``.
+    """
+    source = path.parent.name if path.parent.name not in ("", ".") else "unknown"
+    match = _DIGIT_RUN.match(stem_of(path))
+    time = match.group(0) if match is not None else "unknown"
+    return group_key_for(source=source, time=time)
+
+
+def compute_wall_hash(game: GameRecord) -> str | None:
+    """Wall hash identical to partition identity; ``None`` when no wall.
+
+    Real MJAI has no 136-list wall field, so this is null corpus-wide.
+    """
+    if game.wall_tiles is None:
+        return None
+    return "sha256:" + hashlib.sha256(canonical_bytes(list(game.wall_tiles))).hexdigest()
+
+
+def assign_split(*, group_key: str, seed: int, ratios: Mapping[str, float]) -> str:
+    """Assign a group to a partition; math identical to ``assign_partitions``.
+
+    Cumulative thresholds over :data:`PARTITION_ORDER` on
+    ``sha256(f"{seed}|{group_key}")`` scaled to ``[0, 1)``.
+    """
+    if len(ratios) == 0:
+        raise ContractError("split ratios must not be empty")
+    weights: dict[str, float] = {}
+    for name, value in ratios.items():
+        try:
+            weight = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError) as exc:
+            raise ContractError(f"split ratio for {name!r} not numeric: {value!r}") from exc
+        if weight < 0.0:
+            raise ContractError(f"split ratio for {name!r} negative: {weight}")
+        weights[name] = weight
+    total = sum(weights.values())
+    if abs(total - 1.0) > 1e-6:
+        raise ContractError(f"split ratios must sum to 1.0, got {total}")
+    cumulative: list[tuple[str, float]] = []
+    running = 0.0
+    for part in PARTITION_ORDER:
+        if part in weights and weights[part] > 0.0:
+            running += weights[part]
+            cumulative.append((part, running))
+    if len(cumulative) == 0:
+        raise ContractError("no active partitions in ratios")
+    digest = hashlib.sha256(f"{seed}|{group_key}".encode()).digest()
+    draw = int.from_bytes(digest[:8], "big") / 2**64
+    for part, threshold in cumulative:
+        if draw < threshold:
+            return part
+    return cumulative[-1][0]
+
+
+@dataclass(frozen=True, slots=True)
+class StreamCursor:
+    """Resumable frontier: file seek + byte resume + accounting.
+
+    ``byte_offset`` is a decompressed-byte offset (stable across zstd
+    re-encodes); resume skips framed games with ``offset < byte_offset``
+    (game-prefix catch-up). ``shuffle_pos`` counts shuffled emissions.
+    """
+
+    file_index: int
+    byte_offset: int
+    games_seen: int
+    seed: int
+    epoch: int
+    shuffle_pos: int = 0
+
+    def to_dict(self) -> dict[str, int]:
+        """Plain mapping for YAML persistence under the artifact root."""
+        return {
+            "byte_offset": self.byte_offset,
+            "epoch": self.epoch,
+            "file_index": self.file_index,
+            "games_seen": self.games_seen,
+            "seed": self.seed,
+            "shuffle_pos": self.shuffle_pos,
+        }
+
+    @staticmethod
+    def from_dict(raw: Mapping[str, object]) -> StreamCursor:
+        """Inverse of :meth:`to_dict`; rejects non-int or negative fields."""
+        values: dict[str, int] = {}
+        for key in ("file_index", "byte_offset", "games_seen", "seed", "epoch", "shuffle_pos"):
+            value = raw.get(key)
+            if type(value) is not int or value < 0:
+                raise ContractError(f"cursor field {key!r} must be a non-negative int")
+            values[key] = value
+        return StreamCursor(
+            file_index=values["file_index"],
+            byte_offset=values["byte_offset"],
+            games_seen=values["games_seen"],
+            seed=values["seed"],
+            epoch=values["epoch"],
+            shuffle_pos=values["shuffle_pos"],
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class StreamGame:
+    """One validated, split-assigned game: the ephemeral row."""
+
+    path: Path
+    offset: int
+    game: GameRecord
+    wall_hash: str | None
+    validation_hash: str | None
+    split: str = "train"
+
+
+@dataclass(slots=True)
+class StreamStats:
+    """Run-scoped counters; fresh on every ``__iter__`` pass."""
+
+    framed: int = 0
+    emitted: int = 0
+    quarantined: int = 0
+    duplicates: int = 0
+    skipped_split: int = 0
+    waits: int = 0
+
+
+class ZstdLineStream:
+    """Incremental zstd frame splitter with decompressed-byte offsets.
+
+    Yields ``(offset, game_bytes)`` framed on start/end event boundaries
+    while reusing :mod:`decode.py` line rules implicitly: blank lines,
+    non-object lines, and unbalanced boundaries still yield byte ranges so
+    the consumer quarantines them instead of skipping silently. Offsets are
+    decompressed-byte offsets of each game's first byte.
+    """
+
+    def __init__(self, path: Path | str) -> None:
+        self._path = Path(path)
+
+    @property
+    def path(self) -> Path:
+        """Source file."""
+        return self._path
+
+    def iter_games(self) -> Iterator[tuple[int, bytes]]:
+        """Yield framed games in file order."""
+        pending: list[bytes] = []
+        pending_start = 0
+        in_game = False
+
+        def _peek_type(line: bytes) -> str | None:
+            try:
+                value = json.loads(line)
+            except ValueError:
+                return None
+            if not isinstance(value, dict):
+                return None
+            found = value.get("type")
+            return str(found) if isinstance(found, str) else None
+
+        def _feed(line: bytes, line_start: int, *, final: bool) -> list[tuple[int, bytes]]:
+            nonlocal pending, pending_start, in_game
+            done: list[tuple[int, bytes]] = []
+            raw = line if final else line + b"\n"
+            if len(line.strip()) == 0 and not final:
+                if in_game:
+                    pending.append(raw)
+                else:
+                    done.append((line_start, raw))
+                return done
+            peaked = _peek_type(line)
+            if peaked in _START_TYPES:
+                if in_game:
+                    done.append((pending_start, b"".join(pending)))
+                pending = [raw]
+                pending_start = line_start
+                in_game = True
+            elif peaked in _END_TYPES:
+                if in_game:
+                    pending.append(raw)
+                    done.append((pending_start, b"".join(pending)))
+                    pending = []
+                    in_game = False
+                else:
+                    done.append((line_start, raw))
+            elif not in_game:
+                pending = [raw]
+                pending_start = line_start
+                in_game = True
+            else:
+                pending.append(raw)
+            return done
+
+        decoder = zstd.ZstdDecompressor()
+        try:
+            handle = self._path.open("rb")
+        except OSError as exc:
+            raise CorruptArtifactError(f"cannot open stream file {self._path}: {exc}") from exc
+        buf = bytearray()
+        buf_start = 0
+        try:
+            with handle, decoder.stream_reader(handle) as reader:
+                while True:
+                    chunk = reader.read(_CHUNK_SIZE)
+                    if chunk == b"":
+                        break
+                    buf += chunk
+                    while True:
+                        newline = buf.find(b"\n")
+                        if newline == -1:
+                            break
+                        line = bytes(buf[:newline])
+                        line_start = buf_start
+                        del buf[: newline + 1]
+                        buf_start += newline + 1
+                        for item in _feed(line, line_start, final=False):
+                            yield item
+        except zstd.ZstdError as exc:
+            raise CorruptArtifactError(f"zstd decode failed for {self._path}: {exc}") from exc
+        if len(buf) > 0:
+            # No trailing newline: frame the remainder so decode rejects it.
+            for item in _feed(bytes(buf), buf_start, final=True):
+                yield item
+        if in_game and len(pending) > 0:
+            yield (pending_start, b"".join(pending))
+
+
+@dataclass(slots=True)
+class _Run:
+    """Mutable per-pass position, counters, and dedup set."""
+
+    file_index: int
+    byte_offset: int
+    games_seen: int
+    stats: StreamStats | None
+    hashes: set[str]
+
+
+@dataclass(slots=True)
+class _ShuffleState:
+    """Shuffle buffer + deterministic RNG."""
+
+    buf: list[StreamGame]
+    rng: random.Random
+
+
+def _shuffle_key(seed: int, epoch: int) -> int:
+    """Counter-derived shuffle material; no wall-clock anywhere."""
+    raw = hashlib.sha256(f"{seed}|{epoch}".encode()).digest()
+    return int.from_bytes(raw[:8], "big")
+
+
+def _check_int(name: str, value: int) -> int:
+    if type(value) is not int or value < 0:
+        raise ContractError(f"{name} must be a non-negative int, got {value!r}")
+    return value
+
+
+class GameStream:
+    """Validated, split-filtered game iterator with cursor resume.
+
+    ``split=None`` emits every valid game (with its assignment attached);
+    otherwise only that partition is emitted. ``ratios`` are explicit —
+    owned by RunSpec selection, never defaulted here.
+    """
+
+    def __init__(
+        self,
+        manifest: StreamManifest,
+        *,
+        seed: int,
+        ratios: Mapping[str, float],
+        epoch: int = 0,
+        split: str | None = None,
+        shuffle_buffer: int = 0,
+        start: StreamCursor | None = None,
+        drop_duplicates: bool = True,
+        shuffle_restore_entries: list[dict[str, object]] | None = None,
+        shuffle_restore_rng: dict[str, object] | None = None,
+        shuffle_restore_prefix_hashes: list[str] | tuple[str, ...] | None = None,
+    ) -> None:
+        self._manifest = manifest
+        self._seed = _check_int("seed", seed)
+        self._epoch = _check_int("epoch", epoch)
+        if split is not None and split not in PARTITION_ORDER:
+            raise ContractError(f"unknown split {split!r}")
+        self._split = split
+        # Eager ratio validation: raise before any I/O on bad specs.
+        assign_split(group_key="__validate__", seed=self._seed, ratios=ratios)
+        self._ratios = dict(ratios)
+        self._shuffle_buffer = _check_int("shuffle_buffer", shuffle_buffer)
+        if not isinstance(drop_duplicates, bool):
+            raise ContractError("drop_duplicates must be bool")
+        self._drop_duplicates = drop_duplicates
+        self._file_index = 0
+        self._byte_offset = 0
+        self._games_seen = 0
+        self._shuffle_pos = 0
+        self._stats = StreamStats()
+        # Live shuffle iteration state (tail phase) for checkpoint snapshots.
+        # Points at the generator-owned ``_ShuffleState``/``_Run`` while the
+        # epoch pass is suspended at a yield; ``None`` before first pull.
+        self._active_buf: list[StreamGame] | None = None
+        self._active_rng: random.Random | None = None
+        self._active_run: _Run | None = None
+        # Verbatim shuffle restore (fast resume): entries + RNG, no prefix replay.
+        if (shuffle_restore_entries is None) != (shuffle_restore_rng is None):
+            raise ContractError("shuffle restore needs both entries and RNG state")
+        self._shuffle_restore_entries: list[dict[str, object]] | None = None
+        self._shuffle_restore_rng: dict[str, object] | None = None
+        if shuffle_restore_entries is not None and shuffle_restore_rng is not None:
+            if self._shuffle_buffer <= 0:
+                raise ContractError("shuffle restore requires a positive shuffle_buffer")
+            if not isinstance(shuffle_restore_entries, list):
+                raise ContractError("shuffle restore entries must be a list")
+            if len(shuffle_restore_entries) > self._shuffle_buffer:
+                raise ContractError("shuffle restore overflows buffer_size")
+            for entry in shuffle_restore_entries:
+                if not isinstance(entry, dict):
+                    raise ContractError("shuffle restore entry must be a mapping")
+                unknown = sorted(k for k in entry if k not in ("key", "path", "offset"))
+                if unknown:
+                    raise ContractError(f"shuffle restore entry unknown keys {unknown}")
+                key, path, offset = entry.get("key"), entry.get("path"), entry.get("offset")
+                if not isinstance(key, str) or key == "":
+                    raise ContractError("shuffle restore entry key must be a non-empty str")
+                if not isinstance(path, str) or path == "":
+                    raise ContractError("shuffle restore entry path must be a non-empty str")
+                if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+                    raise ContractError("shuffle restore entry offset must be non-negative int")
+            # Fail fast on malformed RNG (parsed again at iter time).
+            parse_shuffle_rng(shuffle_restore_rng)
+            self._shuffle_restore_entries = list(shuffle_restore_entries)
+            self._shuffle_restore_rng = dict(shuffle_restore_rng)
+        # Prefix dedup seed (S1 hardening): verified count+digest upstream; shape
+        # checked here, seeded into the resume _Run so future membership matches
+        # the full-replay prefix set even when duplicates exist. Independent of
+        # the entries/RNG pair (ordered resume seeds prefix only).
+        self._shuffle_restore_prefix_hashes: tuple[str, ...] | None = None
+        if shuffle_restore_prefix_hashes is not None:
+            if not isinstance(shuffle_restore_prefix_hashes, (list, tuple)):
+                raise ContractError("shuffle restore prefix_hashes must be a list")
+            for sha in shuffle_restore_prefix_hashes:
+                if not isinstance(sha, str) or not sha.startswith("sha256:") or sha == "sha256:":
+                    raise ContractError("shuffle restore prefix entries must be sha256 strings")
+            self._shuffle_restore_prefix_hashes = tuple(shuffle_restore_prefix_hashes)
+        if start is not None:
+            self.skip_to(start)
+
+    def cursor(self) -> StreamCursor:
+        """Current emitted frontier for YAML persistence."""
+        return StreamCursor(
+            file_index=self._file_index,
+            byte_offset=self._byte_offset,
+            games_seen=self._games_seen,
+            seed=self._seed,
+            epoch=self._epoch,
+            shuffle_pos=self._shuffle_pos,
+        )
+
+    @property
+    def stats(self) -> StreamStats:
+        """Counters for the most recent pass."""
+        return self._stats
+
+    def skip_to(self, cursor: StreamCursor) -> None:
+        """Seek to a cursor; seed/epoch mismatch is a hard failure."""
+        if cursor.seed != self._seed or cursor.epoch != self._epoch:
+            raise ContractError("cursor seed/epoch does not match this stream")
+        if cursor.file_index > len(self._manifest.files):
+            raise ContractError(f"cursor file_index {cursor.file_index} beyond manifest")
+        _check_int("cursor.byte_offset", cursor.byte_offset)
+        _check_int("cursor.games_seen", cursor.games_seen)
+        _check_int("cursor.shuffle_pos", cursor.shuffle_pos)
+        self._file_index = cursor.file_index
+        self._byte_offset = cursor.byte_offset
+        self._games_seen = cursor.games_seen
+        self._shuffle_pos = cursor.shuffle_pos
+
+    def _sync_pos(self, run: _Run) -> None:
+        self._file_index = run.file_index
+        self._byte_offset = run.byte_offset
+        self._games_seen = run.games_seen
+
+    def _framed_from(self, run: _Run) -> Iterator[tuple[int, int, bytes]]:
+        """Yield ``(file_index, end_offset, game_bytes)`` from the run position.
+
+        Read-only over ``run``: position advances in :meth:`_finish_decode`
+        (in-order processing), never on submit-ahead framing.
+        """
+        files = self._manifest.files
+        start_file = run.file_index
+        start_base = run.byte_offset
+        for file_index in range(start_file, len(files)):
+            entry = files[file_index]
+            base = start_base if file_index == start_file else 0
+            for offset, game_bytes in ZstdLineStream(entry.path).iter_games():
+                if offset < base:
+                    continue
+                yield file_index, offset + len(game_bytes), game_bytes
+
+    def _finish_decode(
+        self,
+        run: _Run,
+        file_index: int,
+        end: int,
+        game_bytes: bytes,
+        game: GameRecord | None,
+        validation_hash: str | None,
+    ) -> StreamGame | None:
+        """Shared validate/quarantine/dedup/split tail; advances the run."""
+        run.file_index = file_index
+        run.byte_offset = end
+        run.games_seen += 1
+        stats = run.stats
+        if stats is not None:
+            stats.framed += 1
+        if game is None or validation_hash is None:
+            if stats is not None:
+                stats.quarantined += 1
+            return None
+        if self._drop_duplicates:
+            if game.raw_bytes_sha256 in run.hashes:
+                if stats is not None:
+                    stats.quarantined += 1
+                    stats.duplicates += 1
+                return None
+            run.hashes.add(game.raw_bytes_sha256)
+        entry = self._manifest.files[file_index]
+        wall_hash = compute_wall_hash(game)
+        assigned = assign_split(
+            group_key=group_key_for_path(entry.path), seed=self._seed, ratios=self._ratios
+        )
+        if self._split is not None and assigned != self._split:
+            if stats is not None:
+                stats.skipped_split += 1
+            return None
+        if stats is not None:
+            stats.emitted += 1
+        return StreamGame(
+            path=entry.path,
+            offset=end - len(game_bytes),
+            game=game,
+            wall_hash=wall_hash,
+            validation_hash=validation_hash,
+            split=assigned,
+        )
+
+    def _decode_inline(
+        self, object_id: str, game_bytes: bytes
+    ) -> tuple[GameRecord | None, str | None]:
+        try:
+            game = decode_game_object(
+                object_id=object_id, packaged_object_id=object_id, decoded_bytes=game_bytes
+            )
+        except (ContractError, CorruptArtifactError, ValueError):
+            return None, None
+        return game, validate_game(game).validation_hash
+
+    def _ordered_source(self, run: _Run) -> Iterator[StreamGame]:
+        for file_index, end, game_bytes in self._framed_from(run):
+            entry = self._manifest.files[file_index]
+            game, validation_hash = self._decode_inline(stem_of(entry.path), game_bytes)
+            emitted = self._finish_decode(run, file_index, end, game_bytes, game, validation_hash)
+            if emitted is not None:
+                yield emitted
+
+    def _shuffled(self, run: _Run, state: _ShuffleState) -> Iterator[StreamGame]:
+        """Fill-sample-replace shuffle; deterministic in seed+epoch."""
+        width = self._shuffle_buffer
+        for game in self._ordered_source(run):
+            if len(state.buf) < width:
+                state.buf.append(game)
+                continue
+            index = state.rng.randrange(width)
+            outgoing = state.buf[index]
+            state.buf[index] = game
+            yield outgoing
+        state.rng.shuffle(state.buf)
+        while len(state.buf) > 0:
+            yield state.buf.pop()
+
+    def shuffle_snapshot(self) -> tuple[list[dict[str, object]], dict[str, object]] | None:
+        """Live shuffle buffer + RNG for checkpoint sidecars (``None`` when ordered).
+        Returns ``(entries, rng_state)`` with entries in buffer order; each entry
+        carries deterministic ``key`` (raw_bytes_sha256) plus ``path``/``offset``
+        for verbatim refetch. Empty buffer yields ``([], rng)`` (valid).
+        """
+        if self._shuffle_buffer <= 0:
+            return None
+        if self._active_buf is None or self._active_rng is None:
+            rng = random.Random(_shuffle_key(self._seed, self._epoch))
+            return ([], serialize_shuffle_rng(rng))
+        entries: list[dict[str, object]] = []
+        for game in self._active_buf:
+            entries.append(
+                {
+                    "key": str(game.game.raw_bytes_sha256),
+                    "path": game.path.as_posix(),
+                    "offset": int(game.offset),
+                }
+            )
+        return (entries, serialize_shuffle_rng(self._active_rng))
+
+    def prefix_hashes_snapshot(self) -> list[str]:
+        """Live dedup-prefix hashes for checkpoint sidecars (sorted, possibly empty).
+        Sourced from the suspended pass ``_Run``; ``[]`` before first pull.
+        """
+        if self._active_run is None:
+            return []
+        return sorted(self._active_run.hashes)
+
+    def _restore_shuffle_state(self, run: _Run) -> _ShuffleState:
+        """Materialize the verbatim shuffle buffer + RNG (fast resume, no replay)."""
+        assert self._shuffle_restore_entries is not None
+        assert self._shuffle_restore_rng is not None
+        version, internal, gauss_next = parse_shuffle_rng(self._shuffle_restore_rng)
+        rng = random.Random()
+        rng.setstate((version, tuple(internal), gauss_next))
+        buf: list[StreamGame] = []
+        for entry in self._shuffle_restore_entries:
+            key = str(entry["key"])
+            fpath = Path(str(entry["path"]))
+            game_offset = int(entry["offset"])  # type: ignore[arg-type]
+            fetched = fetch_game_at(
+                fpath, game_offset, seed=self._seed, ratios=self._ratios, expected_sha=key
+            )
+            if self._split is not None and fetched.split != self._split:
+                raise ContractError("restored shuffle game split mismatch")
+            buf.append(fetched)
+        # Dedup set seeds from the verified prefix record (count+digest checked
+        # upstream before construction), so future membership matches the
+        # full-replay prefix set even when duplicates exist.
+        prefix: set[str] = set(self._shuffle_restore_prefix_hashes or ())
+        run.hashes.update(prefix)
+        return _ShuffleState(buf=buf, rng=rng)
+
+    def __iter__(self) -> Iterator[StreamGame]:
+        stats = StreamStats()
+        self._stats = stats
+        if self._shuffle_buffer <= 0:
+            if self._shuffle_restore_entries is not None:
+                raise ContractError("shuffle restore requires a positive shuffle_buffer")
+            run = _Run(
+                file_index=self._file_index,
+                byte_offset=self._byte_offset,
+                games_seen=self._games_seen,
+                stats=stats,
+                hashes=set(self._shuffle_restore_prefix_hashes or ()),
+            )
+            for game in self._ordered_source(run):
+                self._shuffle_pos += 1
+                self._sync_pos(run)
+                yield game
+            self._sync_pos(run)
+            return
+        snap = (self._file_index, self._byte_offset, self._games_seen, self._shuffle_pos)
+        if self._shuffle_restore_entries is not None and self._shuffle_restore_rng is not None:
+            # Seek resume: verbatim buffer + RNG + prefix, no prefix replay.
+            run = _Run(
+                file_index=self._file_index,
+                byte_offset=self._byte_offset,
+                games_seen=self._games_seen,
+                stats=stats,
+                hashes=set(),
+            )
+            state = self._restore_shuffle_state(run)
+            self._active_buf = state.buf
+            self._active_rng = state.rng
+            self._active_run = run
+            try:
+                for game in self._shuffled(run, state):
+                    self._shuffle_pos += 1
+                    self._sync_pos(run)
+                    yield game
+                self._sync_pos(run)
+            finally:
+                self._active_buf = None
+                self._active_rng = None
+                self._active_run = None
+            return
+        if snap != (0, 0, 0, 0):
+            raise ContractError(
+                "shuffled stream resume requires shuffle restore state "
+                "(buffer_entries/buffer_rng_state/prefix_hashes); prefix replay removed"
+            )
+        state = _ShuffleState(buf=[], rng=random.Random(_shuffle_key(self._seed, self._epoch)))
+        run = _Run(file_index=0, byte_offset=0, games_seen=0, stats=stats, hashes=set())
+        self._active_buf = state.buf
+        self._active_rng = state.rng
+        self._active_run = run
+        try:
+            for game in self._shuffled(run, state):
+                self._shuffle_pos += 1
+                self._sync_pos(run)
+                yield game
+            self._sync_pos(run)
+        finally:
+            self._active_buf = None
+            self._active_rng = None
+            self._active_run = None
+
+    def iter_batches(self, batch_size: int) -> Iterator[list[StreamGame]]:
+        """Yield pre-batched game lists; one stack + pin_memory per batch downstream."""
+        if type(batch_size) is not int or batch_size <= 0:
+            raise ContractError(f"batch_size must be a positive int, got {batch_size!r}")
+        batch: list[StreamGame] = []
+        for game in self:
+            batch.append(game)
+            if len(batch) >= batch_size:
+                yield batch
+                batch = []
+        if len(batch) > 0:
+            yield batch
+
+
+class PrefetchGameStream(GameStream):
+    """Game stream with threaded background decode.
+
+    Frames are submitted in order with sequence numbers; results are
+    processed strictly in sequence order, never completion order, so the
+    emitted sequence is bit-identical to :class:`GameStream`. ``waits``
+    counts how often the consumer blocked on the next sequence — the
+    GPU-starvation signal (raise prefetch/workers while it climbs).
+    """
+
+    def __init__(
+        self,
+        manifest: StreamManifest,
+        *,
+        seed: int,
+        ratios: Mapping[str, float],
+        epoch: int = 0,
+        split: str | None = None,
+        shuffle_buffer: int = 0,
+        start: StreamCursor | None = None,
+        drop_duplicates: bool = True,
+        prefetch: int = 16,
+        max_workers: int | None = None,
+        shuffle_restore_entries: list[dict[str, object]] | None = None,
+        shuffle_restore_rng: dict[str, object] | None = None,
+        shuffle_restore_prefix_hashes: list[str] | tuple[str, ...] | None = None,
+    ) -> None:
+        super().__init__(
+            manifest,
+            seed=seed,
+            ratios=ratios,
+            epoch=epoch,
+            split=split,
+            shuffle_buffer=shuffle_buffer,
+            start=start,
+            drop_duplicates=drop_duplicates,
+            shuffle_restore_entries=shuffle_restore_entries,
+            shuffle_restore_rng=shuffle_restore_rng,
+            shuffle_restore_prefix_hashes=shuffle_restore_prefix_hashes,
+        )
+        if type(prefetch) is not int or prefetch < 1:
+            raise ContractError(f"prefetch must be a positive int, got {prefetch!r}")
+        if max_workers is not None and (type(max_workers) is not int or max_workers < 1):
+            raise ContractError(f"max_workers must be a positive int, got {max_workers!r}")
+        self._prefetch = prefetch
+        self._max_workers = max_workers
+
+    def _decode_job(
+        self, file_index: int, end: int, game_bytes: bytes
+    ) -> tuple[int, int, bytes, GameRecord | None, str | None]:
+        entry = self._manifest.files[file_index]
+        game, validation_hash = self._decode_inline(stem_of(entry.path), game_bytes)
+        return file_index, end, game_bytes, game, validation_hash
+
+    def _ordered_source(self, run: _Run) -> Iterator[StreamGame]:
+        pending: dict[int, Future[tuple[int, int, bytes, GameRecord | None, str | None]]] = {}
+        waits = 0
+        sequence = 0
+        due = 0
+        source = self._framed_from(run)
+        exhausted = False
+        with ThreadPoolExecutor(
+            max_workers=self._max_workers, thread_name_prefix="stream-decode"
+        ) as pool:
+            while True:
+                while len(pending) < self._prefetch and not exhausted:
+                    try:
+                        file_index, end, game_bytes = next(source)
+                    except StopIteration:
+                        exhausted = True
+                        break
+                    pending[sequence] = pool.submit(self._decode_job, file_index, end, game_bytes)
+                    sequence += 1
+                if due not in pending:
+                    break
+                future = pending.pop(due)
+                if not future.done():
+                    waits += 1
+                file_index, end, game_bytes, game, validation_hash = future.result()
+                due += 1
+                emitted = self._finish_decode(
+                    run, file_index, end, game_bytes, game, validation_hash
+                )
+                if emitted is not None:
+                    yield emitted
+        if run.stats is not None:
+            run.stats.waits += waits
+
+
+def slice_microbatches(
+    batch: Sequence[StreamGame], microbatch_size: int
+) -> Iterator[list[StreamGame]]:
+    """Cut shallow microbatch slices with no re-decode (same objects)."""
+    if type(microbatch_size) is not int or microbatch_size <= 0:
+        raise ContractError(f"microbatch_size must be a positive int, got {microbatch_size!r}")
+    for start in range(0, len(batch), microbatch_size):
+        yield list(batch[start : start + microbatch_size])
+
+
+def count_decisions(games: Iterable[StreamGame]) -> int:
+    """Decision proxy for throughput math: total events across games."""
+    return sum(len(game.game.events) for game in games)
+
+
+def check_wall_disjoint(games: Iterable[StreamGame]) -> None:
+    """Fail if one wall lands in two splits; vacuous when all hashes are null."""
+    seen: dict[str, str] = {}
+    for game in games:
+        if game.wall_hash is None:
+            continue
+        previous = seen.get(game.wall_hash)
+        if previous is None:
+            seen[game.wall_hash] = game.split
+        elif previous != game.split:
+            raise ContractError(f"wall {game.wall_hash[:16]} in splits {previous} and {game.split}")
+
+
+def verify_no_privileged_leakage(payload: Mapping[str, object]) -> None:
+    """Hard failure if an actor-bound mapping carries a privileged key."""
+    bad = sorted(key for key in payload if key in FORBIDDEN_IN_ACTOR)
+    if len(bad) > 0:
+        raise ContractError(f"privileged keys in actor payload: {bad}")
+
+
+def actor_payload(game: StreamGame) -> dict[str, object]:
+    """Firewall-safe projection: identity + counts + hashes, never events.
+
+    Events carry private hands (``tehais``), so they stay privileged.
+    """
+    payload: dict[str, object] = {
+        "event_count": len(game.game.events),
+        "game_id": game.game.game_id,
+        "source_object_id": game.game.object_id,
+        "split": game.split,
+        "validation_hash": game.validation_hash,
+        "wall_hash": game.wall_hash,
+    }
+    verify_no_privileged_leakage(payload)
+    return payload

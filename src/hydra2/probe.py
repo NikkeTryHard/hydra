@@ -48,6 +48,7 @@ def probe_frozen_install() -> tuple[bool, str]:
         + (f": {output.splitlines()[-1]}" if len(output) != 0 else ""),
     )
 
+
 def probe_fresh_imports() -> tuple[bool, str]:
     from hydra2.runtime.environment import IMPORTABLE_RUNTIME_MODULES
 

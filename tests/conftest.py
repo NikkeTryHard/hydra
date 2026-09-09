@@ -28,21 +28,65 @@ import pytest
 import torch
 
 
+def _xdist_worker_thread_budget() -> int:
+    # Per-worker torch intra-thread slice so N workers share the box instead
+    # of each spawning total-core BLAS pools (N*20 oversubscription at 20
+    # default threads). Controller/master (no PYTEST_XDIST_WORKER) keeps 0 =
+    # no clamp. torch/CUDA init lazily (first tensor/op), so clamping here at
+    # conftest import — before any test body runs — still precedes all pools.
+    if not os.environ.get("PYTEST_XDIST_WORKER"):
+        return 0
+    try:
+        total = len(os.sched_affinity(0))
+    except (AttributeError, OSError):
+        total = os.cpu_count() or 20
+    try:
+        workers = int(os.environ.get("PYTEST_XDIST_WORKER_COUNT", "1"))
+    except ValueError:
+        workers = 1
+    return max(1, total // max(1, workers))
+
+
+_WORKER_THREADS = _xdist_worker_thread_budget()
+if _WORKER_THREADS:
+    # Best-effort BLAS env (pools read at first use); torch pools clamp below.
+    os.environ.setdefault("OMP_NUM_THREADS", str(_WORKER_THREADS))
+    os.environ.setdefault("MKL_NUM_THREADS", str(_WORKER_THREADS))
+    torch.set_num_threads(_WORKER_THREADS)
+    torch.set_num_interop_threads(min(2, _WORKER_THREADS))
+
+
 def _default_inductor_cache_dir() -> str:
     # Persistent torch.inductor disk cache, version-keyed so torch/triton
     # upgrades cannot poison it. setdefault: explicit env always wins.
     # Read by torch._inductor (async_compile/autotune); fx_graph_cache
     # defaults on in torch 2.14 — no other inductor knobs are flipped here.
-    safe_ver = "".join(
-        c if (c.isalnum() or c in "._-") else "_" for c in str(torch.__version__)
-    )
-    base = os.environ.get("XDG_CACHE_HOME") or os.path.join(
-        os.path.expanduser("~"), ".cache"
-    )
+    safe_ver = "".join(c if (c.isalnum() or c in "._-") else "_" for c in str(torch.__version__))
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
     return os.path.join(base, "hydra2", f"inductor-torch{safe_ver}")
 
 
 os.environ.setdefault("TORCHINDUCTOR_CACHE_DIR", _default_inductor_cache_dir())
+
+
+def _default_jax_cache_dir() -> str:
+    # Persistent JAX compilation cache, version-keyed like inductor above.
+    # Cache key already binds HLO + jaxlib + flags + device: a hit reuses the
+    # identical executable (decisions unchanged), a miss recompiles. Metadata
+    # lookup only (no jax import here: importing jax in every worker would
+    # pay XLA load + risk concurrent-import aborts in the CPU lane).
+    try:
+        from importlib.metadata import version
+
+        jax_ver = version("jax")
+    except Exception:
+        jax_ver = "unknown"
+    safe_ver = "".join(c if (c.isalnum() or c in "._-") else "_" for c in str(jax_ver))
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
+    return os.path.join(base, "hydra2", f"jax-cache-{safe_ver}")
+
+
+os.environ.setdefault("JAX_COMPILATION_CACHE_DIR", _default_jax_cache_dir())
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SRC = os.path.join(_REPO_ROOT, "src")
@@ -616,6 +660,11 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int | pytest.ExitCode) -> None:
+    # Under pytest-xdist each worker holds a partial _MODULE_STATS (the
+    # controller forwards every worker's logreport to itself, so its copy is
+    # complete). Workers skip the write; the controller emits the one report.
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        return
     try:
         from hydra2.artifacts.atomic import atomic_replace_bytes
         from hydra2.artifacts.canonical import canonical_bytes

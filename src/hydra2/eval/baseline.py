@@ -92,6 +92,8 @@ def _require_legal_mask(mask: torch.Tensor) -> torch.Tensor:
     elif torch.all(mask.any(dim=1)).item() is False:  # pyrefly: ignore[pytorch-efficiency-lint-item-call]  # reason: eager host sync for contract; single scalar must cross host. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
         raise ContractError("nonterminal all-false legal row is hard error")
     return mask
+
+
 def _require_targets(targets: torch.Tensor, legal_mask: torch.Tensor) -> torch.Tensor:
     if not isinstance(targets, torch.Tensor):
         raise ContractError(f"targets must be Tensor, got {type(targets).__name__}")
@@ -122,6 +124,7 @@ def _require_targets(targets: torch.Tensor, legal_mask: torch.Tensor) -> torch.T
                 raise ContractError(f"target {a} is illegal at row {i} (masked)")
     return targets
 
+
 def _require_logits(logits: torch.Tensor, legal_mask: torch.Tensor) -> torch.Tensor:
     if not isinstance(logits, torch.Tensor):
         raise ContractError(f"logits must be Tensor, got {type(logits).__name__}")
@@ -140,6 +143,7 @@ def _require_logits(logits: torch.Tensor, legal_mask: torch.Tensor) -> torch.Ten
     elif torch.isfinite(logits).all().item() is False:  # pyrefly: ignore[pytorch-efficiency-lint-item-call]  # reason: eager host sync for finiteness check; single scalar must cross host. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
         raise ContractError("logits must be finite (no inf/nan)")
     return logits
+
 
 def _seed_everything(seed: int) -> None:
     _ = torch.manual_seed(seed)
@@ -171,6 +175,8 @@ def masked_cross_entropy(
     elif torch.isfinite(per_row).all().item() is False:  # pyrefly: ignore[pytorch-efficiency-lint-item-call]  # reason: eager host sync for NLL check; single scalar must cross host. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
         raise ContractError("masked NLL produced non-finite value")
     return float(per_row.mean().item())  # pyrefly: ignore[pytorch-efficiency-lint-item-call]  # reason: eager host sync for metric reporting; single scalar must cross host. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
+
+
 def legal_uniform_nll(targets: torch.Tensor, legal_mask: torch.Tensor) -> float:
     """NLL of the legal-uniform baseline: -log(1 / num_legal)."""
     mask = _require_legal_mask(legal_mask)
@@ -180,6 +186,7 @@ def legal_uniform_nll(targets: torch.Tensor, legal_mask: torch.Tensor) -> float:
     counts = mask.sum(dim=1).to(torch.float64)
     nll = torch.log(counts)
     return float(nll.mean().item())  # pyrefly: ignore[pytorch-efficiency-lint-item-call]  # reason: eager host sync for metric reporting; single scalar must cross host. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
+
 
 def top_k_accuracy(
     logits: torch.Tensor, targets: torch.Tensor, legal_mask: torch.Tensor, k: int
@@ -197,7 +204,7 @@ def top_k_accuracy(
     k_clamped = min(k, logits_v.shape[1])
     _, topk_idx = torch.topk(masked, k=k_clamped, dim=-1)
     hits = (topk_idx == t.unsqueeze(1)).any(dim=1).to(torch.float64)
-    return float(hits.mean().item())  # pyrefly: ignore[bad-argument-type]  # reason: intentional sync; Tensor.item() Any -> float. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
+    return float(hits.mean().item())  # pyrefly: ignore[pytorch-efficiency-lint-item-call]  # reason: eager host sync for metric reporting; single scalar must cross host. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
 
 
 def expected_calibration_error(

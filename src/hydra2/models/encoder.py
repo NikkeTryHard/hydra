@@ -98,13 +98,17 @@ def encode_observations(
 
     batch_size = len(observations)
 
-    # History bucketing: each history length → bucket ceil.
+    # History bucketing: each history length → bucket ceil. Over-cap rows
+    # fail closed here (replay paths quarantine earlier); tensors are NEVER
+    # silently truncated to fit the model.
     history_lengths = [len(o.visible_history) for o in observations]
     max_len = max(history_lengths) if len(history_lengths) != 0 else 0
+    if max_len > buckets[-1]:
+        raise ContractError(
+            f"visible history {max_len} exceeds model bucket cap {buckets[-1]}; "
+            "rows are never truncated"
+        )
     bucket_len = _bucket_length(max_len, buckets)
-    # Edge: empty history still yields bucket 32 with all padding.
-    if bucket_len < max_len:
-        bucket_len = max_len
     # --- Perf-B P1 vectorized alloc: numpy backing + from_numpy zero-copy ---
     # Before: 9x torch.tensor(list(...)) per row (seat_winds, scores, ippatsu, riichi,
     # concealed, dora, visible, legal_mask, etc.) + per-event kind assignment via
@@ -170,20 +174,20 @@ def encode_observations(
         actor_seats_np[idx] = int(obs.actor)
         dealer_np[idx] = int(obs.dealer)
         turn_actor_np[idx] = int(obs.turn_actor)
-        actor_can_riichi_np[idx] = bool(obs.actor_can_riichi)
-        actor_can_tsumo_np[idx] = bool(obs.actor_can_tsumo)
+        actor_can_riichi_np[idx] = obs.actor_can_riichi
+        actor_can_tsumo_np[idx] = obs.actor_can_tsumo
         actor_furiten_np[idx] = _furiten_to_id[obs.actor_furiten]
-        hand_number_np[idx] = int(obs.hand_number)
-        round_index_np[idx] = int(obs.round_index)
+        hand_number_np[idx] = obs.hand_number
+        round_index_np[idx] = obs.round_index
         round_wind_np[idx] = _wind_to_id[int(obs.round_wind)]
         # seat_winds: vectorized row fill via list comp → numpy slice (no torch)
         seat_winds_np[idx] = np.array([_wind_to_id[int(w)] for w in obs.seat_winds], dtype=np.int64)
-        honba_np[idx] = int(obs.honba)
-        riichi_sticks_np[idx] = int(obs.riichi_sticks)
+        honba_np[idx] = obs.honba
+        riichi_sticks_np[idx] = obs.riichi_sticks
         scores_np[idx] = np.array(list(obs.scores), dtype=np.int32)
         phase_np[idx] = _phase_to_id[obs.phase]
-        live_wall_tiles_remaining_np[idx] = int(obs.live_wall_tiles_remaining)
-        kan_count_np[idx] = int(obs.kan_count)
+        live_wall_tiles_remaining_np[idx] = obs.live_wall_tiles_remaining
+        kan_count_np[idx] = obs.kan_count
         ippatsu_active_np[idx] = np.array(list(obs.ippatsu_active), dtype=np.bool_)
         riichi_states_np[idx] = np.array(
             [_riichi_to_id[s] for s in obs.riichi_states], dtype=np.int64
@@ -284,13 +288,18 @@ def encode_observations(
     # memory to overlap; without it flag is no-op.
     # Maintainability: keep pure CPU alloc path for cpu-only tests;
     # pin only when cuda available to avoid overhead.
+    # Perf-C P2b: pin_memory() is out-of-place (returns a pinned copy), so
+    # the results must be rebound — discarding them pinned nothing and every
+    # history/legal plane crossed H2D synchronously.
     if torch.cuda.is_available():
         try:
-            for _t in features.values():
-                _t.pin_memory()  # type: ignore[attr-defined]  # reason: CPU Tensor.pin_memory; stubs miss
-            history_mask.pin_memory()  # type: ignore[attr-defined]  # reason: same CPU pin_memory gap
-            legal_mask.pin_memory()  # type: ignore[attr-defined]  # reason: same CPU pin_memory gap
-            actor_seats.pin_memory()  # type: ignore[attr-defined]  # reason: same CPU pin_memory gap
+            features = {
+                name: tensor.pin_memory()  # type: ignore[attr-defined]  # reason: CPU Tensor.pin_memory; stubs miss
+                for name, tensor in features.items()
+            }
+            history_mask = features["history_mask"]
+            legal_mask = features["legal_mask"]
+            actor_seats = features["actor_seats"]
         except Exception:
             pass
 
@@ -368,9 +377,13 @@ def validate_batch_against_schema(batch: ActorTensorBatch) -> None:
                 if valid_mask.shape == tensor.shape:
                     values = tensor[valid_mask]
                     if values.numel() > 0:
-                        if spec.valid_min is not None and bool((values < spec.valid_min).any().item()):  # pyrefly: ignore[pytorch-efficiency-lint-item-call]  # noqa: E501  # reason: eager host sync for range check; single scalar must cross host. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
+                        if spec.valid_min is not None and bool(
+                            (values < spec.valid_min).any().item()  # pyrefly: ignore[pytorch-efficiency-lint-item-call]  # reason: eager host sync for range check; single scalar must cross host. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
+                        ):
                             raise ContractError(f"field {name} below valid_min")
-                        if spec.valid_max is not None and bool((values > spec.valid_max).any().item()):  # pyrefly: ignore[pytorch-efficiency-lint-item-call]  # noqa: E501  # reason: eager host sync for range check; single scalar must cross host. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
+                        if spec.valid_max is not None and bool(
+                            (values > spec.valid_max).any().item()  # pyrefly: ignore[pytorch-efficiency-lint-item-call]  # reason: eager host sync for range check; single scalar must cross host. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
+                        ):
                             raise ContractError(f"field {name} above valid_max")
     # Legal mask at least one true per row.
     if not bool(batch.legal_mask.any(dim=1).all().item()):  # pyrefly: ignore[pytorch-efficiency-lint-item-call]  # reason: intentional host sync for contract; single scalar must cross host. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html

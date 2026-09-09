@@ -736,9 +736,11 @@ class GumbelSearchPlanner(Planner):  # type: ignore[misc]
                 resource_view=str(params.get("resource_view", "calls")),
                 seed_material=master_seed,
             )
-        self._continuations: dict[int, UniformContinuationPolicy] = continuation_policies if continuation_policies is not None else {
-            seat: UniformContinuationPolicy() for seat in range(4)
-        }
+        self._continuations: dict[int, UniformContinuationPolicy] = (
+            continuation_policies
+            if continuation_policies is not None
+            else {seat: UniformContinuationPolicy() for seat in range(4)}
+        )
         self._master_seed = master_seed
         self._belief_epoch: Any | None = None
         self._model_calls: int = 0
@@ -968,7 +970,11 @@ class GumbelSearchPlanner(Planner):  # type: ignore[misc]
                         # Allow terminal rollouts that avoid model calls
                         # So we only break if we would definitely need model call and already exhausted
                         # For simplicity, break when both budgets exhausted
-                        if self._transitions >= (self._config.max_transitions if self._config.max_transitions is not None else 10**9):
+                        if self._transitions >= (
+                            self._config.max_transitions
+                            if self._config.max_transitions is not None
+                            else 10**9
+                        ):
                             break
                     # Sample natural world
                     if self._belief is not None and epoch is not None and _HAS_BELIEF:
@@ -1068,7 +1074,11 @@ class GumbelSearchPlanner(Planner):  # type: ignore[misc]
                         best_id = aid
         if best_id is None:
             # Fallback: highest gumbel alone (no visits)
-            best_id = max(survivors, key=lambda aid: gumbels[aid]) if len(survivors) > 0 else sorted_ids[0]  # type: ignore[unknown-argument-type,explicit-any]
+            best_id = (
+                max(survivors, key=lambda aid: gumbels[aid])  # type: ignore[unknown-argument-type,explicit-any]
+                if len(survivors) > 0
+                else sorted_ids[0]
+            )
 
         # Value vectors for each legal action (mean vectors, or placeholder for unvisited)
         vecs: list[tuple[float, float, float, float]] = []
@@ -1186,15 +1196,23 @@ class GumbelSearchPlanner(Planner):  # type: ignore[misc]
                 u_vectors.append(
                     _UV(
                         values=vals_4,
-                        utility_id=str(getattr(
-                            request.candidate_spec, "utility_id", "expected_final_placement"
-                        )),
-                        utility_manifest_hash=make_digest_text(str(getattr(
-                            request.candidate_spec, "utility_manifest_hash", "sha256:" + "b" * 64
-                        ))),
-                        rules_hash=make_digest_text(str(getattr(
-                            request.candidate_spec, "rules_hash", "sha256:" + "a" * 64
-                        ))),
+                        utility_id=str(
+                            getattr(
+                                request.candidate_spec, "utility_id", "expected_final_placement"
+                            )
+                        ),
+                        utility_manifest_hash=make_digest_text(
+                            str(
+                                getattr(
+                                    request.candidate_spec,
+                                    "utility_manifest_hash",
+                                    "sha256:" + "b" * 64,
+                                )
+                            )
+                        ),
+                        rules_hash=make_digest_text(
+                            str(getattr(request.candidate_spec, "rules_hash", "sha256:" + "a" * 64))
+                        ),
                     )
                 )
             except Exception:
@@ -1301,9 +1319,11 @@ class PuctBaselinePlanner(Planner):  # type: ignore[misc]
                 resource_view=str(params.get("resource_view", "calls")),
                 seed_material=master_seed,
             )
-        self._continuations: dict[int, UniformContinuationPolicy] = continuation_policies if continuation_policies is not None else {
-            seat: UniformContinuationPolicy() for seat in range(4)
-        }
+        self._continuations: dict[int, UniformContinuationPolicy] = (
+            continuation_policies
+            if continuation_policies is not None
+            else {seat: UniformContinuationPolicy() for seat in range(4)}
+        )
         self._master_seed = master_seed
         self._belief_epoch: Any | None = None
         self._model_calls = 0
@@ -1565,15 +1585,23 @@ class PuctBaselinePlanner(Planner):  # type: ignore[misc]
                 u_vectors.append(
                     _UV(
                         values=vals_fixed,
-                        utility_id=str(getattr(
-                            request.candidate_spec, "utility_id", "expected_final_placement"
-                        )),
-                        utility_manifest_hash=make_digest_text(str(getattr(
-                            request.candidate_spec, "utility_manifest_hash", "sha256:" + "b" * 64
-                        ))),
-                        rules_hash=make_digest_text(str(getattr(
-                            request.candidate_spec, "rules_hash", "sha256:" + "a" * 64
-                        ))),
+                        utility_id=str(
+                            getattr(
+                                request.candidate_spec, "utility_id", "expected_final_placement"
+                            )
+                        ),
+                        utility_manifest_hash=make_digest_text(
+                            str(
+                                getattr(
+                                    request.candidate_spec,
+                                    "utility_manifest_hash",
+                                    "sha256:" + "b" * 64,
+                                )
+                            )
+                        ),
+                        rules_hash=make_digest_text(
+                            str(getattr(request.candidate_spec, "rules_hash", "sha256:" + "a" * 64))
+                        ),
                     )
                 )
             spec_hash = _csh(request.candidate_spec)  # type: ignore[call-arg]
@@ -1681,7 +1709,7 @@ def _load_default_hashes() -> dict[str, str]:
             "observation_schema_hash",
             "packet_boundary_hash",
         ):
-            defaults.setdefault(key, "sha256:" + MISSING_HASH)
+            _ = defaults.setdefault(key, "sha256:" + MISSING_HASH)
     return defaults
 
 
@@ -1708,7 +1736,8 @@ def _derive_utility_manifest_hash(model: Any | None) -> str:
         from hydra2.models.model import Hydra2BaselineModel
 
         probe: Any = Hydra2BaselineModel() if model is None else model
-        return str(make_digest_text(str(probe.utility_manifest_hash)))
+        manifest_raw: object = probe.utility_manifest_hash
+        return str(make_digest_text(str(manifest_raw)))
     except (ImportError, AttributeError, ValueError, TypeError, OSError) as exc:
         logger.debug("gumbel: utility_manifest_hash derivation failed", exc_info=exc)
         raise ContractError("gumbel: cannot derive utility_manifest_hash from model") from exc
@@ -1754,7 +1783,9 @@ def make_gumbel_candidate_spec(
     canonical = _canonical_hashes()
     utility_manifest_hash = _derive_utility_manifest_hash(None)
     bound_model_hash = (
-        model_hash if model_hash is not None and model_hash != "" else _model_hash_from_identity(None)
+        model_hash
+        if model_hash is not None and model_hash != ""
+        else _model_hash_from_identity(None)
     )
     bound_case_hash = (
         case_manifest_hash
@@ -1787,7 +1818,9 @@ def make_gumbel_candidate_spec(
         candidate_id=cfg.candidate_id,
         algorithm="gumbel_search",
         algorithm_version="1.0.0",
-        rules_hash=rules_hash if rules_hash is not None and rules_hash != "" else defaults["rules_hash"],
+        rules_hash=rules_hash
+        if rules_hash is not None and rules_hash != ""
+        else defaults["rules_hash"],
         utility_id="expected_final_placement",
         utility_manifest_hash=utility_manifest_hash,
         action_table_hash=defaults["action_table_hash"],

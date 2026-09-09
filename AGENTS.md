@@ -6,15 +6,16 @@ RFC 2119 applies to MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL. `NEVER` 
 
 ## Stack (exact; Pixi is sole authority)
 
-Pixi owns env+lock (`pixi.lock`). You MUST NEVER create `uv.lock`, use a stray `.venv`, or run bare `pytest`/`python`/`ruff`. Verified 2026-09-04 via `pixi run config-check`: `torch==2.14.0+cu130` (cuda 13.0, sm_120 available), `lightning-fabric==2.6.5`, `riichienv==0.4.8`, mahjax pinned `5222872`, `ruff==0.16.5`, `pyrefly==1.2.0`, `pytest==9.1.1`, python 3.12. Pyrefly MUST use pin `.pixi/envs/default/bin/python`.
+Pixi owns env+lock (`pixi.lock`). You MUST NEVER create `uv.lock`, use a stray `.venv`, or run bare `pytest`/`python`/`ruff`. Verified 2026-09-04 via `pixi run config-check`: `torch==2.14.0+cu130` (cuda 13.0, sm_120 available), `lightning-fabric==2.6.5`, `riichienv==0.4.8`, mahjax pinned `5222872`, `ruff==0.16.6`, `pyrefly==1.2.0`, `pytest==9.1.1`, `clearml==2.1.12`, python 3.12. Pyrefly MUST use pin `.pixi/envs/default/bin/python`.
 
 ## Commands (always through Pixi; never on host)
 
 | Need | Command |
 | --- | --- |
 | Focused test | `pixi run test <file>::<test>` |
-| Package gate | `pixi run test-{contracts,conformance,integration,unit,search,training,analysis} --package <WP-ID>` |
-| Full suite | `pixi run test` (only if shared contracts/runtime/data touched) |
+| Parallel lanes | `pixi run test-cpu` + `pixi run test-serial` (REQUIRED split; append `--package <WP-ID>` where the task supports it) |
+| Package gate | `pixi run test-{unit,integration,contracts} --package <WP-ID>`; `pixi run test-analysis --package WP-12` (`test-{search,training,conformance}` run unscoped `pytest tests`) |
+| Full suite | `pixi run test` (both lanes; only if shared contracts/runtime/data touched) |
 | Lint / format / types | `pixi run lint`, `pixi run format-check`, `pixi run typecheck` |
 | Env / probe | `pixi run config-check`, `pixi run env-manifest`, `pixi run runtime-probe` |
 | WP exit | `pixi run hydra2 work-package verify <WP-ID> --artifact-root "$HYDRA2_ARTIFACT_ROOT"` |
@@ -31,7 +32,7 @@ Capture once to a log file, then grep it. NEVER re-run a suite with different gr
 - `CUBLAS_WORKSPACE_CONFIG` MUST be set before any CUDA context (done in `tests/conftest.py`); inductor cache is version-keyed there. Do not move it.
 - Simulator stays eager. Only pure-tensor model regions MAY compile (`torch.compile`/inductor); SDPA is the standard dense-attention path. Every speed claim needs fixed-corpus eager parity + cold-start/latency/throughput/memory/determinism evidence per device.
 - MahJax is a quarantined accelerator at its pinned SHA until conformance passes. NEVER let accelerator trajectories leak into reference data.
-- No Lightning Trainer: `lightning`/`pytorch-lightning` MUST stay absent (`TRAINER_FORBIDDEN` in `src/hydra2/config.py`). Own the loop, optimizer, schedule, accumulation, checkpoint.
+- No Lightning Trainer: `lightning`/`pytorch-lightning` MUST stay absent (`TRAINER_FORBIDDEN_PACKAGES` in `src/hydra2/config.py`). Own the loop, optimizer, schedule, accumulation, checkpoint.
 - `HYDRA2_ARTIFACT_ROOT` MUST live outside raw/confidential data roots. NEVER publish raw samples, source identity, or sponsor identity (D-017).
 
 ```python
@@ -44,7 +45,7 @@ dora = F.pad(dora4, (0, 1))  # NEVER — hides an incompatible artifact
 
 ## Architecture boundaries
 
-Layered DAG, dependencies flow one way: `contracts` (stdlib-only Tenhou vocab) <- `artifacts` <- `engines` (riichienv 0.4.8 reference adapter; mahjax JAX shell) <- `runtime` (plain eager / Fabric adapter) + `data` (zstd ingest -> validate -> quarantine -> parquet) -> `models` (actor-visible encoder + SDPA transformer) -> `belief` (natural packets) -> `search` (candidate0/ISMCTS/DESPOT/PBRF/Gumbel/resolving) -> `eval` (duplicate-wall blocks, expected final placement) + `training`/`distillation`. NEVER invert an edge (e.g. models importing search; workers touching raw stores). `lean/` is a manual-sync sidecar: no codegen either direction; no `sorry` in files called done. `tools/mjai-dataset-packager/` is isolated (clang+mold, nextest); behavior changes need compatibility evidence.
+Layered DAG, dependencies flow one way: `contracts` (stdlib-only Tenhou vocab) <- `artifacts` <- `engines` (riichienv 0.4.8 reference adapter; mahjax JAX shell) <- `runtime` (plain eager / Fabric adapter) + `data` (zstd ingest -> validate -> quarantine -> parquet) -> `models` (actor-visible encoder + SDPA transformer) -> `belief` (natural packets) -> `search` (candidate0/ISMCTS/DESPOT/PBRF/Gumbel/resolving) -> `eval` (duplicate-wall blocks, expected final placement) + `training`/`distillation` + `analysis`/`tracking`/`completion`. NEVER invert an edge (e.g. models importing search; workers touching raw stores). `lean/` is a manual-sync sidecar: no codegen either direction; no `sorry` in files called done. `tools/mjai-dataset-packager/` is isolated (clang+mold, nextest); behavior changes need compatibility evidence.
 
 ## Docs authority (conflicts)
 
@@ -55,7 +56,13 @@ Layered DAG, dependencies flow one way: `contracts` (stdlib-only Tenhou vocab) <
 - Default: add the test to the existing file for the module you changed. New files only for new modules. Every test MUST defend observable behavior or an invariant and MUST fail without the change.
 - Ladder: focused nodeid -> file -> `--package <WP-ID>` gate -> full suite only if shared code moved. A passing narrow test NEVER substitutes for the package exit gate.
 - Determinism: fixed seeds, `tempDir`-style tmp dirs, `port: 0`, poll-with-deadline NEVER `sleep(N)`, no live internet (local harness doubles only), assert behavior before exit codes.
-- GPU lanes: `gpu` mark needs CUDA (absence is hard failure); `slow`/`soak` are opt-in via `-m`, never deselected by default.
+- Parallel lanes: `pixi run test-cpu` (`-n 10 --dist loadscope`, everything except `gpu`/`serial`) + `pixi run test-serial` (`-n 0`, `gpu or serial` only). Every test MUST land in exactly one lane. `-n`/`--dist` live ONLY in lane tasks, NEVER in `addopts`. `loadscope` (whole file/class per worker) is REQUIRED — per-test `--dist load` oversubscribes the single GPU (CUBLAS/OOM) and splits file-order-coupled tests.
+- Lane marks: `gpu` = needs CUDA (absence is hard failure); `serial` = fused GPU-kernel loads, JAX device init at import, CUDA contexts, shared-cache writers (single process ONLY — concurrent import aborts workers, CUBINs OOM under contention). Readers of another test's outputs MUST carry the writer's mark. `slow`/`soak` stay opt-in via `-m`, NEVER deselected by default.
+- Parallel-safe tests: `tmp_path`/explicit roots ONLY (NEVER shared or hardcoded paths); fixtures read-only or worker-local; no sockets, no `sleep`, no wall-clock seeds; each test self-contained (NEVER read files another test writes).
+- Float agreement: bitwise `torch.equal` ONLY for same-shape repeat eval. Cross-shape/bucket agreement MUST use `allclose(atol=1e-6, rtol=1e-5)` — thread count changes reduction order (workers run fewer threads than serial).
+- Threads: conftest clamps torch/OMP per xdist worker. You MUST NEVER call `set_num_threads` in tests, or loosen the clamp to fit one test — mark that test `serial` instead.
+- JAX hot loops: hoist `jax.jit(step-fn)` above the loop on one stable function object (NEVER re-jit per step, NEVER eager-step hot loops); persistent cache dir is version-keyed in conftest. Same kernels = decisions identical; anything changing compute needs requalification.
+- Shared writers (reports, tokens): controller-only under xdist, unique-per-run paths. Designed producer→consumer chains MUST share one lane mark (order is only guaranteed inside it) — NEVER rely on unmarked cross-test order.
 - Be humble and honest: NEVER overstate what works in commits, PRs, or messages. Second related branch-condition finding -> stop, re-read the requirement, narrow the contract instead of adding machinery.
 
 ## Allowed / ask-first / never

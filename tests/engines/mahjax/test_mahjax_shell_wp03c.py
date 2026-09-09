@@ -37,7 +37,7 @@ from hydra2.engines.mahjax import (
     write_mahjax_environment_fragment,
 )
 
-pytestmark = pytest.mark.contract_package("WP-03C")
+pytestmark = [pytest.mark.contract_package("WP-03C"), pytest.mark.serial]
 
 #: Stand-in rules-manifest identity (real binding is issued by WP-04C).
 RULES_ID = make_digest_text("sha256:" + "3a" * 32)

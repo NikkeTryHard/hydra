@@ -60,10 +60,12 @@ def test_masked_metrics_correctness_and_rejections() -> None:
     logits = torch.randn(B, A, dtype=torch.float32)
     # Build legal mask with at least 2 legal per row.
     legal_mask = torch.tensor(
-        [[True, True, False, True, False, False],
-         [True, False, True, True, True, False],
-         [False, True, True, True, False, True],
-         [True, True, True, False, False, False]],
+        [
+            [True, True, False, True, False, False],
+            [True, False, True, True, True, False],
+            [False, True, True, True, False, True],
+            [True, True, True, False, False, False],
+        ],
         dtype=torch.bool,
     )
     targets = torch.tensor([0, 2, 1, 0], dtype=torch.int64)
@@ -122,8 +124,12 @@ def test_masked_metrics_correctness_and_rejections() -> None:
 def test_tiny_shard_overfit_to_threshold() -> None:
     """Tiny-shard overfit reaches declared NLL threshold deterministically."""
     # Use small shard size and enough steps to ensure overfit.
-    metrics, info = tiny_shard_overfit(seed=0, shard_size=8, steps=250, threshold_nll=OVERFIT_NLL_THRESHOLD)
-    assert metrics.masked_nll < OVERFIT_NLL_THRESHOLD, f"NLL {metrics.masked_nll} >= {OVERFIT_NLL_THRESHOLD}"
+    metrics, info = tiny_shard_overfit(
+        seed=0, shard_size=8, steps=250, threshold_nll=OVERFIT_NLL_THRESHOLD
+    )
+    assert metrics.masked_nll < OVERFIT_NLL_THRESHOLD, (
+        f"NLL {metrics.masked_nll} >= {OVERFIT_NLL_THRESHOLD}"
+    )
     assert metrics.top1_accuracy >= 0.5  # should be high after overfit
     assert info["device"] in ("cpu", "cuda", "cuda:0")
     assert info["compile_mode"] == EAGER_ORACLE_ID
@@ -175,6 +181,7 @@ def test_held_out_split_disjoint_and_deterministic() -> None:
         )
         verify_held_out_disjoint(bad)
 
+
 def test_held_out_metrics_separate_and_reported() -> None:
     """Train and held-out metrics are computed separately and both appear in report."""
     torch.manual_seed(1)
@@ -202,8 +209,12 @@ def test_held_out_metrics_separate_and_reported() -> None:
     train_idx = [int(x.split("-")[1]) for x in split.train_ids]
     held_idx = [int(x.split("-")[1]) for x in split.held_out_ids]
 
-    train_metrics = compute_baseline_metrics(logits[train_idx], targets[train_idx], legal_mask[train_idx])
-    held_metrics = compute_baseline_metrics(logits[held_idx], targets[held_idx], legal_mask[held_idx])
+    train_metrics = compute_baseline_metrics(
+        logits[train_idx], targets[train_idx], legal_mask[train_idx]
+    )
+    held_metrics = compute_baseline_metrics(
+        logits[held_idx], targets[held_idx], legal_mask[held_idx]
+    )
 
     # Held-out metrics are not identical to train in general (different slices)
     # but both are finite and have correct counts
@@ -212,7 +223,11 @@ def test_held_out_metrics_separate_and_reported() -> None:
     # Report binds both
     hidden = check_hidden_permutation_invariance(seed=1)
     report = make_baseline_report(
-        seed=7, held_out_split=split, metrics=train_metrics, held_out_metrics=held_metrics, hidden_invariance=hidden
+        seed=7,
+        held_out_split=split,
+        metrics=train_metrics,
+        held_out_metrics=held_metrics,
+        hidden_invariance=hidden,
     )
     assert report["held_out_split_digest"] == split.digest
     assert report["metrics"]["digest"] == train_metrics.digest
@@ -356,12 +371,20 @@ def test_deterministic_interrupted_resumed_matches_uninterrupted() -> None:
 
         m_b, o_b = make_model_and_opt(SEED)
         h_b = build_runtime(adapter=PlainPytorchAdapter(), model=m_b, optimizer=o_b, spec=s)
-        resume_checkpoint(source=ckpt, run_spec_hash=run_spec_hash, source_hash=source_hash, model=h_b.model, optimizer=h_b.optimizer)
+        resume_checkpoint(
+            source=ckpt,
+            run_spec_hash=run_spec_hash,
+            source_hash=source_hash,
+            model=h_b.model,
+            optimizer=h_b.optimizer,
+        )
         losses_b = run_steps(h_b, x, y, steps=3)
 
         assert losses_a == losses_b, f"resume losses differ: {losses_a} vs {losses_b}"
         for k in h_a.model.state_dict():
-            assert torch.equal(h_a.model.state_dict()[k].cpu(), h_b.model.state_dict()[k].cpu()), f"param {k} differs"
+            assert torch.equal(h_a.model.state_dict()[k].cpu(), h_b.model.state_dict()[k].cpu()), (
+                f"param {k} differs"
+            )
 
     B, A = 6, 8
     torch.manual_seed(999)
@@ -380,6 +403,8 @@ def test_deterministic_interrupted_resumed_matches_uninterrupted() -> None:
     fresh = fresh_process_metrics(logits, targets, legal_mask)
     assert fresh.digest == metrics.digest
     assert fresh.masked_nll == metrics.masked_nll
+
+
 def test_reference_games_zero_illegal_timeouts() -> None:
     """Complete reference games: zero illegal actions / timeouts."""
     summary = evaluate_reference_games(num_games=4, seed=0)
@@ -419,7 +444,12 @@ def test_report_canonical_deterministic_and_eager_oracle() -> None:
     _tiny_m, tiny_info = tiny_shard_overfit(seed=2, shard_size=8, steps=100)
     hidden = check_hidden_permutation_invariance(seed=2)
     report = make_baseline_report(
-        seed=99, held_out_split=split, metrics=train_m, held_out_metrics=held_m, tiny_shard_info=tiny_info, hidden_invariance=hidden
+        seed=99,
+        held_out_split=split,
+        metrics=train_m,
+        held_out_metrics=held_m,
+        tiny_shard_info=tiny_info,
+        hidden_invariance=hidden,
     )
     # Canonical round-trip
     assert report["report_version"] == BASELINE_METRICS_VERSION
@@ -432,7 +462,12 @@ def test_report_canonical_deterministic_and_eager_oracle() -> None:
     assert report["digest"].startswith("sha256:")
     # Deterministic: same inputs -> same digest
     make_baseline_report(
-        seed=99, held_out_split=split, metrics=train_m, held_out_metrics=held_m, tiny_shard_info=tiny_info, hidden_invariance=hidden
+        seed=99,
+        held_out_split=split,
+        metrics=train_m,
+        held_out_metrics=held_m,
+        tiny_shard_info=tiny_info,
+        hidden_invariance=hidden,
     )
     # created_at_utc will differ by a second possibly, so compare digests over content without timestamp?
     # Our make_baseline_report uses wall time, so two reports in same second may differ by few ms.
@@ -447,7 +482,11 @@ def test_report_canonical_deterministic_and_eager_oracle() -> None:
 
     # Shape arm not_activated per BUILD: report must note not activated unless optional arm enabled
     # We record not_activated by absence of shape fields; check that tiny_shard_info does not claim shape
-    assert "shape" not in json.dumps(report).lower() or "not_activated" in json.dumps(report).lower() or True
+    assert (
+        "shape" not in json.dumps(report).lower()
+        or "not_activated" in json.dumps(report).lower()
+        or True
+    )
     # Explicit: if shape arm were activated, it would have separate ModelSpec; here we assert baseline input schema is not shape
     # So the report's tiny_shard_info should not contain shape features
     assert "own_private_ids" not in str(report)
@@ -487,7 +526,9 @@ def test_shape_arm_not_activated_records_not_activated() -> None:
     m1 = compute_baseline_metrics(logits[train_idx], targets[train_idx], legal_mask[train_idx])
     m2 = compute_baseline_metrics(logits[held_idx], targets[held_idx], legal_mask[held_idx])
     hidden = check_hidden_permutation_invariance(seed=0)
-    report = make_baseline_report(seed=0, held_out_split=split, metrics=m1, held_out_metrics=m2, hidden_invariance=hidden)
+    report = make_baseline_report(
+        seed=0, held_out_split=split, metrics=m1, held_out_metrics=m2, hidden_invariance=hidden
+    )
     # BUILD says: if optional shape arm not activated, record not_activated
     # We enforce by checking that report does not contain shape fields and notes not_activated implicitly
     # For explicitness, add a not_activated marker in tiny_shard_info when shape not used

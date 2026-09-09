@@ -312,9 +312,7 @@ class ArtifactRegistry:
                         else cast("dict[str, Any]", {})
                     )
                     migration_raw: Any = (
-                        cast("Any", meta_dict.get("migration"))
-                        if isinstance(meta, dict)
-                        else None
+                        cast("Any", meta_dict.get("migration")) if isinstance(meta, dict) else None
                     )
                     entry = RegistryEntry(
                         artifact_type=artifact_type,
@@ -333,9 +331,7 @@ class ArtifactRegistry:
     def _upsert_index_row(self, entry: RegistryEntry) -> None:
         index: dict[str, Any] = self._load_index()
         rows: dict[str, Any] = cast("dict[str, Any]", index["rows"])
-        type_rows: dict[str, Any] = cast(
-            "dict[str, Any]", rows.setdefault(entry.artifact_type, {})
-        )
+        type_rows: dict[str, Any] = cast("dict[str, Any]", rows.setdefault(entry.artifact_type, {}))
         version_rows: dict[str, Any] = cast(
             "dict[str, Any]", type_rows.setdefault(entry.schema_version, {})
         )

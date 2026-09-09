@@ -131,10 +131,13 @@ ACTION_KIND_ORDINALS: dict[str, int] = {
     "accept_abortive_draw": 12,
 }
 
+
+def _kind_ordinal(kind: str) -> int:
+    return ACTION_KIND_ORDINALS[kind]
+
+
 #: Kinds in frozen ordinal order.
-ACTION_KINDS: tuple[str, ...] = tuple(
-    sorted(ACTION_KIND_ORDINALS, key=lambda k: ACTION_KIND_ORDINALS[k])
-)
+ACTION_KINDS: tuple[str, ...] = tuple(sorted(ACTION_KIND_ORDINALS, key=_kind_ordinal))
 
 JsonValue = (
     None
@@ -1130,19 +1133,22 @@ def _table_from_document(document: object, *, origin: str) -> ActionTable:
     raw_actions: object = payload["actions"]
     if not isinstance(raw_actions, list) or len(raw_actions) == 0:
         raise ContractError(f"{origin}: actions must be a non-empty array")
-    templates = tuple(_template_from_json(entry, origin=origin)  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
- for entry in raw_actions)  # type: ignore[attr-defined]  # reason: raw_actions isinstance-checked as list above; checker cannot narrow object
+    templates = tuple(
+        _template_from_json(entry, origin=origin)  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
+        for entry in raw_actions
+    )  # type: ignore[attr-defined]  # reason: raw_actions isinstance-checked as list above; checker cannot narrow object
     recomputed = compute_table_digest(templates, make_schema_version(envelope_version))
-    if not hmac.compare_digest(str(recomputed), str(declared_digest)):
+    if not hmac.compare_digest(str(recomputed), declared_digest):
         raise DigestMismatchError(
             f"{origin}: declared digest {declared_digest!r} != recomputed {recomputed!r}"
         )
     table = build_action_table(templates, schema_version=make_schema_version(envelope_version))
-    if not hmac.compare_digest(str(table.digest), str(declared_digest)):
+    if not hmac.compare_digest(str(table.digest), declared_digest):
         raise DigestMismatchError(
             f"{origin}: rebuilt table digest {table.digest!r} != declared {declared_digest!r}"
         )
     return table
+
 
 def _template_from_json(entry: object, *, origin: str) -> CanonicalActionTemplate:
     if not isinstance(entry, Mapping) or set(entry) != set(_TEMPLATE_JSON_FIELDS):

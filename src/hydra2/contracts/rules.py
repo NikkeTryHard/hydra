@@ -884,6 +884,7 @@ def _validate_source_evidence(evidence: Any) -> None:
                     "every manifest value must cite its source or owner decision"
                 )
 
+
 # Convenience instances used by tests and config generation.
 
 STANDARD_CLOCK = ClockRule(

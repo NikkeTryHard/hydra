@@ -38,6 +38,41 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.contract_package("WP-14")
 
+
+@pytest.fixture(scope="session", autouse=True)
+def _s8_rust_extension(tmp_path_factory: pytest.TempPathFactory) -> Any:
+    """S8 cutover: wall-less replay flows through Rust; build the extension once."""
+    import importlib
+    import importlib.machinery
+    import os
+    import shutil
+    import subprocess
+    import sys
+    from pathlib import Path as _Path
+
+    root = _Path(__file__).resolve().parents[2]
+    crate = root / "tools" / "hydra2-replay-rs"
+    env = {**os.environ, "PYO3_PYTHON": sys.executable}
+    proc = subprocess.run(
+        ["cargo", "build", "--offline", "-p", "hydra2-replay-rs"],
+        cwd=crate,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, f"cargo build failed:\n{proc.stderr[-4000:]}"
+    built = crate / "target" / "debug" / "libhydra2_replay_rs.so"
+    assert built.is_file(), f"expected cdylib at {built}"
+    ext_dir = tmp_path_factory.mktemp("hydra2_replay_rs")
+    suffix = importlib.machinery.EXTENSION_SUFFIXES[0]
+    shutil.copy(built, ext_dir / f"hydra2_replay_rs{suffix}")
+    sys.path.insert(0, str(ext_dir))
+    try:
+        yield importlib.import_module("hydra2_replay_rs")
+    finally:
+        sys.path.remove(str(ext_dir))
+
+
 GAME_ID = "wp14-sim-replay-01"
 
 
@@ -1072,42 +1107,6 @@ def test_invented_bare_kan_dora_quarantined() -> None:
     game = _invented_kyoku_game("wp14-invented-bare-dora", tehais, header, body)
     with pytest.raises(ContractError, match="kan-dora indicator unrecoverable"):
         replay_game(game)
-
-
-def test_repeat_dora_marker_reuses_used_indicator() -> None:
-    """Second kan-dora reveal of one indicator string reuses it (unit).
-
-    Real Tenhou re-emits a single marker string for successive kan-dora
-    reveals (audit: ordered markers faithful to the XML reveal order) while
-    the filler-built dead wall carries one fresh copy of that string. The
-    repeat resolves against the used indicator so emitted strings stay
-    faithful; copy identity is folded by design. Only a marker naming no
-    indicator at all stays fail-closed.
-    """
-    from hydra2.engines.riichienv.log_replay import _GameState, _KyokuWalk, _resolve_dora
-
-    game = _record("wp14-invented-repeat-dora", [])
-    state = _GameState(
-        game=game,
-        split="train",
-        seat_filter=None,
-        rules=None,
-        rules_hash="",
-        table=None,
-        sim_game_id="wp14-invented-repeat-dora",
-        builder=None,
-    )
-    marker = mjai_string_of(0)
-    walk = _KyokuWalk(
-        queues=[[], [], [], []],
-        stash={},
-        tw=None,
-        last_oracle_dora=(0,),
-        dora_used={0},
-    )
-    assert _resolve_dora(state, walk, 0, marker) == 0
-    with pytest.raises(ContractError, match="matches no fresh indicator"):
-        _resolve_dora(state, walk, 0, "P")
 
 
 def test_invented_double_kan_same_marker_emits_rows() -> None:

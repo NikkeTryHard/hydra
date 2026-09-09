@@ -95,6 +95,8 @@ def _make_public_discard_event(
         schema_hash=schema_hash,
     )
     return envelope
+
+
 @lru_cache(maxsize=4096)
 def _cached_successor_refs(particle_world_ref: str, tile: int, aid: int) -> tuple[str, str]:
     """Cache successor/delta refs per particle+tile+aid — avoids repeated sha256.
@@ -105,8 +107,13 @@ def _cached_successor_refs(particle_world_ref: str, tile: int, aid: int) -> tupl
     repeated kernel enumerations. Also arrow zero-copy columnar take similarly
     caches hash lookups (https://arrow.apache.org/docs/python/index.html).
     """
-    succ = "world_succ:" + hashlib.sha256(f"{particle_world_ref}:{tile}:{aid}".encode()).hexdigest()[:16]
-    delta = "delta:" + hashlib.sha256(f"delta:{particle_world_ref}:{tile}".encode()).hexdigest()[:16]
+    succ = (
+        "world_succ:"
+        + hashlib.sha256(f"{particle_world_ref}:{tile}:{aid}".encode()).hexdigest()[:16]
+    )
+    delta = (
+        "delta:" + hashlib.sha256(f"delta:{particle_world_ref}:{tile}".encode()).hexdigest()[:16]
+    )
     return succ, delta
 
 
@@ -118,7 +125,9 @@ def _cached_observation_hash(tile: int, seq: int) -> DigestText:
     input shape (https://github.com/jax-ml/jax/blob/main/docs/automatic-vectorization.md);
     same principle applies to deterministic packet hash reuse.
     """
-    return DigestText("sha256:" + hashlib.sha256(canonical_bytes({"packet_seq": seq, "tile": tile})).hexdigest())
+    return DigestText(
+        "sha256:" + hashlib.sha256(canonical_bytes({"packet_seq": seq, "tile": tile})).hexdigest()
+    )
 
 
 @lru_cache(maxsize=2048)

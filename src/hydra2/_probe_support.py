@@ -51,6 +51,7 @@ def require_fresh_import(module: str) -> tuple[bool, str]:
         return False, f"import {module}: rc={proc.returncode}: {tail[0]}"
     return True, f"import {module}: rc=0"
 
+
 def require_module_imports(modules: Sequence[str]) -> tuple[bool, str]:
     """Fresh-process import of every listed module; first failure reported."""
     for module in modules:

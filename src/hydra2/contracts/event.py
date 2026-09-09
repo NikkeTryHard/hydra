@@ -41,6 +41,7 @@ Boundary notes:
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import hmac
 import json
@@ -96,6 +97,8 @@ __all__ = [
     "compute_packet_id",
     "envelope_digest",
     "envelope_identity_document",
+    "event_schema_digest",
+    "event_schema_payload",
     "filter_events_for_actor",
     "load_event_schema",
     "load_packet_boundary_spec",
@@ -217,7 +220,7 @@ def _optional_seat(value: object, *, name: str) -> Seat | None:
         return None
     if isinstance(value, bool) or not isinstance(value, int):
         raise ContractError(f"{name} must be a seat int 0..3, got {type(value).__name__}")
-    return make_seat(int(value))
+    return make_seat(value)
 
 
 def _optional_tile(value: object, *, name: str) -> TileId | None:
@@ -225,7 +228,7 @@ def _optional_tile(value: object, *, name: str) -> TileId | None:
         return None
     if isinstance(value, bool) or not isinstance(value, int):
         raise ContractError(f"{name} must be a tile id int 0..135, got {type(value).__name__}")
-    return make_tile_id(int(value))
+    return make_tile_id(value)
 
 
 def _optional_action(value: object, *, name: str) -> ActionId | None:
@@ -235,7 +238,7 @@ def _optional_action(value: object, *, name: str) -> ActionId | None:
         raise ContractError(
             f"{name} must be an action id nonnegative int, got {type(value).__name__}"
         )
-    return make_action_id(int(value))
+    return make_action_id(value)
 
 
 def _tile_tuple(values: Sequence[int], *, name: str) -> tuple[TileId, ...]:
@@ -396,8 +399,11 @@ def _validate_delta_value(path: tuple[str | int, ...], operation: str, value: ob
         ):
             raise ContractError("melds.append requires the canonical meld object shape")
         _ = _require_str(value["meld_id"], name="meld.meld_id")  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
-        _ = _require_enum(  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
-            value["kind"], name="meld.kind", allowed=("chi", "pon", "daiminkan", "ankan", "kakan")  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
+        meld_kind: object = value["kind"]
+        _ = _require_enum(
+            meld_kind,
+            name="meld.kind",
+            allowed=("chi", "pon", "daiminkan", "ankan", "kakan"),
         )
         make_seat(value["owner"])  # type: ignore[arg-type]  # reason: meld field statically object; validated inside make_seat
         if value["source_seat"] is not None:
@@ -1314,10 +1320,45 @@ def compute_event_schema_digest(payload_without_digest: Mapping[str, object]) ->
     return DigestText("sha256:" + hashlib.sha256(identity).hexdigest())
 
 
+#: Compiled event-schema payload, process-constant (built from module
+#: constants). Module-owned: compare against it, never mutate it. Same
+#: pattern as ``_RULES_CACHE`` (replay_expand) and
+#: ``_OBSERVATION_SCHEMA_DIGEST_CACHE`` (observation).
+_EVENT_SCHEMA_PAYLOAD_CACHE: dict[str, object] | None = None
+
+#: Digest of :func:`event_schema_payload`; stamped onto envelopes at capture.
+_EVENT_SCHEMA_DIGEST_CACHE: DigestText | None = None
+
+
+def event_schema_payload() -> dict[str, object]:
+    """Compiled event-schema payload WITHOUT the digest field.
+
+    Built once per process from module constants; the returned mapping is
+    module-owned (compare, never mutate). Builders needing an owned copy
+    must copy before stamping ``digest``.
+    """
+    global _EVENT_SCHEMA_PAYLOAD_CACHE
+    cached = _EVENT_SCHEMA_PAYLOAD_CACHE
+    if cached is None:
+        cached = build_event_schema_payload()
+        _EVENT_SCHEMA_PAYLOAD_CACHE = cached
+    return cached
+
+
+def event_schema_digest() -> DigestText:
+    """Digest of the compiled event-schema payload; computed once per process."""
+    global _EVENT_SCHEMA_DIGEST_CACHE
+    cached = _EVENT_SCHEMA_DIGEST_CACHE
+    if cached is None:
+        cached = compute_event_schema_digest(event_schema_payload())
+        _EVENT_SCHEMA_DIGEST_CACHE = cached
+    return cached
+
+
 def build_event_schema_envelope() -> dict[str, object]:
     """SPEC 2.2 envelope whose canonical bytes are the published artifact."""
-    payload = build_event_schema_payload()
-    payload["digest"] = compute_event_schema_digest(payload)
+    payload = copy.deepcopy(event_schema_payload())
+    payload["digest"] = event_schema_digest()
     return {
         "artifact_type": EVENT_SCHEMA_ARTIFACT_TYPE,
         "schema_version": EVENT_SCHEMA_SCHEMA_VERSION,
@@ -1368,7 +1409,7 @@ def parse_event_schema(raw_bytes: bytes) -> dict[str, object]:
         raise DigestMismatchError(
             f"event_schema digest mismatch: recorded {recorded} != recomputed {expected}"
         )
-    compiled = build_event_schema_payload()
+    compiled = event_schema_payload()
     if {k: v for k, v in payload.items() if k != "digest"} != compiled:
         raise ContractError("event_schema artifact diverges from the compiled schema matrix")
     return dict(document)

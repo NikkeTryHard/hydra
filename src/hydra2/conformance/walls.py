@@ -197,6 +197,7 @@ class WallPlan:
             raise ValueError(f"unresolved wall slots: {remaining}")
         return tuple(TileId(t) for t in wall)
 
+
 def build_wall(
     *,
     hands: Mapping[int, Mapping[int, int]],

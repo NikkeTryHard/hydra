@@ -191,6 +191,7 @@ class TelemetryTolerance:
             raise ValueError(f"tolerance cannot excuse mode-required fields: {tolerated_extras}")
         return REQUIRED_CORE_FIELDS + extras
 
+
 def telemetry_invalid_reason(row: ResourceTelemetry, tolerance: TelemetryTolerance) -> str | None:
     """Return why this row invalidates its block, or None when usable."""
     if row.invalid_reason is not None:
@@ -199,6 +200,7 @@ def telemetry_invalid_reason(row: ResourceTelemetry, tolerance: TelemetryToleran
     if len(missing) != 0:
         return f"missing required telemetry (never imputed): {missing}"
     return None
+
 
 def block_missing_telemetry_report(
     rows_by_game: Mapping[str, ResourceTelemetry], tolerance: TelemetryTolerance

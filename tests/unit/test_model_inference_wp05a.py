@@ -131,6 +131,20 @@ def _history_of_length(n: int) -> tuple[EventEnvelope, ...]:
     return tuple(_make_turn_advance(i + 1, actor=i % 4) for i in range(n))
 
 
+def _batch_to_device(batch: ActorTensorBatch, device: torch.device) -> ActorTensorBatch:
+    """Move an ActorTensorBatch to device (test-only; mirrors loop._move_batch_to_device)."""
+    return ActorTensorBatch(
+        features={
+            k: (v.to(device) if isinstance(v, torch.Tensor) else v)
+            for k, v in dict(batch.features).items()
+        },
+        history_mask=batch.history_mask.to(device),
+        legal_mask=batch.legal_mask.to(device),
+        observation_hashes=batch.observation_hashes,
+        actor_seats=batch.actor_seats.to(device),
+    )
+
+
 # ---------------------------------------------------------------------------
 # 1 actor-visible tensor encoder (no privileged fields)
 # ---------------------------------------------------------------------------
@@ -308,7 +322,40 @@ def test_sdpa_dense_attention_eval_dropout_zero() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_dense_legal_policy_head() -> None:
+@pytest.mark.parametrize(
+    "precision",
+    [
+        pytest.param("fp32", id="fp32"),
+        pytest.param("bf16", id="bf16", marks=pytest.mark.gpu),
+    ],
+)
+def test_dense_legal_policy_head(precision: str) -> None:
+    if precision == "bf16":
+        # CUDA-only numerics: same weights, fp32 reference vs bf16 autocast.
+        if not torch.cuda.is_available():
+            pytest.fail("BLOCKER: CUDA device unavailable; GPU probes cannot be qualified on CPU")
+        torch.manual_seed(0)
+        model = Hydra2BaselineModel()
+        model.eval()
+        model.to("cuda")
+        batch = _batch_to_device(encode_observations([_make_observation()]), torch.device("cuda"))
+        with torch.no_grad():
+            ref = model.evaluate(batch)
+            assert ref.policy_logits.dtype == torch.float32
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                out = model.evaluate(batch)
+        # Logits are dense bf16 covering every action; masking happens outside.
+        assert out.policy_logits.dtype == torch.bfloat16
+        assert out.policy_logits.shape[-1] == BASELINE_ACTION_COUNT
+        assert torch.allclose(
+            out.policy_logits.float(), ref.policy_logits.float(), atol=1e-2, rtol=1e-2
+        )
+        # Legal entries remain finite after masked fill.
+        illegal = ~batch.legal_mask
+        masked = out.policy_logits.float().masked_fill(illegal, float("-inf"))
+        # At least one finite per row (since at least one legal).
+        assert torch.isfinite(masked[batch.legal_mask]).all()
+        return
     model = Hydra2BaselineModel()
     assert model.policy_head.out_features == BASELINE_ACTION_COUNT
     assert model.policy_head.in_features == model.d_model * 2
@@ -330,7 +377,47 @@ def test_dense_legal_policy_head() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_four_seat_value_distribution_vector_head() -> None:
+@pytest.mark.parametrize(
+    "precision",
+    [
+        pytest.param("fp32", id="fp32"),
+        pytest.param("bf16", id="bf16", marks=pytest.mark.gpu),
+    ],
+)
+def test_four_seat_value_distribution_vector_head(precision: str) -> None:
+    if precision == "bf16":
+        # CUDA-only numerics: same weights, fp32 reference vs bf16 autocast.
+        if not torch.cuda.is_available():
+            pytest.fail("BLOCKER: CUDA device unavailable; GPU probes cannot be qualified on CPU")
+        torch.manual_seed(0)
+        model = Hydra2BaselineModel()
+        model.eval()
+        model.to("cuda")
+        batch = _batch_to_device(
+            encode_observations([_make_observation(), _make_observation(actor=2)]),
+            torch.device("cuda"),
+        )
+        with torch.no_grad():
+            ref = model.evaluate(batch)
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                out = model.evaluate(batch)
+        # Both placement and value retain four seats.
+        assert out.placement_logits.shape == (2, 4, 4)
+        assert out.value_vector.shape == (2, 4)
+        # Value is under named utility; check identity binding.
+        assert out.utility_id == model.utility_id
+        assert out.utility_manifest_hash == model.utility_manifest_hash
+        assert out.model_identity == model.model_identity
+        # Placement rows are per-seat rank logits; value vector is per-seat.
+        assert out.placement_logits.dtype == torch.bfloat16
+        assert out.value_vector.dtype == torch.bfloat16
+        assert torch.allclose(
+            out.placement_logits.float(), ref.placement_logits.float(), atol=1e-2, rtol=1e-2
+        )
+        assert torch.allclose(
+            out.value_vector.float(), ref.value_vector.float(), atol=1.5e-1, rtol=2e-2
+        )
+        return
     model = Hydra2BaselineModel()
     batch = encode_observations([_make_observation(), _make_observation(actor=2)])
     out = model.evaluate(batch)
@@ -460,10 +547,14 @@ def test_cache_full_history_encoding_agreement() -> None:
         out64 = model.evaluate(batch64)
         out128 = model.evaluate(batch128)
 
-    # All three bucketings agree bitwise under identical masks.
-    assert torch.equal(out32.policy_logits, out64.policy_logits)
-    assert torch.equal(out64.policy_logits, out128.policy_logits)
-    assert torch.equal(out32.value_vector, out128.value_vector)
+    # All three bucketings agree under identical masks. Tolerance, not
+    # bitwise: different bucket widths tile reductions differently, so
+    # last-ulp order varies with shape and CPU thread count (xdist workers
+    # run fewer threads). Padding is masked, so agreement within 1e-6 is
+    # the honest contract.
+    assert torch.allclose(out32.policy_logits, out64.policy_logits, atol=1e-6, rtol=1e-5)
+    assert torch.allclose(out64.policy_logits, out128.policy_logits, atol=1e-6, rtol=1e-5)
+    assert torch.allclose(out32.value_vector, out128.value_vector, atol=1e-6, rtol=1e-5)
 
     # Full-history vs cached prefix: extending history then masking
     # extra with explicit False must keep prefix representation stable.

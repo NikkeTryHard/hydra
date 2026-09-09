@@ -68,7 +68,7 @@ from hydra2.contracts.event import (
 __all__ = [
     "DORA_SENTINEL",
     "DORA_SHAPE",
-    "MELD_KINDS",
+    "HISTORY_EVENT_CAP",
     "OBSERVATION_SCHEMA_ARTIFACT_TYPE",
     "OBSERVATION_SCHEMA_RELPATH",
     "OBSERVATION_SCHEMA_SCHEMA_VERSION",
@@ -179,6 +179,16 @@ def _quad(values: object, *, name: str, validator) -> tuple:
     if isinstance(values, (str, bytes)) or not isinstance(values, Sequence) or len(values) != 4:
         raise ContractError(f"{name} must be exactly four entries")
     return tuple(validator(v, name=f"{name}[{i}]") for i, v in enumerate(values))
+
+
+def _validate_wind_type(v: object, name: str) -> TileType:
+    return TileType(
+        _require_plain_int(v, name=name, minimum=_WIND_TILE_TYPES[0], maximum=_WIND_TILE_TYPES[-1])
+    )
+
+
+def _validate_score(v: object, name: str) -> int:
+    return _require_plain_int(v, name=name, minimum=-(10**9), maximum=10**9)
 
 
 @dataclass(frozen=True, slots=True)
@@ -358,11 +368,7 @@ class ActorObservation:
         winds = _quad(
             self.seat_winds,
             name="seat_winds",
-            validator=lambda v, name: TileType(  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
-                _require_plain_int(  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
-                    v, name=name, minimum=_WIND_TILE_TYPES[0], maximum=_WIND_TILE_TYPES[-1]  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
-                )
-            ),
+            validator=_validate_wind_type,
         )
         if sorted(int(w) for w in winds) != list(_WIND_TILE_TYPES):  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
             raise ContractError("seat_winds must permute East/South/West/North aligned by seat")
@@ -382,9 +388,7 @@ class ActorObservation:
             _quad(
                 self.scores,
                 name="scores",
-                validator=lambda v, name: _require_plain_int(  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
-                    v, name=name, minimum=-(10**9), maximum=10**9  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
-                ),
+                validator=_validate_score,
             ),
         )
         object.__setattr__(self, "turn_actor", make_seat(self.turn_actor))
@@ -611,8 +615,16 @@ def make_actor_observation(**field_values: object) -> ActorObservation:
         )
     body = {k: v for k, v in field_values.items() if k != "observation_hash"}
     staged = ActorObservation(**body, observation_hash=None)  # type: ignore[arg-type]  # reason: body keys pre-checked against _OBSERVATION_FIELDS above
+    # Perf-C P1: the staged instance already ran the full __post_init__ firewall
+    # (closed slots, visibility filter, dora contiguity, mask positivity), so
+    # bind the digest in place instead of reconstructing (which re-validated
+    # every field and re-serialized the history for a second hash). The bound
+    # object is field-identical to a reconstructed one: normalization in
+    # __post_init__ is idempotent and the digest is verified independently by
+    # VISIBILITY_VALIDATOR at capture time.
     digest = compute_observation_hash(staged)
-    return ActorObservation(**body, observation_hash=digest)  # type: ignore[arg-type]  # reason: body keys pre-checked against _OBSERVATION_FIELDS above
+    object.__setattr__(staged, "observation_hash", digest)
+    return staged
 
 
 # ---------------------------------------------------------------------------
@@ -826,9 +838,17 @@ def compute_observation_schema_digest(payload_without_digest: Mapping[str, objec
     return DigestText("sha256:" + hashlib.sha256(identity).hexdigest())
 
 
+_OBSERVATION_SCHEMA_DIGEST_CACHE: DigestText | None = None
+
+
 def observation_schema_digest() -> DigestText:
     """Digest of the compiled schema; stamped onto every built observation."""
-    return compute_observation_schema_digest(build_observation_schema_payload())
+    global _OBSERVATION_SCHEMA_DIGEST_CACHE
+    cached = _OBSERVATION_SCHEMA_DIGEST_CACHE
+    if cached is None:
+        cached = compute_observation_schema_digest(build_observation_schema_payload())
+        _OBSERVATION_SCHEMA_DIGEST_CACHE = cached
+    return cached
 
 
 def build_observation_schema_envelope() -> dict[str, object]:
@@ -929,6 +949,12 @@ class VisibilityValidator:
 
 #: Shared stateless validator instance (SPEC 8 protocol object).
 VISIBILITY_VALIDATOR = VisibilityValidator()
+
+#: Max visible-history events a row may carry. Mirrors
+#: ``HISTORY_BUCKET_LENGTHS[-1]`` (models/schema, the model cap); pinned
+#: equal by test. Histories are per-kyoku and NEVER truncated silently --
+#: over-cap rows fail closed at capture/encode time instead.
+HISTORY_EVENT_CAP = 256
 
 
 # ---------------------------------------------------------------------------
@@ -1097,7 +1123,9 @@ class ObservationBuilder:
                 tiles=tuple(sorted([*event.payload.consumed_tiles, claimed])),
             )
             self._melds[actor].append(meld)  # type: ignore[index]  # reason: actor is a validated seat int; container keyed by Seat NewType
-            self._kan_count += 1
+            if kind == "daiminkan":
+                # Chi/pon open the hand but are not kans (grammar delta_paths agrees).
+                self._kan_count += 1
         elif kind == "ankan":
             meld = VisibleMeld(
                 meld_id=None,
@@ -1106,6 +1134,12 @@ class ObservationBuilder:
                 tiles=tuple(sorted(event.payload.consumed_tiles)),
             )
             self._melds[actor].append(meld)  # type: ignore[index]  # reason: actor is a validated seat int; container keyed by Seat NewType
+            self._kan_count += 1
+        elif kind == "kakan":
+            added = event.payload.tile
+            assert added is not None  # kind-shape validation guarantees the tile
+            assert actor is not None  # grammar requires actor for kakan
+            self._upgrade_kakan(actor, int(added))
             self._kan_count += 1
         elif kind == "dora_revealed":
             revealed = event.payload.tile
@@ -1216,9 +1250,7 @@ class ObservationBuilder:
             self._public["scores"] = _quad(
                 snapshot["scores"],
                 name="scores",
-                validator=lambda v, name: _require_plain_int(  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
-                    v, name=name, minimum=-(10**9), maximum=10**9  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
-                ),
+                validator=_validate_score,
             )
         if "turn_actor" in snapshot:
             self._public["turn_actor"] = make_seat(snapshot["turn_actor"])  # type: ignore[arg-type]  # reason: snapshot value statically object; validated inside make_seat

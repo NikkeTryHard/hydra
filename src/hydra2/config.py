@@ -81,7 +81,7 @@ def _default_artifact_root() -> Path:
         tmpdir = tempfile.gettempdir()
     except Exception:
         tmpdir = ""
-    if tmpdir and tmpdir.strip() != "":
+    if tmpdir != "" and tmpdir.strip() != "":
         return Path(tmpdir) / "hydra2-artifacts"
     return Path.home() / ".cache" / "hydra2" / "artifacts"
 
@@ -142,5 +142,11 @@ def __getattr__(name: str) -> Path:
 
 def __dir__() -> list[str]:
     return sorted(
-        [*__all__, "DEFAULT_ARTIFACT_ROOT", "REPO_ROOT", "_default_artifact_root", "_find_repo_root"]  # noqa: E501
+        [
+            *__all__,
+            "DEFAULT_ARTIFACT_ROOT",
+            "REPO_ROOT",
+            "_default_artifact_root",
+            "_find_repo_root",
+        ]
     )

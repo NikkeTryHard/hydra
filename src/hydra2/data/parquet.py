@@ -22,8 +22,10 @@ if TYPE_CHECKING:
 __all__ = [
     "DecisionRow",
     "PrivilegedRow",
+    "validate_privileged_ranks",
     "verify_no_privileged_leakage",
     "write_actor_shards",
+    "write_privileged_ranks",
     "write_privileged_shards",
 ]
 
@@ -92,7 +94,6 @@ _PRIVILEGED_SCHEMA = pa.schema(
 )
 
 
-
 @dataclass(frozen=True, slots=True)
 class DecisionRow:
     game_id: str
@@ -116,6 +117,41 @@ class PrivilegedRow:
     decision_id: str
     privileged_label: dict[str, object]
     full_world: dict[str, object] | None = None
+
+
+# privileged_label opaque-dict key conventions (day-one, no parquet schema break):
+# - "ranks": AUTHORITATIVE placement. Strict 1..4 4-list permutation, one rank per
+#   seat (rank 1 = first). utility() is the fixed point: ranks -> rank_values ->
+#   UtilityVector.values. Read bridge only: 0..3 seat convention and 4-list
+#   "final_placement" are accepted by the oracle loader/join but MUST never be
+#   written (writers emit 1..4 via validate_privileged_ranks).
+# - "hidden_tiles" / "hidden_tile_counts": 34-list belief counts (index-CE target).
+# - "wall_id" / "split": provenance passthrough inside the opaque dict (kept out
+#   of the Arrow schema so the parquet layout never breaks).
+# Belief note: belief loss stays index-CE; 34-dim distribution support is DEFERRED
+# (see join_oracle_targets docstring).
+
+
+def validate_privileged_ranks(ranks: object, decision_id: str = "") -> tuple[int, int, int, int]:
+    """Pin the day-one ranks convention: strict 1..4 4-list permutation.
+
+    Returns the validated ranks as a 4-tuple. Raises ContractError for any
+    non-list/tuple, wrong length, non-int (bool included), or non-permutation
+    input — including the 0..3 seat convention, which is a read-only bridge in
+    the oracle loader and must never be written.
+    """
+    where = f" for {decision_id!r}" if decision_id != "" else ""
+    if not isinstance(ranks, (list, tuple)) or len(ranks) != 4:
+        raise ContractError(f"privileged_label['ranks'] must be a 4-list{where}")
+    if any(isinstance(x, bool) for x in ranks) or not all(isinstance(x, int) for x in ranks):
+        raise ContractError(f"privileged_label['ranks'] must be int 1..4{where}")
+    ordered = (int(ranks[0]), int(ranks[1]), int(ranks[2]), int(ranks[3]))
+    if sorted(ordered) != [1, 2, 3, 4]:
+        raise ContractError(
+            f"privileged_label['ranks'] must be a strict 1..4 permutation{where}, "
+            f"got {list(ordered)!r}"
+        )
+    return ordered
 
 
 def _actor_observation_is_privileged_free(obs: dict[str, object]) -> None:
@@ -247,15 +283,16 @@ def write_privileged_shards(
         "decision_id": [r.decision_id for r in rows],
         "privileged_label": [json.dumps(r.privileged_label, separators=(",", ":")) for r in rows],
         "full_world": [
-            json.dumps(r.full_world, separators=(",", ":"))
-            if r.full_world is not None
-            else ""
+            json.dumps(r.full_world, separators=(",", ":")) if r.full_world is not None else ""
             for r in rows
         ],
     }
     # Reuse hoisted privileged schema (P-B05)
     table = pa.table(table_dict, schema=_PRIVILEGED_SCHEMA)
-    out_path = destination / "privileged.parquet"
+    # P0-1: shard name MUST match the oracle loader glob (privileged-*.parquet,
+    # mirroring actor-*.parquet sharding). The bare "privileged.parquet" name was
+    # invisible to the loader and silently yielded zero rows.
+    out_path = destination / "privileged-000.parquet"
     pq.write_table(
         table,
         out_path,
@@ -277,6 +314,48 @@ def write_privileged_shards(
     }
     atomic_replace_bytes(destination / "privileged_manifest.json", canonical_bytes(manifest))
     return {"all": shard_hash}
+
+
+def write_privileged_ranks(
+    *,
+    destination: Path,
+    ranks_by_id: dict[str, list[int] | tuple[int, int, int, int]],
+    wall_ids: dict[str, str] | None = None,
+    split: str = "train",
+    dataset_hash: str | None = None,
+    split_manifest_hash: str | None = None,
+) -> dict[str, str]:
+    """Write privileged placement rows carrying the pinned 1..4 ranks convention.
+
+    Each decision_id maps to a strict 1..4 permutation (validated via
+    validate_privileged_ranks). wall_id/split ride inside the opaque
+    privileged_label dict (passthrough, no Arrow schema break); the loader/join
+    consumes ranks by opaque decision_id only, never through the actor batch.
+    Only the "train" split is written (oracle distillation is train-only).
+    """
+    if len(ranks_by_id) == 0:
+        raise ContractError("no privileged ranks to write")
+    if split != "train":
+        raise ContractError(f"privileged ranks split must be 'train', got {split!r}")
+    rows: list[PrivilegedRow] = []
+    for decision_id in sorted(ranks_by_id):
+        if not isinstance(decision_id, str) or decision_id == "":
+            raise ContractError("decision_id must be an opaque non-empty str")
+        ordered = validate_privileged_ranks(ranks_by_id[decision_id], decision_id)
+        label: dict[str, object] = {"ranks": list(ordered), "split": split}
+        if wall_ids is not None and decision_id in wall_ids:
+            wall_id = wall_ids[decision_id]
+            if not isinstance(wall_id, str) or wall_id == "":
+                raise ContractError(f"wall_id must be a non-empty str for {decision_id!r}")
+            label["wall_id"] = wall_id
+        rows.append(PrivilegedRow(decision_id=decision_id, privileged_label=label))
+    return write_privileged_shards(
+        destination=destination,
+        rows=rows,
+        dataset_hash=dataset_hash,
+        split_manifest_hash=split_manifest_hash,
+    )
+
 
 def verify_no_privileged_leakage(actor_parquet_path: Path) -> None:
     """Hard failure: privileged inference field in actor shard is forbidden.
@@ -312,9 +391,7 @@ def verify_no_privileged_leakage(actor_parquet_path: Path) -> None:
                 try:
                     obs_raw: object = json.loads(obs_json) if isinstance(obs_json, str) else {}
                     obs: dict[str, object] = (
-                        cast("dict[str, object]", obs_raw)
-                        if isinstance(obs_raw, dict)
-                        else {}
+                        cast("dict[str, object]", obs_raw) if isinstance(obs_raw, dict) else {}
                     )
                 except json.JSONDecodeError:
                     continue

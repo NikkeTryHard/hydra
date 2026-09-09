@@ -387,6 +387,7 @@ def test_exact_pushforward_then_condition() -> None:
         make_actor_visible_packet,
         public_state_chain_hash,
     )
+
     # Create a dummy public discard to anchor packet
     payload = EventPayload(
         kind="discard",
@@ -761,7 +762,9 @@ def test_natural_full_fidelity_confirmation_runner() -> None:
     _w, obs = _make_world_and_obs()
     corpus = build_tiny_corpus(observation=obs, size=4)
     cases = tuple(
-        ConfirmationCase(case_id=f"case_{i}", world_id=w.world_id, observation_hash=w.observation_hash)
+        ConfirmationCase(
+            case_id=f"case_{i}", world_id=w.world_id, observation_hash=w.observation_hash
+        )
         for i, w in enumerate(corpus.worlds)
     )
     rng = _rng(b"confirm_runner")
@@ -819,7 +822,9 @@ def test_parent_only_reweight_negative_fixture() -> None:
     # Negative fixture: a fake successor that reweights parent without transition (same world_ref)
     # should not appear among true successors
     for s in succs:
-        assert s.successor_world_ref != p.world_ref, "successor must be transitioned world, not parent-only reweight"
+        assert s.successor_world_ref != p.world_ref, (
+            "successor must be transitioned world, not parent-only reweight"
+        )
         assert s.delta_ref != p.world_ref
     # Also ensure that no successor is just parent reweighted: we check that our kernel does not return parent
     parent_world_ids = {p.world_ref}
@@ -1009,7 +1014,9 @@ def test_deterministic_confirmation_replay() -> None:
     _w, obs = _make_world_and_obs()
     corpus = build_tiny_corpus(observation=obs, size=4)
     cases = tuple(
-        ConfirmationCase(case_id=f"case_{i}", world_id=ww.world_id, observation_hash=ww.observation_hash)
+        ConfirmationCase(
+            case_id=f"case_{i}", world_id=ww.world_id, observation_hash=ww.observation_hash
+        )
         for i, ww in enumerate(corpus.worlds)
     )
 
@@ -1061,8 +1068,12 @@ def test_sampled_determinism_and_provenance() -> None:
     belief, epoch = _sampled_epoch()
     parent = belief.sample_natural(epoch, count=1, rng=_rng(b"sampled_det"))[0]
     cfg = SampledKernelConfig(samples_per_parent_action=4)
-    first = enumerate_sampled(epoch=epoch, particle=parent, action=0, config=cfg, rng=_rng(b"sampled_det"))
-    second = enumerate_sampled(epoch=epoch, particle=parent, action=0, config=cfg, rng=_rng(b"sampled_det"))
+    first = enumerate_sampled(
+        epoch=epoch, particle=parent, action=0, config=cfg, rng=_rng(b"sampled_det")
+    )
+    second = enumerate_sampled(
+        epoch=epoch, particle=parent, action=0, config=cfg, rng=_rng(b"sampled_det")
+    )
     assert len(first) == 4
     assert [(s.successor_world_ref, s.raw_weight) for s in first] == [
         (s.successor_world_ref, s.raw_weight) for s in second
@@ -1080,7 +1091,11 @@ def test_sampled_no_mass_one_claim() -> None:
     belief, epoch = _sampled_epoch()
     parent = belief.sample_natural(epoch, count=1, rng=_rng(b"sampled_mass"))[0]
     batch = enumerate_sampled(
-        epoch=epoch, particle=parent, action=0, config=SampledKernelConfig(samples_per_parent_action=1), rng=_rng(b"sampled_mass")
+        epoch=epoch,
+        particle=parent,
+        action=0,
+        config=SampledKernelConfig(samples_per_parent_action=1),
+        rng=_rng(b"sampled_mass"),
     )
     assert len(batch) == 1
     assert batch[0].raw_weight == pytest.approx(0.5)
@@ -1096,7 +1111,13 @@ def test_sampled_stale_rejection() -> None:
     _, epoch = _sampled_epoch()
     bad = types.SimpleNamespace(epoch=9999, target_id=epoch.target_id, world_ref="x")
     with pytest.raises(StaleBeliefError):
-        enumerate_sampled(epoch=epoch, particle=bad, action=0, config=SampledKernelConfig(samples_per_parent_action=2), rng=_rng(b"sampled_stale"))
+        enumerate_sampled(
+            epoch=epoch,
+            particle=bad,
+            action=0,
+            config=SampledKernelConfig(samples_per_parent_action=2),
+            rng=_rng(b"sampled_stale"),
+        )
 
 
 def test_sampled_exhaustive_untouched() -> None:

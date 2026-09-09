@@ -75,6 +75,7 @@ except ImportError:
     from hydra2.config import repo_root  # portable marker walk, cached
 
     REPO_ROOT: Path = repo_root()  # type: ignore[no-redef]
+
     @dataclass(frozen=True, slots=True)
     class ResourceBudget:
         mode: str = "gameplay_5s"
@@ -398,9 +399,7 @@ def fresh_rebuild_epoch(
     Must digest-equal the successor stored in packet.epoch_after when the packet
     is the REALIZED one (mass-one partition guarantee).
     """
-    epoch_id = (
-        epoch_before.epoch if isinstance(epoch_before, BeliefEpochLite) else epoch_before
-    )
+    epoch_id = epoch_before.epoch if isinstance(epoch_before, BeliefEpochLite) else epoch_before
     if packet.epoch_before != epoch_id:
         raise ContractError(f"packet epoch_before {packet.epoch_before!r} != epoch {epoch_id!r}")
     raw = canonical_bytes({"epoch_before": epoch_id, "packet_id": packet.packet_id})
@@ -427,7 +426,7 @@ def _distribute_quota(sorted_pids: list[str], quota: int) -> dict[str, int]:
     """
     dist: dict[str, int] = dict.fromkeys(sorted_pids, 0)
     remaining = quota
-    while remaining > 0 and dist:
+    while remaining > 0 and len(dist) > 0:
         for pid in sorted_pids:
             if remaining <= 0:
                 break
@@ -529,7 +528,9 @@ def make_persistence_candidate_spec(
         fallback_margin_ms = 500
     # Validate deadline / deployable invariants via PersistenceArm
     if arm_id in ("B", "F", "R", "P") and deadline_ms > DEPLOYABLE_DEADLINE_MS:
-        raise ContractError(f"deployable arm {arm_id} deadline {deadline_ms} >{DEPLOYABLE_DEADLINE_MS}")
+        raise ContractError(
+            f"deployable arm {arm_id} deadline {deadline_ms} >{DEPLOYABLE_DEADLINE_MS}"
+        )
     if arm_id == "C":
         # C gets extended budget: deadline + extra_wait_allowance is the *scheduled max*
         # The ResourceBudget deadline reflects the extended allowance (lab control).
@@ -597,7 +598,9 @@ def validate_deadline_and_fallback(
     if fallback_margin_ms < 0 or fallback_margin_ms >= deadline_ms:
         raise ContractError(f"fallback_margin {fallback_margin_ms} must be in [0,{deadline_ms})")
     if arm.id in ("B", "F", "R", "P") and deadline_ms > DEPLOYABLE_DEADLINE_MS:
-        raise ContractError(f"deployable arm {arm.id} deadline {deadline_ms} >{DEPLOYABLE_DEADLINE_MS}")
+        raise ContractError(
+            f"deployable arm {arm.id} deadline {deadline_ms} >{DEPLOYABLE_DEADLINE_MS}"
+        )
     if arm.id == "C" and not arm.deployable and arm.extra_wait_allowance_ms <= 0:
         raise ContractError("C extra allowance must be positive")
 
@@ -700,9 +703,7 @@ class PersistencePlanner:
             oh = str(hash_val)
         else:
             obs_str: str = str(cast("object", observation))
-            oh = hashlib.sha256(
-                canonical_bytes({"obs": obs_str, "arm": self.arm.id})
-            ).hexdigest()
+            oh = hashlib.sha256(canonical_bytes({"obs": obs_str, "arm": self.arm.id})).hexdigest()
             oh = "sha256:" + oh
         raw = f"{oh}:{self.arm.id}".encode()
         return "epoch:" + hashlib.sha256(raw).hexdigest()[:16]
@@ -832,7 +833,12 @@ class PersistencePlanner:
                     timeout=True,
                     completed=False,
                 )
-                return self._result_for(cast("object", act), cast("tuple[Any, ...]", legal_actions), tel, completed=False)
+                return self._result_for(
+                    cast("object", act),
+                    cast("tuple[Any, ...]", legal_actions),
+                    tel,
+                    completed=False,
+                )
         action, calls, trans, fallback_used, timeout = self._do_search(
             observation=observation,
             legal_actions=legal_actions,
@@ -904,7 +910,9 @@ class PersistencePlanner:
                 # Violation: retain found where forbidden — squash and count
                 self._forest.clear()
                 self._forest = None
-            epoch_after_bfc: object = getattr(cast("object", packet), "epoch_after", cast("object", packet_id))
+            epoch_after_bfc: object = getattr(
+                cast("object", packet), "epoch_after", cast("object", packet_id)
+            )
             self._current_epoch = str(epoch_after_bfc)
             self._commit_log.append(
                 {"arm": self.arm.id, "packet_id": packet_id, "outcome": "fresh", "ponder_calls": 0}
@@ -916,7 +924,9 @@ class PersistencePlanner:
             # No speculative forest (e.g., fallback) — treat as rebuild
             self._surprise_counts["miss"] += 1
             self._surprise_counts["recovery"] += 1
-            epoch_after_none: object = getattr(cast("object", packet), "epoch_after", cast("object", packet_id))
+            epoch_after_none: object = getattr(
+                cast("object", packet), "epoch_after", cast("object", packet_id)
+            )
             self._current_epoch = str(epoch_after_none)
             self._commit_log.append(
                 {
@@ -938,7 +948,9 @@ class PersistencePlanner:
             self._surprise_counts["recovery"] += 1
             # Rebuild authoritative epoch_after
             # Validate commit/rebuild equality conceptually: rebuilt hash must match packet's epoch_after if packet valid
-            epoch_after_miss: object = getattr(cast("object", packet), "epoch_after", cast("object", packet_id))
+            epoch_after_miss: object = getattr(
+                cast("object", packet), "epoch_after", cast("object", packet_id)
+            )
             self._current_epoch = str(epoch_after_miss)
             self._commit_log.append(
                 {

@@ -123,9 +123,15 @@ class _TransformerLayer(nn.Module):
         batch: int = int(cast("Any", x.shape[0]))  # pyrefly: ignore[explicit-any]  # reason: deliberate Any for dynamic shape; int() validates
         seq_len: int = int(cast("Any", x.shape[1]))  # pyrefly: ignore[explicit-any]  # reason: deliberate Any for dynamic shape; int() validates
 
-        queries: torch.Tensor = self.q_proj(x).view(batch, seq_len, self.n_heads, self.head_dim).transpose(1, 2)  # noqa: E501  # reason: single logical reshape; splitting harms scan. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.view.html
-        keys: torch.Tensor = self.k_proj(x).view(batch, seq_len, self.n_heads, self.head_dim).transpose(1, 2)  # noqa: E501  # reason: single logical reshape; splitting harms scan. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.view.html
-        values: torch.Tensor = self.v_proj(x).view(batch, seq_len, self.n_heads, self.head_dim).transpose(1, 2)  # noqa: E501  # reason: single logical reshape; splitting harms scan. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.view.html
+        queries: torch.Tensor = (
+            self.q_proj(x).view(batch, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
+        )  # reason: single logical reshape; splitting harms scan. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.view.html
+        keys: torch.Tensor = (
+            self.k_proj(x).view(batch, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
+        )  # reason: single logical reshape; splitting harms scan. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.view.html
+        values: torch.Tensor = (
+            self.v_proj(x).view(batch, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
+        )  # reason: single logical reshape; splitting harms scan. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.view.html
         # Perf-A §4.1: bool mask dispatch without O(B·T²) float alloc.
         # Evidence: SDPA tutorial
         #  https://pytorch.org/tutorials/intermediate/scaled_dot_product_attention_tutorial.html  # noqa: E501  # reason: URL cannot wrap without breaking link; alternative loses precision
@@ -169,6 +175,7 @@ class _TransformerLayer(nn.Module):
 
 class Hydra2BaselineModel(nn.Module):
     """Baseline transformer — actor-visible only, SDPA, dense heads."""
+
     # Root-cause type for register_buffer: pyrefly infers Module|Tensor
     # for dynamically registered buffers; explicit annotation narrows
     # to Tensor without runtime cost. Evidence:
@@ -236,7 +243,9 @@ class Hydra2BaselineModel(nn.Module):
         # buffer is device-resident and sliced without alloc.
         # https://docs.pytorch.org/docs/2.13/generated/torch.compile.html — constants
         # hoisted enable fusion.
-        self.register_buffer("pos_ids", torch.arange(max_bucket, dtype=torch.long), persistent=False)  # noqa: E501  # reason: single logical buffer registration; splitting harms scan
+        self.register_buffer(
+            "pos_ids", torch.arange(max_bucket, dtype=torch.long), persistent=False
+        )  # reason: single logical buffer registration; splitting harms scan
         # Input dim: actor (one-hot 4 via embedding) + dealer embedding + phase etc.
         # For baseline determinism, we use simple linear over flattened scalars
         # computed in forward; dimension is declared as 64.
@@ -276,6 +285,7 @@ class Hydra2BaselineModel(nn.Module):
                     _bias: torch.Tensor = nn.init.zeros_(module.bias)
             elif isinstance(module, nn.Embedding):
                 _emb: torch.Tensor = nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
     def _compute_model_identity(self) -> DigestText:
         import hashlib
 
@@ -316,7 +326,9 @@ class Hydra2BaselineModel(nn.Module):
             )
         if torch.compiler.is_compiling():
             torch._check_tensor_all(
-                batch.legal_mask.any(dim=1), lambda: "nonterminal batch requires at least one legal per row"  # noqa: E501  # reason: contract string cannot split without harming grep; alternative worse
+                batch.legal_mask.any(dim=1),
+                # reason: contract string cannot split without harming grep; alternative worse
+                lambda: "nonterminal batch requires at least one legal per row",
             )
         elif not bool(batch.legal_mask.any(dim=1).all().item()):  # pyrefly: ignore[pytorch-efficiency-lint-item-call]  # reason: eager host sync for contract; single scalar must cross host. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
             raise ContractError("nonterminal batch requires at least one legal per row")
@@ -329,7 +341,9 @@ class Hydra2BaselineModel(nn.Module):
         history_mask: torch.Tensor = batch.history_mask  # [B,T] True=participate
 
         # History embedding with positional addition — padding positions use zero mask.
-        hist_emb: torch.Tensor = self.history_embedding(history_kind.clamp(min=0, max=_NUM_EVENT_KINDS - 1))  # noqa: E501  # reason: single logical embedding lookup; splitting harms scan
+        hist_emb: torch.Tensor = self.history_embedding(
+            history_kind.clamp(min=0, max=_NUM_EVENT_KINDS - 1)
+        )  # reason: single logical embedding lookup; splitting harms scan
         # Perf-A §4.1: use buffer pos_ids sliced instead of torch.arange per forward.
         # Avoids [B,T] int64 alloc + H2D each step; buffer is persistent=False
         # device-resident, sliced via view.
@@ -346,13 +360,15 @@ class Hydra2BaselineModel(nn.Module):
         x = self.final_norm(x)
 
         # Masked mean pool over history — padded positions excluded.
-        mask_f: torch.Tensor = history_mask.float().unsqueeze(-1)  # [B,T,1]
+        # AMP F3: dtype-following mask (was .float()); under bf16 autocast the
+        # trunk is bf16 so the mask follows x.dtype; fp32 default is identical.
+        mask_f: torch.Tensor = history_mask.to(x.dtype).unsqueeze(-1)  # [B,T,1]
         # When history empty (all padding), denominator zero; use zero vector.
         denom: torch.Tensor = mask_f.sum(dim=1).clamp(min=1.0)  # [B,1]
         pooled: torch.Tensor = (x * mask_f).sum(dim=1) / denom  # [B,D]
 
         # Scalar branch — build 64-dim vector from actor-visible scalars.
-        scalar_vec: torch.Tensor = self._build_scalar_features(batch)  # [B,64]
+        scalar_vec: torch.Tensor = self._build_scalar_features(batch, dtype=x.dtype)  # [B,64]
         scalar_emb: torch.Tensor = self.scalar_proj(scalar_vec)  # [B,D]
         trunk: torch.Tensor = torch.cat([pooled, scalar_emb], dim=-1)  # [B, 2D]
 
@@ -393,9 +409,16 @@ class Hydra2BaselineModel(nn.Module):
             model_identity=self.model_identity,
         )
 
-    def _build_scalar_features(self, batch: ActorTensorBatch) -> torch.Tensor:
+    def _build_scalar_features(
+        self, batch: ActorTensorBatch, *, dtype: torch.dtype | None = None
+    ) -> torch.Tensor:
         # Compose 64-dim scalar feature vector from actor-visible fields.
         # All inputs are actor-visible; no hidden state.
+        # AMP F4: dtype-following normalizations (was .float()). evaluate passes
+        # x.dtype so bf16 autocast keeps the scalar branch in bf16 while the
+        # fp32 default (None) is identical. -inf fills, LayerNorm,
+        # masked_policy untouched.
+        compute_dtype: torch.dtype = dtype if dtype is not None else torch.float32
         feats: list[torch.Tensor] = []
 
         actor: torch.Tensor = batch.features["actor"]  # [B]
@@ -404,43 +427,49 @@ class Hydra2BaselineModel(nn.Module):
         phase: torch.Tensor = batch.features["phase"]
         actor_furiten: torch.Tensor = batch.features["actor_furiten"]
 
-        feats.append(self.actor_emb(actor))  # [B,8]
-        feats.append(self.actor_emb(dealer))
-        feats.append(self.actor_emb(turn_actor))
-        feats.append(self.phase_emb(phase.clamp(max=5)))
-        feats.append(self.furiten_emb(actor_furiten.clamp(max=3)))
+        feats.append(self.actor_emb(actor).to(compute_dtype))  # [B,8]
+        feats.append(self.actor_emb(dealer).to(compute_dtype))
+        feats.append(self.actor_emb(turn_actor).to(compute_dtype))
+        feats.append(self.phase_emb(phase.clamp(max=5)).to(compute_dtype))
+        feats.append(self.furiten_emb(actor_furiten.clamp(max=3)).to(compute_dtype))
 
         # Scores normalized / 30000, seat_winds embedding, etc.
-        scores: torch.Tensor = batch.features["scores"].float() / 30000.0  # [B,4]
+        scores: torch.Tensor = batch.features["scores"].to(compute_dtype) / 30000.0  # [B,4]
         feats.append(scores)  # 4
 
         # Round wind embedding
         round_wind: torch.Tensor = batch.features["round_wind"]
-        feats.append(self.wind_emb(round_wind.clamp(max=3)))  # [B,4]
+        feats.append(self.wind_emb(round_wind.clamp(max=3)).to(compute_dtype))  # [B,4]
 
         # seat_winds flattened embedding sum
         seat_winds: torch.Tensor = batch.features["seat_winds"]  # [B,4]
-        seat_emb: torch.Tensor = self.wind_emb(seat_winds.clamp(max=3)).view(scores.shape[0], -1)  # [B,16]  # noqa: E501  # reason: single logical embedding reshape; splitting harms scan
+        seat_emb: torch.Tensor = (
+            self.wind_emb(seat_winds.clamp(max=3)).to(compute_dtype).view(scores.shape[0], -1)
+        )  # [B,16]  # reason: single logical embedding reshape; splitting harms scan
         feats.append(seat_emb)
 
         # Scalar ints normalized
-        honba = batch.features["honba"].float().unsqueeze(-1) / 10.0  # [B,1]
-        riichi_sticks = batch.features["riichi_sticks"].float().unsqueeze(-1) / 10.0
-        live_wall = batch.features["live_wall_tiles_remaining"].float().unsqueeze(-1) / 70.0
-        kan_count = batch.features["kan_count"].float().unsqueeze(-1) / 4.0
-        round_index = batch.features["round_index"].float().unsqueeze(-1) / 10.0
-        hand_number = batch.features["hand_number"].float().unsqueeze(-1) / 10.0
+        honba = batch.features["honba"].to(compute_dtype).unsqueeze(-1) / 10.0  # [B,1]
+        riichi_sticks = batch.features["riichi_sticks"].to(compute_dtype).unsqueeze(-1) / 10.0
+        live_wall = (
+            batch.features["live_wall_tiles_remaining"].to(compute_dtype).unsqueeze(-1) / 70.0
+        )
+        kan_count = batch.features["kan_count"].to(compute_dtype).unsqueeze(-1) / 4.0
+        round_index = batch.features["round_index"].to(compute_dtype).unsqueeze(-1) / 10.0
+        hand_number = batch.features["hand_number"].to(compute_dtype).unsqueeze(-1) / 10.0
         feats.extend([honba, riichi_sticks, live_wall, kan_count, round_index, hand_number])  # +6
 
         # Dora + own drawn tile one-hot-ish normalized
-        dora = batch.features["dora_indicators"].float() / 136.0  # [B,5]
+        dora = batch.features["dora_indicators"].to(compute_dtype) / 136.0  # [B,5]
         feats.append(dora)  # 5
-        own_drawn = batch.features["own_drawn_tile"].float().unsqueeze(-1) / 136.0  # [B,1]
+        own_drawn = (
+            batch.features["own_drawn_tile"].to(compute_dtype).unsqueeze(-1) / 136.0
+        )  # [B,1]
         feats.append(own_drawn)  # 1
 
         # Concealed counts normalized
         concealed = (
-            batch.features["concealed_hand_counts"].float() / 4.0
+            batch.features["concealed_hand_counts"].to(compute_dtype) / 4.0
         )  # [B,34] -> compress to sum?
         # Reduce to 4 stats: mean, max, etc. to keep dim 64 bounded
         concealed_mean = concealed.mean(dim=1, keepdim=True)  # [B,1]
@@ -448,25 +477,27 @@ class Hydra2BaselineModel(nn.Module):
         feats.extend([concealed_mean, concealed_max])  # +2
 
         # Visible discards counts similarly
-        vis_disc = batch.features["visible_discards_counts"].float() / 4.0
+        vis_disc = batch.features["visible_discards_counts"].to(compute_dtype) / 4.0
         vis_mean = vis_disc.mean(dim=1, keepdim=True)
         vis_max = vis_disc.max(dim=1).values.unsqueeze(-1)
         feats.extend([vis_mean, vis_max])
 
         # ippatsu_active sum, riichi_states
         ippatsu_sum = (
-            batch.features["ippatsu_active"].float().sum(dim=1, keepdim=True) / 4.0
+            batch.features["ippatsu_active"].to(compute_dtype).sum(dim=1, keepdim=True) / 4.0
         )  # [B,1]
         feats.append(ippatsu_sum)
-        riichi_sum = batch.features["riichi_states"].float().sum(dim=1, keepdim=True) / 8.0  # [B,1]
+        riichi_sum = (
+            batch.features["riichi_states"].to(compute_dtype).sum(dim=1, keepdim=True) / 8.0
+        )  # [B,1]
         feats.append(riichi_sum)
 
         # Bool actor_can
-        can_riichi = batch.features["actor_can_riichi"].float().unsqueeze(-1)
-        can_tsumo = batch.features["actor_can_tsumo"].float().unsqueeze(-1)
+        can_riichi = batch.features["actor_can_riichi"].to(compute_dtype).unsqueeze(-1)
+        can_tsumo = batch.features["actor_can_tsumo"].to(compute_dtype).unsqueeze(-1)
         feats.extend([can_riichi, can_tsumo])
 
-        concat = torch.cat(feats, dim=-1)  # should be 64
+        concat = torch.cat(feats, dim=-1).to(compute_dtype)  # should be 64
         # Pad or truncate to exactly 64
         if concat.shape[-1] < 64:
             pad = torch.zeros(
@@ -524,7 +555,16 @@ class Hydra2BaselineModel(nn.Module):
                     "output_key": "placement_logits",
                     "target_id": "final_placement",
                     "loss_id": "cross_entropy_4x4",
-                    "parameters": {"seats": 4, "ranks": 4},
+                    # Per-seat semantics: [B,4,4] logits (dim-1 seat 0..3,
+                    # dim-2 rank-logits 1..4) vs [B,4] rank indices; per-seat
+                    # CE then mean over seats. Binds Linear(2D->16).view(B,4,4).
+                    "parameters": {
+                        "logits_shape": [4, 4],
+                        "ranks": 4,
+                        "seats": 4,
+                        "semantics": "per_seat_rank_logits",
+                        "target_shape": [4],
+                    },
                 },
                 {
                     "head_id": "policy",

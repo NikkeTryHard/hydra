@@ -597,7 +597,19 @@ def _default_head_specs() -> tuple[ModelHeadSpec, ...]:
             output_key="placement_logits",
             target_id="final_placement",
             loss_id="cross_entropy_4x4",
-            parameters={"seats": 4, "ranks": 4},
+            # Per-seat placement-credit semantics (day-one trainable):
+            # logits [B,4,4] where dim-1 = seat 0..3, dim-2 = rank-logits
+            # for ranks 1..4; target [B,4] per-seat rank indices; loss is
+            # per-seat cross-entropy then mean over seats (Lean
+            # paired_argmax_suboptimality). Field table untouched — input
+            # digest sha256:222c9eeb... unchanged; model_spec digest churns.
+            parameters={
+                "logits_shape": [4, 4],
+                "ranks": 4,
+                "seats": 4,
+                "semantics": "per_seat_rank_logits",
+                "target_shape": [4],
+            },
         ),
         ModelHeadSpec(
             head_id="policy",

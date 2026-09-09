@@ -571,4 +571,55 @@ theorem fp_demo_order : (0.0005 : ℝ) < 0.0014 ∧ (0.0014 : ℝ) < 0.1792 := b
 end FpOrder
 end AcqArgmax
 
+section TelescopeError
+
+/-- Wave-3 Python consumer: telescope propagation (GRP reward shaping):
+    uniform `e`-close potential estimates keep the telescoped return within `2 * e`
+    of the true `Phi T - Phi 0` (triangle inequality over `grp_telescope`). -/
+theorem grp_telescope_error
+    (Phi Phihat : ℕ → ℝ) (T : ℕ) (e : ℝ)
+    (herr : ∀ k, k ≤ T → |Phihat k - Phi k| ≤ e) :
+    |∑ k ∈ Finset.range T, grpReward Phihat k - (Phi T - Phi 0)| ≤ 2 * e := by
+  have hT : |Phihat T - Phi T| ≤ e := herr T le_rfl
+  have h0 : |Phihat 0 - Phi 0| ≤ e := herr 0 (Nat.zero_le T)
+  have htele : ∑ k ∈ Finset.range T, grpReward Phihat k = Phihat T - Phihat 0 :=
+    grp_telescope Phihat T
+  rw [htele]
+  have heq : (Phihat T - Phihat 0) - (Phi T - Phi 0)
+      = (Phihat T - Phi T) - (Phihat 0 - Phi 0) := by ring
+  rw [heq]
+  have htri : |(Phihat T - Phi T) - (Phihat 0 - Phi 0)|
+      ≤ |Phihat T - Phi T| + |Phihat 0 - Phi 0| := by
+    calc |(Phihat T - Phi T) - (Phihat 0 - Phi 0)|
+        = |(Phihat T - Phi T) + (-(Phihat 0 - Phi 0))| := by rw [sub_eq_add_neg]
+      _ ≤ |Phihat T - Phi T| + |-(Phihat 0 - Phi 0)| := abs_add_le _ _
+      _ = |Phihat T - Phi T| + |Phihat 0 - Phi 0| := by rw [abs_neg]
+  calc |(Phihat T - Phi T) - (Phihat 0 - Phi 0)|
+      ≤ |Phihat T - Phi T| + |Phihat 0 - Phi 0| := htri
+    _ ≤ e + e := add_le_add hT h0
+    _ = 2 * e := by ring
+
+end TelescopeError
+
+section PairedArgmax
+
+/-- Wave-3 Python consumer: selection rule (paired comparison):
+    a uniform `e`-close surrogate keeps the surrogate-argmax within `2 * e`
+    of optimal under the true scores (finite `Fin 3` argmax via `ei_argmax_exists`). -/
+theorem paired_argmax_suboptimality
+    (f fhat : Fin 3 → ℝ) (e : ℝ)
+    (herr : ∀ r, |fhat r - f r| ≤ e) :
+    ∃ rhat, (∀ r, fhat r ≤ fhat rhat) ∧ ∀ r, f r ≤ f rhat + 2 * e := by
+  obtain ⟨rhat, hrhat⟩ := ei_argmax_exists fhat
+  refine ⟨rhat, hrhat, fun r => ?_⟩
+  have h1 := herr r
+  have h2 := herr rhat
+  rw [abs_le] at h1 h2
+  calc f r ≤ fhat r + e := by linarith [h1.1]
+    _ ≤ fhat rhat + e := by linarith [hrhat r]
+    _ ≤ (f rhat + e) + e := by linarith [h2.2]
+    _ = f rhat + 2 * e := by ring
+
+end PairedArgmax
+
 end Hydra2.Blueprint.Objective

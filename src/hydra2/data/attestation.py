@@ -25,6 +25,7 @@ __all__ = [
     "require_attestation",
 ]
 
+
 def _repo_attestation_path() -> Path:
     """Resolve D-017 attestation path via repo_root marker walk; fallback to importlib.resources for wheel installs.
 
@@ -67,6 +68,7 @@ def _repo_attestation_path() -> Path:
 
 D017_ATTESTATION_PATH = _repo_attestation_path()
 
+
 def _artifact_attestation_path() -> Path:
     """Portable artifact copy path via hydra2.config.artifact_root (XDG/TMPDIR aware).
 
@@ -79,6 +81,7 @@ def _artifact_attestation_path() -> Path:
     from hydra2.config import artifact_root  # local import to avoid cycles
 
     return artifact_root() / "attestations" / "D-017.json"
+
 
 D017_BLOCKER = (
     "D-017 pending: real-corpus attestation not yet supplied; "

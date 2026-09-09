@@ -180,7 +180,9 @@ def validate_record(raw: Any) -> dict[str, Any]:
         if not isinstance(value, str):
             raise ContractError(f"{key} must be a UTC timestamp string")
         _ = make_utc_timestamp(value)
-    if _parse_utc(cast("Any", raw["started_at_utc"])) > _parse_utc(cast("Any", raw["finished_at_utc"])):  # pyrefly: ignore[explicit-any]  # noqa: E501
+    if _parse_utc(cast("Any", raw["started_at_utc"])) > _parse_utc(
+        cast("Any", raw["finished_at_utc"])
+    ):  # pyrefly: ignore[explicit-any]
         raise ContractError("started_at_utc must not be after finished_at_utc")
     manifest_hash = raw.get("environment_manifest_sha256")
     if manifest_hash is not None:
@@ -230,7 +232,11 @@ def _validate_commands(raw: dict[str, Any]) -> None:
         if not isinstance(entry, dict):
             raise ContractError("each command must be an object")
         argv = entry.get("argv")
-        if not isinstance(argv, list) or len(argv) == 0 or not all(isinstance(a, str) for a in argv):  # noqa: E501
+        if (
+            not isinstance(argv, list)
+            or len(argv) == 0
+            or not all(isinstance(a, str) for a in argv)
+        ):
             raise ContractError(f"command argv invalid: {argv!r}")
         code = entry.get("exit_code")
         if isinstance(code, bool) or not isinstance(code, int):

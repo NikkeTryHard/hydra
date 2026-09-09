@@ -54,7 +54,7 @@ def installed_origin_commit_id(*, expected_url: str = MAHJAX_GIT_URL) -> str:
 
     direct_url_path: Path | None = None
     files: Any = dist.files
-    for entry in (files if files is not None else ()):
+    for entry in files if files is not None else ():
         if str(entry).endswith("direct_url.json"):
             direct_url_path = Path(str(dist.locate_file(entry)))
             break

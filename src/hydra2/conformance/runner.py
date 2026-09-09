@@ -91,9 +91,7 @@ def _auto_action(sim: RiichiEnvExactSimulator, actor: int) -> CanonicalAction:
         tsumogiri = [
             a
             for a in actions
-            if a.kind == "tsumogiri"
-            and a.tile is not None
-            and int(a.tile) == drawn
+            if a.kind == "tsumogiri" and a.tile is not None and int(a.tile) == drawn
         ]
         if len(tsumogiri) != 0:
             return tsumogiri[0]
@@ -175,10 +173,7 @@ def _drive(
                 a
                 for a in sim.legal_actions(Seat(actor))
                 if a.kind == decision.kind
-                and (
-                    decision.tile is None
-                    or (a.tile is not None and int(a.tile) == decision.tile)
-                )
+                and (decision.tile is None or (a.tile is not None and int(a.tile) == decision.tile))
             ]
             if len(offered) != 0:
                 state.violations.append(
@@ -235,9 +230,7 @@ def _fallback_policy(sim: RiichiEnvExactSimulator, rng_seed: int = 0):
                 [
                     a
                     for a in actions
-                    if a.kind == "tsumogiri"
-                    and a.tile is not None
-                    and int(a.tile) == drawn
+                    if a.kind == "tsumogiri" and a.tile is not None and int(a.tile) == drawn
                 ]
                 if drawn is not None
                 else []
@@ -334,9 +327,7 @@ class CaseResult:
 class ReferenceTraceRunner:
     """Runs corpus cases and persists the FIRST counterexample per case."""
 
-    def __init__(
-        self, *, manifest: RulesManifest, artifact_root_path: Path | None = None
-    ) -> None:
+    def __init__(self, *, manifest: RulesManifest, artifact_root_path: Path | None = None) -> None:
         self._manifest: RulesManifest = manifest
         self._artifact_root = Path(
             artifact_root_path if artifact_root_path is not None else artifact_root()
@@ -483,9 +474,7 @@ class ReferenceTraceRunner:
                 "final_scores": None
                 if sim._raw_outcome is None
                 else list(sim._raw_outcome.final_scores),
-                "ranks": None
-                if sim._raw_outcome is None
-                else list(sim._raw_outcome.ranks),
+                "ranks": None if sim._raw_outcome is None else list(sim._raw_outcome.ranks),
             },
             "hashes": {},
             "created_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -517,9 +506,7 @@ def _envelope_row(envelope: EventEnvelope) -> dict[str, Any]:
         if envelope.payload.source_seat is None
         else int(envelope.payload.source_seat),
         "consumed": sorted(int(t) for t in envelope.payload.consumed_tiles),
-        "scores": None
-        if envelope.payload.scores is None
-        else list(envelope.payload.scores),
+        "scores": None if envelope.payload.scores is None else list(envelope.payload.scores),
         "reason": envelope.payload.reason,
         "public_delta": [
             {"path": list(d.path), "operation": d.operation, "value": d.value}

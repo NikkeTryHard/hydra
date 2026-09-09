@@ -24,6 +24,8 @@ from hydra2.contracts.common import ContractError, StaleBeliefError
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from hydra2.contracts.randomness import RandomStream
+
 __all__ = [
     "SAMPLED_KERNEL_MODE",
     "SampledKernelConfig",
@@ -98,7 +100,7 @@ def enumerate_sampled(
     policy_set: Any | None = None,
     config: SampledKernelConfig | None = None,
     kernel: NaturalPacketKernel | None = None,
-    rng: Any,
+    rng: RandomStream,
 ) -> tuple[SampledSuccessor, ...]:
     """Draw L traces from the exhaustive frame law (SPEC 14.3.1).
 
@@ -133,7 +135,7 @@ def enumerate_sampled(
         raise ContractError("frame kernel total mass must be positive finite")
     draws = cfg.samples_per_parent_action
     for _ in range(draws):
-        u = float(rng.random_float())
+        u: float = rng.random_float()
         if not 0.0 <= u < 1.0:
             raise ContractError("rng.random_float must lie in [0, 1)")
         cumulative = 0.0

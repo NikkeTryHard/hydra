@@ -261,7 +261,9 @@ class StudentBeliefModel(nn.Module):
                 raise ContractError("nonterminal all-false legal row is hard error")
             # Mask illegal logits to -inf for correct softmax
             masked: torch.Tensor = torch.where(
-                legal_mask, logits, torch.tensor(float("-inf"), device=logits.device)  # pyrefly: ignore[unknown-argument-type] # device known
+                legal_mask,
+                logits,
+                torch.tensor(float("-inf"), device=logits.device),  # pyrefly: ignore[unknown-argument-type] # device known
             )
             out["policy_logits"] = masked
         return out
@@ -490,9 +492,7 @@ def compute_proper_scores(
     h.update(logits.detach().cpu().float().numpy().tobytes())
     h.update(targets.detach().cpu().numpy().tobytes())
     digest = "sha256:" + h.hexdigest()
-    return ProperScoreResult(
-        nll=float(nll), brier=brier, count=logits.shape[0], digest=digest
-    )
+    return ProperScoreResult(nll=float(nll), brier=brier, count=logits.shape[0], digest=digest)
 
 
 # ---------------------------------------------------------------------------
@@ -545,7 +545,11 @@ def compare_duplicate_blocks(
         raise ContractError(
             f"frozen supervised gate mutated: before={baseline_checkpoint_hash_before!r} after={baseline_checkpoint_hash_after!r}"  # noqa: E501
         )
-    if len(wall_blocks_student) == 0 or len(wall_blocks_teacher) == 0 or len(wall_blocks_baseline) == 0:  # noqa: E501
+    if (
+        len(wall_blocks_student) == 0
+        or len(wall_blocks_teacher) == 0
+        or len(wall_blocks_baseline) == 0
+    ):
         raise ContractError("compare_duplicate_blocks requires non-empty wall block lists")
     if not (len(wall_blocks_student) == len(wall_blocks_teacher) == len(wall_blocks_baseline)):
         raise ContractError("wall block lists must have equal length")
@@ -559,7 +563,9 @@ def compare_duplicate_blocks(
         ("baseline", wall_blocks_baseline),
     ]:
         ids = [
-            getattr(b, "wall_id", None) if getattr(b, "wall_id", None) is not None else (getattr(b, "wall", None) if getattr(b, "wall", None) is not None else f"wall-{i}")  # noqa: E501
+            getattr(b, "wall_id", None)
+            if getattr(b, "wall_id", None) is not None
+            else (getattr(b, "wall", None) if getattr(b, "wall", None) is not None else f"wall-{i}")
             for i, b in enumerate(blocks)
         ]
         if len(ids) != len(set(ids)):
@@ -705,6 +711,7 @@ def hidden_permutation_invariance_check(
                     )
             return True
 
+
 def deterministic_distillation_step(
     student: StudentBeliefModel,
     teacher: OracleTeacher,
@@ -725,7 +732,9 @@ def deterministic_distillation_step(
     optimizer.zero_grad(set_to_none=True)
     # Teacher soft targets (no grad)
     with torch.no_grad():
-        t_out: dict[str, torch.Tensor] = teacher(actor_features, privileged_features, legal_mask=legal_mask)  # noqa: E501
+        t_out: dict[str, torch.Tensor] = teacher(
+            actor_features, privileged_features, legal_mask=legal_mask
+        )
         # Use forward to get logits then convert to probs for loss helper
         _b_logits: torch.Tensor = t_out["belief_logits"]
         _v_logits: torch.Tensor = t_out["value_logits"]
@@ -738,7 +747,9 @@ def deterministic_distillation_step(
             "event_probs": F.softmax(_e_logits, dim=-1),
         }
     s_out: dict[str, torch.Tensor] = student(actor_features, legal_mask=legal_mask)
-    losses: dict[str, torch.Tensor] = distillation_loss(s_out, t_probs, legal_mask=legal_mask, config=config)  # noqa: E501
+    losses: dict[str, torch.Tensor] = distillation_loss(
+        s_out, t_probs, legal_mask=legal_mask, config=config
+    )
     _ = losses["total"].backward()
     # Finite grad check
     for name, p in student.named_parameters():

@@ -30,36 +30,41 @@ platforms = ["linux-64"]
 python = "3.12.*"
 
 [tool.pixi.pypi-dependencies]
+clearml = "==2.1.12"
 torch = "==2.14.0"
 lightning-fabric = "==2.6.5"
 riichienv = "==0.4.8"
 mahjax = { git = "https://github.com/nissymori/mahjax.git", rev = "52228723901a4ace44b745afd25141acc25405ec" }
+pyyaml = "==6.0.3"
 hydra2 = { path = ".", editable = true }
 
 # Dev-only dependency (exact pin) kept out of the runtime surface.
 [tool.pixi.feature.dev.pypi-dependencies]
 pytest = "==9.1.1"
-ruff = "==0.16.5"
+pytest-xdist = "==3.8.0"
+ruff = "==0.16.6"
 pyrefly = "==1.2.0"
 
 [tool.pixi.environments]
 default = { features = ["dev"] }
 
 [tool.pixi.tasks]
-test = "pytest tests"
-test-unit = "pytest tests/unit"
-test-integration = "pytest tests/integration"
-test-contracts = "pytest tests/contracts"
-test-search = "pytest tests"
-test-training = "pytest tests"
-test-analysis = "pytest tests --package WP-12"
-lint = "ruff check src tests"
-format-check = "ruff format --check src tests"
-typecheck = "pyrefly check src"
-config-check = "python -m hydra2.config_check"
-env-manifest = "python -m hydra2.runtime.environment"
-runtime-probe = "python -m hydra2.probe"
-test-conformance = "pytest tests"
+test = { cmd = "pixi run test-cpu; CPU=$?; pixi run test-serial; SER=$?; [ $CPU -eq 0 ] && [ $SER -eq 0 ]" }
+test-cpu = { cmd = "pytest tests -m 'not gpu and not serial' -n 10 --dist loadscope" }
+test-serial = { cmd = "pytest tests -m 'gpu or serial' -n 0" }
+test-unit = { cmd = "pytest tests/unit" }
+test-integration = { cmd = "pytest tests/integration" }
+test-contracts = { cmd = "pytest tests/contracts" }
+test-search = { cmd = "pytest tests" }
+test-training = { cmd = "pytest tests" }
+test-analysis = { cmd = "pytest tests --package WP-12" }
+lint = { cmd = "ruff check src tests" }
+format-check = { cmd = "ruff format --check src tests" }
+typecheck = { cmd = "pyrefly check src" }
+config-check = { cmd = "python -m hydra2.config_check" }
+env-manifest = { cmd = "python -m hydra2.runtime.environment" }
+runtime-probe = { cmd = "python -m hydra2.probe" }
+test-conformance = { cmd = "pytest tests" }
 [tool.ruff]
 target-version = "py312"
 line-length = 100  # keep 100 (stricter than 120) — src is green; search/tests tolerate E501 via per-file-ignores
@@ -67,7 +72,7 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 
-# Lean-strict for sophisticated AI research stack (ruff 0.16.5). Rationale evaluated via `ruff check --statistics`:
+# Lean-strict for sophisticated AI research stack (ruff 0.16.6). Rationale evaluated via `ruff check --statistics`:
 # - Before: ["E","F","W","I","N","UP","B","A","C4","SIM","RUF"] (11) — src green, tests 204 errors (fixed to 22 via --fix).
 # - Evaluated candidates: S (bandit), ARG (unused-args), DTZ (datetimez), TC (type-checking), TID (tidy-imports).
 #   * S: +126 new hits (S101 44 asserts, S110 47 pass, S311 9 random, S603 8 subprocess...). S101 is idiomatic for
@@ -114,6 +119,7 @@ testpaths = ["tests"]
 addopts = "-ra --strict-markers"
 markers = [
   "gpu: probe requires a CUDA device (RTX 5070); absence is a hard failure",
+  "serial: JAX-init/CUDA/shared-cache test, runs only in the single-process serial lane",
   "slow: multi-second CPU test (opt-in lane via -m, never deselected by default)",
   "soak: minute-scale GPU soak / nightly-only test (opt-in lane via -m, never deselected by default)",
 ]

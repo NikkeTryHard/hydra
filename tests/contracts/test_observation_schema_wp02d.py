@@ -56,21 +56,18 @@ GOLDEN_OBSERVATION_SCHEMA_PAYLOAD_DIGEST = (
 #: Seat-0 scripted-round canonical bytes captured BEFORE the builder stopped
 #: accepting caller-supplied schema lineage (legacy hash below).
 GOLDEN_PRE_WIRING_SEAT0_SHA256 = (
-    # Re-derived alongside GOLDEN_WIRED_SEAT0_SHA256 after the event_schema_v1
-    # supersession (kan/dora_revealed grammar repairs): the reconstruction
-    # starts from the live wired document, whose lineage embeds the event-
-    # schema digest, so both values move together.
-    "sha256:bdd909c54e631647db36f0235944b8696f4aa2a15b0df9c05070e39a7f72206a"
+    # Re-derived 2026-09-07 after the kan_count fix (chi/pon no longer count
+    # as kans; kakan upgrades pon and counts): scripted round holds one chi,
+    # so the wired document's kan_count moved 2 -> 1 and both values with it.
+    "sha256:b19e5916bf2432891817e0767a2af9936d9a91400ab44309f4eeada1d5faae17"
 )
 #: Derived deterministically at wiring time: the same scripted-round document
 #: with the builder-stamped lineage and the recomputed observation hash.
 GOLDEN_WIRED_SEAT0_SHA256 = (
-    # Re-derived after the event_schema_v1.json supersession (kan/dora_revealed
-    # grammar repairs): builder-stamped lineage covers the event-schema digest,
-    # so the wired seat-0 canonical bytes move deterministically.
-    "sha256:e1c6a32728df0bc86eb6136814fcb7104086a9b738f8b5d781c30d54492673b7"
+    # Re-derived 2026-09-07 with the kan_count fix (see above); any future
+    # move must cite its contract change here, never silently re-pin.
+    "sha256:dd00c34337c9cc576fcd598a7d9f8480997f4423b24e9d6dd928f3bda2a7bde3"
 )
-
 _LEGACY_SCHEMA_HASH = "sha256:" + "0b" * 32
 
 

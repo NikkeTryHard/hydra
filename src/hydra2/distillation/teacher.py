@@ -11,7 +11,7 @@ import random
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import torch
 import torch.nn as nn
@@ -19,6 +19,12 @@ import torch.nn.functional as F  # noqa: N812
 
 from hydra2.artifacts.canonical import canonical_bytes
 from hydra2.contracts.common import ContractError
+
+if TYPE_CHECKING:
+    from hydra2.contracts.observation import ActorObservation
+    from hydra2.eval.blocks import WallBlock
+    from hydra2.models.model import Hydra2BaselineModel, ModelOutput
+    from hydra2.search.common import CandidateSpec
 
 # ---------------------------------------------------------------------------
 # Constants — teacher registry mirrors Candidates 0-6
@@ -190,19 +196,13 @@ def load_analysis_gate(candidate_id: str) -> dict[str, Any]:
             f"{gate.get('reason', 'ineligible')}"
         )
     if not bool(gate.get("compute_only")):
-        raise ContractError(
-            f"WP-10 blocked for {candidate_id!r}: WP-12 gate not compute_only"
-        )
+        raise ContractError(f"WP-10 blocked for {candidate_id!r}: WP-12 gate not compute_only")
     if not bool(gate.get("deterministic_replay_ok")):
         raise ContractError(
             f"WP-10 blocked for {candidate_id!r}: WP-12 deterministic replay failed"
         )
-    gameplay_spec_hash = _require_sha256(
-        "gameplay_spec_hash", str(gate.get("gameplay_spec_hash"))
-    )
-    analysis_spec_hash = _require_sha256(
-        "analysis_spec_hash", str(gate.get("analysis_spec_hash"))
-    )
+    gameplay_spec_hash = _require_sha256("gameplay_spec_hash", str(gate.get("gameplay_spec_hash")))
+    analysis_spec_hash = _require_sha256("analysis_spec_hash", str(gate.get("analysis_spec_hash")))
     report_hash = _require_sha256("report_hash", str(gate.get("report_hash")))
     digest = _require_sha256("digest", str(gate.get("digest")))
     return {
@@ -336,7 +336,7 @@ def select_teacher(
     )
 
 
-def _real_candidate_spec(candidate_id: str) -> Any:
+def _real_candidate_spec(candidate_id: str) -> CandidateSpec:
     """Resolve the REAL CandidateSpec for a teacher candidate via its factory.
 
     Mirrors ``hydra2.analysis.qualification._make_gameplay_spec_for`` (same
@@ -364,7 +364,7 @@ def _real_candidate_spec(candidate_id: str) -> Any:
     return spec
 
 
-def _spec_digest_of(spec: Any) -> str:
+def _spec_digest_of(spec: CandidateSpec) -> str:
     """Content digest of a CandidateSpec (SPEC 15 canonical projection)."""
     from hydra2.search.common import candidate_spec_hash
 
@@ -417,8 +417,6 @@ def _hash_to_uniform(key: bytes, index: int) -> float:
     return v
 
 
-
-
 def _masked_softmax(logits: tuple[float, ...], mask: tuple[bool, ...]) -> tuple[float, ...]:
     if len(logits) != len(mask):
         raise ContractError(f"logits len {len(logits)} != mask len {len(mask)}")
@@ -452,7 +450,7 @@ def _provenance_for_case(
         "case_id": case_id,
         "trajectory_index": index,
         "actor": actor,
-        "seed_material_hex": bytes(seed_material).hex(),
+        "seed_material_hex": seed_material.hex(),
         "budget": dict(budget),
         "provenance_version": "1.0.0",
     }
@@ -469,7 +467,13 @@ def _case_hand_tiles(*, case_id: str, teacher_id: str, seed_material: bytes) -> 
     across cases, teachers, and seed materials.
     """
     seed = hashlib.sha256(
-        _CASE_RNG_DOMAIN + b"|" + bytes(seed_material) + b"|" + teacher_id.encode() + b"|" + case_id.encode()
+        _CASE_RNG_DOMAIN
+        + b"|"
+        + seed_material
+        + b"|"
+        + teacher_id.encode()
+        + b"|"
+        + case_id.encode()
     ).digest()
     rng = random.Random(int.from_bytes(seed, "big"))
     tiles = list(range(136))
@@ -488,16 +492,14 @@ def _discard_mask_for_hand(hand: tuple[int, ...]) -> tuple[bool, ...]:
     index_by_tile: dict[int, int] = {}
     for idx, entry in enumerate(entries):
         if entry.get("kind") == "discard" and isinstance(entry.get("tile"), int):
-            tile = int(entry["tile"])
+            tile: int = entry["tile"]
             if tile not in index_by_tile:
                 index_by_tile[tile] = idx
     mask = [False] * len(entries)
     for tile in hand:
         idx = index_by_tile.get(tile)
         if idx is None:
-            raise ContractError(
-                f"WP-10 blocked: no canonical discard action for held tile {tile}"
-            )
+            raise ContractError(f"WP-10 blocked: no canonical discard action for held tile {tile}")
         mask[idx] = True
     if not any(mask):
         raise ContractError("WP-10 blocked: exact legal mask empty")
@@ -505,8 +507,8 @@ def _discard_mask_for_hand(hand: tuple[int, ...]) -> tuple[bool, ...]:
 
 
 def _case_observation(
-    *, case_id: str, teacher_id: str, actor: int, spec: Any, seed_material: bytes
-) -> Any:
+    *, case_id: str, teacher_id: str, actor: int, spec: CandidateSpec, seed_material: bytes
+) -> ActorObservation:
     """Build the REAL actor-visible observation for a distillation case.
 
     Concealed hand from the case RNG, exact discard mask from the canonical
@@ -537,11 +539,11 @@ def _case_observation(
             sequence=0,
             actor=actor,
             rules_id="tenhou_4p_hanchan_v1",
-            rules_hash=make_digest_text(str(spec.rules_hash)),
-            action_table_hash=make_digest_text(str(spec.action_table_hash)),
+            rules_hash=make_digest_text(spec.rules_hash),
+            action_table_hash=make_digest_text(spec.action_table_hash),
             event_schema_hash=compute_event_schema_digest(build_event_schema_payload()),
             observation_schema_hash=observation_schema_digest(),
-            packet_boundary_hash=make_digest_text(str(spec.packet_boundary_hash)),
+            packet_boundary_hash=make_digest_text(spec.packet_boundary_hash),
             round_index=0,
             round_wind=27,
             hand_number=0,
@@ -581,10 +583,10 @@ def _case_observation(
     return obs
 
 
-_TEACHER_PRIOR_CACHE: dict[str, Any] = {}
+_TEACHER_PRIOR_CACHE: dict[str, Hydra2BaselineModel] = {}
 
 
-def _teacher_prior_model(spec: Any) -> Any:
+def _teacher_prior_model(spec: CandidateSpec) -> Hydra2BaselineModel:
     """Real teacher prior: baseline transformer bound to the CandidateSpec.
 
     Weights are deterministically seeded from the spec's model_hash, so the
@@ -594,7 +596,7 @@ def _teacher_prior_model(spec: Any) -> Any:
     """
     from hydra2.models.model import Hydra2BaselineModel
 
-    model_hash = str(getattr(spec, "model_hash", ""))
+    model_hash = spec.model_hash
     _ = _require_sha256("spec.model_hash", model_hash)
     cached = _TEACHER_PRIOR_CACHE.get(model_hash)
     if cached is not None:
@@ -612,7 +614,7 @@ def _teacher_prior_model(spec: Any) -> Any:
 
 
 def _teacher_policy_and_value(
-    *, observation: Any, spec: Any
+    *, observation: ActorObservation, spec: CandidateSpec
 ) -> tuple[tuple[float, ...], tuple[float, float, float, float]]:
     """REAL teacher policy + four-seat return for a case observation.
 
@@ -630,18 +632,18 @@ def _teacher_policy_and_value(
     try:
         batch = encode_observations([observation])
         with torch.no_grad():
-            out = model.evaluate(batch)
+            out: ModelOutput = model.evaluate(batch)
             logits: list[float] = out.policy_logits[0].tolist()
             values: list[float] = out.value_vector[0].tolist()
     except ContractError:
         raise
     except Exception as exc:
         raise ContractError(f"WP-10 blocked: teacher prior failed: {exc}") from exc
-    mask = tuple(bool(m) for m in observation.legal_mask)
-    policy = _masked_softmax(tuple(float(v) for v in logits), mask)
-    if len(values) != 4 or not all(math.isfinite(float(v)) for v in values):
+    mask = tuple(observation.legal_mask)
+    policy = _masked_softmax(tuple(logits), mask)
+    if len(values) != 4 or not all(math.isfinite(v) for v in values):
         raise ContractError("WP-10 blocked: teacher value vector invalid")
-    vector = (float(values[0]), float(values[1]), float(values[2]), float(values[3]))
+    vector = (values[0], values[1], values[2], values[3])
     return policy, vector
 
 
@@ -822,7 +824,7 @@ def generate_trajectories(
     budget: dict[str, Any] | None = None,
     with_privileged_labels: bool = False,
     num_actions: int | None = None,
-    seed_material: bytes = b"wp10_trajectory_v1",
+    seed_material: bytes | bytearray = b"wp10_trajectory_v1",
 ) -> tuple[TrajectoryRecord, ...]:
     """Generate deterministic distillation trajectories for teacher.
 
@@ -896,7 +898,7 @@ def generate_trajectories(
             spec=spec,
             seed_material=seed_material,
         )
-        legal_mask = tuple(bool(m) for m in obs.legal_mask)
+        legal_mask = tuple(obs.legal_mask)
         policy, vec = _teacher_policy_and_value(observation=obs, spec=spec)
         prov = _provenance_for_case(
             case_id=case_id,
@@ -914,10 +916,13 @@ def generate_trajectories(
             with_privileged=with_privileged_labels,
             world_id=None,
         )
+        obs_hash = obs.observation_hash
+        if obs_hash is None:
+            raise ContractError("WP-10 blocked: case observation missing hash")
         rec = make_trajectory_record(
             case_id=case_id,
             actor=actor,
-            observation_hash=str(obs.observation_hash),
+            observation_hash=obs_hash,
             legal_mask=legal_mask,
             teacher_policy=policy,
             vector_return=vec,
@@ -1009,7 +1014,7 @@ class StudentModel(nn.Module):
         return torch.argmax(masked, dim=-1)
 
 
-def _features_from_actor_observation(obs: Any) -> torch.Tensor:
+def _features_from_actor_observation(obs: ActorObservation) -> torch.Tensor:
     """REAL actor-visible features for one observation (model_input_v1 path).
 
     Encodes via :func:`hydra2.models.encoder.encode_observations` and reduces
@@ -1030,19 +1035,21 @@ def _features_from_actor_observation(obs: Any) -> torch.Tensor:
     counts = feats["concealed_hand_counts"][0].to(torch.float32) / 4.0
     scores = feats["scores"][0].to(torch.float32) / 40000.0
     wall_left = feats["live_wall_tiles_remaining"][0].to(torch.float32).reshape(1) / 136.0
-    actor_idx = int(feats["actor"][0].item())
-    turn_idx = int(feats["turn_actor"][0].item())
-    actor_oh = torch.zeros(4)
-    actor_oh[actor_idx] = 1.0
-    turn_oh = torch.zeros(4)
-    turn_oh[turn_idx] = 1.0
+    actor_oh = (
+        F.one_hot(feats["actor"][0].reshape(()).to(torch.int64), num_classes=4)
+        .to(torch.float32)
+        .reshape(4)
+    )
+    turn_oh = (
+        F.one_hot(feats["turn_actor"][0].reshape(()).to(torch.int64), num_classes=4)
+        .to(torch.float32)
+        .reshape(4)
+    )
     ippatsu = feats["ippatsu_active"][0].to(torch.float32).reshape(-1)
     ippatsu_any = (ippatsu.sum() > 0).to(torch.float32).reshape(1)
     vec = torch.cat([counts, scores, wall_left, actor_oh, turn_oh, ippatsu_any])
     if vec.numel() != _REAL_FEATURE_DIM:
-        raise ContractError(
-            f"WP-10 blocked: real feature dim {vec.numel()} != {_REAL_FEATURE_DIM}"
-        )
+        raise ContractError(f"WP-10 blocked: real feature dim {vec.numel()} != {_REAL_FEATURE_DIM}")
     return vec.to(torch.float32)
 
 
@@ -1069,9 +1076,7 @@ def features_for_record(record: TrajectoryRecord) -> torch.Tensor:
         ) from exc
     spec = _real_candidate_spec(teacher_id)
     if _spec_digest_of(spec) != record.teacher_spec_hash:
-        raise ContractError(
-            "WP-10 blocked: record teacher_spec_hash != live CandidateSpec digest"
-        )
+        raise ContractError("WP-10 blocked: record teacher_spec_hash != live CandidateSpec digest")
     obs = _case_observation(
         case_id=case_id,
         teacher_id=teacher_id,
@@ -1079,11 +1084,11 @@ def features_for_record(record: TrajectoryRecord) -> torch.Tensor:
         spec=spec,
         seed_material=seed_material,
     )
-    if str(obs.observation_hash) != record.observation_hash:
+    if obs.observation_hash != record.observation_hash:
         raise ContractError(
             "WP-10 blocked: reconstructed observation hash != record observation_hash"
         )
-    if tuple(bool(m) for m in obs.legal_mask) != record.legal_mask:
+    if tuple(obs.legal_mask) != record.legal_mask:
         raise ContractError("WP-10 blocked: reconstructed legal mask != record mask")
     return _features_from_actor_observation(obs)
 
@@ -1252,22 +1257,24 @@ def train_student_distillation(
 def _scalarize_for_actor(vector: tuple[float, ...], actor: int) -> float:
     if len(vector) != 4:
         raise ContractError(f"four-seat vector required, got len {len(vector)}")
-    value = float(vector[actor])
+    value = vector[actor]
     if not math.isfinite(value):
         raise ContractError(f"scalarized value non-finite {value}")
     return value
 
 
-def _student_value_for_observation(*, student: StudentModel, observation: Any) -> tuple[float, float, float, float]:
+def _student_value_for_observation(
+    *, student: StudentModel, observation: ActorObservation
+) -> tuple[float, float, float, float]:
     """REAL student four-seat value for an observation (real encoder features)."""
     feats = _features_from_actor_observation(observation).unsqueeze(0)
-    mask_t = torch.tensor([[bool(m) for m in observation.legal_mask]], dtype=torch.bool)
+    mask_t = torch.tensor([list(observation.legal_mask)], dtype=torch.bool)
     with torch.no_grad():
         out: dict[str, torch.Tensor] = student(feats, legal_mask=mask_t)
         values: list[float] = out["value"][0].tolist()
-    if len(values) != 4 or not all(math.isfinite(float(v)) for v in values):
+    if len(values) != 4 or not all(math.isfinite(v) for v in values):
         raise ContractError("student value vector invalid")
-    return (float(values[0]), float(values[1]), float(values[2]), float(values[3]))
+    return (values[0], values[1], values[2], values[3])
 
 
 def evaluate_five_arms(
@@ -1331,7 +1338,7 @@ def evaluate_five_arms(
     schedule = build_match_schedule(
         wall_ids=wall_ids,
         labels=("teacher", "student", "pre_distill", "field"),
-        rules_hash=str(spec.rules_hash),
+        rules_hash=spec.rules_hash,
         master_seed=stream_seed,
         experiment_id="wp10-distill",
         split_id="eval",
@@ -1352,7 +1359,7 @@ def evaluate_five_arms(
     game_ids: list[str] = []
     game_actors: list[int] = []
     game_walls: list[str] = []
-    observations: list[Any] = []
+    observations: list[ActorObservation] = []
     for wall_id in wall_ids:
         for slot in range(TOTAL_GAMES_PER_WALL):
             game_id = f"{wall_id}:g{slot}"
@@ -1371,8 +1378,10 @@ def evaluate_five_arms(
             )
     # Invoke the REAL teacher policy once per scheduled game (measured contrasts).
     teacher_values: list[float] = []
-    for obs, game_id, wall_id, actor in zip(observations, game_ids, game_walls, game_actors, strict=True):
-        mask = tuple(bool(m) for m in obs.legal_mask)
+    for obs, game_id, wall_id, actor in zip(
+        observations, game_ids, game_walls, game_actors, strict=True
+    ):
+        mask = tuple(obs.legal_mask)
         try:
             result: Any = teacher_policy_fn(
                 case_id=game_id,
@@ -1399,7 +1408,9 @@ def evaluate_five_arms(
     with torch.no_grad():
         for obs, actor in zip(observations, game_actors, strict=True):
             student_values.append(
-                _scalarize_for_actor(_student_value_for_observation(student=student, observation=obs), actor)
+                _scalarize_for_actor(
+                    _student_value_for_observation(student=student, observation=obs), actor
+                )
             )
             pre_values.append(
                 _scalarize_for_actor(
@@ -1422,7 +1433,7 @@ def evaluate_five_arms(
     _ = teacher_plus_search_policy(justification=justification, observation=observations[0])
     _ = student_plus_search_policy(student=student, observation=observations[0])
     arms = ["pre_distill", "student", "teacher", "teacher_plus_search", "student_plus_search"]
-    blocks_by_arm: dict[str, tuple[Any, ...]] = {}
+    blocks_by_arm: dict[str, tuple[WallBlock, ...]] = {}
     for arm in arms:
         per_game = {gid: contrasts_by_game[gid][arm] for gid in game_ids}
         blocks_by_arm[arm] = build_wall_blocks(schedule=schedule, contrasts_by_game=per_game)
@@ -1433,7 +1444,9 @@ def evaluate_five_arms(
     wall_id_list = list(wall_ids)
     block_contrasts: dict[str, list[float]] = {}
     for arm in arms:
-        block_contrasts[arm] = [float(sum(block.contrasts) / len(block.contrasts)) for block in blocks_by_arm[arm]]
+        block_contrasts[arm] = [
+            sum(block.contrasts) / len(block.contrasts) for block in blocks_by_arm[arm]
+        ]
     means = {arm: sum(v) / len(v) for arm, v in block_contrasts.items()}
     delta_student_pre = means["student"] - means["pre_distill"]
     delta_teacher_student = means["teacher"] - means["student"]
@@ -1449,40 +1462,44 @@ def evaluate_five_arms(
     _, flip_low, flip_high = sign_flip_interval(
         diff_blocks, stream=RandomStream(stream_seed), resamples=resamples
     )
-    noninf_passed = bool(boot_low > -noninferiority_margin)
+    noninf_passed = boot_low > -noninferiority_margin
     gate_values = {
         "noninferiority": "passed" if noninf_passed else "failed",
         "wall_disjoint": "passed",
-        "bootstrap_coverage": "passed" if math.isfinite(boot_low) and math.isfinite(boot_high) else "failed",
+        "bootstrap_coverage": "passed"
+        if math.isfinite(boot_low) and math.isfinite(boot_high)
+        else "failed",
     }
     disposition = "promoted" if noninf_passed else "rejected"
-    case_manifest_hash = "sha256:" + hashlib.sha256(
-        canonical_bytes({"games": sorted(game_ids)})
-    ).hexdigest()
-    result_table_hash = "sha256:" + hashlib.sha256(
-        canonical_bytes({arm: block_contrasts[arm] for arm in arms})
-    ).hexdigest()
+    case_manifest_hash = (
+        "sha256:" + hashlib.sha256(canonical_bytes({"games": sorted(game_ids)})).hexdigest()
+    )
+    result_table_hash = (
+        "sha256:"
+        + hashlib.sha256(canonical_bytes({arm: block_contrasts[arm] for arm in arms})).hexdigest()
+    )
     promotion = make_promotion_record(
         candidate_spec_hash=justification.candidate_spec_hash,
-        utility_manifest_hash=str(spec.utility_manifest_hash),
+        utility_manifest_hash=spec.utility_manifest_hash,
         comparator_spec_hashes=(justification.candidate_spec_hash,),
         case_manifest_hash=case_manifest_hash,
         result_table_hash=result_table_hash,
         resource_view="wall_block",
         uncertainty_unit="wall_block",
         pass_inequality=f"mean_student_minus_pre > {-noninferiority_margin}",
-        observed_estimate=float(est),
-        confidence_bounds=(float(boot_low), float(boot_high)),
+        observed_estimate=est,
+        confidence_bounds=(boot_low, boot_high),
         gates=gate_values,
         disposition=disposition,
+        schedule_hash=schedule.walls_hash,
     )
     calibration = {
         "method": "wall_block_bootstrap",
-        "bootstrap_low": float(boot_low),
-        "bootstrap_high": float(boot_high),
-        "sign_flip_low": float(flip_low),
-        "sign_flip_high": float(flip_high),
-        "ci_width": float(boot_high - boot_low),
+        "bootstrap_low": boot_low,
+        "bootstrap_high": boot_high,
+        "sign_flip_low": flip_low,
+        "sign_flip_high": flip_high,
+        "ci_width": boot_high - boot_low,
         "num_walls": num_blocks,
         "resamples": resamples,
     }
@@ -1505,9 +1522,7 @@ def evaluate_five_arms(
         for _block in blocks_by_arm["student"]:
             if len(_block.contrasts) == 0:
                 raise ContractError("WP-10 blocked: empty wall block in sidecar")
-            _sidecar_means.append(
-                (_block.wall_id, float(sum(_block.contrasts) / len(_block.contrasts)))
-            )
+            _sidecar_means.append((_block.wall_id, sum(_block.contrasts) / len(_block.contrasts)))
         confirmation_sidecar_out = confirmation_sidecar(
             schedule=schedule,
             blocks=BlockAggregateResult(valid=tuple(_sidecar_means), excluded=()),
@@ -1523,8 +1538,8 @@ def evaluate_five_arms(
         "means": means,
         "delta_student_pre": delta_student_pre,
         "delta_teacher_student": delta_teacher_student,
-        "bootstrap": {"estimate": float(est), "low": float(boot_low), "high": float(boot_high)},
-        "sign_flip": {"low": float(flip_low), "high": float(flip_high)},
+        "bootstrap": {"estimate": est, "low": boot_low, "high": boot_high},
+        "sign_flip": {"low": flip_low, "high": flip_high},
         "promotion_record": promotion,
         "promotion_digest": str(promotion_digest(promotion)),
         "calibration": calibration,
@@ -1601,7 +1616,9 @@ def check_teacher_replacement_invalidates(
 # ---------------------------------------------------------------------------
 
 
-def teacher_plus_search_policy(*, justification: TeacherJustification, observation: Any) -> tuple[float, ...]:
+def teacher_plus_search_policy(
+    *, justification: TeacherJustification, observation: ActorObservation
+) -> tuple[float, ...]:
     """Teacher+search policy — the REAL teacher policy for the observation.
 
     Invokes the exact teacher candidate path (spec-bound model prior over the
@@ -1621,7 +1638,9 @@ def teacher_plus_search_policy(*, justification: TeacherJustification, observati
     return policy
 
 
-def student_plus_search_policy(*, student: StudentModel, observation: Any) -> tuple[float, ...]:
+def student_plus_search_policy(
+    *, student: StudentModel, observation: ActorObservation
+) -> tuple[float, ...]:
     """Student+search policy — the REAL student policy for the observation.
 
     Encodes via the real model_input_v1 path and masks to the observation's
@@ -1630,13 +1649,13 @@ def student_plus_search_policy(*, student: StudentModel, observation: Any) -> tu
     """
     if not isinstance(student, StudentModel):
         raise ContractError(f"student must be StudentModel, got {type(student)}")
-    mask = tuple(bool(m) for m in observation.legal_mask)
+    mask = tuple(observation.legal_mask)
     feats = _features_from_actor_observation(observation).unsqueeze(0)
     mask_t = torch.tensor([list(mask)], dtype=torch.bool)
     with torch.no_grad():
         out: dict[str, torch.Tensor] = student(feats, legal_mask=mask_t)
         logits: list[float] = out["policy_logits"][0].tolist()  # pyrefly: ignore[explicit-any]
-    return _masked_softmax(tuple(float(v) for v in logits), mask)
+    return _masked_softmax(tuple(logits), mask)
 
 
 # ---------------------------------------------------------------------------

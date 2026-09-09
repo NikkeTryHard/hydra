@@ -844,6 +844,7 @@ def test_ponder_quota_rejects_nonpositive() -> None:
                 deadline_monotonic_ns=time.monotonic_ns() + 100_000_000, ponder_quota_total=bad
             )
 
+
 def test_ponder_quota_ignored_off_p_arm() -> None:
     arm = make_persistence_arm("R")
     cand = make_persistence_candidate_spec(arm_id="R")

@@ -143,7 +143,13 @@ def test_physical_transition_and_actor_policy_likelihood() -> None:
     kernel = NaturalPacketKernel()
     succs = kernel.enumerate_next(epoch=e, particle=p, action=0)
     for s in succs:
-        assert abs(math.exp(s.log_physical_probability + s.log_actor_policy_probability) - s.probability) < 1e-12
+        assert (
+            abs(
+                math.exp(s.log_physical_probability + s.log_actor_policy_probability)
+                - s.probability
+            )
+            < 1e-12
+        )
 
 
 def test_exact_pushforward_then_condition() -> None:
@@ -152,9 +158,38 @@ def test_exact_pushforward_then_condition() -> None:
     e0 = b.begin(obs, model_id=b._belief_model_hash)  # type: ignore[attr-defined]
     obs_new = _obs(hand=(0, 1), dec="dec_push")
     # Make packet
-    payload = EventPayload(kind="discard", actor=1, tile=6, action_id=0, source_seat=None, consumed_tiles=(), offered_action_ids=(), accepted_action_ids=(), round_index=None, scores=None, reason=None)
-    ev = EventEnvelope(game_id="game_tiny_001", sequence=50, kind="discard", actor=1, visibility="public", visible_to=(0, 1, 2, 3), payload=payload, public_delta=(), rules_hash=obs.rules_hash, schema_hash="sha256:" + "c" * 64)  # type: ignore[arg-type]
-    packet = make_actor_visible_packet(actor_view=0, events=(ev,), public_state_hash_before=public_state_chain_hash([]), public_state_hash_after=public_state_chain_hash([ev]), observation_hash_after=obs_new.observation_hash)  # type: ignore[arg-type]
+    payload = EventPayload(
+        kind="discard",
+        actor=1,
+        tile=6,
+        action_id=0,
+        source_seat=None,
+        consumed_tiles=(),
+        offered_action_ids=(),
+        accepted_action_ids=(),
+        round_index=None,
+        scores=None,
+        reason=None,
+    )
+    ev = EventEnvelope(
+        game_id="game_tiny_001",
+        sequence=50,
+        kind="discard",
+        actor=1,
+        visibility="public",
+        visible_to=(0, 1, 2, 3),
+        payload=payload,
+        public_delta=(),
+        rules_hash=obs.rules_hash,
+        schema_hash="sha256:" + "c" * 64,
+    )  # type: ignore[arg-type]
+    packet = make_actor_visible_packet(
+        actor_view=0,
+        events=(ev,),
+        public_state_hash_before=public_state_chain_hash([]),
+        public_state_hash_after=public_state_chain_hash([ev]),
+        observation_hash_after=obs_new.observation_hash,
+    )  # type: ignore[arg-type]
     e1 = b.pushforward_condition(e0, action=0, packet=packet)
     assert int(e1.epoch) == int(e0.epoch) + 1
     assert e1.observation_hash == obs_new.observation_hash
@@ -165,9 +200,38 @@ def test_epoch_increment_after_committed_transition() -> None:
     b = NaturalBelief()
     e0 = b.begin(obs, model_id=b._belief_model_hash)  # type: ignore[attr-defined]
     obs2 = _obs(dec="dec_inc2")
-    payload = EventPayload(kind="discard", actor=1, tile=7, action_id=0, source_seat=None, consumed_tiles=(), offered_action_ids=(), accepted_action_ids=(), round_index=None, scores=None, reason=None)
-    ev = EventEnvelope(game_id="game_tiny_001", sequence=51, kind="discard", actor=1, visibility="public", visible_to=(0, 1, 2, 3), payload=payload, public_delta=(), rules_hash=obs.rules_hash, schema_hash="sha256:" + "c" * 64)  # type: ignore[arg-type]
-    packet = make_actor_visible_packet(actor_view=0, events=(ev,), public_state_hash_before=public_state_chain_hash([]), public_state_hash_after=public_state_chain_hash([ev]), observation_hash_after=obs2.observation_hash)  # type: ignore[arg-type]
+    payload = EventPayload(
+        kind="discard",
+        actor=1,
+        tile=7,
+        action_id=0,
+        source_seat=None,
+        consumed_tiles=(),
+        offered_action_ids=(),
+        accepted_action_ids=(),
+        round_index=None,
+        scores=None,
+        reason=None,
+    )
+    ev = EventEnvelope(
+        game_id="game_tiny_001",
+        sequence=51,
+        kind="discard",
+        actor=1,
+        visibility="public",
+        visible_to=(0, 1, 2, 3),
+        payload=payload,
+        public_delta=(),
+        rules_hash=obs.rules_hash,
+        schema_hash="sha256:" + "c" * 64,
+    )  # type: ignore[arg-type]
+    packet = make_actor_visible_packet(
+        actor_view=0,
+        events=(ev,),
+        public_state_hash_before=public_state_chain_hash([]),
+        public_state_hash_after=public_state_chain_hash([ev]),
+        observation_hash_after=obs2.observation_hash,
+    )  # type: ignore[arg-type]
     e1 = b.pushforward_condition(e0, action=0, packet=packet)
     assert int(e1.epoch) == int(e0.epoch) + 1
 
@@ -178,9 +242,38 @@ def test_stale_provenance_epoch_target_rejection() -> None:
     e0 = b.begin(obs, model_id=b._belief_model_hash)  # type: ignore[attr-defined]
     p0 = b.sample_natural(e0, count=1, rng=_rng(b"stale3"))[0]
     obs_next = _obs(dec="dec_stale_int")
-    payload = EventPayload(kind="discard", actor=1, tile=8, action_id=0, source_seat=None, consumed_tiles=(), offered_action_ids=(), accepted_action_ids=(), round_index=None, scores=None, reason=None)
-    ev = EventEnvelope(game_id="game_tiny_001", sequence=52, kind="discard", actor=1, visibility="public", visible_to=(0, 1, 2, 3), payload=payload, public_delta=(), rules_hash=obs.rules_hash, schema_hash="sha256:" + "c" * 64)  # type: ignore[arg-type]
-    packet = make_actor_visible_packet(actor_view=0, events=(ev,), public_state_hash_before=public_state_chain_hash([]), public_state_hash_after=public_state_chain_hash([ev]), observation_hash_after=obs_next.observation_hash)  # type: ignore[arg-type]
+    payload = EventPayload(
+        kind="discard",
+        actor=1,
+        tile=8,
+        action_id=0,
+        source_seat=None,
+        consumed_tiles=(),
+        offered_action_ids=(),
+        accepted_action_ids=(),
+        round_index=None,
+        scores=None,
+        reason=None,
+    )
+    ev = EventEnvelope(
+        game_id="game_tiny_001",
+        sequence=52,
+        kind="discard",
+        actor=1,
+        visibility="public",
+        visible_to=(0, 1, 2, 3),
+        payload=payload,
+        public_delta=(),
+        rules_hash=obs.rules_hash,
+        schema_hash="sha256:" + "c" * 64,
+    )  # type: ignore[arg-type]
+    packet = make_actor_visible_packet(
+        actor_view=0,
+        events=(ev,),
+        public_state_hash_before=public_state_chain_hash([]),
+        public_state_hash_after=public_state_chain_hash([ev]),
+        observation_hash_after=obs_next.observation_hash,
+    )  # type: ignore[arg-type]
     e1 = b.pushforward_condition(e0, action=0, packet=packet)
     kernel = NaturalPacketKernel()
     try:
@@ -208,7 +301,10 @@ def test_tiny_finite_world_corpus_with_exact_probabilities() -> None:
 def test_natural_full_fidelity_confirmation_runner() -> None:
     obs = _obs()
     corpus = build_tiny_corpus(observation=obs, size=4)
-    cases = tuple(ConfirmationCase(case_id=f"c{i}", world_id=w.world_id, observation_hash=w.observation_hash) for i, w in enumerate(corpus.worlds))
+    cases = tuple(
+        ConfirmationCase(case_id=f"c{i}", world_id=w.world_id, observation_hash=w.observation_hash)
+        for i, w in enumerate(corpus.worlds)
+    )
     runner = NaturalConfirmationRunner()
     r = runner.confirm(cases, rng=_rng(b"confirm_int"))
     assert len(r) == 4
@@ -251,9 +347,38 @@ def test_pushforward_equals_rebuild() -> None:
     b = NaturalBelief()
     e0 = b.begin(obs, model_id=b._belief_model_hash)  # type: ignore[attr-defined]
     obs_new = _obs(dec="dec_rebuild_int")
-    payload = EventPayload(kind="discard", actor=1, tile=10, action_id=0, source_seat=None, consumed_tiles=(), offered_action_ids=(), accepted_action_ids=(), round_index=None, scores=None, reason=None)
-    ev = EventEnvelope(game_id="game_tiny_001", sequence=60, kind="discard", actor=1, visibility="public", visible_to=(0, 1, 2, 3), payload=payload, public_delta=(), rules_hash=obs.rules_hash, schema_hash="sha256:" + "c" * 64)  # type: ignore[arg-type]
-    packet = make_actor_visible_packet(actor_view=0, events=(ev,), public_state_hash_before=public_state_chain_hash([]), public_state_hash_after=public_state_chain_hash([ev]), observation_hash_after=obs_new.observation_hash)  # type: ignore[arg-type]
+    payload = EventPayload(
+        kind="discard",
+        actor=1,
+        tile=10,
+        action_id=0,
+        source_seat=None,
+        consumed_tiles=(),
+        offered_action_ids=(),
+        accepted_action_ids=(),
+        round_index=None,
+        scores=None,
+        reason=None,
+    )
+    ev = EventEnvelope(
+        game_id="game_tiny_001",
+        sequence=60,
+        kind="discard",
+        actor=1,
+        visibility="public",
+        visible_to=(0, 1, 2, 3),
+        payload=payload,
+        public_delta=(),
+        rules_hash=obs.rules_hash,
+        schema_hash="sha256:" + "c" * 64,
+    )  # type: ignore[arg-type]
+    packet = make_actor_visible_packet(
+        actor_view=0,
+        events=(ev,),
+        public_state_hash_before=public_state_chain_hash([]),
+        public_state_hash_after=public_state_chain_hash([ev]),
+        observation_hash_after=obs_new.observation_hash,
+    )  # type: ignore[arg-type]
     pushed = b.pushforward_condition(e0, action=0, packet=packet)
     b2 = NaturalBelief()
     rebuilt = b2.begin(obs_new, model_id=b2._belief_model_hash)  # type: ignore[attr-defined]
@@ -268,8 +393,24 @@ def test_pushforward_equals_rebuild() -> None:
 def test_hidden_permutation_invariance() -> None:
     base = ((0, 1), (2, 3), (4, 5), (6, 7))
     swapped = ((0, 1), (4, 5), (2, 3), (6, 7))
-    w1 = make_full_world(concealed_hands=base, live_wall=(8, 9, 10, 11), dead_wall=(), latent_state={"v": 1}, rules_hash="sha256:" + "a" * 64, observation_hash="sha256:" + "b" * 64, simulator_snapshot="s1")
-    w2 = make_full_world(concealed_hands=swapped, live_wall=(8, 9, 10, 11), dead_wall=(), latent_state={"v": 2}, rules_hash="sha256:" + "a" * 64, observation_hash="sha256:" + "b" * 64, simulator_snapshot="s2")
+    w1 = make_full_world(
+        concealed_hands=base,
+        live_wall=(8, 9, 10, 11),
+        dead_wall=(),
+        latent_state={"v": 1},
+        rules_hash="sha256:" + "a" * 64,
+        observation_hash="sha256:" + "b" * 64,
+        simulator_snapshot="s1",
+    )
+    w2 = make_full_world(
+        concealed_hands=swapped,
+        live_wall=(8, 9, 10, 11),
+        dead_wall=(),
+        latent_state={"v": 2},
+        rules_hash="sha256:" + "a" * 64,
+        observation_hash="sha256:" + "b" * 64,
+        simulator_snapshot="s2",
+    )
     o1 = world_actor_observation(w1, actor=0)
     o2 = world_actor_observation(w2, actor=0)
     assert o1.observation_hash == o2.observation_hash
@@ -289,7 +430,10 @@ def test_density_normalization_support() -> None:
 def test_deterministic_confirmation_replay() -> None:
     obs = _obs()
     corpus = build_tiny_corpus(observation=obs, size=4)
-    cases = tuple(ConfirmationCase(case_id=f"cc{i}", world_id=w.world_id, observation_hash=w.observation_hash) for i, w in enumerate(corpus.worlds))
+    cases = tuple(
+        ConfirmationCase(case_id=f"cc{i}", world_id=w.world_id, observation_hash=w.observation_hash)
+        for i, w in enumerate(corpus.worlds)
+    )
     runner = NaturalConfirmationRunner()
 
     def make_rng():

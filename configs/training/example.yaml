@@ -1,0 +1,136 @@
+# Hydra2 streaming-first training: operator example (copy, edit, launch).
+#
+# CONTRACT (read before editing):
+# - Copy this file to a run file (e.g. configs/training/my-run.yaml) and
+#   launch with: hydra2 train my-run.yaml --dry-run   (plan only, reads no
+#   data, mutates nothing) then: hydra2 train my-run.yaml
+# - Code wins on drift: src/hydra2/training/run_config.py is authoritative;
+#   unknown keys raise ContractError with a stable message (strict loader).
+# - Streaming-first: training consumes .mjai.json.zst straight from
+#   data.root (no parquet shards), yet ephemeral rows carry the identical
+#   contracts (validate-then-quarantine, actor/privileged split, wall-disjoint
+#   manifests + leakage check, counter-based RNG, (5,) dora).
+# - Mounts via environment only: data.root MUST stay
+#   ${HYDRA2_DATA_ROOT}/... (allowlisted interpolation). Never commit a
+#   literal /mnt/... or /home/... path, and never any secret/token.
+#
+# REQUIRED FIRST (a run without these fails closed):
+run:
+  id: example-tenhou-run-001 # WHY: run id names <artifact_root>/runs/<id>/; must be unique per spec.
+  kind: supervised # v1 only supervised (distill/rl raise; see parked rl: null below).
+  description: "Example Tenhou-only supervised streaming run."
+
+# PATHS (env-driven; operator sets HYDRA2_DATA_ROOT, never edits a mount here):
+data:
+  root: ${HYDRA2_DATA_ROOT}/tenhou-houou-mjai # Contract: absolute after interpolation; Tenhou houou corpus.
+  scope: tenhou-4p-hanchan # Tenhou-only scope: any other value raises.
+  train_split: train
+  val_split: validation
+  wall_disjoint: true # Contract: MUST stay true (train/val share no walls).
+  leakage_check: true # Contract: MUST stay true (actor/privileged leakage gate).
+  dora_width: 5 # Frozen (5,) dora: any other value raises.
+  actor_privileged_split: true # Contract: MUST stay true (firewall).
+  dataset_manifest_hash: null # OPTIONAL provenance pin: set to sha256:<hex> to bind the stream manifest.
+  # STREAM (ResumeExactPlan pins; operator-tunable, resume-verified):
+  shuffle_buffer_size: 10000 # WHY: decorrelates the stream; buffer persists verbatim as KEYS (never refilled).
+  drop_last: true # WHY: pins tail behavior so sample counts reproduce bit-identically.
+  num_workers: 0 # WHY: loader worker count; resume with a different count is a hard error.
+  world_size: 1 # WHY: data-parallel world; rank comes from launch env and is verified at bind.
+
+# MODEL (identity; changing architecture_id is a new ModelSpec):
+model:
+  architecture_id: hydra2_baseline_transformer_v1
+  action_count: 6792 # Frozen Tenhou 4p action width.
+  parameters: {} # Architecture hyperparameters live here when the spec allows them.
+
+# OBJECTIVE WEIGHTS (explicit: zero/absent disables a head):
+weights:
+  w_policy: 1.0
+  w_placement: 0.0
+  w_value: 0.0
+  # DANGEROUS when positive: any positive w_event/w_belief REQUIRES
+  # privileged_source_hash (positive-requires-binding) — privileged labels
+  # must come from the pinned manifest, joined by opaque decision id only.
+  w_event: null
+  w_belief: null
+  privileged_source_hash: null
+
+# OPTIMIZER (registered id + numeric battery: lr > 0, betas in [0,1), wd >= 0):
+optimizer:
+  id: adamw
+  lr: 0.0003 # Evidence default: stable BC start for the baseline transformer.
+  betas: [0.9, 0.999]
+  weight_decay: 0.01
+
+# SCHEDULER (registered id; detail lives in parameters at bind time):
+scheduler:
+  id: cosine
+  warmup_updates: 100 # Evidence default: 1% of a 10k-update horizon.
+  parameters: {}
+
+# RUNTIME (precision/device matrix: loop.precision must agree; fp16 rejected
+# by design; bf16_mixed requires a CUDA device — never silent CPU fallback):
+runtime:
+  adapter_id: plain_pytorch # or fabric_2.6.5 (identical loop state, only backward differs).
+  device: cuda # cpu or cuda[:N]; CUDA availability checked at bind, not in YAML.
+  precision: fp32 # fp32 default preserves byte-identical resume; bf16_mixed opts in.
+  compile_mode: eager # Simulator stays eager; only pure-tensor model regions may compile.
+
+# LOOP (safe defaults explicit; minibatch derives as micro * accum = 32):
+loop:
+  microbatch_size: 4 # Evidence default: fits the baseline on a single GPU.
+  accumulation_steps: 8 # Evidence default: 4*8 = 32 optimizer minibatch.
+  gradient_clip_norm: 1.0 # null disables; positive finite required otherwise.
+  max_updates: 10000
+  checkpoint_frequency_updates: 500 # Update-boundary checkpoints only (partial windows re-run).
+  precision: fp32 # Must agree with runtime.precision per the matrix above.
+  keep_last_checkpoints: null # null keeps all; set N to bound retained ckpt-<update>.pt files.
+
+# SEEDS (counter-based roots, never wall-clock; same seed + same cursor ==
+# same sequence; sampler fans data_seed out, epoch_seed = data_seed + epoch):
+seeds:
+  data_seed: 0
+  train_seed: 0
+  selection_seed: 0
+
+# SELECTION (frozen pre-results; training NEVER calls selection; outcomes
+# affect best-ckpt.pt promotion only, never resume writes):
+selection:
+  N: 30
+  pilot_s: 1.5
+  delta: 0.5
+  alpha: 0.05
+  beta: 0.2
+  design: fixed_n
+  declared_peeks: [30]
+  margin: 0.0
+  resamples: 2000
+  seed: 0
+
+# OBSERVABILITY (observer-only ClearML mirror; local artifacts authoritative;
+# HYDRA2_CLEARML_DISABLED=1 kill-switch wins over enabled: true):
+mirror:
+  enabled: false
+  project: hydra2-tenhou-4p
+  task_name: null
+  offline_dir: null
+
+# VALIDATION (duplicate-wall eval cadence; eval walls never enter replay):
+eval:
+  frequency_updates: 500
+  num_batches: 10
+  walls_dir: null # e.g. ${HYDRA2_DATA_ROOT}/walls (set when the wall corpus lands).
+  microbatch_size: null # null means the loop microbatch.
+
+# OUTPUT (everything lands under the artifact root):
+output:
+  artifact_root: null # null honors HYDRA2_ARTIFACT_ROOT.
+  run_id: null # null uses run.id above.
+
+# PARKED (training-plan S5): RL arrives in a later wave; any non-null value
+# raises ContractError (unsupported hard error, never silent-pick).
+rl: null
+
+# DRY-RUN (verify before mutating):
+#   hydra2 train configs/training/example.yaml --dry-run
+# Full gate after edits: pixi run lint && pixi run format-check && pixi run typecheck

@@ -57,13 +57,12 @@ def decode_zstd_verified(path: Path, expected_sha256: str, expected_len: int) ->
             total = 0
             while True:
                 chunk = reader.read(65536)
-                if not chunk:
+                if chunk == b"":
                     break
                 total += len(chunk)
                 if total > limit:
                     raise CorruptArtifactError(
-                        f"decoded size exceeds 512MiB zip-bomb guard for {path}: "
-                        f"{total} > {limit}"
+                        f"decoded size exceeds 512MiB zip-bomb guard for {path}: {total} > {limit}"
                     )
                 hasher.update(chunk)
                 chunks.append(chunk)

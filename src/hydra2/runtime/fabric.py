@@ -69,6 +69,10 @@ class FabricRuntimeAdapter:
             precision=cast("_FabricPrecision", want),
             strategy="auto",
         )
+        # Bind the precision AFTER construction: the guard above compares
+        # self._fabric_precision to `want`, so omitting this assignment makes
+        # every second setup raise even for the same precision.
+        self._fabric_precision = want
         if accelerator == "cuda":
             # Materialize the device now so failures surface at setup time.
             torch.cuda.set_device(self._fabric.device)
@@ -91,6 +95,7 @@ class FabricRuntimeAdapter:
             device=cast("Any", fabric.device),
             runtime_identity=runtime_identity(spec),
         )
+
     def barrier(self) -> None:
         assert self._fabric is not None, "barrier before setup"
         self._fabric.barrier()

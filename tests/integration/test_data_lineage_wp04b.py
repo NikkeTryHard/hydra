@@ -77,6 +77,8 @@ def _tenhou_mount() -> Path:
     except Exception:
         pass
     return Path(os.environ.get("HYDRA2_TENHOU_MOUNT", "/mnt/samsung_nvme/samsung/mahjong_dataset"))
+
+
 PACKAGER_BIN = (
     REPO_ROOT / "tools" / "mjai-dataset-packager" / "target" / "debug" / "mjai-dataset-packager"
 )
@@ -849,7 +851,9 @@ def test_arrow_parquet_actor_vs_privileged_separation(tmp_path: Path) -> None:
             assert "hidden_tiles" not in obs
             assert "full_world" not in obs
     # Privileged shard exists separately and joins via opaque decision_id only
-    priv_path = priv_dir / "privileged.parquet"
+    priv_shards = sorted(priv_dir.glob("privileged-*.parquet"))
+    assert len(priv_shards) == 1
+    priv_path = priv_shards[0]
     assert priv_path.is_file()
     import pyarrow.parquet as pq
 
