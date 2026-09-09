@@ -1005,6 +1005,7 @@ class RiichiEnvExactSimulator:
     def _on_start_kyoku(self, event: Any) -> None:
         assert self._env is not None
         self._hand_index += 1
+        self._ippatsu = [False] * 4  # new hand: no ippatsu window open
         dealer = self._inv[int(cast("Any", event["oya"]))]
         scores: tuple[int, ...] = tuple(int(cast("Any", s)) for s in cast("Any", event["scores"]))
         wind_type = _BAKAZE_TO_TILE_TYPE[str(cast("Any", event["bakaze"]))]
@@ -1139,6 +1140,7 @@ class RiichiEnvExactSimulator:
                 ),
             )
         )
+        self._ippatsu[actor] = True  # accepted reach opens the ippatsu window
         self._refresh_public_snapshot()
 
     def _on_call(self, event: Any) -> None:

@@ -15,13 +15,14 @@ Pipeline per call to :func:`run_stream_training`:
    before any runtime object is built.
 3. Pull train-split games through :class:`GameStream` (or the bit-identical
    :class:`PrefetchGameStream` when ``data.num_workers > 0``), expand each
-   game to actor :class:`DecisionRow` rows — wall-bound games through
-   :func:`expand_game` unchanged, wall-less games through the simulator's
-   own wall-less replay (:func:`replay_game`), quarantining-and-counting
-   expansion failures per game — encode microbatches through the
-   real actor-visible encoder, join privileged ranks by opaque decision id
-   (train-split rows only; the loop gates the join on config weights), and
-   drive :meth:`SupervisedLoop.train` with the config weights.
+   game to actor :class:`DecisionRow` rows through the Rust replay stream
+   (:func:`_expand_game_rust_json`: wall-bound games bind the real S7 wall
+   digest, wall-less games the SIM mark; both fail closed per game),
+   quarantining-and-counting expansion failures per game — encode
+   microbatches through the real actor-visible encoder, join privileged
+   ranks by opaque decision id (train-split rows only; the loop gates the
+   join on config weights), and drive :meth:`SupervisedLoop.train` with the
+   config weights.
 4. Write ``ckpt-<update>.pt`` + ResumeExactPlan sidecars every
    ``loop.checkpoint_frequency_updates`` updates, append ``metrics.jsonl``
    rows plus ``train.log`` lines, prune to ``keep_last_checkpoints``, and
@@ -156,7 +157,7 @@ def _require_replay_backend(backend: str) -> str:
 
 
 def _expand_game_rows(
-    game: GameRecord, split: str, backend: str = "python"
+    game: GameRecord, split: str, backend: str = "rust_json"
 ) -> tuple[list[DecisionRow], bool]:
     """Expand one game to actor rows on the selected backend.
 
@@ -179,17 +180,21 @@ def _expand_game_rows(
 
 
 def _expand_game_rust_json(game: GameRecord, split: str) -> list[DecisionRow]:
-    """Replay one wall-less game through the Rust JSON handoff.
+    """Replay one game through the Rust JSON handoff (walled or wall-less).
 
     Frames ``game.events`` to single-game JSONL scratch (temp dir only: the
     corpus stays read-only, nothing lands under the artifact root), drains one
-    Slice-4 ``RustJsonStream`` over it, and projects each 13-field row onto
-    :class:`DecisionRow`. Whole-game Rust quarantines raise
+    serial ``RustJsonStream`` over it, and assembles full training rows
+    (:func:`hydra2.training.rust_observations.assemble_game_rows`: Rust
+    decisions/masks/chosen plus Python-rebuilt full observations — take ids,
+    melds, rivers, scores, histories, furiten — through the kept observation
+    builder, no second engine). Wall-bound games ride with their framed
+    136-tile wall (the Rust S7 path binds the real wall digest); wall-less
+    games bind the SIM mark. Whole-game Rust quarantines raise
     :class:`ContractError` carrying the Rust ``Quarantine.detail`` so callers
-    count them under :func:`_quarantine_class` exactly like Python replay
-    failures. A missing compiled extension raises loudly (never a silent
-    quarantine). Rust expansion stashes no live observations, so one process
-    must not mix backends across an encode.
+    count them under :func:`_quarantine_class`. A missing compiled extension
+    raises loudly (never a silent quarantine). Rust expansion stashes no
+    live observations (the encoder always takes the validating parse path).
     """
     import tempfile
     from pathlib import Path
@@ -198,7 +203,18 @@ def _expand_game_rust_json(game: GameRecord, split: str) -> list[DecisionRow]:
     from hydra2.training.rust_stream import RustJsonStream
 
     try:
-        lines = [json.dumps(dict(event), sort_keys=True) for event in game.events]
+        framed = [dict(event) for event in game.events]
+    except (TypeError, ValueError) as exc:
+        raise ContractError(f"rust replay cannot frame game {game.game_id!r}: {exc}") from exc
+    if framed:
+        # The Rust stream names rows from the first event carrying an
+        # explicit game id, else ``game-<sha12(object_id)>``; Python names
+        # rows from the record id. Bind the record id so both agree (hashes
+        # bind it too). Real corpus games already agree (identical fallback).
+        first = framed[0]
+        first["game_id"] = str(game.game_id)
+    try:
+        lines = [json.dumps(event, sort_keys=True) for event in framed]
     except (TypeError, ValueError) as exc:
         raise ContractError(f"rust replay cannot frame game {game.game_id!r}: {exc}") from exc
     stem = str(game.object_id).replace("/", "_")
@@ -223,8 +239,14 @@ def _expand_game_rust_json(game: GameRecord, split: str) -> list[DecisionRow]:
             # the id with double quotes, normalized above), so both backends
             # count the same game under the same reason class.
             raise ContractError(quarantines[0].detail)
-        raise ContractError(f"rust replay returned no rows for game {game.game_id!r}")
-    actor_rows: list[DecisionRow] = []
+        # Rowless games (abortive kyushu, empty draws): the drained engine
+        # returned no rows without error; mirror that (the dataset owns the
+        # empty-split terminal, per game this is a counted replay, not a
+        # quarantine).
+        return []
+    from hydra2.training.rust_observations import assemble_game_rows
+
+    parsed: list[dict[str, Any]] = []
     for row in rows:
         try:
             actor_doc = json.loads(row["actor_observation"])
@@ -236,29 +258,8 @@ def _expand_game_rust_json(game: GameRecord, split: str) -> list[DecisionRow]:
             raise ContractError(
                 f"rust replay actor_observation not a mapping for {row.get('decision_id')!r}"
             )
-        chosen = row.get("chosen_action_id")
-        if isinstance(chosen, bool) or not isinstance(chosen, int):
-            raise ContractError(
-                f"rust replay left chosen unresolved for {row.get('decision_id')!r}"
-            )
-        actor_rows.append(
-            DecisionRow(
-                game_id=str(row["game_id"]),
-                round_id=str(row["round_id"]),
-                decision_id=str(row["decision_id"]),
-                seat=int(row["seat"]),
-                source_object_id=str(row["source_object_id"]),
-                split=str(row["split"]),
-                rules_hash=str(row["rules_hash"]),
-                adapter_hash=str(row["adapter_hash"]),
-                observation_hash=str(row["observation_hash"]),
-                action_table_hash=str(row["action_table_hash"]),
-                derivation_hash=str(row["derivation_hash"]),
-                actor_observation=dict(actor_doc),
-                chosen_action_id=int(chosen),
-            )
-        )
-    return actor_rows
+        parsed.append({**row, "actor_observation": actor_doc})
+    return assemble_game_rows(game, split, parsed)
 
 
 #: v1 is single-process: only rank 0 exists, so any other world size fails
@@ -380,16 +381,11 @@ class _StreamDataset:
     Games are pulled on demand, expanded to actor rows, and encoded per
     microbatch through the real encoder; privileged rows ride along into
     :attr:`privileged` (train-split rows only — this dataset never sees
-    validation games). Expansion dispatches on wall presence: games carrying
-    ``wall_tiles`` expand through :func:`expand_game` unchanged, wall-less
-    games replay through :func:`_expand_game_rows` on the configured
-    ``replay_backend`` (``"python"`` wall-less replay or the ``"rust_json"``
-    handoff); expansion failures quarantine-and-count per game
-    (never fail-soft) in :attr:`expand_quarantined`, with per-path game
-    counts in :attr:`replayed` / :attr:`sim_replayed`. ``expand_workers > 0``
-    expands pulled games in a bounded spawn pool (cache-free pure map,
-    ordered merge by pull sequence: rows, counters, and quarantine classes
-    match the serial path game-for-game); ``0`` is the serial reference.
+    validation games). Every game expands through :func:`_expand_game_rows`
+    on the configured ``replay_backend`` (``"rust_json"`` serial, ``"python"``
+    shim fallback); expansion failures quarantine-and-count per game (never
+    fail-soft) in :attr:`expand_quarantined`, with per-path game counts in
+    :attr:`replayed` / :attr:`sim_replayed`.
     Single-pass: the stream is consumed once, epoch pinned 0; exhaustion
     with rows still demanded fails closed (rescope ``max_updates`` to
     supply), and resume seeks to the recorded frontier with verbatim buffer
@@ -405,7 +401,7 @@ class _StreamDataset:
         seed: int,
         drop_last: bool,
         need_privileged: bool = True,
-        replay_backend: str = "python",
+        replay_backend: str = "rust_json",
         expand_workers: int = 0,
     ) -> None:
         if drop_last is not True:
@@ -420,6 +416,11 @@ class _StreamDataset:
         self._expand_workers = min(expand_workers, _PARALLEL_EXPAND_MAX_WORKERS)
         self._expand_pool: ProcessPoolExecutor | None = None
         self._replay_backend = _require_replay_backend(replay_backend)
+        if self._replay_backend == "rust_json" and self._expand_workers > 0:
+            raise ContractError(
+                "replay_backend='rust_json' with expand_workers>0 stays fail-closed "
+                "(serial first: the expansion pool has no Rust equivalent yet)"
+            )
         self._need_privileged = need_privileged
         self._factory = stream_factory
         self._num_actions = num_actions
@@ -486,13 +487,13 @@ class _StreamDataset:
     def _pull_game(self) -> bool:
         """Pull, expand, and buffer one game; ``False`` at stream end.
 
-        Wall-bound games expand through :func:`expand_game` unchanged;
-        wall-less games replay through :func:`_expand_game_rows` on this
-        dataset's ``replay_backend``. Privileged rows expand only when the dataset
-        was built with ``need_privileged`` (positive auxiliary weights);
-        BC-only runs skip them so label-less games still train. Either path
-        raising :class:`ContractError` quarantines-and-counts the game
-        (fail closed, never a silent drop); only fully expanded games buffer rows.
+        Every game expands through :func:`_expand_game_rows` on this
+        dataset's ``replay_backend`` (the Rust stream). Privileged rows
+        expand only when the dataset was built with ``need_privileged``
+        (positive auxiliary weights); BC-only runs skip them so label-less
+        games still train. Either path raising :class:`ContractError`
+        quarantines-and-counts the game (fail closed, never a silent drop);
+        only fully expanded games buffer rows.
         This serial pull is the bit-identity reference: order, cursors, dedup,
         and split assignment are untouched from pull to buffer (the parallel
         batch path in :meth:`_fill_parallel` merges in this same pull order).
@@ -2048,10 +2049,14 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
         drop_last=config.data.drop_last,
         need_privileged=need_privileged,
         replay_backend=config.data.replay_backend,
-        # Parallel game expansion rides the existing prefetch/parallel path:
-        # num_workers > 0 already selects PrefetchGameStream above; the same
-        # knob sizes the bounded (16-max) expansion pool, 0 stays serial.
-        expand_workers=config.data.num_workers,
+        # Parallel game expansion rides the existing prefetch/parallel path
+        # on the python backend only: num_workers > 0 selects
+        # PrefetchGameStream above (decode parallelism, backend-independent)
+        # and sizes the bounded (16-max) expansion pool. The Rust backend has
+        # no pool equivalent yet (serial first), so it always expands serially
+        # even when prefetch decodes in parallel; an explicit
+        # expand_workers>0 with rust_json refuses fail-closed at construction.
+        expand_workers=config.data.num_workers if config.data.replay_backend == "python" else 0,
     )
     payload: Any = None
     if resume is not None and envelope is not None:
