@@ -710,3 +710,37 @@ def test_validate_batch_against_schema_rejects_malformed() -> None:
     )
     with pytest.raises(ContractError):
         validate_batch_against_schema(bad2)
+
+
+@pytest.mark.gpu
+def test_attn_bf16_matches_fp32_decisions() -> None:
+    """Scoped bf16 attention preserves decisions (flash-path parity).
+
+    Only the SDPA kernel runs in bf16 (unlocking fused/flash paths, which
+    have no fp32 kernel); every projection, norm, and output stays fp32.
+    Logits agree to bf16 tolerance and argmax decisions are exact, so the
+    flag is a pure-speedup switch for measured-faster shapes.
+    """
+    if not torch.cuda.is_available():
+        pytest.fail("BLOCKER: CUDA device unavailable; GPU probes cannot be qualified on CPU")
+    torch.manual_seed(0)
+    model = Hydra2BaselineModel()
+    model.eval()
+    model.to("cuda")
+    batch = _batch_to_device(
+        encode_observations([_make_observation(), _make_observation(actor=2)]),
+        torch.device("cuda"),
+    )
+    with torch.no_grad():
+        ref = model(batch)
+        assert ref.policy_logits.dtype == torch.float32
+        for layer in model.layers:
+            layer.attn_bf16 = True
+        out = model(batch)
+    assert out.policy_logits.dtype == torch.float32
+    assert torch.allclose(out.policy_logits, ref.policy_logits, atol=1e-2, rtol=1e-2)
+    assert torch.equal(
+        select_actions(out.policy_logits, batch.legal_mask),
+        select_actions(ref.policy_logits, batch.legal_mask),
+    )
+    assert torch.isfinite(out.policy_logits[batch.legal_mask]).all()

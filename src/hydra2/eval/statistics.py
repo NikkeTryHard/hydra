@@ -555,4 +555,4 @@ def score_selection(
     est, low, high = bootstrap_blocks(
         contrasts, stream=stream, resamples=config.resamples, alpha=config.alpha
     )
-    return float(fmean(contrasts)), (est, low, high), result.excluded
+    return fmean(contrasts), (est, low, high), result.excluded

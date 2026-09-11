@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "Proprietary" }
 authors = [{ name = "Hydra2 builders" }]
-dependencies = ["pyarrow>=25.0.1,<26", "zstandard>=0.25.0,<0.26", "jax[cuda13]>=0.11.1,<0.12", "nvidia-cudnn-cu12>=9.25.1.1,<10", "nvidia-cudnn-cu13>=9.20.0.48,<10", "nvidia-nccl-cu12>=2.31.2,<3", "nvidia-nvshmem-cu12>=3.7.2,<4"]
+dependencies = ["pyarrow>=25.0.1,<26", "zstandard>=0.25.0,<0.26", "jax[cuda13]>=0.11.1,<0.12", "nvidia-cudnn-cu13>=9.20.0.48,<10", "mlflow-skinny>=3.16.0,<4"]
 
 # Dependency authority for third-party packages lives ONLY in [tool.pixi.*].
 # Pixi is the sole environment/lock authority (pixi.lock); never create uv.lock.
@@ -28,13 +28,17 @@ platforms = ["linux-64"]
 
 [tool.pixi.dependencies]
 python = "3.12.*"
+nvidia-ml-py = ">=13.610.43,<14"
+psutil = ">=7.2.2,<8"
+sqlalchemy = ">=2.0.52,<3"
+alembic = ">=1.19.2,<2"
 
 [tool.pixi.pypi-dependencies]
 clearml = "==2.1.12"
 torch = "==2.14.0"
 lightning-fabric = "==2.6.5"
-riichienv = "==0.4.8"
-mahjax = { git = "https://github.com/nissymori/mahjax.git", rev = "52228723901a4ace44b745afd25141acc25405ec" }
+riichienv = "==0.4.10"
+mahjax = { git = "https://github.com/nissymori/mahjax.git", rev = "cff90d1e68cf21464071864672a9618bb20f2551" }
 pyyaml = "==6.0.3"
 hydra2 = { path = ".", editable = true }
 
@@ -50,7 +54,7 @@ default = { features = ["dev"] }
 
 [tool.pixi.tasks]
 test = { cmd = "pixi run test-cpu; CPU=$?; pixi run test-serial; SER=$?; [ $CPU -eq 0 ] && [ $SER -eq 0 ]" }
-test-cpu = { cmd = "pytest tests -m 'not gpu and not serial' -n 10 --dist loadscope" }
+test-cpu = { cmd = "pytest tests -m 'not gpu and not serial' -n 16 --dist loadscope", env = { CUDA_VISIBLE_DEVICES = "", JAX_PLATFORMS = "cpu", XLA_PYTHON_CLIENT_PREALLOCATE = "false" } }
 test-serial = { cmd = "pytest tests -m 'gpu or serial' -n 0" }
 test-unit = { cmd = "pytest tests/unit" }
 test-integration = { cmd = "pytest tests/integration" }
@@ -64,6 +68,7 @@ typecheck = { cmd = "pyrefly check src" }
 config-check = { cmd = "python -m hydra2.config_check" }
 env-manifest = { cmd = "python -m hydra2.runtime.environment" }
 runtime-probe = { cmd = "python -m hydra2.probe" }
+build-ext = { cmd = "export EXTDST=\"$(python -c 'import sysconfig; print(sysconfig.get_path(\"purelib\"))')/hydra2_replay_rs$(python -c 'import sysconfig; print(sysconfig.get_config_var(\"EXT_SUFFIX\"))')\"; export PYO3_PYTHON=\"$PIXI_PROJECT_ROOT/.pixi/envs/default/bin/python\"; cargo build --release -p hydra2-replay-rs --manifest-path \"$PIXI_PROJECT_ROOT/tools/hydra2-replay-rs/Cargo.toml\" && cp \"$PIXI_PROJECT_ROOT/tools/hydra2-replay-rs/target/release/libhydra2_replay_rs.so\" \"$EXTDST\" && python -c 'import json, os; from pathlib import Path; root = Path(os.environ[\"PIXI_PROJECT_ROOT\"]) / \"tools\" / \"hydra2-replay-rs\" / \"crates\"; mt = max(p.stat().st_mtime for p in root.rglob(\"*\") if p.is_file() and \"target\" not in p.parts); Path(os.environ[\"EXTDST\"]).with_name(\"hydra2_replay_rs.build.json\").write_text(json.dumps({\"source_root\": str(root), \"source_mtime\": mt}))'" }
 test-conformance = { cmd = "pytest tests" }
 [tool.ruff]
 target-version = "py312"

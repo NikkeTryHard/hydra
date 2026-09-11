@@ -89,6 +89,7 @@ def _build_loop(
     loop_precision: str,
     rt_precision: str | None = None,
     adapter_id: str = "plain_pytorch",
+    device: str | None = None,
 ):
     from hydra2.training.loop import SupervisedLoop, TrainingLoopConfig
 
@@ -115,6 +116,7 @@ def _build_loop(
         checkpoint_dir=tmp_path / f"ckpt-{loop_precision}-{rt_precision}-{adapter_id}",
         manifest_hashes=make_test_manifest_hashes(),
         runtime_spec=rt_spec,
+        device=device,
     )
     return loop, model
 
@@ -224,7 +226,7 @@ class TestReplayPin:
             split_manifest_hash="sha256:" + "f" * 64,
         )
         dataset = AuthoritativeParquetDataset(
-            parquet_dir=dest, feature_dim=16, num_actions=8, seed=0
+            parquet_dir=dest, feature_dim=16, num_actions=8, seed=0, allow_narrow=True
         )
         # NOTE: feature_dim mismatch (16 vs stub 8) is fine — construction
         # fails on precision before any forward.
@@ -274,7 +276,31 @@ class TestLoopRuntimeAgreement:
         loop, _ = _build_loop(
             tmp_path, loop_precision=precision, rt_precision=precision, adapter_id=adapter_id
         )
+
         assert loop.config.precision == precision
+
+    def test_plain_bf16_cuda_agrees(self, tmp_path: Path) -> None:
+        """plain+bf16_mixed constructs on CUDA (loop-owned autocast is CUDA-only)."""
+        loop, _ = _build_loop(
+            tmp_path,
+            loop_precision="bf16_mixed",
+            rt_precision="bf16_mixed",
+            adapter_id="plain_pytorch",
+            device="cuda",
+        )
+        assert loop.config.precision == "bf16_mixed"
+        assert loop.device.type == "cuda"
+
+    def test_plain_bf16_cpu_rejected(self, tmp_path: Path) -> None:
+        """plain+bf16_mixed on CPU fails closed (would silently compute fp32)."""
+        with pytest.raises(ContractError, match="CUDA"):
+            _build_loop(
+                tmp_path,
+                loop_precision="bf16_mixed",
+                rt_precision="bf16_mixed",
+                adapter_id="plain_pytorch",
+                device="cpu",
+            )
 
 
 class TestDigestDistinctness:
@@ -359,3 +385,24 @@ class TestFiniteSkip:
         finite, norm = global_grad_norm_is_finite(model)
         assert finite is False
         assert norm == float("inf") or norm > 0
+
+    def test_helper_finite_single_sync_exact(self) -> None:
+        """Fused probe: finite grads report exact norm with one host sync."""
+        from hydra2.training.objectives import global_grad_norm_is_finite
+
+        model = _StubModel()
+        for p in model.parameters():
+            p.grad = torch.ones_like(p) * 3.0
+        finite, norm = global_grad_norm_is_finite(model)
+        assert finite is True
+        expected = sum(p.grad.numel() * 9.0 for p in model.parameters()) ** 0.5
+        assert norm == pytest.approx(expected, rel=1e-5)
+
+    def test_helper_no_grads_is_finite_zero(self) -> None:
+        """Fused probe: no grads anywhere is finite with zero norm."""
+        from hydra2.training.objectives import global_grad_norm_is_finite
+
+        model = _StubModel()
+        finite, norm = global_grad_norm_is_finite(model)
+        assert finite is True
+        assert norm == 0.0

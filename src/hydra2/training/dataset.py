@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,7 +45,7 @@ from hydra2.data.parquet import (
     FORBIDDEN_IN_ACTOR,
     verify_no_privileged_leakage,
 )
-from hydra2.models.encoder import ActorTensorBatch, encode_observations
+from hydra2.models.encoder import encode_observations
 from hydra2.models.schema import BASELINE_ACTION_COUNT
 
 __all__ = [
@@ -56,6 +57,7 @@ __all__ = [
     "encode_observation_rows",
     "tensorize_actor_row",
 ]
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,12 +124,27 @@ def _lexicographic_hash(s: str) -> int:
     return int(hashlib.sha256(s.encode()).hexdigest()[:8], 16)
 
 
+def _require_action_width(num_actions: int, *, allow_narrow: bool, where: str) -> None:
+    """Fail closed unless the vocab width is the frozen baseline or narrow is explicit.
+
+    ``num_actions != BASELINE_ACTION_COUNT`` is a test-only configuration and
+    requires ``allow_narrow=True``; production always trains the full 6792
+    table so aliased (modulo-remapped) labels can never flow silently.
+    """
+    if num_actions != BASELINE_ACTION_COUNT and not allow_narrow:
+        raise ContractError(
+            f"{where}: num_actions {num_actions} != baseline {BASELINE_ACTION_COUNT} "
+            "requires allow_narrow=True (test-only narrow vocab)"
+        )
+
+
 def tensorize_actor_row(
     row: dict[str, Any],
     *,
     num_actions: int,
     feature_dim: int = 16,
     seed: int = 0,
+    allow_narrow: bool = False,
 ) -> dict[str, Any]:
     """Deterministic tensorization of one actor row for tests/synthetic data.
 
@@ -139,8 +156,11 @@ def tensorize_actor_row(
     Produces:
       features: FloatTensor [feature_dim] hashed from decision_id
       legal_mask: BoolTensor [num_actions]
-      chosen_action_id: LongTensor scalar (chosen_action_id % num_actions, ensured legal)
+      chosen_action_id: LongTensor scalar (exact id in production; modulo
+        ``num_actions`` only under ``allow_narrow`` for small test vocabs,
+        ensured legal)
     """
+    _require_action_width(num_actions, allow_narrow=allow_narrow, where="tensorize_actor_row")
     decision_id: str = str(row["decision_id"])
     chosen_raw: int = int(row["chosen_action_id"])
     # Deterministic features from decision_id hash
@@ -157,8 +177,18 @@ def tensorize_actor_row(
     # Randomly decide legal count 1..min(8, num_actions)
     legal_count = int(torch.randint(1, min(8, num_actions) + 1, (1,), generator=gen).item())  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for synthetic row; single scalar must cross host. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
     legal_mask = torch.zeros(num_actions, dtype=torch.bool)
-    # Always include chosen
-    chosen = chosen_raw % num_actions
+    # Always include chosen: exact label in production (out-of-range is a
+    # hard error, never silently aliased); modulo remap only under the
+    # test-only narrow flag.
+    if allow_narrow:
+        chosen = chosen_raw % num_actions
+    else:
+        if not 0 <= chosen_raw < num_actions:
+            raise ContractError(
+                f"chosen_action_id {chosen_raw} out of range for baseline "
+                f"vocab {num_actions} (aliased labels are never trained)"
+            )
+        chosen = chosen_raw
     legal_mask[chosen] = True
     # Fill remaining
     candidates: list[int] = list(range(num_actions))
@@ -278,15 +308,13 @@ def _actor_observation_from_json_dict(doc: Any, *, decision_id: str) -> ActorObs
         raise ContractError(f"unparseable actor_observation for {decision_id!r}: not a mapping")
     # Bridge ingress (W3-A): the Rust JSON handoff emits a 13-key string
     # projection (marked by its ``projection`` tag) as bridge INPUT, never as
-    # encoder input. Full docs are the 35-field engine ``to_json`` documents
-    # assembled by ``rust_observations.assemble_game_rows``. An unexpanded
-    # projection reaching the encoder path fails closed here (named reason,
-    # never synthesized into a full doc).
+    # encoder input. The plane feed carries no projections; any ``projection``
+    # tag reaching the encoder path fails closed here (named reason, never
+    # synthesized into a full doc).
     if "projection" in doc:
         raise ContractError(
             f"unexpanded-projection-row for {decision_id!r}: "
-            f"projection tag {doc.get('projection')!r} must be expanded via "
-            "rust_observations.assemble_game_rows before encoding"
+            f"projection tag {doc.get('projection')!r} has no plane-feed expansion"
         )
     where = decision_id
     try:
@@ -386,178 +414,11 @@ def _real_features_from_encoder_batch(batch: Any, *, feature_dim: int) -> torch.
     if width == 0:
         return out
     idx = torch.arange(width) % feature_dim
-    out.scatter_add_(1, idx.unsqueeze(0).expand(batch_size, width), wide)
+    # intentionally discarded: in-place accumulation returns self
+    expanded = idx.unsqueeze(0).expand(batch_size, width)
+    _ = out.scatter_add_(1, expanded, wide)
     denom = (width + feature_dim - 1) // feature_dim
     return out / float(denom)
-
-
-# ---------------------------------------------------------------------------
-# Encode-side redundancy deletion (Phase 2A/B.1): digest-versioned batch
-# tensor cache + live-object fast path.
-#
-# ``encode_observation_rows`` parses each row's ``actor_observation`` JSON
-# into validated contract objects and re-hashes the full visible history per
-# row (~88% of encode time on history-bearing rows). String rows (the
-# parquet column shape) are byte-identical across repeat encodes, so a batch
-# over the same raw bytes, chosen ids, code, and config encodes
-# byte-identical tensors. The cache memoizes those tensors: repeat encodes
-# (multi-epoch parquet training, re-verification) skip parsing, validation,
-# hashing, and encoding entirely. Misses run the unchanged validating path,
-# so firewall/quarantine behavior is identical; any tampered or corrupted
-# byte misses. Non-string rows bypass the cache and use the
-# direct/stash/parse paths.
-# ---------------------------------------------------------------------------
-
-#: Resident batch-tensor entries (each ~9KB/row encoded planes; 32 batches
-#: of 1024 ≈ 300MB worst case, well under training-box headroom).
-_BATCH_TENSOR_CACHE_CAP = 32
-
-#: Key ``(marker, code_digest, feature_dim, num_actions, rows)`` where
-#: ``rows`` is ``((decision_id, raw_sha256, chosen_raw), ...)`` in batch
-#: order. Values hold unpinned cloned tensors (pinned on serve, same
-#: conditions as the miss path); every served batch is a fresh clone so
-#: downstream mutation can never poison the cache.
-_BATCH_TENSOR_CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
-
-#: Digest of the module sources whose behavior cached tensors memoize.
-#: Any edit to the parse/validate/encode chain invalidates every entry
-#: (mismatch → recompute, never serve stale).
-_ENCODE_CODE_DIGEST: str | None = None
-
-
-def _encode_code_digest() -> str:
-    """Process-once digest over the encode chain's module sources."""
-    global _ENCODE_CODE_DIGEST
-    cached = _ENCODE_CODE_DIGEST
-    if cached is not None:
-        return cached
-    try:
-        import sys
-
-        parts: list[bytes] = []
-        for name in (
-            "hydra2.training.dataset",
-            "hydra2.contracts.observation",
-            "hydra2.contracts.event",
-            "hydra2.contracts.canonical",
-            "hydra2.contracts.common",
-            "hydra2.models.encoder",
-            "hydra2.models.schema",
-        ):
-            path = sys.modules[name].__file__
-            if path is None:
-                raise ImportError(f"module {name} has no source path")
-            with open(path, "rb") as handle:
-                parts.append(handle.read())
-        cached = "sha256:" + hashlib.sha256(b"\x00".join(parts)).hexdigest()
-    except Exception:
-        cached = "unknown"
-    _ENCODE_CODE_DIGEST = cached
-    return cached
-
-
-def _row_raw_fingerprint(row: dict[str, Any]) -> str | None:
-    """sha256 of a string row's raw JSON bytes, or ``None`` if not cachable.
-
-    Only string rows (the parquet column shape) participate in the batch
-    tensor cache: byte-identity of the raw document binds the content
-    exactly, so any tampered or corrupted byte misses and takes the
-    validating parse path. Live objects and dict rows bypass the cache and
-    use the direct/stash/parse paths. Reads nothing but the raw bytes;
-    never validates.
-    """
-    raw: Any = row.get("actor_observation")
-    if not isinstance(raw, str) or raw == "":
-        return None
-    return "sha256:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-
-def _batch_cache_key(
-    row_list: list[dict[str, Any]],
-    chosen_raws: list[int],
-    fingerprints: list[str | None],
-    *,
-    feature_dim: int,
-    num_actions: int,
-) -> tuple[Any, ...] | None:
-    """Cache key for an all-string batch, else ``None`` (bypass, no store)."""
-    if any(fingerprint is None for fingerprint in fingerprints):
-        return None
-    return (
-        "encode-v1",
-        _encode_code_digest(),
-        feature_dim,
-        num_actions,
-        tuple(
-            (str(row.get("decision_id", "")), fingerprint, chosen)
-            for row, fingerprint, chosen in zip(row_list, fingerprints, chosen_raws, strict=True)
-        ),
-    )
-
-
-def _clone_cached_batch(stored: dict[str, Any]) -> dict[str, Any]:
-    """Fresh-tensor copy of a cached batch (callers may mutate the return)."""
-    actor = stored["actor_batch"]
-    if not isinstance(actor, ActorTensorBatch):
-        raise ContractError("cached batch holds no ActorTensorBatch")
-    memo: dict[int, torch.Tensor] = {}
-
-    def _clone(tensor: torch.Tensor) -> torch.Tensor:
-        known = memo.get(id(tensor))
-        if known is None:
-            known = tensor.clone()
-            memo[id(tensor)] = known
-        return known
-
-    features = {name: _clone(tensor) for name, tensor in actor.features.items()}
-    fresh_actor = ActorTensorBatch(
-        features=features,
-        history_mask=features["history_mask"],
-        legal_mask=features["legal_mask"],
-        observation_hashes=actor.observation_hashes,
-        actor_seats=features["actor_seats"],
-    )
-    return {
-        "features": stored["features"].clone(),
-        "legal_mask": stored["legal_mask"].clone(),
-        "chosen_action_id": stored["chosen_action_id"].clone(),
-        "actor_batch": fresh_actor,
-    }
-
-
-def _pin_cloned_batch(batch: dict[str, Any]) -> dict[str, Any]:
-    """Apply the miss-path CUDA pinning to cloned tensors (same conditions)."""
-    if not torch.cuda.is_available():
-        return batch
-    actor = batch["actor_batch"]
-    try:
-        pinned = {name: tensor.pin_memory() for name, tensor in actor.features.items()}
-    except Exception:
-        return batch
-    batch = dict(batch)
-    batch["actor_batch"] = ActorTensorBatch(
-        features=pinned,
-        history_mask=pinned["history_mask"],
-        legal_mask=pinned["legal_mask"],
-        observation_hashes=actor.observation_hashes,
-        actor_seats=pinned["actor_seats"],
-    )
-    try:
-        batch["features"] = batch["features"].pin_memory()
-        batch["legal_mask"] = batch["legal_mask"].pin_memory()
-        batch["chosen_action_id"] = batch["chosen_action_id"].pin_memory()
-    except Exception:
-        pass
-    return batch
-
-
-def _batch_cache_store(key: tuple[Any, ...], batch: dict[str, Any]) -> None:
-    """Store unpinned clones of a freshly encoded batch (bounded, FIFO)."""
-    if len(_BATCH_TENSOR_CACHE) >= _BATCH_TENSOR_CACHE_CAP:
-        drop = max(1, _BATCH_TENSOR_CACHE_CAP // 4)
-        for old in list(_BATCH_TENSOR_CACHE)[:drop]:
-            del _BATCH_TENSOR_CACHE[old]
-    _BATCH_TENSOR_CACHE[key] = _clone_cached_batch(batch)
 
 
 def _resolve_live_or_parse(row: dict[str, Any]) -> ActorObservation:
@@ -612,6 +473,8 @@ def encode_observation_rows(
     *,
     num_actions: int,
     feature_dim: int = 16,
+    allow_narrow: bool = False,
+    pin_memory: bool = True,
 ) -> dict[str, Any]:
     """Tensorize rows through the real actor-visible encoder.
 
@@ -619,16 +482,15 @@ def encode_observation_rows(
     :class:`ActorObservation` and encodes the batch with
     :func:`encode_observations`.  ``features`` folds real encoder content
     (never a decision_id hash), ``legal_mask`` is the observation's own mask
-    (sliced to ``num_actions`` when testing with a small vocab), and
-    ``chosen_action_id`` is the record's choice modulo ``num_actions``,
+    (sliced to ``num_actions`` only under the test-only ``allow_narrow`` flag
+    for a small vocab), and ``chosen_action_id`` is the record's exact choice
+    in production (modulo ``num_actions`` only under ``allow_narrow``),
     validated legal.  The encoded :class:`ActorTensorBatch` is also carried
     under ``actor_batch`` for the real-model input bridge (loop routes
     ``model.evaluate(batch['actor_batch'])``); flat keys stay byte-identical
     for compat.  Rows whose validated observation was stashed live at
     capture time skip the re-parse (identical objects either way); rows
-    already carrying the live object skip it outright.  Repeat string
-    batches over identical raw bytes are served from the digest-versioned
-    tensor cache (tensor-equal, freshly cloned).  Any unparseable row raises
+    already carrying the live object skip it outright.  Any unparseable row raises
     :class:`ContractError` — never falls back to the synthetic hash
     stand-in.
     """
@@ -643,10 +505,10 @@ def encode_observation_rows(
         raise ContractError(
             f"num_actions {num_actions} exceeds baseline {BASELINE_ACTION_COUNT} in real mode"
         )
+    _require_action_width(num_actions, allow_narrow=allow_narrow, where="encode_observation_rows")
     if feature_dim <= 0:
         raise ContractError(f"feature_dim must be positive, got {feature_dim}")
     chosen_raws: list[int] = []
-    fingerprints: list[str | None] = []
     for row in row_list:
         if not isinstance(row, dict):
             raise ContractError(f"row must be a mapping, got {type(row).__name__}")
@@ -656,17 +518,9 @@ def encode_observation_rows(
             did = row.get("decision_id")
             raise ContractError(f"unparseable chosen_action_id for {did!r}") from exc
         chosen_raws.append(chosen_raw)
-        fingerprints.append(_row_raw_fingerprint(row))
-    cache_key = _batch_cache_key(
-        row_list, chosen_raws, fingerprints, feature_dim=feature_dim, num_actions=num_actions
-    )
-    if cache_key is not None:
-        stored = _BATCH_TENSOR_CACHE.get(cache_key)
-        if stored is not None:
-            return _pin_cloned_batch(_clone_cached_batch(stored))
     observations: list[ActorObservation] = [_resolve_live_or_parse(row) for row in row_list]
     try:
-        encoded = encode_observations(observations)
+        encoded = encode_observations(observations, pin_memory=pin_memory)
     except ContractError:
         raise
     except Exception as exc:
@@ -678,42 +532,54 @@ def encode_observation_rows(
         legal_mask = full_legal.to(torch.bool).contiguous()
     else:
         legal_mask = full_legal[:, :num_actions].to(torch.bool).contiguous()
-    for i in range(len(row_list)):
-        if not bool(legal_mask[i].any().item()):
-            raise ContractError(
-                f"real legal_mask has no legal action for {observations[i].decision_id!r} "
-                f"(sliced to {num_actions})"
-            )
-    chosen_ids: list[int] = []
-    for i, raw in enumerate(chosen_raws):
-        chosen = raw % num_actions
-        if not bool(legal_mask[i, chosen].item()):
-            raise ContractError(
-                f"chosen action {chosen} (raw {raw}) illegal for {observations[i].decision_id!r}"
-            )
-        chosen_ids.append(chosen)
+    # Vectorized legality: one any/all reduction (single host sync) instead
+    # of a per-row .any().item() sync in the row loop. First-bad index via
+    # nonzero keeps the error identical to the row-loop version.
+    row_has_legal = legal_mask.any(dim=1)
+    if not bool(row_has_legal.all().item()):  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for fail-closed legality guard; branching needs host value. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
+        bad_row = int(torch.nonzero(~row_has_legal, as_tuple=False)[0, 0].item())  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for identical error index; alternative loses error parity. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
+        raise ContractError(
+            f"real legal_mask has no legal action for {observations[bad_row].decision_id!r} "
+            f"(sliced to {num_actions})"
+        )
+    if allow_narrow:
+        chosen_ids: list[int] = [raw % num_actions for raw in chosen_raws]
+    else:
+        for raw in chosen_raws:
+            if not 0 <= raw < num_actions:
+                raise ContractError(
+                    f"chosen_action_id {raw} out of range for baseline vocab "
+                    f"{num_actions} (aliased labels are never trained)"
+                )
+        chosen_ids = list(chosen_raws)
+    chosen_t = torch.tensor(chosen_ids, dtype=torch.long)
+    legal_chosen = legal_mask[torch.arange(len(row_list)), chosen_t]
+    if not bool(legal_chosen.all().item()):  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for fail-closed legality guard; branching needs host value. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
+        bad_idx = int(torch.nonzero(~legal_chosen, as_tuple=False)[0, 0].item())  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for identical error index; alternative loses error parity. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
+        raise ContractError(
+            f"chosen action {chosen_ids[bad_idx]} (raw {chosen_raws[bad_idx]}) illegal "
+            f"for {observations[bad_idx].decision_id!r}"
+        )
     features = _real_features_from_encoder_batch(encoded, feature_dim=feature_dim)
     chosen_action_id = torch.tensor(chosen_ids, dtype=torch.long)
-    if torch.cuda.is_available():
+    if pin_memory and torch.cuda.is_available():
         try:
             features = features.pin_memory()
             legal_mask = legal_mask.pin_memory()
             chosen_action_id = chosen_action_id.pin_memory()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("dataset pin_memory failed, using pageable fallback: %s", exc)
     result = {
         "features": features,
         "legal_mask": legal_mask,
         "chosen_action_id": chosen_action_id,
         "actor_batch": encoded,
     }
-    if cache_key is not None:
-        _batch_cache_store(cache_key, result)
+
     return result
 
 
 #: Rare-action families oversampled by the stratified sampler (SOTA R5).
-#: ``kan`` covers the daiminkan/ankan/kakan kinds; ``ron``/``tsumo`` are the
 #: winning-call kinds.  Ratios are caller-supplied; the r1 recipe uses 3x.
 RARE_ACTION_KINDS: tuple[str, ...] = ("daiminkan", "ankan", "kakan", "ron", "tsumo")
 
@@ -811,7 +677,7 @@ def build_stratified_order(
     expanded: dict[str, list[int]] = {}
     for kind in sorted(by_kind):
         members = by_kind[kind]
-        ratio = float((resolved or {}).get(kind, 1.0))
+        ratio = (resolved if resolved is not None else {}).get(kind, 1.0)
         target = max(1, round(len(members) * ratio))
         expanded[kind] = [members[i % len(members)] for i in range(target)]
     order: list[int] = []
@@ -840,9 +706,11 @@ class AuthoritativeParquetDataset:
             is not pre-tensorized).  In ``'real'`` mode it sets the folded
             real-feature width.
         num_actions: canonical action vocab size.  Defaults to the frozen
-            action table size (6792) when ``None`` is passed; tests may use
-            a smaller value for speed by passing e.g. ``16``.  In ``'real'``
-            mode a smaller value slices the observation's own legal mask.
+            action table size (6792) when ``None`` is passed; any other value
+            is test-only and requires ``allow_narrow=True``.  In ``'real'``
+            mode a narrow value slices the observation's own legal mask.
+        allow_narrow: test-only flag permitting ``num_actions != 6792``
+            (with modulo-remapped labels).  Production defaults to ``False``.
         seed: deterministic shuffle seed.  ``None`` disables shuffling
             (canonical lexicographic order).  When set, the permutation is
             computed once from the seed and the cursor tracks offset into
@@ -881,6 +749,7 @@ class AuthoritativeParquetDataset:
         stratified: bool = False,
         sampling_ratios: Mapping[str, float] | None = None,
         kind_by_id: Mapping[str, str] | None = None,
+        allow_narrow: bool = False,
     ) -> None:
         if tensorize not in ("synthetic", "real"):
             raise ContractError(f"tensorize must be 'synthetic' or 'real', got {tensorize!r}")
@@ -888,6 +757,10 @@ class AuthoritativeParquetDataset:
         self.parquet_dir = Path(parquet_dir)
         self.feature_dim = feature_dim
         self.num_actions = num_actions if num_actions is not None else 6792
+        _require_action_width(
+            self.num_actions, allow_narrow=allow_narrow, where="AuthoritativeParquetDataset"
+        )
+        self.allow_narrow = allow_narrow
         self.seed = seed
         self._rows: list[dict[str, Any]] = []
         self._cursor: int = 0
@@ -1016,7 +889,10 @@ class AuthoritativeParquetDataset:
             self._kinds = None
         if self._stratified:
             assert self._kinds is not None
-            ratios = self._sampling_ratios or dict(DEFAULT_STRATIFIED_RATIOS)
+            if self._sampling_ratios is not None and len(self._sampling_ratios) > 0:
+                ratios = self._sampling_ratios
+            else:
+                ratios = dict(DEFAULT_STRATIFIED_RATIOS)
             self._order = build_stratified_order(
                 self._kinds, ratios, seed=self.seed if self.seed is not None else 0
             )
@@ -1121,6 +997,7 @@ class AuthoritativeParquetDataset:
                 rows,
                 num_actions=self.num_actions,
                 feature_dim=self.feature_dim,
+                allow_narrow=self.allow_narrow,
             )
         batch_features: list[torch.Tensor] = []
         batch_legal: list[torch.Tensor] = []
@@ -1131,6 +1008,7 @@ class AuthoritativeParquetDataset:
                 num_actions=self.num_actions,
                 feature_dim=self.feature_dim,
                 seed=self.seed if self.seed is not None else 0,
+                allow_narrow=self.allow_narrow,
             )
             batch_features.append(t["features"])
             batch_legal.append(t["legal_mask"])
@@ -1149,8 +1027,8 @@ class AuthoritativeParquetDataset:
                 features = features.pin_memory()
                 legal_mask = legal_mask.pin_memory()
                 chosen_action_id = chosen_action_id.pin_memory()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("dataset pin_memory failed, using pageable fallback: %s", exc)
         return {
             "features": features,
             "legal_mask": legal_mask,

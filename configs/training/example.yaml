@@ -36,6 +36,10 @@ data:
   drop_last: true # WHY: pins tail behavior so sample counts reproduce bit-identically.
   num_workers: 0 # WHY: loader worker count; resume with a different count is a hard error.
   world_size: 1 # WHY: data-parallel world; rank comes from launch env and is verified at bind.
+  replay_backend: rust # WHY: Rust plane feed (tensor-native, no per-row Python); requires `pixi run build-ext` once per env. python selects the parity oracle.
+  # FEED TUNING (all in YAML per repo rule — no hidden constants; file refs in WHY):
+  decode_prefetch: 64 # WHY: games held in the background decode pool (src/hydra2/data/stream.py PrefetchGameStream). Must cover one expansion batch; raise if StreamStats.waits climbs.
+  expand_batch_games: 64 # WHY: games pulled per fill round, sharded over spawn workers with one bridge FFI per chunk (src/hydra2/training/stream_train.py _fill_parallel via rust_batch.expand_game_batch).
 
 # MODEL (identity; changing architecture_id is a new ModelSpec):
 model:
@@ -71,7 +75,7 @@ scheduler:
 # RUNTIME (precision/device matrix: loop.precision must agree; fp16 rejected
 # by design; bf16_mixed requires a CUDA device — never silent CPU fallback):
 runtime:
-  adapter_id: plain_pytorch # or fabric_2.6.5 (identical loop state, only backward differs).
+  adapter_id: plain_pytorch # or fabric_2.6.5 (identical loop state, only backward differs; bf16_mixed runs loop-owned autocast on plain — fabric AMP cannot traverse the frozen actor batch).
   device: cuda # cpu or cuda[:N]; CUDA availability checked at bind, not in YAML.
   precision: fp32 # fp32 default preserves byte-identical resume; bf16_mixed opts in.
   compile_mode: eager # Simulator stays eager; only pure-tensor model regions may compile.
@@ -85,6 +89,7 @@ loop:
   checkpoint_frequency_updates: 500 # Update-boundary checkpoints only (partial windows re-run).
   precision: fp32 # Must agree with runtime.precision per the matrix above.
   keep_last_checkpoints: null # null keeps all; set N to bound retained ckpt-<update>.pt files.
+  fetch_prefetch_depth: 3 # WHY: microbatches held in the loop prefetch queue (src/hydra2/training/loop.py SupervisedLoop.train). Must cover a fill burst behind compute windows: depth >= ceil(fetch_ms/compute_ms)+1. Raise if fetch_decode_ms bimodal with slow mode > compute.
 
 # SEEDS (counter-based roots, never wall-clock; same seed + same cursor ==
 # same sequence; sampler fans data_seed out, epoch_seed = data_seed + epoch):
@@ -114,6 +119,20 @@ mirror:
   project: hydra2-tenhou-4p
   task_name: null
   offline_dir: null
+
+# TELEMETRY (observer-only; local artifacts authoritative):
+# - mlflow_enabled (default true): quiet per-update scalars into
+#   <artifact_root>/mirror/mlflow/mlruns.db (SQLite, offline, no server);
+#   HYDRA2_MLFLOW_DISABLED=1 kill-switch wins over true. CLI: --mlflow/--no-mlflow.
+# - verbose_enabled (default false): 20/50ms NVML+psutil rows into
+#   logs/verbose-telemetry.jsonl. CLI: --verbose-telemetry/--no-verbose-telemetry.
+# - profiler_captures (default 0): single-update torch.profiler captures at
+#   post-warmup checkpoint boundaries under profiler/ (CUDA-only).
+telemetry:
+  mlflow_enabled: true
+  verbose_enabled: false
+  verbose_interval_ms: 50
+  profiler_captures: 0
 
 # VALIDATION (duplicate-wall eval cadence; eval walls never enter replay):
 eval:

@@ -1,6 +1,6 @@
 """Engine-state extraction: public snapshots, settlement facts, state digests.
 
-All values here come straight off verified RiichiEnv 0.4.8 runtime
+All values here come straight off verified RiichiEnv 0.4.10 runtime
 properties; nothing is inferred from mjai strings except where noted.
 
 Owner decisions recorded:

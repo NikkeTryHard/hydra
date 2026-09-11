@@ -26,7 +26,7 @@ The authoritative source is Tenhou's rule/manual page: <https://tenhou.net/man/>
 
 The first rules artifact, `tenhou_4p_hanchan_v1.json`, must additionally record every scoring and match flag not safely inferred from prose: kuitan, kuikae, furiten, chankan, rinshan, kan-dora/ura timing, pao, yakuman/kazoe policy, multiple-ron stick allocation, all-last, agari-yame, tobi, sudden-death, tie-break, and exact placement conversion. Engines may not fill omitted fields from their defaults.
 
-`RiichiEnv==0.4.8` is the first reference-engine adapter, not the rules authority. MahJax at commit `3fa282699e5786d165216578bc8e213f96a0dca5` is an optional accelerator after conformance. Neither may silently redefine Tenhou rules.
+`RiichiEnv==0.4.10` is the first reference-engine adapter, not the rules authority. MahJax at commit `cff90d1e68cf21464071864672a9618bb20f2551` (v0.1.3) is an optional accelerator after conformance. Neither may silently redefine Tenhou rules.
 
 ### 1.2 LuckyJ and deployment boundary
 

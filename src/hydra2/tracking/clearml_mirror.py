@@ -47,7 +47,7 @@ import os
 import warnings
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 __all__ = [
     "EXPERIMENT_DEFAULT",
@@ -94,16 +94,30 @@ METRIC_ALLOWLIST = frozenset(
         "ci_lo",
         "ci_hi",
         "num_eval_batches",
+        "temperature",
+        "calibrated_nll",
+        "calibrated_ece",
     }
 )
 
-#: Per-head series (``event_<head>`` / ``belief_<head>``) pass the allowlist.
-METRIC_ALLOWLIST_PREFIXES = ("event_", "belief_")
+#: Per-head series (``event_<head>`` / ``belief_<head>``), flattened
+#: per-type scorecards (``per_type/<kind>/<metric>``), and post-hoc
+#: calibration scalars (``temperature`` / ``calibrated_*``) pass the
+#: allowlist.  Exact keys above cover the known scalars; the prefixes
+#: future-proof eval-report additions under the same families.
+METRIC_ALLOWLIST_PREFIXES = ("event_", "belief_", "per_type/", "calibrated_", "temperature")
 
 #: Promotion record keys mirrored as scalars alongside the record artifact.
 _PROMOTION_METRIC_KEYS = ("observed_estimate", "ci_lo", "ci_hi")
 
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+class _TaskLogger(Protocol):
+    """Structural type for the ClearML task logger (SDK is untyped/optional)."""
+
+    def report_scalar(self, *args: object, **kwargs: object) -> None: ...
+    def report_text(self, *args: object, **kwargs: object) -> None: ...
 
 
 def _env_truthy(name: str) -> bool:
@@ -178,7 +192,9 @@ def _flatten_params(params: Mapping[str, Any] | Any, *, _prefix: str = "") -> di
         if isinstance(value, Mapping):
             flat.update(_flatten_params(value, _prefix=name))
         else:
-            flat[name] = str(value)
+            # Non-mapping leaf: static type degrades to Unknown here; object is honest.
+            leaf: object = value
+            flat[name] = str(leaf)
     return flat
 
 
@@ -218,7 +234,7 @@ class ClearmlMirror:
         environment_digest: str | None = None,
     ) -> None:
         try:
-            self._enabled = bool(enabled)
+            self._enabled = enabled
         except Exception:
             self._enabled = False
         try:
@@ -228,17 +244,17 @@ class ClearmlMirror:
         except Exception:
             self._offline_dir = default_offline_dir()
         try:
-            self._project = str(project) if project else EXPERIMENT_DEFAULT
+            self._project = project if project != "" else EXPERIMENT_DEFAULT
         except Exception:
             self._project = EXPERIMENT_DEFAULT
         try:
-            name = task_name if task_name else run_name
-            self._task_name = str(name) if name else TASK_DEFAULT
+            name = task_name if task_name is not None and task_name != "" else run_name
+            self._task_name = name if name is not None and name != "" else TASK_DEFAULT
         except Exception:
             self._task_name = TASK_DEFAULT
         try:
             self._manifest_hashes = (
-                {str(k): str(v) for k, v in dict(manifest_hashes).items()}
+                {k: str(v) for k, v in dict(manifest_hashes).items()}
                 if isinstance(manifest_hashes, Mapping)
                 else {}
             )
@@ -249,7 +265,11 @@ class ClearmlMirror:
         except Exception:
             self._loop_config = {}
         try:
-            self._environment_digest = str(environment_digest) if environment_digest else None
+            self._environment_digest = (
+                environment_digest
+                if environment_digest is not None and environment_digest != ""
+                else None
+            )
         except Exception:
             self._environment_digest = None
         self._task: Any = None
@@ -290,9 +310,9 @@ class ClearmlMirror:
                 auto_connect_frameworks=False,
             )
             params = _flatten_params(self._loop_config)
-            if params:
+            if len(params) > 0:
                 task.connect(params)
-            raw_id = task.id
+            raw_id: object = task.id
             self._task = task
             self._task_id = str(raw_id) if raw_id is not None else None
             return self._task_id
@@ -306,11 +326,11 @@ class ClearmlMirror:
             return
         try:
             metrics = _filter_metrics(entry)
-            if not metrics:
+            if len(metrics) == 0:
                 return
-            logger = self._task.get_logger()
+            logger: _TaskLogger = self._task.get_logger()
             for key, value in metrics.items():
-                logger.report_scalar(title=key, series=key, value=value, iteration=int(step))
+                logger.report_scalar(title=key, series=key, value=value, iteration=step)
         except Exception as exc:
             self._degraded("log_update", exc)
 
@@ -338,13 +358,13 @@ class ClearmlMirror:
         if not self._enabled or self._task is None:
             return
         try:
-            label = str(name)
+            label = name
             payload = dict(report) if isinstance(report, Mapping) else {}
             self._task.upload_artifact(f"eval/{label}.json", payload)
-            logger = self._task.get_logger()
+            logger: _TaskLogger = self._task.get_logger()
             for key, value in _filter_metrics(payload).items():
                 logger.report_scalar(title=f"eval/{label}", series=key, value=value, iteration=0)
-            if digest:
+            if digest is not None and digest != "":
                 self._task.add_tags([f"eval.{label}.digest={digest}"])
                 logger.report_text(f"eval {label} digest {digest}")
         except Exception as exc:
@@ -357,7 +377,7 @@ class ClearmlMirror:
         try:
             record = dict(record_json) if isinstance(record_json, Mapping) else {}
             self._task.upload_artifact("promotion/record.json", record)
-            logger = self._task.get_logger()
+            logger: _TaskLogger = self._task.get_logger()
             for key in _PROMOTION_METRIC_KEYS:
                 value = record.get(key)
                 if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -366,7 +386,7 @@ class ClearmlMirror:
                 if not math.isfinite(number):
                     continue
                 logger.report_scalar(title="promotion", series=key, value=number, iteration=0)
-            if digest:
+            if digest is not None and digest != "":
                 self._task.add_tags([f"promotion.digest={digest}"])
                 logger.report_text(f"promotion digest {digest}")
         except Exception as exc:
@@ -384,11 +404,11 @@ class ClearmlMirror:
             return
         try:
             tags: list[str] = []
-            if manifest_digest:
+            if manifest_digest is not None and manifest_digest != "":
                 tags.append(f"duplicate.manifest_digest={manifest_digest}")
-            if telemetry_digest:
+            if telemetry_digest is not None and telemetry_digest != "":
                 tags.append(f"duplicate.telemetry_digest={telemetry_digest}")
-            if tags:
+            if len(tags) > 0:
                 self._task.add_tags(tags)
             if sidecar is not None and isinstance(sidecar, Mapping):
                 self._task.upload_artifact("duplicate/confirmation_sidecar.json", dict(sidecar))

@@ -8,6 +8,7 @@ Padding values never carry semantics without their mask.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import numpy as np
@@ -22,6 +23,8 @@ from hydra2.models.schema import (
     HISTORY_BUCKET_LENGTHS,
     model_input_schema_digest,
 )
+
+logger = logging.getLogger(__name__)
 
 # Visible enumerations for encoding.
 _FURIKEN_STATES = ("none", "temporary", "riichi", "discard")
@@ -80,6 +83,7 @@ def encode_observations(
     observations: list[ActorObservation],
     *,
     buckets: tuple[int, ...] = HISTORY_BUCKET_LENGTHS,
+    pin_memory: bool = True,
 ) -> ActorTensorBatch:
     """Encode a list of observations into a padded, bucketed batch.
 
@@ -180,39 +184,36 @@ def encode_observations(
         hand_number_np[idx] = obs.hand_number
         round_index_np[idx] = obs.round_index
         round_wind_np[idx] = _wind_to_id[int(obs.round_wind)]
-        # seat_winds: vectorized row fill via list comp → numpy slice (no torch)
-        seat_winds_np[idx] = np.array([_wind_to_id[int(w)] for w in obs.seat_winds], dtype=np.int64)
+        # seat_winds: row fill via list comp → slice (no per-row temporaries)
+        seat_winds_np[idx] = [_wind_to_id[int(w)] for w in obs.seat_winds]
         honba_np[idx] = obs.honba
         riichi_sticks_np[idx] = obs.riichi_sticks
-        scores_np[idx] = np.array(list(obs.scores), dtype=np.int32)
+        scores_np[idx] = obs.scores
         phase_np[idx] = _phase_to_id[obs.phase]
         live_wall_tiles_remaining_np[idx] = obs.live_wall_tiles_remaining
         kan_count_np[idx] = obs.kan_count
-        ippatsu_active_np[idx] = np.array(list(obs.ippatsu_active), dtype=np.bool_)
-        riichi_states_np[idx] = np.array(
-            [_riichi_to_id[s] for s in obs.riichi_states], dtype=np.int64
-        )
+        ippatsu_active_np[idx] = obs.ippatsu_active
+        riichi_states_np[idx] = [_riichi_to_id[s] for s in obs.riichi_states]
 
-        # Tiles
-        concealed = _concealed_counts(obs)
-        concealed_hand_counts_np[idx] = np.array(concealed, dtype=np.int32)
+        # Tiles (sequence assignment into the preallocated row — no per-row temp)
+        concealed_hand_counts_np[idx] = _concealed_counts(obs)
 
         if obs.own_drawn_tile is not None:
             own_drawn_tile_np[idx] = int(obs.own_drawn_tile)
         # else already -1 fill
 
-        dora_indicators_np[idx] = np.array(list(obs.dora_indicators), dtype=np.int32)
+        dora_indicators_np[idx] = obs.dora_indicators
 
-        disc_counts = _visible_discards_counts(obs)
-        visible_discards_counts_np[idx] = np.array(disc_counts, dtype=np.int32)
+        visible_discards_counts_np[idx] = _visible_discards_counts(obs)
 
-        # History — vectorized per-event kind fill into numpy (no per-row torch alloc)
-        # Keep per-event loop (variable length) but write to numpy backing directly
-        for pos, event in enumerate(obs.visible_history):
-            kind_id = _event_to_id.get(event.kind, 0)
-            history_event_kind_np[idx, pos] = kind_id
-            history_mask_np[idx, pos] = True
-        # Padding already 0/False
+        # History — one slice fill per row (variable length, no per-event loop;
+        # padding already 0/False)
+        hist_len = len(obs.visible_history)
+        if hist_len > 0:
+            history_event_kind_np[idx, :hist_len] = [
+                _event_to_id.get(event.kind, 0) for event in obs.visible_history
+            ]
+            history_mask_np[idx, :hist_len] = True
 
         # Legal mask — validate before numpy fill
         if len(obs.legal_mask) != BASELINE_ACTION_COUNT:
@@ -221,7 +222,7 @@ def encode_observations(
             )
         if not any(obs.legal_mask):
             raise ContractError("legal_mask must contain at least one True at a decision")
-        legal_mask_np[idx] = np.array(list(obs.legal_mask), dtype=np.bool_)
+        legal_mask_np[idx] = obs.legal_mask
 
     # Zero-copy convert numpy → torch (from_numpy shares memory, no copy)
     # Note: torch.from_numpy zero-copy for CPU; pin_memory later enables async H2D.
@@ -290,8 +291,7 @@ def encode_observations(
     # pin only when cuda available to avoid overhead.
     # Perf-C P2b: pin_memory() is out-of-place (returns a pinned copy), so
     # the results must be rebound — discarding them pinned nothing and every
-    # history/legal plane crossed H2D synchronously.
-    if torch.cuda.is_available():
+    if pin_memory and torch.cuda.is_available():
         try:
             features = {
                 name: tensor.pin_memory()  # type: ignore[attr-defined]  # reason: CPU Tensor.pin_memory; stubs miss
@@ -300,8 +300,8 @@ def encode_observations(
             history_mask = features["history_mask"]
             legal_mask = features["legal_mask"]
             actor_seats = features["actor_seats"]
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("encoder pin_memory failed, using pageable fallback: %s", exc)
 
     # Schema guard: every field in _BASELINE_FIELDS must be present, no extras besides
     # those fields. Check canonical order is respected by caller via sorted keys.

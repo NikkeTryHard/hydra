@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from typing import TYPE_CHECKING, Any
 
 import pyarrow.parquet as pq
@@ -43,6 +44,8 @@ from hydra2.training.loop import FORBIDDEN_BATCH_KEYS, SupervisedLoop, TrainingL
 from hydra2.training.objectives import (
     compute_supervised_loss,
     masked_cross_entropy,
+    supervised_loss_kernel,
+    validate_supervised_inputs,
 )
 from tests.unit._manifest_helpers import make_test_manifest_hashes
 
@@ -226,6 +229,7 @@ def _build_loop(
         num_actions=num_actions,
         seed=seed,
         verify=True,
+        allow_narrow=True,
     )
     model: nn.Module
     if w_placement != 0.0 or w_value != 0.0 or (w_event and any(v != 0 for v in w_event.values())):
@@ -525,7 +529,10 @@ def test_train_with_value_head_logs_value(tmp_path: Path, actor_parquet_factory)
     weights = loop.config.objective_weights()
     losses = compute_supervised_loss(model_out, batch, weights)
     expected_total = masked_cross_entropy(
-        model_out["policy_logits"], batch["chosen_action_id"], batch["legal_mask"]
+        model_out["policy_logits"],
+        batch["chosen_action_id"],
+        batch["legal_mask"],
+        label_smoothing=weights["label_smoothing"],
     ) + 0.5 * torch.nn.functional.mse_loss(model_out["value_vector"], batch["value_target"])
     assert torch.allclose(losses["total"], expected_total, atol=1e-6)
     assert torch.allclose(
@@ -533,6 +540,34 @@ def test_train_with_value_head_logs_value(tmp_path: Path, actor_parquet_factory)
         torch.nn.functional.mse_loss(model_out["value_vector"], batch["value_target"]),
         atol=1e-6,
     )
+
+
+def test_hot_entry_always_lean(tmp_path: Path, actor_parquet_factory) -> None:
+    """Hot entries carry masked_nll/top1 only; rich metrics ride the eval report."""
+    import dataclasses
+
+    parquet_dir = actor_parquet_factory(num_rows=16)
+    for flag in (False, True):
+        loop, _, _ = _build_loop(tmp_path, parquet_dir, seed=123, max_updates=2)
+        loop.config = dataclasses.replace(loop.config, log_per_type_metrics=flag)
+        hist = loop.train(max_updates=2)
+        assert len(hist) == 2
+        core = ("total", "policy", "masked_nll", "top1")
+        dropped = (
+            "top3",
+            "top5",
+            "calibration_ece",
+            "legal_uniform_nll",
+            "legal_uniform_gap",
+            "support_min",
+            "support_max",
+        )
+        for entry in hist:
+            assert not any(k.startswith("per_type/") for k in entry)
+            for key in core:
+                assert key in entry, f"core key {key!r} missing (flag={flag})"
+            for key in dropped:
+                assert key not in entry, f"hot key {key!r} must ride eval, not history"
 
 
 # ---------------------------------------------------------------------------
@@ -587,6 +622,7 @@ def test_deterministic_requires_same_shuffle_order(tmp_path: Path, actor_parquet
         num_actions=NUM_ACTIONS_SMALL,
         seed=999,
         verify=True,
+        allow_narrow=True,
     )
     ds2 = AuthoritativeParquetDataset(
         parquet_dir=parquet_dir,
@@ -594,6 +630,7 @@ def test_deterministic_requires_same_shuffle_order(tmp_path: Path, actor_parquet
         num_actions=NUM_ACTIONS_SMALL,
         seed=999,
         verify=True,
+        allow_narrow=True,
     )
     b1 = ds1.next_batch(4)
     b2 = ds2.next_batch(4)
@@ -678,6 +715,7 @@ def test_manifest_hashes_required_and_validated(tmp_path: Path, actor_parquet_fa
         num_actions=NUM_ACTIONS_SMALL,
         seed=0,
         verify=True,
+        allow_narrow=True,
     )
     model = StubPolicyModel(feature_dim=FEATURE_DIM, num_actions=NUM_ACTIONS_SMALL)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, foreach=True)
@@ -848,6 +886,7 @@ def test_plain_and_fabric_identical_loop_state(tmp_path: Path, actor_parquet_fac
         num_actions=NUM_ACTIONS_SMALL,
         seed=seed,
         verify=True,
+        allow_narrow=True,
     )
     model_plain = StubPolicyModel().to("cuda")
     # Clone weights deterministically for fair comparison: copy state dict
@@ -888,6 +927,7 @@ def test_plain_and_fabric_identical_loop_state(tmp_path: Path, actor_parquet_fac
         num_actions=NUM_ACTIONS_SMALL,
         seed=seed,
         verify=True,
+        allow_narrow=True,
     )
     model_fab_base = StubPolicyModel()
     model_fab_base.load_state_dict(plain_sd)
@@ -956,22 +996,12 @@ def test_loss_logging_and_reporting(tmp_path: Path, actor_parquet_factory) -> No
     hist = loop.train(max_updates=5)
     assert len(hist) == 5
     for entry in hist:
-        for key in (
-            "masked_nll",
-            "top1",
-            "top3",
-            "top5",
-            "calibration_ece",
-            "legal_uniform_nll",
-            "legal_uniform_gap",
-        ):
+        for key in ("masked_nll", "top1"):
             assert key in entry, f"history missing {key}"
             assert isinstance(entry[key], float)
             assert entry[key] == entry[key], "NaN in history"  # not nan
         # masked_nll should be finite
         assert 0 <= entry["top1"] <= 1
-        assert 0 <= entry["top3"] <= 1
-        assert 0 <= entry["calibration_ece"] <= 1
     # Evaluate report over held-out batches
     report = loop.evaluate_report(ds, weights=None)
     for k in (
@@ -1046,6 +1076,7 @@ def test_no_privileged_fields_rejected_in_parquet(tmp_path: Path) -> None:
             num_actions=NUM_ACTIONS_SMALL,
             seed=0,
             verify=True,
+            allow_narrow=True,
         )
     # Clean and test dora shim: create rows with (4,) shim via manual parquet
     (dest / "privileged-train.parquet").unlink()
@@ -1064,6 +1095,7 @@ def test_no_privileged_fields_rejected_in_parquet(tmp_path: Path) -> None:
             num_actions=NUM_ACTIONS_SMALL,
             seed=0,
             verify=True,
+            allow_narrow=True,
         )
 
 
@@ -1112,6 +1144,7 @@ def test_authoritative_parquet_is_synthetic_qualified(
         num_actions=NUM_ACTIONS_SMALL,
         seed=0,
         verify=True,
+        allow_narrow=True,
     )
     assert len(ds) == 16
     # Ensure each row's tensorization never sees privileged data
@@ -1516,6 +1549,40 @@ def test_real_encode_features_differ_for_same_decision_id() -> None:
     assert torch.equal(synth_a["features"], synth_b["features"])
 
 
+def test_encode_pin_flag_byte_identical_skips_page_lock(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """pin_memory=False skips all page-locking with byte-identical tensors.
+
+    The pinned-ring feed stages H2D from its own pinned slots, so
+    encode-side pin_memory() calls are pure overhead there. Forcing
+    CUDA-visible proves the gate both ways: pin True attempts the lock
+    (falling back with warnings, no device here), pin False never attempts.
+    """
+    hand = (0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48)
+    obs = _make_real_observation(decision_id="pin-dec", concealed_hand=hand)
+    rows = [_real_row_dict("pin-dec", obs), _real_row_dict("pin-dec", obs)]
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    with caplog.at_level(logging.WARNING):
+        pinned = encode_observation_rows(
+            rows, num_actions=BASELINE_ACTION_COUNT, feature_dim=FEATURE_DIM, pin_memory=True
+        )
+    assert any("pin_memory failed" in r.message for r in caplog.records)
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        plain = encode_observation_rows(
+            rows, num_actions=BASELINE_ACTION_COUNT, feature_dim=FEATURE_DIM, pin_memory=False
+        )
+    assert caplog.records == []
+    for key in ("features", "legal_mask", "chosen_action_id"):
+        assert torch.equal(pinned[key], plain[key])
+    assert torch.equal(
+        pinned["actor_batch"].features["concealed_hand_counts"],
+        plain["actor_batch"].features["concealed_hand_counts"],
+    )
+    assert torch.equal(pinned["actor_batch"].history_mask, plain["actor_batch"].history_mask)
+
+
 def test_real_dataset_mode_batch_over_real_parquet(tmp_path: Path) -> None:
     hands = [
         (0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48),
@@ -1552,6 +1619,7 @@ def test_synthetic_default_unchanged(tmp_path: Path, actor_parquet_factory) -> N
         num_actions=NUM_ACTIONS_SMALL,
         seed=0,
         verify=True,
+        allow_narrow=True,
     )
     assert dataset.tensorize == "synthetic"
     batch = dataset.next_batch(4)
@@ -1564,6 +1632,7 @@ def test_synthetic_default_unchanged(tmp_path: Path, actor_parquet_factory) -> N
         num_actions=NUM_ACTIONS_SMALL,
         feature_dim=FEATURE_DIM,
         seed=0,
+        allow_narrow=True,
     )
     assert torch.equal(batch["features"][0], probe["features"])
 
@@ -1577,8 +1646,9 @@ def test_real_mode_rejects_bad_tensorize_flag(tmp_path: Path, actor_parquet_fact
             num_actions=NUM_ACTIONS_SMALL,
             seed=0,
             verify=True,
-            tensorize="hashed",  # type: ignore[arg-type]
-        )
+            allow_narrow=True,
+            tensorize="hashed",
+        )  # type: ignore[arg-type]
 
 
 def test_real_mode_bad_row_raises_contract_error(tmp_path: Path) -> None:
@@ -1633,6 +1703,7 @@ def test_oracle_join_injects_placement_and_value_targets(
         num_actions=NUM_ACTIONS_SMALL,
         seed=7,
         verify=True,
+        allow_narrow=True,
     )
     model = StubModelPerSeat(feature_dim=FEATURE_DIM, num_actions=NUM_ACTIONS_SMALL)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, foreach=True)
@@ -1747,6 +1818,32 @@ def test_model_forward_converts_model_output_dataclass() -> None:
             return sentinel
 
     assert _model_forward(StubDictModel(), batch) is sentinel
+
+
+def test_model_forward_rejects_all_false_legal_before_forward() -> None:
+    """Pre-forward gate: all-false legal mask raises before any model call."""
+    from hydra2.models.encoder import ActorTensorBatch
+    from hydra2.training.loop import _model_forward
+
+    class _NoCallModel(nn.Module):
+        action_count = 6792
+
+        def evaluate(self, batch: object) -> object:
+            raise AssertionError("must not reach forward")
+
+        def forward(self, batch: object) -> object:  # type: ignore[override]
+            raise AssertionError("must not reach forward")
+
+    feats = {"history_event_kind": torch.zeros(2, 32, dtype=torch.int64)}
+    bad = ActorTensorBatch(
+        features=feats,
+        history_mask=torch.ones(2, 32, dtype=torch.bool),
+        legal_mask=torch.zeros(2, 6792, dtype=torch.bool),
+        observation_hashes=("sha256:" + "0" * 64, "sha256:" + "0" * 64),
+        actor_seats=torch.zeros(2, dtype=torch.int64),
+    )
+    with pytest.raises(ContractError, match="at least one legal"):
+        _model_forward(_NoCallModel(), {"actor_batch": bad})
 
 
 # ---------------------------------------------------------------------------
@@ -1932,6 +2029,7 @@ def test_supervised_loop_wall_ledger_overlap_raises(tmp_path: Path, actor_parque
         num_actions=NUM_ACTIONS_SMALL,
         seed=7,
         verify=True,
+        allow_narrow=True,
     )
     batch = dataset.next_batch(4)
     assert batch is not None
@@ -1973,3 +2071,144 @@ def test_supervised_loop_wall_ledger_overlap_raises(tmp_path: Path, actor_parque
     assert loop.evaluation_wall_ids == frozenset({"wall-eval-1"})
     with pytest.raises(ContractError, match="wall leakage"):
         loop.train_step(batch)
+
+
+def test_narrow_vocab_requires_explicit_flag(tmp_path: Path, actor_parquet_factory) -> None:
+    """Narrow vocabs fail closed without allow_narrow (no silent aliasing)."""
+    parquet_dir = actor_parquet_factory(num_rows=4)
+    with pytest.raises(ContractError, match="allow_narrow"):
+        AuthoritativeParquetDataset(
+            parquet_dir=parquet_dir,
+            feature_dim=FEATURE_DIM,
+            num_actions=NUM_ACTIONS_SMALL,
+            seed=0,
+            verify=True,
+        )
+    with pytest.raises(ContractError, match="allow_narrow"):
+        tensorize_actor_row(
+            {"decision_id": "dec-0000", "chosen_action_id": 0},
+            num_actions=NUM_ACTIONS_SMALL,
+            feature_dim=FEATURE_DIM,
+            seed=0,
+        )
+
+
+def test_compiled_supervised_loss_matches_eager_bitwise() -> None:
+    """Inductor-fused kernel is bitwise-identical to eager (train-loop wiring).
+
+    Guards the loop's compiled-loss fast path: the loop pre-validates
+    eagerly, then runs the check-free kernel, so the test mirrors that
+    split (validate once, compare eager kernel vs compiled kernel). Same
+    values down to the last bit on both the plain and legal-only-smoothing
+    paths, so compiling the loss is a pure speedup. Skipped where inductor
+    is unavailable.
+    """
+    torch = pytest.importorskip("torch")
+    try:
+        import torch._inductor
+    except ImportError:
+        pytest.skip("inductor unavailable")
+    torch.manual_seed(0)
+    batch_size, width, legal = 8, 64, 5
+    logits = torch.randn(batch_size, width)
+    mask = torch.zeros(batch_size, width, dtype=torch.bool)
+    mask[:, :legal] = True
+    targets = torch.randint(0, legal, (batch_size,))
+    model_out = {"policy_logits": logits}
+    batch = {"chosen_action_id": targets, "legal_mask": mask}
+    compiled = torch.compile(supervised_loss_kernel, fullgraph=False)
+    for smoothing in (0.0, 0.03):
+        weights = {"w_policy": 1.0, "label_smoothing": smoothing}
+        validate_supervised_inputs(model_out, batch, weights)
+        want = compute_supervised_loss(model_out, batch, weights)
+        got = compiled(model_out, batch, weights)
+        assert torch.equal(got["total"], want["total"])
+        assert torch.equal(got["policy"], want["policy"])
+
+
+def test_loss_validator_matches_public_errors() -> None:
+    """Validator raises the identical error as the eager public loss."""
+    torch.manual_seed(0)
+    batch_size, width, legal = 4, 16, 5
+    logits = torch.randn(batch_size, width)
+    good_mask = torch.zeros(batch_size, width, dtype=torch.bool)
+    good_mask[:, :legal] = True
+    good_targets = torch.randint(0, legal, (batch_size,))
+
+    def _check(model_out: dict, batch: dict, weights: dict) -> None:
+        with pytest.raises(ContractError) as public_exc:
+            compute_supervised_loss(model_out, batch, weights)
+        with pytest.raises(ContractError) as validator_exc:
+            validate_supervised_inputs(model_out, batch, weights)
+        assert str(public_exc.value) == str(validator_exc.value)
+
+    weights = {"w_policy": 1.0}
+    base_out = {"policy_logits": logits}
+    base_batch = {"chosen_action_id": good_targets, "legal_mask": good_mask}
+    # All-false legal row.
+    bad_mask = torch.zeros(batch_size, width, dtype=torch.bool)
+    _check(base_out, {"chosen_action_id": good_targets, "legal_mask": bad_mask}, weights)
+    # Out-of-range target.
+    bad_targets = torch.full((batch_size,), width, dtype=torch.long)
+    _check(base_out, {"chosen_action_id": bad_targets, "legal_mask": good_mask}, weights)
+    # Illegal target (in range, masked out).
+    illegal = torch.zeros(batch_size, dtype=torch.long)
+    illegal[0] = legal  # row 0: only [0, legal) legal
+    _check(base_out, {"chosen_action_id": illegal, "legal_mask": good_mask}, weights)
+    # Missing keys.
+    _check(base_out, {"legal_mask": good_mask}, weights)
+    _check({}, base_batch, weights)
+
+
+def test_nonfinite_logits_trip_total_gate() -> None:
+    """CE-local gate deleted: corrupt logits still fail closed via the total gate."""
+    torch.manual_seed(0)
+    batch_size, width, legal = 4, 16, 5
+    logits = torch.randn(batch_size, width)
+    logits[0, 0] = float("inf")
+    good_mask = torch.zeros(batch_size, width, dtype=torch.bool)
+    good_mask[:, :legal] = True
+    good_targets = torch.randint(0, legal, (batch_size,))
+    model_out = {"policy_logits": logits}
+    batch = {"chosen_action_id": good_targets, "legal_mask": good_mask}
+    with pytest.raises(ContractError, match="non-finite"):
+        compute_supervised_loss(model_out, batch, {"w_policy": 1.0})
+
+
+@pytest.mark.gpu
+def test_device_assert_trips_live_on_cuda() -> None:
+    """Prod device-assert path fires (subprocess isolation: poison cannot leak).
+
+    Runs the trip in a child process with the test gate scrubbed: a real
+    violation must abort (never exit 42), with a device-side assert in
+    stderr. CPU-semantics tests elsewhere pin the exact typed errors.
+    """
+    import os
+    import subprocess
+    import sys
+
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA device")
+    code = (
+        "import os;",
+        "os.environ.pop('HYDRA2_DISABLE_DEVICE_ASSERTS', None);",
+        "import torch;",
+        "from hydra2.training.objectives import _check_legal_rows;",
+        "mask = torch.zeros(2, 4, dtype=torch.bool, device='cuda');",
+        "_check_legal_rows(mask);",
+        "torch.cuda.synchronize();",
+        "raise SystemExit(42)",
+    )
+    env = {k: v for k, v in os.environ.items() if k != "HYDRA2_DISABLE_DEVICE_ASSERTS"}
+    proc = subprocess.run(
+        [sys.executable, "-c", "".join(code)],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        env=env,
+    )
+    assert proc.returncode != 42, f"device assert did not trip; stderr={proc.stderr[-2000:]}"
+    assert "cudaErrorAssert" in proc.stderr or "device-side assert" in proc.stderr, (
+        f"expected device-assert text; stderr={proc.stderr[-2000:]}"
+    )

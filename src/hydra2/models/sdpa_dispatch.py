@@ -28,7 +28,7 @@ import torch
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator
 
 __all__ = [
     "backend_health",
@@ -48,7 +48,7 @@ _PINNED_BACKENDS: tuple[SDPBackend, SDPBackend, SDPBackend] = (
 
 
 @contextlib.contextmanager
-def pinned_sdpa_kernel() -> Iterator[None]:
+def pinned_sdpa_kernel() -> Generator[None, None, None]:
     """Pin SDPA backend selection to flash -> efficient -> math.
 
     Exit restores the previous backend flags (``sdpa_kernel`` guarantee).

@@ -434,11 +434,9 @@ def test_split_wall_seed_leakage_audits() -> None:
     # Pass case
     audit = audit_leakage(train_ids=train_ids, held_ids=held_ids)
     assert audit["split_no_overlap"] is True
-    # Fail case — overlap
-    audit2 = audit_leakage(
-        train_ids=train_ids, held_ids=tuple(f"case_{i:05d}" for i in range(5, 12))
-    )
-    assert audit2["split_no_overlap"] is False
+    # Fail case — overlap must raise (cannot be silently ignored)
+    with pytest.raises(ContractError):
+        audit_leakage(train_ids=train_ids, held_ids=tuple(f"case_{i:05d}" for i in range(5, 12)))
 
     # Wall audit
     train_walls = tuple(f"wall_{i:04d}" for i in range(8))
@@ -447,13 +445,13 @@ def test_split_wall_seed_leakage_audits() -> None:
         train_ids=train_ids, held_ids=held_ids, train_walls=train_walls, held_walls=held_walls
     )
     assert audit_w["wall_no_overlap"] is True
-    audit_w2 = audit_leakage(
-        train_ids=train_ids,
-        held_ids=held_ids,
-        train_walls=train_walls,
-        held_walls=tuple(f"wall_{i:04d}" for i in range(4, 10)),
-    )
-    assert audit_w2["wall_no_overlap"] is False
+    with pytest.raises(ContractError):
+        audit_leakage(
+            train_ids=train_ids,
+            held_ids=held_ids,
+            train_walls=train_walls,
+            held_walls=tuple(f"wall_{i:04d}" for i in range(4, 10)),
+        )
 
     # Seed isolation
     assert (
@@ -462,12 +460,10 @@ def test_split_wall_seed_leakage_audits() -> None:
         )["seed_isolated"]
         is True
     )
-    assert (
+    with pytest.raises(ContractError):
         audit_leakage(
             train_ids=train_ids, held_ids=held_ids, train_seeds=(1, 2, 3), held_seeds=(3, 4, 5)
-        )["seed_isolated"]
-        is False
-    )
+        )
 
 
 # ---------------------------------------------------------------------------

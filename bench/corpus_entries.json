@@ -1,0 +1,1920 @@
+{
+  "entries": [
+    {
+      "id": "F1",
+      "kind": "synth-expand-smoke",
+      "n_decisions": 5,
+      "n_games": 1,
+      "n_lines": 50,
+      "note": "golden builders + skip-type dora pads; expand must yield 5 rows",
+      "relpath": "bench/corpus/f1-smoke-50x5.mjai.json",
+      "sha256": "sha256:faf2cd048341e42fd9b89e2e440cc85e071dbd6a6936b5ff65aaa4c6db1ec30b"
+    },
+    {
+      "id": "F2",
+      "kind": "synth-stream-primary",
+      "n_games": 247,
+      "n_lines": 1500,
+      "note": "scales test_stream_wp14 _game_bytes; stream leg only (turn_advance is not expand vocab)",
+      "relpath": "bench/corpus/f2-primary-1500.mjai.json.zst",
+      "seed": 20260909,
+      "sha256": "sha256:1eb1fcefd304a6988eb6a3206b19c1ce9b47d8dae8863cbb98b5aae456b1c499",
+      "sha256_raw": "sha256:fce0fb8e4593d6a9644c3503bb3847ead4765ca397007e18c9f3ec2ac93bd5c2",
+      "zstd_level": 1,
+      "zstd_version": "*** Zstandard CLI (64-bit) v1.5.7, by Yann Collet ***"
+    },
+    {
+      "id": "F8",
+      "kind": "stream-leg-shard",
+      "n_decisions": 22,
+      "n_games": 22,
+      "n_lines": 110,
+      "note": "30x22 emission leg; 660 games total, counted via PrefetchGameStream",
+      "part": "2024010100gm-00a9-0000-00000000.mjai.json.zst",
+      "relpath": "bench/corpus/f8-stream-30x22/2024010100gm-00a9-0000-00000000.mjai.json.zst",
+      "sha256": "sha256:cca984b6c7636b539b684ef5106d5056350fb84f8d90d3fef6921775cf908676",
+      "zstd_level": 1
+    },
+    {
+      "id": "F8",
+      "kind": "stream-leg-shard",
+      "n_decisions": 22,
+      "n_games": 22,
+      "n_lines": 110,
+      "note": "30x22 emission leg; 660 games total, counted via PrefetchGameStream",
+      "part": "2024010100gm-00a9-0000-00000001.mjai.json.zst",
+      "relpath": "bench/corpus/f8-stream-30x22/2024010100gm-00a9-0000-00000001.mjai.json.zst",
+      "sha256": "sha256:f0e2f6b1582ba301cd9c3ae1a4b91fac21ae6023152681bd3a1ac208d68822cc",
+      "zstd_level": 1
+    },
+    {
+      "id": "F8",
+      "kind": "stream-leg-shard",
+      "n_decisions": 22,
+      "n_games": 22,
+      "n_lines": 110,
+      "note": "30x22 emission leg; 660 games total, counted via PrefetchGameStream",
+      "part": "2024010100gm-00a9-0000-00000002.mjai.json.zst",
+      "relpath": "bench/corpus/f8-stream-30x22/2024010100gm-00a9-0000-00000002.mjai.json.zst",
+      "sha256": "sha256:d2bc85bb7f8c5dbd29436cd481849bd7c01518ade196aac891ce6a3bf053d986",
+      "zstd_level": 1
+    },
+    {
+      "id": "F8",
+      "kind": "stream-leg-shard",
+      "n_decisions": 22,
+      "n_games": 22,
+      "n_lines": 110,
+      "note": "30x22 emission leg; 660 games total, counted via PrefetchGameStream",
+      "part": "2024010100gm-00a9-0000-00000003.mjai.json.zst",
+      "relpath": "bench/corpus/f8-stream-30x22/2024010100gm-00a9-0000-00000003.mjai.json.zst",
+      "sha256": "sha256:5e6309c4a8b8382f3f4850743301b06adffc41adfe6ccb4dc920bb87222f4c04",
+      "zstd_level": 1
+    },
+    {
+      "id": "F8",
+      "kind": "stream-leg-shard",
+      "n_decisions": 22,
+      "n_games": 22,
+      "n_lines": 110,
+      "note": "30x22 emission leg; 660 games total, counted via PrefetchGameStream",
+      "part": "2024010100gm-00a9-0000-00000004.mjai.json.zst",
+      "relpath": "bench/corpus/f8-stream-30x22/2024010100gm-00a9-0000-00000004.mjai.json.zst",
+      "sha256": "sha256:c419f0a7a7123082872d956122f76e1037734eeec45fc3c8429933fd785a6b73",
+      "zstd_level": 1
+    },
+    {
+      "id": "F8",
+      "kind": "stream-leg-shard",
+      "n_decisions": 22,
+      "n_games": 22,
+      "n_lines": 110,
+      "note": "30x22 emission leg; 660 games total, counted via PrefetchGameStream",
+      "part": "2024010100gm-00a9-0000-00000005.mjai.json.zst",
+      "relpath": "bench/corpus/f8-stream-30x22/2024010100gm-00a9-0000-00000005.mjai.json.zst",
+      "sha256": "sha256:2a657d93b8cd4685b95a28b2e55ba8dd34e093852b461e01c0967120e5e2ebad",
+      "zstd_level": 1
+    },
+    {
+      "id": "F8",
+      "kind": "stream-leg-shard",
+      "n_decisions": 22,
+      "n_games": 22,
+      "n_lines": 110,
+      "note": "30x22 emission leg; 660 games total, counted via PrefetchGameStream",
+      "part": "2024010100gm-00a9-0000-00000006.mjai.json.zst",
+      "relpath": "bench/corpus/f8-stream-30x22/2024010100gm-00a9-0000-00000006.mjai.json.zst",
+      "sha256": "sha256:d2749c3faa90426c70b29af15e17e0e146eee360feabec2e7cbd897098d44f4f",
+      "zstd_level": 1
+    },
+    {
+      "id": "F8",
+      "kind": "stream-leg-shard",
+      "n_decisions": 22,
+      "n_games": 22,
+      "n_lines": 110,
+      "note": "30x22 emission leg; 660 games total, counted via PrefetchGameStream",
+      "part": "2024010100gm-00a9-0000-00000007.mjai.json.zst",
+      "relpath": "bench/corpus/f8-stream-30x22/2024010100gm-00a9-0000-00000007.mjai.json.zst",
+      "sha256": "sha256:42a76441f956bcc123613ce33b79333e9f27a0052bc194b9fe99c73cdf957b32",
+      "zstd_level": 1
+    },
+    {
+      "id": "F8",
+      "kind": "stream-leg-shard",
+      "n_decisions": 22,
+      "n_games": 22,
+      "n_lines": 110,
+      "note": "30x22 emission leg; 660 games total, counted via PrefetchGameStream",
+      "part": "2024010100gm-00a9-0000-00000008.mjai.json.zst",
+      "relpath": "bench/corpus/f8-stream-30x22/2024010100gm-00a9-0000-00000008.mjai.json.zst",
+      "sha256": "sha256:c20768d44177bb50991e4cc0144171bc0113607143e3d8cb759608d205e274f3",
+      "zstd_level": 1
+    },
+    {
+      "id": "F8",
+      "kind": "stream-leg-shard",
+      "n_decisions": 22,
+      "n_games": 22,
+      "n_lines": 110,
+      "note": "30x22 emission leg; 660 games total, counted via PrefetchGameStream",
+      "part": "2024010100gm-00a9-0000-00000009.mjai.json.zst",
+      "relpath": "bench/corpus/f8-stream-30x22/2024010100gm-00a9-0000-00000009.mjai.json.zst",
+      "sha256": "sha256:7707f3237a7b34b9f1fec82059484e73474578f1ce55a8f5237ee7786ad9848a",
+      "zstd_level": 1
+    },
+    {
+      "id": "F8",
+      "kind": "stream-leg-shard",
+      "n_decisions": 22,
+      "n_games": 22,
+      "n_lines": 110,
+      "note": "30x22 emission leg; 660 games total, counted via PrefetchGameStream",
+      "part": "2024010100gm-00a9-0000-00000010.mjai.json.zst",
+      "relpath": "bench/corpus/f8-stream-30x22/2024010100gm-00a9-0000-00000010.mjai.json.zst",
+      "sha256": "sha256:0844f8b0a217c8d98687579ad91f65b3b732d1b30af6045a4e61dbe53f9c5267",
+      "zstd_level": 1
+    },
+    {
+      "id": "F8",
+      "kind": "stream-leg-shard",
+      "n_decisions": 22,
+      "n_games": 22,
+      "n_lines": 110,
+      "note": "30x22 emission leg; 660 games total, counted via PrefetchGameStream",
+      "part": "2024010100gm-00a9-0000-00000011.mjai.json.zst",
+      "relpath": "bench/corpus/f8-stream-30x22/2024010100gm-00a9-0000-00000011.mjai.json.zst",
+      "sha256": "sha256:a7a320ce409df7ee7142dabb371e19116b35df448e188b895000053655041cc1",
+      "zstd_level": 1
+    },
+    {
+      "id": "F8",
+      "kind": "stream-leg-shard",
+      "n_decisions": 22,
+      "n_games": 22,
+      "n_lines": 110,
+      "note": "30x22 emission leg; 660 games total, counted via PrefetchGameStream",
+      "part": "2024010100gm-00a9-0000-00000012.mjai.json.zst",
+      "relpath": "bench/corpus/f8-stream-30x22/2024010100gm-00a9-0000-00000012.mjai.json.zst",
+      "sha256": "sha256:b3970899430c0187d58e979235871083f56ea35d27badbc7ce17c3a105168220",
+      "zstd_level": 1
+    },
+    {
+      "id": "F8",
+      "kind": "stream-leg-shard",
+      "n_decisions": 22,
+      "n_games": 22,
+      "n_lines": 110,
+      "note": "30x22 emission leg; 660 games total, counted via PrefetchGameStream",
+      "part": "2024010100gm-00a9-0000-00000013.mjai.json.zst",
+      "relpath": "bench/corpus/f8-stream-30x22/2024010100gm-00a9-0000-00000013.mjai.json.zst",
+      "sha256": "sha256:cfff9ae6dd2ffa85e0eb7ed627510fc970b7acb6a9b1d832519aa9593dc94f14",
+      "zstd_level": 1
+    },
+    {
+      "id": "F8",
+      "kind": "stream-leg-shard",
+      "n_decisions": 22,
+      "n_games": 22,
+      "n_lines": 110,
+      "note": "30x22 emission leg; 660 games total, counted via PrefetchGameStream",
+      "part": "2024010100gm-00a9-0000-00000014.mjai.json.zst",
+      "relpath": "bench/corpus/f8-stream-30x22/2024010100gm-00a9-0000-00000014.mjai.json.zst",
+      "sha256": "sha256:82cdcb5c9468dcb50df8823542d8edaf5fe1cd3377ad4e535d6bd7edb6e2ea0a",
+      "zstd_level": 1
+    },
+    {
+      "id": "F8",
+      "kind": "stream-leg-shard",
+      "n_decisions": 22,
+      "n_games": 22,
+      "n_lines": 110,
+      "note": "30x22 emission leg; 660 games total, counted via PrefetchGameStream",
+      "part": "2024010100gm-00a9-0000-00000015.mjai.json.zst",
+      "relpath": "bench/corpus/f8-stream-30x22/2024010100gm-00a9-0000-00000015.mjai.json.zst",
+      "sha256": "sha256:e21a17baaae494b8fcbcbe6a7fb27bea41c82fc56bbbbb75bb536e53e7c738de",
+      "zstd_level": 1
+    },
+    {
+      "id": "F8",
+      "kind": "stream-leg-shard",
+      "n_decisions": 22,
+      "n_games": 22,
+      "n_lines": 110,
+      "note": "30x22 emission leg; 660 games total, counted via PrefetchGameStream",
+      "part": "2024010100gm-00a9-0000-00000016.mjai.json.zst",
+      "relpath": "bench/corpus/f8-stream-30x22/2024010100gm-00a9-0000-00000016.mjai.json.zst",
+      "sha256": "sha256:49973270e7b7b5ce724b546d8727aacc6cff8dfd2fabd4744cab99999407f389",
+      "zstd_level": 1
+    },
+    {
+      "id": "F8",
+      "kind": "stream-leg-shard",
+      "n_decisions": 22,
+      "n_games": 22,
+      "n_lines": 110,
+      "note": "30x22 emission leg; 660 games total, counted via PrefetchGameStream",
+      "part": "2024010100gm-00a9-0000-00000017.mjai.json.zst",
+      "relpath": "bench/corpus/f8-stream-30x22/2024010100gm-00a9-0000-00000017.mjai.json.zst",
+      "sha256": "sha256:2e05413c993f06c1b757fcd54bf0de6fe29a2ca454ea305db6b311e79fec804f",
+      "zstd_level": 1
+    },
+    {
+      "id": "F8",
+      "kind": "stream-leg-shard",
+      "n_decisions": 22,
+      "n_games": 22,
+      "n_lines": 110,
+      "note": "30x22 emission leg; 660 games total, counted via PrefetchGameStream",
+      "part": "2024010100gm-00a9-0000-00000018.mjai.json.zst",
+      "relpath": "bench/corpus/f8-stream-30x22/2024010100gm-00a9-0000-00000018.mjai.json.zst",
+      "sha256": "sha256:45a83dc4ff9fd09553a063004421b60d1de8109235e7f506593e774544dedafb",
+      "zstd_level": 1
+    },
+    {
+      "id": "F8",
+      "kind": "stream-leg-shard",
+      "n_decisions": 22,
+      "n_games": 22,
+      "n_lines": 110,
+      "note": "30x22 emission leg; 660 games total, counted via PrefetchGameStream",
+      "part": "2024010100gm-00a9-0000-00000019.mjai.json.zst",
+      "relpath": "bench/corpus/f8-stream-30x22/2024010100gm-00a9-0000-00000019.mjai.json.zst",
+      "sha256": "sha256:ce0a9fa5c6bb5703e8acd85f134fa6d1951d1e0625e2345e88f856648e25a697",
+      "zstd_level": 1
+    },
+    {
+      "id": "F8",
+      "kind": "stream-leg-shard",
+      "n_decisions": 22,
+      "n_games": 22,
+      "n_lines": 110,
+      "note": "30x22 emission leg; 660 games total, counted via PrefetchGameStream",
+      "part": "2024010100gm-00a9-0000-00000020.mjai.json.zst",
+      "relpath": "bench/corpus/f8-stream-30x22/2024010100gm-00a9-0000-00000020.mjai.json.zst",
+      "sha256": "sha256:f3a6154b5e3b6690c9c183768c5ad1001bb4338bafa86dba469fcb4a3b660018",
+      "zstd_level": 1
+    },
+    {
+      "id": "F8",
+      "kind": "stream-leg-shard",
+      "n_decisions": 22,
+      "n_games": 22,
+      "n_lines": 110,
+      "note": "30x22 emission leg; 660 games total, counted via PrefetchGameStream",
+      "part": "2024010100gm-00a9-0000-00000021.mjai.json.zst",
+      "relpath": "bench/corpus/f8-stream-30x22/2024010100gm-00a9-0000-00000021.mjai.json.zst",
+      "sha256": "sha256:c1f8ea0dd8227756068062dc6ba4d1a96ab8efe79c37995f9f248b1f02d12006",
+      "zstd_level": 1
+    },
+    {
+      "id": "F8",
+      "kind": "stream-leg-shard",
+      "n_decisions": 22,
+      "n_games": 22,
+      "n_lines": 110,
+      "note": "30x22 emission leg; 660 games total, counted via PrefetchGameStream",
+      "part": "2024010100gm-00a9-0000-00000022.mjai.json.zst",
+      "relpath": "bench/corpus/f8-stream-30x22/2024010100gm-00a9-0000-00000022.mjai.json.zst",
+      "sha256": "sha256:cdee42035dd1f49261fc94ff4ca6a3590da42e532c1b93a2112a5a4cac5c2406",
+      "zstd_level": 1
+    },
+    {
+      "id": "F8",
+      "kind": "stream-leg-shard",
+      "n_decisions": 22,
+      "n_games": 22,
+      "n_lines": 110,
+      "note": "30x22 emission leg; 660 games total, counted via PrefetchGameStream",
+      "part": "2024010100gm-00a9-0000-00000023.mjai.json.zst",
+      "relpath": "bench/corpus/f8-stream-30x22/2024010100gm-00a9-0000-00000023.mjai.json.zst",
+      "sha256": "sha256:6a004ae5ff49120210c3e7067a1701fa1379cb6bbe190e53c5a53a637269639a",
+      "zstd_level": 1
+    },
+    {
+      "id": "F8",
+      "kind": "stream-leg-shard",
+      "n_decisions": 22,
+      "n_games": 22,
+      "n_lines": 110,
+      "note": "30x22 emission leg; 660 games total, counted via PrefetchGameStream",
+      "part": "2024010100gm-00a9-0000-00000024.mjai.json.zst",
+      "relpath": "bench/corpus/f8-stream-30x22/2024010100gm-00a9-0000-00000024.mjai.json.zst",
+      "sha256": "sha256:94e6660c31022324ab5b71a409c28677bc6ff4b2cca9e4a5fc941844d5ba2e82",
+      "zstd_level": 1
+    },
+    {
+      "id": "F8",
+      "kind": "stream-leg-shard",
+      "n_decisions": 22,
+      "n_games": 22,
+      "n_lines": 110,
+      "note": "30x22 emission leg; 660 games total, counted via PrefetchGameStream",
+      "part": "2024010100gm-00a9-0000-00000025.mjai.json.zst",
+      "relpath": "bench/corpus/f8-stream-30x22/2024010100gm-00a9-0000-00000025.mjai.json.zst",
+      "sha256": "sha256:1ca546e7c24e7edb8056e71944b8d8dc578e2074a9fb10acf4adfc62af1c5210",
+      "zstd_level": 1
+    },
+    {
+      "id": "F8",
+      "kind": "stream-leg-shard",
+      "n_decisions": 22,
+      "n_games": 22,
+      "n_lines": 110,
+      "note": "30x22 emission leg; 660 games total, counted via PrefetchGameStream",
+      "part": "2024010100gm-00a9-0000-00000026.mjai.json.zst",
+      "relpath": "bench/corpus/f8-stream-30x22/2024010100gm-00a9-0000-00000026.mjai.json.zst",
+      "sha256": "sha256:6051b15d28e8c34a5d1c75f40bae6763de3ba0011fb2e38bd7cec93cadb605e6",
+      "zstd_level": 1
+    },
+    {
+      "id": "F8",
+      "kind": "stream-leg-shard",
+      "n_decisions": 22,
+      "n_games": 22,
+      "n_lines": 110,
+      "note": "30x22 emission leg; 660 games total, counted via PrefetchGameStream",
+      "part": "2024010100gm-00a9-0000-00000027.mjai.json.zst",
+      "relpath": "bench/corpus/f8-stream-30x22/2024010100gm-00a9-0000-00000027.mjai.json.zst",
+      "sha256": "sha256:3357e147ee1cab7b467d502878a3845fba07d4175e59d9bee6f2bf53352f8e07",
+      "zstd_level": 1
+    },
+    {
+      "id": "F8",
+      "kind": "stream-leg-shard",
+      "n_decisions": 22,
+      "n_games": 22,
+      "n_lines": 110,
+      "note": "30x22 emission leg; 660 games total, counted via PrefetchGameStream",
+      "part": "2024010100gm-00a9-0000-00000028.mjai.json.zst",
+      "relpath": "bench/corpus/f8-stream-30x22/2024010100gm-00a9-0000-00000028.mjai.json.zst",
+      "sha256": "sha256:c9a185ba0ba3d798683e16ec6629fb8028edc15dd302a4e1a000d357e93fa9a3",
+      "zstd_level": 1
+    },
+    {
+      "id": "F8",
+      "kind": "stream-leg-shard",
+      "n_decisions": 22,
+      "n_games": 22,
+      "n_lines": 110,
+      "note": "30x22 emission leg; 660 games total, counted via PrefetchGameStream",
+      "part": "2024010100gm-00a9-0000-00000029.mjai.json.zst",
+      "relpath": "bench/corpus/f8-stream-30x22/2024010100gm-00a9-0000-00000029.mjai.json.zst",
+      "sha256": "sha256:f7fb6ddfe020941218f59b5807e2dea6b1513399efc704ed1ba038ff9a2bd1cd",
+      "zstd_level": 1
+    },
+    {
+      "builder": "f10-v1",
+      "builder_hash": "sha256:8432c1d2f3945f39f2d28b56e67cdba5b6b61c3c8bf12b9f6065b249eedbccb4",
+      "id": "F10",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "real dahai/hora rows via replay_expand; stream leg expands every game",
+      "part": "2024010100gm-00a9-0000-91000000.mjai.json.zst",
+      "relpath": "bench/corpus/f10-decisions/2024010100gm-00a9-0000-91000000.mjai.json.zst",
+      "sha256": "sha256:1fcf55134cbe8eddea54523d4b5a8501b7311161c8f3a5715e785cdcd2e3954e",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f10-v1",
+      "builder_hash": "sha256:8432c1d2f3945f39f2d28b56e67cdba5b6b61c3c8bf12b9f6065b249eedbccb4",
+      "id": "F10",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "real dahai/hora rows via replay_expand; stream leg expands every game",
+      "part": "2024010100gm-00a9-0000-91000001.mjai.json.zst",
+      "relpath": "bench/corpus/f10-decisions/2024010100gm-00a9-0000-91000001.mjai.json.zst",
+      "sha256": "sha256:e65a2a01c729bf5bcd9f436938c0411a6fb7451d0c8d1bf510494062a235cc81",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f10-v1",
+      "builder_hash": "sha256:8432c1d2f3945f39f2d28b56e67cdba5b6b61c3c8bf12b9f6065b249eedbccb4",
+      "id": "F10",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "real dahai/hora rows via replay_expand; stream leg expands every game",
+      "part": "2024010100gm-00a9-0000-91000002.mjai.json.zst",
+      "relpath": "bench/corpus/f10-decisions/2024010100gm-00a9-0000-91000002.mjai.json.zst",
+      "sha256": "sha256:85e9dec67dc821f6599cf028a7969ecf763d99928f833ace3e08987b36173366",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f10-v1",
+      "builder_hash": "sha256:8432c1d2f3945f39f2d28b56e67cdba5b6b61c3c8bf12b9f6065b249eedbccb4",
+      "id": "F10",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "real dahai/hora rows via replay_expand; stream leg expands every game",
+      "part": "2024010100gm-00a9-0000-91000003.mjai.json.zst",
+      "relpath": "bench/corpus/f10-decisions/2024010100gm-00a9-0000-91000003.mjai.json.zst",
+      "sha256": "sha256:5689bafb503b5fbc9a83e9d54956475d999eb342754a256e0a7ddf84a1b654df",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f10-v1",
+      "builder_hash": "sha256:8432c1d2f3945f39f2d28b56e67cdba5b6b61c3c8bf12b9f6065b249eedbccb4",
+      "id": "F10",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "real dahai/hora rows via replay_expand; stream leg expands every game",
+      "part": "2024010100gm-00a9-0000-91000004.mjai.json.zst",
+      "relpath": "bench/corpus/f10-decisions/2024010100gm-00a9-0000-91000004.mjai.json.zst",
+      "sha256": "sha256:978e5f51e018a81fbba975f4be5a1ffe76b7b7ccab8bb53d0d479ffe7317f7f1",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f10-v1",
+      "builder_hash": "sha256:8432c1d2f3945f39f2d28b56e67cdba5b6b61c3c8bf12b9f6065b249eedbccb4",
+      "id": "F10",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "real dahai/hora rows via replay_expand; stream leg expands every game",
+      "part": "2024010100gm-00a9-0000-91000005.mjai.json.zst",
+      "relpath": "bench/corpus/f10-decisions/2024010100gm-00a9-0000-91000005.mjai.json.zst",
+      "sha256": "sha256:25da79610423863052766f5e049d8d940c3c20d3cc93d3dfc9e5e8a427df39a0",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f10-v1",
+      "builder_hash": "sha256:8432c1d2f3945f39f2d28b56e67cdba5b6b61c3c8bf12b9f6065b249eedbccb4",
+      "id": "F10",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "real dahai/hora rows via replay_expand; stream leg expands every game",
+      "part": "2024010100gm-00a9-0000-91000006.mjai.json.zst",
+      "relpath": "bench/corpus/f10-decisions/2024010100gm-00a9-0000-91000006.mjai.json.zst",
+      "sha256": "sha256:ae2f155f921908c26478586ac1c58b6a2337408d1756d2da29a4ce629b947bf8",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f10-v1",
+      "builder_hash": "sha256:8432c1d2f3945f39f2d28b56e67cdba5b6b61c3c8bf12b9f6065b249eedbccb4",
+      "id": "F10",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "real dahai/hora rows via replay_expand; stream leg expands every game",
+      "part": "2024010100gm-00a9-0000-91000007.mjai.json.zst",
+      "relpath": "bench/corpus/f10-decisions/2024010100gm-00a9-0000-91000007.mjai.json.zst",
+      "sha256": "sha256:3bc126ff5f024825798123150d4f909568ad72a60c854ce5a17ce921c543fe7a",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000000.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000000.mjai.json.zst",
+      "sha256": "sha256:d666233bbe900a09d439e88218ac0aced9e7d9b47e49bee645386d5ff1aea3f0",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000001.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000001.mjai.json.zst",
+      "sha256": "sha256:fcdd0e68910d9bc7b5219e9d63c9d9ccfc1317b55e30f17735feedd36e4c9578",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000002.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000002.mjai.json.zst",
+      "sha256": "sha256:ee10c4596ea197fc6f0710100a5c692c583bf94de81603b8282ba8ecf4a50abd",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000003.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000003.mjai.json.zst",
+      "sha256": "sha256:42d613cc3f1cc3e23bb895a803d22c1f39bbedc3aff39243a6ac625e56565ba0",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000004.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000004.mjai.json.zst",
+      "sha256": "sha256:1488311762b319a4283241de0c65a6e67c43d1ac89b8f89393bc2cdf6a0f6e57",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000005.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000005.mjai.json.zst",
+      "sha256": "sha256:368db326b24a6f8619968e8f47478ac7d36a337162527ff81cc7af8e6cf6333c",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000006.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000006.mjai.json.zst",
+      "sha256": "sha256:301395b59681817c87af239ebfb96c00f3eb852888ca63dd29bdb652121d909e",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000007.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000007.mjai.json.zst",
+      "sha256": "sha256:484fe9741ca6e987ee902ade7bee46f82b0ea5432ce8b5a07b7c68e0d6657c7c",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000008.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000008.mjai.json.zst",
+      "sha256": "sha256:a321cf63a6a29d678690924cd376cf6065c407a831a9e86384a803768a12c175",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000009.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000009.mjai.json.zst",
+      "sha256": "sha256:1fa12a1f6f8b8935865d0f2aa9844ce22ce39fae5eb5145f85014f3a02979af3",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000010.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000010.mjai.json.zst",
+      "sha256": "sha256:89052e953ad7c639898991cf0f878b8094f6a45a9f82a5dcf590218ae1348174",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000011.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000011.mjai.json.zst",
+      "sha256": "sha256:f746570d86dd1681c4c6876ca6278c3cb6861415abf7993f043a1f898eb7124e",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000012.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000012.mjai.json.zst",
+      "sha256": "sha256:1f504fdb938d4f516e912cf2947728dc154162be8aaad7e50532d787f1d4a362",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000013.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000013.mjai.json.zst",
+      "sha256": "sha256:1588b0ca4799ffb48275a015954fc88bb69809eb32264658036aa2e2508fd255",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000014.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000014.mjai.json.zst",
+      "sha256": "sha256:631f581c381ceb3fb5a15e4c5c3e4263e968fa55e9dcd2546fb024e4d0c5a7fa",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000015.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000015.mjai.json.zst",
+      "sha256": "sha256:a2a4f5f75a0688ff49240be01ca8fecf1293e311ee9a5d8221916dfb0bdb3f0c",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000016.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000016.mjai.json.zst",
+      "sha256": "sha256:2aa5f933cdcc2053cbb2ae8c87feb49762c8cf5c13a3fe1db5d54bd9500abd65",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000017.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000017.mjai.json.zst",
+      "sha256": "sha256:c66f02cd9394d368b3b9cfaed0efd03909fa0762e600420c53a6952c81fbfb6d",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000018.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000018.mjai.json.zst",
+      "sha256": "sha256:fa290a12f3623523c4b7334ac5714e90b1179108bf789ca0c67c59f8038f3d81",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000019.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000019.mjai.json.zst",
+      "sha256": "sha256:45074ff63d93ad7d77f9dc95b66c9d77401fd8b97f2a250ce4aa41ca1413601d",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000020.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000020.mjai.json.zst",
+      "sha256": "sha256:c6143c251f086f47d8e1e3fd72ff296426ede154d18462aafb14c45a1873222f",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000021.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000021.mjai.json.zst",
+      "sha256": "sha256:b7f6956a14816484df480cec1359a654aee0f3beee85fd48d2f4a1a2ef16fc8a",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000022.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000022.mjai.json.zst",
+      "sha256": "sha256:37cb41eb9b945ea36eaf568a61cbe4f22d96578f400b8b240400721f750b3bcf",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000023.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000023.mjai.json.zst",
+      "sha256": "sha256:63e4a2d503913fddb57057ed4dcc5f4c249af23737acb378ea305e3b48bc4195",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000024.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000024.mjai.json.zst",
+      "sha256": "sha256:5c6d46d91f0184c1ff14cfb7341a6079df14817d16792e2c2898875f53835f50",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000025.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000025.mjai.json.zst",
+      "sha256": "sha256:f5d35dac4f95113743e72cad01d40762a4237b8cd5c471cee51999ad5322c89f",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000026.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000026.mjai.json.zst",
+      "sha256": "sha256:960fe1aca344e706a2bc769654cea162184c8a601a6f5abde8b1f971594b52f3",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000027.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000027.mjai.json.zst",
+      "sha256": "sha256:39fba5aaae1d4a95c1bebde33f95ccd541f55298b1c6a5c700683a786efcf507",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000028.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000028.mjai.json.zst",
+      "sha256": "sha256:d7908e73bd857a1098791a3c357ae9187bece12e63eace4f2f318912d2b35cfa",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000029.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000029.mjai.json.zst",
+      "sha256": "sha256:58a0cde48b66ae60a354de32443c86bab247fcc4b787078334473a5bce5fcbfb",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000030.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000030.mjai.json.zst",
+      "sha256": "sha256:9a19af2d0f1440f0069f3c3f78743d9b176c421618d5e6977b16eb2b5bd6055e",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000031.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000031.mjai.json.zst",
+      "sha256": "sha256:93f6c3decf7ebc2bf5138fce23df54880c2e40a8578081820a702cd28a835af5",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000032.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000032.mjai.json.zst",
+      "sha256": "sha256:878c614b4cbc531262bc8c7434bc78e950553781e14569b6c888ebe25672b179",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000033.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000033.mjai.json.zst",
+      "sha256": "sha256:fb9740c2abc2ea97538cfe2c31b7116c1af853040a4f76c48eb0f7371e65c321",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000034.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000034.mjai.json.zst",
+      "sha256": "sha256:1331244f71c519e06214e72ccd9105d0401c586c6563f076b090513de2e4a46f",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000035.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000035.mjai.json.zst",
+      "sha256": "sha256:feba6c89ea28f60f4f2e8554f8b2729160902b58f9be16114b2388845b217257",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000036.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000036.mjai.json.zst",
+      "sha256": "sha256:493ea2f2f5547a8469590d7de925935ba1c7feb7cfd952e0162a6884416dc757",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000037.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000037.mjai.json.zst",
+      "sha256": "sha256:647895038e6e79389375cbb26aaa6c6740c70074f965a2b504eadc6f66071dd0",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000038.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000038.mjai.json.zst",
+      "sha256": "sha256:dc40236127786a0c690529545639ab1a0fba87e48f7cfd53ebd9e96868c6d190",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000039.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000039.mjai.json.zst",
+      "sha256": "sha256:2225196a319f826acf4e09d523a43a5903755805ef2f6f6bfd88dfd2075391c2",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000040.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000040.mjai.json.zst",
+      "sha256": "sha256:4ae57ef9b65234eebecb51cbf8a3b2087162240a06c114382b52f3fd3c132304",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000041.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000041.mjai.json.zst",
+      "sha256": "sha256:7c77d5856a4b3ceefbde9aa333432f5f1f76d6404e08dd28155ab72c2b714e2f",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000042.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000042.mjai.json.zst",
+      "sha256": "sha256:e3b05d4819a17823ea2a2000c77d7bb06ab3ac5b1668105c24abbd5591ea2141",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000043.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000043.mjai.json.zst",
+      "sha256": "sha256:3ef2c1c522dfc94263ba49902ac6529483ad1ca1317aed9302d3ca5e6fd244a0",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000044.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000044.mjai.json.zst",
+      "sha256": "sha256:fd6a90d45f1f21af621e82db2e3fd98ea7448cba8c06d49b10ec162967e379c7",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000045.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000045.mjai.json.zst",
+      "sha256": "sha256:a58a2c3be6eb279f608bdc4ebab8c9d4a2c7e320803010d29207ac3a29578de2",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000046.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000046.mjai.json.zst",
+      "sha256": "sha256:15009d6e50463992d046d279a058dfbecbc24452c41db5e130b42b82a979328f",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000047.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000047.mjai.json.zst",
+      "sha256": "sha256:e26fce727f7a6ab83ee904c289f2dcd8438a781df7c61aeec5f7e580a2d714ff",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000048.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000048.mjai.json.zst",
+      "sha256": "sha256:3f4dab20743ae0895ed387e2763d8e3414b2ada1e71b41e05db02edcae3b6fbe",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000049.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000049.mjai.json.zst",
+      "sha256": "sha256:bb87d0a22a64624d9b23e4c2191f2cb4216087ee0c2c9ea0536ad75569e8a9cb",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000050.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000050.mjai.json.zst",
+      "sha256": "sha256:d5bf661cc0c5bcfe92751982da1ff894a9d94682103a0feaeb1ef39cb81d25f0",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000051.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000051.mjai.json.zst",
+      "sha256": "sha256:73f7e7ca853d0bc1b4d574399f74f912d008c2197a918de3672b1c46403a4aec",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000052.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000052.mjai.json.zst",
+      "sha256": "sha256:9410705938da19fff1bdce2dc29831db17dbb2740d0a4355d47eedafdff082ad",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000053.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000053.mjai.json.zst",
+      "sha256": "sha256:941e41b9ddd15b094aac6c8461c4b7e14b90c5c34d4abd4004419e51b72db975",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000054.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000054.mjai.json.zst",
+      "sha256": "sha256:9ba23dd3b2134e1c11acca566885eb81fa5eccc33e3b27a1cbb6b963bbe76f9b",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000055.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000055.mjai.json.zst",
+      "sha256": "sha256:79e3f986a2639573a80a20bef318ab67e037aa1e0ca53d30293d5b4c213505bf",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000056.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000056.mjai.json.zst",
+      "sha256": "sha256:fe4a74c470a89ada584eae804f68d59dae43dc6ef959f25f2739528a38658f23",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000057.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000057.mjai.json.zst",
+      "sha256": "sha256:04ed1ffb34f4b845a9c8a4b717a119f83cbbd0eaf9acd2f56c557fac927ee400",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000058.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000058.mjai.json.zst",
+      "sha256": "sha256:11661ea45917cb745ad01dcb2b3c8bb4169102295b0e75000938b59307c0dda9",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000059.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000059.mjai.json.zst",
+      "sha256": "sha256:185899e1475f3fcb6cca4894c8b35f9637bf2d4041b52a5d2174c19f30445ad6",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000060.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000060.mjai.json.zst",
+      "sha256": "sha256:c332421750afb181a479fcbf8ed52368b061c25f5903452e40cd02e6e334a2d3",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000061.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000061.mjai.json.zst",
+      "sha256": "sha256:156e9dac1a7893339250923d5c34eb3d3501eab538b7183239c1fb3e831def7a",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000062.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000062.mjai.json.zst",
+      "sha256": "sha256:a604badb221e788f9dc2678431e128e0e2f8bcf4b9a4937c53825373e8edeb97",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "builder": "f11-v1",
+      "builder_hash": "sha256:ffae24cfd86a3aed6f358d745160a23894ac2e38fcb0ebaecb306f8b7171cfd4",
+      "id": "F11",
+      "kind": "decision-primary",
+      "n_decisions": 54,
+      "n_games": 12,
+      "n_lines": 150,
+      "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+      "part": "2024010100gm-00a9-0000-92000063.mjai.json.zst",
+      "relpath": "bench/corpus/f11-saturated/2024010100gm-00a9-0000-92000063.mjai.json.zst",
+      "sha256": "sha256:b817935d67756652fad840e1cdd7eca3c3f837b064733b03b4ebcfe05ccccc5b",
+      "template_sha256": [
+        "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19",
+        "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+      ],
+      "zstd_level": 1
+    },
+    {
+      "id": "F3",
+      "kind": "repo-fixture",
+      "n_games": 1,
+      "n_lines": 13,
+      "part": "walled-synth.jsonl",
+      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s7/walled-synth.jsonl",
+      "sha256": "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19"
+    },
+    {
+      "id": "F3",
+      "kind": "repo-fixture",
+      "n_games": 1,
+      "n_lines": 12,
+      "part": "walled-real.jsonl",
+      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s7/walled-real.jsonl",
+      "sha256": "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
+    },
+    {
+      "id": "F3",
+      "kind": "repo-fixture",
+      "n_games": 1,
+      "n_lines": 11,
+      "part": "walled-ankan.jsonl",
+      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s7/walled-ankan.jsonl",
+      "sha256": "sha256:a965cecbb10300d160d8ea821744f9abd64686ce49ee8ef179f5507932f78aa1"
+    },
+    {
+      "id": "F3",
+      "kind": "repo-fixture",
+      "n_games": 1,
+      "n_lines": 19,
+      "part": "walled-kakan.jsonl",
+      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s7/walled-kakan.jsonl",
+      "sha256": "sha256:7fbbc8dee524c337a7f10ce98b244f72b21aa31882dd40e413a803786f748065"
+    },
+    {
+      "id": "F3",
+      "kind": "repo-fixture",
+      "n_games": 1,
+      "n_lines": 7,
+      "part": "walled-truncated.jsonl",
+      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s7/walled-truncated.jsonl",
+      "sha256": "sha256:78e8394a70337d77932deeb2db43706a167af8e19ae78c601c53131b37b4020b"
+    },
+    {
+      "id": "F3",
+      "kind": "repo-fixture",
+      "n_games": 1,
+      "n_lines": 13,
+      "part": "walled-post-terminal.jsonl",
+      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s7/walled-post-terminal.jsonl",
+      "sha256": "sha256:b7499fc3350671ea51d1db7726ffe0314c0edd51413ff2ea90deec0740948a35"
+    },
+    {
+      "id": "F4",
+      "kind": "repo-fixture",
+      "n_games": 1,
+      "n_lines": 12,
+      "part": "good-a.jsonl",
+      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s4/good-a.jsonl",
+      "sha256": "sha256:f1369b770a4e4d8746350a68112a2c86db2b875ce28651c35b10e447f24eccac"
+    },
+    {
+      "id": "F4",
+      "kind": "repo-fixture",
+      "n_games": 1,
+      "n_lines": 14,
+      "part": "good-b.jsonl",
+      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s4/good-b.jsonl",
+      "sha256": "sha256:0c6611aac934dcd189e29260138186e62da737be70ec588356a21ec9acc74487"
+    },
+    {
+      "id": "F4",
+      "kind": "repo-fixture",
+      "n_games": 1,
+      "n_lines": 4,
+      "part": "q-framing.jsonl",
+      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s4/q-framing.jsonl",
+      "sha256": "sha256:f5d4d0b684cd99f050330d41c3b15d5ebb8325c22a78ebbf93658845d0854435"
+    },
+    {
+      "id": "F4",
+      "kind": "repo-fixture",
+      "n_games": 1,
+      "n_lines": 2,
+      "part": "q-truncated.jsonl",
+      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s4/q-truncated.jsonl",
+      "sha256": "sha256:ab69e4757350fa19599d6edd7fa3342682ff1e7009b8bb7ba11e863c824c2387"
+    },
+    {
+      "id": "F4",
+      "kind": "repo-fixture",
+      "n_games": 1,
+      "n_lines": 4,
+      "part": "q-unknown-event.jsonl",
+      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s4/q-unknown-event.jsonl",
+      "sha256": "sha256:5d74acf78e9e4a798f0446e13062eb5c9f60c9b2c000864227fa89d53ff0ff51"
+    },
+    {
+      "id": "F4",
+      "kind": "repo-fixture",
+      "n_games": 1,
+      "n_lines": 4,
+      "part": "q-bare-dora.jsonl",
+      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s4/q-bare-dora.jsonl",
+      "sha256": "sha256:569c1590e1e8b2625a7480a8c5198201d5e642432a236d3d88bb9ffb5eb573f7"
+    },
+    {
+      "id": "F4",
+      "kind": "repo-fixture",
+      "n_games": 1,
+      "n_lines": 7,
+      "part": "q-double-ron.jsonl",
+      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s4/q-double-ron.jsonl",
+      "sha256": "sha256:e96b32cd7d80b72a15d5903c1fd70997d46d58cc2e7b70989095b016ee9dfb8e"
+    },
+    {
+      "id": "F4",
+      "kind": "repo-fixture",
+      "n_games": 1,
+      "n_lines": 3,
+      "part": "q-turn-order.jsonl",
+      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s4/q-turn-order.jsonl",
+      "sha256": "sha256:b3908224c5e5f1e3802f0467d035baf8a5f169a2ab6a29580963653a9dd3d65c"
+    },
+    {
+      "id": "F4",
+      "kind": "repo-fixture",
+      "n_games": 1,
+      "n_lines": 4,
+      "part": "q-tile-conservation.jsonl",
+      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s4/q-tile-conservation.jsonl",
+      "sha256": "sha256:3e848c92fff91dd4e2f9c367cf7566bc7329fcbb064d258efc77f0cb3d177c31"
+    },
+    {
+      "id": "F4",
+      "kind": "repo-fixture",
+      "n_games": 1,
+      "n_lines": 3,
+      "part": "q-wall-bearing.jsonl",
+      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s4/q-wall-bearing.jsonl",
+      "sha256": "sha256:4402671c9480acad546c94f06e07f22ae02ce25dbc9fd9f4dff50aeb8c6b183b"
+    },
+    {
+      "id": "F5",
+      "kind": "repo-fixture",
+      "n_games": 1,
+      "n_lines": 12,
+      "part": "priv-a.jsonl",
+      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s5/priv-a.jsonl",
+      "sha256": "sha256:eecb4f3ef9ed3f054554fafe9eceb29f9648a52172e9e0a1064c5041d296bec6"
+    },
+    {
+      "id": "F5",
+      "kind": "repo-fixture",
+      "n_games": 1,
+      "n_lines": 12,
+      "part": "priv-tie.jsonl",
+      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s5/priv-tie.jsonl",
+      "sha256": "sha256:c8affee8f6f07008a58eb390a3eb70243540fc3ac05e765e9627ad38b1146bcf"
+    },
+    {
+      "id": "F5",
+      "kind": "repo-fixture",
+      "n_games": 1,
+      "n_lines": 12,
+      "part": "priv-missing.jsonl",
+      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s5/priv-missing.jsonl",
+      "sha256": "sha256:f1369b770a4e4d8746350a68112a2c86db2b875ce28651c35b10e447f24eccac"
+    },
+    {
+      "id": "F5",
+      "kind": "repo-fixture",
+      "n_games": 1,
+      "n_lines": 12,
+      "part": "priv-alias.jsonl",
+      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s5/priv-alias.jsonl",
+      "sha256": "sha256:604a37965cbc58605389af893f321330e8eaa8da3ec44afff10788ddd666a493"
+    },
+    {
+      "id": "F6",
+      "kind": "repo-fixture",
+      "n_games": null,
+      "n_lines": 3,
+      "part": "a.mjai.json.zst",
+      "relpath": "tools/mjai-dataset-packager/tests/fixtures/golden/a.mjai.json.zst",
+      "sha256": "sha256:86726541f6ede8e07a5a5ea953ca784faf54f1deaed9ccd369ceca31e982a140"
+    },
+    {
+      "id": "F6",
+      "kind": "repo-fixture",
+      "n_games": null,
+      "n_lines": 2,
+      "part": "b.mjai.json.zst",
+      "relpath": "tools/mjai-dataset-packager/tests/fixtures/golden/b.mjai.json.zst",
+      "sha256": "sha256:9e388b6696e9f5934024342027c3173a5660ed5bd7580eb35fd6f0e6bd935ad6"
+    },
+    {
+      "id": "F7",
+      "kind": "repo-fixture",
+      "n_games": 0,
+      "n_lines": 42578,
+      "part": "frozen-row-hashes.json",
+      "relpath": "tools/hydra2-replay-rs/tests/fixtures/frozen-row-hashes.json",
+      "sha256": "sha256:b1453fd84630aa989dd8828646b507c9dd72e3d9f8472e5b8d65a4e3f549eb42"
+    },
+    {
+      "id": "F7",
+      "kind": "repo-fixture",
+      "n_games": null,
+      "n_lines": 326,
+      "part": "freeze_row_hashes.py",
+      "relpath": "scripts/freeze_row_hashes.py",
+      "sha256": "sha256:145dc283e553e2cbc7810f47ed3f8e8083b982fe52fe85782c3b5606861ff3e3"
+    },
+    {
+      "details": {
+        "B": 1024,
+        "T": 256,
+        "depth": 2,
+        "n_fields": 26,
+        "note": "current-tree 26-plane baseline; Rust hot-13 ceiling is DERIVED from the ROW_BYTES sum (~0.89KB@T64/~2.6KB@T256, plan delta #EF78), never a hand constant",
+        "ring_nbytes": 19574784,
+        "slot_nbytes": 9787392
+      },
+      "id": "F9",
+      "kind": "computed-geometry",
+      "n_games": null,
+      "n_lines": null,
+      "relpath": null,
+      "sha256": null
+    }
+  ],
+  "entries_version": "1",
+  "generated_at": "2026-09-10T01:57:47Z",
+  "zstd_level": 1,
+  "zstd_version": "*** Zstandard CLI (64-bit) v1.5.7, by Yann Collet ***"
+}

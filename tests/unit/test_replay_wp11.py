@@ -164,7 +164,11 @@ def _build_replay(
     if parquet_dir is None:
         parquet_dir = _write_synthetic_parquet(tmp_path / f"replay-{seed}", num_rows=num_rows)
     dataset = AuthoritativeParquetDataset(
-        parquet_dir=parquet_dir, feature_dim=FEATURE_DIM, num_actions=NUM_ACTIONS_SMALL, seed=seed
+        parquet_dir=parquet_dir,
+        feature_dim=FEATURE_DIM,
+        num_actions=NUM_ACTIONS_SMALL,
+        seed=seed,
+        allow_narrow=True,
     )
     model = StubPolicyModel(feature_dim=FEATURE_DIM, num_actions=NUM_ACTIONS_SMALL)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
@@ -248,6 +252,7 @@ def test_actor_learner_replay_over_authorized_data(tmp_path: Path, actor_parquet
         feature_dim=FEATURE_DIM,
         num_actions=NUM_ACTIONS_SMALL,
         seed=1,
+        allow_narrow=True,
     )
     ckpt_dir = tmp_path / "opp_ckpt"
     rep_immutable = ActorLearnerReplay(
@@ -280,10 +285,18 @@ def test_deterministic_replay(tmp_path: Path, actor_parquet_factory) -> None:
     # Same seed gives same order
     parquet_dir = actor_parquet_factory(num_rows=24)
     ds1 = AuthoritativeParquetDataset(
-        parquet_dir=parquet_dir, feature_dim=FEATURE_DIM, num_actions=NUM_ACTIONS_SMALL, seed=42
+        parquet_dir=parquet_dir,
+        feature_dim=FEATURE_DIM,
+        num_actions=NUM_ACTIONS_SMALL,
+        seed=42,
+        allow_narrow=True,
     )
     ds2 = AuthoritativeParquetDataset(
-        parquet_dir=parquet_dir, feature_dim=FEATURE_DIM, num_actions=NUM_ACTIONS_SMALL, seed=42
+        parquet_dir=parquet_dir,
+        feature_dim=FEATURE_DIM,
+        num_actions=NUM_ACTIONS_SMALL,
+        seed=42,
+        allow_narrow=True,
     )
     b1 = ds1.next_batch(4)
     b2 = ds2.next_batch(4)
@@ -348,10 +361,18 @@ def test_deterministic_replay(tmp_path: Path, actor_parquet_factory) -> None:
 def test_deterministic_requires_same_seed(tmp_path: Path, actor_parquet_factory) -> None:
     d1 = actor_parquet_factory(num_rows=12)
     ds_a = AuthoritativeParquetDataset(
-        parquet_dir=d1, feature_dim=FEATURE_DIM, num_actions=NUM_ACTIONS_SMALL, seed=1
+        parquet_dir=d1,
+        feature_dim=FEATURE_DIM,
+        num_actions=NUM_ACTIONS_SMALL,
+        seed=1,
+        allow_narrow=True,
     )
     ds_b = AuthoritativeParquetDataset(
-        parquet_dir=d1, feature_dim=FEATURE_DIM, num_actions=NUM_ACTIONS_SMALL, seed=2
+        parquet_dir=d1,
+        feature_dim=FEATURE_DIM,
+        num_actions=NUM_ACTIONS_SMALL,
+        seed=2,
+        allow_narrow=True,
     )
     ba = ds_a.next_batch(4)
     bb = ds_b.next_batch(4)
@@ -504,7 +525,11 @@ def test_dora_shim_rejected_in_parquet(tmp_path: Path) -> None:
 def test_authorized_parquet_is_synthetic_qualified(tmp_path: Path, actor_parquet_factory) -> None:
     parquet_dir = actor_parquet_factory(num_rows=16)
     dataset = AuthoritativeParquetDataset(
-        parquet_dir=parquet_dir, feature_dim=FEATURE_DIM, num_actions=NUM_ACTIONS_SMALL, seed=0
+        parquet_dir=parquet_dir,
+        feature_dim=FEATURE_DIM,
+        num_actions=NUM_ACTIONS_SMALL,
+        seed=0,
+        allow_narrow=True,
     )
     assert len(dataset) == 16
     batch = dataset.next_batch(4)
@@ -543,7 +568,11 @@ def test_checkpoint_manifest_verified_before_mutation(
 ) -> None:
     parquet_dir = actor_parquet_factory(num_rows=12)
     dataset = AuthoritativeParquetDataset(
-        parquet_dir=parquet_dir, feature_dim=FEATURE_DIM, num_actions=NUM_ACTIONS_SMALL, seed=0
+        parquet_dir=parquet_dir,
+        feature_dim=FEATURE_DIM,
+        num_actions=NUM_ACTIONS_SMALL,
+        seed=0,
+        allow_narrow=True,
     )
     model = StubPolicyModel()
     opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
@@ -564,7 +593,11 @@ def test_checkpoint_manifest_verified_before_mutation(
     model2 = StubPolicyModel()
     opt2 = torch.optim.AdamW(model2.parameters(), lr=1e-3)
     dataset2 = AuthoritativeParquetDataset(
-        parquet_dir=parquet_dir, feature_dim=FEATURE_DIM, num_actions=NUM_ACTIONS_SMALL, seed=0
+        parquet_dir=parquet_dir,
+        feature_dim=FEATURE_DIM,
+        num_actions=NUM_ACTIONS_SMALL,
+        seed=0,
+        allow_narrow=True,
     )
     # Use wrong manifest hashes (full test-only digests with two corrupted entries)
     wrong_hashes = make_test_manifest_hashes()
@@ -862,7 +895,11 @@ def test_replay_w_value_train_joins_value_targets(tmp_path: Path, actor_parquet_
     assert ReplayConfig(w_value=1.0).objective_weights()["w_value"] == 1.0
     parquet_dir = actor_parquet_factory(num_rows=8)
     dataset = AuthoritativeParquetDataset(
-        parquet_dir=parquet_dir, feature_dim=FEATURE_DIM, num_actions=NUM_ACTIONS_SMALL, seed=0
+        parquet_dir=parquet_dir,
+        feature_dim=FEATURE_DIM,
+        num_actions=NUM_ACTIONS_SMALL,
+        seed=0,
+        allow_narrow=True,
     )
     store = PrivilegedLabelStore()
     for i in range(8):
@@ -895,7 +932,11 @@ def test_replay_join_leakage_still_rejected(tmp_path: Path, actor_parquet_factor
 
     parquet_dir = actor_parquet_factory(num_rows=8)
     dataset = AuthoritativeParquetDataset(
-        parquet_dir=parquet_dir, feature_dim=FEATURE_DIM, num_actions=NUM_ACTIONS_SMALL, seed=0
+        parquet_dir=parquet_dir,
+        feature_dim=FEATURE_DIM,
+        num_actions=NUM_ACTIONS_SMALL,
+        seed=0,
+        allow_narrow=True,
     )
     store = PrivilegedLabelStore()
     for i in range(8):

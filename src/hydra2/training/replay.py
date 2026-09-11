@@ -48,6 +48,8 @@ import torch.nn as nn
 
 from hydra2.contracts.common import ContractError, CorruptArtifactError
 from hydra2.eval.statistics import SelectionConfig, score_selection
+from hydra2.models.encoder import ActorTensorBatch
+from hydra2.models.model import validate_actor_batch
 from hydra2.runtime.checkpoint import (
     build_manifest,
     capture_rng_state,
@@ -121,7 +123,7 @@ def _atomic_publish_best(source: Path, dest: Path) -> str:
     digest = _best_ckpt_digest_for(data)
     tmp = dst.with_name(dst.name + ".tmp")
     with open(tmp, "wb") as fh:
-        fh.write(data)
+        _ = fh.write(data)  # intentionally discarded: byte count unneeded after fsync
         fh.flush()
         os.fsync(fh.fileno())
     os.replace(tmp, dst)
@@ -240,7 +242,12 @@ class ReplayConfig:
             )
 
 
-def _model_forward(model: nn.Module, batch: dict[str, Any]) -> dict[str, Any]:
+def _model_forward(model: nn.Module, batch: Any) -> dict[str, Any]:
+    # Eager contract gate BEFORE the (possibly compiled) forward (see loop's
+    # bridge): shapes + nonterminal legal mask raise here on the host, so an
+    # inductor graph holds zero device→host syncs. Stub/dict batches skip it.
+    if isinstance(batch, ActorTensorBatch) and hasattr(model, "evaluate"):
+        validate_actor_batch(batch, getattr(model, "action_count", None))
     if hasattr(model, "evaluate") and callable(model.evaluate):
         out = model.evaluate(batch)
     else:
@@ -290,6 +297,27 @@ def _move_batch_to_device(batch: dict[str, Any], device: torch.device) -> dict[s
         else:
             moved[k] = v
     return moved
+
+
+def _batch_action_kinds(batch: dict[str, Any], targets: torch.Tensor) -> list[str] | None:
+    """Per-row action-kind labels for scorecard logging (``None`` when absent).
+
+    Reads the sampler-attached ``"_action_kinds"`` (or ``"action_kinds"``)
+    list; returns ``None`` unless it is a length-matching list of non-empty
+    strings.  Logging-only: never affects loss, stepping, or checkpoints.
+    """
+    raw: Any = batch.get("_action_kinds", batch.get("action_kinds"))
+    if raw is None:
+        return None
+    if not isinstance(raw, (list, tuple)):
+        return None
+    raw_list: list[object] = list(raw)
+    kinds = [str(k) for k in raw_list]
+    if len(kinds) != targets.shape[0]:
+        return None
+    if any(k == "" for k in kinds):
+        return None
+    return kinds
 
 
 class PrivilegedLabelStore:
@@ -596,7 +624,7 @@ class ActorLearnerReplay:
         # belief heads keep the index-CE contract and are never joined here.
         if len(self.privileged_store) == 0:
             return batch
-        if float(self.config.w_placement) == 0.0 and float(self.config.w_value) == 0.0:
+        if self.config.w_placement == 0.0 and self.config.w_value == 0.0:
             return batch
         decision_ids_any: Any = batch.get("_decision_ids", [])
         if not isinstance(decision_ids_any, (list, tuple)) or len(decision_ids_any) == 0:
@@ -608,9 +636,9 @@ class ActorLearnerReplay:
             decision_ids, self.privileged_store, evaluation_wall_ids=self.evaluation_wall_ids
         )
         merged: dict[str, Any] = dict(batch)
-        if float(self.config.w_placement) != 0.0 and "placement_target" in joined:
+        if self.config.w_placement != 0.0 and "placement_target" in joined:
             merged["placement_target"] = joined["placement_target"]
-        if float(self.config.w_value) != 0.0 and "value_target" in joined:
+        if self.config.w_value != 0.0 and "value_target" in joined:
             merged["value_target"] = joined["value_target"]
         _validate_batch_no_privileged(merged)
         self.privileged_store.verify_no_leakage_into_batch(merged)
@@ -680,13 +708,17 @@ class ActorLearnerReplay:
                     for _head_id, _head_loss in _event_heads_any.items():
                         if isinstance(_head_loss, torch.Tensor):
                             _head_scalar = float(_head_loss.detach().cpu().item())  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for logging scalars; alternative loses logging. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
-                            micro_event_heads.setdefault(str(_head_id), []).append(_head_scalar)
+                            _head_id_obj: object = _head_id
+                            micro_event_heads.setdefault(str(_head_id_obj), []).append(_head_scalar)
                 _belief_heads_any: Any = losses.get("_belief_per_head", {})
                 if isinstance(_belief_heads_any, dict):
                     for _head_id, _head_loss in _belief_heads_any.items():
                         if isinstance(_head_loss, torch.Tensor):
                             _head_scalar = float(_head_loss.detach().cpu().item())  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for logging scalars; alternative loses logging. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
-                            micro_belief_heads.setdefault(str(_head_id), []).append(_head_scalar)
+                            _head_id_obj2: object = _head_id
+                            micro_belief_heads.setdefault(str(_head_id_obj2), []).append(
+                                _head_scalar
+                            )
                 self.state.microstep += 1
                 self.state.examples_seen += self.config.microbatch_size
                 self.state.sampler_cursor = self._sampler_state_snapshot()
@@ -727,12 +759,12 @@ class ActorLearnerReplay:
                 entry = _skip_entry
                 if self.state.global_update % self.config.checkpoint_frequency_updates == 0:
                     dest = self.save_checkpoint()
-                    self._mirror.log_update(_skip_entry, step=int(self.state.global_update))
+                    self._mirror.log_update(_skip_entry, step=self.state.global_update)
                     self._mirror.log_checkpoint(
                         checkpoint_path=dest,
                         manifest_json={
                             "checkpoint_file": dest.name,
-                            "global_update": int(self.state.global_update),
+                            "global_update": self.state.global_update,
                             "manifest_hashes": dict(self.manifest_hashes),
                         },
                     )
@@ -743,8 +775,7 @@ class ActorLearnerReplay:
                 )
             self.optimizer.step()
             if self.scheduler is not None:
-                with contextlib.suppress(Exception):
-                    self.scheduler.step()
+                self.scheduler.step()
             self.optimizer.zero_grad(set_to_none=True)
             self.state.global_update += 1
             self.state.epoch = int(self._sampler_state_snapshot().get("epoch", 0))
@@ -758,6 +789,7 @@ class ActorLearnerReplay:
                     train_logits.detach(),
                     train_targets.detach(),
                     train_mask.detach(),
+                    action_kinds=_batch_action_kinds(batch, train_targets),
                 )
             except Exception:
                 metrics = {
@@ -787,9 +819,20 @@ class ActorLearnerReplay:
                 "top1": metrics.get("top1", 0.0),
                 "top3": metrics.get("top3", 0.0),
                 "top5": metrics.get("top5", 0.0),
+                "calibration_ece": metrics.get("calibration_ece", 0.0),
+                "legal_uniform_nll": metrics.get("legal_uniform_nll", 0.0),
+                "legal_uniform_gap": metrics.get("legal_uniform_gap", 0.0),
+                "strata": metrics.get("strata", 0.0),
+                "confusion": metrics.get("confusion", 0.0),
                 "skipped_updates": float(self.state.skipped_updates),
                 "skipped_this_update": 0.0,
             }
+            # Per-type scorecards: flattened ``per_type/<kind>/*`` floats ride
+            # the entry when the batch carries kind labels (mirrors
+            # ``SupervisedLoop``; report-only, never loss).
+            for _mkey, _mval in metrics.items():
+                if _mkey.startswith("per_type/") and isinstance(_mval, float):
+                    entry[_mkey] = _mval
             for _event_head in sorted(micro_event_heads):
                 _event_vals = micro_event_heads[_event_head]
                 entry[f"event_{_event_head}"] = (
@@ -804,22 +847,22 @@ class ActorLearnerReplay:
             self._global_metrics_history.append(dict(entry))
             if self.state.global_update % self.config.checkpoint_frequency_updates == 0:
                 dest = self.save_checkpoint()
-                self._mirror.log_update(entry, step=int(self.state.global_update))
+                self._mirror.log_update(entry, step=self.state.global_update)
                 self._mirror.log_checkpoint(
                     checkpoint_path=dest,
                     manifest_json={
                         "checkpoint_file": dest.name,
-                        "global_update": int(self.state.global_update),
+                        "global_update": self.state.global_update,
                         "manifest_hashes": dict(self.manifest_hashes),
                     },
                 )
         dest = self.save_checkpoint()
-        self._mirror.log_update(entry, step=int(self.state.global_update))
+        self._mirror.log_update(entry, step=self.state.global_update)
         self._mirror.log_checkpoint(
             checkpoint_path=dest,
             manifest_json={
                 "checkpoint_file": dest.name,
-                "global_update": int(self.state.global_update),
+                "global_update": self.state.global_update,
                 "manifest_hashes": dict(self.manifest_hashes),
             },
         )
@@ -884,7 +927,7 @@ class ActorLearnerReplay:
         restored = ReplayState.from_dict(dict(raw_ts))
         # Replay is fp32-only: refuse cross-regime resume (and any non-fp32
         # checkpoint, which could only come from a lying writer).
-        if str(restored.precision) != "fp32" or str(self.config.precision) != "fp32":
+        if restored.precision != "fp32" or self.config.precision != "fp32":
             raise CorruptArtifactError(
                 f"checkpoint precision {restored.precision!r} != replay precision 'fp32'; "
                 "refusing cross-regime resume"
@@ -953,7 +996,7 @@ class ActorLearnerReplay:
         metric, _, _ = score_selection(
             blocks, telemetry_by_game, config, peek_index, tolerance=tolerance
         )
-        return float(metric)
+        return metric
 
     def maybe_promote_best(
         self,
@@ -976,15 +1019,15 @@ class ActorLearnerReplay:
         expected, _, _ = score_selection(
             blocks, telemetry_by_game, config, peek_index, tolerance=tolerance
         )
-        if float(metric) != float(expected):
+        if metric != expected:
             raise ContractError(
-                f"promotion metric {float(metric)!r} != gated score {float(expected)!r} "
+                f"promotion metric {metric!r} != gated score {expected!r} "
                 "for this blocks/telemetry/peek (score first via evaluate_selection)"
             )
         best = self.state.best_selection_metric
-        if best is not None and not (float(metric) < float(best)):
+        if best is not None and not (metric < best):
             return False
         digest = _atomic_publish_best(Path(ckpt), self.checkpoint_dir / "best-ckpt.pt")
-        self.state.best_selection_metric = float(metric)
+        self.state.best_selection_metric = metric
         self.state.best_ckpt_digest = digest
         return True

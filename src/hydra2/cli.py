@@ -66,6 +66,20 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="'latest' for the latest compatible checkpoint in the run dir, or a path to ckpt-*.pt",
     )
+    _ = train.add_argument(
+        "--mlflow",
+        dest="mlflow",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="override YAML telemetry.mlflow_enabled (default: honor YAML)",
+    )
+    _ = train.add_argument(
+        "--verbose-telemetry",
+        dest="verbose_telemetry",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="override YAML telemetry.verbose_enabled (default: honor YAML)",
+    )
     return parser
 
 
@@ -117,6 +131,16 @@ def main(argv: list[str] | None = None) -> int:
         except Hydra2Error as exc:
             print(f"error[{type(exc).__name__}]: {exc}", file=sys.stderr)
             return 2
+        # Tri-state CLI flags override YAML telemetry knobs (None honors YAML).
+        if args.mlflow is not None or args.verbose_telemetry is not None:
+            from dataclasses import replace as _dc_replace
+
+            telemetry = config.telemetry
+            if args.mlflow is not None:
+                telemetry = _dc_replace(telemetry, mlflow_enabled=args.mlflow)
+            if args.verbose_telemetry is not None:
+                telemetry = _dc_replace(telemetry, verbose_enabled=args.verbose_telemetry)
+            config = _dc_replace(config, telemetry=telemetry)
         # Dry-run reads no data and mutates nothing: the plan is pure
         # config resolution (operator edits YAML by hand when it is wrong).
         if args.dry_run:

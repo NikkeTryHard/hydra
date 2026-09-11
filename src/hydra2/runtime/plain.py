@@ -61,12 +61,21 @@ class PlainPytorchAdapter:
     def setup(self, *, model: Any, optimizer: Any, spec: RuntimeSpec) -> RuntimeHandle:
         import torch
 
-        # Plain is fp32-only by contract: any non-fp32 request fails closed
-        # here, before device binding, so CPU-only runs still reject lies.
-        if spec.precision != "fp32":
+        # Plain supports fp32 (any device) and bf16_mixed (CUDA only) via the
+        # loop-owned autocast around forward+loss — the adapter itself never
+        # autocasts, keeps fp32 master weights, runs no scaler. fp16 and
+        # anything else fail closed here, before device binding, so CPU-only
+        # runs still reject lies. bf16 on CPU would silently compute fp32
+        # (loop autocast is CUDA-only), so it fails closed too.
+        if spec.precision not in ("fp32", "bf16_mixed"):
             raise ContractError(
-                f"PlainPytorchAdapter requires precision 'fp32', got {spec.precision!r} "
-                "(plain is fp32-only; use fabric_2.6.5 for bf16_mixed)"
+                f"PlainPytorchAdapter precision {spec.precision!r} not supported "
+                "(want 'fp32' or 'bf16_mixed'; fp16_mixed rejected: no loss scaler)"
+            )
+        if spec.precision == "bf16_mixed" and spec.device == "cpu":
+            raise ContractError(
+                "PlainPytorchAdapter bf16_mixed requires a CUDA device "
+                "(loop-owned autocast is CUDA-only; never silent CPU fallback)"
             )
         require_device_available(spec.device)
         device: Any = cast("Any", torch.device(spec.device))

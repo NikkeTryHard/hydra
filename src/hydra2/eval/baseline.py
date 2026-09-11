@@ -208,9 +208,14 @@ def top_k_accuracy(
 
 
 def expected_calibration_error(
-    logits: torch.Tensor, targets: torch.Tensor, legal_mask: torch.Tensor, num_bins: int = 15
+    logits: torch.Tensor, targets: torch.Tensor, legal_mask: torch.Tensor, num_bins: int = 10
 ) -> float:
-    """ECE over legal softmax confidence (max prob)."""
+    """ECE over legal softmax confidence (max prob), frozen 10-bin grid.
+
+    The default matches the frozen ``_ECE_NUM_BINS`` grid in
+    ``training/objectives.py`` so train and eval calibration agree; pass an
+    explicit ``num_bins`` only for ablations (digests then differ).
+    """
     if not isinstance(num_bins, int) or num_bins <= 0:
         raise ContractError(f"num_bins must be positive int, got {num_bins!r}")
     mask = _require_legal_mask(legal_mask)
@@ -288,7 +293,7 @@ def compute_baseline_metrics(
     legal_mask: torch.Tensor,
     *,
     compile_mode: str = EAGER_ORACLE_ID,
-    num_bins: int = 15,
+    num_bins: int = 10,
 ) -> BaselineMetrics:
     """Compute the full baseline metric bundle deterministically."""
     nll = masked_cross_entropy(logits, targets, legal_mask)

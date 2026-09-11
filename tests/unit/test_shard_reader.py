@@ -295,6 +295,23 @@ def test_schema_digest_gate(tmp_path: Path) -> None:
         assert reader.manifest["order"] == {"kind": "canonical"}
 
 
+def test_undeclared_narrow_width_rejected(tmp_path: Path) -> None:
+    """A manifest action_width below baseline needs allow_narrow to open."""
+    fixed = write_shard(tmp_path / "shard", backend="ipc")
+    assert "action_width" not in fixed["manifest"]
+    manifest = dict(fixed["manifest"])
+    manifest["action_width"] = 16
+    (tmp_path / "shard" / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ContractError):
+        ShardReader(tmp_path / "shard", batch_size=BATCH, bucket_batches=False)
+    with ShardReader(
+        tmp_path / "shard", batch_size=BATCH, bucket_batches=False, allow_narrow=True
+    ) as reader:
+        assert reader.manifest["action_width"] == 16
+        batch = reader.next_batch()
+        assert batch["_sample_end"] > 0
+
+
 def test_npy_backend_reads_identical(tmp_path: Path) -> None:
     fixed = write_shard(tmp_path / "shard", backend="npy")
     with ShardReader(tmp_path / "shard", batch_size=BATCH, bucket_batches=False) as reader:

@@ -190,7 +190,7 @@ def _schedule_for(game_id: str, wall_tiles: tuple[int, ...]) -> WallSchedule:
     """Build the game wall; raises instead of synthesizing a missing wall."""
     if len(wall_tiles) != 136:
         raise ContractError(f"wall_tiles must carry 136 tiles, got {len(wall_tiles)}")
-    physical = tuple(make_tile_id(int(t)) for t in wall_tiles)
+    physical = tuple(make_tile_id(t) for t in wall_tiles)
     schedule_id = f"replay-{game_id}"
     return WallSchedule(
         schedule_id=schedule_id,
@@ -247,7 +247,7 @@ def _count_row_decisions(events: Sequence[dict[str, object]]) -> int:
         event = events[idx]
         if not isinstance(event, dict):
             raise ContractError(f"mjai event [{idx}] must be an object")
-        kind = _event_kind(cast("dict[str, object]", event))
+        kind = _event_kind(event)
         if kind in _END_TYPES:
             break
         if kind == "reach":
@@ -257,7 +257,7 @@ def _count_row_decisions(events: Sequence[dict[str, object]]) -> int:
             following = events[nxt]
             if not isinstance(following, dict):
                 raise ContractError("reach event must be followed by its declaration dahai")
-            if _event_kind(cast("dict[str, object]", following)) != "dahai":
+            if _event_kind(following) != "dahai":
                 raise ContractError("reach event must be followed by its declaration dahai")
             count += 1
             idx = nxt + 1
@@ -278,7 +278,7 @@ def _skip_index(events: Sequence[dict[str, object]], start: int) -> int | None:
         event = events[idx]
         if not isinstance(event, dict):
             raise ContractError(f"mjai event [{idx}] must be an object")
-        kind = _event_kind(cast("dict[str, object]", event))
+        kind = _event_kind(event)
         if kind in _END_TYPES or kind in _ROW_TYPES or kind == "reach":
             return idx
         if kind not in _SKIP_TYPES:
@@ -312,7 +312,7 @@ class ReplayExpander:
         sim = self._sim
         sim.reset(
             rules=self._rules,
-            wall=_schedule_for(game.game_id, tuple(int(t) for t in wall_tiles)),
+            wall=_schedule_for(game.game_id, tuple(wall_tiles)),
             seat_permutation=(make_seat(0), make_seat(1), make_seat(2), make_seat(3)),
         )
         events = game.events
@@ -325,7 +325,7 @@ class ReplayExpander:
             event = events[idx]
             if not isinstance(event, dict):
                 raise ContractError(f"mjai event [{idx}] must be an object")
-            ev = cast("dict[str, object]", event)
+            ev = event
             kind = _event_kind(ev)
             if kind in _END_TYPES:
                 break
@@ -383,7 +383,7 @@ class ReplayExpander:
         split: str,
     ) -> int:
         sim = self._sim
-        pending = sorted(int(s) for s in sim._pending)
+        pending = sorted(sim._pending)
         claim = self._window_claim(ev, kind, pending)
         if claim is None:
             # No logged claim here: mechanically pass every responder so the
@@ -398,7 +398,8 @@ class ReplayExpander:
             self._apply_pass(earlier)
         self._emit_row(game, seat, action, len(rows), round_idx, rows, split=split)
         applied = self._select_for_apply(seat, action)
-        sim.apply(applied)
+        # Engine advance is the effect; result discarded.
+        _ = sim.apply(applied)
         return idx + 1
 
     def _window_claim(
@@ -446,7 +447,7 @@ class ReplayExpander:
             following = events[nxt]
             if not isinstance(following, dict):
                 raise ContractError("reach event must be followed by its declaration dahai")
-            dev = cast("dict[str, object]", following)
+            dev = following
             if _event_kind(dev) != "dahai":
                 raise ContractError("reach event must be followed by its declaration dahai")
             actor = _require_actor(ev, where="reach")
@@ -458,7 +459,8 @@ class ReplayExpander:
             legals = sim.legal_actions(make_seat(expected))
             action = self._match_riichi(expected, dev, legals)
             self._emit_row(game, expected, action, len(rows), round_idx, rows, split=split)
-            sim.apply(self._select_for_apply(expected, action))
+            # Engine advance is the effect; result discarded.
+            _ = sim.apply(self._select_for_apply(expected, action))
             return nxt + 1
         if kind == "dahai":
             actor = _require_actor(ev, where="dahai")
@@ -467,7 +469,8 @@ class ReplayExpander:
             legals = sim.legal_actions(make_seat(expected))
             action = self._match_dahai(expected, ev, legals, idx=idx)
             self._emit_row(game, expected, action, len(rows), round_idx, rows, split=split)
-            sim.apply(self._select_for_apply(expected, action))
+            # Engine advance is the effect; result discarded.
+            _ = sim.apply(self._select_for_apply(expected, action))
             return idx + 1
         if kind in ("ankan", "kakan"):
             actor = _require_actor(ev, where=kind)
@@ -476,7 +479,8 @@ class ReplayExpander:
             legals = sim.legal_actions(make_seat(expected))
             action = self._match_kan(expected, kind, ev, legals, idx=idx)
             self._emit_row(game, expected, action, len(rows), round_idx, rows, split=split)
-            sim.apply(self._select_for_apply(expected, action))
+            # Engine advance is the effect; result discarded.
+            _ = sim.apply(self._select_for_apply(expected, action))
             return idx + 1
         if kind == "hora":
             actor = _require_actor(ev, where="hora")
@@ -487,7 +491,8 @@ class ReplayExpander:
             legals = sim.legal_actions(make_seat(expected))
             action = self._match_tsumo(expected, ev, legals, idx=idx)
             self._emit_row(game, expected, action, len(rows), round_idx, rows, split=split)
-            sim.apply(self._select_for_apply(expected, action))
+            # Engine advance is the effect; result discarded.
+            _ = sim.apply(self._select_for_apply(expected, action))
             return idx + 1
         raise ContractError(f"unmapped mjai event type {kind!r} at index {idx}")
 
@@ -496,7 +501,8 @@ class ReplayExpander:
         legals = sim.legal_actions(make_seat(seat))
         for action in legals:
             if action.kind == "pass":
-                sim.apply(action)
+                # Mechanical pass advances the engine; result discarded.
+                _ = sim.apply(action)
                 return
         raise ContractError(f"seat {seat} has no pass action in the claim window")
 
@@ -534,7 +540,7 @@ class ReplayExpander:
         # Perf-C P1a: hand the validated live object to the encoder out of
         # band (row dict content below is byte-identical either way).
         stash_live_observation(decision_id, observation)
-        wall_digest = str(sim._schedule_digest)
+        wall_digest = sim._schedule_digest
         derivation = str(
             of_canonical(
                 {
@@ -560,7 +566,7 @@ class ReplayExpander:
                 observation_hash=obs_hash,
                 action_table_hash=str(observation.action_table_hash),
                 derivation_hash=derivation,
-                actor_observation=cast("dict[str, object]", observation.to_json()),
+                actor_observation=observation.to_json(),
                 chosen_action_id=chosen_id,
                 privileged_label_ref=decision_id,
             )
@@ -576,13 +582,13 @@ class ReplayExpander:
             raise ContractError(f"dahai event [{idx}] carries no pai string")
         if bool(ev.get("tsumogiri", False)):
             matches = [a for a in legals if a.kind == "tsumogiri" and _matches_pai(a.tile, pai)]
-            if not matches:
+            if len(matches) == 0:
                 raise IllegalActionError(f"tsumogiri {pai!r} illegal for seat {seat} [{idx}]")
-            return min(matches, key=lambda a: int(cast("int", a.tile)))
+            return min(matches, key=lambda a: cast("int", a.tile))
         matches = [a for a in legals if a.kind == "discard" and _matches_pai(a.tile, pai)]
-        if not matches:
+        if len(matches) == 0:
             raise IllegalActionError(f"discard {pai!r} illegal for seat {seat} [{idx}]")
-        return min(matches, key=lambda a: int(cast("int", a.tile)))
+        return min(matches, key=lambda a: cast("int", a.tile))
 
     def _match_riichi(
         self, seat: int, ev: dict[str, object], legals: tuple[CanonicalAction, ...]
@@ -591,9 +597,9 @@ class ReplayExpander:
         if not isinstance(pai, str) or pai == "":
             raise ContractError("riichi declaration dahai carries no pai string")
         matches = [a for a in legals if a.kind == "riichi_discard" and _matches_pai(a.tile, pai)]
-        if not matches:
+        if len(matches) == 0:
             raise IllegalActionError(f"riichi discard {pai!r} illegal for seat {seat}")
-        return min(matches, key=lambda a: int(cast("int", a.tile)))
+        return min(matches, key=lambda a: cast("int", a.tile))
 
     def _match_claim(
         self, seat: int, kind: str, ev: dict[str, object], legals: tuple[CanonicalAction, ...]
@@ -607,7 +613,8 @@ class ReplayExpander:
             raise ContractError(f"logged {kind} carries no consumed tile list")
         if isinstance(target, bool) or not isinstance(target, int) or not 0 <= target <= 3:
             raise ContractError(f"logged {kind} carries no valid target seat")
-        wanted = sorted(str(t) for t in consumed)
+        consumed_seq: Sequence[object] = consumed
+        wanted = sorted(str(t) for t in consumed_seq)
         matches = []
         for action in legals:
             if action.kind != kind or action.called_tile is None:
@@ -619,9 +626,9 @@ class ReplayExpander:
             if action.source_seat is not None and int(action.source_seat) != target:
                 continue
             matches.append(action)
-        if not matches:
+        if len(matches) == 0:
             raise IllegalActionError(f"logged {kind} {pai!r} is illegal for seat {seat}")
-        return min(matches, key=lambda a: tuple(sorted(int(t) for t in a.consumed_tiles)))
+        return min(matches, key=_consumed_tiles_key)
 
     def _match_kan(
         self,
@@ -636,22 +643,23 @@ class ReplayExpander:
             consumed = ev.get("consumed")
             if not isinstance(consumed, (list, tuple)):
                 raise ContractError(f"logged ankan [{idx}] carries no consumed tile list")
-            wanted = sorted(str(t) for t in consumed)
+            consumed_seq: Sequence[object] = consumed
+            wanted = sorted(str(t) for t in consumed_seq)
             matches = [
                 a
                 for a in legals
                 if a.kind == "ankan" and sorted(_mjai_strings(tuple(a.consumed_tiles))) == wanted
             ]
-            if not matches:
+            if len(matches) == 0:
                 raise IllegalActionError(f"logged ankan is illegal for seat {seat} at [{idx}]")
-            return min(matches, key=lambda a: tuple(sorted(int(t) for t in a.consumed_tiles)))
+            return min(matches, key=_consumed_tiles_key)
         pai = ev.get("pai")
         if not isinstance(pai, str) or pai == "":
             raise ContractError(f"logged kakan [{idx}] carries no pai string")
         matches = [a for a in legals if a.kind == "kakan" and _matches_pai(a.tile, pai)]
-        if not matches:
+        if len(matches) == 0:
             raise IllegalActionError(f"kakan {pai!r} illegal for seat {seat} at [{idx}]")
-        return min(matches, key=lambda a: int(cast("int", a.tile)))
+        return min(matches, key=lambda a: cast("int", a.tile))
 
     def _match_tsumo(
         self, seat: int, ev: dict[str, object], legals: tuple[CanonicalAction, ...], *, idx: int
@@ -660,11 +668,11 @@ class ReplayExpander:
         matches = [a for a in legals if a.kind == "tsumo"]
         if isinstance(pai, str) and pai != "":
             narrowed = [a for a in matches if _matches_pai(a.tile, pai)]
-            if narrowed:
+            if len(narrowed) > 0:
                 matches = narrowed
-        if not matches:
+        if len(matches) == 0:
             raise IllegalActionError(f"tsumo win illegal for seat {seat} at [{idx}]")
-        return min(matches, key=lambda a: -1 if a.tile is None else int(a.tile))
+        return min(matches, key=_optional_tile_key)
 
     def _match_ron(
         self, seat: int, ev: dict[str, object], legals: tuple[CanonicalAction, ...]
@@ -673,22 +681,32 @@ class ReplayExpander:
         matches = [a for a in legals if a.kind == "ron"]
         if isinstance(pai, str) and pai != "":
             narrowed = [a for a in matches if _matches_pai(a.tile, pai)]
-            if narrowed:
+            if len(narrowed) > 0:
                 matches = narrowed
-        if not matches:
+        if len(matches) == 0:
             raise IllegalActionError(f"logged ron is illegal for seat {seat}")
-        return min(matches, key=lambda a: -1 if a.tile is None else int(a.tile))
+        return min(matches, key=_optional_tile_key)
+
+
+def _consumed_tiles_key(action: CanonicalAction) -> tuple[int, ...]:
+    """Deterministic copy-resolution order: ascending physical ids."""
+    return tuple(sorted(int(t) for t in action.consumed_tiles))
+
+
+def _optional_tile_key(action: CanonicalAction) -> int:
+    """Tile-less wins first, else ascending physical id."""
+    return -1 if action.tile is None else int(action.tile)
 
 
 def _tile_string(tile: int) -> str:
     from hydra2.engines.riichienv.tiles import mjai_string_of
 
-    return mjai_string_of(int(tile))
+    return mjai_string_of(tile)
 
 
 def _matches_pai(tile: int | None, pai: str) -> bool:
     """Exact MJAI-string match for one physical tile (red fives distinct)."""
-    return tile is not None and _tile_string(int(tile)) == pai
+    return tile is not None and _tile_string(tile) == pai
 
 
 def _get_expander() -> ReplayExpander:
@@ -724,7 +742,7 @@ def expand_privileged_rows(
 
     if split == "":
         raise ContractError("split must be a non-empty string")
-    events = [cast("dict[str, object]", e) for e in game.events]
+    events = list(game.events)
     count = _count_row_decisions(events)
     scores = _final_scores(events)
     ranks = ranks_from_final_scores(list(scores))

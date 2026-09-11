@@ -44,8 +44,8 @@ Test whether PBRF's retained actor-visible event forest and opponent-turn comput
 | --- | --- | --- |
 | D-001 | Tenhou four-player hanchan rules are authoritative. | `tenhou_4p_hanchan_v1.json` holds source URL/date/digest and complete selected flags. No engine default silently fills a field. |
 | D-002 | Tenhou manual at <https://tenhou.net/man/> is the initial primary rules source. | First manifest locks 25k/30k, 10-20 uma, three reds, relevant end/time behavior, then explicitly records remaining selected flags. |
-| D-003 | `RiichiEnv==0.4.8` is initial reference-engine adapter. | It must conform to D-001. It does not define rules by fiat. |
-| D-004 | MahJax is optional accelerator at exact SHA `3fa282699e5786d165216578bc8e213f96a0dca5`. | Declare the full Git URL and revision under Pixi's PyPI dependencies; floating main/PyPI substitute prohibited. Accelerator trajectories are quarantined until conformance passes. |
+| D-003 | `RiichiEnv==0.4.10` is the reference-engine adapter (re-pinned 2026-09-10 with Tenhou-anchored requal, one re-freeze WP04A-12). | It must conform to D-001. It does not define rules by fiat. |
+| D-004 | MahJax is optional accelerator at exact SHA `cff90d1e68cf21464071864672a9618bb20f2551` (v0.1.3; requalified 2026-09-10 under a new lineage). | Declare the full Git URL and revision under Pixi's PyPI dependencies; floating main/PyPI substitute prohibited. Accelerator trajectories are quarantined until conformance passes. |
 | D-005 | `dora_indicators` has fixed shape `(5,)`. | Schema/cache/checkpoint hashes include it. `(4,)` artifacts are incompatible; no padding shim. |
 | D-006 | Stable PyTorch 2.13.x semantics are authoritative; standalone `lightning-fabric==2.6.5` is an optional thin device/precision/strategy adapter. | Hydra2 owns supervised, distillation, and RL loops, optimizers, schedules, accumulation, evaluation, and checkpoints; no Lightning Trainer package is installed. Compile eligible pure-tensor model regions before `Fabric.setup`; retain a plain-PyTorch eager fallback without downgrading PyTorch. Changing the PyTorch patch, Fabric version, setup order, or ownership boundary changes environment/run/checkpoint/compile-lineage hashes, invalidates affected qualification artifacts, requires rebuild or explicit checkpoint migration, and requires fresh import, resume-equivalence, eager-parity, and device qualification records. |
 | D-007 | W&B mirrors; local manifests/checkpoints are authoritative. | Formal work runs offline, records local hashes, and reconciles rather than overwrites. |
@@ -225,7 +225,7 @@ Caches key on full dataset manifest, split, schema/preprocessing/layout/dtype/li
 
 ### 7.1 RiichiEnv reference adapter
 
-Reference adapter must pin `RiichiEnv==0.4.8`, map canonical action/event/observation both directions, accept deterministic wall/seat schedule, and expose actor streams through a process/API boundary. It must implement the Tenhou manifest precisely enough for qualification corpus cases, or the affected rule subset remains unsupported.
+Reference adapter must pin `RiichiEnv==0.4.10`, map canonical action/event/observation both directions, accept deterministic wall/seat schedule, and expose actor streams through a process/API boundary. It must implement the Tenhou manifest precisely enough for qualification corpus cases, or the affected rule subset remains unsupported.
 
 ### 7.2 MahJax quarantine
 
@@ -389,7 +389,7 @@ Relocation hash evidence, captured before moving from repository root and after 
 
 **Status:** NOT STARTED.  
 **Dependencies:** M1, M2.  
-**Deliverables:** v0.4.8 adapter, deterministic wall/seat controls, actor-isolated API, canonical codecs.  
+**Deliverables:** v0.4.10 adapter, deterministic wall/seat controls, actor-isolated API, canonical codecs.
 **Exit:** seeded complete games; action/event round trips; actor boundary canary; stored deterministic reference traces.  
 **Evidence:** complete-game logs and fixtures.
 

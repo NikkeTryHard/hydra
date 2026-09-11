@@ -21,7 +21,7 @@ list shown with parity evidence, approved by the operator (one word suffices),
 then removed with a JSONL audit-log entry. No blanket auto-delete (XFS deletions are
 unrecoverable); no silent removals; no deletions bundled inside other work.
 
-STOCK-ENGINE LAW 2026-09-08 (operator, absolute): riichienv 0.4.8 stays unmodified —
+STOCK-ENGINE LAW 2026-09-08 (operator, absolute; version refreshed 2026-09-10 to riichienv 0.4.10): the pinned engine stays unmodified —
 no forks, no perf patches inside the engine (hydra1 paid correctness risk for that).
 All performance work happens AROUND it: orchestration, batching, buffers, handoff,
 validation placement. Engine interns are out of scope for every package.

@@ -116,7 +116,7 @@ def _event_fingerprint(sim: RiichiEnvExactSimulator) -> str:
 
 def test_engine_identity_pins_reference_build() -> None:
     assert ENGINE_IDENTITY.name == "riichienv"
-    assert ENGINE_IDENTITY.version == RIICHENV_VERSION_PIN == "0.4.8"
+    assert ENGINE_IDENTITY.version == RIICHENV_VERSION_PIN == "0.4.10"
     assert str(ENGINE_IDENTITY.environment_hash).startswith("sha256:")
 
 

@@ -2,7 +2,7 @@
 
 Design decisions recorded here (full rationale in work_packages/WP-03A):
 
-D-WP03A-1 Per-hand engines with adapter-driven chaining. RiichiEnv 0.4.8
+D-WP03A-1 Per-hand engines with adapter-driven chaining. RiichiEnv 0.4.10
     honours ``reset(wall=...)`` for the first hand only; later hands come from
     engine-internal RNG (verified: identical injected walls diverge at kyoku
     2). The adapter therefore plays each hand on a fresh engine instance fed
@@ -176,7 +176,7 @@ def _rules_identity(manifest: RulesManifest, recomputed: str) -> str:
 
 
 class RiichiEnvExactSimulator:
-    """SPEC 9 exact simulator backed by pinned RiichiEnv 0.4.8."""
+    """SPEC 9 exact simulator backed by pinned RiichiEnv 0.4.10."""
 
     def __init__(self) -> None:
         self._rules: RulesManifest | None = None
@@ -232,11 +232,11 @@ class RiichiEnvExactSimulator:
         # cannot disambiguate the two plain copies of a suit five.
         self._pre_step_hands: dict[int, tuple[int, ...]] = {}
         # D-WP03A-11: exact physical id each seat adds in a kakan, captured
-        # at apply() time. Engine 0.4.8 upgrades the prior pon meld IN PLACE
+        # at apply() time. Engine 0.4.10 upgrades the prior pon meld IN PLACE
         # (same list slot), so by mjai-translation time the pon triple is no
         # longer recoverable from engine state alone.
         self._kakan_added: dict[int, int] = {}
-        # D-WP03A-9: engine 0.4.8 exposes no runtime ippatsu property (stale
+        # D-WP03A-9: engine 0.4.10 exposes no runtime ippatsu property (stale
         # stub lists one); the adapter derives the flags from canonical events:
         # set at riichi_accepted, cleared by any meld interrupt and by the
         # declarer's own next discard, reset every hand.
@@ -1576,7 +1576,7 @@ class RiichiEnvExactSimulator:
         engine_pid = int(cast("Any", event["actor"]))
         # D-WP03A-11: the exact added tile was captured at apply() time; the
         # pon triple it upgraded is still the seat's latest meld at mjai
-        # translation time (engine 0.4.8 upgrades that meld IN PLACE, so
+        # translation time (engine 0.4.10 upgrades that meld IN PLACE, so
         # scanning for a separate 3-tile pon would fail after any later meld).
         meld_tiles = self._latest_meld_tiles(engine_pid)
         added = self._kakan_added.get(engine_pid)

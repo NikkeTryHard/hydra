@@ -1,0 +1,23 @@
+# Build parallelism only (16 threads for compilation). No RUSTFLAGS here on
+# purpose: global ~/.cargo supplies target-cpu=native + clang + mold, and any
+# local rustflags duplicate would churn fingerprints for zero gain.
+# No debug profile anywhere near this tree: release = opt-3 + fat LTO +
+# codegen-units=1 + strip (workspace Cargo.toml); test profile stays default
+# (tripwire correctness, never measured).
+[build]
+jobs = 16
+rustc-wrapper = "sccache"
+# PGO: F10-duel profile for hydra-feed (regenerated 2026-09-09 against segment-2 keeps).
+# Canonical profile location: pgo-data/feed.profdata (workspace-cwd-relative). Behavior-identical
+# profiling only; tripwire (nextest -p hydra-feed, 76 tests) stays green; F10 holds 432/96/0.
+# FINGERPRINT-WIPE REQUIRED: the first build that enables profile-use MUST invalidate stale
+# fingerprints (`cargo clean` or `rm -rf target/release/.fingerprint`); config rustflag changes
+# do not dirty Fresh units, else stale non-PGO artifacts get measured as Fresh.
+# CAVEATS (verified 2026-09-09; cachyos cargo 1.98.1 + sccache 0.17.0 server, server cwd=/):
+# (1) this cargo does NOT forward `[build] rustflags` to rustc (file or --config CLI; env
+#     RUSTFLAGS and `target.*.rustflags` DO arrive) — the harness MUST deliver profile-use via
+#     RUSTFLAGS env (absolute path) or `[target.<triple>] rustflags`, never this key alone.
+# (2) repo-relative profile paths FAIL under sccache ("does not exist": server resolves from /),
+#     so measured builds need an ABSOLUTE path and/or sccache bypass. This key stays as the
+#     stock-cargo recipe declaration; the harness resolves it to absolute at build time.
+rustflags = ["-Cprofile-use=pgo-data/feed.profdata"]

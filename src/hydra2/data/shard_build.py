@@ -70,6 +70,7 @@ from hydra2.data.attestation import (
 
 if TYPE_CHECKING:
     from hydra2.data.decode import GameRecord
+    from hydra2.models.encoder import ActorTensorBatch
 from hydra2.data.parquet import FORBIDDEN_IN_ACTOR
 from hydra2.data.replay_expand import expand_game
 from hydra2.models.encoder import input_schema_hash
@@ -113,9 +114,10 @@ def _pool_worker_init() -> None:
     oversubscribe ``C`` cores. One thread per worker keeps parallelism at
     exactly ``max_workers`` processes. Runs in workers only.
     """
-    os.environ.setdefault("OMP_NUM_THREADS", "1")
-    os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
-    os.environ.setdefault("MKL_NUM_THREADS", "1")
+    # Env clamp is the effect; prior values discarded.
+    _ = os.environ.setdefault("OMP_NUM_THREADS", "1")
+    _ = os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+    _ = os.environ.setdefault("MKL_NUM_THREADS", "1")
     with contextlib.suppress(Exception):
         torch.set_num_threads(1)
         torch.set_num_interop_threads(1)
@@ -151,8 +153,8 @@ def _expand_shard_game(
         return (None, _quarantine_class(exc), False)
     row_dicts = [
         {
-            "decision_id": str(row.decision_id),
-            "chosen_action_id": int(row.chosen_action_id),
+            "decision_id": row.decision_id,
+            "chosen_action_id": row.chosen_action_id,
             "actor_observation": dict(row.actor_observation),
         }
         for row in actor_rows
@@ -184,11 +186,14 @@ def _firewall_check_row(row: dict[str, Any]) -> None:
     obs = row.get("actor_observation")
     if not isinstance(obs, dict):
         raise ContractError(f"actor_observation not a mapping for {did!r}")
-    for key in obs:
+    obs_map: dict[str, object] = obs
+    for key in obs_map:
         if key in FORBIDDEN_IN_ACTOR:
             raise ContractError(f"privileged field leakage into actor observation: {key!r}")
-        if isinstance(obs[key], dict):
-            for sub in obs[key]:
+        nested: object = obs_map[key]
+        if isinstance(nested, dict):
+            nested_map: dict[str, object] = nested
+            for sub in nested_map:
                 if sub in FORBIDDEN_IN_ACTOR:
                     raise ContractError(f"privileged nested field leakage: {key}.{sub}")
     dora = obs.get("dora_indicators")
@@ -263,10 +268,42 @@ def _expand_all(
     return (rows, stats)
 
 
+def _plane_name(entry: dict[str, object]) -> str:
+    """Manifest plane name as stored (opaque str)."""
+    name: object = entry["name"]
+    return str(name)
+
+
+def _plane_chunk(entry: dict[str, object]) -> int:
+    """Manifest chunk index (validated int upstream; no coercion)."""
+    raw: object = entry["chunk"]
+    if not isinstance(raw, int):
+        raise ContractError(f"manifest plane chunk invalid: {raw!r}")
+    return raw
+
+
+def _plane_trailing(entry: dict[str, object]) -> tuple[int, ...]:
+    """Manifest plane trailing shape (row dim excluded)."""
+    raw: object = entry["shape"]
+    if not isinstance(raw, list):
+        raise ContractError(f"manifest plane shape invalid: {raw!r}")
+    dims: list[int] = []
+    for value in raw:
+        if not isinstance(value, int):
+            raise ContractError(f"manifest plane shape invalid: {raw!r}")
+        dims.append(value)
+    return tuple(dims[1:])
+
+
+def _decision_id_key(row: dict[str, object]) -> str:
+    """Canonical order key: opaque decision id as stored."""
+    return str(row["decision_id"])
+
+
 def _order_rows(rows: list[dict[str, Any]], *, order: str, seed: int) -> list[dict[str, Any]]:
     """Sequence rows: canonical (sorted decision_id) or seeded perm."""
     if order == "canonical":
-        return sorted(rows, key=lambda row: str(row["decision_id"]))
+        return sorted(rows, key=_decision_id_key)
     perm = list(range(len(rows)))
     random.Random(seed).shuffle(perm)
     return [rows[i] for i in perm]
@@ -286,11 +323,11 @@ def _pad_history_batch(
     """
     from hydra2.contracts.common import ContractError as _ContractError
 
-    actor_batch = batch["actor_batch"]
+    actor_batch: ActorTensorBatch = batch["actor_batch"]
     features: dict[str, torch.Tensor] = dict(actor_batch.features)
     kind = features["history_event_kind"]
     mask = features["history_mask"]
-    width = int(kind.shape[1])
+    width = kind.shape[1]
     if width > FIXED_HISTORY_T:
         raise _ContractError(
             f"encoded history width {width} exceeds fixed cap {FIXED_HISTORY_T}; "
@@ -349,6 +386,7 @@ def build_shards(
     seed: int = 0,
     attestation: Attestation | None = None,
     num_actions: int = BASELINE_ACTION_COUNT,
+    allow_narrow: bool = False,
 ) -> dict[str, Any]:
     """Expand, check, encode once, and write per-plane shard files.
 
@@ -368,7 +406,9 @@ def build_shards(
         attestation: D-017 binding (defaults to synthetic; fail closed when
             absent/unusable via :func:`require_attestation`).
         num_actions: action vocab width (full baseline by default; the stored
-            ``legal_mask`` plane is sliced exactly like the live path).
+            ``legal_mask`` plane is sliced exactly like the live path; any
+            non-baseline width is test-only and requires ``allow_narrow``).
+            The width is recorded as ``action_width`` in the manifest.
 
     Returns the manifest dict (also written to ``manifest.json``).
     """
@@ -396,7 +436,7 @@ def build_shards(
     for row in rows:
         _firewall_check_row(row)
     ordered = _order_rows(rows, order=order, seed=seed)
-    batch = encode_observation_rows(ordered, num_actions=num_actions)
+    batch = encode_observation_rows(ordered, num_actions=num_actions, allow_narrow=allow_narrow)
     batch = dict(batch)
     batch["decision_ids"] = [str(row["decision_id"]) for row in ordered]
     planes, decision_ids, observation_hashes = _pad_history_batch(batch)
@@ -426,7 +466,7 @@ def build_shards(
                     "name": name,
                     "dtype": logical_dtype,
                     "storage_dtype": storage_dtype,
-                    "shape": [hi - lo, *[int(d) for d in full[name].shape[1:]]],
+                    "shape": [hi - lo, *full[name].shape[1:]],
                     "chunk": chunk,
                     "file": filename,
                     "sha256": sha,
@@ -436,8 +476,9 @@ def build_shards(
 
     ids_bytes = json.dumps(decision_ids).encode()
     hashes_bytes = json.dumps(observation_hashes).encode()
-    (dest / DECISION_IDS_FILENAME).write_bytes(ids_bytes)
-    (dest / OBSERVATION_HASHES_FILENAME).write_bytes(hashes_bytes)
+    # Sidecar writes are the effect; byte counts discarded.
+    _ = (dest / DECISION_IDS_FILENAME).write_bytes(ids_bytes)
+    _ = (dest / OBSERVATION_HASHES_FILENAME).write_bytes(hashes_bytes)
 
     elapsed = time.perf_counter() - start
     mib = uncompressed_bytes / float(2**20)
@@ -447,6 +488,7 @@ def build_shards(
         "rows": total_rows,
         "chunks": chunks,
         "chunk_rows": chunk_rows,
+        "action_width": num_actions,
         "schema_digest": schema_digest,
         "dataset_hash": dataset_hash,
         "split": split,
@@ -470,7 +512,10 @@ def build_shards(
             "uncompressed_bytes": uncompressed_bytes,
         },
     }
-    (dest / "manifest.json").write_bytes(json.dumps(manifest, sort_keys=True, indent=2).encode())
+    # Manifest write is the effect; byte count discarded.
+    _ = (dest / "manifest.json").write_bytes(
+        json.dumps(manifest, sort_keys=True, indent=2).encode()
+    )
     return manifest
 
 
@@ -493,6 +538,9 @@ def validate_manifest(manifest: dict[str, Any], *, out_dir: Path | str) -> None:
     rows = manifest.get("rows")
     if not isinstance(rows, int) or rows <= 0:
         raise ContractError(f"manifest rows invalid: {rows!r}")
+    action_width = manifest.get("action_width")
+    if not isinstance(action_width, int) or action_width <= 0:
+        raise ContractError(f"manifest action_width invalid: {action_width!r}")
 
     per_chunk: dict[int, int] = {}
     for entry in planes:
@@ -501,20 +549,21 @@ def validate_manifest(manifest: dict[str, Any], *, out_dir: Path | str) -> None:
         for key in ("name", "dtype", "storage_dtype", "shape", "chunk", "file", "sha256"):
             if key not in entry:
                 raise ContractError(f"manifest plane entry missing {key!r}")
-        shape = entry["shape"]
+        shape: list[int] = entry["shape"]
         if not isinstance(shape, list) or len(shape) == 0 or shape[0] <= 0:
             raise ContractError(f"manifest plane shape invalid: {shape!r}")
-        chunk = entry["chunk"]
+        chunk: int = entry["chunk"]
         if not isinstance(chunk, int) or chunk < 0:
             raise ContractError(f"manifest plane chunk invalid: {chunk!r}")
         per_chunk[chunk] = per_chunk.get(chunk, 0) + shape[0]
-        plane_path = dest / str(entry["file"])
+        file_obj: object = entry["file"]
+        plane_path = dest / str(file_obj)
         data = plane_path.read_bytes() if plane_path.is_file() else None
         if data is None:
             raise ContractError(f"manifest plane file missing: {entry['file']!r}")
         if hashlib.sha256(data).hexdigest() != entry["sha256"]:
             raise ContractError(f"manifest plane sha256 mismatch: {entry['file']!r}")
-    plane_names = {str(e["name"]) for e in planes if isinstance(e, dict)}
+    plane_names = {_plane_name(e) for e in planes if isinstance(e, dict)}
     if sum(per_chunk.values()) != rows * len(plane_names):
         raise ContractError("manifest plane row totals disagree with rows")
     # Every chunk must carry the same plane set; one plane keeps one trailing
@@ -522,7 +571,7 @@ def validate_manifest(manifest: dict[str, Any], *, out_dir: Path | str) -> None:
     by_chunk: dict[int, list[dict[str, Any]]] = {}
     for entry in planes:
         if isinstance(entry, dict):
-            by_chunk.setdefault(int(entry["chunk"]), []).append(entry)
+            by_chunk.setdefault(_plane_chunk(entry), []).append(entry)
     reference = sorted(str(e["name"]) for e in by_chunk[min(by_chunk)])
     for chunk, entries in by_chunk.items():
         if sorted(str(e["name"]) for e in entries) != reference:
@@ -530,11 +579,18 @@ def validate_manifest(manifest: dict[str, Any], *, out_dir: Path | str) -> None:
     trailing: dict[str, set[tuple[int, ...]]] = {}
     for entry in planes:
         if isinstance(entry, dict):
-            shapes = trailing.setdefault(str(entry["name"]), set())
-            shapes.add(tuple(int(d) for d in entry["shape"][1:]))
+            shapes = trailing.setdefault(_plane_name(entry), set())
+            shapes.add(_plane_trailing(entry))
     for name, shapes in trailing.items():
         if len(shapes) != 1:
             raise ContractError(f"manifest plane {name!r} trailing shapes disagree")
+    legal_shapes = trailing.get("legal_mask")
+    if legal_shapes is not None:
+        (legal_tail,) = legal_shapes
+        if len(legal_tail) != 1 or legal_tail[0] != action_width:
+            raise ContractError(
+                f"manifest legal_mask width {legal_tail!r} != action_width {action_width!r}"
+            )
     if manifest.get("chunks") != len(by_chunk):
         raise ContractError("manifest chunks disagree with plane files")
 
@@ -551,8 +607,8 @@ def validate_manifest(manifest: dict[str, Any], *, out_dir: Path | str) -> None:
         raise ContractError("decision_ids sidecar sha256 mismatch")
     if hashlib.sha256(hashes_bytes).hexdigest() != manifest.get("observation_hashes_sha256"):
         raise ContractError("observation_hashes sidecar sha256 mismatch")
-    decision_ids = json.loads(ids_bytes.decode())
-    observation_hashes = json.loads(hashes_bytes.decode())
+    decision_ids: list[object] = json.loads(ids_bytes.decode())
+    observation_hashes: list[object] = json.loads(hashes_bytes.decode())
     if not isinstance(decision_ids, list) or len(decision_ids) != rows:
         raise ContractError("decision_ids sidecar row count mismatch")
     if not isinstance(observation_hashes, list) or len(observation_hashes) != rows:
@@ -563,19 +619,23 @@ def validate_manifest(manifest: dict[str, Any], *, out_dir: Path | str) -> None:
     )
     if recomputed != manifest.get("dataset_hash"):
         raise ContractError("manifest dataset_hash mismatch")
-    order = manifest.get("order")
-    if not isinstance(order, dict) or order.get("kind") not in _ORDER_KINDS:
+    order_obj: object = manifest.get("order")
+    if not isinstance(order_obj, dict):
+        raise ContractError(f"manifest order invalid: {manifest.get('order')!r}")
+    order: dict[str, object] = order_obj
+    if order.get("kind") not in _ORDER_KINDS:
         raise ContractError(f"manifest order invalid: {order!r}")
     if order.get("kind") == "canonical" and [str(d) for d in decision_ids] != sorted(
         str(d) for d in decision_ids
     ):
         raise ContractError("manifest attests canonical order but decision_ids are unsorted")
-    attestation = manifest.get("attestation")
-    if (
-        not isinstance(attestation, dict)
-        or not attestation.get("attestation_id")
-        or attestation.get("kind") not in ("synthetic", "real")
-    ):
+    attestation_obj: object = manifest.get("attestation")
+    if not isinstance(attestation_obj, dict):
+        raise ContractError(f"manifest attestation invalid: {manifest.get('attestation')!r}")
+    attestation: dict[str, object] = attestation_obj
+    attestation_id: object = attestation.get("attestation_id")
+    attestation_kind: object = attestation.get("kind")
+    if bool(attestation_id) is False or attestation_kind not in ("synthetic", "real"):
         raise ContractError(f"manifest attestation invalid: {attestation!r}")
     build = manifest.get("build")
     if not isinstance(build, dict):

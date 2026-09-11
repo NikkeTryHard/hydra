@@ -231,9 +231,8 @@ Dependency contract:
   > Caveat 2026-09-04: code now pins `torch==2.14.0` (`pyproject.toml:33`, locked wheel in `pixi.lock:41`); the 2.13.x line above is superseded. See `## Status 2026-09-04`.
 - `lightning-fabric==2.6.5` standalone.
 - NEVER install `lightning` or `pytorch-lightning` Trainer package.
-- `RiichiEnv==0.4.8` exact.
-- MahJax exact Git SHA `3fa282699e5786d165216578bc8e213f96a0dca5`.
-  > Caveat 2026-09-04: code now pins MahJax rev `52228723901a4ace44b745afd25141acc25405ec` (`pyproject.toml:36`); the SHA above is superseded. See `## Status 2026-09-04`.
+- `RiichiEnv==0.4.10` exact (re-pinned 2026-09-10 with Tenhou-anchored requal; see `## Status 2026-09-10`).
+- MahJax exact Git SHA `cff90d1e68cf21464071864672a9618bb20f2551` (v0.1.3; re-pinned 2026-09-10 under a new WP-04C lineage; see `## Status 2026-09-10`).
 - Pixi sole environment/lock authority; NEVER create `uv.lock`.
 - Ruff owns formatting/lint; Pyrefly owns type checking.
 
@@ -351,7 +350,7 @@ Exit: all M2 fixtures pass; schema hashes recorded.
 **Entry:** WP-01, WP-02D.  
 **Owned paths:** `src/hydra2/engines/riichienv/`, adapter tests.
 
-- [ ] Pin adapter to RiichiEnv 0.4.8 identity.
+- [ ] Pin adapter to RiichiEnv 0.4.10 identity.
 - [ ] Map canonical actions both directions.
 - [ ] Map engine events to canonical envelopes.
 - [ ] Produce actor observations through isolated API.
@@ -827,11 +826,9 @@ Completion means every required observable behavior, negative fixture, evidence 
 ### Dependency pins (WP-01 contract, §4)
 
 - `torch==2.14.0` (cu130 wheel) is the locked runtime: `pyproject.toml:33` (`[tool.pixi.pypi-dependencies]`), locked at `pixi.lock:41`. The §4 `2.13.x` line is superseded; downstream environment/run/checkpoint/compile evidence keyed to 2.13.x is invalid per the §4 exit rule.
-- Unchanged and confirmed: `lightning-fabric==2.6.5` (`pyproject.toml:34`), `RiichiEnv==0.4.8` (`pyproject.toml:35`, matches WP-03A pin), Python `3.12.*` (`pyproject.toml:30`, `requires-python >=3.12,<3.13` at `pyproject.toml:10`).
-- MahJax rev is now `5222872...` (`pyproject.toml:36`); the §4 SHA `3fa2826...` is superseded. WP-03C must re-verify the exact SHA at runtime before any output consumption.
+- Unchanged and confirmed: `lightning-fabric==2.6.5` (`pyproject.toml:34`), `RiichiEnv==0.4.10` (matches WP-03A pin), Python `3.12.*` (`pyproject.toml:30`, `requires-python >=3.12,<3.13` at `pyproject.toml:10`) — snapshot refreshed 2026-09-10, see `## Status 2026-09-10`.
+- MahJax rev is now `cff90d1e68cf21464071864672a9618bb20f2551` (v0.1.3); WP-03C must re-verify the exact SHA at runtime before any output consumption.
 - Pixi remains the sole environment/lock authority (`pyproject.toml:15-16`); `uv.lock` is absent (banned). `pixi.lock` (1733 lines) is the lockfile of record.
-
-### Lane state (reproduce with the §1 matrix commands)
 
 - Reported 2026-09-04: `pixi run pyrefly check src` → 0 errors; `pixi run ruff check src tests` → clean; unit lane 364 passed / 0 failed (`pixi run test-unit`); full collect 802 (`pixi run pytest --collect-only -q`). Re-run the exact lane command before relying on these counts.
 - Pyrefly runs under the pixi-interpreter pin (`pyproject.toml:134-147`, `python-interpreter-path = ".pixi/envs/default/bin/python"`): without it pyrefly auto-discovers the empty uv-made `.venv` and emits phantom missing-import errors. Upstream `facebook/pyrefly#4432` + PR `#4490` (native pixi support). Removal condition: vendored pyrefly includes #4490 AND `dump-config` proves auto-discovery without the pin.
@@ -848,3 +845,13 @@ Completion means every required observable behavior, negative fixture, evidence 
 
 - Uncommitted worktree at snapshot time: 52 modified + 3 untracked (`git status --porcelain`: 52 `M`, 3 `??`; untracked are `docs/hydra2-loop6-suggestions/`, `formal/`, `tests/unit/_manifest_helpers.py`). Touched lanes include contracts, data, training, search, eval, and their unit/integration tests. Treat every gate claim above as worktree-relative until committed.
 - Pre-existing failures under investigation (do not relabel complete; record prerequisite per the closing banner): environment-manifest pin resolution (`src/hydra2/completion.py:404-434`, `_resolve_environment_manifest` returns `None` when no artifact matches the recorded hash) and the WP04A-09 kyuushu/kyuuhai abort case (`KeyError` surface; case at `tests/conformance/test_reference_corpus_wp04a.py:811-931`, registered `"WP04A-09"` at `:909,931`).
+
+## Status 2026-09-10 (wave 2: RiichiEnv 0.4.10 + MahJax cff90d1)
+
+> Informative code-truth snapshot; same conflict handling as `## Status 2026-09-04`.
+
+### Dependency pins
+
+- `RiichiEnv==0.4.10` (`pyproject.toml`, `src/hydra2/engines/riichienv/identity.py`, lock sha256 `5d18fcd3`). Upgrade drivers: abortive-draw/renchan/deposit rework (#225/#230/#231/#232), kakan/furiten/claim-window fixes (#235/#236/#237), special-hand yakuman #238, dora/tedashi notes (#239/#240). Requal: WP-03A 15 passed, reference-corpus 19 passed after one Tenhou-anchored re-freeze (WP04A-12 sanchahou: 1000-point sticks now deducted at each `riichi_discard` apply, so abort-time deltas are `[0,0,0,0]`; net abortive payload `(24000,24000,24000,25000)` + `kyotaku=3` unchanged), parity G1–G7 22 passed. `GameRule.default_tenhou().dealer_first_discard_is_tedashi` stays `False` (#240 default holds).
+- MahJax rev `cff90d1e68cf21464071864672a9618bb20f2551` (v0.1.3; `src/hydra2/config.py:36` `MAHJAX_PIN_SHA`). Upstream #74 removed `RoundState.shanten_current_player` (fixed at 3 sites in `src/hydra2/engines/mahjax/differential.py`: surgery drops the `_replace_state` kwarg, `_mahjax_shanten` + sweep payloads compute via `Shanten.number` over the actor hand) and fixed prevalent-wind (`round//4`), `_calc_wind` dealer seats, daiminkan ron-mask, and terminated-state handling — settlement fan/fu moves vs the old pin are EXPECTED and re-baselined only with engine-diff evidence under a new WP-04C lineage (`SHA cff90d1`, jax/jaxlib 0.11.1, `sm_120`, `canonical_v1`, adapter 1.0.0). #75 examples-only; #76 version string only.
+- nvidia set: BLOCKED, old wheels kept by design — `torch==2.14.0` METADATA pins hold `nvidia-cudnn-cu13==9.24.0.43` / `nccl==2.30.7` / `nvshmem==3.4.5`; `pixi update` reports lock already up-to-date. Unblocks only with a torch bump (out of scope, do NOT touch).

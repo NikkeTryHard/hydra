@@ -23,6 +23,15 @@ import sys
 from datetime import UTC, datetime
 
 os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+# MLflow observer mirror is default-on in production; tests stay hermetic and
+# fast (no file-store writes, no system-metrics monitor thread). Mirror tests
+# re-enable explicitly via monkeypatch.
+os.environ.setdefault("HYDRA2_MLFLOW_DISABLED", "1")
+# Device-side asserts (_assert_async) poison the shared CUDA context on fire,
+# which would cascade across the serial lane. Tests pin the exact host
+# ContractError/IllegalActionError instead; production (unset) takes the
+# zero-sync device path. Proved live by test_device_assert_trips_on_cuda.
+os.environ.setdefault("HYDRA2_DISABLE_DEVICE_ASSERTS", "1")
 
 import pytest
 import torch

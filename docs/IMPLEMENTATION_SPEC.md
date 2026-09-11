@@ -31,9 +31,46 @@ src/hydra2/
   train/{state.py,objective.py,supervised/,distill/,rl/}
   eval/{schedule.py,case.py,runner.py,blocks.py,statistics.py,telemetry.py,promotion.py}
   performance/{candidate.py,qualify.py,ledger.py}
-  tracking/{__init__.py,clearml_mirror.py}
+  tracking/{__init__.py,clearml_mirror.py,mlflow_mirror.py,verbose_sampler.py}
 ```
-Tracking is an observer-only ClearML mirror (offline-capable, hermetic session dir under the artifact root), disabled by default; local artifacts stay authoritative.
+Tracking is observer-only, two-tier; local artifacts stay authoritative.
+Tier 1 (quiet, default-on): an MLflow mirror (per-artifact-root SQLite store
+`mirror/mlflow/mlruns.db`, offline, no server) copies allowlisted scalars,
+digests, and JSON snapshots; `HYDRA2_MLFLOW_DISABLED=1` kill-switch wins.
+Tier 2 (verbose, opt-in): a daemon sampler appends 20/50ms NVML+psutil rows
+to `logs/verbose-telemetry.jsonl`, plus optional single-update
+torch.profiler captures under `profiler/`; configured by the RunSpec
+`telemetry` section (`mlflow_enabled` / `verbose_enabled` /
+`verbose_interval_ms` / `profiler_captures`) with `--mlflow` /
+`--verbose-telemetry` CLI overrides. The legacy ClearML mirror remains,
+disabled by default.
+Resume policy: the run digest binds every RunSpec section, so checkpoints
+written before a section lands (e.g. pre-`telemetry`, pre feed-knob runs —
+all local throughput runs, none promoted) fail the `run_spec_hash` gate
+on resume by design. Resume only within one section generation.
+
+Desync contracts (host-sync removal, clean cutover — superseded code deleted):
+
+- Fail-closed split (SPEC 11.1): CUDA-path validation is a device-side
+  assert tripwire (`torch._assert_async` on the same predicates; violations
+  surface on the next sync and poison the context — abort-is-abort for a
+  fail-closed trainer). CPU/eval keeps the exact typed
+  `ContractError`/`IllegalActionError` messages. Tests force the host path
+  via `HYDRA2_DISABLE_DEVICE_ASSERTS=1` (conftest); production (unset)
+  takes the zero-sync device path, proved live by an isolated subprocess
+  trip test (poison cannot leak into the shared lane).
+- Hot scalars: per-update history carries `total/policy/placement/value/
+  event/belief/masked_nll/top1` only (2 host syncs + 1 window tolist + the
+  grad-probe sync). Top-k/ECE/uniform/support/per-type ride the eval
+  report; `log_per_type_metrics` still parses but gates eval only.
+- Chunked workers: parallel expansion shards `data.expand_batch_games`
+  over spawn workers with one bridge FFI per chunk; merge stays strictly
+  pull-ordered with per-game quarantine classes identical to serial
+  (message-based classifier). Proven by serial-vs-parallel hash parity.
+- Feed knobs (all YAML, bounds are memory sanity): `data.decode_prefetch`
+  [1,1024] (default 64), `data.expand_batch_games` [1,1024] (default 64),
+  `loop.fetch_prefetch_depth` [1,16] (default 3, sized
+  `>= ceil(fetch_ms/compute_ms)+1`).
 
 Rules:
 
@@ -656,6 +693,8 @@ def build_runtime(*, adapter, model, optimizer, spec):
 ```
 
 Fabric setup remains inside patch because Fabric may unwrap/reapply compile. Plain adapter MUST follow identical call order.
+Precision matrix: plain supports `fp32` (any device) and `bf16_mixed` (CUDA only), both via loop-owned autocast around forward+loss (the adapter itself never autocasts; fp32 master weights, no scaler). `fp16_mixed` is rejected on plain (no loss scaler); `bf16_mixed` on CPU is rejected at adapter, loop, and config layers (loop autocast is CUDA-only; never silent CPU fallback).
+
 `setup` MUST return the exact wrapped/rebound model and optimizer used for subsequent forward/update operations; caller discards pre-setup references. Plain setup moves model and optimizer state to target device. Fabric setup calls `Fabric.setup(model, optimizer)` once and returns Fabric's rebound objects/backward/device. Neither adapter owns loop, checkpoint, optimizer policy, or compilation.
 
 Checkpoint:

@@ -1,6 +1,6 @@
 """Canonical <-> RiichiEnv action mapping and legal-mask construction.
 
-Engine facts used here (verified against 0.4.8 runtime probes):
+Engine facts used here (verified against 0.4.10 runtime probes + requal gates):
 * ``Observation.legal_actions()`` returns :class:`riichienv.Action` objects;
   DISCARD carries the physical tile, CHI/PON/DAIMINKAN carry called tile +
   consumed hand tiles, ANKAN carries all four physical tiles, KAKAN carries

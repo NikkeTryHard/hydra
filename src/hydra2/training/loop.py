@@ -24,6 +24,8 @@ import json
 import math
 import os
 import time
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -40,6 +42,8 @@ import torch.nn as nn
 
 from hydra2.contracts.common import ContractError, CorruptArtifactError
 from hydra2.eval.statistics import SelectionConfig, score_selection
+from hydra2.models.encoder import ActorTensorBatch
+from hydra2.models.model import validate_actor_batch
 from hydra2.runtime.checkpoint import (
     build_manifest,
     capture_rng_state,
@@ -47,11 +51,15 @@ from hydra2.runtime.checkpoint import (
     save_checkpoint,
 )
 from hydra2.training.objectives import (
+    _check_total_finite,
+    compute_hot_scalars,
     compute_metrics,
     compute_per_type_metrics,
     compute_supervised_loss,
     fit_temperature_scaling,
     global_grad_norm_is_finite,
+    supervised_loss_kernel,
+    validate_supervised_inputs,
 )
 
 __all__ = [
@@ -113,7 +121,7 @@ def _atomic_publish_best(source: Path, dest: Path) -> str:
     digest = _best_ckpt_digest_for(data)
     tmp = dst.with_name(dst.name + ".tmp")
     with open(tmp, "wb") as fh:
-        fh.write(data)
+        _ = fh.write(data)  # intentionally discarded: byte count unneeded after fsync
         fh.flush()
         os.fsync(fh.fileno())
     os.replace(tmp, dst)
@@ -199,7 +207,7 @@ class TrainingLoopConfig:
 
     # Optimizer microbatching — project owned
     microbatch_size: int = 4
-    accumulation_steps: int = 1
+    accumulation_steps: int = 8
 
     # Optimization dynamics
     gradient_clip_norm: float | None = 1.0
@@ -214,15 +222,18 @@ class TrainingLoopConfig:
     # torch.autocast(cuda, bfloat16) with fp32 master weights, fp32
     # accumulate/optimizer/clip and NO GradScaler. fp16 excluded by design.
     precision: Literal["fp32", "bf16_mixed"] = "fp32"
-    # Wave-3B recipe threading (defaults preserve byte-identical behavior):
-    # legal-only label-smoothing eps in [0, 1) (0.0 = disabled, plain CE);
-    # sampler/scorecard knobs carried for observability (stream single-pass
-    # keeps stream order; parquet dataset honors stratification).
-    label_smoothing: float = 0.0
+    # Wave-3B recipe threading (defaults carry the SOTA-quoted constant):
+    # legal-only label-smoothing eps in [0, 1) (0.0 = disabled, plain CE;
+    # default 0.03 spreads mass over the LEGAL set only, illegal mass stays
+    # exactly zero); sampler/scorecard knobs carried for observability
+    # (stream single-pass keeps stream order; parquet dataset honors
+    # stratification).
+    label_smoothing: float = 0.03
     stratified_sampling: bool = False
     sampling_ratios: dict[str, float] | None = None
     log_per_type_metrics: bool = True
     fit_temperature: bool = True
+    fetch_prefetch_depth: int = 3
 
     @property
     def optimizer_minibatch_size(self) -> int:
@@ -235,7 +246,7 @@ class TrainingLoopConfig:
             "w_value": self.w_value,
             "w_event": dict(self.w_event if self.w_event is not None else {}),
             "w_belief": dict(self.w_belief if self.w_belief is not None else {}),
-            "label_smoothing": float(self.label_smoothing),
+            "label_smoothing": self.label_smoothing,
         }
 
     def validate(self) -> None:
@@ -247,8 +258,10 @@ class TrainingLoopConfig:
             raise ContractError("optimizer_minibatch_size must be positive")
         if self.w_policy < 0.0 or self.w_placement < 0.0 or self.w_value < 0.0:
             raise ContractError("w_policy/w_placement/w_value must be nonnegative")
-        for _w in list((self.w_event or {}).values()) + list((self.w_belief or {}).values()):
-            if _w < 0.0:
+        event_vals = (self.w_event if self.w_event is not None else {}).values()
+        belief_vals = (self.w_belief if self.w_belief is not None else {}).values()
+        for _w in list(event_vals) + list(belief_vals):
+            if not isinstance(_w, (int, float)) or _w < 0.0:
                 raise ContractError("w_event/w_belief values must be nonnegative")
         if self.precision not in ("fp32", "bf16_mixed"):
             raise ContractError(f"precision must be 'fp32' or 'bf16_mixed', got {self.precision!r}")
@@ -284,6 +297,41 @@ class TrainingLoopConfig:
             )
         if not isinstance(self.fit_temperature, bool):
             raise ContractError(f"fit_temperature must be a bool, got {self.fit_temperature!r}")
+        if (
+            isinstance(self.fetch_prefetch_depth, bool)
+            or not isinstance(self.fetch_prefetch_depth, int)
+            or not (1 <= self.fetch_prefetch_depth <= 16)
+        ):
+            raise ContractError(
+                f"fetch_prefetch_depth must be an int in [1, 16], got {self.fetch_prefetch_depth!r}"
+            )
+
+
+def _window_means(*windows: list[torch.Tensor]) -> list[float]:
+    """One-sync means over per-head on-device window tensors.
+
+    Each window's mean uses the identical stack-then-mean op the former
+    per-head helper used, so values are bitwise identical; the stacked
+    means cross the host in a single ``tolist()`` instead of one ``.item()``
+    per head.  Empty windows read ``0.0``.  Order of ``windows`` is the
+    order of the returned means.
+    """
+    slots: list[int | None] = []
+    means: list[torch.Tensor] = []
+    for window in windows:
+        if len(window) == 0:
+            slots.append(None)
+        else:
+            stacked = torch.stack([t.detach().float().reshape(()) for t in window])
+            means.append(stacked.mean())
+            slots.append(len(means) - 1)
+    out: list[float] = [0.0] * len(windows)
+    if len(means) != 0:
+        flat = torch.stack(means).tolist()  # single host sync for all heads
+        for pos, ref in enumerate(slots):
+            if ref is not None:
+                out[pos] = float(flat[ref])
+    return out
 
 
 def _model_forward(model: nn.Module, batch: dict[str, Any]) -> dict[str, Any]:
@@ -301,6 +349,12 @@ def _model_forward(model: nn.Module, batch: dict[str, Any]) -> dict[str, Any]:
 
     actor_batch: Any = batch.get("actor_batch")
     if actor_batch is not None and hasattr(model, "evaluate") and callable(model.evaluate):
+        # Eager contract gate BEFORE the (possibly compiled) forward: shapes
+        # + nonterminal legal mask raise here on the host, so the inductor
+        # graph holds zero device→host syncs. Compiled or not, the same
+        # ContractError fires for the same bad batch.
+        if isinstance(actor_batch, ActorTensorBatch):
+            validate_actor_batch(actor_batch, getattr(model, "action_count", None))
         # Route through __call__ (not .evaluate directly): torch.compile wraps forward,
         # and forward() delegates to evaluate() — calling .evaluate bypasses compilation
         # (0 dynamo graphs). Uncompiled models behave identically (forward→evaluate).
@@ -441,13 +495,18 @@ def _move_batch_to_device(batch: dict[str, Any], device: torch.device) -> dict[s
 # workers); h2d_ms above the overlapped budget means the transfer path
 # lags (pinning / depth). Wall-clock waits only — utilization ratios are
 # never derived here.
-#
-# PROVISIONAL integration: the pinned-ring module
-# (hydra2.training.pinned_ring, sibling-owned, not yet landed) exposes
-# PinnedRing.open(shapes, ...) -> handle with handle.next(cpu_batch),
+# Gated overlap feed: the pinned-ring module (hydra2.training.pinned_ring)
+# exposes PinnedRing.open(shapes, ...) -> handle with handle.next(cpu_batch),
 # handle.stats() and handle.close(). The loop consumes that contract
-# duck-typed (no import; the handle arrives caller-owned via feed=) so
-# these hooks land and verify before the ring does.
+# duck-typed (no import; the handle arrives caller-owned via feed=) so the
+# sync fallback stays default. No silent default-on: the ring is opt-in
+# (caller attaches feed=) and must verify byte-identical to oracle rows
+# before any default flip. When attached, train() prefetches next_batch
+# (S1-S9: stream pull + expand + encode) on one background thread so
+# fetch_decode overlaps compute; _h2d_batch queue_wait_ms covers the slot-
+# recycle wait. Without a feed the synchronous move runs and queue_wait_ms
+# is 0.0 — no queue exists to wait on. Sync fallback is always kept when
+# CUDA/pinned is unavailable.
 
 _TELEMETRY_METRICS: tuple[str, ...] = (
     "queue_wait_ms",
@@ -488,16 +547,16 @@ class MicrobatchTelemetry:
     def to_dict(self) -> dict[str, Any]:
         return {
             "kind": "microbatch",
-            "microstep": int(self.microstep),
-            "global_update": int(self.global_update),
-            "queue_wait_ms": float(self.queue_wait_ms),
-            "fetch_decode_ms": float(self.fetch_decode_ms),
-            "h2d_ms": float(self.h2d_ms),
-            "compute_ms": float(self.compute_ms),
-            "producer_wait_s": float(self.producer_wait_s),
-            "forward_ms": float(self.forward_ms),
-            "loss_ms": float(self.loss_ms),
-            "backward_ms": float(self.backward_ms),
+            "microstep": self.microstep,
+            "global_update": self.global_update,
+            "queue_wait_ms": self.queue_wait_ms,
+            "fetch_decode_ms": self.fetch_decode_ms,
+            "h2d_ms": self.h2d_ms,
+            "compute_ms": self.compute_ms,
+            "producer_wait_s": self.producer_wait_s,
+            "forward_ms": self.forward_ms,
+            "loss_ms": self.loss_ms,
+            "backward_ms": self.backward_ms,
         }
 
 
@@ -512,9 +571,9 @@ class UpdateTelemetry:
     def to_dict(self) -> dict[str, Any]:
         return {
             "kind": "update",
-            "global_update": int(self.global_update),
-            "optimizer_ms": float(self.optimizer_ms),
-            "logging_ms": float(self.logging_ms),
+            "global_update": self.global_update,
+            "optimizer_ms": self.optimizer_ms,
+            "logging_ms": self.logging_ms,
         }
 
 
@@ -528,9 +587,9 @@ def _quantile_sorted(sorted_values: list[float], q: float) -> float:
     lo = math.floor(pos)
     hi = math.ceil(pos)
     if lo == hi:
-        return float(sorted_values[lo])
+        return sorted_values[lo]
     frac = pos - lo
-    return float(sorted_values[lo] + frac * (sorted_values[hi] - sorted_values[lo]))
+    return sorted_values[lo] + frac * (sorted_values[hi] - sorted_values[lo])
 
 
 def summarize_telemetry(records: list[MicrobatchTelemetry]) -> dict[str, float]:
@@ -569,8 +628,9 @@ def _batch_action_kinds(batch: dict[str, Any], targets: torch.Tensor) -> list[st
         return None
     if not isinstance(raw, (list, tuple)):
         return None
-    kinds = [str(k) for k in list(raw)]
-    if len(kinds) != int(targets.shape[0]):
+    raw_list: list[object] = list(raw)
+    kinds = [str(k) for k in raw_list]
+    if len(kinds) != targets.shape[0]:
         return None
     if any(k == "" for k in kinds):
         return None
@@ -650,6 +710,7 @@ class SupervisedLoop:
         privileged_source: Any | None = None,
         evaluation_wall_ids: set[str] | frozenset[str] | None = None,
         mirror: ClearmlMirror | None = None,
+        mlflow_mirror: Any | None = None,
         runtime_spec: Any | None = None,
         telemetry_path: Path | str | None = None,
         feed: Any | None = None,
@@ -669,10 +730,10 @@ class SupervisedLoop:
                     "runtime and loop precisions must match exactly"
                 )
             rt_adapter = getattr(runtime_spec, "adapter_id", None)
-            if rt_adapter == "plain_pytorch" and rt_precision != "fp32":
+            if rt_adapter == "plain_pytorch" and rt_precision not in ("fp32", "bf16_mixed"):
                 raise ContractError(
-                    f"PlainPytorchAdapter requires precision 'fp32', got {rt_precision!r} "
-                    "(plain is fp32-only)"
+                    f"PlainPytorchAdapter precision {rt_precision!r} not supported "
+                    "(want 'fp32' or 'bf16_mixed'; fp16_mixed rejected: no loss scaler)"
                 )
         # Handle-carried precision (forward-compat): adapters bind precision
         # into the handle path via runtime_spec; when present it must agree.
@@ -705,6 +766,17 @@ class SupervisedLoop:
             self.device = torch.device(str(_device_attr))
         else:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # Plain bf16 needs CUDA: loop-owned autocast is CUDA-only, so a CPU
+        # device here would silently compute fp32 under a bf16 label.
+        if (
+            getattr(self.runtime_spec, "adapter_id", None) == "plain_pytorch"
+            and getattr(self.runtime_spec, "precision", None) == "bf16_mixed"
+            and self.device.type != "cuda"
+        ):
+            raise ContractError(
+                "PlainPytorchAdapter bf16_mixed requires a CUDA device "
+                "(loop-owned autocast is CUDA-only; never silent CPU fallback)"
+            )
 
         # Determinism: seed all RNGs deterministically on construction.
         _ = torch.manual_seed(config.seed)
@@ -737,13 +809,24 @@ class SupervisedLoop:
         self._global_metrics_history: list[dict[str, float]] = []
         # Phase-3 wait telemetry: JSONL sink (None disables file output;
         # in-memory records are always collected, reset per train() run)
-        # plus the optional caller-owned ring feed (PROVISIONAL
+        # plus the optional caller-owned ring feed (gated opt-in
         # pinned_ring.py contract, duck-typed: next/stats; the loop never
-        # opens or closes the handle — lifecycle stays with the caller).
+        # opens or closes the handle — lifecycle stays with the caller;
+        # sync fallback stays default, no silent default-on).
         self.telemetry_path: Path | None = (
             Path(telemetry_path) if telemetry_path is not None else None
         )
         self.feed: Any | None = feed
+        # Dedicated H2D transfer stream (sync-path overlap where the loop
+        # structure allows): pinned-source non_blocking copies issue on this
+        # stream, then order the compute stream after the transfer event so
+        # copy-engine work overlaps previous compute tails. None on CPU or
+        # when CUDA is unavailable (sync fallback, queue_wait stays 0.0).
+        self._h2d_stream: Any | None = None
+        self._h2d_event: Any | None = None
+        if self.device.type == "cuda" and torch.cuda.is_available():
+            with contextlib.suppress(Exception):
+                self._h2d_stream = torch.cuda.Stream(device=self.device)
         self.telemetry_records: list[MicrobatchTelemetry] = []
         # Wave-3C update-stage timings (optimizer/logging per global update;
         # summary-only, reset per train() alongside microbatch records).
@@ -779,7 +862,35 @@ class SupervisedLoop:
                     )
                     if isinstance(_compiled, nn.Module):
                         self.model = _compiled
-        _ = self.model.train()
+        # Compiled supervised loss (same guards): the smoothing path is
+        # memory-bound full-vocab passes; inductor fuses them (measured ~8x
+        # on synthetic microbatches; less in-training — see telemetry) with
+        # values matching eager to 1ulp (see
+        # test_compiled_supervised_loss_matches_eager_bitwise, which pins
+        # bitwise equality where exact, inside the repo allclose bar
+        # otherwise). Shapes are static per run ([B,A] fixed microbatch,
+        # drop_last tails raise), so dynamic=False. Fallback preserves
+        # correctness.
+        # Compiled entry is the check-free kernel: the loop pre-validates
+        # eagerly via _validated_loss (same errors), so the inductor graph
+        # holds zero host syncs. Eager fallback stays the validating public
+        # fn (replay/tests/direct callers unchanged).
+        self._compiled_loss: Any = compute_supervised_loss
+        if self.device.type == "cuda":
+            try:
+                _loss_compiling = torch.compiler.is_compiling()
+            except Exception:
+                _loss_compiling = False
+            if not _loss_compiling and not torch.are_deterministic_algorithms_enabled():
+                with contextlib.suppress(Exception):
+                    _compiled_loss: Any = torch.compile(
+                        supervised_loss_kernel,
+                        mode="max-autotune-no-cudagraphs",
+                        dynamic=False,
+                        fullgraph=False,
+                    )
+                    if callable(_compiled_loss):
+                        self._compiled_loss = _compiled_loss
         # Observer mirror (see hydra2.tracking): disabled by default; when
         # enabled it copies allowlisted scalars + digests, never feeds back.
         if mirror is None:
@@ -801,6 +912,28 @@ class SupervisedLoop:
             )
             _ = mirror.start_run()
         self._mirror: ClearmlMirror = mirror
+        # MLflow quiet mirror (default-on in production, Null under
+        # HYDRA2_MLFLOW_DISABLED in tests). Started here only when the loop
+        # constructs it; stream_train passes a started instance instead.
+        if mlflow_mirror is None:
+            from hydra2.tracking.mlflow_mirror import make_mirror as make_mlflow_mirror
+
+            mlflow_mirror = make_mlflow_mirror(
+                manifest_hashes=dict(validated),
+                loop_config={
+                    "microbatch_size": config.microbatch_size,
+                    "accumulation_steps": config.accumulation_steps,
+                    "max_updates": config.max_updates,
+                    "checkpoint_frequency_updates": config.checkpoint_frequency_updates,
+                    "seed": config.seed,
+                    "w_policy": config.w_policy,
+                    "w_placement": config.w_placement,
+                    "w_value": config.w_value,
+                    "precision": config.precision,
+                },
+            )
+            _ = mlflow_mirror.start_run()
+        self._mlflow_mirror: Any = mlflow_mirror
 
     # ------------------------------------------------------------------
     # Sampler state helpers
@@ -842,15 +975,39 @@ class SupervisedLoop:
             raise CorruptArtifactError("authoritative dataset returned None batch")
         return dict(raw_any), fetch_decode_ms
 
+    def _acquire_cpu_batch_with_state(
+        self, microbatch_size: int
+    ) -> tuple[dict[str, Any], float, dict[str, Any]]:
+        """Fetch one CPU batch plus its post-fetch sampler snapshot (prefetch unit).
+
+        Runs on the single background prefetch thread when a feed is
+        attached; the snapshot is captured in fetch order immediately after
+        ``next_batch`` so the consumer never reads a live cursor that has
+        already advanced past unconsumed prefetches (deterministic order,
+        byte-identical batches; sampler_cursor tracks consumed, not head).
+        """
+        batch, fetch_decode_ms = self._acquire_cpu_batch(microbatch_size)
+        try:
+            snap = self._sampler_state_snapshot()
+        except Exception:
+            snap = {}
+        if not isinstance(snap, dict):
+            snap = {"offset": 0, "seed": self.config.seed, "total": 0, "epoch": 0}
+        return batch, fetch_decode_ms, snap
+
     def _h2d_batch(self, batch: dict[str, Any]) -> tuple[dict[str, Any], float, float]:
         """Move one batch host-to-device; return ``(moved, queue_wait_ms, h2d_ms)``.
 
-        With a caller-owned ring feed the transfer runs through
-        ``feed.next`` (PROVISIONAL pinned_ring.py contract): ``h2d_ms`` is
-        the ring's event-timed ``h2d_ms_last`` when reported, and
-        ``queue_wait_ms`` is the remaining wall time (slot-recycle wait).
-        Without a feed the synchronous move runs and ``queue_wait_ms`` is
-        0.0 — no queue exists to wait on.
+        With a caller-owned ring feed (gated opt-in pinned_ring.py
+        contract): ``h2d_ms`` is the ring's event-timed ``h2d_ms_last``
+        when reported, and ``queue_wait_ms`` is the remaining wall time
+        (slot-recycle wait). Without a feed the synchronous move runs and
+        ``queue_wait_ms`` is 0.0 — no queue exists to wait on. The sync
+        path issues pinned-source non_blocking copies on the dedicated
+        transfer stream when CUDA is available (real overlap where the
+        loop structure allows) and orders the compute stream after the
+        transfer event; CPU/pinned-unavailable falls back to a synchronous
+        copy.
         """
         feed: Any | None = self.feed
         if feed is not None:
@@ -865,6 +1022,20 @@ class SupervisedLoop:
                     h2d_ms = float(last_any)
             queue_wait_ms = max(0.0, wall_ms - h2d_ms)
             return dict(moved_any), queue_wait_ms, h2d_ms
+        stream: Any | None = self._h2d_stream
+        if stream is not None and self.device.type == "cuda" and torch.cuda.is_available():
+            try:
+                t0 = time.perf_counter()
+                with torch.cuda.stream(stream):
+                    moved = _move_batch_to_device(batch, self.device)
+                    evt: Any = torch.cuda.Event()
+                    evt.record(stream)
+                torch.cuda.current_stream().wait_event(evt)
+                self._h2d_event = evt
+                h2d_ms = (time.perf_counter() - t0) * 1000.0
+                return moved, 0.0, h2d_ms
+            except Exception:
+                pass
         t0 = time.perf_counter()
         moved = _move_batch_to_device(batch, self.device)
         h2d_ms = (time.perf_counter() - t0) * 1000.0
@@ -912,7 +1083,8 @@ class SupervisedLoop:
         if telemetry_path is not None:
             telemetry_path.parent.mkdir(parents=True, exist_ok=True)
             with open(telemetry_path, "a", encoding="utf-8") as sink:
-                sink.write(json.dumps(record.to_dict(), sort_keys=True) + "\n")
+                payload = json.dumps(record.to_dict(), sort_keys=True) + "\n"
+                _ = sink.write(payload)  # intentionally discarded: byte count unneeded
 
     def _record_update_telemetry(self, *, optimizer_ms: float, logging_ms: float) -> None:
         """Append one update-stage record (memory only; rides file summary)."""
@@ -977,22 +1149,39 @@ class SupervisedLoop:
                     return batch
             except TypeError:
                 pass
-        if float(self.config.w_placement) == 0.0 and float(self.config.w_value) == 0.0:
+        if self.config.w_placement == 0.0 and self.config.w_value == 0.0:
             return batch
         decision_ids_any: Any = batch.get("_decision_ids", [])
         if not isinstance(decision_ids_any, (list, tuple)) or len(decision_ids_any) == 0:
             return batch
-        decision_ids: list[str] = [str(x) for x in list(decision_ids_any)]
+        decision_ids_raw: list[object] = list(decision_ids_any)
+        decision_ids: list[str] = [str(x) for x in decision_ids_raw]
         from hydra2.belief.oracle_loader import join_oracle_targets
 
         joined = join_oracle_targets(decision_ids, src, evaluation_wall_ids=evaluation_wall_ids)
         merged: dict[str, Any] = dict(batch)
-        if float(self.config.w_placement) != 0.0 and "placement_target" in joined:
+        if self.config.w_placement != 0.0 and "placement_target" in joined:
             merged["placement_target"] = joined["placement_target"]
-        if float(self.config.w_value) != 0.0 and "value_target" in joined:
+        if self.config.w_value != 0.0 and "value_target" in joined:
             merged["value_target"] = joined["value_target"]
         _validate_batch_no_privileged(merged)
         return merged
+
+    def _validated_loss(self, model_out: dict[str, Any], batch: dict[str, Any]) -> dict[str, Any]:
+        """Eager pre-validation + compiled kernel + total-finite gate.
+
+        Runs :func:`validate_supervised_inputs` on the host (same errors the
+        kernel skips under compile), invokes ``self._compiled_loss`` (kernel
+        on CUDA, validating public fn on fallback paths), then gates the
+        weighted total with the identical non-finite error.  Both call sites
+        (``train_step`` and the accumulation loop) share this so the fail-
+        closed contract cannot drift between them.
+        """
+        weights = self.config.objective_weights()
+        validate_supervised_inputs(model_out, batch, weights)
+        losses = self._compiled_loss(model_out, batch, weights)
+        _check_total_finite(losses["total"])
+        return losses
 
     def train_step(self, batch: dict[str, Any]) -> dict[str, float]:
         """Single microbatch forward/backward without optimizer stepping.
@@ -1006,7 +1195,7 @@ class SupervisedLoop:
         # AMP: autocast covers forward+loss only; backward below stays fp32.
         with self._forward_autocast():
             model_out = _model_forward(self.model, batch)
-            losses = compute_supervised_loss(model_out, batch, self.config.objective_weights())
+            losses = self._validated_loss(model_out, batch)
         # Caller scales for accumulation; we return the unscaled total for logging
         total_tensor: torch.Tensor = losses["total"]
         total_unscaled: float = float(total_tensor.detach().cpu().item())  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for logging scalar; alternative (keep on device) loses logging. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
@@ -1049,8 +1238,35 @@ class SupervisedLoop:
         telemetry_path = self.telemetry_path
         if telemetry_path is not None:
             telemetry_path.parent.mkdir(parents=True, exist_ok=True)
-            telemetry_path.write_text("", encoding="utf-8")
+            # intentionally discarded: char count unneeded for truncation
+            _ = telemetry_path.write_text("", encoding="utf-8")
 
+        # Gated fetch prefetch (feed attached only; depth from
+        # ``fetch_prefetch_depth``): the whole next_batch chain (stream pull
+        # + expand + encode) runs on one background thread while the main
+        # thread does H2D + compute, so fetch_decode overlaps compute and
+        # _h2d_batch queue_wait covers the slot-recycle wait. Single worker
+        # FIFO preserves order exactly (byte-identical batches, deterministic
+        # cursor); sampler snapshots travel with the batch (consumed, not
+        # live head) so checkpoints resume without skipping
+        # prefetched-but-unconsumed rows. Feed None keeps the serial sync
+        # fallback (no thread, queue_wait 0.0).
+        use_prefetch = self.feed is not None
+        total_mb = max_u * self.config.accumulation_steps
+        _prefetch_ex: ThreadPoolExecutor | None = None
+        _pending: deque[Any] = deque()
+        _fetched = 0
+        last_snap: dict[str, Any] | None = None
+        if use_prefetch:
+            _prefetch_ex = ThreadPoolExecutor(max_workers=1, thread_name_prefix="h2d-prefetch")
+            _depth = max(1, min(int(self.config.fetch_prefetch_depth), total_mb))
+            while _fetched < _depth:
+                _pending.append(
+                    _prefetch_ex.submit(
+                        self._acquire_cpu_batch_with_state, self.config.microbatch_size
+                    )
+                )
+                _fetched += 1
         while self.state.global_update < target_global:
             # Accumulation window — Wave-3C: loss scalars stay on-device as
             # tensors (no per-microbatch .item() syncs); logging aggregates
@@ -1068,7 +1284,23 @@ class SupervisedLoop:
             # Zero grad at start of accumulation window
             # (already zeroed after previous update)
             for _acc_step in range(self.config.accumulation_steps):
-                raw_batch, fetch_decode_ms = self._acquire_cpu_batch(self.config.microbatch_size)
+                if len(_pending) > 0:
+                    raw_batch, fetch_decode_ms, _snap = _pending.popleft().result()
+                    last_snap = _snap
+                    # Lookahead: refill to configured depth while main does H2D+compute.
+                    if _fetched < total_mb and _prefetch_ex is not None:
+                        _pending.append(
+                            _prefetch_ex.submit(
+                                self._acquire_cpu_batch_with_state,
+                                self.config.microbatch_size,
+                            )
+                        )
+                        _fetched += 1
+                else:
+                    raw_batch, fetch_decode_ms = self._acquire_cpu_batch(
+                        self.config.microbatch_size
+                    )
+                    last_snap = None
                 _validate_batch_no_privileged(raw_batch)
                 raw_batch = self._maybe_join_oracle_targets(
                     raw_batch, evaluation_wall_ids=self.evaluation_wall_ids
@@ -1084,9 +1316,7 @@ class SupervisedLoop:
                     model_out = _model_forward(self.model, batch)
                     forward_ms = (time.perf_counter() - _fwd_t0) * 1000.0
                     _loss_t0 = time.perf_counter()
-                    losses = compute_supervised_loss(
-                        model_out, batch, self.config.objective_weights()
-                    )
+                    losses = self._validated_loss(model_out, batch)
                     loss_ms = (time.perf_counter() - _loss_t0) * 1000.0
                 # Accumulation: scale loss so that sum over accumulation_steps
                 # equals mean over optimizer minibatch (exact numerator/count).
@@ -1106,24 +1336,35 @@ class SupervisedLoop:
                     backward_ms=backward_ms,
                 )
                 micro_total_tensors.append(step_total.detach())
-                micro_placement_tensors.append(losses["placement"].detach())
-                micro_value_tensors.append(losses["value"].detach())
-                micro_event_tensors.append(losses["event"].detach())
-                micro_belief_tensors.append(losses["belief"].detach())
-                micro_policy_tensors.append(losses["policy"].detach())
+                placement_loss: torch.Tensor = losses["placement"]
+                value_loss: torch.Tensor = losses["value"]
+                event_loss: torch.Tensor = losses["event"]
+                belief_loss: torch.Tensor = losses["belief"]
+                policy_loss: torch.Tensor = losses["policy"]
+                micro_placement_tensors.append(placement_loss.detach())
+                micro_value_tensors.append(value_loss.detach())
+                micro_event_tensors.append(event_loss.detach())
+                micro_belief_tensors.append(belief_loss.detach())
+                micro_policy_tensors.append(policy_loss.detach())
                 _event_heads_any: Any = losses.get("_event_per_head", {})
                 if isinstance(_event_heads_any, dict):
                     for _head_id, _head_loss in _event_heads_any.items():
                         if isinstance(_head_loss, torch.Tensor):
-                            _dst = micro_event_head_tensors.setdefault(str(_head_id), [])
+                            _event_head_id: object = _head_id
+                            _dst = micro_event_head_tensors.setdefault(str(_event_head_id), [])
                             _dst.append(_head_loss.detach())
                 _belief_heads_any: Any = losses.get("_belief_per_head", {})
                 if isinstance(_belief_heads_any, dict):
                     for _head_id, _head_loss in _belief_heads_any.items():
                         if isinstance(_head_loss, torch.Tensor):
-                            _dst = micro_belief_head_tensors.setdefault(str(_head_id), [])
+                            _belief_head_id: object = _head_id
+                            _dst = micro_belief_head_tensors.setdefault(str(_belief_head_id), [])
                             _dst.append(_head_loss.detach())
-                self.state.sampler_cursor = self._sampler_state_snapshot()
+                self.state.sampler_cursor = (
+                    last_snap
+                    if (use_prefetch and last_snap is not None)
+                    else self._sampler_state_snapshot()
+                )
             # Fail-closed finite-grad skip: per-update global grad-norm finite
             # check BEFORE clip/step. Non-finite grads skip the optimizer (and
             # scheduler) step, zero grads, and count the skip — weights are
@@ -1140,32 +1381,35 @@ class SupervisedLoop:
                 _log_t0 = time.perf_counter()
                 self.state.skipped_updates += 1
                 self.state.global_update += 1
-                self.state.epoch = int(self._sampler_state_snapshot().get("epoch", 0))
+                snap_epoch: int = (
+                    last_snap.get("epoch", 0)
+                    if use_prefetch and last_snap is not None
+                    else self._sampler_state_snapshot().get("epoch", 0)
+                )
+                self.state.epoch = snap_epoch
                 self.state.semantic_rng_state = None
 
-                # Deferred single-sync means over the on-device window tensors.
-                def _mean_tensors(_tensors: list[torch.Tensor]) -> float:
-                    if len(_tensors) == 0:
-                        return 0.0
-                    stacked = torch.stack([t.detach().float().reshape(()) for t in _tensors])
-                    return float(stacked.mean().cpu().item())
-
-                _skip_avg = _mean_tensors(micro_total_tensors)
+                # Deferred single-sync means over the on-device window tensors
+                # (one host sync for all heads; see _window_means).
+                _skip_means = _window_means(
+                    micro_total_tensors,
+                    micro_policy_tensors,
+                    micro_placement_tensors,
+                    micro_value_tensors,
+                    micro_event_tensors,
+                    micro_belief_tensors,
+                )
+                _skip_avg = _skip_means[0]
                 _skip_entry: dict[str, float] = {
                     "global_update": float(self.state.global_update),
                     "total": _skip_avg,
-                    "policy": _mean_tensors(micro_policy_tensors),
-                    "placement": _mean_tensors(micro_placement_tensors),
-                    "value": _mean_tensors(micro_value_tensors),
-                    "event": _mean_tensors(micro_event_tensors),
-                    "belief": _mean_tensors(micro_belief_tensors),
+                    "policy": _skip_means[1],
+                    "placement": _skip_means[2],
+                    "value": _skip_means[3],
+                    "event": _skip_means[4],
+                    "belief": _skip_means[5],
                     "masked_nll": _skip_avg,
                     "top1": 0.0,
-                    "top3": 0.0,
-                    "top5": 0.0,
-                    "calibration_ece": 0.0,
-                    "legal_uniform_nll": 0.0,
-                    "legal_uniform_gap": 0.0,
                     "skipped_updates": float(self.state.skipped_updates),
                     "skipped_this_update": 1.0,
                 }
@@ -1178,12 +1422,21 @@ class SupervisedLoop:
                     or self.state.global_update == target_global
                 ):
                     dest = self.save_checkpoint()
-                    self._mirror.log_update(_skip_entry, step=int(self.state.global_update))
+                    self._mirror.log_update(_skip_entry, step=self.state.global_update)
                     self._mirror.log_checkpoint(
                         checkpoint_path=dest,
                         manifest_json={
                             "checkpoint_file": dest.name,
-                            "global_update": int(self.state.global_update),
+                            "global_update": self.state.global_update,
+                            "manifest_hashes": dict(self.manifest_hashes),
+                        },
+                    )
+                    self._mlflow_mirror.log_update(_skip_entry, step=self.state.global_update)
+                    self._mlflow_mirror.log_checkpoint(
+                        checkpoint_path=dest,
+                        manifest_json={
+                            "checkpoint_file": dest.name,
+                            "global_update": self.state.global_update,
                             "manifest_hashes": dict(self.manifest_hashes),
                         },
                     )
@@ -1195,13 +1448,17 @@ class SupervisedLoop:
 
             self.optimizer.step()
             if self.scheduler is not None:
-                with contextlib.suppress(Exception):
-                    self.scheduler.step()
+                self.scheduler.step()
             self.optimizer.zero_grad(set_to_none=True)
             _optimizer_ms = (time.perf_counter() - _opt_t0) * 1000.0
 
             self.state.global_update += 1
-            self.state.epoch = int(self._sampler_state_snapshot().get("epoch", 0))
+            snap_epoch2: int = (
+                last_snap.get("epoch", 0)
+                if use_prefetch and last_snap is not None
+                else self._sampler_state_snapshot().get("epoch", 0)
+            )
+            self.state.epoch = snap_epoch2
             self.state.semantic_rng_state = None  # populated at checkpoint via capture_rng_state
 
             # Logging: mean over accumulation window + per-head metrics on last microbatch
@@ -1213,43 +1470,46 @@ class SupervisedLoop:
 
             # Recompute metrics for reporting (masked NLL, top-k, etc.) on last logits
             # We reuse last batch/model_out already in scope; recompute with stored batch
-            def _mean_tensors(_tensors: list[torch.Tensor]) -> float:
-                if len(_tensors) == 0:
-                    return 0.0
-                stacked = torch.stack([t.detach().float().reshape(()) for t in _tensors])
-                return float(stacked.mean().cpu().item())
-
-            avg_loss = _mean_tensors(micro_total_tensors)
-            avg_policy = _mean_tensors(micro_policy_tensors)
-            avg_placement = _mean_tensors(micro_placement_tensors)
-            avg_value = _mean_tensors(micro_value_tensors)
-            avg_event = _mean_tensors(micro_event_tensors)
-            avg_belief = _mean_tensors(micro_belief_tensors)
-            # Compute richer diagnostics on the last microbatch (lawful to peek)
-            # We have batch/model_out from last iteration in scope — recompute metrics there
+            # One host sync for every head mean (bitwise-identical values; see
+            # _window_means). Fixed-order lists: 6 trunk heads, then per-head
+            # event/belief windows in sorted-head order.
+            _event_head_keys = sorted(micro_event_head_tensors)
+            _belief_head_keys = sorted(micro_belief_head_tensors)
+            _all_means = _window_means(
+                micro_total_tensors,
+                micro_policy_tensors,
+                micro_placement_tensors,
+                micro_value_tensors,
+                micro_event_tensors,
+                micro_belief_tensors,
+                *[micro_event_head_tensors[_k] for _k in _event_head_keys],
+                *[micro_belief_head_tensors[_k] for _k in _belief_head_keys],
+            )
+            avg_loss = _all_means[0]
+            avg_policy = _all_means[1]
+            avg_placement = _all_means[2]
+            avg_value = _all_means[3]
+            avg_event = _all_means[4]
+            avg_belief = _all_means[5]
+            _extra_means = _all_means[6:]
+            # Hot diagnostics: masked NLL + top-1 only (2 host syncs). Richer
+            # metrics (top-k/ECE/uniform/support/per-type) ride the eval
+            # report; the batch was pre-validated this microbatch, so no
+            # re-validation here. We have batch/model_out from last iteration
+            # in scope — recompute hot scalars there.
             try:
                 train_logits: torch.Tensor = model_out["policy_logits"]
                 train_targets: torch.Tensor = batch["chosen_action_id"]
                 train_mask: torch.Tensor = batch["legal_mask"]
-                metrics = compute_metrics(
+                metrics = compute_hot_scalars(
                     train_logits.detach(),
                     train_targets.detach(),
                     train_mask.detach(),
-                    action_kinds=_batch_action_kinds(batch, train_targets),
                 )
             except Exception:
                 metrics = {
                     "masked_nll": avg_loss,
                     "top1": 0.0,
-                    "top3": 0.0,
-                    "top5": 0.0,
-                    "calibration_ece": 0.0,
-                    "legal_uniform_nll": 0.0,
-                    "legal_uniform_gap": 0.0,
-                    "support_min": 0.0,
-                    "support_max": 0.0,
-                    "strata": 0.0,
-                    "confusion": 0.0,
                 }
 
             entry: dict[str, float] = {
@@ -1262,31 +1522,14 @@ class SupervisedLoop:
                 "belief": avg_belief,
                 "masked_nll": metrics.get("masked_nll", avg_loss),
                 "top1": metrics.get("top1", 0.0),
-                "top3": metrics.get("top3", 0.0),
-                "top5": metrics.get("top5", 0.0),
-                "calibration_ece": metrics.get("calibration_ece", 0.0),
-                "legal_uniform_nll": metrics.get("legal_uniform_nll", 0.0),
-                "legal_uniform_gap": metrics.get("legal_uniform_gap", 0.0),
                 "skipped_updates": float(self.state.skipped_updates),
                 "skipped_this_update": 0.0,
             }
-            # Per-type scorecards (Wave 3-B): flattened per_type/<kind>/*
-            # floats from the last-microbatch metrics ride the entry when the
-            # recipe enables them (default True preserves current entries).
-            if self.config.log_per_type_metrics:
-                entry.update(
-                    {
-                        _mkey: _mval
-                        for _mkey, _mval in metrics.items()
-                        if _mkey.startswith("per_type/") and isinstance(_mval, float)
-                    }
-                )
-            for _event_head in sorted(micro_event_head_tensors):
-                _event_vals = micro_event_head_tensors[_event_head]
-                entry[f"event_{_event_head}"] = _mean_tensors(_event_vals)
-            for _belief_head in sorted(micro_belief_head_tensors):
-                _belief_vals = micro_belief_head_tensors[_belief_head]
-                entry[f"belief_{_belief_head}"] = _mean_tensors(_belief_vals)
+            for _event_pos, _event_head in enumerate(_event_head_keys):
+                entry[f"event_{_event_head}"] = _extra_means[_event_pos]
+            _belief_base = len(_event_head_keys)
+            for _belief_pos, _belief_head in enumerate(_belief_head_keys):
+                entry[f"belief_{_belief_head}"] = _extra_means[_belief_base + _belief_pos]
             self.loss_history.append(entry)
             self._global_metrics_history.append(metrics)
             _logging_ms = (time.perf_counter() - _log_t0) * 1000.0
@@ -1299,16 +1542,28 @@ class SupervisedLoop:
                 or self.state.global_update == target_global
             ):
                 dest = self.save_checkpoint()
-                self._mirror.log_update(entry, step=int(self.state.global_update))
+                self._mirror.log_update(entry, step=self.state.global_update)
                 self._mirror.log_checkpoint(
                     checkpoint_path=dest,
                     manifest_json={
                         "checkpoint_file": dest.name,
-                        "global_update": int(self.state.global_update),
+                        "global_update": self.state.global_update,
+                        "manifest_hashes": dict(self.manifest_hashes),
+                    },
+                )
+                self._mlflow_mirror.log_update(entry, step=self.state.global_update)
+                self._mlflow_mirror.log_checkpoint(
+                    checkpoint_path=dest,
+                    manifest_json={
+                        "checkpoint_file": dest.name,
+                        "global_update": self.state.global_update,
                         "manifest_hashes": dict(self.manifest_hashes),
                     },
                 )
 
+        if _prefetch_ex is not None:
+            with contextlib.suppress(Exception):
+                _prefetch_ex.shutdown(wait=True)
         if self.telemetry_path is not None:
             summary_line: dict[str, Any] = {
                 "kind": "summary",
@@ -1316,7 +1571,8 @@ class SupervisedLoop:
                 **self.telemetry_summary(),
             }
             with open(self.telemetry_path, "a", encoding="utf-8") as sink:
-                sink.write(json.dumps(summary_line, sort_keys=True) + "\n")
+                payload = json.dumps(summary_line, sort_keys=True) + "\n"
+                _ = sink.write(payload)  # intentionally discarded: byte count unneeded
 
         return list(self.loss_history)
 
@@ -1349,12 +1605,20 @@ class SupervisedLoop:
         else:
             sched_state = {}
 
+        # Prefetch-aware sampler state: state.sampler_cursor tracks consumed
+        # (not live prefetch head) so resume re-fetches at most the 1-deep
+        # lookahead deterministically instead of skipping it. Sync path is
+        # identical (consumed == live, no outstanding prefetch).
+        _consumed = self.state.sampler_cursor
+        sampler_state: Any = (
+            _consumed if isinstance(_consumed, dict) else self._sampler_state_snapshot()
+        )
         payload: dict[str, Any] = {
             "model_state": self.model.state_dict(),
             "optimizer_state": self.optimizer.state_dict(),
             "scheduler_state": sched_state,
             "training_state": self.state.to_dict(),
-            "sampler_state": self._sampler_state_snapshot(),
+            "sampler_state": sampler_state,
             "rng_state": capture_rng_state(),
         }
         manifest = build_manifest(
@@ -1414,7 +1678,7 @@ class SupervisedLoop:
             restored = TrainingState.from_dict(raw_training)
             # Precision regime must match: a fp32 checkpoint resumed under a
             # bf16 loop (or reverse) would silently change numerics.
-            if str(restored.precision) != str(self.config.precision):
+            if restored.precision != self.config.precision:
                 raise CorruptArtifactError(
                     f"checkpoint precision {restored.precision!r} != "
                     f"loop precision {self.config.precision!r}; refusing cross-regime resume"
@@ -1463,7 +1727,9 @@ class SupervisedLoop:
         ``legal_uniform_comparison`` (checklist alias),
         ``strata`` (kinds present when batches carry ``"_action_kinds"``)
         and ``confusion`` (legacy ``0.0``), plus flattened
-        ``per_type/<kind>/{n,nll,top1,top3,ece}`` when kinds are complete,
+        ``per_type/<kind>/{n,nll,top1,top3,ece,recall,low_support}`` when kinds
+        are complete (``recall`` equals ``top1`` by construction;
+        ``low_support`` flags ``n<30``, report-only),
         and post-hoc ``temperature``/``calibrated_nll``/``calibrated_ece``
         fit on the pooled eval rows (validation-only, never training).
         """
@@ -1550,8 +1816,9 @@ class SupervisedLoop:
             flat_probs = torch.softmax(flat_masked, dim=-1)
             _, flat_pred = flat_probs.max(dim=1)
             counts: dict[int, int] = {}
-            for _p in flat_pred.tolist():
-                _pi = int(_p)
+            pred_list: list[int] = flat_pred.tolist()
+            for _p in pred_list:
+                _pi = _p
                 counts[_pi] = counts.get(_pi, 0) + 1
             if len(counts) > 0:
                 report["support_min"] = float(min(counts.values()))
@@ -1563,25 +1830,27 @@ class SupervisedLoop:
                 )
                 for _kind in sorted(per_type):
                     _km = per_type[_kind]
-                    report[f"per_type/{_kind}/n"] = float(_km["n"])
-                    report[f"per_type/{_kind}/nll"] = float(_km["nll"])
-                    report[f"per_type/{_kind}/top1"] = float(_km["top1"])
-                    report[f"per_type/{_kind}/top3"] = float(_km["top3"])
-                    report[f"per_type/{_kind}/ece"] = float(_km["ece"])
+                    report[f"per_type/{_kind}/n"] = _km["n"]
+                    report[f"per_type/{_kind}/nll"] = _km["nll"]
+                    report[f"per_type/{_kind}/top1"] = _km["top1"]
+                    report[f"per_type/{_kind}/top3"] = _km["top3"]
+                    report[f"per_type/{_kind}/ece"] = _km["ece"]
+                    report[f"per_type/{_kind}/recall"] = _km["recall"]
+                    report[f"per_type/{_kind}/low_support"] = _km["low_support"]
                 report["strata"] = float(len(per_type))
             if self.config.fit_temperature:
                 temp = fit_temperature_scaling(flat_logits, flat_targets, flat_masks)
-                report["temperature"] = float(temp["temperature"])
-                report["calibrated_nll"] = float(temp["nll_after"])
-                report["calibrated_ece"] = float(temp["ece_after"])
+                report["temperature"] = temp["temperature"]
+                report["calibrated_nll"] = temp["nll_after"]
+                report["calibrated_ece"] = temp["ece_after"]
             else:
                 report["temperature"] = 1.0
-                report["calibrated_nll"] = float(report["masked_nll"])
-                report["calibrated_ece"] = float(report["calibration_ece"])
+                report["calibrated_nll"] = report["masked_nll"]
+                report["calibrated_ece"] = report["calibration_ece"]
         except Exception:
             report.setdefault("temperature", 1.0)
-            report.setdefault("calibrated_nll", float(report["masked_nll"]))
-            report.setdefault("calibrated_ece", float(report["calibration_ece"]))
+            _ = report.setdefault("calibrated_nll", report["masked_nll"])
+            _ = report.setdefault("calibrated_ece", report["calibration_ece"])
         # Also store last metrics for resume comparison
         _ = self.model.train()
         return report
@@ -1608,7 +1877,7 @@ class SupervisedLoop:
         metric, _, _ = score_selection(
             blocks, telemetry_by_game, config, peek_index, tolerance=tolerance
         )
-        return float(metric)
+        return metric
 
     def maybe_promote_best(
         self,
@@ -1639,15 +1908,15 @@ class SupervisedLoop:
         expected, _, _ = score_selection(
             blocks, telemetry_by_game, config, peek_index, tolerance=tolerance
         )
-        if float(metric) != float(expected):
+        if metric != expected:
             raise ContractError(
-                f"promotion metric {float(metric)!r} != gated score {float(expected)!r} "
+                f"promotion metric {metric!r} != gated score {expected!r} "
                 "for this blocks/telemetry/peek (score first via evaluate_selection)"
             )
         best = self.state.best_selection_metric
-        if best is not None and not (float(metric) < float(best)):
+        if best is not None and not (metric < best):
             return False
         digest = _atomic_publish_best(Path(ckpt), self.checkpoint_dir / "best-ckpt.pt")
-        self.state.best_selection_metric = float(metric)
+        self.state.best_selection_metric = metric
         self.state.best_ckpt_digest = digest
         return True

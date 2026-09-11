@@ -88,7 +88,7 @@ def build_intersection_report(
         "rules_manifest_sha256": rules_manifest_sha256,
         "created_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "adapter_compatibility_notes": {
-            "reference_engine": "riichienv@0.4.8",
+            "reference_engine": "riichienv@0.4.10",
             "documented_unsupported_rules": dict(sorted(documented.items())),
             "resolution_policy": (
                 "A mismatch case whose every rule field is documented-unsupported "

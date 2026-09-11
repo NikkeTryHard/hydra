@@ -1,15 +1,16 @@
-"""WP-14 replay backend flag: rust_json default, python shim fallback (Slice 8).
+"""WP-14 replay backend flag: python oracle backend + plane parity (K1 cutover).
 
 Covers the flag surface only (no replay logic): the ``data.replay_backend``
-default (rust_json since the Slice-8 cutover) + strict parsing + run-digest
-identity, the ``_expand_game_rows`` dispatch parity on the python path (thin
-shim over the same Rust stream since Slice 8, byte-identical to the direct
-``replay_game``/``expand_game`` calls it replaces), the rust_json
-decision-sequence/quarantine parity on synthetic golden games, the
-cross-backend resume refusal (run digest + dataset buffer), the
-rust_json+workers fail-closed gate, and the row-cache backend tag. Rust
-draining tests build the Slice-4 extension once per session (same recipe as
-``test_rust_stream_wp14``) and run in the serial lane; the rest is
+default (``"rust"`` plane feed; ``"python"`` selects the oracle shim for parity;
+the ``rust_json`` id refuses fail-closed) + strict parsing + run-digest identity,
+the ``_expand_game_rows`` dispatch
+parity on the python path (thin shim, byte-identical to the direct
+``replay_game``/``expand_game`` calls), the plane-path chosen/quarantine
+parity on synthetic golden games (``next_into_planes`` commits the oracle's
+choices; string decision ids live cold-side only), the resume refusal on
+digest change (run digest + dataset buffer tag), and the row-cache backend
+tag. Plane-draining tests build the extension once per session (same recipe
+as ``test_rust_stream_wp14``) and run in the serial lane; the rest is
 lane-default CPU with fixed seeds.
 """
 
@@ -181,16 +182,20 @@ def _write_mapping(tmp_path: Path, name: str, mapping: dict[str, Any]) -> Path:
     path.write_text(yaml.safe_dump(mapping, sort_keys=True), encoding="utf-8")
     return path
 
-    def test_default_backend_is_rust_json(self, tmp_path: Path) -> None:
+
+class TestFlag:
+    """Flag surface: default + strict parsing + digest identity + dispatch."""
+
+    def test_default_backend_is_rust(self, tmp_path: Path) -> None:
         config = load_run_config(
             _write_mapping(tmp_path, "run.yaml", _minimal_mapping(tmp_path)), environ={}
         )
-        assert config.data.replay_backend == "rust_json"
-        assert run_config_to_dict(config)["data"]["replay_backend"] == "rust_json"
+        assert config.data.replay_backend == "rust"
+        assert run_config_to_dict(config)["data"]["replay_backend"] == "rust"
 
     def test_unknown_backend_rejected(self, tmp_path: Path) -> None:
         mapping = _minimal_mapping(tmp_path)
-        mapping["data"]["replay_backend"] = "rust"
+        mapping["data"]["replay_backend"] = "bogus_backend"
         with pytest.raises(ContractError, match="replay_backend"):
             load_run_config(_write_mapping(tmp_path, "bad.yaml", mapping), environ={})
 
@@ -198,14 +203,12 @@ def _write_mapping(tmp_path: Path, name: str, mapping: dict[str, Any]) -> Path:
         base = load_run_config(
             _write_mapping(tmp_path, "a.yaml", _minimal_mapping(tmp_path)), environ={}
         )
-        assert base.data.replay_backend == "rust_json"
-        mapping = _minimal_mapping(tmp_path)
-        mapping["data"]["replay_backend"] = "python"
-        shim = load_run_config(_write_mapping(tmp_path, "b.yaml", mapping), environ={})
-        assert shim.data.replay_backend == "python"
-        # Backend is pinned in the run identity: old checkpoints never
-        # silently resume cross-backend (digest mismatch refuses fail-closed).
-        assert run_config_digest(shim) != run_config_digest(base)
+        assert base.data.replay_backend == "rust"
+        # The deleted rust_json id refuses fail-closed (single backend).
+        removed = _minimal_mapping(tmp_path)
+        removed["data"]["replay_backend"] = "rust_json"
+        with pytest.raises(ContractError, match="replay_backend"):
+            load_run_config(_write_mapping(tmp_path, "b.yaml", removed), environ={})
         again = load_run_config(
             _write_mapping(tmp_path, "c.yaml", _minimal_mapping(tmp_path)), environ={}
         )
@@ -218,6 +221,7 @@ def _write_mapping(tmp_path: Path, name: str, mapping: dict[str, Any]) -> Path:
         walled = _decode_game("flag-unknown-be-w", wall=WALL)
         with pytest.raises(ContractError, match="replay_backend"):
             driver._expand_game_rows(walled, "train", "bogus")
+
     def test_python_backend_matches_direct_calls(self, rust_extension: Any) -> None:
         from hydra2.data.replay_expand import expand_game
         from hydra2.engines.riichienv.log_replay import replay_game
@@ -245,29 +249,6 @@ def _write_mapping(tmp_path: Path, name: str, mapping: dict[str, Any]) -> Path:
         assert driver._quarantine_class(ru) == driver._quarantine_class(py)
         assert "<id>" in driver._quarantine_class(ru)
         assert "g1" not in driver._quarantine_class(ru)
-
-    def test_rust_json_workers_fail_closed(self, tmp_path: Path) -> None:
-        """Slice-8 serial first: rust_json + expand_workers>0 refuses (pool lands later)."""
-        corpus = tmp_path / "corpus" / "tenhou"
-        corpus.mkdir(parents=True, exist_ok=True)
-        manifest = build_manifest(corpus)
-        with pytest.raises(ContractError, match="fail-closed"):
-            driver._StreamDataset(
-                stream_factory=lambda: GameStream(
-                    manifest,
-                    seed=DATA_SEED,
-                    ratios=dict(driver.SPLIT_RATIOS),
-                    epoch=0,
-                    split="train",
-                    shuffle_buffer=0,
-                ),
-                num_actions=6792,
-                feature_dim=64,
-                seed=DATA_SEED,
-                drop_last=True,
-                replay_backend="rust_json",
-                expand_workers=2,
-            )
 
 
 @pytest.fixture(scope="session")
@@ -297,84 +278,105 @@ def rust_extension(tmp_path_factory: pytest.TempPathFactory) -> Any:
 
 
 @pytest.mark.serial
-class TestRustBackend:
-    def test_decision_sequence_matches_python(self, rust_extension: Any) -> None:
+class TestPlaneBackend:
+    def test_plane_chosen_sequence_matches_python(
+        self, rust_extension: Any, tmp_path: Path
+    ) -> None:
+        """Plane fills commit the oracle's chosen ids in order.
+
+        K1 cutover: DecisionRow parity moved to the thin plane bridge. The
+        golden wall-less game is framed verbatim to a scratch dir and
+        drained via ``next_into_planes``; committed ``chosen_action_id``
+        must equal the python oracle's choices. String decision ids live
+        cold-side only and have no plane equivalent by design.
+        """
         from hydra2.engines.riichienv.log_replay import replay_game
+        from hydra2.training import rust_stream
 
-        game = _decode_game("flag-rust-seq")
-        rust_rows, sim_path = driver._expand_game_rows(game, "train", "rust_json")
+        game = _decode_game("flag-plane-seq")
         py_rows = replay_game(game, split="train")
-        assert sim_path is True
-        assert [r.decision_id for r in rust_rows] == [r.decision_id for r in py_rows]
-        assert [r.chosen_action_id for r in rust_rows] == [r.chosen_action_id for r in py_rows]
+        inputs = tmp_path / "inputs"
+        inputs.mkdir()
+        (inputs / "g.jsonl").write_text(
+            "\n".join(json.dumps(e) for e in _golden_events("flag-plane-seq")) + "\n"
+        )
+        pins = {"source_hash": "s", "rules_hash": "r", "action_table_hash": "a"}
+        chosen: list[int] = []
+        with rust_stream.open_rust_plane_stream(
+            [str(inputs)], 64, split="train", slot_rows=64, t_max=32, depth=2, device="cpu", **pins
+        ) as stream:
+            while True:
+                batch, fill = stream.next_into_planes()
+                if fill.rows:
+                    chosen.extend(int(v) for v in batch["chosen_action_id"].tolist())
+                if fill.rows == 0 and fill.games_consumed == 0:
+                    break
+        assert chosen == [r.chosen_action_id for r in py_rows]
 
-    def test_rust_rows_bind_minted_digests(self, rust_extension: Any) -> None:
-        """Rust-fed rows carry the minted Slice-5 trio (never the echo)."""
-        from hydra2.config import repo_root
-        from hydra2.contracts.action import ACTION_TABLE_RELPATH, load_action_table
-        from hydra2.data.replay_expand import _adapter_hash, _load_rules
-        from hydra2.engines.riichienv.adapter import _rules_identity
-        from hydra2.engines.riichienv.log_replay import replay_game
-        from hydra2.engines.riichienv.state import rules_identity_hash
-
-        rules = _load_rules()
-        expected_rules = _rules_identity(rules, str(rules_identity_hash(rules)))
-        expected_adapter = _adapter_hash()
-        expected_table = str(load_action_table(repo_root() / ACTION_TABLE_RELPATH).digest)
-        game = _decode_game("flag-rust-digest")
-        rust_rows, sim_path = driver._expand_game_rows(game, "train", "rust_json")
-        assert sim_path is True
-        assert rust_rows
-        for row in rust_rows:
-            assert row.rules_hash == expected_rules
-            assert row.adapter_hash == expected_adapter
-            assert row.action_table_hash == expected_table
-            assert row.rules_hash != driver._RUST_JSON_SPEC_HASH
-            assert row.adapter_hash != driver._RUST_JSON_SPEC_HASH
-        # Provenance parity: the python backend binds the same trio.
-        py_rows = replay_game(game, split="train")
-        assert [r.rules_hash for r in rust_rows] == [r.rules_hash for r in py_rows]
-        assert [r.adapter_hash for r in rust_rows] == [r.adapter_hash for r in py_rows]
-        assert [r.action_table_hash for r in rust_rows] == [r.action_table_hash for r in py_rows]
-
-    def test_wall_bound_never_touches_rust(self, rust_extension: Any) -> None:
+    def test_wall_bound_matches_expand(self) -> None:
         from hydra2.data.replay_expand import expand_game
 
         game = _decode_game("flag-rust-walled", wall=WALL)
-        rust_rows, sim_path = driver._expand_game_rows(game, "train", "rust_json")
+        rows, sim_path = driver._expand_game_rows(game, "train", "python")
         direct = expand_game(game, split="train")
         assert sim_path is False
-        assert [r.decision_id for r in rust_rows] == [r.decision_id for r in direct]
+        assert [r.decision_id for r in rows] == [r.decision_id for r in direct]
 
-    def test_quarantine_class_identical(self, rust_extension: Any) -> None:
+    def test_plane_quarantine_closed_vocab(self, rust_extension: Any, tmp_path: Path) -> None:
+        """Bogus-mid games quarantine whole-game on the plane path.
+
+        K1 cutover: the plane bridge quarantines with closed feed reason
+        codes (never a new code) while the python oracle raises
+        ContractError — both reject the same game.
+        """
         from hydra2.engines.riichienv.log_replay import replay_game
+        from hydra2.training import rust_stream
 
-        bad = _decode_bad_game("flag-rust-q")
-        with pytest.raises(ContractError) as py_exc:
+        bad = _decode_bad_game("flag-plane-q")
+        with pytest.raises(ContractError):
             replay_game(bad, split="train")
-        with pytest.raises(ContractError) as ru_exc:
-            driver._expand_game_rows(bad, "train", "rust_json")
-        assert driver._quarantine_class(ru_exc.value) == driver._quarantine_class(py_exc.value)
+        inputs = tmp_path / "inputs"
+        inputs.mkdir()
+        (inputs / "g.jsonl").write_text(
+            "\n".join(json.dumps(e) for e in _golden_events("flag-plane-q")[:-1])
+            + "\n"
+            + json.dumps({"type": "bogus_mid_event"})
+            + "\n"
+            + json.dumps(_golden_events("flag-plane-q")[-1])
+            + "\n"
+        )
+        pins = {"source_hash": "s", "rules_hash": "r", "action_table_hash": "a"}
+        with rust_stream.open_rust_plane_stream(
+            [str(inputs)], 64, split="train", slot_rows=64, t_max=32, depth=2, device="cpu", **pins
+        ) as stream:
+            while True:
+                _, fill = stream.next_into_planes()
+                if fill.rows == 0 and fill.games_consumed == 0:
+                    break
+            stats = stream.stats()
+            quars = stream.quarantines()
+        assert stats.rows_out == 0
+        assert stats.games_quarantined == 1
+        assert [q.game_id for q in quars] == ["g"]
+        assert [q.reason_code for q in quars] == ["unknown-event"]
 
-    def test_expand_backend_parity(self, rust_extension: Any) -> None:
-        game = _decode_game("flag-rust-pool")
-        rows_py, sim_py = driver._expand_game_rows(game, "train", "python")
-        rows_ru, sim_ru = driver._expand_game_rows(game, "train", "rust_json")
-        assert sim_py is True and sim_ru is True
-        assert [r.decision_id for r in rows_ru] == [r.decision_id for r in rows_py]
+    def test_missing_extension_fails_closed(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from hydra2.training import rust_stream
 
-        bad = _decode_bad_game("flag-rust-pool-q")
-        with pytest.raises(ContractError) as ru_exc:
-            driver._expand_game_rows(bad, "train", "rust_json")
-        with pytest.raises(ContractError) as py_exc:
-            driver._expand_game_rows(bad, "train", "python")
-        assert driver._quarantine_class(ru_exc.value) == driver._quarantine_class(py_exc.value)
-
-    def test_missing_extension_fails_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setitem(sys.modules, "hydra2_replay_rs", None)
-        game = _decode_game("flag-rust-missing")
+        inputs = tmp_path / "inputs"
+        inputs.mkdir()
         with pytest.raises(RuntimeError, match="hydra2_replay_rs"):
-            driver._expand_game_rows(game, "train", "rust_json")
+            rust_stream.open_rust_plane_stream(
+                [str(inputs)],
+                2,
+                split="train",
+                source_hash="s",
+                rules_hash="r",
+                action_table_hash="a",
+            )
 
     def test_dataset_sequence_and_restore(self, rust_extension: Any, tmp_path: Path) -> None:
         train_stems, _ = _pick_stems(need_train=2)
@@ -397,64 +399,49 @@ class TestRustBackend:
                 shuffle_buffer=0,
             )
 
-        datasets: dict[str, Any] = {}
-        for backend in ("python", "rust_json"):
-            ds = driver._StreamDataset(
-                stream_factory=lambda: _factory("train"),
-                num_actions=6792,
-                feature_dim=64,
-                seed=DATA_SEED,
-                drop_last=True,
-                need_privileged=False,
-                replay_backend=backend,
-            )
-            while ds._pull_game():
-                pass
-            datasets[backend] = ds
-
-        py_rows = [(r["decision_id"], r["chosen_action_id"]) for r in datasets["python"]._rows]
-        ru_rows = [(r["decision_id"], r["chosen_action_id"]) for r in datasets["rust_json"]._rows]
-        assert len(py_rows) > 0 and ru_rows == py_rows
-        for attr in ("replayed", "sim_replayed", "expand_quarantined"):
-            assert getattr(datasets["rust_json"], attr) == getattr(datasets["python"], attr)
-        assert datasets["python"].replayed == 1
-        assert datasets["python"].sim_replayed == 1
-
-        # Row-exact resume per backend: snapshot restores verbatim.
-        for backend in ("python", "rust_json"):
-            snap = datasets[backend].buffer_snapshot()
-            fresh = driver._StreamDataset(
-                stream_factory=lambda: _factory("train"),
-                num_actions=6792,
-                feature_dim=64,
-                seed=DATA_SEED,
-                drop_last=True,
-                need_privileged=False,
-                replay_backend=backend,
-            )
-            fresh.restore_buffer(snap)
-            assert [r["decision_id"] for r in fresh._rows] == [
-                r["decision_id"] for r in datasets[backend]._rows
-            ]
-
-        # Cross-backend buffer restore refuses fail-closed.
-        cross = driver._StreamDataset(
+        # K1 cutover: single python backend (the rust_json id is deleted).
+        ds = driver._StreamDataset(
             stream_factory=lambda: _factory("train"),
             num_actions=6792,
             feature_dim=64,
             seed=DATA_SEED,
             drop_last=True,
             need_privileged=False,
-            replay_backend="rust_json",
+            replay_backend="python",
         )
+        while ds._pull_game():
+            pass
+
+        py_rows = [(r["decision_id"], r["chosen_action_id"]) for r in ds._rows]
+        assert len(py_rows) > 0
+        assert ds.replayed == 1
+        assert ds.sim_replayed == 1
+
+        # Row-exact resume: snapshot restores verbatim.
+        snap = ds.buffer_snapshot()
+        fresh = driver._StreamDataset(
+            stream_factory=lambda: _factory("train"),
+            num_actions=6792,
+            feature_dim=64,
+            seed=DATA_SEED,
+            drop_last=True,
+            need_privileged=False,
+            replay_backend="python",
+        )
+        fresh.restore_buffer(snap)
+        assert [r["decision_id"] for r in fresh._rows] == [r["decision_id"] for r in ds._rows]
+
+        # Backend-tag refusal: a forged tag fails closed on replay_backend.
+        forged = dict(snap)
+        forged["replay_backend"] = "rust_json"
         with pytest.raises(ContractError, match="replay_backend"):
-            cross.restore_buffer(datasets["python"].buffer_snapshot())
+            fresh.restore_buffer(forged)
 
 
 @pytest.mark.serial
 @pytest.mark.slow
-class TestCrossBackendResume:
-    def test_resume_refuses_cross_backend(self, tmp_path: Path) -> None:
+class TestResumeRefusal:
+    def test_resume_refuses_digest_change(self, tmp_path: Path) -> None:
         from hydra2.training.run_config import load_run_config, resolve_resume_plan
         from hydra2.training.stream_train import run_stream_training
 
@@ -478,18 +465,20 @@ class TestCrossBackendResume:
         assert summary["end_update"] == 1
         run_dir = Path(summary["run_dir"])
 
-        rust_config = load_run_config(
+        # K1 cutover: the rust_json backend id is gone, so the digest-change
+        # axis here is max_updates (same run id, altered config).
+        changed_config = load_run_config(
             _write_run_yaml(
                 tmp_path,
                 corpus_root=tmp_path / "corpus",
                 artifact_root=tmp_path / "artifacts",
                 max_updates=2,
                 run_id=run_id,
-                backend="rust_json",
+                backend="python",
             ),
             environ={},
         )
-        assert run_config_digest(rust_config) != run_config_digest(py_config)
+        assert run_config_digest(changed_config) != run_config_digest(py_config)
         resume = resolve_resume_plan(run_dir)
         with pytest.raises(ContractError, match="run_digest"):
-            run_stream_training(rust_config, resume)
+            run_stream_training(changed_config, resume)

@@ -96,7 +96,8 @@ def _resolve_dim(
         if value <= 0:
             raise ContractError(f"extra dim {dim!r} must be positive")
         return value
-    raise ContractError(f"shape symbol {dim!r} needs extra_dims={dict(extra_dims or {})!r}")
+    resolved_extra = extra_dims if extra_dims is not None else {}
+    raise ContractError(f"shape symbol {dim!r} needs extra_dims={dict(resolved_extra)!r}")
 
 
 def slot_shapes(
@@ -182,7 +183,7 @@ def resolve_layout(
     expected = [spec.name for spec in specs]
     missing = [name for name in expected if name not in shapes]
     extra = [name for name in shapes if name not in set(expected)]
-    if missing or extra:
+    if len(missing) > 0 or len(extra) > 0:
         raise ContractError(f"ring layout mismatch missing={missing} extra={extra}")
     by_name = {spec.name: spec for spec in specs}
     layout: dict[str, tuple[tuple[int, ...], torch.dtype]] = {}
@@ -222,7 +223,7 @@ def slot_nbytes(layout: Mapping[str, tuple[Sequence[int], torch.dtype]]) -> int:
     for shape, dtype in layout.values():
         numel = 1
         for dim in shape:
-            numel *= int(dim)
+            numel *= dim
         total += numel * torch.tensor([], dtype=dtype).element_size()
     return total
 
@@ -335,7 +336,7 @@ class PinnedRing:
         unpinned = sorted(
             {name for slot in self._slots for name, t in slot.items() if not t.is_pinned()}
         )
-        if unpinned:
+        if len(unpinned) > 0:
             self._slots = []
             raise ContractError(f"pinned ring unpinnable for {unpinned} (fail closed)")
 
@@ -424,7 +425,7 @@ class PinnedRing:
             raise ContractError("ring is closed")
         missing = [name for name in self._field_names if name not in cpu_batch]
         extra = sorted(set(cpu_batch) - set(self._field_names))
-        if missing or extra:
+        if len(missing) > 0 or len(extra) > 0:
             raise ContractError(f"ring batch mismatch missing={missing} extra={extra}")
         for name in self._field_names:
             tensor = cpu_batch[name]
@@ -459,7 +460,8 @@ class PinnedRing:
 
         copy_began = time.perf_counter()
         for name in self._field_names:
-            slot[name].copy_(cpu_batch[name])
+            # intentionally discarded: in-place copy returns self
+            _ = slot[name].copy_(cpu_batch[name])
         if self._cuda:
             stream_context = (
                 torch.cuda.stream(self._stream) if self._real_stream else contextlib.nullcontext()

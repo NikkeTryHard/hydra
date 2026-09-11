@@ -1114,6 +1114,7 @@ def test_loader_verifies_hashes_and_legal_masks(tmp_path: Path) -> None:
         expected_action_table_hash=_sha(CONFIG_ACTION_TABLE),
         expected_schema_hash=_sha(CONFIG_OBS_SCHEMA),
         batch_size=2,
+        allow_narrow=True,
     )
     assert len(batch) == 2
     # Illegal mask: all False at nonterminal should be hard error
@@ -1202,11 +1203,36 @@ def test_loader_verifies_hashes_and_legal_masks(tmp_path: Path) -> None:
             dataset_manifest=bad_manifest,
             expected_action_table_hash=_sha(CONFIG_ACTION_TABLE),
             expected_schema_hash=_sha(CONFIG_OBS_SCHEMA),
+            allow_narrow=True,
+        )
+
+
+def test_loader_narrow_mask_requires_explicit_flag(tmp_path: Path) -> None:
+    """Toy-width legal masks fail closed without allow_narrow (no silent aliasing)."""
+    rows = [_make_decision_row("game0", "dec0", "train")]
+    actor_dir = tmp_path / "actor-narrow-gate"
+    write_actor_shards(
+        destination=actor_dir,
+        rows=rows,
+        dataset_hash="sha256:" + "e" * 64,
+        split_manifest_hash="sha256:" + "f" * 64,
+    )
+    shard = actor_dir / "actor-train.parquet"
+    manifest = actor_dir / "actor_manifest.json"
+    with pytest.raises(Exception, match="allow_narrow"):
+        verify_and_load_batch(
+            actor_parquet=shard,
+            privileged_parquet=None,
+            dataset_manifest=manifest,
+            expected_action_table_hash=_sha(CONFIG_ACTION_TABLE),
+            expected_schema_hash=_sha(CONFIG_OBS_SCHEMA),
+            batch_size=1,
         )
 
 
 def test_loader_corrupt_shard_hard_failure(tmp_path: Path) -> None:
     # Corrupt shard must not be ignored (hard failure)
+
     rows = [_make_decision_row("g", "d", "train")]
     actor_dir = tmp_path / "actor"
     write_actor_shards(
@@ -1251,6 +1277,7 @@ def test_fresh_process_batch_load(tmp_path: Path) -> None:
         expected_action_table_hash=_sha(CONFIG_ACTION_TABLE),
         expected_schema_hash=_sha(CONFIG_OBS_SCHEMA),
         batch_size=2,
+        allow_narrow=True,
     )
     assert len(batch) == 2
     assert all("decision_id" in r for r in batch)
@@ -1389,6 +1416,7 @@ def test_synthetic_pipeline_end_to_end(tmp_path: Path) -> None:
             dataset_manifest=manifest_path,
             expected_action_table_hash=_sha(CONFIG_ACTION_TABLE),
             expected_schema_hash=_sha(CONFIG_OBS_SCHEMA),
+            allow_narrow=True,
         )
         assert len(batch) >= 1
 
@@ -1637,6 +1665,7 @@ def test_real_tenhou_full_pipeline_sample_20_games(tmp_path: Path) -> None:
         expected_action_table_hash=_sha(CONFIG_ACTION_TABLE),
         expected_schema_hash=_sha(CONFIG_OBS_SCHEMA),
         batch_size=2,
+        allow_narrow=True,
     )
     assert len(batch) >= 1
     batch2 = load_batch_in_fresh_process(
@@ -1644,5 +1673,6 @@ def test_real_tenhou_full_pipeline_sample_20_games(tmp_path: Path) -> None:
         dataset_manifest=actor_manifest,
         expected_action_table_hash=_sha(CONFIG_ACTION_TABLE),
         expected_schema_hash=_sha(CONFIG_OBS_SCHEMA),
+        allow_narrow=True,
     )
     assert len(batch2) >= 1

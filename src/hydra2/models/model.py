@@ -8,6 +8,8 @@ full-history encodings agree on valid prefix when masks are applied.
 
 from __future__ import annotations
 
+import contextlib
+import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
@@ -42,7 +44,47 @@ __all__ = [
     "ModelOutput",
     "masked_policy",
     "select_actions",
+    "validate_actor_batch",
 ]
+
+
+def validate_actor_batch(batch: ActorTensorBatch, action_count: int | None = None) -> None:
+    """Actor-batch contract check (shapes + nonterminal legal mask).
+
+    Shape checks are host-side Python ints (zero syncs). The legal-mask
+    gate is a device-side assert on CUDA (violations trip on the next
+    sync and poison the context — abort-is-abort for fail-closed
+    training); CPU/eval keeps the exact error. Runs BEFORE a compiled
+    forward so the inductor graph holds zero device→host syncs.
+    """
+    if batch.history_mask.shape[0] != batch.legal_mask.shape[0]:
+        raise ContractError("batch size mismatch between history_mask and legal_mask")
+    if action_count is not None and batch.legal_mask.shape[1] != action_count:
+        raise ContractError(
+            f"legal_mask A {batch.legal_mask.shape[1]} != model action_count {action_count}"
+        )
+    _fail_closed_actor_rows(batch.legal_mask)
+    if batch.history_mask.shape != batch.features["history_event_kind"].shape:
+        raise ContractError("history_mask vs history_event_kind shape mismatch")
+
+
+def _fail_closed_actor_rows(legal_mask: torch.Tensor) -> None:
+    """Legal-rows gate: device assert on CUDA, exact raise elsewhere.
+
+    Twin of ``hydra2.training.objectives._fail_closed_gate`` (kept separate:
+    models must not import training — layer direction).
+    """
+    pred = legal_mask.any(dim=1).all()
+    cuda = False
+    with contextlib.suppress(Exception):
+        disabled = os.environ.get("HYDRA2_DISABLE_DEVICE_ASSERTS", "").strip().lower()
+        cuda = bool(pred.is_cuda) and disabled not in ("1", "true", "yes", "on")
+    if cuda:
+        with contextlib.suppress(Exception):
+            torch._assert_async(pred)
+            return
+    if bool(pred.item()) is False:  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # reason: CPU/eval-only host sync for contract; CUDA path returns above. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
+        raise ContractError("nonterminal batch requires at least one legal per row")
 
 
 def masked_policy(logits: torch.Tensor, legal_mask: torch.Tensor) -> torch.Tensor:
@@ -57,11 +99,12 @@ def masked_policy(logits: torch.Tensor, legal_mask: torch.Tensor) -> torch.Tenso
         )
     if legal_mask.dtype != torch.bool:
         raise ContractError("legal_mask must be bool dtype")
-    if torch.compiler.is_compiling():
-        torch._check_tensor_all(
-            legal_mask.any(dim=-1), lambda: "masked_policy requires at least one legal per row"
-        )
-    elif not bool(legal_mask.any(dim=-1).all().item()):  # pyrefly: ignore[pytorch-efficiency-lint-item-call]  # reason: eager host sync for contract; single scalar must cross host. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
+    # Eager-only legal-rows check: under torch.compile the guard folds away
+    # (short-circuit skips the .item()) so the graph holds no host sync
+    # (dynamo-traced _check_tensor_all on the mask tensor graph-breaks every
+    # forward). Compiled callers pre-validate via validate_actor_batch;
+    # eager callers keep the identical error.
+    if not torch.compiler.is_compiling() and not bool(legal_mask.any(dim=-1).all().item()):  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # reason: eager-only host sync for contract (short-circuit skips it under compile; compiled path pre-validates). Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
         raise ContractError("masked_policy requires at least one legal per row")
     masked = logits.masked_fill(~legal_mask, float("-inf"))
     probs = F.softmax(masked, dim=-1)
@@ -115,6 +158,12 @@ class _TransformerLayer(nn.Module):
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
         self.dropout = dropout
+        #: Scoped mixed precision: run ONLY the SDPA kernel in bf16 (unlocks
+        #: the flash / fused attention path, which has no fp32 kernel) while
+        #: every projection, norm, and output stays fp32. Off by default;
+        #: enable only where measured faster (the cast pair costs more than
+        #: it saves below bf16-efficient shapes).
+        self.attn_bf16: bool = False
 
     def forward(self, x: torch.Tensor, key_padding_mask: torch.Tensor) -> torch.Tensor:
         # x: [B,T,D], key_padding_mask: [B,T] bool True=padding (masked out)
@@ -153,14 +202,24 @@ class _TransformerLayer(nn.Module):
         # padded queries ignored in later masked mean.
 
         dropout_p: float = self.dropout if self.training else 0.0
-        attended: torch.Tensor = F.scaled_dot_product_attention(
-            queries,
-            keys,
-            values,
-            attn_mask=attn_mask,
-            dropout_p=dropout_p,
-            is_causal=False,
-        )
+        if self.attn_bf16 and queries.is_cuda and queries.dtype == torch.float32:
+            attended = F.scaled_dot_product_attention(
+                queries.to(torch.bfloat16),
+                keys.to(torch.bfloat16),
+                values.to(torch.bfloat16),
+                attn_mask=attn_mask,
+                dropout_p=dropout_p,
+                is_causal=False,
+            ).to(queries.dtype)
+        else:
+            attended = F.scaled_dot_product_attention(
+                queries,
+                keys,
+                values,
+                attn_mask=attn_mask,
+                dropout_p=dropout_p,
+                is_causal=False,
+            )
         # Perf-A §4.1 transpose/view fuse: inductor fuses transpose+reshape under max-autotune;
         #  avoid contiguous().view copy (4 MiB at B=32,T=256,D=128) in eager. Evidence: https://docs.pytorch.org/docs/2.14/generated/torch.compile.html
         attended = attended.transpose(1, 2).reshape(batch, seq_len, self.d_model)
@@ -316,24 +375,11 @@ class Hydra2BaselineModel(nn.Module):
         return self.evaluate(batch)
 
     def evaluate(self, batch: ActorTensorBatch) -> ModelOutput:
-        # Validate shapes / legal mask.
-        if batch.history_mask.shape[0] != batch.legal_mask.shape[0]:
-            raise ContractError("batch size mismatch between history_mask and legal_mask")
-        if batch.legal_mask.shape[1] != self.action_count:
-            raise ContractError(
-                f"legal_mask A {batch.legal_mask.shape[1]} != "
-                f"model action_count {self.action_count}"
-            )
-        if torch.compiler.is_compiling():
-            torch._check_tensor_all(
-                batch.legal_mask.any(dim=1),
-                # reason: contract string cannot split without harming grep; alternative worse
-                lambda: "nonterminal batch requires at least one legal per row",
-            )
-        elif not bool(batch.legal_mask.any(dim=1).all().item()):  # pyrefly: ignore[pytorch-efficiency-lint-item-call]  # reason: eager host sync for contract; single scalar must cross host. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
-            raise ContractError("nonterminal batch requires at least one legal per row")
-        if batch.history_mask.shape != batch.features["history_event_kind"].shape:
-            raise ContractError("history_mask vs history_event_kind shape mismatch")
+        # Validate shapes / legal mask (eager only): compiled callers
+        # pre-validate via validate_actor_batch (see _model_forward) so the
+        # graph holds zero host syncs; direct eager callers keep identical errors.
+        if not torch.compiler.is_compiling():
+            validate_actor_batch(batch, self.action_count)
 
         batch_size: int = batch.history_mask.shape[0]
         seq_len: int = batch.history_mask.shape[1]
@@ -357,7 +403,7 @@ class Hydra2BaselineModel(nn.Module):
         for layer in self.layers:
             x = layer(x, key_padding_mask)
 
-        x = self.final_norm(x)
+        x: torch.Tensor = self.final_norm(x)
 
         # Masked mean pool over history — padded positions excluded.
         # AMP F3: dtype-following mask (was .float()); under bf16 autocast the
@@ -427,11 +473,16 @@ class Hydra2BaselineModel(nn.Module):
         phase: torch.Tensor = batch.features["phase"]
         actor_furiten: torch.Tensor = batch.features["actor_furiten"]
 
-        feats.append(self.actor_emb(actor).to(compute_dtype))  # [B,8]
-        feats.append(self.actor_emb(dealer).to(compute_dtype))
-        feats.append(self.actor_emb(turn_actor).to(compute_dtype))
-        feats.append(self.phase_emb(phase.clamp(max=5)).to(compute_dtype))
-        feats.append(self.furiten_emb(actor_furiten.clamp(max=3)).to(compute_dtype))
+        actor_feat: torch.Tensor = self.actor_emb(actor).to(compute_dtype)  # [B,8]
+        feats.append(actor_feat)
+        dealer_feat: torch.Tensor = self.actor_emb(dealer).to(compute_dtype)
+        feats.append(dealer_feat)
+        turn_actor_feat: torch.Tensor = self.actor_emb(turn_actor).to(compute_dtype)
+        feats.append(turn_actor_feat)
+        phase_feat: torch.Tensor = self.phase_emb(phase.clamp(max=5)).to(compute_dtype)
+        feats.append(phase_feat)
+        furiten_feat: torch.Tensor = self.furiten_emb(actor_furiten.clamp(max=3)).to(compute_dtype)
+        feats.append(furiten_feat)
 
         # Scores normalized / 30000, seat_winds embedding, etc.
         scores: torch.Tensor = batch.features["scores"].to(compute_dtype) / 30000.0  # [B,4]
@@ -439,7 +490,8 @@ class Hydra2BaselineModel(nn.Module):
 
         # Round wind embedding
         round_wind: torch.Tensor = batch.features["round_wind"]
-        feats.append(self.wind_emb(round_wind.clamp(max=3)).to(compute_dtype))  # [B,4]
+        round_wind_feat: torch.Tensor = self.wind_emb(round_wind.clamp(max=3)).to(compute_dtype)
+        feats.append(round_wind_feat)  # [B,4]
 
         # seat_winds flattened embedding sum
         seat_winds: torch.Tensor = batch.features["seat_winds"]  # [B,4]

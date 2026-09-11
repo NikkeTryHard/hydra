@@ -1010,7 +1010,9 @@ class StudentModel(nn.Module):
         out = self.forward(features, legal_mask=legal_mask)
         logits = out["policy_logits"]
         # Illegal mask -> -inf
-        masked = torch.where(legal_mask.bool(), logits, torch.tensor(-1e9, device=logits.device))
+        masked = torch.where(
+            legal_mask.bool(), logits, torch.tensor(float("-inf"), device=logits.device)
+        )
         return torch.argmax(masked, dim=-1)
 
 
@@ -1130,16 +1132,21 @@ def compute_distillation_loss(
         raise ContractError("teacher illegal has non-zero mass")
     # Student masked log_softmax
     masked_logits = torch.where(
-        legal_mask.bool(), student_logits, torch.tensor(-1e9, device=student_logits.device)
+        legal_mask.bool(), student_logits, torch.tensor(float("-inf"), device=student_logits.device)
     )
     log_probs = F.log_softmax(masked_logits / config.temperature, dim=-1)
     # Teacher already zero on illegal, safe
-    # KL = sum teacher * (log teacher - log student) ; for numerical stability treat 0 log 0 as 0
+    # KL = sum over LEGAL actions only of teacher * (log teacher - log student);
+    # illegal log_probs are -inf and 0 * -inf is NaN, so exclude illegal terms
+    # explicitly (they contribute exactly 0: teacher mass is 0 there, asserted above).
     # Use teacher * log teacher - teacher * log student
     eps = 1e-12
     teacher_clamped = teacher_policy.clamp_min(eps)
     # Only where legal, teacher may have support
-    kl_per_row = torch.sum(teacher_policy * (torch.log(teacher_clamped) - log_probs), dim=-1)
+    kl_terms = teacher_policy * (torch.log(teacher_clamped) - log_probs)
+    kl_per_row = torch.sum(
+        torch.where(legal_mask.bool(), kl_terms, torch.zeros_like(kl_terms)), dim=-1
+    )
     # Masked mean over rows
     loss_policy = kl_per_row.mean()
 
@@ -1158,7 +1165,9 @@ def compute_distillation_loss(
             raise ContractError("anchor_target required when w_bc>0 and anchor_logits present")
         # BC anchor: masked CE
         masked_anchor = torch.where(
-            legal_mask.bool(), anchor_logits, torch.tensor(-1e9, device=anchor_logits.device)
+            legal_mask.bool(),
+            anchor_logits,
+            torch.tensor(float("-inf"), device=anchor_logits.device),
         )
         ce = F.cross_entropy(masked_anchor, anchor_target.long(), reduction="mean")
         losses["bc"] = ce * config.w_bc
@@ -1565,20 +1574,30 @@ def audit_leakage(
     train_seeds: tuple[int, ...] | list[int] | None = None,
     held_seeds: tuple[int, ...] | list[int] | None = None,
 ) -> dict[str, bool]:
-    """Run split/wall/seed leakage audits. Returns dict of audit pass bools."""
+    """Run split/wall/seed leakage audits. Raises ContractError on any leak; returns all-True dict on pass."""
     train_set = set(train_ids)
     held_set = set(held_ids)
-    split_ok = len(train_set & held_set) == 0
+    split_overlap = train_set & held_set
 
-    wall_ok = True
+    wall_overlap: set[str] = set()
     if train_walls is not None and held_walls is not None:
-        wall_ok = len(set(train_walls) & set(held_walls)) == 0
+        wall_overlap = set(train_walls) & set(held_walls)
 
-    seed_ok = True
+    seed_overlap: set[int] = set()
     if train_seeds is not None and held_seeds is not None:
-        seed_ok = len(set(train_seeds) & set(held_seeds)) == 0
+        seed_overlap = set(train_seeds) & set(held_seeds)
 
-    return {"split_no_overlap": split_ok, "wall_no_overlap": wall_ok, "seed_isolated": seed_ok}
+    failures: list[str] = []
+    if len(split_overlap) != 0:
+        failures.append(f"split overlap {sorted(split_overlap)[:5]} (n={len(split_overlap)})")
+    if len(wall_overlap) != 0:
+        failures.append(f"wall overlap {sorted(wall_overlap)[:5]} (n={len(wall_overlap)})")
+    if len(seed_overlap) != 0:
+        failures.append(f"seed overlap {sorted(seed_overlap)[:5]} (n={len(seed_overlap)})")
+    if len(failures) != 0:
+        raise ContractError(f"WP-10 blocked: leakage audit failed: {'; '.join(failures)}")
+
+    return {"split_no_overlap": True, "wall_no_overlap": True, "seed_isolated": True}
 
 
 def check_teacher_replacement_invalidates(
@@ -1691,10 +1710,13 @@ def calibration_report(
         with torch.no_grad():
             out: dict[str, torch.Tensor] = student(feats, legal_mask=mask_t)
             logits: torch.Tensor = out["policy_logits"][0]
-            masked = torch.where(mask_t[0], logits, torch.tensor(-1e9))
+            masked = torch.where(
+                mask_t[0], logits, torch.tensor(float("-inf"), device=logits.device)
+            )
             logp = F.log_softmax(masked, dim=-1)
             teacher = torch.tensor(r.teacher_policy, dtype=torch.float32)
-            kl = torch.sum(teacher * (torch.log(teacher.clamp_min(1e-12)) - logp)).item()  # pyrefly: ignore[pytorch-efficiency-lint-item-call]
+            kl_terms = teacher * (torch.log(teacher.clamp_min(1e-12)) - logp)
+            kl = torch.sum(torch.where(mask_t[0], kl_terms, torch.zeros_like(kl_terms))).item()  # pyrefly: ignore[pytorch-efficiency-lint-item-call]
             total_kl += float(kl)
     avg_kl = total_kl / len(records) if len(records) > 0 else 0.0
     ece = min(0.1, avg_kl * 0.05)

@@ -6,7 +6,7 @@ live-draw and dead-wall placements, using one global cycle-safe assignment so
 that no placement silently corrupts another seat's tiles (probe-verified
 failure mode).
 
-Layout facts of RiichiEnv 0.4.8 under ``reset(wall=...)`` (probed with an
+Layout facts of RiichiEnv 0.4.10 under ``reset(wall=...)`` (probed with an
 identity wall, see docs/wp04a-progress.md or attestation metadata):
 
 - haipai: seat ``k`` draws indices ``[4k..4k+3, 16+4k..19+4k, 32+4k..35+4k,

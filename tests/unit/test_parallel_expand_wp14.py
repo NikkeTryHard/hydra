@@ -201,6 +201,7 @@ class TestSerialParallelParity:
             seed=DATA_SEED,
             drop_last=True,
             need_privileged=True,
+            replay_backend="python",
         )
         # Production shape: prefetch decode plus the bounded expansion pool.
         parallel = driver._StreamDataset(
@@ -241,6 +242,64 @@ class TestSerialParallelParity:
         assert len(serial_state["rows"]) > 0
         # Bit-identity: rows bytes, privileged joins, counters, reason classes
         # in first-seen order, buffer index, and the row hash all match.
+        assert parallel_state == serial_state
+
+    def test_rows_quarantine_and_order_identical_rust(self, tmp_path: Path) -> None:
+        """Serial vs pool expansion agree on the rust backend (spawn-safe)."""
+        corpus = tmp_path / "corpus" / "tenhou"
+        _write_parity_corpus(corpus)
+        manifest = build_manifest(corpus)
+
+        serial = driver._StreamDataset(
+            stream_factory=lambda: GameStream(
+                manifest,
+                seed=DATA_SEED,
+                ratios=dict(_RATIOS),
+                epoch=0,
+                split="train",
+                shuffle_buffer=0,
+            ),
+            num_actions=6792,
+            feature_dim=64,
+            seed=DATA_SEED,
+            drop_last=True,
+            need_privileged=True,
+            replay_backend="rust",
+        )
+        parallel = driver._StreamDataset(
+            stream_factory=lambda: PrefetchGameStream(
+                manifest,
+                seed=DATA_SEED,
+                ratios=dict(_RATIOS),
+                epoch=0,
+                split="train",
+                shuffle_buffer=0,
+                prefetch=8,
+                max_workers=2,
+            ),
+            num_actions=6792,
+            feature_dim=64,
+            seed=DATA_SEED,
+            drop_last=True,
+            need_privileged=True,
+            replay_backend="rust",
+            expand_workers=4,
+        )
+        try:
+            _drain(serial)
+            _drain(parallel)
+            assert parallel._expand_pool is not None
+            assert parallel._expand_workers == 4
+            assert serial._expand_pool is None
+            serial_state = _snapshot_state(serial)
+            parallel_state = _snapshot_state(parallel)
+        finally:
+            serial.close()
+            parallel.close()
+        assert serial_state["expand_quarantined"] == 3
+        assert len(serial_state["reasons"]) == 2
+        assert serial_state["replayed"] > 0 and serial_state["sim_replayed"] > 0
+        assert len(serial_state["rows"]) > 0
         assert parallel_state == serial_state
 
 

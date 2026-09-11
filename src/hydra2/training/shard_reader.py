@@ -62,7 +62,7 @@ import pyarrow.ipc as pa_ipc
 import torch
 
 from hydra2.contracts.common import ContractError, CorruptArtifactError
-from hydra2.models.schema import HISTORY_BUCKET_LENGTHS
+from hydra2.models.schema import BASELINE_ACTION_COUNT, HISTORY_BUCKET_LENGTHS
 
 __all__ = [
     "MANIFEST_VERSION",
@@ -116,7 +116,7 @@ def _sha256_file(path: Path) -> str:
 
 
 def _normalize_hex(digest: str) -> str:
-    text = str(digest).strip().lower()
+    text = digest.strip().lower()
     if text.startswith("sha256:"):
         text = text[len("sha256:") :]
     return text
@@ -131,7 +131,8 @@ def _bucket_ceil(length: int, buckets: tuple[int, ...] = HISTORY_BUCKET_LENGTHS)
 
 def _canonical_perm(seed: int, rows: int) -> list[int]:
     gen = torch.Generator().manual_seed(seed)
-    return [int(x) for x in torch.randperm(rows, generator=gen).tolist()]
+    perm: list[int] = torch.randperm(rows, generator=gen).tolist()
+    return perm
 
 
 def dataset_hash_of(decision_ids: list[str]) -> str:
@@ -147,7 +148,7 @@ class _NpyPlane:
         suffix = _plane_suffix(path.name)
         if suffix in _NPY_SUFFIXES:
             arr = np.load(path, mmap_mode="r")
-            if arr.dtype != dtype or tuple(arr.shape) != shape:
+            if arr.dtype != dtype or arr.shape != shape:
                 raise CorruptArtifactError(
                     f"plane {path.name} on-disk {(arr.dtype, arr.shape)} != "
                     f"manifest {(dtype, shape)}"
@@ -241,7 +242,7 @@ def _load_manifest(shard_dir: Path, manifest_name: str) -> dict[str, Any]:
     if not isinstance(manifest, dict):
         raise CorruptArtifactError(f"shard manifest {path} must be a JSON object")
     missing = _REQUIRED_MANIFEST_KEYS - set(manifest.keys())
-    if missing:
+    if len(missing) > 0:
         raise ContractError(f"shard manifest {path} missing keys {sorted(missing)}")
     return manifest
 
@@ -277,6 +278,8 @@ class ShardReader:
         expect_schema_digest: when given, the manifest ``schema_digest`` must
             equal it (production passes ``model_input_schema_digest()``).
         manifest_name: manifest file basename inside ``shard_dir``.
+        allow_narrow: test-only flag permitting a manifest ``action_width``
+            (or ``legal_mask`` plane) narrower than the frozen baseline.
     """
 
     def __init__(
@@ -290,6 +293,7 @@ class ShardReader:
         verify: bool = True,
         expect_schema_digest: str | None = None,
         manifest_name: str = "manifest.json",
+        allow_narrow: bool = False,
     ) -> None:
         if batch_size <= 0:
             raise ContractError(f"batch_size must be positive, got {batch_size}")
@@ -318,14 +322,15 @@ class ShardReader:
         if self._order_kind == "perm" and "seed" not in order:
             raise ContractError("manifest order.kind 'perm' requires a seed")
 
-        if expect_schema_digest is not None and str(manifest["schema_digest"]) != str(
-            expect_schema_digest
-        ):
+        expected = str(manifest["schema_digest"])
+        if expect_schema_digest is not None and expected != expect_schema_digest:
             raise ContractError(
                 f"schema_digest {manifest['schema_digest']!r} != expected {expect_schema_digest!r}"
             )
 
         self._planes, self._plane_meta = self._open_planes(manifest, verify=verify)
+        self._allow_narrow = allow_narrow
+        self._action_width = self._resolve_action_width(manifest)
         self._decision_ids = _load_sidecar_list(self._dir, "decision_ids.json", rows, what="ids")
         self._observation_hashes = _load_sidecar_list(
             self._dir, "observation_hashes.json", rows, what="hashes"
@@ -437,6 +442,38 @@ class ShardReader:
             meta[name] = {"dtype": logical_dtype, "shape": (self._rows, *tail)}
         return planes, meta
 
+    def _resolve_action_width(self, manifest: dict[str, Any]) -> int | None:
+        """Fail closed on undeclared or aliased action widths.
+
+        The builder records the vocab width as ``action_width``; it must agree
+        with the ``legal_mask`` plane when both are present.  A width other
+        than the frozen baseline is test-only and requires ``allow_narrow``.
+        Returns the resolved width, or ``None`` when neither the manifest nor
+        the planes declare one (legacy envelope without a legal plane).
+        """
+        declared = manifest.get("action_width")
+        if declared is not None and (
+            not isinstance(declared, int) or isinstance(declared, bool) or declared <= 0
+        ):
+            raise ContractError(f"manifest action_width invalid: {declared!r}")
+        actual: int | None = None
+        legal_meta = self._plane_meta.get("legal_mask")
+        if legal_meta is not None:
+            shape = legal_meta["shape"]
+            if isinstance(shape, tuple) and len(shape) == 2:
+                actual = int(shape[1])
+        if declared is not None and actual is not None and declared != actual:
+            raise ContractError(
+                f"manifest action_width {declared} != legal_mask plane width {actual}"
+            )
+        width = declared if declared is not None else actual
+        if width is not None and width != BASELINE_ACTION_COUNT and not self._allow_narrow:
+            raise ContractError(
+                f"shard action width {width} != baseline {BASELINE_ACTION_COUNT} "
+                "requires allow_narrow=True (test-only narrow vocab)"
+            )
+        return width
+
     # ------------------------------------------------------------------
     # Order / buckets / spans
     # ------------------------------------------------------------------
@@ -531,6 +568,16 @@ class ShardReader:
                 batch[name] = [str(v) for v in values.tolist()]
             else:
                 batch[name] = torch.from_numpy(np.ascontiguousarray(values))
+        legal = batch.get("legal_mask")
+        if isinstance(legal, torch.Tensor) and legal.dim() == 2:
+            expected = (
+                self._action_width if self._action_width is not None else BASELINE_ACTION_COUNT
+            )
+            if legal.shape[1] != expected:
+                raise ContractError(
+                    f"legal_mask width {legal.shape[1]} != expected {expected} "
+                    "(aliased widths are never trained)"
+                )
         if self._decision_ids is not None:
             order = self._epoch_seq[start:end].tolist()
             batch["_decision_ids"] = [self._decision_ids[int(i)] for i in order]
@@ -566,7 +613,7 @@ class ShardReader:
         self._stop.clear()
         while True:
             try:
-                self._queue.get_nowait()
+                _ = self._queue.get_nowait()  # intentionally discarded: draining stale batches
             except queue.Empty:
                 break
         self._producer = threading.Thread(
@@ -624,7 +671,7 @@ class ShardReader:
 
     @property
     def queue_depth(self) -> int:
-        return int(self._queue.maxsize)
+        return self._queue.maxsize
 
     def get_state(self) -> dict[str, Any]:
         """Resume cursor ``{epoch, sample_in_epoch}`` (+ seed/rows guards)."""

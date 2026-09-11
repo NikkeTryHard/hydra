@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, cast
 import pyarrow.parquet as pq
 
 from hydra2.contracts.common import ContractError, CorruptArtifactError
+from hydra2.models.schema import BASELINE_ACTION_COUNT
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -112,6 +113,7 @@ def verify_and_load_batch(
     expected_action_table_hash: str,
     expected_schema_hash: str,
     batch_size: int = 4,
+    allow_narrow: bool = False,
 ) -> list[dict[str, object]]:
     """Loader verifies manifest, shard hashes, schema hashes, row counts,
     legal masks, split membership.
@@ -247,10 +249,15 @@ def verify_and_load_batch(
         if isinstance(legal_mask, list):
             if len(legal_mask) == 0:
                 raise ContractError(f"legal_mask empty at row {idx}")
-            # Must be bool list aligned with action table
-            if expected_action_table_hash != "":
-                # Length should equal action table size; we approximate by checking non-zero
-                pass
+            # Fail closed on aliased widths: production masks span the full
+            # baseline vocab; a narrower test mask must declare itself via
+            # ``allow_narrow`` (never silently remapped).
+            if not allow_narrow and len(legal_mask) != BASELINE_ACTION_COUNT:
+                raise ContractError(
+                    f"legal_mask width {len(legal_mask)} != baseline "
+                    f"{BASELINE_ACTION_COUNT} at row {idx} "
+                    "(narrow test masks require allow_narrow=True)"
+                )
             if not any(legal_mask):
                 # At nonterminal, all-false is hard error
                 # Determine if terminal phase: check observation phase (reuse obs)
@@ -288,6 +295,7 @@ def load_batch_in_fresh_process(
     expected_action_table_hash: str,
     expected_schema_hash: str,
     batch_size: int = 2,
+    allow_narrow: bool = False,
 ) -> list[dict[str, object]]:
     """Spawn a fresh Python process to load a representative batch (checklist item 10)."""
     code = f"""
@@ -301,6 +309,7 @@ rows = verify_and_load_batch(
     expected_action_table_hash={expected_action_table_hash!r},
     expected_schema_hash={expected_schema_hash!r},
     batch_size={batch_size},
+    allow_narrow={allow_narrow!r},
 )
 print(json.dumps({{"count": len(rows), "first_keys": sorted(rows[0].keys()) if rows else []}}))
 """
@@ -334,4 +343,5 @@ print(json.dumps({{"count": len(rows), "first_keys": sorted(rows[0].keys()) if r
         expected_action_table_hash=expected_action_table_hash,
         expected_schema_hash=expected_schema_hash,
         batch_size=batch_size,
+        allow_narrow=allow_narrow,
     )

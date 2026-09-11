@@ -513,8 +513,8 @@ def generate_action_templates() -> tuple[CanonicalActionTemplate, ...]:
     """Enumerate every and only structurally valid template once (SPEC 6.3).
 
     Census (analytic): pass 4, discard/tsumogiri/riichi_discard 136 each,
-    chi 4032, pon 1224, daiminkan 408, ankan 34, kakan 136, ron 1224,
-    tsumo 136, both abort kinds 1 each => 7608 templates.
+    chi 4032, pon 1224, daiminkan 408, ankan 34, kakan 136, ron 408,
+    tsumo 136, both abort kinds 1 each => 6792 templates.
     """
     templates: list[CanonicalActionTemplate] = []
 

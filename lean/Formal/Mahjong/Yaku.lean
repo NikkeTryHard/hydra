@@ -18,12 +18,15 @@ set_option linter.style.longLine false
 namespace Formal.Mahjong
 
 /-!
-# Yaku — faithful port of RiichiEnv 0.4.8 `src/yaku.rs` + `yaku_checker.rs` + `types.rs`
+# Yaku — faithful port of RiichiEnv 0.4.10 `src/yaku.rs` + `yaku_checker.rs` + `types.rs`
 
-Ported 1:1 from `RiichiEnv/riichienv-core/src/yaku.rs` (38.2KB), `yaku_checker.rs`
-(14.3KB), `types.rs` (9.2KB) and hydra2 wrappers `tiles.py`/`walls.py`.
+Ported 1:1 from `RiichiEnv/riichienv-core/src/yaku.rs`, `yaku_checker.rs`
+(`14.3KB`), `types.rs` (`9.2KB`) and hydra2 wrappers `tiles.py`/`walls.py`.
 Every ID, han value, open/closed reduction, yakuman 13×, and dora/aka/ura
-bonus handling matches `YAKU_TABLE` and `calculate_yaku` verbatim.
+bonus handling matches `YAKU_TABLE` and `calculate_yaku` verbatim, including
+upstream #238 (`b697293`) special-hand composition — kokushi stacks with
+heavenly/all-honors yakuman while chiitoitsu is exclusive with yakuman
+(see §14 `scoredYakuList`; engine vectors in the §14 doc comment).
 
 * TileId 0..135 as `TileId := Fin 136`, `TileType := Fin 34` (`id/4`), copy
   `Fin 4` — identical to `types.rs::TILE_MAX = 34` and `tiles.py::physical_of`
@@ -903,5 +906,107 @@ theorem red_tile_parity :
     tileType ⟨52, by omega⟩ = (⟨13, by omega⟩ : TileType) ∧
     tileType ⟨88, by omega⟩ = (⟨22, by omega⟩ : TileType) := by
   refine ⟨?_, ?_, ?_⟩ <;> native_decide
+
+-- ---------------------------------------------------------------------------
+-- 14. Special-hand yakuman composition — upstream #238 (`b697293`, v0.4.10)
+-- ---------------------------------------------------------------------------
+
+/-- Special-hand branch of `yaku.rs::calculate_yaku` (`divisions.is_empty()`):
+    before #238, kokushi paid 13 (26 thirteen-sided) and chiitoitsu paid
+    chiitoitsu+honroutou+static yaku with yakuman evaluated only afterwards;
+    after #238, heavenly/all-honors yakuman are evaluated FIRST, then:
+    (a) kokushi STACKS (`han += 13`, `+= 26` thirteen-sided) and tenhou forces
+        the thirteen-sided reading regardless of the dealt tile;
+    (b) chiitoitsu is EXCLUSIVE — with any yakuman held, the scored set is the
+        yakuman only (no chiitoitsu, no honroutou, no static yaku, no dora).
+    Engine vectors (`HandEvaluator.hand_from_text(..).calc(..)`, 0.4.10):
+    * kokushi+tenhou `"119m19p19s123467z" + 124`: han 39, yaku `[35, 49]`, fu 0
+    * kokushi13+chiihou `"19m19p19s1234567z" + 1`: han 39, `[36, 49]`, fu 0
+    * kokushi single+chiihou `"119m19p19s123467z" + 124`: han 26, `[36, 42]`, fu 0
+    * seven-pairs+tenhou `"224466p2205668s" + 101`: han 13, `[35]` only, fu 0
+    * all-honors seven-pairs `"1122334455667z" + 133`: han 13, `[39]` only, fu 0
+    * all-honors+tenhou: han 26, `[35, 39]`, fu 0
+    * ordinary seven-pairs (no yakuman): han 5, `[1, 12, 25, 32]`, fu 25
+    Modeling boundary: single-vs-thirteen-sided kokushi selection depends on the
+    winning tile, which this tile-count model does not track
+    (`isKokushi13Pred` holds for every kokushi shape post-win); the scored set
+    therefore retains whichever kokushi form holds, matching the engine exactly
+    for tenhou (always thirteen-sided, han 39) and over-approximating the
+    single-wait non-heavenly case (engine: `Kokushi` 13 han only). -/
+def scoredYakuList (h : Hand) (ms : MeldSet) (ctx : YakuContext := defaultYakuContext) : Finset Yaku :=
+  if isChiitoitsuPred h ms && decide (∃ y ∈ yakuList h ms ctx, isYakuman y = true)
+  then (yakuList h ms ctx).filter (fun y => isYakuman y)
+  else yakuList h ms ctx
+
+/-- Stacking half of #238: a held yakuman is always scored — nothing yakuman
+    is ever dropped (kokushi stacks with tenhou/chiihou/all-honors). -/
+theorem scoredYakuList_preserves_yakuman (h : Hand) (ms : MeldSet) (ctx : YakuContext) (y : Yaku)
+    (hy : y ∈ yakuList h ms ctx) (hyy : isYakuman y = true) :
+    y ∈ scoredYakuList h ms ctx := by
+  unfold scoredYakuList
+  split
+  · next hcond => exact Finset.mem_filter.mpr ⟨hy, hyy⟩
+  · next hcond => exact hy
+
+/-- Exclusivity half of #238: on a chiitoitsu-shape hand with any yakuman held,
+    no ordinary yaku is scored. -/
+theorem scoredYakuList_excludes_non_yakuman (h : Hand) (ms : MeldSet) (ctx : YakuContext) (y : Yaku)
+    (hc : isChiitoitsuPred h ms = true)
+    (hy : ∃ y ∈ yakuList h ms ctx, isYakuman y = true)
+    (hny : isYakuman y = false) :
+    y ∉ scoredYakuList h ms ctx := by
+  unfold scoredYakuList
+  have hdec : decide (∃ y ∈ yakuList h ms ctx, isYakuman y = true) = true :=
+    decide_eq_true hy
+  have hcond : (isChiitoitsuPred h ms && decide (∃ y ∈ yakuList h ms ctx, isYakuman y = true)) = true := by
+    simp [hc, hdec]
+  rw [if_pos hcond]
+  intro hmem
+  have h2 := (Finset.mem_filter.mp hmem).2
+  rw [hny] at h2
+  exact Bool.noConfusion h2
+
+/-- Chiitoitsu itself is excluded with yakuman (`isYakuman Chiitoitsu = false`). -/
+theorem chiitoitsu_yakuman_excludes_chiitoitsu (h : Hand) (ms : MeldSet) (ctx : YakuContext)
+    (hc : isChiitoitsuPred h ms = true)
+    (hy : ∃ y ∈ yakuList h ms ctx, isYakuman y = true) :
+    Yaku.Chiitoitsu ∉ scoredYakuList h ms ctx :=
+  scoredYakuList_excludes_non_yakuman h ms ctx Yaku.Chiitoitsu hc hy (by decide)
+
+/-- Without the chiitoitsu shape, #238 changes nothing: the scored set is the
+    held set (kokushi stacking holds by non-erasure). -/
+theorem scoredYakuList_eq_held_of_not_chiitoitsu (h : Hand) (ms : MeldSet) (ctx : YakuContext)
+    (hc : isChiitoitsuPred h ms = false) :
+    scoredYakuList h ms ctx = yakuList h ms ctx := by
+  unfold scoredYakuList
+  have hcond : (isChiitoitsuPred h ms && decide (∃ y ∈ yakuList h ms ctx, isYakuman y = true)) = false := by
+    simp [hc]
+  have hneg : ¬ ((isChiitoitsuPred h ms && decide (∃ y ∈ yakuList h ms ctx, isYakuman y = true)) = true) := by
+    simp [hcond]
+  rw [if_neg hneg]
+
+/-- Without any yakuman held, #238 changes nothing either (ordinary
+    seven-pairs keeps chiitoitsu+honroutou+static yaku, 25 fu). -/
+theorem scoredYakuList_eq_held_of_no_yakuman (h : Hand) (ms : MeldSet) (ctx : YakuContext)
+    (hy : ¬ ∃ y ∈ yakuList h ms ctx, isYakuman y = true) :
+    scoredYakuList h ms ctx = yakuList h ms ctx := by
+  unfold scoredYakuList
+  have hdec : decide (∃ y ∈ yakuList h ms ctx, isYakuman y = true) = false := by
+    cases h : decide (∃ y ∈ yakuList h ms ctx, isYakuman y = true) with
+    | true => exact absurd (of_decide_eq_true h) hy
+    | false => rfl
+  have hcond : (isChiitoitsuPred h ms && decide (∃ y ∈ yakuList h ms ctx, isYakuman y = true)) = false := by
+    simp [hdec]
+  have hneg : ¬ ((isChiitoitsuPred h ms && decide (∃ y ∈ yakuList h ms ctx, isYakuman y = true)) = true) := by
+    simp [hcond]
+  rw [if_neg hneg]
+/-- Kokushi stacking corollary: on a kokushi-shape (hence non-chiitoitsu-shape)
+    hand, every held yaku — heavenly yakuman included — is scored. -/
+theorem kokushi_tenhou_both_scored (h : Hand) (ms : MeldSet) (ctx : YakuContext)
+    (hnc : isChiitoitsuPred h ms = false)
+    (y : Yaku) (hy : y ∈ yakuList h ms ctx) :
+    y ∈ scoredYakuList h ms ctx := by
+  rw [scoredYakuList_eq_held_of_not_chiitoitsu h ms ctx hnc]
+  exact hy
 
 end Formal.Mahjong

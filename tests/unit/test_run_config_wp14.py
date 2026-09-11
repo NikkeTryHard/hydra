@@ -305,3 +305,84 @@ class TestPlanFormat:
         assert "wp14-run-001" in text
         assert run_config_digest(config) in text
         assert "resume: fresh start" in text
+
+
+class TestTelemetrySection:
+    def test_absent_defaults(self, tmp_path: Path) -> None:
+        """No telemetry block: mlflow on, verbose off, no captures."""
+        path = _write_yaml(tmp_path, "run.yaml", _minimal_mapping(tmp_path))
+        config = load_run_config(path)
+        assert config.telemetry.mlflow_enabled is True
+        assert config.telemetry.verbose_enabled is False
+        assert config.telemetry.verbose_interval_ms == 50
+        assert config.telemetry.profiler_captures == 0
+
+    def test_explicit_values(self, tmp_path: Path) -> None:
+        mapping = _minimal_mapping(tmp_path)
+        mapping["telemetry"] = {
+            "mlflow_enabled": False,
+            "verbose_enabled": True,
+            "verbose_interval_ms": 20,
+            "profiler_captures": 3,
+        }
+        config = load_run_config(_write_yaml(tmp_path, "run.yaml", mapping))
+        assert config.telemetry.mlflow_enabled is False
+        assert config.telemetry.verbose_enabled is True
+        assert config.telemetry.verbose_interval_ms == 20
+        assert config.telemetry.profiler_captures == 3
+
+    def test_strict_rejects(self, tmp_path: Path) -> None:
+        bad_interval = _minimal_mapping(tmp_path)
+        bad_interval["telemetry"] = {"verbose_interval_ms": 100}
+        with pytest.raises(ContractError):
+            load_run_config(_write_yaml(tmp_path, "bad-interval.yaml", bad_interval))
+        bad_captures = _minimal_mapping(tmp_path)
+        bad_captures["telemetry"] = {"profiler_captures": -1}
+        with pytest.raises(ContractError):
+            load_run_config(_write_yaml(tmp_path, "bad-captures.yaml", bad_captures))
+        bad_key = _minimal_mapping(tmp_path)
+        bad_key["telemetry"] = {"nope": True}
+        with pytest.raises(ContractError):
+            load_run_config(_write_yaml(tmp_path, "bad-key.yaml", bad_key))
+
+    def test_plan_reports_telemetry(self, tmp_path: Path) -> None:
+        path = _write_yaml(tmp_path, "run.yaml", _minimal_mapping(tmp_path))
+        plan = format_plan(load_run_config(path), artifact_root=tmp_path)
+        assert "telemetry: mlflow=True verbose=False@50ms profiler=0" in plan
+
+
+class TestFeedKnobs:
+    def test_defaults(self, tmp_path: Path) -> None:
+        """Absent knobs: decode 64, batch 64, loop depth 3."""
+        config = load_run_config(_write_yaml(tmp_path, "run.yaml", _minimal_mapping(tmp_path)))
+        assert config.data.decode_prefetch == 64
+        assert config.data.expand_batch_games == 64
+        assert config.loop.fetch_prefetch_depth == 3
+
+    def test_explicit_values_round_trip(self, tmp_path: Path) -> None:
+        mapping = _minimal_mapping(tmp_path)
+        mapping["data"]["decode_prefetch"] = 32
+        mapping["data"]["expand_batch_games"] = 16
+        mapping["loop"] = {"fetch_prefetch_depth": 2}
+        config = load_run_config(_write_yaml(tmp_path, "run.yaml", mapping))
+        assert config.data.decode_prefetch == 32
+        assert config.data.expand_batch_games == 16
+        assert config.loop.fetch_prefetch_depth == 2
+        again = run_config_to_dict(config)
+        assert again["data"]["decode_prefetch"] == 32
+        assert again["data"]["expand_batch_games"] == 16
+        assert again["loop"]["fetch_prefetch_depth"] == 2
+
+    def test_strict_rejects(self, tmp_path: Path) -> None:
+        for section, key, bad in (
+            ("data", "decode_prefetch", 0),
+            ("data", "decode_prefetch", 2048),
+            ("data", "expand_batch_games", -1),
+            ("loop", "fetch_prefetch_depth", 0),
+            ("loop", "fetch_prefetch_depth", 17),
+            ("loop", "fetch_prefetch_depth", True),
+        ):
+            mapping = _minimal_mapping(tmp_path)
+            mapping.setdefault(section, {})[key] = bad
+            with pytest.raises(ContractError):
+                load_run_config(_write_yaml(tmp_path, "bad.yaml", mapping))

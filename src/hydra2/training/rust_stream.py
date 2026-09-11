@@ -1,53 +1,39 @@
-"""PyO3 JSON-rows handoff (S8 cutover: primary replay path, no tensors/buffers).
+"""Thin plane-filling handoff over the PyO3 boundary (K1 cutover: sole replay path).
 
-Thin Python side of ``tools/hydra2-replay-rs/src/py_stream.rs``: open a
-serial ``PyHydra2ReplayStream`` over framed per-game inputs, pull
-newline-delimited DecisionRow-JSON batches through a caller-owned bytearray,
-and validate every row before it reaches training code.
+Thin Python side of the ``hydra2-replay-rs`` bridge (``PyHydraStream``):
+Rust stages framed per-game inputs and fills caller-owned pinned plane
+slots DIRECTLY via ``data_ptr`` — no JSON, no per-row copies. ``next_into``
+takes 13 base pointers + 13 byte caps (``tensor.nbytes``) in §7 plane order
+and returns the committed ``(rows, games, t_len)``; the valid prefix moves
+to device on a single transfer stream with a slot-local ``wait_event``
+(no global sync, no ``.item``).
 
-Enforced per batch (defense in depth, Rust enforces the same gates before
-any byte crosses the FFI boundary):
+Open pins are opaque non-empty digests (``source_hash``/``rules_hash``/
+``action_table_hash``); the closed-form walk ids are pinned entry-wise to
+the compiled action-table digest inside Rust, which fails closed at open
+when the pin itself drifts. Quarantines cross as whole-game records with
+feed reason codes (never a new code on this path).
 
-- row keys are EXACTLY the 13 ``ACTOR_FIELDS`` (extras = privileged leak,
-  missing = schema fork, both fail closed);
-- ``actor_observation`` parses and carries no ``FORBIDDEN_REPLAY_KEYS``;
-- ``split``/``rules_hash``/``adapter_hash``/``action_table_hash`` echo the
-  open binding: ``split`` is the dataset split, the three digests are the
-  pinned Slice-5 authorities (published rules bytes, engine-identity digest,
-  verified table CONTENT digest). The legacy ``spec_hash`` stays a required
-  transport pin for FFI stability but is never bound into rows.
-
-Scratch discipline mirrors the Rust ``parity_84`` gate: when
+Scratch discipline mirrors the Rust parity gate: when
 ``HYDRA2_ARTIFACT_ROOT`` is set it must sit outside the raw corpus roots
 (``HYDRA2_DATA_ROOT``, ``HYDRA2_TENHOU_MOUNT``); the corpus stays read-only.
 """
 
 from __future__ import annotations
 
-import ctypes
 import importlib
-import json
 import os
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
-
-from hydra2.data.parquet import ACTOR_FIELDS
-from hydra2.training.replay import FORBIDDEN_REPLAY_KEYS
-
-if TYPE_CHECKING:
-    from collections.abc import Iterator
+from typing import Any
 
 __all__ = [
-    "ACTOR_FIELD_SET",
-    "RustJsonStream",
-    "RustStreamQuarantine",
+    "RustPlaneFill",
+    "RustPlaneQuarantine",
+    "RustPlaneStream",
     "RustStreamStats",
     "assert_artifact_root_outside_raw_roots",
-    "open_rust_stream",
+    "open_rust_plane_stream",
 ]
-
-#: Exact row envelope: the 13 actor-namespace fields, nothing else.
-ACTOR_FIELD_SET = frozenset(ACTOR_FIELDS)
 
 _RAW_ROOT_KEYS = ("HYDRA2_DATA_ROOT", "HYDRA2_TENHOU_MOUNT")
 
@@ -55,11 +41,11 @@ _RAW_ROOT_KEYS = ("HYDRA2_DATA_ROOT", "HYDRA2_TENHOU_MOUNT")
 def assert_artifact_root_outside_raw_roots() -> None:
     """Fail closed when artifacts would land inside a raw corpus mount."""
     artifact = os.environ.get("HYDRA2_ARTIFACT_ROOT", "")
-    if not artifact:
+    if artifact == "":
         return
     for key in _RAW_ROOT_KEYS:
         raw = os.environ.get(key, "")
-        if not raw:
+        if raw == "":
             continue
         if artifact.startswith(raw) or raw.startswith(artifact):
             raise ValueError(
@@ -81,37 +67,6 @@ def _load_extension() -> Any:
         ) from exc
 
 
-def _minted_provenance() -> tuple[str, str, str]:
-    """Resolve the pinned Slice-5 digest authorities from the Python oracle.
-
-    Returns ``(rules_hash, adapter_hash, action_table_hash)`` byte-identical
-    to the Rust ``PINNED_*`` constants: sha256 over the published rules-file
-    bytes (published wins, mirroring ``_rules_identity``), ``of_canonical``
-    over the machine-stable engine identity (mirroring ``_adapter_hash``),
-    and the verified table CONTENT digest (``table.digest``, never file
-    bytes). Imports stay lazy so this module never drags the engine graph
-    into collectors that only need the envelope constants.
-    """
-    from hydra2.config import repo_root
-    from hydra2.contracts.action import ACTION_TABLE_RELPATH, load_action_table
-    from hydra2.data.replay_expand import _adapter_hash, _load_rules
-    from hydra2.engines.riichienv.adapter import _rules_identity
-    from hydra2.engines.riichienv.state import rules_identity_hash
-
-    rules = _load_rules()
-    resolved = (
-        _rules_identity(rules, str(rules_identity_hash(rules))),
-        _adapter_hash(),
-        str(load_action_table(repo_root() / ACTION_TABLE_RELPATH).digest),
-    )
-    for name, value in zip(
-        ("rules_hash", "adapter_hash", "action_table_hash"), resolved, strict=True
-    ):
-        if not value:
-            raise RuntimeError(f"rust stream oracle left {name} empty; refusing to open")
-    return resolved
-
-
 @dataclass(frozen=True, slots=True)
 class RustStreamStats:
     open_count: int
@@ -120,129 +75,255 @@ class RustStreamStats:
     rows_out: int
 
 
+_T_BUCKETS = (32, 64, 128, 256)
+
+#: Hot plane order (§7 #0-25; ptrs order = table order). Each entry is
+#: ``(name, cols, dtype_name)`` with ``cols`` None (scalar), an int (fixed
+#: ``"legal"`` (per-row stride ``[ids128][len8]``, 136B/row, carried as raw
+#: bytes and unpacked per row on device — never SoA across rows).
+#: resolved lazily in :class:`RustPlaneStream`.
+_HOT_PLANES: tuple[tuple[str, int | str | None, str], ...] = (
+    ("concealed_hand_counts", 34, "uint8"),
+    ("visible_discards_counts", 34, "uint8"),
+    ("dora_indicators", 5, "int32"),
+    ("scores", 4, "int32"),
+    ("history_event_kind", "T", "int64"),
+    ("history_mask", "T", "bool"),
+    ("chosen_action_id", None, "int64"),
+    ("actor", None, "int64"),
+    ("dealer", None, "int64"),
+    ("round_wind", None, "int64"),
+    ("phase", None, "int64"),
+    ("seat_winds", 4, "int64"),
+    ("legal_packed", "legal", "uint8"),
+    ("turn_actor", None, "int64"),
+    ("actor_furiten", None, "int64"),
+    ("honba", None, "int32"),
+    ("riichi_sticks", None, "int32"),
+    ("live_wall_tiles_remaining", None, "int32"),
+    ("kan_count", None, "int32"),
+    ("round_index", None, "int32"),
+    ("hand_number", None, "int32"),
+    ("own_drawn_tile", None, "int32"),
+    ("ippatsu_active", 4, "bool"),
+    ("riichi_states", 4, "int64"),
+    ("actor_can_riichi", None, "bool"),
+    ("actor_can_tsumo", None, "bool"),
+)
+
+
 @dataclass(frozen=True, slots=True)
-class RustStreamQuarantine:
+class RustPlaneFill:
+    rows: int
+    games_consumed: int
+    games_quarantined: int
+    t_len: int
+
+
+@dataclass(frozen=True, slots=True)
+class RustPlaneQuarantine:
     game_id: str
     reason_code: str
     detail: str
+    obs_hash: int
 
 
-class RustJsonStream:
-    """Serial DecisionRow-JSON stream over framed per-game inputs.
+class RustPlaneStream:
+    """Plane-filling stream over caller-pinned slots (K1 cutover: sole handoff).
+    Rust fills pinned ring slots DIRECTLY via ``data_ptr`` — no JSON, no
+    per-row copies — and ``next_into_planes`` moves the valid prefix to
+    device on a single transfer stream with slot-local ``wait_event``
+    (the :mod:`pinned_ring` pattern: no global sync, no ``.item``).
 
-    ``next()`` returns a validated ``list[dict]`` (empty at exhaustion);
-    ``close()`` is idempotent; use as a context manager for scoped runs.
-
-    The open digest binding is the Slice-5 minted trio
-    (``rules_hash``/``adapter_hash``/``action_table_hash``); omitted digests
-    resolve from the Python oracle (byte-identical to the Rust ``PINNED_*``
-    authorities), so every row must carry the minted values verbatim.
-    ``spec_hash`` stays a required transport pin for FFI stability and is
-    never read back out of rows.
+    Per §6.5 caller: rings are built ONCE (``depth`` slots x 13 planes,
+    ``pin_memory=True``), ``byte_caps`` are ``tensor.nbytes``, the GIL is
+    released for the entire fill, and ``slot_events[cur]`` is recorded
+    AFTER the ``.to()``s on the transfer stream. History planes transfer
+    ``[:rows, :t_len]`` (the fill commits ``t_len`` entries per history
+    row; beyond-``t_len`` slot bytes are untouched filler, never rows).
     """
 
     def __init__(
         self,
         data_dirs: list[str],
         batch: int,
-        workers: int = 0,
-        queue: int = 4,
+        *,
         split: str = "train",
-        spec_hash: str = "",
-        capacity_bytes: int = 0,
-        rules_hash: str | None = None,
-        adapter_hash: str | None = None,
-        action_table_hash: str | None = None,
+        source_hash: str = "",
+        rules_hash: str = "",
+        action_table_hash: str = "",
+        slot_rows: int = 256,
+        t_max: int = 256,
+        depth: int = 2,
+        device: str = "cuda",
     ) -> None:
+        import time
+        from collections import deque
+
+        try:
+            import torch
+        except ImportError as exc:
+            raise RuntimeError("rust plane stream needs torch") from exc
         assert_artifact_root_outside_raw_roots()
-        if not data_dirs:
-            raise ValueError("rust stream data_dirs must not be empty")
+        if len(data_dirs) == 0:
+            raise ValueError("rust plane stream data_dirs must not be empty")
         if batch < 1:
-            raise ValueError(f"rust stream batch must be >= 1, got {batch}")
-        if workers != 0:
-            raise ValueError("rust stream workers>0 is deferred to Slice 7; pass workers=0")
+            raise ValueError(f"rust plane stream batch must be >= 1, got {batch}")
         if split not in ("train", "validation"):
-            raise ValueError(f"rust stream split must be train|validation, got {split!r}")
-        if not spec_hash:
-            raise ValueError("rust stream spec_hash must not be empty")
-        if rules_hash is None or adapter_hash is None or action_table_hash is None:
-            minted = _minted_provenance()
-            if rules_hash is None:
-                rules_hash = minted[0]
-            if adapter_hash is None:
-                adapter_hash = minted[1]
-            if action_table_hash is None:
-                action_table_hash = minted[2]
+            raise ValueError(f"rust plane stream split must be train|validation, got {split!r}")
         for name, value in (
+            ("source_hash", source_hash),
             ("rules_hash", rules_hash),
-            ("adapter_hash", adapter_hash),
             ("action_table_hash", action_table_hash),
         ):
-            if not value:
-                raise ValueError(f"rust stream {name} must not be empty")
-        ext = _load_extension()
-        self._split = split
-        self._rules_hash = rules_hash
-        self._adapter_hash = adapter_hash
-        self._action_table_hash = action_table_hash
-        capacity = capacity_bytes or max(65536, batch * 16384)
-        self._buf = bytearray(capacity)
+            if value == "":
+                raise ValueError(f"rust plane stream {name} must not be empty")
+        if slot_rows < 1:
+            raise ValueError(f"rust plane stream slot_rows must be >= 1, got {slot_rows}")
+        if t_max not in _T_BUCKETS:
+            raise ValueError(f"rust plane stream t_max must be one of {_T_BUCKETS}, got {t_max}")
+        if depth < 1:
+            raise ValueError(f"rust plane stream depth must be >= 1, got {depth}")
+        self._torch = torch
+        self._time = time
+        self._t_max = t_max
+        self._batch = batch
+        resolved = torch.device(device)
+        self._device = resolved
+        self._cuda = resolved.type == "cuda" and torch.cuda.is_available()
+        dtypes = {n: getattr(torch, n) for _, _, n in _HOT_PLANES}
+
+        def _shape(cols: int | str | None) -> tuple[int, ...]:
+            if cols is None:
+                return (slot_rows,)
+            if cols == "T":
+                return (slot_rows, t_max)
+            if cols == "legal":
+                return (slot_rows * 136,)
+            if isinstance(cols, int):
+                return (slot_rows, cols)
+            raise ValueError(f"rust plane stream bad plane width {cols!r}")
+
+        try:
+            self._rings = [
+                [
+                    torch.empty(_shape(cols), dtype=dtypes[dtype], pin_memory=True)
+                    for _, cols, dtype in _HOT_PLANES
+                ]
+                for _ in range(depth)
+            ]
+        except (RuntimeError, TypeError, ValueError) as exc:
+            raise ValueError(f"rust plane stream pinned alloc failed (fail closed): {exc}") from exc
+        unpinned = sorted(
+            f"slot-{s}/plane-{p}"
+            for s, slot in enumerate(self._rings)
+            for p, tensor in enumerate(slot)
+            if not tensor.is_pinned()
+        )
+        if len(unpinned) > 0:
+            self._rings = []
+            raise ValueError(f"rust plane stream unpinnable for {unpinned} (fail closed)")
+        # Event/stream handles hold torch CUDA objects on GPU runs and None
+        # on CPU runs; typed Any so the CUDA-only use sites (guarded by
+        # self._cuda) narrow without Optional-element assertions.
+        self._transfer: Any
+        self._consume: list[Any]
+        self._start: list[Any]
+        self._end: list[Any]
+        if self._cuda:
+            self._transfer = torch.cuda.Stream(device=resolved)
+            self._consume = [torch.cuda.Event(enable_timing=True) for _ in range(depth)]
+            self._start = [torch.cuda.Event(enable_timing=True) for _ in range(depth)]
+            self._end = [torch.cuda.Event(enable_timing=True) for _ in range(depth)]
+        else:
+            self._transfer = None
+            self._consume = [None] * depth
+            self._start = [None] * depth
+            self._end = [None] * depth
+        self._depth = depth
+        self._cursor = 0
         self._closed = False
-        self._handle: Any = ext.PyHydra2ReplayStream.open(
-            [str(d) for d in data_dirs], batch, workers, queue, split, spec_hash
+        self._slot_used = [False] * depth
+        self._sync_ms: deque[float] = deque(maxlen=1024)
+        self._h2d_ms: deque[float] = deque(maxlen=1024)
+        ext = _load_extension()
+        self._handle: Any = ext.PyHydraStream.open(
+            list(data_dirs), batch, split, source_hash, rules_hash, action_table_hash
         )
 
-    def _validated_rows(self, payload: bytes) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
-        for line in payload.split(b"\n"):
-            if not line:
-                continue
-            row: Any = json.loads(line)
-            if not isinstance(row, dict) or set(row) != ACTOR_FIELD_SET:
-                raise ValueError(
-                    "rust stream row envelope drift: keys must be exactly ACTOR_FIELDS, "
-                    f"got {sorted(row) if isinstance(row, dict) else type(row).__name__}"
-                )
-            forbidden = set(row) & set(FORBIDDEN_REPLAY_KEYS)
-            if forbidden:
-                raise ValueError(f"rust stream row carries forbidden keys {sorted(forbidden)}")
-            if row["split"] != self._split:
-                raise ValueError(
-                    f"rust stream row split {row['split']!r} != open split {self._split!r}"
-                )
-            for key, expected in (
-                ("rules_hash", self._rules_hash),
-                ("adapter_hash", self._adapter_hash),
-                ("action_table_hash", self._action_table_hash),
-            ):
-                value = row[key]
-                if not isinstance(value, str) or value != expected:
-                    raise ValueError(f"rust stream row {key} does not bind the open {key}")
-            actor_text = row["actor_observation"]
-            if not isinstance(actor_text, str):
-                raise ValueError("rust stream actor_observation must ride as a JSON string")
-            actor_doc: Any = json.loads(actor_text)
-            if not isinstance(actor_doc, dict):
-                raise ValueError("rust stream actor_observation must decode to an object")
-            forbidden_doc = set(actor_doc) & set(FORBIDDEN_REPLAY_KEYS)
-            if forbidden_doc:
-                raise ValueError(
-                    f"rust stream actor_observation carries forbidden keys {sorted(forbidden_doc)}"
-                )
-            chosen = row["chosen_action_id"]
-            if chosen is not None and not isinstance(chosen, int):
-                raise ValueError("rust stream chosen_action_id must be int or null")
-            rows.append(row)
-        return rows
-
-    def next(self) -> list[dict[str, Any]]:
-        """Drain up to ``batch`` validated rows ([] at exhaustion)."""
+    def next_into_planes(self) -> tuple[dict[str, Any], RustPlaneFill]:
+        """Fill one slot and move its valid prefix to device (slot-local wait)."""
+        torch = self._torch
         if self._closed:
             raise ValueError("hydra2 replay stream is closed")
-        addr = ctypes.addressof(ctypes.c_char.from_buffer(self._buf))
-        nxt: Any = self._handle.next_into_json(addr, len(self._buf))
-        payload = bytes(self._buf[: int(nxt.bytes_written)])
-        return self._validated_rows(payload)
+        cur = self._cursor
+        slot = self._rings[cur]
+        if self._cuda:
+            # Reuse gate (pinned_ring pattern): stall here is the overlap
+            # signal — near-zero once fills + transfers pipeline at depth>=2.
+            wait_began = self._time.perf_counter()
+            self._consume[cur].synchronize()
+            self._sync_ms.append((self._time.perf_counter() - wait_began) * 1000.0)
+            if self._slot_used[cur]:
+                self._h2d_ms.append(float(self._start[cur].elapsed_time(self._end[cur])))
+        ptrs = [t.data_ptr() for t in slot]
+        byte_caps = [t.nbytes for t in slot]
+        raw: Any = self._handle.next_into(ptrs, byte_caps)
+        fill = RustPlaneFill(
+            rows=int(raw.rows),
+            games_consumed=int(raw.games_consumed),
+            games_quarantined=int(raw.games_quarantined),
+            t_len=int(raw.t_len),
+        )
+        rows, t_len = fill.rows, fill.t_len
+        self._cursor = (cur + 1) % self._depth
+        if rows == 0:
+            return {}, fill
+        if t_len > self._t_max:
+            raise ValueError(
+                f"rust plane stream fill t_len {t_len} exceeds slot t_max {self._t_max}; "
+                "reopen with a bigger t_max"
+            )
+        out: dict[str, Any] = {}
+        if self._cuda:
+            with torch.cuda.stream(self._transfer):
+                self._start[cur].record()
+                for (name, cols, _), tensor in zip(_HOT_PLANES, slot, strict=True):
+                    if cols == "T":
+                        out[name] = tensor[:rows, :t_len].to(self._device, non_blocking=True)
+                    elif cols == "legal":
+                        out[name] = tensor[: rows * 136].to(self._device, non_blocking=True)
+                    else:
+                        out[name] = tensor[:rows].to(self._device, non_blocking=True)
+                packed = out.pop("legal_packed")
+                # Per-row stride, not SoA: view rows x 136B, then split. The
+                # slices copy ~rows*136B once (35KB at 256 rows) — negligible
+                # next to the H2D that follows on this stream.
+                strided = packed.view(rows, 136)
+                out["legal_ids"] = strided[:, :128].contiguous().view(torch.int32).reshape(rows, 32)
+                out["legal_len"] = strided[:, 128:].contiguous().view(torch.int64).reshape(rows)
+                self._end[cur].record()
+                self._consume[cur].record()
+            torch.cuda.current_stream().wait_event(self._consume[cur])
+        else:
+            for (name, cols, _), tensor in zip(_HOT_PLANES, slot, strict=True):
+                if cols == "T":
+                    out[name] = tensor[:rows, :t_len].clone()
+                elif cols == "legal":
+                    packed = tensor[: rows * 136].clone()
+                    strided = packed.view(rows, 136)
+                    out["legal_ids"] = (
+                        strided[:, :128].contiguous().view(torch.int32).reshape(rows, 32)
+                    )
+                    out["legal_len"] = strided[:, 128:].contiguous().view(torch.int64).reshape(rows)
+                else:
+                    out[name] = tensor[:rows].clone()
+        self._slot_used[cur] = True
+        return out, fill
+
+    def timings(self) -> tuple[list[float], list[float]]:
+        """(sync_ms, h2d_ms) samples: reuse stalls vs transfer durations."""
+        return list(self._sync_ms), list(self._h2d_ms)
 
     def stats(self) -> RustStreamStats:
         """Cumulative counters (``open_count == 1`` on a live stream)."""
@@ -254,13 +335,14 @@ class RustJsonStream:
             rows_out=int(raw.rows_out),
         )
 
-    def quarantines(self) -> list[RustStreamQuarantine]:
-        """Whole-game quarantines in load order (Slice-3 reason codes)."""
+    def quarantines(self) -> list[RustPlaneQuarantine]:
+        """Whole-game quarantines in load order (feed reason codes)."""
         return [
-            RustStreamQuarantine(
+            RustPlaneQuarantine(
                 game_id=str(item.game_id),
                 reason_code=str(item.reason_code),
                 detail=str(item.detail),
+                obs_hash=int(item.obs_hash),
             )
             for item in self._handle.quarantines()
         ]
@@ -272,45 +354,38 @@ class RustJsonStream:
         self._closed = True
         self._handle.close()
 
-    def __enter__(self) -> RustJsonStream:
+    def __enter__(self) -> RustPlaneStream:
         return self
 
     def __exit__(self, *exc: object) -> None:
         self.close()
 
-    def __iter__(self) -> Iterator[dict[str, Any]]:
-        batch = self.next()
-        while batch:
-            yield from batch
-            batch = self.next()
 
-
-def open_rust_stream(
+def open_rust_plane_stream(
     data_dirs: list[str],
     batch: int,
-    workers: int = 0,
-    queue: int = 4,
+    *,
     split: str = "train",
-    spec_hash: str = "",
-    capacity_bytes: int = 0,
-    rules_hash: str | None = None,
-    adapter_hash: str | None = None,
-    action_table_hash: str | None = None,
-) -> RustJsonStream:
-    """Open a serial DecisionRow-JSON stream (see :class:`RustJsonStream`).
-
-    Omitted digests resolve from the Python oracle (byte-identical to the
-    Rust ``PINNED_*`` authorities); explicit digests bind strictly.
+    source_hash: str = "",
+    rules_hash: str = "",
+    action_table_hash: str = "",
+    slot_rows: int = 256,
+    t_max: int = 256,
+    depth: int = 2,
+    device: str = "cuda",
+) -> RustPlaneStream:
+    """Open a plane-filling stream (see :class:`RustPlaneStream`).
+    Sole replay handoff (K1 cutover): the JSON path is deleted.
     """
-    return RustJsonStream(
+    return RustPlaneStream(
         data_dirs=data_dirs,
         batch=batch,
-        workers=workers,
-        queue=queue,
         split=split,
-        spec_hash=spec_hash,
-        capacity_bytes=capacity_bytes,
+        source_hash=source_hash,
         rules_hash=rules_hash,
-        adapter_hash=adapter_hash,
         action_table_hash=action_table_hash,
+        slot_rows=slot_rows,
+        t_max=t_max,
+        depth=depth,
+        device=device,
     )

@@ -259,9 +259,14 @@ def test_firewall_and_guards_fail_closed(tmp_path: Path) -> None:
         build_shards(games, out_dir=tmp_path / "badchunk", chunk_rows=0)
     with pytest.raises(ContractError, match="expand_workers invalid"):
         build_shards(games, out_dir=tmp_path / "badworkers", expand_workers=-1)
+    with pytest.raises(ContractError, match="allow_narrow"):
+        build_shards(games, out_dir=tmp_path / "narrow", num_actions=16)
 
     out_dir = tmp_path / "shards"
     manifest = build_shards(games, out_dir=out_dir, expand_workers=0)
+    assert manifest["action_width"] == 6792
+    with pytest.raises(ContractError, match="action_width"):
+        validate_manifest({**manifest, "action_width": 16}, out_dir=out_dir)
     tampered = json.loads(json.dumps(manifest))
     tampered["planes"][0]["sha256"] = "0" * 64
     with pytest.raises(ContractError, match="sha256 mismatch"):

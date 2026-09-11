@@ -72,6 +72,7 @@ __all__ = [
     "SelectionConfig",
     "ShuffleState",
     "StreamCursor",
+    "TelemetryConfig",
     "WeightsConfig",
     "WorkerPlan",
     "create_run_layout",
@@ -86,7 +87,7 @@ __all__ = [
     "run_dir_for",
 ]
 
-#: The twelve RunSpec YAML sections, in canonical order. Unknown top-level
+#: The fourteen RunSpec YAML sections, in canonical order. Unknown top-level
 #: keys are rejected (strict loader).
 CONFIG_SECTIONS: tuple[str, ...] = (
     "run",
@@ -100,6 +101,7 @@ CONFIG_SECTIONS: tuple[str, ...] = (
     "seeds",
     "selection",
     "mirror",
+    "telemetry",
     "eval",
     "output",
 )
@@ -171,8 +173,8 @@ class DataConfig:
     arrives with ``run.kind=rl`` (deferred, top-level ``rl`` must be null).
     Stream mechanics (ResumeExactPlan handoff): ``shuffle_buffer_size`` pins
     the shuffle buffer capacity (buffer persists verbatim as row KEYS, never
-    refilled HF-style); ``drop_last`` pins tail behavior; ``num_workers`` /
-    ``world_size`` pin the worker plan verified at resume (mismatch is a
+    refilled HF-style); 0 disables shuffling (stream order). ``drop_last``
+    pins tail behavior; ``num_workers`` / ``world_size`` pin the worker plan
     hard error). Shuffle order derives from ``seeds.data_seed`` with
     ``epoch_seed = data_seed + epoch``; the stream builder owns the draw,
     this config owns the pins.
@@ -191,13 +193,21 @@ class DataConfig:
     drop_last: bool = True
     num_workers: int = 0
     world_size: int = 1
-    #: Replay backend (Slice 5, flag-gated): ``"python"`` is the default and
-    #: preserves the pre-flag behavior byte-identically; ``"rust_json"``
-    #: routes wall-less games through the ``rust_stream`` JSON handoff
-    #: (serial ``workers=0``; ``workers>0`` stays fail-closed). The value is
-    #: part of the run digest, so cross-backend resume refuses fail-closed
-    #: (digest mismatch, as does the dataset buffer backend tag).
-    replay_backend: str = "python"
+    #: Replay backend: ``"rust"`` (Rust per-game walk + tensor-native batch assembly over the
+    #: identical stream: same order/shuffle/resume/sidecar, same rows, no
+    #: per-row Python) or ``"python"`` (oracle shim, byte-identical rows, parity only).
+    #: The value is part of the run digest, so a
+    #: changed backend refuses resume fail-closed (digest mismatch, as does
+    #: the dataset buffer backend tag).
+    replay_backend: str = "rust"
+    #: Decode lookahead: games held in the background decode pool
+    #: (``PrefetchGameStream`` in ``src/hydra2/data/stream.py``). Must cover
+    #: one full expansion batch; larger smooths variable-rows-per-game burst.
+    decode_prefetch: int = 64
+    #: Expansion batch: games pulled per fill round and sharded over the
+    #: spawn workers (``_fill_parallel`` in ``src/hydra2/training/stream_train.py``,
+    #: one bridge FFI per chunk via ``expand_game_batch``).
+    expand_batch_games: int = 64
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,10 +239,10 @@ class WeightsConfig:
     w_belief: dict[str, float] | None = None
     privileged_source_hash: str | None = None
     #: Legal-only label-smoothing mass ``eps`` in ``[0, 1)`` (default
-    #: ``0.0`` = disabled, byte-identical plain masked CE).  The ``eps``
-    #: mass spreads over the LEGAL set only (illegal mass stays exactly
-    #: zero); the r1 recipe sets ``0.03`` (SOTA-quoted default).
-    label_smoothing: float = 0.0
+    #: ``0.03``, the SOTA-quoted constant; ``0.0`` disables to byte-identical
+    #: plain masked CE).  The ``eps`` mass spreads over the LEGAL set only
+    #: (illegal mass stays exactly zero).
+    label_smoothing: float = 0.03
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,13 +253,16 @@ class OptimizerConfig:
     lr: float = 3e-4
     betas: tuple[float, float] = (0.9, 0.999)
     weight_decay: float = 0.01
-    #: Head-specific LR multipliers ``{head_name: mult}`` (SOTA Mortal
-    #: decay/no-decay per-group precedent; dominant policy head may run
-    #: ``0.1``-``0.3``x).  ``None`` (default) is a uniform ``lr`` for all
-    #: parameters.  Registry + validation in this slice; the optimizer
-    #: build consumes these in a follow-up (``stream_train``
-    #: ``_build_optimizer`` is read-only here).
-    head_lr_mult: dict[str, float] | None = None
+    #: Policy-head LR multiplier (SOTA dominant-head precedent; the policy
+    #: head trains at ``lr * head_lr_mult`` with ``weight_decay`` forced to
+    #: ``0.0``).  Only ``policy_head.`` parameters take the head LR; the
+    #: placement/value/event/belief heads stay in the trunk groups at the
+    #: base LR by design (policy-only head LR: the policy head dominates the
+    #: update and benefits from the larger step, while auxiliary heads train
+    #: alongside the trunk they read out from).  Trunk parameters split into
+    #: decay (``weight_decay``) vs no-decay (``0.0``) groups in
+    #: ``stream_train._optimizer_param_groups``.
+    head_lr_mult: float = 3.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -313,7 +326,11 @@ class LoopConfig:
     #: ``2``-``4``x).  ``None`` (default) means uniform (no oversampling).
     #: Values MUST be positive and finite; keys MUST be non-empty strings.
     sampling_ratios: dict[str, float] | None = None
-    #: Log flattened per-type ``per_type/<kind>/{n,nll,top1,top3,ece}``
+    #: Fetch lookahead: microbatches held in the loop prefetch queue
+    #: (``SupervisedLoop.train`` in ``src/hydra2/training/loop.py``). Must
+    #: cover a fill burst behind compute windows (fetch/compute ratio sized).
+    fetch_prefetch_depth: int = 3
+    #: Log flattened per-type ``per_type/<kind>/{n,nll,top1,top3,ece,recall,low_support}``
     #: scorecards in train history and eval reports (default ``True``).
     log_per_type_metrics: bool = True
     #: Fit post-hoc temperature on eval reports (default ``True``).
@@ -377,6 +394,25 @@ class MirrorConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class TelemetryConfig:
+    """``telemetry`` section: observer-only MLflow + verbose sampler flags.
+
+    Local artifacts stay authoritative; telemetry never feeds values back.
+    ``mlflow_enabled`` defaults on (quiet per-update scalars into the
+    per-artifact-root SQLite store); ``HYDRA2_MLFLOW_DISABLED=1`` is the
+    kill-switch and wins over ``true``. ``verbose_enabled`` defaults off
+    (20-50ms NVML/psutil rows into ``logs/verbose-telemetry.jsonl``).
+    ``profiler_captures`` arms that many single-update torch.profiler
+    captures per run (0 disables; CUDA-only, traces under ``profiler/``).
+    """
+
+    mlflow_enabled: bool = True
+    verbose_enabled: bool = False
+    verbose_interval_ms: int = 50
+    profiler_captures: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class EvalConfig:
     """``eval`` section: duplicate-wall evaluation cadence.
 
@@ -419,6 +455,7 @@ class RunConfig:
     seeds: SeedsConfig = field(default_factory=SeedsConfig)
     selection: SelectionConfig = field(default_factory=SelectionConfig)
     mirror: MirrorConfig = field(default_factory=MirrorConfig)
+    telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
     eval: EvalConfig = field(default_factory=EvalConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
 
@@ -456,7 +493,7 @@ class StreamCursor:
         expected = ("file_index", "byte_offset", "games_seen", "seed", "epoch")
         unknown = sorted(k for k in raw if k not in expected)
         missing = [k for k in expected if k not in raw]
-        if unknown or missing:
+        if len(unknown) > 0 or len(missing) > 0:
             raise ContractError(
                 f"stream cursor envelope mismatch; missing={missing} unknown={unknown}"
             )
@@ -607,7 +644,7 @@ def _reject_unknown(raw: Any, allowed: tuple[str, ...], *, where: str) -> dict[s
     if not isinstance(raw, dict):
         raise ContractError(f"{where} must be a mapping, got {type(raw).__name__}")
     unknown = sorted(k for k in raw if k not in allowed)
-    if unknown:
+    if len(unknown) > 0:
         raise ContractError(f"{where} has unknown keys {unknown}; allowed={sorted(allowed)}")
     return dict(raw)
 
@@ -623,6 +660,14 @@ def _require_positive_int(raw: dict[str, Any], key: str, *, where: str) -> int:
     value = raw.get(key)
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ContractError(f"{where}.{key} must be a positive int, got {value!r}")
+    return value
+
+
+def _require_bounded_int(raw: dict[str, Any], key: str, *, where: str, lo: int, hi: int) -> int:
+    """Tuning knob in ``[lo, hi]`` (fail-closed; bounds are memory sanity, not tuning)."""
+    value = raw.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or not (lo <= value <= hi):
+        raise ContractError(f"{where}.{key} must be an int in [{lo}, {hi}], got {value!r}")
     return value
 
 
@@ -752,7 +797,7 @@ def _parse_run(raw: Any) -> RunMeta:
     description = fields.get("description", "")
     if not isinstance(description, str):
         raise ContractError("run.description must be a string")
-    return RunMeta(run_id=run_id, kind=str(kind), description=description)
+    return RunMeta(run_id=run_id, kind=kind, description=description)
 
 
 def _parse_data(raw: Any) -> DataConfig:
@@ -773,6 +818,8 @@ def _parse_data(raw: Any) -> DataConfig:
             "num_workers",
             "world_size",
             "replay_backend",
+            "decode_prefetch",
+            "expand_batch_games",
         ),
         where="data",
     )
@@ -802,10 +849,10 @@ def _parse_data(raw: Any) -> DataConfig:
     drop_last = fields.get("drop_last", True)
     if not isinstance(drop_last, bool):
         raise ContractError(f"data.drop_last must be a bool, got {drop_last!r}")
-    replay_backend = fields.get("replay_backend", "python")
-    if replay_backend not in ("python", "rust_json"):
+    replay_backend = fields.get("replay_backend", "rust")
+    if replay_backend not in ("python", "rust"):
         raise ContractError(
-            f"data.replay_backend must be one of ['python', 'rust_json'], got {replay_backend!r}"
+            f"data.replay_backend must be 'python' or 'rust', got {replay_backend!r}"
         )
     return DataConfig(
         root=root,
@@ -817,7 +864,7 @@ def _parse_data(raw: Any) -> DataConfig:
         dora_width=5,
         actor_privileged_split=True,
         dataset_manifest_hash=_digest_pin_or_none(fields, "dataset_manifest_hash", where="data"),
-        shuffle_buffer_size=_require_positive_int(fields, "shuffle_buffer_size", where="data")
+        shuffle_buffer_size=_require_nonnegative_int(fields, "shuffle_buffer_size", where="data")
         if "shuffle_buffer_size" in fields
         else 10000,
         drop_last=drop_last,
@@ -828,6 +875,14 @@ def _parse_data(raw: Any) -> DataConfig:
         if "world_size" in fields
         else 1,
         replay_backend=str(replay_backend),
+        decode_prefetch=_require_bounded_int(fields, "decode_prefetch", where="data", lo=1, hi=1024)
+        if "decode_prefetch" in fields
+        else 64,
+        expand_batch_games=_require_bounded_int(
+            fields, "expand_batch_games", where="data", lo=1, hi=1024
+        )
+        if "expand_batch_games" in fields
+        else 64,
     )
 
 
@@ -846,6 +901,12 @@ def _parse_model(raw: Any) -> ModelConfig:
     action_count = fields.get("action_count", 6792)
     if isinstance(action_count, bool) or not isinstance(action_count, int) or action_count <= 0:
         raise ContractError(f"model.action_count must be a positive int, got {action_count!r}")
+    from hydra2.models.schema import BASELINE_ACTION_COUNT
+
+    if action_count != BASELINE_ACTION_COUNT:
+        raise ContractError(
+            f"model.action_count {action_count} != baseline {BASELINE_ACTION_COUNT}"
+        )
     parameters = fields.get("parameters", {})
     if not isinstance(parameters, dict):
         raise ContractError("model.parameters must be a mapping")
@@ -889,7 +950,7 @@ def _parse_weights(raw: Any) -> WeightsConfig:
             fields, "label_smoothing", where="weights", lo=0.0, hi=1.0, hi_open=True
         )
         if "label_smoothing" in fields and fields.get("label_smoothing") is not None
-        else 0.0,
+        else 0.03,
     )
 
 
@@ -925,12 +986,23 @@ def _parse_optimizer(raw: Any) -> OptimizerConfig:
         or float(decay) < 0.0
     ):
         raise ContractError(f"optimizer.weight_decay must be finite non-negative, got {decay!r}")
+    head_mult = fields.get("head_lr_mult", 3.0)
+    if (
+        isinstance(head_mult, bool)
+        or not isinstance(head_mult, (int, float))
+        or not (float(head_mult) == float(head_mult))
+        or float(head_mult) in (float("inf"), float("-inf"))
+        or float(head_mult) <= 0.0
+    ):
+        raise ContractError(
+            f"optimizer.head_lr_mult must be positive and finite, got {head_mult!r}"
+        )
     return OptimizerConfig(
-        name=str(name),
+        name=name,
         lr=float(lr),
         betas=betas,
         weight_decay=float(decay),
-        head_lr_mult=_positive_float_map(fields, "head_lr_mult", where="optimizer"),
+        head_lr_mult=float(head_mult),
     )
 
 
@@ -950,7 +1022,7 @@ def _parse_scheduler(raw: Any) -> SchedulerConfig:
     if not isinstance(parameters, dict):
         raise ContractError("scheduler.parameters must be a mapping")
     return SchedulerConfig(
-        name=str(name),
+        name=name,
         warmup_updates=warmup,
         parameters=dict(parameters),
         final_factor=_require_bounded_float(
@@ -1005,10 +1077,10 @@ def _parse_runtime(raw: Any) -> RuntimeConfig:
     except ImportError:
         pass
     return RuntimeConfig(
-        adapter_id=str(adapter_id),
+        adapter_id=adapter_id,
         device=device,
-        precision=str(precision),
-        compile_mode=str(compile_mode),
+        precision=precision,
+        compile_mode=compile_mode,
     )
 
 
@@ -1027,6 +1099,7 @@ def _parse_loop(raw: Any) -> LoopConfig:
             "sampling_ratios",
             "log_per_type_metrics",
             "fit_temperature",
+            "fetch_prefetch_depth",
         ),
         where="loop",
     )
@@ -1068,6 +1141,11 @@ def _parse_loop(raw: Any) -> LoopConfig:
         sampling_ratios=_positive_float_map(fields, "sampling_ratios", where="loop"),
         log_per_type_metrics=_require_loop_bool(fields, "log_per_type_metrics", default=True),
         fit_temperature=_require_loop_bool(fields, "fit_temperature", default=True),
+        fetch_prefetch_depth=_require_bounded_int(
+            fields, "fetch_prefetch_depth", where="loop", lo=1, hi=16
+        )
+        if "fetch_prefetch_depth" in fields
+        else 3,
     )
 
 
@@ -1149,7 +1227,7 @@ def _parse_selection(raw: Any) -> SelectionConfig:
         delta=float(fields.get("delta", 0.5)),
         alpha=float(fields.get("alpha", 0.05)),
         beta=float(fields.get("beta", 0.2)),
-        design=str(design),
+        design=design,
         declared_peeks=peeks,
         margin=float(margin),
         resamples=_require_positive_int(fields, "resamples", where="selection")
@@ -1160,7 +1238,7 @@ def _parse_selection(raw: Any) -> SelectionConfig:
     try:
         from hydra2.eval.statistics import SelectionConfig as _Authoritative
 
-        _Authoritative(
+        _ = _Authoritative(  # intentionally discarded: construction validates cross-module contract
             N=selection.N,
             pilot_s=selection.pilot_s,
             delta=selection.delta,
@@ -1175,6 +1253,48 @@ def _parse_selection(raw: Any) -> SelectionConfig:
     except ImportError:
         pass
     return selection
+
+
+def _parse_telemetry(raw: Any) -> TelemetryConfig:
+    fields = _reject_unknown(
+        raw,
+        ("mlflow_enabled", "verbose_enabled", "verbose_interval_ms", "profiler_captures"),
+        where="telemetry",
+    )
+    mlflow_enabled = fields.get("mlflow_enabled", True)
+    if not isinstance(mlflow_enabled, bool):
+        raise ContractError(f"telemetry.mlflow_enabled must be a bool, got {mlflow_enabled!r}")
+    verbose_enabled = fields.get("verbose_enabled", False)
+    if not isinstance(verbose_enabled, bool):
+        raise ContractError(f"telemetry.verbose_enabled must be a bool, got {verbose_enabled!r}")
+    verbose_interval_ms = fields.get("verbose_interval_ms", 50)
+    if (
+        not isinstance(verbose_interval_ms, bool)
+        and isinstance(verbose_interval_ms, int)
+        and verbose_interval_ms in (20, 50)
+    ):
+        pass
+    else:
+        raise ContractError(
+            f"telemetry.verbose_interval_ms must be 20 or 50, got {verbose_interval_ms!r}"
+        )
+    profiler_captures = fields.get("profiler_captures", 0)
+    if (
+        not isinstance(profiler_captures, bool)
+        and isinstance(profiler_captures, int)
+        and 0 <= profiler_captures <= 16
+    ):
+        pass
+    else:
+        raise ContractError(
+            f"telemetry.profiler_captures must be an int in [0, 16], got {profiler_captures!r}"
+        )
+    return TelemetryConfig(
+        mlflow_enabled=mlflow_enabled,
+        verbose_enabled=verbose_enabled,
+        verbose_interval_ms=verbose_interval_ms,
+        profiler_captures=profiler_captures,
+    )
 
 
 def _parse_mirror(raw: Any) -> MirrorConfig:
@@ -1244,6 +1364,7 @@ _SECTION_PARSERS: dict[str, Any] = {
     "seeds": _parse_seeds,
     "selection": _parse_selection,
     "mirror": _parse_mirror,
+    "telemetry": _parse_telemetry,
     "eval": _parse_eval,
     "output": _parse_output,
 }
@@ -1281,6 +1402,7 @@ def _parse_root(mapping: Any) -> RunConfig:
         seeds=parsed["seeds"],
         selection=parsed["selection"],
         mirror=parsed["mirror"],
+        telemetry=parsed["telemetry"],
         eval=parsed["eval"],
         output=parsed["output"],
     )
@@ -1298,7 +1420,10 @@ def _cross_validate(config: RunConfig) -> None:
             f"loop.precision {loop_precision!r} disagrees with runtime.precision "
             f"{runtime_precision!r} (expected {expected_loop!r}); autocast scope must match"
         )
-    effective_run_id = config.output.run_id or config.run.run_id
+    output_id = config.output.run_id
+    effective_run_id = (
+        output_id if output_id is not None and len(output_id) > 0 else config.run.run_id
+    )
     if _RUN_ID_RE.fullmatch(effective_run_id) is None:
         raise ContractError(f"effective run id invalid: {effective_run_id!r}")
     if runtime_precision == "bf16_mixed" and config.runtime.device == "cpu":
@@ -1312,8 +1437,8 @@ def _cross_validate(config: RunConfig) -> None:
         for weight in [
             config.weights.w_placement,
             config.weights.w_value,
-            *(config.weights.w_event or {}).values(),
-            *(config.weights.w_belief or {}).values(),
+            *((config.weights.w_event if config.weights.w_event is not None else {}).values()),
+            *((config.weights.w_belief if config.weights.w_belief is not None else {}).values()),
         ]
     )
     if auxiliary_positive and config.weights.privileged_source_hash is None:
@@ -1393,6 +1518,8 @@ def run_config_to_dict(config: RunConfig) -> dict[str, Any]:
             "num_workers": config.data.num_workers,
             "world_size": config.data.world_size,
             "replay_backend": config.data.replay_backend,
+            "decode_prefetch": config.data.decode_prefetch,
+            "expand_batch_games": config.data.expand_batch_games,
         },
         "model": {
             "architecture_id": config.model.architecture_id,
@@ -1413,9 +1540,7 @@ def run_config_to_dict(config: RunConfig) -> dict[str, Any]:
             "lr": config.optimizer.lr,
             "betas": [config.optimizer.betas[0], config.optimizer.betas[1]],
             "weight_decay": config.optimizer.weight_decay,
-            "head_lr_mult": None
-            if config.optimizer.head_lr_mult is None
-            else dict(config.optimizer.head_lr_mult),
+            "head_lr_mult": config.optimizer.head_lr_mult,
         },
         "scheduler": {
             "id": config.scheduler.name,
@@ -1444,6 +1569,7 @@ def run_config_to_dict(config: RunConfig) -> dict[str, Any]:
             else dict(config.loop.sampling_ratios),
             "log_per_type_metrics": config.loop.log_per_type_metrics,
             "fit_temperature": config.loop.fit_temperature,
+            "fetch_prefetch_depth": config.loop.fetch_prefetch_depth,
         },
         "seeds": {
             "data_seed": config.seeds.data_seed,
@@ -1502,7 +1628,8 @@ def resolve_artifact_root(config: RunConfig) -> Path:
 
 def effective_run_id(config: RunConfig) -> str:
     """``output.run_id`` override wins, else ``run.id``."""
-    return config.output.run_id or config.run.run_id
+    override = config.output.run_id
+    return override if override is not None and len(override) > 0 else config.run.run_id
 
 
 def run_dir_for(config: RunConfig, *, artifact_root: Path | str | None = None) -> Path:
@@ -1610,7 +1737,7 @@ def _parse_shuffle(raw: Any, *, sidecar: Path) -> ShuffleState:
         "prefix_hashes",
     )
     unknown = sorted(k for k in raw if k not in allowed)
-    if unknown:
+    if len(unknown) > 0:
         raise ContractError(f"checkpoint sidecar shuffle unknown keys {unknown}: {sidecar}")
     keys = raw.get("buffer_keys", [])
     if not isinstance(keys, list) or any(not isinstance(k, str) or k == "" for k in keys):
@@ -1629,9 +1756,9 @@ def _parse_shuffle(raw: Any, *, sidecar: Path) -> ShuffleState:
     prefix_raw = raw.get("prefix_hashes", {})
     if not isinstance(prefix_raw, dict):
         raise ContractError(f"checkpoint sidecar shuffle.prefix_hashes invalid: {sidecar}")
-    if prefix_raw:
+    if len(prefix_raw) > 0:
         unknown_prefix = sorted(k for k in prefix_raw if k not in ("file", "count", "sha256"))
-        if unknown_prefix:
+        if len(unknown_prefix) > 0:
             raise ContractError(
                 f"checkpoint sidecar shuffle.prefix_hashes unknown keys {unknown_prefix}: {sidecar}"
             )
@@ -1661,7 +1788,7 @@ def _parse_accum(raw: Any, *, sidecar: Path) -> AccumState:
     if not isinstance(raw, dict):
         raise ContractError(f"checkpoint sidecar accum must be a mapping: {sidecar}")
     unknown = sorted(k for k in raw if k not in ("yielded_batches", "micro_in_update"))
-    if unknown:
+    if len(unknown) > 0:
         raise ContractError(f"checkpoint sidecar accum unknown keys {unknown}: {sidecar}")
     yielded = raw.get("yielded_batches", 0)
     micro = raw.get("micro_in_update", 0)
@@ -1675,7 +1802,7 @@ def _parse_worker_plan(raw: Any, *, sidecar: Path) -> WorkerPlan:
     if not isinstance(raw, dict):
         raise ContractError(f"checkpoint sidecar worker_plan must be a mapping: {sidecar}")
     unknown = sorted(k for k in raw if k not in ("num_workers", "world_size", "rank"))
-    if unknown:
+    if len(unknown) > 0:
         raise ContractError(f"checkpoint sidecar worker_plan unknown keys {unknown}: {sidecar}")
     workers = raw.get("num_workers", 0)
     world = raw.get("world_size", 1)
@@ -1693,7 +1820,7 @@ def _parse_sidecar_manifests(raw: Any, *, sidecar: Path) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ContractError(f"checkpoint sidecar manifests must be a mapping: {sidecar}")
     unknown = sorted(k for k in raw if k not in ("stream_manifest_hash", "dataset_manifest_hash"))
-    if unknown:
+    if len(unknown) > 0:
         raise ContractError(f"checkpoint sidecar manifests unknown keys {unknown}: {sidecar}")
     out: dict[str, Any] = {}
     for key in ("stream_manifest_hash", "dataset_manifest_hash"):
@@ -1773,7 +1900,7 @@ def find_latest_checkpoint(run_dir: str | Path) -> Path | None:
     not here.
     """
     candidates = _iter_structural_candidates(run_dir)
-    return candidates[0][1] if candidates else None
+    return candidates[0][1] if len(candidates) > 0 else None
 
 
 def _check_compat(config: RunConfig, expected_digest: str, parsed: _Sidecar, ckpt: Path) -> None:
@@ -1836,7 +1963,7 @@ def resolve_resume_plan(run_dir: str | Path, *, which: str | Path | None = None)
     expected_digest = run_config_digest(config)
     if which is None or (isinstance(which, str) and which == "latest"):
         candidates = _iter_structural_candidates(directory)
-        if not candidates:
+        if len(candidates) == 0:
             raise ContractError(f"no valid checkpoint in {directory / 'checkpoints'}")
         failures: list[str] = []
         for _, candidate in candidates:
@@ -1894,7 +2021,11 @@ def format_plan(
     run_dir = run_dir_for(config, artifact_root=artifact_root)
     digest = run_config_digest(config)
     minibatch = config.loop.optimizer_minibatch_size
-    eval_micro = config.eval.microbatch_size or config.loop.microbatch_size
+    eval_micro_raw = config.eval.microbatch_size
+    if eval_micro_raw is not None and eval_micro_raw != 0:
+        eval_micro = eval_micro_raw
+    else:
+        eval_micro = config.loop.microbatch_size
     lines = [
         f"run: {effective_run_id(config)} (kind={config.run.kind})",
         f"digest: {digest}",
@@ -1921,11 +2052,14 @@ def format_plan(
         f"keep={config.loop.keep_last_checkpoints} "
         f"stratified={config.loop.stratified_sampling} ratios={config.loop.sampling_ratios} "
         f"per_type={config.loop.log_per_type_metrics} fit_temp={config.loop.fit_temperature}",
+        f"mirror: enabled={config.mirror.enabled} project={config.mirror.project}",
         f"seeds: data={config.seeds.data_seed} train={config.seeds.train_seed} "
         f"selection={config.seeds.selection_seed}",
+        f"telemetry: mlflow={config.telemetry.mlflow_enabled} "
+        f"verbose={config.telemetry.verbose_enabled}@{config.telemetry.verbose_interval_ms}ms "
+        f"profiler={config.telemetry.profiler_captures}",
         f"selection: N={config.selection.N} design={config.selection.design} "
         f"delta={config.selection.delta} alpha={config.selection.alpha}",
-        f"mirror: enabled={config.mirror.enabled} project={config.mirror.project}",
         f"eval: every={config.eval.frequency_updates} batches={config.eval.num_batches} "
         f"micro={eval_micro}",
     ]

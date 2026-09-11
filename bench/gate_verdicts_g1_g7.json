@@ -1,0 +1,99 @@
+{
+ "gate_verdicts": {
+  "G1": {
+   "evidence": [
+    "freeze-check-first aborts with 'oracle moved - re-pin and re-run' (exit-3 analog) on the stale frozen fixture: log_replay.py drifted since the e80184a re-freeze, so no hash is compared (fail-closed, verified)",
+    "closed --allow set rejects open names (SystemExit 2)",
+    "freeze->check round-trips identical on vendored rows (full mode)",
+    "bitwise repeat: good-a/good-b wall-less + walled-synth replays hash-identical minus volatile"
+   ],
+   "owner": "P0-B",
+   "status": "pass"
+  },
+  "G2": {
+   "evidence": [
+    "repeat encode: floats torch.allclose(atol=1e-6, rtol=1e-6), ints/bools/masks EXACT",
+    "cross-shape: subset-prefix overlap slices + permutation invariance per row",
+    "concealed-count distributions row-sum ~1 at 1e-4"
+   ],
+   "owner": "P0-B",
+   "status": "pass"
+  },
+  "G3": {
+   "evidence": [
+    "(4,)/(6,)/split-sentinel/bad-tile dora raise ContractError, never padded",
+    "all 10 replayed rows (5 wall-less + 5 walled) carry (5,) with sentinel tail-contiguous",
+    "(4,) shim smuggled into a row aborts"
+   ],
+   "owner": "P0-B",
+   "status": "pass"
+  },
+  "G4": {
+   "evidence": [
+    "invented ron deltas [3900,-3900,0,0] conserved, single payer; invented tsumo pays winner with all losers negative (Tenhou stick bundling is log-authoritative)",
+    "evaluator han/fu recompute agrees with calculate_score below yakuman caps (3han60fu ron 7700) + Tenhou spots 1000/1500/7700/8000 + tsumo (300,500,1100)",
+    "double-ron mismatch and unmapped Other events quarantine the whole game (zero partial rows)"
+   ],
+   "owner": "P0-B",
+   "status": "pass"
+  },
+  "G5": {
+   "evidence": [
+    "s4 corpus: 3 row-games + 7 quarantined == 10 games; quarantined games emit ZERO rows",
+    "histogram keys match Rust s4 pins verbatim (bare-dora/double-ron/framing x2/tile-conservation/turn-order/unknown-event); no 'other' bucket",
+    "sink records carry {identity, event_idx, reason, obs_hash_u64} + lineage; u64 keys discriminate"
+   ],
+   "owner": "P0-B",
+   "status": "pass"
+  },
+  "G6": {
+   "evidence": [
+    "wall-less derivations recompute exactly with wall_digest None + sim-replay-wall-less-v1 (never invented)",
+    "walled derivations bind the real wall_schedule_digest('replay-<game>', wall); SIM-form recompute differs (mark retired); adapter authorities agree cross-module"
+   ],
+   "owner": "P0-B",
+   "status": "pass"
+  },
+  "G7": {
+   "evidence": [
+    "envelopes are EXACTLY the 13 ACTOR_FIELDS pinned against the Rust literal; privileged_label_ref excluded",
+    "ZERO forbidden/privileged* keys top-level and nested over 10 rows (recursive sweep + authority check)",
+    "smuggled top-level and dict-nested keys abort via the parquet authority"
+   ],
+   "owner": "P0-B",
+   "status": "pass"
+  }
+ },
+ "manifest_digest": "sha256:15237977a5b07978dd9e93cefb680ad6202498dcd7d78682fe08abc884e2a84c",
+ "source": "tests/parity/test_parity_gates_g1_g7_wp0b.py (22 tests, pixi run pytest tests/parity -n 0)",
+ "walk_parity": {
+  "counts": {
+   "dora_tail_checks": 36,
+   "f1_rows_exact": 9,
+   "f3_rows_kind_exact": 9,
+   "g_legs_green": 12,
+   "histogram_files": 7,
+   "kind_mismatches": 2,
+   "rust_s4": 2,
+   "rust_s7": 12
+  },
+  "evidence": [
+   "F1 bitwise: s4/good-a 4 rows + s4/good-b 5 rows match on seat/phase/turn_actor/chosen_id/legal_ids/concealed-[u8;34]+MJAI/drawn/dora(5,)/wall_remaining, 0 mismatches over 9 rows",
+   "F3 mutual-ok (walled-synth 5 rows, walled-real 4 rows): kind-level exact on chosen/legal-sets/counts34/drawn-kind/dora/meta/wall; walled derivations recompute to the real wall_schedule_digest on both sides",
+   "F3 wall agreement: py derivations bind replay-<game> digest; rust binds same digest via schedule_id_for (s7 unit pins wall_digest_matches_python_authority + derivation_shapes, 12/12 green)",
+   "S4 quarantine histogram py==rust 7/7: bare-dora/double-ron/framing x2/tile-conservation/turn-order/unknown-event; q-wall-bearing walled-ok zero rows both sides",
+   "F7: manifest sha256:b1453fd8 match; 10 oracle pins checked, log_replay.py moved -> fail-closed abort path (G1-pinned); fixture compact 42553 rows",
+   "G1/G3/G4/G6 pytest legs 12/12 green (read-only test file); rust s4_gates 2/2 + s7_walled 12/12 green",
+   "dora (5,) tail-contiguous on every compared row, both sides (36 checks); han/fu absent hot, shape checks only (G4 cold)",
+   "alloc: feed hot (gate/ingest/tiles/ledger) zero-alloc per module audits + grep; legacy shard walk per-row HashSet/sort/String owned by P2-A feed::walk move"
+  ],
+  "forks": [
+   "F1 copy resolution: py names wall-order copies, rust names canonical per (kind,red) first copy; id VALUES differ, kinds/actions exact (plane note: legal_ids_sorted + chosen_id need the P2-A convention pin)",
+   "F2 riichi on walled-synth d0003: rust offers riichi_discard 4m/8m, python live engine offers none; pinned authority riichienv.check_riichi_candidates exact hand14 = [] agrees with python (rust tenpai_discards over-accepts triple-quad hands; 0/42553 probe rows affected)",
+   "F3 kyushu on walled-real d0002: python offers abort_nine_terminals 6790, rust V1 never (pinned drained quirk 0/42553), rust V2 offers == python (version fork, V2 resolves)",
+   "F4 kan/truncated walled: rust walks per s7 pins (ankan 3, kakan 8, truncated honest-prefix 2), python single-pass quarantines whole game (IllegalActionError, ContractError family); post-terminal both quarantine, zero partial rows either side"
+  ],
+  "owner": "WalkParityProver",
+  "status": "conditional-pass"
+ }
+}

@@ -1,6 +1,6 @@
 """Deterministic continuation-wall derivation (decision D-WP03A-1).
 
-RiichiEnv 0.4.8 honours ``reset(wall=...)`` for the FIRST hand of a game but
+RiichiEnv 0.4.10 honours ``reset(wall=...)`` for the FIRST hand of a game but
 generates later hands' walls from engine-internal RNG (verified: identical
 injected walls diverge at kyoku 2). The adapter therefore re-resets between
 hands and derives every subsequent 136-tile wall from the pinned

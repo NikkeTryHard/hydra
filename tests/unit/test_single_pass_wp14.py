@@ -12,9 +12,12 @@ the drain narrows away):
   kuikae discard 4m while the drained oracle still offers it;
 - chi offer-completeness: the live engine offers every chi variant for the
   called tile while the drain surfaces only the taken one;
-- kyushu timing: the live engine offers nine-terminals abort on a seat's
-  first draw with 9+ distinct terminals/honors even after other discards,
-  while the drain surfaces it only before any discard.
+- kyushu timing: both paths surface nine-terminals abort on a seat's first
+  draw with 9+ distinct terminals/honors even after another seat's plain
+  discard — only a meld blocks kyuushu (Tenhou rule), so the pre-discard-only
+  drain distinction from the previous pin no longer holds at 0.4.10
+  (re-baselined with MjaiReplay evidence; upstream abortive-resolution
+  rework #231).
 
 A fourth test pins the derivation-marker rev bump (``v2``): single-pass rows
 never mix silently with ``v1`` drained rows.
@@ -156,7 +159,7 @@ def test_chi_variants_complete_live_taken_only_drained() -> None:
 
 
 def test_kyushu_offered_live_past_first_discard() -> None:
-    """9-terminal haipai, first draw after a discard: live offers kyushu."""
+    """9-terminal haipai, first draw after a discard: both paths offer kyushu."""
     tehais = [
         ["4p", "5p", "6s", "7s", "2s", "3s", "E", "S", "S", "W", "W", "N", "C"],
         ["2m", "3m", "4m", "2p", "3p", "6m", "7m", "8m", "5s", "6s", "7s", "8s", "C"],
@@ -174,9 +177,14 @@ def test_kyushu_offered_live_past_first_discard() -> None:
     table = _table()
     old_kinds = {k[0] for k in _mask_kinds(old_rows[1], table)}
     new_kinds = {k[0] for k in _mask_kinds(new_rows[1], table)}
-    # A discard already happened, so the drain no longer surfaces the abort
-    # while the live engine still offers it on the qualifying first draw.
-    assert "abort_nine_terminals" not in old_kinds
+    # Engine 0.4.10 offers the nine-terminals abort on seat 2's first draw
+    # with 9+ terminal/honor kinds even though seat 1 already discarded: only
+    # a meld blocks kyuushu (Tenhou rule; no calls here), so the drained
+    # oracle and the live engine agree. Raw-engine evidence at 0.4.10:
+    # MjaiReplay yields KYUSHU_KYUHAI for seat 2's 6m draw; both row paths
+    # carry abort_nine_terminals (upstream abortive-resolution rework #231
+    # touches legal_actions.rs + replay state).
+    assert "abort_nine_terminals" in old_kinds
     assert "abort_nine_terminals" in new_kinds
     assert new_rows[1].actor_observation["legal_mask"][new_rows[1].chosen_action_id] is True
 

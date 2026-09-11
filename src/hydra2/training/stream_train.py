@@ -15,9 +15,9 @@ Pipeline per call to :func:`run_stream_training`:
    before any runtime object is built.
 3. Pull train-split games through :class:`GameStream` (or the bit-identical
    :class:`PrefetchGameStream` when ``data.num_workers > 0``), expand each
-   game to actor :class:`DecisionRow` rows through the Rust replay stream
-   (:func:`_expand_game_rust_json`: wall-bound games bind the real S7 wall
-   digest, wall-less games the SIM mark; both fail closed per game),
+   game to actor :class:`DecisionRow` rows through the ``"python"`` oracle
+   (wall-bound games bind the real S7 wall digest, wall-less games the SIM
+   mark; both fail closed per game),
    quarantining-and-counting expansion failures per game — encode
    microbatches through the real actor-visible encoder, join privileged
    ranks by opaque decision id (train-split rows only; the loop gates the
@@ -25,7 +25,9 @@ Pipeline per call to :func:`run_stream_training`:
    config weights.
 4. Write ``ckpt-<update>.pt`` + ResumeExactPlan sidecars every
    ``loop.checkpoint_frequency_updates`` updates, append ``metrics.jsonl``
-   rows plus ``train.log`` lines, prune to ``keep_last_checkpoints``, and
+   rows plus ``train.log`` lines, record per-microbatch feed telemetry to
+   ``logs/feed-telemetry.jsonl`` (observer-only walls; resume never reads it),
+   prune to ``keep_last_checkpoints``, and
    leave best-checkpoint promotion to the manual gate
    (:meth:`SupervisedLoop.evaluate_selection` /
    :meth:`SupervisedLoop.maybe_promote_best` are never called here).
@@ -53,7 +55,7 @@ import time
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from multiprocessing import get_context as _mp_get_context
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import torch
 
@@ -64,6 +66,7 @@ from hydra2.data.decode import decode_game_object
 from hydra2.data.replay_expand import (
     expand_game,
     expand_privileged_rows,
+    pop_live_observation,
 )
 from hydra2.data.stream import (
     GameStream,
@@ -85,7 +88,13 @@ from hydra2.data.stream import (
 from hydra2.data.validate import validate_game
 from hydra2.runtime.checkpoint import capture_rng_state
 from hydra2.training.dataset import encode_observation_rows
-from hydra2.training.loop import SupervisedLoop, TrainingLoopConfig, TrainingState
+from hydra2.training.loop import (
+    SupervisedLoop,
+    TrainingLoopConfig,
+    TrainingState,
+    summarize_telemetry,
+    summarize_update_telemetry,
+)
 from hydra2.training.run_config import create_run_layout, run_config_digest
 
 if TYPE_CHECKING:
@@ -134,17 +143,12 @@ def _quarantine_class(exc: ContractError) -> str:
     return text[:100]
 
 
-#: Wall-less replay backends (Slice 5, flag-gated). ``"python"`` is the
-#: default and preserves the pre-flag behavior byte-identically;
-#: ``"rust_json"`` routes wall-less games through the Slice-4 ``rust_stream``
-#: JSON handoff. Wall-bound games never leave :func:`expand_game`.
-_REPLAY_BACKENDS: tuple[str, ...] = ("python", "rust_json")
-
-#: Provenance hash bound into Rust-fed rows as ``rules_hash``/``adapter_hash``
-#: (the stream mints no hashes of its own). Training drops these hashes before
-#: the encoder (:func:`_row_to_dict` keeps decision/choice/observation only),
-#: so a constant suffices until Slice 6 wires RunConfig-digest plumbing.
-_RUST_JSON_SPEC_HASH = "rust_json-v1"
+#: Replay backends. ``"rust"`` is the default (Rust per-game walk over raw
+#: framed bytes + tensor-native batch assembly, no per-row Python);
+#: ``"python"`` is the oracle shim (byte-identical rows, parity only). The
+#: ``rust_json`` JSON handoff was deleted in the K1 cutover.
+#: Wall-bound games never leave :func:`expand_game` on the python path.
+_REPLAY_BACKENDS: tuple[str, ...] = ("python", "rust")
 
 
 def _require_replay_backend(backend: str) -> str:
@@ -159,106 +163,110 @@ def _require_replay_backend(backend: str) -> str:
 def _expand_game_rows(
     game: GameRecord, split: str, backend: str = "python"
 ) -> tuple[list[DecisionRow], bool]:
-    """Expand one game to actor rows on the selected backend.
+    """Expand one game to actor rows on the ``"python"`` oracle backend.
 
-    Wall-bound games always expand through :func:`expand_game` (the Rust path
-    never binds walls); wall-less games replay through ``log_replay`` on the
-    ``"python"`` backend or through the Slice-4 ``rust_stream`` JSON handoff
-    on ``"rust_json"``. Returns ``(actor_rows, sim_path)`` with ``sim_path``
-    true for wall-less games on either backend, so the
+    Wall-bound games expand through :func:`expand_game`; wall-less games
+    replay through ``log_replay``. Returns ``(actor_rows, sim_path)`` with
+    ``sim_path`` true for wall-less games, so the
     ``replayed``/``sim_replayed``/``expand_quarantined`` counters and the
-    :func:`_quarantine_class` normalization apply verbatim to both backends.
+    :func:`_quarantine_class` normalization apply verbatim.
     """
-    _require_replay_backend(backend)
+    # intentionally discarded: validation only, backend arg already bound
+    _ = _require_replay_backend(backend)
     if game.wall_tiles is not None:
         return (expand_game(game, split=split), False)
-    if backend == "rust_json":
-        return (_expand_game_rust_json(game, split), True)
+
     from hydra2.engines.riichienv.log_replay import replay_game as _replay_sim_game
 
     return (_replay_sim_game(game, split=split), True)
 
 
-def _expand_game_rust_json(game: GameRecord, split: str) -> list[DecisionRow]:
-    """Replay one game through the Rust JSON handoff (walled or wall-less).
+def _expand_game_planes(
+    game: GameRecord, split: str, raw: bytes = b""
+) -> tuple[list[dict[str, Any]], bool]:
+    """Expand one game through the Rust per-game walk (``replay_backend="rust"``).
 
-    Frames ``game.events`` to single-game JSONL scratch (temp dir only: the
-    corpus stays read-only, nothing lands under the artifact root), drains one
-    serial ``RustJsonStream`` over it, and assembles full training rows
-    (:func:`hydra2.training.rust_observations.assemble_game_rows`: Rust
-    decisions/masks/chosen plus Python-rebuilt full observations — take ids,
-    melds, rivers, scores, histories, furiten — through the kept observation
-    builder, no second engine). Wall-bound games ride with their framed
-    136-tile wall (the Rust S7 path binds the real wall digest); wall-less
-    games bind the SIM mark. Whole-game Rust quarantines raise
-    :class:`ContractError` carrying the Rust ``Quarantine.detail`` so callers
-    count them under :func:`_quarantine_class`. A missing compiled extension
-    raises loudly (never a silent quarantine). Rust expansion stashes no
-    live observations (the encoder always takes the validating parse path).
+    Returns ``(slim_row_dicts, sim_path)`` with ``sim_path`` true for
+    wall-less games (same predicate as :func:`_expand_game_rows`, so
+    replayed/sim counters match). Row dicts carry ``decision_id``,
+    ``chosen_action_id``, ``action_kind`` plus the shared game planes blob
+    (``_planes`` name→bytes, ``_row`` offset, ``_t_len``) for tensor
+    assembly in ``next_batch`` — no ``DecisionRow`` objects, no observations.
+    ``decision_id`` format (``<game_id>:d<seq:04d>``) matches the python path
+    exactly, so privileged joins and sidecar hashes agree. Quarantines raise
+    :class:`ContractError` (feed reason string) for the caller to
+    quarantine-and-count exactly like oracle rejects.
+
+    ``raw`` is the verbatim framed game bytes (``StreamGame.raw``): the walk
+    runs on the original bytes with the wall spliced in Rust, instead of
+    re-serializing every parsed event in Python (which costs more than the
+    walk itself). Walled games bind ``game.wall_tiles`` (136 ints, fail
+    closed otherwise); wall-less games walk the embedded content verbatim.
+    Empty ``raw`` (hand-built games in tests) falls back to the legacy
+    re-serialization, which parses to identical events.
     """
-    import tempfile
-    from pathlib import Path
+    from hydra2.training.rust_batch import replay_game_planes_raw
 
-    from hydra2.training.rust_stream import RustJsonStream
+    sim_path = game.wall_tiles is None
+    # intentionally discarded: split rides the buffer entry parent-side
+    _ = split
+    wall: list[int] | None = None
+    if game.wall_tiles is not None:
+        # Walled regime follows wall content (the framer binds the record
+        # wall, mirroring decode_game_object): the record wall overrides
+        # whatever the log embedded.
+        wall = [int(t) for t in game.wall_tiles]
+        if len(wall) != 136:
+            raise ContractError(f"wall_tiles must carry 136 tiles, got {len(wall)}")
+    if raw:
+        text = raw
+    elif sim_path:
+        text = ("\n".join(json.dumps(event) for event in game.events) + "\n").encode("utf-8")
+    else:
+        assert wall is not None
+        head = dict(game.events[0])
+        head["wall"] = wall
+        body = "\n".join(json.dumps(e) for e in game.events[1:])
+        text = (json.dumps(head) + "\n" + body + "\n").encode("utf-8")
+    planes, rows, _t_len, quarantined, reason, event_idx = replay_game_planes_raw(text, 0, wall)
+    if quarantined:
+        raise ContractError(
+            f"rust walk quarantined game {game.game_id!r}: {reason} at event {event_idx}"
+        )
 
-    try:
-        framed = [dict(event) for event in game.events]
-    except (TypeError, ValueError) as exc:
-        raise ContractError(f"rust replay cannot frame game {game.game_id!r}: {exc}") from exc
-    if framed:
-        # The Rust stream names rows from the first event carrying an
-        # explicit game id, else ``game-<sha12(object_id)>``; Python names
-        # rows from the record id. Bind the record id so both agree (hashes
-        # bind it too). Real corpus games already agree (identical fallback).
-        first = framed[0]
-        first["game_id"] = str(game.game_id)
-    try:
-        lines = [json.dumps(event, sort_keys=True) for event in framed]
-    except (TypeError, ValueError) as exc:
-        raise ContractError(f"rust replay cannot frame game {game.game_id!r}: {exc}") from exc
-    stem = str(game.object_id).replace("/", "_")
-    if stem in ("", ".", ".."):
-        raise ContractError(f"rust replay object_id unusable: {game.object_id!r}")
-    with tempfile.TemporaryDirectory(prefix="hydra2-rust-game-") as tmp:
-        (Path(tmp) / f"{stem}.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
-        stream = RustJsonStream([tmp], batch=4096, split=split, spec_hash=_RUST_JSON_SPEC_HASH)
-        try:
-            rows: list[dict[str, Any]] = []
-            batch = stream.next()
-            while batch:
-                rows.extend(batch)
-                batch = stream.next()
-            quarantines = stream.quarantines()
-        finally:
-            stream.close()
-    if not rows:
-        if quarantines:
-            # Verbatim detail: Rust desync sentences share the Python
-            # ``sim replay desync game … kyoku …`` shape (Rust Debug quotes
-            # the id with double quotes, normalized above), so both backends
-            # count the same game under the same reason class.
-            raise ContractError(quarantines[0].detail)
-        # Rowless games (abortive kyushu, empty draws): the drained engine
-        # returned no rows without error; mirror that (the dataset owns the
-        # empty-split terminal, per game this is a counted replay, not a
-        # quarantine).
-        return []
-    from hydra2.training.rust_observations import assemble_game_rows
+    return (_slim_row_dicts(str(game.game_id), planes, int(rows), int(_t_len)), sim_path)
 
-    parsed: list[dict[str, Any]] = []
-    for row in rows:
-        try:
-            actor_doc = json.loads(row["actor_observation"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ContractError(
-                f"rust replay actor_observation unparseable for {row.get('decision_id')!r}: {exc}"
-            ) from exc
-        if not isinstance(actor_doc, dict):
-            raise ContractError(
-                f"rust replay actor_observation not a mapping for {row.get('decision_id')!r}"
-            )
-        parsed.append({**row, "actor_observation": actor_doc})
-    return assemble_game_rows(game, split, parsed)
+
+def _slim_row_dicts(
+    game_id: str, planes: dict[str, bytes], rows: int, t_len: int
+) -> list[dict[str, Any]]:
+    """Project staged planes into slim per-row dicts (shared pull paths).
+
+    Parses the committed ``chosen_action_id`` column once and fans out one
+    dict per row (``decision_id``/``chosen_action_id``/``action_kind`` plus
+    the shared game planes blob for tensor assembly). Raises the identical
+    row-drift :class:`ContractError` as the inline path on shape mismatch.
+    """
+    chosen_ids: list[int] = [
+        int(v) for v in torch.frombuffer(planes["chosen_action_id"], dtype=torch.int64).tolist()
+    ]
+    if len(chosen_ids) != int(rows):
+        raise ContractError(
+            f"rust walk row drift on game {game_id!r}: {len(chosen_ids)} chosen vs {int(rows)} rows"
+        )
+    out: list[dict[str, Any]] = []
+    for seq, chosen_id in enumerate(chosen_ids):
+        out.append(
+            {
+                "decision_id": f"{game_id}:d{seq:04d}",
+                "chosen_action_id": chosen_id,
+                "action_kind": _action_kind_for_id(chosen_id),
+                "_planes": planes,
+                "_row": seq,
+                "_t_len": int(t_len),
+            }
+        )
+    return out
 
 
 #: v1 is single-process: only rank 0 exists, so any other world size fails
@@ -284,8 +292,8 @@ def _needs_privileged_labels(config: RunConfig) -> bool:
         [
             config.weights.w_placement,
             config.weights.w_value,
-            *(config.weights.w_event or {}).values(),
-            *(config.weights.w_belief or {}).values(),
+            *(config.weights.w_event if config.weights.w_event is not None else {}).values(),
+            *(config.weights.w_belief if config.weights.w_belief is not None else {}).values(),
         ]
     )
 
@@ -342,12 +350,25 @@ def _action_kind_for_id(chosen_id: int) -> str:
 
 
 def _row_to_dict(row: Any) -> dict[str, Any]:
-    """Project a :class:`DecisionRow` onto the real-encoder input shape."""
+    """Project a :class:`DecisionRow` onto the real-encoder input shape.
+
+    Carries the live :class:`ActorObservation` when the expanding call just
+    built it (same object serially; pickled copy across the pool boundary),
+    so the encoder consumes it directly instead of re-serializing,
+    re-parsing, and re-validating the document (~0.3ms/row saved). Misses
+    (foreign rows) keep the validated document form.
+    :func:`_resolve_live_or_parse` owns the fallback plus the
+    observation-hash guard either way, so content is identical in both
+    cases — this changes transport, never content.
+    """
     chosen = int(row.chosen_action_id)
+    decision_id = str(row.decision_id)
+    live = pop_live_observation(decision_id)
     return {
-        "decision_id": str(row.decision_id),
+        "decision_id": decision_id,
         "chosen_action_id": chosen,
-        "actor_observation": dict(row.actor_observation),
+        "actor_observation": live if live is not None else dict(row.actor_observation),
+        "observation_hash": str(row.observation_hash),
         "action_kind": _action_kind_for_id(chosen),
     }
 
@@ -356,17 +377,16 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
 #: here, never spawn unbounded processes; 16 keeps spawn RSS + file
 #: descriptors predictable next to the scan pool).
 #:
-#: Joint worker budget — size ``config.data.num_workers`` against cores, not
-#: against one pool: the same knob sizes the one-shot pre-train scan pool
-#: (processes, released before training starts), the live ``PrefetchGameStream``
-#: decode threads, AND this expansion pool (processes, alive for the whole
-#: run). Scan never overlaps training, but prefetch threads + expansion procs
-#: + the main torch threads train concurrently, so keep
-#: ``2 * num_workers + main torch threads <= cores``. :func:`_pool_worker_init`
-#: clamps each worker to one thread (fixes thread oversubscription, not process
-#: oversubscription). Oversubscribed symptoms: fills slower than the serial
-#: path (thrash), spawn RSS + fd pressure (every proc re-imports torch), and
-#: climbing ``PrefetchGameStream.waits``. When fills stop scaling, lower
+#: Thread budget is joint: the scan pool's spawn workers (processes, released
+#: before training starts), the live ``PrefetchGameStream`` decode threads,
+#: AND this expansion pool (processes, alive for the whole run). Scan never
+#: overlaps training, but prefetch threads + expansion procs + the main torch
+#: threads train concurrently, so keep ``2 * num_workers + main torch threads
+#: <= cores``. :func:`_pool_worker_init` clamps each worker to one thread
+#: (fixes thread oversubscription, not process oversubscription).
+#: Oversubscribed symptoms: fills slower than the serial path (thrash), spawn
+#: RSS + fd pressure (every proc re-imports torch), and climbing
+#: ``PrefetchGameStream.waits``. When fills stop scaling, lower
 #: ``num_workers`` before raising it.
 _PARALLEL_EXPAND_MAX_WORKERS = 16
 
@@ -383,37 +403,135 @@ def _pool_worker_init() -> None:
     is first touched in the worker. Runs in workers only — parent threads
     are untouched.
     """
-    os.environ.setdefault("OMP_NUM_THREADS", "1")
-    os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
-    os.environ.setdefault("MKL_NUM_THREADS", "1")
+    # intentionally discarded: env value unneeded after ensure
+    _ = os.environ.setdefault("OMP_NUM_THREADS", "1")
+    _ = os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+    _ = os.environ.setdefault("MKL_NUM_THREADS", "1")
     with contextlib.suppress(Exception):
         torch.set_num_threads(1)
         torch.set_num_interop_threads(1)
 
 
-def _expand_streamed_game(
-    payload: tuple[Any, str, str, bool],
-) -> tuple[list[dict[str, Any]], list[tuple[str, dict[str, Any]]], bool]:
-    """Pure per-game expansion for the process pool (no shared mutable state).
+def _expand_streamed_chunk(
+    payloads: list[tuple[Any, str, str, bool, bytes]],
+) -> list[tuple[str, Any, Any, Any]]:
+    """Expand a contiguous chunk of games; one bridge call for rust backend.
 
-    ``payload`` is ``(game, split, replay_backend, need_privileged)``;
-    returns ``(row_dicts, privileged_pairs, sim_path)`` with actor rows
-    already projected through :func:`_row_to_dict` and privileged labels as
-    plain ``(decision_id, label)`` pairs, so the parent merges plain data
-    only. Runs the identical entry points as the serial pull
-    (:func:`_expand_game_rows` plus :func:`expand_privileged_rows`), hence
-    identical rows and identical :class:`ContractError` messages; failures
-    propagate to the parent, which quarantines-and-counts per game exactly
-    like :meth:`_StreamDataset._pull_game` (reason classes verbatim, order
-    by pull sequence). Anything that is not a :class:`ContractError`
-    propagates fail-closed, as in serial.
+    ``payloads`` are ``(game, split, replay_backend, need_privileged, raw)``
+    in pull order. Returns per game, in order: ``("ok", row_dicts,
+    priv_pairs, sim_path)`` or ``("quarantine", message)``. Per-game
+    :class:`ContractError` rides as data so the parent quarantines-and-counts
+    exactly like the serial pull (reason classes verbatim — the classifier
+    is message-based); anything else propagates fail-closed. No shared
+    mutable state (spawn-pool safe).
     """
-    game, split, backend, need_privileged = payload
-    actor_rows, sim_path = _expand_game_rows(game, split, backend)
-    priv_rows = expand_privileged_rows(game, split=split) if need_privileged else []
-    row_dicts = [_row_to_dict(row) for row in actor_rows]
-    priv_pairs = [(str(priv.decision_id), dict(priv.privileged_label)) for priv in priv_rows]
-    return (row_dicts, priv_pairs, sim_path)
+    if len(payloads) == 0:
+        return []
+    backend = payloads[0][2]
+    if backend == "rust":
+        from hydra2.training.rust_batch import expand_game_batch
+
+        # Wall pre-check mirrors _pull_game_batch (fail-closed 136 tiles).
+        walls: list[list[int] | None] = []
+        pre_err: dict[int, str] = {}
+        for pos, (game, _split, _b, _n, _raw) in enumerate(payloads):
+            tiles = game.wall_tiles
+            if tiles is None:
+                walls.append(None)
+            else:
+                wall = [int(t) for t in tiles]
+                if len(wall) != 136:
+                    pre_err[pos] = f"wall_tiles must carry 136 tiles, got {len(wall)}"
+                    walls.append(None)
+                else:
+                    walls.append(wall)
+        idxs = [
+            pos
+            for pos, (_game, _s, _b, _n, raw) in enumerate(payloads)
+            if raw and pos not in pre_err
+        ]
+        results = expand_game_batch([(payloads[i][4], 0, walls[i]) for i in idxs]) if idxs else []
+        if len(results) != len(idxs):
+            raise ContractError(f"bridge batch drift: {len(results)} results for {len(idxs)} games")
+        by_pos = dict(zip(idxs, results, strict=True))
+        out: list[tuple[str, Any, Any, Any]] = []
+        for pos, (game, split, _b, need_priv, _raw) in enumerate(payloads):
+            try:
+                if pos in pre_err:
+                    raise ContractError(pre_err[pos])
+                if pos in by_pos:
+                    planes, rows, t_len, quarantined, reason, event_idx = by_pos[pos]
+                    if quarantined:
+                        raise ContractError(
+                            f"rust walk quarantined game {game.game_id!r}: "
+                            f"{reason} at event {event_idx}"
+                        )
+                    row_dicts = _slim_row_dicts(str(game.game_id), planes, rows, t_len)
+                    sim_path = game.wall_tiles is None
+                else:
+                    # Hand-built games (tests) carry no framed bytes:
+                    # legacy rebuilt path, same rows as the serial pull.
+                    row_dicts, sim_path = _expand_game_planes(game, split, b"")
+                priv_rows = expand_privileged_rows(game, split=split) if need_priv else []
+                priv_pairs = [(str(p.decision_id), dict(p.privileged_label)) for p in priv_rows]
+                out.append(("ok", row_dicts, priv_pairs, sim_path))
+            except ContractError as exc:
+                out.append(("quarantine", str(exc), None, None))
+        return out
+    out = []
+    for game, split, _b, need_priv, _raw in payloads:
+        try:
+            actor_rows, sim_path = _expand_game_rows(game, split, "python")
+            row_dicts = [_row_to_dict(row) for row in actor_rows]
+            priv_rows = expand_privileged_rows(game, split=split) if need_priv else []
+            priv_pairs = [(str(p.decision_id), dict(p.privileged_label)) for p in priv_rows]
+            out.append(("ok", row_dicts, priv_pairs, sim_path))
+        except ContractError as exc:
+            out.append(("quarantine", str(exc), None, None))
+    return out
+
+
+def _sidecar_window_hash(entries: list[dict[str, Any]], rows: list[dict[str, Any]]) -> str:
+    """Game-keyed integrity hash over a buffered row window (K4 sidecar).
+
+    Binds each whole-game sidecar record (``key`` + ``rows``) plus that
+    game's row payload (``chosen_action_id`` + ``action_kind`` per row, in
+    window order). Per-row ``decision_id`` strings never enter the digest:
+    identity rides the per-game ``key`` (``raw_bytes_sha256``), content
+    rides the chosen/kind payload. Snapshot and restore compute the
+    identical digest, so any game-identity, count, or content drift fails
+    the ``row_hash`` comparison (re-homed, never dropped).
+    """
+    total = 0
+    for entry in entries:
+        count_any = entry["rows"]
+        if isinstance(count_any, bool) or not isinstance(count_any, int):
+            raise ContractError("sidecar window entry rows must be an int")
+        total += count_any
+    if total != len(rows):
+        raise ContractError(f"buffer index drift: {total} indexed rows != {len(rows)} buffered")
+    h = hashlib.sha256()
+    pos = 0
+    for entry in entries:
+        key = entry["key"]
+        if not isinstance(key, str) or key == "":
+            raise ContractError("sidecar window entry key must be a non-empty str")
+        count = int(entry["rows"])
+        h.update(key.encode("utf-8"))
+        h.update(b"\x00")
+        h.update(count.to_bytes(8, "little"))
+        for row in rows[pos : pos + count]:
+            chosen_any = row.get("chosen_action_id", 0)
+            if isinstance(chosen_any, bool) or not isinstance(chosen_any, int):
+                raise ContractError("sidecar window row chosen_action_id must be an int")
+            kind_any = row.get("action_kind", "")
+            if not isinstance(kind_any, str):
+                raise ContractError("sidecar window row action_kind must be a str")
+            h.update(chosen_any.to_bytes(8, "little", signed=True))
+            h.update(kind_any.encode("utf-8"))
+            h.update(b"\x00")
+        pos += count
+    return "sha256:" + h.hexdigest()
 
 
 class _StreamDataset:
@@ -421,13 +539,12 @@ class _StreamDataset:
 
     Exposes the :class:`SupervisedLoop` dataset surface (``next_batch``,
     ``get_sampler_state``/``set_sampler_state``, ``__len__``, ``cursor``).
-    Games are pulled on demand, expanded to actor rows, and encoded per
-    microbatch through the real encoder; privileged rows ride along into
-    :attr:`privileged` (train-split rows only — this dataset never sees
-    validation games). Every game expands through :func:`_expand_game_rows`
-    on the configured ``replay_backend`` (``"rust_json"`` serial, ``"python"``
-    shim fallback); expansion failures quarantine-and-count per game (never
-    fail-soft) in :attr:`expand_quarantined`, with per-path game counts in
+    Games are pulled on demand, expanded to actor rows on the configured
+    ``replay_backend`` (default ``"rust"`` plane feed; ``"python"`` oracle shim
+    for parity only), and assembled per microbatch; privileged rows ride along
+    into :attr:`privileged` (train-split rows only). Expansion failures
+    quarantine-and-count per game (never fail-soft) in
+    :attr:`expand_quarantined`, with per-path game counts in
     :attr:`replayed` / :attr:`sim_replayed`.
     Single-pass: the stream is consumed once, epoch pinned 0; exhaustion
     with rows still demanded fails closed (rescope ``max_updates`` to
@@ -444,8 +561,10 @@ class _StreamDataset:
         seed: int,
         drop_last: bool,
         need_privileged: bool = True,
-        replay_backend: str = "python",
+        replay_backend: str = "rust",
         expand_workers: int = 0,
+        expand_batch_games: int = 64,
+        pin_memory: bool = True,
     ) -> None:
         if drop_last is not True:
             raise ContractError(f"single-pass requires drop_last=true, got {drop_last!r}")
@@ -457,13 +576,17 @@ class _StreamDataset:
             raise ContractError(f"expand_workers invalid: {expand_workers!r} (non-negative int)")
         # Bounded pool: larger requests clamp to _PARALLEL_EXPAND_MAX_WORKERS.
         self._expand_workers = min(expand_workers, _PARALLEL_EXPAND_MAX_WORKERS)
+        if (
+            isinstance(expand_batch_games, bool)
+            or not isinstance(expand_batch_games, int)
+            or not (1 <= expand_batch_games <= 1024)
+        ):
+            raise ContractError(
+                f"expand_batch_games invalid: {expand_batch_games!r} (int in [1, 1024])"
+            )
+        self._expand_batch_games = expand_batch_games
         self._expand_pool: ProcessPoolExecutor | None = None
         self._replay_backend = _require_replay_backend(replay_backend)
-        if self._replay_backend == "rust_json" and self._expand_workers > 0:
-            raise ContractError(
-                "replay_backend='rust_json' with expand_workers>0 stays fail-closed "
-                "(serial first: the expansion pool has no Rust equivalent yet)"
-            )
         self._need_privileged = need_privileged
         self._factory = stream_factory
         self._num_actions = num_actions
@@ -487,6 +610,12 @@ class _StreamDataset:
         # Each entry pins ``key`` (raw_bytes_sha256, deterministic id) plus
         # ``path``/``offset``/``split``/``rows`` for verbatim refetch +
         # re-expansion (kilobytes, never rows). ``sum(rows) == len(_rows)``.
+        # Caller-owned transfer owns pinning: when a pinned-ring feed stages
+        # the H2D copy, encode-side pin_memory() calls (29 page-locks per
+        # microbatch) are pure overhead — the ring copies into its own pinned
+        # slots. The driver clears this once the feed is open; the sync path
+        # keeps it set so non_blocking H2D still overlaps.
+        self.pin_memory = pin_memory
         self._buffered_entries: list[dict[str, Any]] = []
 
     @property
@@ -531,7 +660,7 @@ class _StreamDataset:
         """Pull, expand, and buffer one game; ``False`` at stream end.
 
         Every game expands through :func:`_expand_game_rows` on this
-        dataset's ``replay_backend`` (the Rust stream). Privileged rows
+        dataset's ``replay_backend`` (the ``"python"`` oracle). Privileged rows
         expand only when the dataset was built with ``need_privileged``
         (positive auxiliary weights); BC-only runs skip them so label-less
         games still train. Either path raising :class:`ContractError`
@@ -551,9 +680,15 @@ class _StreamDataset:
                 self._iter = None
                 return False
             try:
-                actor_rows, sim_path = _expand_game_rows(
-                    streamed.game, streamed.split, self._replay_backend
-                )
+                if self._replay_backend == "rust":
+                    row_dicts, sim_path = _expand_game_planes(
+                        streamed.game, streamed.split, streamed.raw
+                    )
+                else:
+                    actor_rows, sim_path = _expand_game_rows(
+                        streamed.game, streamed.split, self._replay_backend
+                    )
+                    row_dicts = [_row_to_dict(row) for row in actor_rows]
                 if self._need_privileged:
                     priv_rows = expand_privileged_rows(streamed.game, split=streamed.split)
                 else:
@@ -567,13 +702,100 @@ class _StreamDataset:
                 self.sim_replayed += 1
             else:
                 self.replayed += 1
-            for row in actor_rows:
-                self._rows.append(_row_to_dict(row))
-            self._track_buffered(streamed, len(actor_rows))
+            for row_dict in row_dicts:
+                self._rows.append(row_dict)
+            self._track_buffered(streamed, len(row_dicts))
             for priv in priv_rows:
                 label = dict(priv.privileged_label)
-                self.privileged.setdefault(str(priv.decision_id), label)
+                # intentionally discarded: existing label wins
+                _ = self.privileged.setdefault(str(priv.decision_id), label)
             return True
+
+    def _pull_game_batch(self, limit: int) -> bool:
+        """Pull up to ``limit`` games; expand rust games in one bridge call.
+
+        Bit-identical merge to serial :meth:`_pull_game` game-for-game
+        (order, replayed/sim counters, privileged joins, quarantine classes,
+        buffer index); only the Rust handoff is batched (one FFI crossing
+        and one GIL release per batch instead of per game). ``True`` once at
+        least one game buffers, ``False`` at stream end. Python-backend
+        datasets never take this path (the oracle stays per-game).
+        """
+        from hydra2.training.rust_batch import expand_game_batch
+
+        while True:
+            batch = self._pull_streamed_batch(limit)
+            if len(batch) == 0:
+                return False
+            walls: list[list[int] | None] = []
+            pre_err: dict[int, ContractError] = {}
+            for pos, streamed in enumerate(batch):
+                tiles = streamed.game.wall_tiles
+                if tiles is None:
+                    walls.append(None)
+                else:
+                    wall = [int(t) for t in tiles]
+                    if len(wall) != 136:
+                        pre_err[pos] = ContractError(
+                            f"wall_tiles must carry 136 tiles, got {len(wall)}"
+                        )
+                        walls.append(None)
+                    else:
+                        walls.append(wall)
+            idxs = [
+                pos for pos, streamed in enumerate(batch) if streamed.raw and pos not in pre_err
+            ]
+            results = (
+                expand_game_batch([(batch[i].raw, 0, walls[i]) for i in idxs])
+                if len(idxs) > 0
+                else []
+            )
+            if len(results) != len(idxs):
+                raise ContractError(
+                    f"bridge batch drift: {len(results)} results for {len(idxs)} games"
+                )
+            by_pos = dict(zip(idxs, results, strict=True))
+            buffered_any = False
+            for pos, streamed in enumerate(batch):
+                try:
+                    if pos in pre_err:
+                        raise pre_err[pos]
+                    if pos in by_pos:
+                        planes, rows, t_len, quarantined, reason, event_idx = by_pos[pos]
+                        game_id = str(streamed.game.game_id)
+                        if quarantined:
+                            raise ContractError(
+                                f"rust walk quarantined game {game_id!r}: "
+                                f"{reason} at event {event_idx}"
+                            )
+                        row_dicts = _slim_row_dicts(game_id, planes, rows, t_len)
+                        sim_path = streamed.game.wall_tiles is None
+                    else:
+                        # Hand-built games (tests) carry no framed bytes:
+                        # legacy rebuilt path, same rows as the serial pull.
+                        row_dicts, sim_path = _expand_game_planes(
+                            streamed.game, streamed.split, b""
+                        )
+                    if self._need_privileged:
+                        priv_rows = expand_privileged_rows(streamed.game, split=streamed.split)
+                    else:
+                        priv_rows = []
+                except ContractError as exc:
+                    self._count_quarantine(exc)
+                    continue
+                if sim_path:
+                    self.sim_replayed += 1
+                else:
+                    self.replayed += 1
+                self._rows.extend(row_dicts)
+                self._track_buffered(streamed, len(row_dicts))
+                for priv in priv_rows:
+                    label = dict(priv.privileged_label)
+                    # intentionally discarded: existing label wins
+                    _ = self.privileged.setdefault(str(priv.decision_id), label)
+                buffered_any = True
+            if buffered_any:
+                return True
 
     def _get_expand_pool(self) -> ProcessPoolExecutor:
         """Lazily-built spawn pool for parallel expansion (bounded, persistent).
@@ -638,24 +860,30 @@ class _StreamDataset:
         self._rows.extend(row_dicts)
         self._track_buffered(streamed, len(row_dicts))
         for decision_id, label in priv_pairs:
-            self.privileged.setdefault(decision_id, label)
+            # intentionally discarded: existing label wins
+            _ = self.privileged.setdefault(decision_id, label)
 
     def _fill_parallel(self, need: int) -> None:
         """Buffer at least ``need`` rows via ordered parallel expansion.
 
-        Pulls raw games in stream order, expands each batch in the bounded
-        spawn pool (:func:`_expand_streamed_game` pure map, no shared mutable
-        state), and merges strictly in pull order via per-sequence futures —
-        never ``pool.map`` (one game's failure cancels the batch tail there).
-        Rows, counters, and quarantine classes match the serial :meth:`_fill`
-        game-for-game; per-game :class:`ContractError` quarantines-and-counts
-        (fail closed, never a silent drop) while any other worker failure
-        propagates. Terminal exhaustion raises the serial messages verbatim.
+        Pulls raw games in stream order in ``_expand_batch_games``-sized
+        rounds, shards each round into contiguous per-worker chunks, expands
+        chunks in the bounded spawn pool (:func:`_expand_streamed_chunk` —
+        one bridge FFI per chunk on rust, per-game oracle inside the chunk
+        on python), and merges strictly in pull order via per-chunk futures
+        — never ``pool.map`` (one game's failure cancels the batch tail
+        there). Rows, counters, and quarantine classes match the serial
+        :meth:`_fill` game-for-game; per-game :class:`ContractError`
+        quarantines-and-counts (fail closed, never a silent drop) while a
+        chunk-level failure quarantines each game it carried (same reason)
+        and any other worker failure propagates. Terminal exhaustion raises
+        the serial messages verbatim.
         """
         pool = self._get_expand_pool()
+        workers = max(1, self._expand_workers)
         while self._live_count() < need:
-            batch = self._pull_streamed_batch(self._expand_workers)
-            if not batch:
+            batch = self._pull_streamed_batch(self._expand_batch_games)
+            if len(batch) == 0:
                 if self._live_count() == 0 and self._offset == 0:
                     raise ContractError("stream yielded zero train rows (empty split?)")
                 raise ContractError(
@@ -663,18 +891,37 @@ class _StreamDataset:
                     "(single-pass: stream end with updates remaining; "
                     "rescope loop.max_updates to supply)"
                 )
-            payloads = [
-                (streamed.game, streamed.split, self._replay_backend, self._need_privileged)
-                for streamed in batch
+            size = max(1, (len(batch) + workers - 1) // workers)
+            chunks = [batch[i : i + size] for i in range(0, len(batch), size)]
+            futures = [
+                pool.submit(
+                    _expand_streamed_chunk,
+                    [
+                        (
+                            streamed.game,
+                            streamed.split,
+                            self._replay_backend,
+                            self._need_privileged,
+                            streamed.raw,
+                        )
+                        for streamed in chunk
+                    ],
+                )
+                for chunk in chunks
             ]
-            futures = [pool.submit(_expand_streamed_game, payload) for payload in payloads]
-            for streamed, future in zip(batch, futures, strict=True):
+            for chunk, future in zip(chunks, futures, strict=True):
                 try:
-                    result = future.result()
+                    results = future.result()
                 except ContractError as exc:
-                    self._count_quarantine(exc)
+                    for _streamed in chunk:
+                        self._count_quarantine(exc)
                     continue
-                self._merge_expanded(streamed, result)
+                for streamed, result in zip(chunk, results, strict=True):
+                    if result[0] == "quarantine":
+                        self._count_quarantine(ContractError(str(result[1])))
+                        continue
+                    _, row_dicts, priv_pairs, sim_path = result
+                    self._merge_expanded(streamed, (row_dicts, priv_pairs, sim_path))
 
     def _track_buffered(self, streamed: Any, row_count: int) -> None:
         """Index one buffered game for fast-resume verbatim rebuild (whole-game)."""
@@ -740,6 +987,18 @@ class _StreamDataset:
         if self._expand_workers > 0:
             self._fill_parallel(need)
             return
+        if self._replay_backend == "rust":
+            while self._live_count() < need:
+                if self._pull_game_batch(self._expand_batch_games):
+                    continue
+                if self._live_count() == 0 and self._offset == 0:
+                    raise ContractError("stream yielded zero train rows (empty split?)")
+                raise ContractError(
+                    f"stream exhausted with {self._live_count()} buffered rows, need {need} "
+                    "(single-pass: stream end with updates remaining; "
+                    "rescope loop.max_updates to supply)"
+                )
+            return
         while self._live_count() < need:
             if self._pull_game():
                 continue
@@ -768,8 +1027,13 @@ class _StreamDataset:
         taken = self._consume_microbatch(batch_size)
         if len(taken) == 0:
             raise ContractError("stream dataset produced an empty microbatch")
+        if self._replay_backend == "rust":
+            return self._next_batch_planes(taken)
         batch = encode_observation_rows(
-            taken, num_actions=self._num_actions, feature_dim=self._feature_dim
+            taken,
+            num_actions=self._num_actions,
+            feature_dim=self._feature_dim,
+            pin_memory=self.pin_memory,
         )
         batch["_decision_ids"] = [str(row["decision_id"]) for row in taken]
         batch["_epoch"] = torch.tensor(self._epoch)
@@ -783,6 +1047,21 @@ class _StreamDataset:
             else:
                 kinds.append("unknown")
         batch["_action_kinds"] = kinds
+        return batch
+
+    def _next_batch_planes(self, taken: list[dict[str, Any]]) -> dict[str, Any]:
+        """Assemble one microbatch from Rust plane blobs (no encoder).
+
+        Groups consecutive rows sharing one game blob (buffer order is game
+        order), slices zero-copy plane views, concats across games, and
+        finishes through :func:`assemble_slim_batch` (shared with eval).
+        Decision ids, kinds, and epoch ride the slim rows, so scorecards
+        and joins behave identically to the encoder path.
+        """
+        from hydra2.training.rust_batch import assemble_slim_batch
+
+        batch = assemble_slim_batch(taken, action_count=self._num_actions)
+        batch["_epoch"] = torch.tensor(self._epoch)
         return batch
 
     def get_sampler_state(self) -> dict[str, Any]:
@@ -815,12 +1094,8 @@ class _StreamDataset:
         self._epoch = 0
 
     def buffered_row_hash(self) -> str:
-        """Deterministic hash of the live ``_rows`` window (decision_id order)."""
-        h = hashlib.sha256()
-        for row in self._rows:
-            h.update(str(row.get("decision_id", "")).encode())
-            h.update(b"\x00")
-        return "sha256:" + h.hexdigest()
+        """Game-keyed sidecar hash over the live window (K4: no per-row id strings)."""
+        return _sidecar_window_hash(self._buffered_entries, self._rows)
 
     def buffer_snapshot(self) -> dict[str, Any]:
         """Fast-resume snapshot: whole-game entries + counters + row hash."""
@@ -858,7 +1133,7 @@ class _StreamDataset:
         entries = snapshot.get("entries")
         if not isinstance(entries, list):
             raise ContractError("dataset buffer entries must be a list")
-        recorded_backend = snapshot.get("replay_backend", "python")
+        recorded_backend = snapshot.get("replay_backend", "rust")
         if recorded_backend != self._replay_backend:
             raise ContractError(
                 f"dataset buffer replay_backend {recorded_backend!r} != "
@@ -870,7 +1145,7 @@ class _StreamDataset:
             unknown = sorted(
                 k for k in entry if k not in ("key", "path", "offset", "split", "rows")
             )
-            if unknown:
+            if len(unknown) > 0:
                 raise ContractError(f"dataset buffer entry unknown keys {unknown}")
             key, path, offset, split, rows = (
                 entry.get("key"),
@@ -918,9 +1193,15 @@ class _StreamDataset:
                 expected_sha=str(entry["key"]),
             )
             try:
-                actor_rows, sim_path = _expand_game_rows(
-                    fetched.game, recorded_split, self._replay_backend
-                )
+                if self._replay_backend == "rust":
+                    row_dicts, sim_path = _expand_game_planes(
+                        fetched.game, recorded_split, fetched.raw
+                    )
+                else:
+                    actor_rows, sim_path = _expand_game_rows(
+                        fetched.game, recorded_split, self._replay_backend
+                    )
+                    row_dicts = [_row_to_dict(row) for row in actor_rows]
                 priv_rows = (
                     expand_privileged_rows(fetched.game, split=recorded_split)
                     if self._need_privileged
@@ -928,21 +1209,19 @@ class _StreamDataset:
                 )
             except ContractError as exc:
                 raise ContractError(f"buffered game failed to re-expand: {exc}") from exc
-            if len(actor_rows) != int(entry["rows"]):
+            if len(row_dicts) != int(entry["rows"]):
                 raise ContractError("buffered game row count mismatch on restore")
-            rebuilt_rows.extend(_row_to_dict(row) for row in actor_rows)
+            rebuilt_rows.extend(row_dicts)
             for priv in priv_rows:
-                rebuilt_priv.setdefault(str(priv.decision_id), dict(priv.privileged_label))
+                label = dict(priv.privileged_label)
+                # intentionally discarded: existing label wins
+                _ = rebuilt_priv.setdefault(str(priv.decision_id), label)
             if sim_path:
                 sim_replayed += 1
             else:
                 replayed += 1
-        # Verify verbatim before mutating live state.
-        h = hashlib.sha256()
-        for row in rebuilt_rows:
-            h.update(str(row.get("decision_id", "")).encode())
-            h.update(b"\x00")
-        actual_hash = "sha256:" + h.hexdigest()
+        # Verify verbatim before mutating live state (game-keyed sidecar hash).
+        actual_hash = _sidecar_window_hash(entries, rebuilt_rows)  # type: ignore[arg-type]
         if actual_hash != expected_hash:
             raise ContractError("dataset buffer row hash mismatch on restore")
         if len(rebuilt_rows) != int(snapshot.get("total_rows", len(rebuilt_rows))):
@@ -1018,7 +1297,7 @@ def _scan_file_games(path_str: str) -> list[tuple[str, str | None, bool] | None]
             out.append(None)
             continue
         try:
-            validate_game(game)
+            _ = validate_game(game)  # intentionally discarded: raises on invalid, outcome unneeded
         except (ContractError, CorruptArtifactError, ValueError):
             out.append(None)
             continue
@@ -1095,7 +1374,7 @@ def _scan_report(
 ) -> _ScanReport:
     """Shared scan tail: wall-disjoint gate plus the report record."""
     overlap = sorted(train_walls & val_walls)
-    if overlap:
+    if len(overlap) > 0:
         raise ContractError(
             f"wall {overlap[0][:16]} in splits "
             f"{config.data.train_split} and {config.data.val_split}"
@@ -1289,7 +1568,7 @@ def _parse_dataset_buffer_sidecar(raw: Any, *, ckpt: Path) -> dict[str, Any]:
         if not isinstance(entry, dict):
             raise ContractError(f"checkpoint dataset_buffer entry must be a mapping: {ckpt}")
         unknown = sorted(k for k in entry if k not in ("key", "path", "offset", "split", "rows"))
-        if unknown:
+        if len(unknown) > 0:
             raise ContractError(f"checkpoint dataset_buffer entry unknown keys {unknown}: {ckpt}")
     for name in ("offset", "dropped", "epoch", "microbatches_in_epoch", "total_rows"):
         value = raw.get(name)
@@ -1327,7 +1606,7 @@ def _build_model(config: RunConfig) -> Any:
         )
     params = dict(config.model.parameters)
     unknown = sorted(k for k in params if k not in _MODEL_PARAMETERS)
-    if unknown:
+    if len(unknown) > 0:
         raise ContractError(f"model.parameters unknown keys {unknown}")
     for key in ("d_model", "n_layers", "n_heads", "d_ff"):
         if key in params and (isinstance(params[key], bool) or not isinstance(params[key], int)):
@@ -1341,54 +1620,65 @@ def _build_model(config: RunConfig) -> Any:
     return Hydra2BaselineModel(action_count=config.model.action_count, **params)
 
 
-_HEAD_PARAM_PREFIXES: dict[str, tuple[str, ...]] = {
-    "policy": ("policy_head.",),
-    "placement": ("placement_head.",),
-    "value": ("value_head.",),
-    "event": ("event_head.",),
-    "belief": ("belief_head.",),
-}
+_POLICY_HEAD_PREFIX = "policy_head."
+
+#: Parameter-name tags that force the no-decay group (case as stored;
+#: model names are lowercase). ``"embed"`` covers ``*embedding`` tables;
+#: the small ``*_emb`` tables (actor/phase/wind/furiten) carry no tag and
+#: decay with the trunk — negligible at their size, kept literal per spec.
+_NO_DECAY_NAME_TAGS: tuple[str, ...] = ("norm", "bias", "embed")
 
 
 def _optimizer_param_groups(config: RunConfig, model: Any) -> list[dict[str, Any]] | None:
-    """Param groups for ``head_lr_mult`` (``None`` = uniform single group).
+    """Three-group AdamW split: trunk-decay, trunk-no-decay, policy-head.
 
-    Known heads map to ``<head>_head.`` parameter prefixes; ``"trunk"``
-    scales every remaining parameter. Unknown keys fail closed. Empty
-    groups are omitted (stub models without heads train at the base lr).
+    * Trunk decay: all non-head parameters except the no-decay set below,
+      ``lr=base`` and ``weight_decay=config.weight_decay``.
+    * Trunk no-decay: non-head parameters with ``param.dim() < 2`` (params
+      without ``.dim`` fall back to the decay group) or whose name contains
+      ``norm``/``bias``/``embed``; ``lr=base`` and ``weight_decay=0.0``
+      (biases, norms, and embeddings are not decayed).
+    * Policy head: ``policy_head.`` parameters, ``lr=base*head_lr_mult``
+      and ``weight_decay=0.0`` (dominant-head precedent).
+
+    Policy-only head LR by design: the placement/value/event/belief heads
+    stay in the trunk groups at the base LR, training alongside the trunk
+    they read out from, while the dominant policy head takes the larger
+    step.  Group order is decay, no-decay, head so the scheduler peak
+    (first group) stays the base LR.  ``None`` only when the model exposes
+    no named parameters (single-group uniform fallback in the builder).
+    Empty buckets are omitted (stub models without a policy head train the
+    trunk groups only).
     """
-    mult = config.optimizer.head_lr_mult
-    if mult is None:
-        return None
-    known = set(_HEAD_PARAM_PREFIXES) | {"trunk"}
-    unknown = sorted(k for k in mult if k not in known)
-    if unknown:
-        raise ContractError(f"optimizer.head_lr_mult unknown heads {unknown}")
-    base_lr = float(config.optimizer.lr)
+    base_lr = config.optimizer.lr
+    weight_decay = config.optimizer.weight_decay
+    head_mult = config.optimizer.head_lr_mult
     try:
         named = list(model.named_parameters())
     except Exception:
         return None
-    buckets: dict[str, list[Any]] = {head: [] for head in mult}
-    trunk: list[Any] = []
+    decay: list[Any] = []
+    no_decay: list[Any] = []
+    head: list[Any] = []
     for name, param in named:
-        placed = False
-        for head, prefixes in _HEAD_PARAM_PREFIXES.items():
-            if head in mult and any(name.startswith(p) for p in prefixes):
-                buckets[head].append(param)
-                placed = True
-                break
-        if not placed:
-            trunk.append(param)
-    groups: list[dict[str, Any]] = []
-    for head, params in buckets.items():
-        if len(params) == 0:
+        if name.startswith(_POLICY_HEAD_PREFIX):
+            head.append(param)
             continue
-        groups.append({"params": params, "lr": base_lr * float(mult[head])})
-    trunk_mult = float(mult.get("trunk", 1.0)) if "trunk" in mult else 1.0
-    if len(trunk) > 0:
-        # Trunk at base lr unless an explicit trunk multiplier rides along.
-        groups.append({"params": trunk, "lr": base_lr * trunk_mult})
+        try:
+            low_dim = param.dim() < 2
+        except AttributeError:
+            low_dim = False  # foreign stub params without .dim decay with the trunk
+        if low_dim or any(tag in name for tag in _NO_DECAY_NAME_TAGS):
+            no_decay.append(param)
+        else:
+            decay.append(param)
+    groups: list[dict[str, Any]] = []
+    if len(decay) > 0:
+        groups.append({"params": decay, "lr": base_lr, "weight_decay": weight_decay})
+    if len(no_decay) > 0:
+        groups.append({"params": no_decay, "lr": base_lr, "weight_decay": 0.0})
+    if len(head) > 0:
+        groups.append({"params": head, "lr": base_lr * head_mult, "weight_decay": 0.0})
     if len(groups) == 0:
         return None
     return groups
@@ -1464,11 +1754,11 @@ def _build_scheduler(config: RunConfig, optimizer: Any) -> Any:
     warmup = config.scheduler.warmup_updates
     horizon = config.loop.max_updates
     parameters = dict(config.scheduler.parameters)
-    final_factor = float(config.scheduler.final_factor)
-    warmup_start = float(config.scheduler.warmup_start_factor)
+    final_factor = config.scheduler.final_factor
+    warmup_start = config.scheduler.warmup_start_factor
     if name == "cosine":
         unknown = sorted(k for k in parameters if k != "T_max")
-        if unknown:
+        if len(unknown) > 0:
             raise ContractError(f"scheduler.parameters unknown keys {unknown}")
         main_span = max(1, horizon - warmup) if warmup < horizon else horizon
         # Peak/final mapping: eta_min is final_factor fraction of peak.
@@ -1479,17 +1769,17 @@ def _build_scheduler(config: RunConfig, optimizer: Any) -> Any:
         try:
             _peak = float(optimizer.param_groups[0]["lr"])
         except Exception:
-            _peak = float(config.optimizer.lr)
+            _peak = config.optimizer.lr
         main = CosineAnnealingLR(
             optimizer, T_max=int(parameters.get("T_max", main_span)), eta_min=_peak * final_factor
         )
     elif name == "constant":
-        if parameters:
+        if len(parameters) > 0:
             raise ContractError(f"scheduler.parameters unknown keys {sorted(parameters)}")
         main = LambdaLR(optimizer, lr_lambda=lambda _epoch: 1.0)
     elif name == "linear":
         unknown = sorted(k for k in parameters if k != "end_factor")
-        if unknown:
+        if len(unknown) > 0:
             raise ContractError(f"scheduler.parameters unknown keys {unknown}")
         # Canonical final_factor wins; legacy parameters end_factor preserved
         # when explicitly set (back-compat for pre-factor configs).
@@ -1540,6 +1830,7 @@ def _manifest_hashes_for_loop(
     except (ContractError, ValueError) as exc:
         raise ContractError(f"cannot derive observation_schema_hash for training: {exc}") from exc
     optimizer_doc = {
+        "head_lr_mult": config.optimizer.head_lr_mult,
         "id": config.optimizer.name,
         "lr": config.optimizer.lr,
         "betas": list(config.optimizer.betas),
@@ -1822,8 +2113,9 @@ def _append_new_history(run_dir: Path, history: list[dict[str, float]]) -> int:
             update = int(entry.get("global_update", -1))
             if update in logged:
                 continue
-            metrics_handle.write(json.dumps(entry, sort_keys=True) + "\n")
-            log_handle.write(
+            payload = json.dumps(entry, sort_keys=True) + "\n"
+            _ = metrics_handle.write(payload)  # intentionally discarded: byte count unneeded
+            _ = log_handle.write(  # intentionally discarded: byte count unneeded
                 f"update={update:06d} total={entry.get('total', 0.0):.6f} "
                 f"policy={entry.get('policy', 0.0):.6f} "
                 f"top1={entry.get('top1', 0.0):.4f}\n"
@@ -1890,32 +2182,46 @@ def _run_holdout_eval(
                 break
             games_touched += 1
             try:
-                actor_rows, _ = _expand_game_rows(
-                    streamed.game, streamed.split, config.data.replay_backend
-                )
+                if config.data.replay_backend == "rust":
+                    row_dicts, _ = _expand_game_planes(streamed.game, streamed.split, streamed.raw)
+                else:
+                    actor_rows, _ = _expand_game_rows(
+                        streamed.game, streamed.split, config.data.replay_backend
+                    )
+                    row_dicts = [_row_to_dict(row) for row in actor_rows]
             except ContractError:
                 continue
-            for row in actor_rows:
-                rows.append(_row_to_dict(row))
+            for row_dict in row_dicts:
+                rows.append(row_dict)
                 if len(rows) >= need_batches * micro:
                     break
         expand_wall = time.perf_counter() - expand_start
-        if not rows:
+        if len(rows) == 0:
             raise ContractError("no val rows for held-out eval")
         encode_start = time.perf_counter()
-        batches = [
-            encode_observation_rows(
-                rows[start : start + micro],
-                num_actions=config.model.action_count,
-                feature_dim=_FEATURE_FOLD_DIM,
-            )
-            for start in range(0, need_batches * micro, micro)
-        ]
+        if config.data.replay_backend == "rust":
+            from hydra2.training.rust_batch import assemble_slim_batch
+
+            batches = [
+                assemble_slim_batch(
+                    rows[start : start + micro], action_count=config.model.action_count
+                )
+                for start in range(0, need_batches * micro, micro)
+            ]
+        else:
+            batches = [
+                encode_observation_rows(
+                    rows[start : start + micro],
+                    num_actions=config.model.action_count,
+                    feature_dim=_FEATURE_FOLD_DIM,
+                )
+                for start in range(0, need_batches * micro, micro)
+            ]
         encode_wall = time.perf_counter() - encode_start
         report = loop.evaluate_report(batches)
         entry: dict[str, Any] = {"update": update}
         for key, value in report.items():
-            entry[str(key)] = float(value) if isinstance(value, (int, float)) else value
+            entry[key] = float(value) if isinstance(value, (int, float)) else value
         with eval_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry, sort_keys=True) + "\n")
         with train_log.open("a", encoding="utf-8") as handle:
@@ -1949,7 +2255,11 @@ def _apply_resume_payload(
     _ = loop.model.load_state_dict(payload["model_state"])
     _ = loop.optimizer.load_state_dict(payload["optimizer_state"])
     scheduler_state = payload.get("scheduler_state")
-    if loop.scheduler is not None and scheduler_state:
+    if (
+        loop.scheduler is not None
+        and scheduler_state is not None
+        and len(scheduler_state) > 0  # {}-skip: writers store {} for scheduler-less runs
+    ):
         try:
             loop.scheduler.load_state_dict(scheduler_state)
         except (ValueError, TypeError, AttributeError) as exc:
@@ -1958,7 +2268,7 @@ def _apply_resume_payload(
     if not isinstance(raw_training, dict):
         raise ContractError(f"checkpoint training_state malformed: {ckpt}")
     _restored = TrainingState.from_dict(raw_training)
-    if str(_restored.precision) != str(loop.config.precision):
+    if _restored.precision != loop.config.precision:
         raise ContractError(
             f"checkpoint precision {_restored.precision!r} != "
             f"loop precision {loop.config.precision!r}; refusing cross-regime resume: {ckpt}"
@@ -2039,6 +2349,217 @@ def _load_resume_envelope(
         drain_microbatches=drain_raw,
         has_fast_path=has_fast,
     )
+
+
+class _GatedOverlapFeed:
+    """Caller-owned gated overlap feed for :class:`SupervisedLoop` (driver lifecycle).
+
+    Duck-types the ``pinned_ring.py`` contract (``next``/``stats``/``close``);
+    the loop never opens or closes the handle. Schema-field tensors under
+    ``batch["actor_batch"].features`` ride the single caller-owned
+    :class:`PinnedRing` (fixed max-bucket-T layout, exact shape match, so
+    batches stay byte-identical); every other leaf — folded ``features`` /
+    ``legal_mask`` / ``chosen_action_id``, ``_``-prefixed passthroughs,
+    joined oracle targets, metadata — moves synchronously. A batch whose
+    history bucket differs from the ring ``T`` falls back to the synchronous
+    move for its schema leaves (still byte-identical, counted in ``stats``).
+    The input batch is never mutated.
+    """
+
+    def __init__(self, ring: Any, device: Any) -> None:
+        self._ring = ring
+        self._device = torch.device(device)
+        self._batches = 0
+        self._fallback_batches = 0
+
+    def _sync_tensor(self, value: Any) -> Any:
+        if isinstance(value, torch.Tensor):
+            return value.to(self._device, non_blocking=True)
+        return value
+
+    def _sync_value(self, value: Any) -> Any:
+        from hydra2.models.encoder import ActorTensorBatch
+
+        if isinstance(value, torch.Tensor):
+            return value.to(self._device, non_blocking=True)
+        if isinstance(value, dict):
+            return {
+                sub_key: (
+                    sub_value.to(self._device, non_blocking=True)
+                    if isinstance(sub_value, torch.Tensor)
+                    else sub_value
+                )
+                for sub_key, sub_value in value.items()
+            }
+        if isinstance(value, ActorTensorBatch):
+            moved_features = {
+                name: self._sync_tensor(tensor) for name, tensor in dict(value.features).items()
+            }
+            return ActorTensorBatch(
+                features=moved_features,
+                history_mask=moved_features["history_mask"],
+                legal_mask=moved_features["legal_mask"],
+                observation_hashes=value.observation_hashes,
+                actor_seats=moved_features["actor_seats"],
+            )
+        return value
+
+    def next(self, cpu_batch: Mapping[str, Any]) -> dict[str, Any]:
+        """Move one CPU batch host-to-device (ring fast path + sync remainder)."""
+        from hydra2.models.encoder import ActorTensorBatch
+
+        self._batches += 1
+        actor_batch = cpu_batch.get("actor_batch")
+        moved_actor: Any | None = None
+        if isinstance(actor_batch, ActorTensorBatch):
+            schema = dict(actor_batch.features)
+            try:
+                ring_out = self._ring.next(schema)
+            except ContractError:
+                # Off-bucket batch (T != ring T): synchronous move, same bytes.
+                self._fallback_batches += 1
+                ring_out = {name: self._sync_tensor(tensor) for name, tensor in schema.items()}
+            moved_actor = ActorTensorBatch(
+                features=ring_out,
+                history_mask=ring_out["history_mask"],
+                legal_mask=ring_out["legal_mask"],
+                observation_hashes=actor_batch.observation_hashes,
+                actor_seats=ring_out["actor_seats"],
+            )
+        moved: dict[str, Any] = {}
+        for key, value in dict(cpu_batch).items():
+            if key == "actor_batch" and moved_actor is not None:
+                moved[key] = moved_actor
+            elif key.startswith("_"):
+                moved[key] = value
+            else:
+                moved[key] = self._sync_value(value)
+        return moved
+
+    def stats(self) -> dict[str, Any]:
+        """Ring counters plus feed-level batch/fallback counts."""
+        base = dict(self._ring.stats())
+        base["feed_batches"] = self._batches
+        base["feed_fallback_batches"] = self._fallback_batches
+        return base
+
+    def close(self) -> None:
+        """Release the ring (idempotent, single lifecycle)."""
+        self._ring.close()
+
+
+def _open_gated_feed(
+    *, microbatch: int, action_count: int, device: Any
+) -> _GatedOverlapFeed | None:
+    """Open the caller-owned overlap feed, or ``None`` for the sync fallback.
+
+    Gated opt-in: CUDA target with CUDA available and pinnable host memory
+    only; anything else (CPU runs, CPU-only tests, failed alloc) returns
+    ``None`` and the loop keeps its synchronous path (queue_wait stays 0.0).
+    """
+    try:
+        resolved = torch.device(device)
+    except (RuntimeError, TypeError, ValueError):
+        return None
+    if resolved.type != "cuda" or not torch.cuda.is_available():
+        return None
+    try:
+        from hydra2.models.schema import HISTORY_BUCKET_LENGTHS
+        from hydra2.training.pinned_ring import PinnedRing, slot_layout
+
+        layout = slot_layout(microbatch, max(HISTORY_BUCKET_LENGTHS), action_count=action_count)
+        ring = PinnedRing.open(layout, depth=2, device=resolved)
+    except Exception:
+        return None
+    return _GatedOverlapFeed(ring, resolved)
+
+
+def _backward_pass_autocast_for(*, precision: str, compile_mode: str) -> Literal["off"] | None:
+    """Derive the functorch backward shim for a runtime precision/compile pair.
+
+    Mirrors the fail-closed gate in :func:`protocol.build_runtime`: compiled
+    non-fp32 requires ``'off'``; every other pair keeps ``None`` so existing
+    runtime identities are byte-identical. Pure derivation, no hardware touch.
+    """
+    if precision != "fp32" and compile_mode != "eager":
+        return "off"
+    return None
+
+
+def _profile_single_update(*, loop: Any, update: int, profiler_dir: Path, train_log: Path) -> None:
+    """Train exactly one update under torch.profiler; warn-only on failure.
+
+    Observer-only: the trace lands under ``profiler/capture-<update>/`` and
+    is never read back into training, checkpoints, or resume.
+    """
+    capture_dir = profiler_dir / f"capture-{update:06d}"
+    try:
+        import gzip
+        import shutil
+
+        import torch
+
+        capture_dir.mkdir(parents=True, exist_ok=True)
+        tmp_path = capture_dir / "trace.json"
+        activities = [
+            torch.profiler.ProfilerActivity.CPU,
+            torch.profiler.ProfilerActivity.CUDA,
+        ]
+        with torch.profiler.profile(
+            activities=activities, record_shapes=False, with_stack=False, profile_memory=False
+        ) as prof:
+            _ = loop.train(max_updates=1)
+        prof.export_chrome_trace(str(tmp_path))
+        with open(tmp_path, "rb") as src, gzip.open(capture_dir / "trace.json.gz", "wb") as dst:
+            shutil.copyfileobj(src, dst)
+        with contextlib.suppress(Exception):
+            tmp_path.unlink()
+        with train_log.open("a", encoding="utf-8") as handle:
+            handle.write(f"profiler:update={update:06d} captured {capture_dir.name}\n")
+    except Exception as exc:
+        with contextlib.suppress(Exception), train_log.open("a", encoding="utf-8") as handle:
+            handle.write(f"profiler:update={update:06d} skipped ({type(exc).__name__})\n")
+
+
+def _train_segment(
+    *,
+    loop: Any,
+    done: int,
+    step: int,
+    captures: set[int],
+    profiler_dir: Path,
+    train_log: Path,
+    cuda_ok: bool,
+) -> int:
+    """Train ``step`` updates from ``done``; capture updates go via profiler.
+
+    Pure stepping helper (no math): plain updates train untouched, and each
+    capture update trains exactly once — under the profiler on CUDA, plain
+    with a log marker elsewhere. Returns the new ``done`` cursor.
+    """
+    cursor = done
+    target = done + step
+    for capture in sorted(captures):
+        if not (cursor < capture <= target):
+            continue
+        plain = capture - 1 - cursor
+        if plain > 0:
+            _ = loop.train(max_updates=plain)
+            cursor += plain
+        if cuda_ok:
+            _profile_single_update(
+                loop=loop, update=capture, profiler_dir=profiler_dir, train_log=train_log
+            )
+        else:
+            with contextlib.suppress(Exception), train_log.open("a", encoding="utf-8") as handle:
+                handle.write(f"profiler:update={capture:06d} skipped (cpu-device)\n")
+            _ = loop.train(max_updates=1)
+        cursor += 1
+    rest = target - cursor
+    if rest > 0:
+        _ = loop.train(max_updates=rest)
+        cursor += rest
+    return cursor
 
 
 def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> dict[str, Any]:
@@ -2186,6 +2707,7 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
                 manifest,
                 **common,
                 max_workers=config.data.num_workers,
+                prefetch=config.data.decode_prefetch,
                 start=seek_start,
                 shuffle_restore_entries=seek_entries,  # type: ignore[arg-type]
                 shuffle_restore_rng=seek_rng,  # type: ignore[arg-type]
@@ -2200,6 +2722,11 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
             shuffle_restore_prefix_hashes=seek_prefix,  # type: ignore[arg-type]
         )
 
+    # Game-pull expansion (both backends): the dataset owns one GameStream and
+    # expands per game — Python oracle rows (``replay_backend="python"``) or
+    # Rust plane blobs (``replay_backend="rust"``, same order/shuffle/sidecar,
+    # tensor-native batch assembly, no per-row Python). Resume, shuffle,
+    # privileged labels, and dedup behave identically on both paths.
     dataset = _StreamDataset(
         stream_factory=_train_stream_factory,
         num_actions=config.model.action_count,
@@ -2208,14 +2735,11 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
         drop_last=config.data.drop_last,
         need_privileged=need_privileged,
         replay_backend=config.data.replay_backend,
-        # Parallel game expansion rides the existing prefetch/parallel path
-        # on the python backend only: num_workers > 0 selects
-        # PrefetchGameStream above (decode parallelism, backend-independent)
-        # and sizes the bounded (16-max) expansion pool. The Rust backend has
-        # no pool equivalent yet (serial first), so it always expands serially
-        # even when prefetch decodes in parallel; an explicit
-        # expand_workers>0 with rust_json refuses fail-closed at construction.
-        expand_workers=config.data.num_workers if config.data.replay_backend == "python" else 0,
+        # Parallel game expansion rides the existing prefetch/parallel path:
+        # num_workers > 0 selects PrefetchGameStream above (decode parallelism)
+        # and sizes the bounded (16-max) expansion pool.
+        expand_workers=config.data.num_workers,
+        expand_batch_games=config.data.expand_batch_games,
     )
     payload: Any = None
     if resume is not None and envelope is not None:
@@ -2269,13 +2793,23 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
         adapter = FabricRuntimeAdapter()
     else:
         raise ContractError(f"unknown runtime adapter_id {config.runtime.adapter_id!r}")
+    # Compiled non-fp32 needs the functorch backward shim (see
+    # _backward_pass_autocast_for); eager and fp32 paths keep None, so
+    # existing runtime identities are unchanged.
     spec = RuntimeSpec(
         adapter_id=config.runtime.adapter_id,  # type: ignore[arg-type]
         device=config.runtime.device,
         precision=config.loop.precision,  # type: ignore[arg-type]
         compile_mode=config.runtime.compile_mode,  # type: ignore[arg-type]
+        backward_pass_autocast=_backward_pass_autocast_for(
+            precision=config.loop.precision, compile_mode=config.runtime.compile_mode
+        ),
     )
     handle = build_runtime(adapter=adapter, model=model, optimizer=optimizer, spec=spec)
+    # bf16 routing: plain_pytorch + bf16_mixed is the launchable bf16 path
+    # (loop-owned autocast, CUDA-only, fail-closed otherwise). fabric_2.6.5 +
+    # the real actor model stays blocked: Fabric AMP convert_input cannot
+    # traverse the frozen ActorTensorBatch (ValueError on the first forward).
 
     loop_config = TrainingLoopConfig(
         w_policy=config.weights.w_policy,
@@ -2297,6 +2831,7 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
         else None,
         log_per_type_metrics=config.loop.log_per_type_metrics,
         fit_temperature=config.loop.fit_temperature,
+        fetch_prefetch_depth=config.loop.fetch_prefetch_depth,
     )
     from hydra2.tracking.clearml_mirror import make_mirror
 
@@ -2320,6 +2855,53 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
             "precision": config.loop.precision,
         },
     )
+    from hydra2.tracking.mlflow_mirror import make_mirror as make_mlflow_mirror
+
+    # MLflow quiet mirror (default-on; Null under HYDRA2_MLFLOW_DISABLED in
+    # tests). Store is anchored to this run's artifact root (runs/<id>/..);
+    # the id file lets resume append to the same MLflow run.
+    mlflow_store_dir = run_dir.parent.parent / "mirror" / "mlflow"
+    mlflow_id_file = run_dir / "mirror" / "mlflow_run_id"
+    stored_mlflow_run: str | None = None
+    if resume is not None:
+        with contextlib.suppress(Exception):
+            stored_mlflow_run = mlflow_id_file.read_text(encoding="utf-8").strip() or None
+    mlflow_mirror = make_mlflow_mirror(
+        tracking_dir=mlflow_store_dir,
+        enabled=config.telemetry.mlflow_enabled,
+        run_name=config.run.run_id,
+        manifest_hashes=loop_manifest_hashes,
+        loop_config={
+            "microbatch_size": microbatch,
+            "accumulation_steps": config.loop.accumulation_steps,
+            "max_updates": config.loop.max_updates,
+            "checkpoint_frequency_updates": config.loop.checkpoint_frequency_updates,
+            "seed": config.seeds.train_seed,
+            "w_policy": config.weights.w_policy,
+            "w_placement": config.weights.w_placement,
+            "w_value": config.weights.w_value,
+            "precision": config.loop.precision,
+        },
+    )
+    started_mlflow_run = mlflow_mirror.start_run(run_id=stored_mlflow_run)
+    if started_mlflow_run:
+        with contextlib.suppress(Exception):
+            mlflow_id_file.parent.mkdir(parents=True, exist_ok=True)
+            mlflow_id_file.write_text(started_mlflow_run, encoding="utf-8")
+    # Gated overlap feed (caller-owned): one depth-2 CUDA PinnedRing over the
+    # fixed max-bucket-T schema layout (B=microbatch, A=action_count). The
+    # probe workload buckets every full microbatch at T=256, so the ring
+    # shape-matches every batch exactly (byte-identical); off-bucket batches
+    # fall back to the sync move inside the feed. None on CPU or when
+    # CUDA/pinned is unavailable (sync fallback, CPU-safe); the loop never
+    # opens or closes the handle.
+    feed = _open_gated_feed(
+        microbatch=microbatch, action_count=config.model.action_count, device=handle.device
+    )
+    # The ring stages the H2D copy from its own pinned slots: encode-side
+    # page-locking would only duplicate that work. Sync fallback (feed None)
+    # keeps pinning so non_blocking transfers still overlap.
+    dataset.pin_memory = feed is None
     loop = SupervisedLoop(
         model=cast("Any", handle.model),
         optimizer=cast("Any", handle.optimizer),
@@ -2333,7 +2915,9 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
         privileged_source=dataset.privileged,
         evaluation_wall_ids=set(scan.val_walls),
         mirror=mirror,
+        mlflow_mirror=mlflow_mirror,
         runtime_spec=spec,
+        feed=feed,
     )
     if resume is not None:
         # Payload identity fully verified above; now mutate live objects.
@@ -2343,38 +2927,105 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
     eval_every = config.eval.frequency_updates
     done = 0
     evals: list[dict[str, Any]] = []
-    while done < remaining:
-        step = min(ckpt_every, remaining - done)
-        loop.train(max_updates=step)
-        done += step
-        _write_streaming_checkpoint(
-            run_dir=run_dir,
-            update=loop.state.global_update,
-            run_digest=run_digest,
-            stream_digest=stream_digest,
-            config=config,
-            loop=loop,
-            dataset=dataset,
-            batch_size=microbatch,
-        )
-        _append_new_history(run_dir, loop.loss_history)
-        _prune_checkpoints(run_dir, keep=config.loop.keep_last_checkpoints)
-        update = loop.state.global_update
-        if eval_every > 0 and update % eval_every == 0:
-            report = _run_holdout_eval(
-                manifest=manifest,
-                ratios=ratios,
+    # Observer-only feed telemetry sink (run-level; the loop's own file sink
+    # stays off because it truncates per train() call, which would drop every
+    # checkpoint segment but the last). Fresh runs start empty; resume appends
+    # the post-resume segments. Resume and RNG never read this file.
+    telemetry_path = run_dir / "logs" / "feed-telemetry.jsonl"
+    telemetry_all: list[Any] = []
+    telemetry_updates: list[Any] = []
+    if resume is None:
+        telemetry_path.write_text("", encoding="utf-8")
+    # Verbose GPU/CPU sampler (opt-in; default off). Run-scoped rows under
+    # logs/; resume appends. Never touches train state or RNG.
+    from hydra2.tracking.verbose_sampler import make_verbose_sampler
+
+    _sampled_loop = loop
+    sampler = make_verbose_sampler(
+        enabled=config.telemetry.verbose_enabled,
+        sink_path=run_dir / "logs" / "verbose-telemetry.jsonl",
+        interval_ms=config.telemetry.verbose_interval_ms,
+        run_id=config.run.run_id,
+        run_digest=run_digest,
+        counters_fn=lambda: (int(_sampled_loop.state.global_update), 0),
+    )
+    _ = sampler.start()
+    # Profiler captures: first K checkpoint boundaries past warmup (compile
+    # noise), bounded by the run window. Each captures exactly one update.
+    profile_updates: set[int] = set()
+    for _slot in range(2, 2 + config.telemetry.profiler_captures):
+        _boundary = ckpt_every * _slot
+        if start_update < _boundary <= start_update + remaining:
+            profile_updates.add(_boundary)
+    _device = getattr(loop, "device", "cpu")
+    _profile_cuda = str(getattr(_device, "type", _device)) == "cuda"
+    try:
+        while done < remaining:
+            step = min(ckpt_every, remaining - done)
+            done = _train_segment(
+                loop=loop,
+                done=done,
+                step=step,
+                captures=profile_updates,
+                profiler_dir=run_dir / "profiler",
+                train_log=run_dir / "logs" / "train.log",
+                cuda_ok=_profile_cuda,
+            )
+            # Accumulate this segment's per-microbatch walls (observer-only).
+            telemetry_all.extend(loop.telemetry_records)
+            telemetry_updates.extend(loop.update_records)
+            with open(telemetry_path, "a", encoding="utf-8") as sink:
+                for record in loop.telemetry_records:
+                    _ = sink.write(json.dumps(record.to_dict(), sort_keys=True) + "\n")
+            # intentionally discarded: checkpoint path unneeded, manifest tracks
+            _ = _write_streaming_checkpoint(
+                run_dir=run_dir,
+                update=loop.state.global_update,
+                run_digest=run_digest,
+                stream_digest=stream_digest,
                 config=config,
                 loop=loop,
-                run_dir=run_dir,
-                update=update,
+                dataset=dataset,
+                batch_size=microbatch,
             )
-            if report is not None:
-                evals.append(report)
+            # intentionally discarded: appended count unneeded
+            _ = _append_new_history(run_dir, loop.loss_history)
+            _prune_checkpoints(run_dir, keep=config.loop.keep_last_checkpoints)
+            update = loop.state.global_update
+            if eval_every > 0 and update % eval_every == 0:
+                report = _run_holdout_eval(
+                    manifest=manifest,
+                    ratios=ratios,
+                    config=config,
+                    loop=loop,
+                    run_dir=run_dir,
+                    update=update,
+                )
+                if report is not None:
+                    evals.append(report)
+    finally:
+        # Training pulled its last row: stop the sampler first (so it never
+        # races the summary write), close the quiet mirror, then release
+        # expansion workers (no-op serial) and the caller-owned ring.
+        with contextlib.suppress(Exception):
+            sampler.stop()
+        with contextlib.suppress(Exception):
+            mlflow_mirror.close()
+        dataset.close()
+        if feed is not None:
+            with contextlib.suppress(Exception):
+                feed.close()
+    telemetry_summary: dict[str, Any] = {
+        "kind": "summary",
+        "microbatches": len(telemetry_all),
+        **summarize_telemetry(telemetry_all),
+        **summarize_update_telemetry(telemetry_updates),
+    }
+    with open(telemetry_path, "a", encoding="utf-8") as sink:
+        _ = sink.write(json.dumps(telemetry_summary, sort_keys=True) + "\n")
     if remaining == 0:
-        _append_new_history(run_dir, loop.loss_history)
-    # Training pulled its last row: release expansion workers (no-op serial).
-    dataset.close()
+        # intentionally discarded: appended count unneeded
+        _ = _append_new_history(run_dir, loop.loss_history)
     checkpoints = _ckpt_names(run_dir)
 
     summary: dict[str, Any] = {
@@ -2395,6 +3046,7 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
         "expand_quarantined": dataset.expand_quarantined,
         "expand_quarantined_by_reason": dict(dataset.expand_quarantine_reasons),
         "privileged_labels": "joined" if need_privileged else "skipped-no-auxiliary-weights",
+        "overlap_feed": "pinned-ring-cuda" if feed is not None else "sync-fallback",
         "checkpoints": checkpoints,
         "evals": evals,
         "loss_history": [dict(entry) for entry in loop.loss_history],

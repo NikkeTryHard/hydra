@@ -182,7 +182,7 @@ def _sim_game_id(game: GameRecord, *, rules_hash: str) -> str:
     from hydra2.contracts.common import make_tile_id as _tid
     from hydra2.engines.protocol import wall_schedule_digest
 
-    physical = tuple(_tid(int(t)) for t in game.wall_tiles)
+    physical = tuple(_tid(t) for t in game.wall_tiles)
     schedule_id = f"replay-{game.game_id}"
     wall_digest = str(wall_schedule_digest(schedule_id, physical))
     seed_material = of_canonical(
@@ -248,7 +248,7 @@ def _coerce_game(game: GameRecord | bytes | str | Path) -> GameRecord:
         raw = Path(game).read_bytes()
         object_id = f"simreplay-path-{Path(game).name}"
     else:
-        raw = bytes(game)
+        raw = game
         import hashlib
 
         object_id = "simreplay-bytes-" + hashlib.sha256(raw).hexdigest()[:16]
@@ -301,6 +301,7 @@ class _GameState:
     declarations: int = 0
     reach_accepted: int = 0
     riichi_declared: tuple[bool, bool, bool, bool] = (False, False, False, False)
+    ippatsu: tuple[bool, bool, bool, bool] = (False, False, False, False)
     tracked_scores: tuple[int, int, int, int] = (0, 0, 0, 0)
     melds: tuple[list[VisibleMeld], ...] = None  # type: ignore[assignment]
     last_discard: tuple[int | None, int | None] = (None, None)
@@ -320,6 +321,24 @@ class _GameState:
         return ContractError(
             f"sim replay desync game {self.game.game_id!r} kyoku {kyoku} {step}: {why}"
         )
+
+
+def _ippatsu_open(state: _GameState, actor: int) -> None:
+    """Open one seat's ippatsu window (adapter e80184a: riichi_accepted)."""
+    flags = list(state.ippatsu)
+    flags[actor] = True
+    state.ippatsu = cast("tuple[bool, bool, bool, bool]", tuple(flags))
+
+
+def _ippatsu_interrupt(state: _GameState, seat: int | None) -> None:
+    """Clear ippatsu (adapter e80184a): seat's own next discard, or every
+    seat on any meld/kan interrupt (seat=None)."""
+    if seat is None:
+        state.ippatsu = (False, False, False, False)
+    else:
+        flags = list(state.ippatsu)
+        flags[seat] = False
+        state.ippatsu = cast("tuple[bool, bool, bool, bool]", tuple(flags))
 
 
 # ---------------------------------------------------------------------------
@@ -384,10 +403,9 @@ def _snapshot_at_row(state: _GameState, *, phase: str, turn_actor: int, obs: _Si
         turn_actor=turn_actor,
         phase=cast("Any", phase),
         live_wall_tiles_remaining=max(0, _LIVE_WALL_BASE - state.draws),
-        # Adapter parity: the adapter's ippatsu list is write-False-only, so
-        # observations always carry all-False (the accepted delta is recorded
-        # but never applied to snapshot state).
-        ippatsu_active=(False, False, False, False),
+        # Adapter parity (e80184a): the window opens on riichi_accepted and
+        # clears per the interrupt rules; snapshots read live state.
+        ippatsu_active=state.ippatsu,
     )
 
 
@@ -400,9 +418,9 @@ def _context_for(
     extra_concealed: Sequence[int] = (),
     obs: _SimStep,
 ) -> ActionContext:
-    concealed = sorted({int(t) for t in obs.hand} | {int(t) for t in extra_concealed})
+    concealed = sorted(set(obs.hand) | set(extra_concealed))
     if obs.drawn is not None:
-        concealed = sorted(set(concealed) | {int(obs.drawn)})
+        concealed = sorted(set(concealed) | {obs.drawn})
     offered_tile, offered_by = offered
     return ActionContext(
         actor=make_seat(seat),
@@ -459,12 +477,12 @@ def _expand_nonclaim_legals(
             offered_tile is not None
             and tile_raw is not None
             and is_ron
-            and mjai_string_of(int(tile_raw)) == mjai_string_of(int(offered_tile))
-            and int(tile_raw) != int(offered_tile)
+            and mjai_string_of(int(tile_raw)) == mjai_string_of(offered_tile)
+            and int(tile_raw) != offered_tile
         ):
             raw = SimpleNamespace(
                 action_type=raw.action_type,
-                tile=int(offered_tile),
+                tile=offered_tile,
                 consume_tiles=tuple(raw.consume_tiles),
             )
         fixed.append(raw)
@@ -493,7 +511,7 @@ def _legal_mjai_type(raw: Any) -> str:
             raise ContractError(f"engine action MJAI unparseable: {exc}") from exc
     if not isinstance(mjai, dict) or not isinstance(mjai.get("type"), str):
         raise ContractError(f"engine action without a type string: {mjai!r}")
-    return str(mjai["type"])
+    return mjai["type"]
 
 
 def _safe_mjai_type(raw: Any) -> str:
@@ -520,10 +538,10 @@ def _distinct_copies(ids: tuple[int, ...]) -> tuple[int, ...]:
     counts: dict[str, int] = {}
     out: list[int] = []
     for tile in ids:
-        pai = mjai_string_of(int(tile))
+        pai = mjai_string_of(tile)
         pool = _copies_of_string(pai)
         seen = counts.get(pai, 0)
-        out.append(pool[seen] if seen < len(pool) else int(tile))
+        out.append(pool[seen] if seen < len(pool) else tile)
         counts[pai] = seen + 1
     return tuple(out)
 
@@ -544,11 +562,11 @@ def _tracked_consumed(
     pool copy of the same string, keeping meld tiles distinct; exhaustion
     fails closed.
     """
-    pool = [int(t) for t in hand]
+    pool = list(hand)
     picked: list[int] = []
-    for pai in sorted(str(s) for s in consumed_strings):
+    for pai in sorted(s for s in consumed_strings):
         for index, candidate in enumerate(pool):
-            if mjai_string_of(int(candidate)) == pai:
+            if mjai_string_of(candidate) == pai:
                 picked.append(pool.pop(index))
                 break
         else:
@@ -557,9 +575,9 @@ def _tracked_consumed(
         raise ContractError(f"claim needs {needed} consumed tiles, got {len(picked)}")
     if called is not None:
         for pos, tile in enumerate(picked):
-            if int(tile) == int(called):
-                pai = mjai_string_of(int(tile))
-                used = {int(t) for t in picked} | {int(called)}
+            if tile == called:
+                pai = mjai_string_of(tile)
+                used = set(picked) | {called}
                 for candidate in _copies_of_string(pai):
                     if candidate not in used:
                         picked[pos] = candidate
@@ -600,7 +618,7 @@ def _concealed_for_build(step: _SimStep) -> list[int]:
     hand = list(step.hand)
     if step.drawn is not None:
         for index, tile in enumerate(hand):
-            if int(tile) == int(step.drawn):
+            if tile == step.drawn:
                 del hand[index]
                 break
     return hand
@@ -646,7 +664,7 @@ def _capture_row(
         _VV.validate_observation(observation)
     except ContractError as exc:
         raise state.fail(kyoku, f"seat {seat} row", f"observation rejected: {exc}") from exc
-    doc = cast("dict[str, object]", observation.to_json())
+    doc = observation.to_json()
     try:
         verify_no_privileged_leakage(doc)
     except ContractError as exc:
@@ -884,9 +902,10 @@ def _do_start_kyoku(
     state.honba = honba
     state.kyotaku = kyotaku
     state.hand_number = kyoku_no
-    state.tracked_scores = cast("tuple[int, int, int, int]", scores)
+    state.tracked_scores = scores
     state.draws = 0
     state.riichi_declared = (False, False, False, False)
+    state.ippatsu = (False, False, False, False)
     state.reach_accepted = 0
     state.melds = ([], [], [], [])
     state.last_discard = (None, None)
@@ -969,17 +988,17 @@ def _resolve_dora(state: _GameState, walk: _KyokuWalk, kyoku: int, marker: str) 
     reused: int | None = None
     for tile in walk.last_oracle_dora:
         try:
-            rendered = mjai_string_of(int(tile))
+            rendered = mjai_string_of(tile)
         except ContractError:
             continue
         if rendered != marker:
             continue
         if tile in walk.dora_used:
             if reused is None:
-                reused = int(tile)
+                reused = tile
             continue
-        walk.dora_used.add(int(tile))
-        return int(tile)
+        walk.dora_used.add(tile)
+        return tile
     if reused is not None:
         # Real Tenhou re-emits one marker string for successive kan-dora
         # reveals (audit: ordered markers faithful to the XML reveal order),
@@ -1004,7 +1023,7 @@ def _fold_offer(raw: Any) -> Any:
     from types import SimpleNamespace  # local single-use adapter (see _expand_nonclaim_legals)
 
     try:
-        _legal_mjai_type(raw)
+        _ = _legal_mjai_type(raw)  # validate MJAI mapping; type string unneeded
         tile_raw: Any = raw.tile
         folded_tile = None if tile_raw is None else int(physical_of(mjai_string_of(int(tile_raw))))
         folded_consume = _distinct_copies(tuple(int(t) for t in raw.consume_tiles))
@@ -1046,11 +1065,11 @@ def _live_step(
         hand = _distinct_copies(pos.hand)
         drawn: int | None = None
         if pos.drawn is not None:
-            drawn = int(physical_of(mjai_string_of(int(pos.drawn))))
+            drawn = physical_of(mjai_string_of(pos.drawn))
         legals = tuple(_fold_offer(raw) for raw in pos.legals)
     else:
-        hand = tuple(int(t) for t in pos.hand)
-        drawn = None if pos.drawn is None else int(pos.drawn)
+        hand = tuple(t for t in pos.hand)
+        drawn = None if pos.drawn is None else pos.drawn
         legals = pos.legals
     return _SimStep(
         seat=seat,
@@ -1192,9 +1211,9 @@ def _do_dahai(
         # raw take-ordered ids, tsumogiri by rule. A non-drawn discard here
         # has no oracle step either and fails closed like the empty queue.
         step = _live_step(state, walk, kyoku, actor, mjai_type="dahai", fold=False)
-        if step.drawn is None or mjai_string_of(int(step.drawn)) != pai:
+        if step.drawn is None or mjai_string_of(step.drawn) != pai:
             raise state.fail(kyoku, "dahai", f"seat {actor} pop: oracle queue empty (dahai)")
-        tile_raw = int(step.drawn)
+        tile_raw = step.drawn
         step = replace(step, mjai_type="dahai", tile=tile_raw, consume=())
         kind = "tsumogiri"
     else:
@@ -1215,7 +1234,7 @@ def _do_dahai(
     expected = CanonicalAction(
         kind=cast("Any", kind),
         actor=make_seat(actor),
-        tile=make_tile_id(int(tile_raw)),
+        tile=make_tile_id(tile_raw),
         called_tile=None,
         consumed_tiles=(),
         source_seat=None,
@@ -1248,13 +1267,14 @@ def _do_dahai(
         kind="discard",
         visibility="public",
         actor=actor,
-        tile=int(tile_raw),
+        tile=tile_raw,
         action_id=chosen_id,
     )
-    state.last_discard = (actor, int(tile_raw))
+    state.last_discard = (actor, tile_raw)
     state.opened_by_discard = True
     walk.drawer = actor
-    _open_window(state, walk, kyoku, actor, int(tile_raw), claim_ev)
+    _open_window(state, walk, kyoku, actor, tile_raw, claim_ev)
+    _ippatsu_interrupt(state, actor)  # declarer discarded again: window gone
 
 
 # ---------------------------------------------------------------------------
@@ -1298,12 +1318,12 @@ def _do_reach(
         raise state.fail(kyoku, "reach", "declaration discard not owned: no offer")
     declaration_tile: int | None = None
     for owned in step.hand:
-        if mjai_string_of(int(owned)) != pai:
+        if mjai_string_of(owned) != pai:
             continue
         if declaration_tile is None:
-            declaration_tile = int(owned)
-        if step.drawn is not None and int(owned) == int(step.drawn):
-            declaration_tile = int(owned)
+            declaration_tile = owned
+        if step.drawn is not None and owned == step.drawn:
+            declaration_tile = owned
             break
     if declaration_tile is None:
         raise state.fail(kyoku, "reach", "declaration discard not owned: tile mismatch")
@@ -1394,7 +1414,7 @@ def _match_stashed_claim(
         if tile_raw is None or mjai_string_of(int(tile_raw)) != pai:
             continue
         candidates.append(raw)
-    if not candidates:
+    if len(candidates) == 0:
         raise state.fail(kyoku, kind, f"seat {seat} oracle holds no {kind} offer, log says {kind}")
     consumed = event.get("consumed")
     if not isinstance(consumed, (list, tuple)):
@@ -1439,8 +1459,8 @@ def _do_claim(
         raise state.fail(kyoku, kind, "claim after the kyoku was decided")
     if state.last_discard[0] is None or state.last_discard[1] is None:
         raise state.fail(kyoku, kind, "claim without a live discard offer")
-    discarder = int(state.last_discard[0])
-    called = int(state.last_discard[1])
+    discarder = state.last_discard[0]
+    called = state.last_discard[1]
     step = _match_stashed_claim(state, walk, kyoku, actor, kind, event, discarder)
     consumed_raw = cast("Any", event["consumed"])
     needed = 2 if kind in ("chi", "pon") else 3
@@ -1496,7 +1516,7 @@ def _do_claim(
         tile_raw: Any = raw.tile
         if tile_raw is None or int(tile_raw) != called:
             continue
-        variant_consumed = sorted({int(t) for t in raw.consume_tiles} - {int(called)})
+        variant_consumed = sorted({int(t) for t in raw.consume_tiles} - {called})
         if len(variant_consumed) != 2:
             continue
         try:
@@ -1559,6 +1579,7 @@ def _do_claim(
     state.last_discard = (None, None)
     walk.drawer = actor
     walk.stash.clear()
+    _ippatsu_interrupt(state, None)  # any call interrupts every chance
 
 
 # ---------------------------------------------------------------------------
@@ -1657,6 +1678,7 @@ def _do_ankan(state: _GameState, walk: _KyokuWalk, kyoku: int, event: dict[str, 
         )
     )
     walk.drawer = actor
+    _ippatsu_interrupt(state, None)  # kan interrupts every chance
 
 
 def _find_prior_pon(state: _GameState, seat: int, added: int) -> VisibleMeld:
@@ -1698,7 +1720,7 @@ def _do_kakan(
         base = (int(physical_of(pai)) // 4) * 4
         pool = [base, base + 1, base + 2, base + 3]
     try:
-        prior = _find_prior_pon(state, actor, int(pool[0]))
+        prior = _find_prior_pon(state, actor, pool[0])
     except ContractError as exc:
         raise state.fail(kyoku, "kakan", str(exc)) from exc
     missing = [c for c in pool if c not in {int(t) for t in prior.tiles}]
@@ -1768,6 +1790,7 @@ def _do_kakan(
     # Kan windows never emit envelopes (adapter grammar routes kakan -> ron
     # directly), but the oracle still resolves responders to advance.
     _open_window(state, walk, kyoku, actor, added, claim_ev)
+    _ippatsu_interrupt(state, None)  # kakan interrupts every chance
 
 
 def _do_dora(state: _GameState, walk: _KyokuWalk, kyoku: int, event: dict[str, object]) -> None:
@@ -1812,6 +1835,7 @@ def _do_reach_accepted(
             make_delta(("ippatsu", actor), "set", True),
         ),
     )
+    _ippatsu_open(state, actor)  # accepted reach opens the window
 
 
 # ---------------------------------------------------------------------------
@@ -1858,7 +1882,7 @@ def _do_hora(state: _GameState, walk: _KyokuWalk, kyoku: int, event: dict[str, o
         step = _live_step(state, walk, kyoku, winner, mjai_type="hora")
         if step.drawn is None:
             raise state.fail(kyoku, "hora", "tsumo win without a drawn winning step")
-        drawn_str = mjai_string_of(int(step.drawn))
+        drawn_str = mjai_string_of(step.drawn)
         offer: Any = None
         for offer_kind in ("hora", "tsumo"):
             try:
@@ -1868,7 +1892,7 @@ def _do_hora(state: _GameState, walk: _KyokuWalk, kyoku: int, event: dict[str, o
             break
         if offer is None:
             raise state.fail(kyoku, "hora", "tsumo win without a drawn winning step")
-        tile = int(step.drawn)
+        tile = step.drawn
         if offer.tile is None or mjai_string_of(int(offer.tile)) != mjai_string_of(tile):
             raise state.fail(kyoku, "hora", "tsumo tile differs from the drawn tile")
         step = replace(step, mjai_type="hora", tile=tile)
@@ -1898,20 +1922,20 @@ def _do_hora(state: _GameState, walk: _KyokuWalk, kyoku: int, event: dict[str, o
             offered=live_offered,
         )
         try:
-            walk.tw.do_tsumo_win(winner, mjai_string_of(int(tile)))
+            walk.tw.do_tsumo_win(winner, mjai_string_of(tile))
         except ContractError as exc:
             raise state.fail(kyoku, "hora", f"oracle win failed: {exc}") from exc
         source: int | None = None
     else:
         if state.last_discard[0] is None or state.last_discard[1] is None:
             raise state.fail(kyoku, "hora", "ron without a live discard offer")
-        discarder = int(state.last_discard[0])
+        discarder = state.last_discard[0]
         if target != discarder:
             raise state.fail(kyoku, "hora", f"ron target {target} != discarder {discarder}")
         step = walk.stash.pop(winner, None)
         if step is None:
             raise state.fail(kyoku, "hora", f"seat {winner} holds no window step for ron")
-        tile = int(state.last_discard[1])
+        tile = state.last_discard[1]
         tile_str = mjai_string_of(tile)
         if not any(
             _safe_mjai_type(raw) == "hora"
@@ -1962,7 +1986,7 @@ def _do_hora(state: _GameState, walk: _KyokuWalk, kyoku: int, event: dict[str, o
         public_delta=(
             make_delta(("scores",), "set", list(deltas)),
             *(
-                (make_delta(("riichi_sticks",), "increment", -int(step.sticks)),)
+                (make_delta(("riichi_sticks",), "increment", -step.sticks),)
                 if step.sticks != 0
                 else ()
             ),
@@ -2098,7 +2122,7 @@ def _walk_game(state: _GameState) -> list[DecisionRow]:
         event = events[idx]
         if not isinstance(event, dict):
             raise ContractError(f"mjai event [{idx}] must be an object")
-        ev = cast("dict[str, object]", event)
+        ev = event
         kind_raw = ev.get("type")
         if not isinstance(kind_raw, str) or kind_raw == "":
             raise ContractError(f"mjai event [{idx}] without a string type")
@@ -2129,7 +2153,7 @@ def _walk_game(state: _GameState) -> list[DecisionRow]:
             if idx + 1 < total:
                 candidate = events[idx + 1]
                 if isinstance(candidate, dict):
-                    following_ev = cast("dict[str, object]", candidate)
+                    following_ev = candidate
             _do_end_kyoku(state, walk, kyoku_ordinal, following_ev)
             idx += 1
             continue
@@ -2154,14 +2178,14 @@ def _walk_game(state: _GameState) -> list[DecisionRow]:
                 following = events[nxt]
                 if not isinstance(following, dict):
                     raise ContractError(f"mjai event [{nxt}] must be an object")
-                following_kind = cast("dict[str, object]", following).get("type")
+                following_kind = following.get("type")
                 if following_kind in _SKIP:
                     nxt += 1
                     continue
                 break
             else:
                 raise state.fail(kyoku_ordinal, "reach", "declaration missing")
-            declaration = cast("dict[str, object]", events[nxt])
+            declaration = events[nxt]
             if declaration.get("type") != "dahai":
                 raise state.fail(kyoku_ordinal, "reach", "declaration is not a dahai")
             decl_actor = _require_actor(state, kyoku_ordinal, declaration, where="dahai")
@@ -2435,9 +2459,9 @@ class _WindowOracle:
                 wall[4 * (rel + 4 * k) + m] = take(str(hand[j]))
             wall[48 + rel] = take(str(hand[12]))
         for i, pai in enumerate(live_draws):
-            wall[52 + i] = take(str(pai))
+            wall[52 + i] = take(pai)
         for i, pai in enumerate(rinshan_draws):
-            wall[135 - i] = take(str(pai))
+            wall[135 - i] = take(pai)
         used = {t for t in wall if t != -1}
         filler = (t for t in range(136) if t not in used)
         wall = [t if t != -1 else next(filler) for t in wall]
@@ -2448,14 +2472,14 @@ class _WindowOracle:
             seed=ordinal,
         )
         try:
-            env.reset(
+            _ = env.reset(
                 oya=oya,
                 wall=wall,
                 scores=list(scores),
                 honba=honba,
                 kyotaku=kyotaku,
                 round_wind=wind,
-            )
+            )  # discard initial obs; reset side-effect installs the position
         except Exception as exc:
             raise self._fail(f"engine reset failed: {exc}") from exc
         self._env = env
@@ -2506,7 +2530,7 @@ class _WindowOracle:
                 if got != sorted(consumed_strs):
                     continue
             matches.append(raw)
-        if not matches:
+        if len(matches) == 0:
             raise self._fail(f"seat {pid} has no {mjai_type} offer for {tile_str!r}")
         return matches[0]
 
@@ -2631,7 +2655,7 @@ class _WindowOracle:
             actor_raw = claim.get("actor")
             if isinstance(actor_raw, bool) or not isinstance(actor_raw, int):
                 raise self._fail("window claim without an actor")
-            actor = int(actor_raw)
+            actor = actor_raw
             if kind not in ("chi", "pon", "daiminkan"):
                 raise self._fail(f"window claim of unexpected kind {kind!r}")
             pai = str(claim.get("pai", ""))
@@ -2643,7 +2667,7 @@ class _WindowOracle:
             if len(self._legals(pid)) == 0:
                 continue
             moves[pid] = self._find(pid, mjai_type="none")
-        if not moves:
+        if len(moves) == 0:
             return
         self._step(moves, where="window resolution")
 
@@ -2657,7 +2681,7 @@ class _WindowOracle:
         from hydra2.engines.riichienv.state import furiten_of
 
         try:
-            state = str(furiten_of(self._engine, pid))
+            state = furiten_of(self._engine, pid)
         except Exception as exc:
             raise self._fail(f"seat {pid} furiten query failed: {exc}") from exc
         if state == "none" and pid in self._missed:

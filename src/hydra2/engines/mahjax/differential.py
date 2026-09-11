@@ -23,13 +23,16 @@ hydra2 walls hold physical tile ids; mahjax decks hold tile TYPES
 sou 18-26, honors E/S/W/N/haku/hatsu/chun 27-33; verified by probe against
 ``Tile.from_tile_id_to_tile(jnp.arange(136))`` and hydra2's mjai mapping).
 
-mahjax state surgery (no deck-injection API exists at pin 0.1.2): the seeded
+mahjax state surgery (no deck-injection API exists at pin 0.1.3): the seeded
 round is built by replicating every stochastic field assignment of
 ``mahjax.no_red_mahjong.env._init`` deterministically — deck, dora/ura
 indicator slots, haipai hands via ``Hand.make_init_hand``, the dealer's
-opening draw from ``deck[83]``, can-win table, yakuman-only judgment,
-legal-action mask and shanten. Every engine-computed field is produced by
+opening draw from ``deck[83]``, can-win table, yakuman-only judgment and the
+legal-action mask. Every engine-computed field is produced by
 the same engine functions ``_init`` itself calls; nothing is hand-baked.
+Shanten is not stored (upstream #74/cff90d1 removed
+``RoundState.shanten_current_player``); it is computed on demand via
+``Shanten.number`` over the actor hand.
 """
 
 from __future__ import annotations
@@ -251,9 +254,11 @@ def build_seeded_round_state(env: Any, deck_types: tuple[int, ...], *, dealer: i
          exactly like ``_init``);
       5. consume the dealer's opening draw from ``deck[83]``, setting
          ``next_deck_ix=82``/``last_draw`` like ``_init``;
-      6. rebuild ``can_win`` via the engine's own ``v_can_win``, the opening
-         legal mask via ``_make_legal_action_mask_after_draw`` and the shanten
-         field via ``Shanten.number`` - all engine functions, no hand-baking;
+      6. rebuild ``can_win`` via the engine's own ``v_can_win`` and the opening
+         legal mask via ``_make_legal_action_mask_after_draw`` - all engine
+         functions, no hand-baking (upstream #74/cff90d1 removed the stored
+         ``shanten_current_player`` field; shanten is computed on demand via
+         ``Shanten.number`` in ``_mahjax_shanten``);
       7. pin dealer/winds/target to the identity-seat convention.
     """
     modules: Any = _mahjax_modules()
@@ -300,12 +305,13 @@ def build_seeded_round_state(env: Any, deck_types: tuple[int, ...], *, dealer: i
     )
     legal_mask: Any = jnp.zeros((4, modules["Action"].NUM_ACTION), dtype=jnp.bool_)  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
     legal_mask = legal_mask.at[dealer, :].set(mask_current)  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-    shanten: Any = modules["Shanten"].number(players.hand[dealer]).astype(jnp.int8)  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+    # NOTE (mahjax cff90d1/#74): RoundState.shanten_current_player no longer
+    # exists; shanten is computed on demand via Shanten.number (see
+    # _mahjax_shanten and _vmap_batch_shanten). No shanten value is stored here.
     return _replace(
         base,
         target=cast("Any", jnp.int8(-1)),
         legal_action_mask=cast("Any", legal_mask),
-        shanten_current_player=shanten,  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
     )
 
 
@@ -396,7 +402,7 @@ def map_script_step_to_mahjax(decision: ScriptedDecision, action: Any) -> list[i
     if kind == "kakan":
         tile: Any = action.tile  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
         if tile is None:
-            # engine 0.4.8 stores added tile via _kakan_added capture;
+            # engine 0.4.10 stores added tile via _kakan_added capture;
             # consumed_tiles or tile may be None; fallback to consumed
             if getattr(action, "consumed_tiles", None) is not None:
                 tile = int(cast("Any", action.consumed_tiles[0]))  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
@@ -512,12 +518,18 @@ def _reference_shanten(sim: Any, actor: int) -> int:
 
 
 def _mahjax_shanten(state: Any) -> int:
-    try:
-        return int(cast("Any", state.round_state.shanten_current_player))  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-    except Exception:
-        return int(
-            cast("Any", state.shanten_current_player)
-        )  # fallback  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+    """Shanten of the current player via the engine's own ``Shanten.number``.
+
+    Upstream #74 (cff90d1) removed ``RoundState.shanten_current_player``; the
+    engine no longer stores it. Compute over the actor hand - the same function
+    ``_reference_shanten`` already uses. Fail-closed: callers report exceptions
+    as checkpoint failures, never a default value.
+    """
+    modules = _mahjax_modules()
+    shanten_cls: Any = modules["Shanten"]  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+    current = int(cast("Any", state.current_player))  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+    hand = cast("Any", state.players.hand[current])  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+    return int(cast("Any", shanten_cls.number(hand)))  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
 
 
 def _reference_dora_types(sim: Any) -> tuple[int, ...]:
@@ -1506,6 +1518,21 @@ def _digest(state: object) -> str:
     return "sha256:" + h.hexdigest()
 
 
+def _vmap_batch_shanten(vmap_next: Any) -> int:
+    """Shanten for batch element 0's current player via ``Shanten.number``.
+
+    Upstream #74 (cff90d1) removed ``RoundState.shanten_current_player``; the
+    sweep payload computes the same signal on demand over the actor hand.
+    Batch layout mirrors the payload readers: leading axis is the vmap batch,
+    next axis is the seat.
+    """
+    modules = _mahjax_modules()
+    shanten_cls: Any = modules["Shanten"]  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+    actor = int(cast("Any", vmap_next.current_player[0]))  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+    hand = cast("Any", vmap_next.players.hand[0, actor])  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+    return int(cast("Any", shanten_cls.number(hand)))  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+
+
 def execution_mode_sweep(
     scenario: Scenario | None = None, *, artifact_root: Path | None = None
 ) -> dict[str, Any]:
@@ -1543,7 +1570,7 @@ def execution_mode_sweep(
         env = make_single_round_env()
         base_state = build_seeded_round_state(cast("Any", env), cast("Any", deck), dealer=0)
     prim: int = int(cast("Any", _mahjax_auto_policy(cast("Any", base_state))))
-    # New mahjax (5222872) requires PRNG key for every step (wall redeal)
+    # Pinned mahjax (cff90d1) requires PRNG key for every step (wall redeal)
     # Use deterministic key 0 for this single-step check; split not needed.
     _step_key: Any = jax.random.PRNGKey(0)  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
     # Force CPU for determinism check to avoid GPU OOM; GPU soak is separate probe
@@ -1650,7 +1677,7 @@ def execution_mode_sweep(
                         for x in cast("Any", vmap_next.round_state.dora_indicators[0].tolist())
                     ],  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
                     "next_deck_ix": int(cast("Any", vmap_next.round_state.next_deck_ix[0])),  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-                    "shanten": int(cast("Any", vmap_next.round_state.shanten_current_player[0])),  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+                    "shanten": _vmap_batch_shanten(cast("Any", vmap_next)),  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
                 }
                 vmap_d = str(of_canonical(cast("Any", v_payload)))
         else:
@@ -1686,7 +1713,7 @@ def execution_mode_sweep(
                     for x in cast("Any", vmap_next.round_state.dora_indicators[0].tolist())
                 ],  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
                 "next_deck_ix": int(cast("Any", vmap_next.round_state.next_deck_ix[0])),  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-                "shanten": int(cast("Any", vmap_next.round_state.shanten_current_player[0])),  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+                "shanten": _vmap_batch_shanten(cast("Any", vmap_next)),  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
             }
             vmap_d = str(of_canonical(cast("Any", v_payload)))
     except Exception as exc:  # pragma: no cover - vmap may not be supported for this state
@@ -1934,7 +1961,7 @@ def _run_one_scenario(
             mj_state = build_seeded_round_state(env, deck, dealer=0)
     except Exception:
         mj_state = build_seeded_round_state(env, deck, dealer=0)
-    # mahjax 5222872 requires PRNG key for every step (wall redeal)
+    # mahjax cff90d1 requires PRNG key for every step (wall redeal)
     _rng: Any = _mahjax_modules()["jax"].random.PRNGKey(99)  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
     # Force CPU device for mahjax steps to avoid GPU OOM (determinism on CPU)
     try:

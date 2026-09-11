@@ -4,7 +4,7 @@ the declared dependency contract.
 Checks (all hard failures on mismatch):
 - torch == 2.13.0 exactly, with CUDA build and sm_120 kernels present
 - lightning-fabric == 2.6.5 standalone; Trainer packages absent
-- riichienv == 0.4.8, mahjax at the pinned git SHA, jax importable
+- riichienv == 0.4.10, mahjax at the pinned git SHA, jax importable
 - ruff / pyrefly / pytest installed versions match the pyproject pins
 - parity tolerance constants are sane
 """

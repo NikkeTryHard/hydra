@@ -55,7 +55,16 @@ This file provides `Han`, `Fu` (from Yaku), `Points`, `scoring : Han → Fu → 
 `validHanFu` bounds, `han_ge1_or_yakuman`, `kazoe_iff`, `validFu_mod10`,
 `dora_not_yaku`, plus full settlement (oya/ko, ron/tsumo, honba), and parity
 lemmas verified against `pixi run python -c "import riichienv; riichienv.calculate_score(...)"`
-probes (see module doc for probed vectors).
+probes (see module doc for probed vectors). Re-run 2026-09-10 at
+`riichienv==0.4.10`: every vector below reproduces identically (`score.rs`
+untouched by the bump to 0.4.10); ko/tsumo/honba splits re-verified
+(`pay_tsumo_ko/oya`, `total`, honba +300). Upstream #238 special-hand vectors
+(`HandEvaluator.hand_from_text(..).calc(..)`, same pin) ground `Yaku.lean` §14:
+kokushi+tenhou han 39 `[35,49]` fu 0; seven-pairs+tenhou han 13 `[35]` fu 0;
+all-honors seven-pairs han 13 `[39]` fu 0; ordinary seven-pairs han 5 fu 25.
+Multi-yakuman unit payments (engine `8000*units` base, e.g. 39-han triple)
+are outside this single-unit model: `basePoints` caps at 8000 per unit and
+`scoring` at 32000 ko ron (see §14).
 
 References:
 * `file://src/hydra2/contracts/rules.py#RULES_ID`
@@ -353,7 +362,9 @@ def scoringRonWithHonba (hanVal : Han) (fuVal : Fu) (isOya : Bool) (honba : Nat)
 def scoringTsumoHonbaTotal (hanVal : Han) (fuVal : Fu) (isOya : Bool) (honba : Nat) : Points :=
   (if isOya then scoringOyaTsumoTotal hanVal fuVal else scoringKoTsumoTotal hanVal fuVal) + honba * 300
 
--- Verified against `pixi run python -c "import riichienv; riichienv.calculate_score(...)"` probes
+-- Verified against `pixi run python -c "import riichienv; riichienv.calculate_score(...)"` probes.
+-- Re-run 2026-09-10 at riichienv 0.4.10: all values below reproduce exactly
+-- (ko/tsumo splits and honba +300 included); `score.rs` is untouched by the bump.
 theorem scoring_1_30_ko_ron : scoring 1 30 = 1000 := by native_decide
 theorem scoring_1_20_ko_ron : scoring 1 20 = 700 := by native_decide
 theorem scoring_2_30_ko_ron : scoring 2 30 = 2000 := by native_decide

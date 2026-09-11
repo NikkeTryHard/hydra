@@ -2,6 +2,10 @@
 /target/
 **/target/
 
+# Local profiling artifacts (perf record output + backups; never committed)
+perf.data*
+**/perf.data*
+
 # Python caches and local environments
 __pycache__/
 *.py[cod]
@@ -22,3 +26,10 @@ __pycache__/
 uv.lock
 .serena/
 ideas/
+
+# Raw benchmark corpus (D-017: never publish raw samples; regenerate via
+# `pixi run python bench/feed_rate.py build-corpus`, pinned by manifest shas)
+bench/corpus/
+
+# Generated bench artifacts (belong under $HYDRA2_ARTIFACT_ROOT outside repo; never committed)
+artifacts/reports/

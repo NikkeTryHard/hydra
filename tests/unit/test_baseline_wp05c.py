@@ -536,3 +536,27 @@ def test_shape_arm_not_activated_records_not_activated() -> None:
     # Simulate the WP-05C gate: shape arm disposition
     shape_disposition = "not_activated"  # default when no ModelSpec with shape features published
     assert shape_disposition == "not_activated"
+
+
+def test_ece_default_matches_frozen_objectives_bins() -> None:
+    """Baseline ECE defaults to the frozen 10-bin grid shared with train metrics."""
+    import inspect
+
+    from hydra2.training.objectives import _ECE_NUM_BINS
+
+    ece_default = inspect.signature(expected_calibration_error).parameters["num_bins"].default
+    bundle_default = inspect.signature(compute_baseline_metrics).parameters["num_bins"].default
+    assert ece_default == 10
+    assert bundle_default == 10
+    assert _ECE_NUM_BINS == 10
+    # Default-path ECE agrees with the frozen grid; explicit ablations still honored.
+    torch.manual_seed(0)
+    logits = torch.randn(8, 6, dtype=torch.float32)
+    legal_mask = torch.ones(8, 6, dtype=torch.bool)
+    targets = torch.randint(0, 6, (8,))
+    assert expected_calibration_error(logits, targets, legal_mask) == pytest.approx(
+        expected_calibration_error(logits, targets, legal_mask, num_bins=10)
+    )
+    assert compute_baseline_metrics(logits, targets, legal_mask).ece == pytest.approx(
+        expected_calibration_error(logits, targets, legal_mask, num_bins=10)
+    )

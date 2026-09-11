@@ -316,3 +316,40 @@ def test_make_mirror_never_raises(clean_env: None) -> None:
         make_mirror(manifest_hashes="garbage", loop_config=["not", "a", "dict"], enabled=True),
         ClearmlMirror,
     )
+
+
+def test_metric_allowlist_passes_per_type_and_calibration(
+    fake_clearml: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Per-type scorecards + temperature/calibrated keys ride the mirror; unknown still dropped."""
+    monkeypatch.setenv("HYDRA2_CLEARML_ENABLED", "1")
+    mirror = make_mirror(
+        manifest_hashes=_manifest_hashes(), loop_config=_loop_config(), run_name="kinds-run"
+    )
+    assert mirror.start_run() is not None
+    task = _FakeTask.instances[0]
+    mirror.log_update(
+        {
+            "total": 0.5,
+            "temperature": 1.25,
+            "calibrated_nll": 2.1,
+            "calibrated_ece": 0.04,
+            "per_type/ron/recall": 0.2,
+            "per_type/ron/low_support": 1.0,
+            "per_type/discard/n": 35.0,
+            "wall": 1.0,
+            "sneaky_future_scalar": 3.0,
+        },
+        step=5,
+    )
+    series = {
+        (row["title"], row["series"]): (row["value"], row["iteration"])
+        for row in task.logger.scalars
+    }
+    assert series[("temperature", "temperature")] == (1.25, 5)
+    assert series[("calibrated_nll", "calibrated_nll")] == (2.1, 5)
+    assert series[("calibrated_ece", "calibrated_ece")] == (0.04, 5)
+    assert series[("per_type/ron/recall", "per_type/ron/recall")] == (0.2, 5)
+    assert series[("per_type/ron/low_support", "per_type/ron/low_support")] == (1.0, 5)
+    assert series[("per_type/discard/n", "per_type/discard/n")] == (35.0, 5)
+    assert all(key not in ("wall", "sneaky_future_scalar") for _, key in series)

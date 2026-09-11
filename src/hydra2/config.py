@@ -33,7 +33,7 @@ TRAINER_FORBIDDEN_PACKAGES = ("lightning", "pytorch-lightning")
 
 # MahJax is pinned by full Git SHA via pixi; no PyPI release matches it.
 MAHJAX_GIT_URL = "https://github.com/nissymori/mahjax.git"
-MAHJAX_PIN_SHA = "52228723901a4ace44b745afd25141acc25405ec"
+MAHJAX_PIN_SHA = "cff90d1e68cf21464071864672a9618bb20f2551"
 
 __all__ = [
     "MAHJAX_GIT_URL",

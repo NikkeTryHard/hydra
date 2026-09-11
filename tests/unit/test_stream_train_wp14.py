@@ -29,6 +29,7 @@ from hydra2.data.stream import assign_split, group_key_for_path
 from hydra2.training.run_config import load_run_config, resolve_resume_plan, run_dir_for
 from hydra2.training.stream_train import (
     SPLIT_RATIOS,
+    _backward_pass_autocast_for,
     _needs_privileged_labels,
     run_stream_training,
 )
@@ -152,6 +153,7 @@ def _write_run_yaml(
     num_workers: int = 0,
     eval_frequency: int | None = None,
     eval_batches: int | None = None,
+    telemetry: dict[str, Any] | None = None,
 ) -> Path:
     mapping: dict[str, Any] = {
         "run": {"id": run_id, "kind": "supervised", "description": "wp14 stream-train fixture"},
@@ -186,6 +188,8 @@ def _write_run_yaml(
             )
             if value is not None
         }
+    if telemetry is not None:
+        mapping["telemetry"] = dict(telemetry)
     path = directory / "run.yaml"
     path.write_text(yaml.safe_dump(mapping, sort_keys=True), encoding="utf-8")
     return path
@@ -656,3 +660,218 @@ class TestSeekResume:
         )
         with pytest.raises(ContractError):
             ds3.restore_buffer(bad)
+
+
+@pytest.mark.serial
+class TestRuntimeWiring:
+    def test_backward_pass_autocast_truth_table(self) -> None:
+        """Only compiled non-fp32 derives 'off'; all other pairs keep None."""
+        assert (
+            _backward_pass_autocast_for(
+                precision="bf16_mixed", compile_mode="max-autotune-no-cudagraphs"
+            )
+            == "off"
+        )
+        assert _backward_pass_autocast_for(precision="bf16_mixed", compile_mode="default") == "off"
+        assert _backward_pass_autocast_for(precision="bf16_mixed", compile_mode="eager") is None
+        assert (
+            _backward_pass_autocast_for(precision="fp32", compile_mode="max-autotune-no-cudagraphs")
+            is None
+        )
+        assert _backward_pass_autocast_for(precision="fp32", compile_mode="eager") is None
+
+    def test_feed_telemetry_jsonl_written(self, tmp_path: Path) -> None:
+        """A finished run leaves per-microbatch feed telemetry plus one summary."""
+        train_stems, _ = _pick_stems(need_train=2, need_val=0)
+        corpus = tmp_path / "corpus" / "tenhou"
+        corpus.mkdir(parents=True)
+        for index, stem in enumerate(train_stems):
+            _write_game(corpus / f"{stem}.mjai.json.zst", f"telemetry-game-{index}")
+        config_path = _write_run_yaml(
+            tmp_path,
+            corpus_root=tmp_path / "corpus",
+            artifact_root=tmp_path / "artifacts",
+            max_updates=2,
+            run_id="wp14-stream-telemetry",
+        )
+        config = load_run_config(config_path, environ={})
+
+        summary = run_stream_training(config, None)
+
+        assert summary["end_update"] == 2
+        rows = [
+            json.loads(line)
+            for line in (Path(summary["run_dir"]) / "logs" / "feed-telemetry.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+            if line.strip() != ""
+        ]
+        micro_rows = [row for row in rows if row["kind"] == "microbatch"]
+        summary_rows = [row for row in rows if row["kind"] == "summary"]
+        assert len(micro_rows) == 2
+        assert len(summary_rows) == 1
+        for row in micro_rows:
+            for key in (
+                "queue_wait_ms",
+                "fetch_decode_ms",
+                "h2d_ms",
+                "compute_ms",
+                "forward_ms",
+                "loss_ms",
+                "backward_ms",
+            ):
+                assert math.isfinite(float(row[key]))
+
+
+class TestTelemetryWiring:
+    def test_verbose_sampler_and_profiler_markers(self, tmp_path: Path, monkeypatch: Any) -> None:
+        """Verbose on + 1 CPU capture: rows land, skip marker logged, training intact."""
+        train_stems, _ = _pick_stems(need_train=2, need_val=0)
+        corpus = tmp_path / "corpus" / "tenhou"
+        corpus.mkdir(parents=True)
+        for index, stem in enumerate(train_stems):
+            _write_game(corpus / f"{stem}.mjai.json.zst", f"telemetry-game-{index}")
+        config = load_run_config(
+            _write_run_yaml(
+                tmp_path,
+                corpus_root=tmp_path / "corpus",
+                artifact_root=tmp_path / "artifacts",
+                max_updates=2,
+                run_id="wp14-stream-verbose",
+                telemetry={
+                    "mlflow_enabled": False,
+                    "verbose_enabled": True,
+                    "verbose_interval_ms": 50,
+                    "profiler_captures": 1,
+                },
+            ),
+            environ={},
+        )
+        summary = run_stream_training(config, None)
+        assert summary["end_update"] == 2
+        run_dir = Path(summary["run_dir"])
+        rows = [
+            json.loads(line)
+            for line in (run_dir / "logs" / "verbose-telemetry.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+            if line.strip() != ""
+        ]
+        assert len(rows) >= 1
+        assert all(row["v"] == 1 and row["run_id"] == "wp14-stream-verbose" for row in rows)
+        train_log = (run_dir / "logs" / "train.log").read_text(encoding="utf-8")
+        assert "profiler:update=000002 skipped (cpu-device)" in train_log
+
+    def test_mlflow_quiet_mirror_writes_store(self, tmp_path: Path, monkeypatch: Any) -> None:
+        """MLflow on: SQLite store + persisted run id appear; training intact."""
+        mlflow = pytest.importorskip("mlflow")
+        _ = mlflow
+        monkeypatch.delenv("HYDRA2_MLFLOW_DISABLED", raising=False)
+        train_stems, _ = _pick_stems(need_train=2, need_val=0)
+        corpus = tmp_path / "corpus" / "tenhou"
+        corpus.mkdir(parents=True)
+        for index, stem in enumerate(train_stems):
+            _write_game(corpus / f"{stem}.mjai.json.zst", f"mlflow-game-{index}")
+        config = load_run_config(
+            _write_run_yaml(
+                tmp_path,
+                corpus_root=tmp_path / "corpus",
+                artifact_root=tmp_path / "artifacts",
+                max_updates=2,
+                run_id="wp14-stream-mlflow",
+                telemetry={"mlflow_enabled": True, "verbose_enabled": False},
+            ),
+            environ={},
+        )
+        summary = run_stream_training(config, None)
+        assert summary["end_update"] == 2
+        run_dir = Path(summary["run_dir"])
+        assert (tmp_path / "artifacts" / "mirror" / "mlflow" / "mlruns.db").is_file()
+        run_id_text = (run_dir / "mirror" / "mlflow_run_id").read_text(encoding="utf-8")
+        assert run_id_text.strip() != ""
+
+    def test_mlflow_run_id_survives_resume(self, tmp_path: Path, monkeypatch: Any) -> None:
+        """Resume appends to the stored MLflow run instead of opening a new one."""
+        mlflow = pytest.importorskip("mlflow")
+        monkeypatch.delenv("HYDRA2_MLFLOW_DISABLED", raising=False)
+        train_stems, _ = _pick_stems(need_train=2, need_val=0)
+        corpus = tmp_path / "corpus" / "tenhou"
+        corpus.mkdir(parents=True)
+        for index, stem in enumerate(train_stems):
+            _write_game(corpus / f"{stem}.mjai.json.zst", f"resume-mlflow-{index}")
+        config = load_run_config(
+            _write_run_yaml(
+                tmp_path,
+                corpus_root=tmp_path / "corpus",
+                artifact_root=tmp_path / "artifacts",
+                max_updates=2,
+                run_id="wp14-stream-resume",
+                telemetry={"mlflow_enabled": True, "verbose_enabled": False},
+            ),
+            environ={},
+        )
+        fresh = run_stream_training(config, None)
+        fresh_dir = Path(fresh["run_dir"])
+        id_file = fresh_dir / "mirror" / "mlflow_run_id"
+        first_id = id_file.read_text(encoding="utf-8").strip()
+        assert first_id != ""
+        (fresh_dir / "checkpoints" / "ckpt-000002.pt").unlink()
+        (fresh_dir / "checkpoints" / "ckpt-000002.json").unlink()
+        resume = resolve_resume_plan(fresh_dir, which=fresh_dir / "checkpoints" / "ckpt-000001.pt")
+        continued = run_stream_training(config, resume)
+        assert continued["end_update"] == 2
+        assert id_file.read_text(encoding="utf-8").strip() == first_id
+        client = mlflow.tracking.MlflowClient(
+            tracking_uri=f"sqlite:///{tmp_path}/artifacts/mirror/mlflow/mlruns.db"
+        )
+        # Fresh run logs updates 1,2; resume re-logs update 2 into the same run.
+        assert sorted(p.step for p in client.get_metric_history(first_id, "total")) == [1, 2, 2]
+
+
+class TestTrainSegment:
+    def test_capture_splits_segment_cpu(self, tmp_path: Path) -> None:
+        """Capture update trains exactly once; CPU path logs the skip marker."""
+        from hydra2.training.stream_train import _train_segment
+
+        calls: list[int] = []
+
+        class _FakeLoop:
+            def train(self, max_updates: int) -> None:
+                calls.append(max_updates)
+
+        train_log = tmp_path / "train.log"
+        done = _train_segment(
+            loop=_FakeLoop(),  # type: ignore[arg-type]
+            done=0,
+            step=2,
+            captures={2},
+            profiler_dir=tmp_path / "profiler",
+            train_log=train_log,
+            cuda_ok=False,
+        )
+        assert done == 2
+        assert calls == [1, 1]
+        assert "profiler:update=000002 skipped (cpu-device)" in train_log.read_text(
+            encoding="utf-8"
+        )
+
+    def test_no_captures_single_call(self, tmp_path: Path) -> None:
+        from hydra2.training.stream_train import _train_segment
+
+        calls: list[int] = []
+
+        class _FakeLoop:
+            def train(self, max_updates: int) -> None:
+                calls.append(max_updates)
+
+        done = _train_segment(
+            loop=_FakeLoop(),  # type: ignore[arg-type]
+            done=5,
+            step=3,
+            captures=set(),
+            profiler_dir=tmp_path / "profiler",
+            train_log=tmp_path / "train.log",
+            cuda_ok=False,
+        )
+        assert done == 8
+        assert calls == [3]

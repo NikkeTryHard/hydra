@@ -28,11 +28,14 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pyarrow.parquet as pq
 
 from hydra2.contracts.common import ContractError, CorruptArtifactError
+
+if TYPE_CHECKING:
+    from hydra2.contracts.utility import UtilityManifest
 
 # Reuse authoritative forbidden set from data/parquet for consistency
 try:
@@ -251,7 +254,7 @@ def _belief_target_from_privileged(
     return tuple(v / total for v in raw)
 
 
-def _oracle_utility_manifest() -> Any:
+def _oracle_utility_manifest() -> UtilityManifest:
     """Canonical day-one utility manifest (same golden as models/model.py)."""
     from hydra2.contracts.rules import RULES_ID
     from hydra2.contracts.utility import (
@@ -287,7 +290,9 @@ def _value_from_ranks_via_utility(ranks_in: Any) -> tuple[float, ...] | None:
         return None
     if any(isinstance(x, bool) for x in ranks_in) or not all(isinstance(x, int) for x in ranks_in):
         return None
-    ranks = tuple(int(x) for x in ranks_in)
+    # Guards prove 4 ints (bool rejected), so int() would be identity.
+    _ranks_int: list[int] = list(ranks_in)
+    ranks = tuple(_ranks_int)
     if sorted(ranks) == [0, 1, 2, 3]:
         # Zero-based seat convention -> 1..4 for utility().
         ranks = tuple(r + 1 for r in ranks)
@@ -354,6 +359,7 @@ def _value_target_from_privileged(
         if isinstance(v, list) and len(v) == 4:
             # Explicit 4-list value claim: strict validation against the
             # manifest (never silently passed through). Bool is not a number.
+            _vals_list: list[float] = []
             for _i, _x in enumerate(v):
                 if isinstance(_x, bool) or not isinstance(_x, (int, float)):
                     raise ContractError(
@@ -364,10 +370,13 @@ def _value_target_from_privileged(
                     raise ContractError(
                         f"value target: entry[{_i}] must be finite for {decision_id!r}"
                     )
-            _vals = tuple(float(_x) for _x in v)
+                # _x narrowed to int | float here; float() keeps int case exact.
+                _vals_list.append(float(_x))
+            _vals = tuple(_vals_list)
             _manifest = _oracle_utility_manifest()
-            _lo = float(_manifest.value_min)
-            _hi = float(_manifest.value_max)
+            # UtilityManifest bounds are float already; float() would be identity.
+            _lo = _manifest.value_min
+            _hi = _manifest.value_max
             for _i, _x in enumerate(_vals):
                 if _x < _lo or _x > _hi:
                     raise ContractError(
@@ -393,7 +402,7 @@ def _value_target_from_privileged(
         if isinstance(rank, int) and not isinstance(rank, bool) and 0 <= rank < 4:
             manifest = _oracle_utility_manifest()
             vec = [0.0] * 4
-            vec[rank] = float(manifest.rank_values[rank])
+            vec[rank] = manifest.rank_values[rank]
             return tuple(vec)
     if not allow_synthetic:
         raise ContractError(
@@ -446,7 +455,7 @@ class PrivilegedOracleLoader:
         _require_train_split(split)
         self.parquet_dir = Path(parquet_dir)
         self.split = split
-        self.allow_synthetic = bool(allow_synthetic)
+        self.allow_synthetic = allow_synthetic
         self._rows: list[dict[str, Any]] = []
         self._wall_ids: set[str] = set()
         shards = _privileged_shard_paths(self.parquet_dir)
@@ -641,7 +650,11 @@ def ranks_from_final_scores(scores: Any) -> tuple[int, int, int, int]:
             f"ranks_from_final_scores: scores must be distinct (ties need Tenhou "
             f"resolve_final_ranks first), got {list(scores)!r}"
         )
-    order = sorted(range(4), key=lambda seat: (-vals[seat], seat))
+
+    def _seat_order(seat: int) -> tuple[float, int]:
+        return (-vals[seat], seat)
+
+    order = sorted(range(4), key=_seat_order)
     ranks = [0, 0, 0, 0]
     for position, seat in enumerate(order):
         ranks[seat] = position + 1
@@ -677,18 +690,20 @@ def _ranks_for_join(
         raise ContractError(
             f"join_oracle_targets: ranks must be int permutation for {decision_id!r}"
         )
-    ranks_tuple = tuple(int(x) for x in candidate)
+    # Guards below prove 4 ints (bool rejected), so int() would be identity.
+    _candidate_ints: list[int] = list(candidate)
+    ranks_tuple: tuple[int, ...] = tuple(_candidate_ints)
     if sorted(ranks_tuple) == [0, 1, 2, 3]:
-        placement = tuple(int(x) for x in ranks_tuple)
+        placement = tuple(ranks_tuple)
     elif sorted(ranks_tuple) == [1, 2, 3, 4]:
-        placement = tuple(int(x) - 1 for x in ranks_tuple)
+        placement = tuple(x - 1 for x in ranks_tuple)
     else:
         raise ContractError(
             f"join_oracle_targets: ranks must be 1..4 or 0..3 permutation for {decision_id!r}, "
             f"got {list(ranks_tuple)!r}"
         )
     for p in placement:
-        if not 0 <= int(p) < 4:
+        if not 0 <= p < 4:
             raise ContractError(
                 f"join_oracle_targets: placement_target out of range [0,4) for {decision_id!r}"
             )
@@ -710,7 +725,11 @@ def _synthetic_ranks(decision_id: str) -> tuple[int, int, int, int]:
     carries no wall/split provenance, so wall checks skip synthetic rows.
     """
     h = hashlib.sha256(decision_id.encode()).digest()
-    order = sorted(range(4), key=lambda seat: (h[seat], seat))
+
+    def _synth_order(seat: int) -> tuple[int, int]:
+        return (h[seat], seat)
+
+    order = sorted(range(4), key=_synth_order)
     ranks = [0, 0, 0, 0]
     for position, seat in enumerate(order):
         ranks[seat] = position + 1
@@ -772,7 +791,9 @@ def join_oracle_targets(
         raw_by_id: dict[str, dict[str, Any]] = {}
         for _raw in list(getattr(source, "_rows", [])):
             if isinstance(_raw, dict) and isinstance(_raw.get("decision_id"), str):
-                raw_by_id.setdefault(str(_raw["decision_id"]), _raw)
+                # First-wins map; setdefault return intentionally discarded.
+                _did_key: str = _raw["decision_id"]
+                _ = raw_by_id.setdefault(_did_key, _raw)
         for _did2 in decision_ids:
             _raw_hit: dict[str, Any] | None = raw_by_id.get(_did2)
             if _raw_hit is None:

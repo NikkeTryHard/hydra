@@ -108,7 +108,8 @@ def model_output_to_loss_dict(output: ModelOutput) -> dict[str, Any]:
                     f"{field_name}[{head_id_any!r}] batch {logits_any.shape[0]}"
                     f" != policy batch {batch_size}"
                 )
-            heads[str(head_id_any)] = logits_any
+            head_id: object = head_id_any
+            heads[str(head_id)] = logits_any
         checked[field_name] = heads
     return {
         "policy_logits": policy,

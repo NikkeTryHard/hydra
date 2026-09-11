@@ -143,9 +143,22 @@ def validate_privileged_ranks(ranks: object, decision_id: str = "") -> tuple[int
     where = f" for {decision_id!r}" if decision_id != "" else ""
     if not isinstance(ranks, (list, tuple)) or len(ranks) != 4:
         raise ContractError(f"privileged_label['ranks'] must be a 4-list{where}")
-    if any(isinstance(x, bool) for x in ranks) or not all(isinstance(x, int) for x in ranks):
+    r0: object = ranks[0]
+    r1: object = ranks[1]
+    r2: object = ranks[2]
+    r3: object = ranks[3]
+    if (
+        isinstance(r0, bool)
+        or not isinstance(r0, int)
+        or isinstance(r1, bool)
+        or not isinstance(r1, int)
+        or isinstance(r2, bool)
+        or not isinstance(r2, int)
+        or isinstance(r3, bool)
+        or not isinstance(r3, int)
+    ):
         raise ContractError(f"privileged_label['ranks'] must be int 1..4{where}")
-    ordered = (int(ranks[0]), int(ranks[1]), int(ranks[2]), int(ranks[3]))
+    ordered = (r0, r1, r2, r3)
     if sorted(ordered) != [1, 2, 3, 4]:
         raise ContractError(
             f"privileged_label['ranks'] must be a strict 1..4 permutation{where}, "

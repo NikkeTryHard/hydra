@@ -24,7 +24,9 @@ perf-A §8.1) does not affect these pure-tensor ops; only ``config.py:25``
 
 from __future__ import annotations
 
+import contextlib
 import math
+import os
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -36,6 +38,7 @@ import torch.nn.functional as F  # noqa: N812 -- conventional alias per PyTorch 
 from hydra2.contracts.common import ContractError, IllegalActionError
 
 __all__ = [
+    "compute_hot_scalars",
     "compute_metrics",
     "compute_per_type_metrics",
     "compute_supervised_loss",
@@ -43,6 +46,8 @@ __all__ = [
     "global_grad_norm_is_finite",
     "masked_cross_entropy",
     "masked_topk_accuracy",
+    "supervised_loss_kernel",
+    "validate_supervised_inputs",
 ]
 
 # Masked logit value — ``-inf`` gives exact zero illegal prob (exp(-inf)=0)
@@ -56,6 +61,10 @@ _MASKED_LOGIT_NEG: float = float("-inf")
 # ECE bins — 10 equal-width bins over ``[0,1]`` confidence; frozen for
 # metric comparability across runs (not a tuned hyperparam).
 _ECE_NUM_BINS: int = 10
+# Minimum per-kind rows for a fully-supported scorecard slice.  Kinds with
+# ``n < 30`` carry ``low_support = 1.0`` (informational only, report path;
+# kinds never enter the loss, so support never affects training).
+_PER_TYPE_MIN_N: int = 30
 # SOTA-quoted default for legal-only label smoothing (masked-LS: soft mass
 # spreads over legal actions only; naive full-vocab LS leaks mass to
 # illegals).  Code default stays ``0.0`` (disabled, byte-identical resume);
@@ -67,6 +76,34 @@ _TEMPERATURE_MIN: float = 0.05
 _TEMPERATURE_MAX: float = 20.0
 
 
+def _fail_closed_gate(predicate: torch.Tensor, make_error: Any) -> None:
+    """Zero-sync fail-closed gate on CUDA; exact host raise elsewhere.
+
+    ``predicate`` is an unreduced bool tensor; it must hold everywhere.
+    ``make_error`` is a zero-arg factory for the typed error — called only
+    when the check actually fails, so message detail (``.item()`` ranges)
+    never costs a sync on success.  On CUDA the check enqueues a
+    device-side assert (no host round-trip): violations surface as a device
+    assert on the next sync and poison the context — abort-is-abort for a
+    fail-closed trainer.  CPU/eval keeps the exact typed error.  Never
+    raises spuriously: any backend failure falls back to the host check.
+    """
+    try:
+        reduced = predicate.all()
+    except Exception as exc:
+        raise make_error() from exc
+    cuda = False
+    with contextlib.suppress(Exception):
+        disabled = os.environ.get("HYDRA2_DISABLE_DEVICE_ASSERTS", "").strip().lower()
+        cuda = bool(reduced.is_cuda) and disabled not in ("1", "true", "yes", "on")
+    if cuda:
+        with contextlib.suppress(Exception):
+            torch._assert_async(reduced)
+            return
+    if bool(reduced.item()) is False:
+        raise make_error()
+
+
 def global_grad_norm_is_finite(model: Any) -> tuple[bool, float]:
     """Per-update global grad-norm finiteness probe (shared by both loops).
 
@@ -75,18 +112,21 @@ def global_grad_norm_is_finite(model: Any) -> tuple[bool, float]:
     flag BEFORE ``optimizer.step``: non-finite grads skip the step (zero +
     count) so one poisoned update cannot corrupt master weights.  No mutation
     here — the skip/zero/count policy lives in the loop.
+
+    One fused foreach norm pass plus a SINGLE host sync (was one ``.item()``
+    per parameter).  Only the finiteness flag is consumed downstream — both
+    loop callers unpack but never use the float — so device-side reduction
+    order is unobservable and the fail-closed skip contract is unchanged.
     """
-    total_sq = 0.0
-    for param in model.parameters():
-        grad = getattr(param, "grad", None)
-        if grad is None:
-            continue
-        try:
-            total_sq += float(grad.detach().float().norm().item()) ** 2  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for grad-norm probe; alternative loses fail-closed skip. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
-        except Exception:
-            return False, float("inf")
-    norm = total_sq**0.5
-    return bool(math.isfinite(norm)), float(norm)
+    try:
+        grads = [p.grad for p in model.parameters() if getattr(p, "grad", None) is not None]
+        if len(grads) == 0:
+            return True, 0.0
+        total = torch.nn.utils.get_total_norm(grads, norm_type=2.0)
+        norm = float(total.detach().item())
+    except Exception:
+        return False, float("inf")
+    return math.isfinite(norm), norm
 
 
 def masked_cross_entropy(
@@ -137,41 +177,19 @@ def masked_cross_entropy(
     if targets.dtype not in (torch.int64, torch.long, torch.int32):
         # Allow int64/int32 but coerce to long for indexing
         targets = targets.long()
-    # Each row must have at least one legal action (nonterminal check)
-    if torch.compiler.is_compiling():
-        torch._check_tensor_all(
-            legal_mask.any(dim=1),
-            lambda: "nonterminal all-false legal row is hard error (SPEC 11.1)",
-        )
-    elif bool(torch.all(legal_mask.any(dim=1)).item()) is False:  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for contract validation; alternative loses validation. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
-        raise ContractError("nonterminal all-false legal row is hard error (SPEC 11.1)")
+    # Data-dependent checks below run eager-only (single-source helpers also
+    # used by validate_supervised_inputs): under torch.compile they fold away
+    # so the graph holds zero host syncs (_check_tensor_all on mask/range
+    # tensors graph-breaks every call). Compiled callers pre-validate.
+    if not torch.compiler.is_compiling():
+        _check_legal_rows(legal_mask)
     # Targets must be in range and legal
     num_actions = logits.shape[1]
-    if torch.compiler.is_compiling():
-        torch._check_tensor_all(
-            targets >= 0,
-            lambda: f"target action_id out of range [0,{num_actions})",
-        )
-        torch._check_tensor_all(
-            targets < num_actions,
-            lambda: f"target action_id out of range [0,{num_actions})",
-        )
-    elif (
-        bool((targets < 0).any().item()) is True  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for range check; alternative loses validation. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
-        or bool(  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for range check; alternative loses validation. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
-            (targets >= num_actions).any().item()  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for range check; alternative loses validation. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
-        )
-        is True
-    ):
-        raise ContractError(f"target action_id out of range [0,{num_actions})")
+    if not torch.compiler.is_compiling():
+        _check_targets_in_range(targets, num_actions)
     batch_idx = torch.arange(targets.shape[0], device=targets.device)
-    if torch.compiler.is_compiling():
-        torch._check_tensor_all(
-            legal_mask[batch_idx, targets],
-            lambda: "selected action is illegal per legal_mask",
-        )
-    elif bool(torch.all(legal_mask[batch_idx, targets]).item()) is False:  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for legality check; alternative loses validation. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
-        raise IllegalActionError("selected action is illegal per legal_mask")
+    if not torch.compiler.is_compiling():
+        _check_targets_legal(legal_mask, targets)
     # Mask illegal to -inf so illegal probability exactly zero (exp(-inf)=0, gradient zero)
     masked_logits = logits.masked_fill(~legal_mask, _MASKED_LOGIT_NEG)
     if eps == 0.0:
@@ -186,12 +204,8 @@ def masked_cross_entropy(
         target_logp = log_prob[batch_idx, targets.long()]
         legal_logp_sum = log_prob.masked_fill(~legal_mask, 0.0).sum(dim=1)
         loss = -((1.0 - eps) * target_logp + smooth * legal_logp_sum).mean()
-    if torch.compiler.is_compiling():
-        torch._check_tensor_all(torch.isfinite(loss), lambda: "masked CE produced non-finite loss")
-    elif bool(torch.isfinite(loss).item()) is False:  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for finite check; alternative loses validation. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
-        raise ContractError(
-            f"masked CE produced non-finite loss: {loss.item()}"  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for error message; alternative loses diagnostics. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
-        )
+    # No CE-local finite gate: any non-finite CE poisons the weighted total,
+    # which the post-gate (_check_total_finite) trips identically.
     return loss
 
 
@@ -213,6 +227,28 @@ def masked_topk_accuracy(
     # Check if target in topk for each row
     correct = (topk == targets.unsqueeze(1)).any(dim=1).float().mean()
     return float(correct.item())  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for metric reporting; alternative loses metric. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
+
+
+def compute_hot_scalars(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    legal_mask: torch.Tensor,
+) -> dict[str, float]:
+    """Per-update hot metrics: masked NLL + top-1 only (2 host syncs).
+
+    No validation (the batch was pre-validated this microbatch) and no
+    uniform/top-k/ECE/support/per-type work — those ride the eval report
+    (:func:`compute_metrics`). Keys mirror the :func:`compute_metrics`
+    subset so hot entries keep ``masked_nll``/``top1`` continuity.
+    """
+    logits_fp32 = logits.to(torch.float32)
+    masked_logits = logits_fp32.masked_fill(~legal_mask, _MASKED_LOGIT_NEG)
+    log_prob = F.log_softmax(masked_logits, dim=-1)
+    targets_long = targets.long() if targets.dtype != torch.long else targets
+    batch_idx = torch.arange(targets_long.shape[0], device=targets_long.device)
+    nll = -log_prob[batch_idx, targets_long].mean().item()
+    top1 = masked_topk_accuracy(logits_fp32, targets_long, legal_mask, k=1)
+    return {"masked_nll": float(nll), "top1": top1}
 
 
 def _generic_ce_loss(
@@ -238,14 +274,108 @@ def _generic_mse_loss(
     return F.mse_loss(pred, target.float(), reduction="mean")
 
 
-def compute_supervised_loss(
+def _check_legal_rows(legal_mask: torch.Tensor) -> None:
+    """Nonterminal check: every row needs at least one legal action (SPEC 11.1)."""
+    _fail_closed_gate(
+        legal_mask.any(dim=1),
+        lambda: ContractError("nonterminal all-false legal row is hard error (SPEC 11.1)"),
+    )
+
+
+def _check_targets_in_range(targets: torch.Tensor, num_actions: int) -> None:
+    """Chosen ids must lie in ``[0, num_actions)``."""
+    _fail_closed_gate(
+        (targets >= 0) & (targets < num_actions),
+        lambda: ContractError(f"target action_id out of range [0,{num_actions})"),
+    )
+
+
+def _check_targets_legal(legal_mask: torch.Tensor, targets: torch.Tensor) -> None:
+    """Chosen action must be legal per row (fail-closed illegal-action gate)."""
+    batch_idx = torch.arange(targets.shape[0], device=targets.device)
+    _fail_closed_gate(
+        legal_mask[batch_idx, targets],
+        lambda: IllegalActionError("selected action is illegal per legal_mask"),
+    )
+
+
+def _check_placement_range(pl_target: torch.Tensor) -> None:
+    """Per-seat placement targets are 0-based in ``[0, 3]``."""
+
+    def _placement_error() -> ContractError:
+        # Failure path only: range detail may sync, success never does.
+        _lo = int(pl_target.min().item())
+        _hi = int(pl_target.max().item())
+        return ContractError(f"placement: per-seat target 0-based in [0,3], got [{_lo},{_hi}]")
+
+    _fail_closed_gate((pl_target >= 0) & (pl_target <= 3), _placement_error)
+
+
+def _check_total_finite(total: torch.Tensor) -> None:
+    """Weighted total must be finite (mid-window poison fail-closed gate)."""
+
+    def _total_error() -> ContractError:
+        # Failure path only: value detail may sync, success never does.
+        return ContractError(f"total loss non-finite: {total.item()}")
+
+    _fail_closed_gate(torch.isfinite(total), _total_error)
+
+
+def validate_supervised_inputs(
+    model_output: dict[str, Any], batch: dict[str, Any], weights: dict[str, Any]
+) -> None:
+    """Eager pre-validation for the compiled loss kernel (single message source).
+
+    Runs every data-dependent (host-sync) check the kernel skips under
+    ``torch.compile``: key presence, legal rows, target range/legality on the
+    policy path, placement-target range on the active per-seat path.  The
+    loss fns call the same ``_check_*`` helpers when eager, so messages
+    cannot drift.  The compiled loop calls this before
+    :func:`supervised_loss_kernel` and gates the total after; direct eager
+    callers go through :func:`compute_supervised_loss`, which calls this.
+    """
+    if "legal_mask" not in batch or "chosen_action_id" not in batch:
+        raise ContractError("batch must contain 'legal_mask' and 'chosen_action_id'")
+    if "policy_logits" not in model_output:
+        raise ContractError("model_output missing 'policy_logits'")
+    legal_mask: torch.Tensor = batch["legal_mask"]
+    targets: torch.Tensor = batch["chosen_action_id"]
+    logits: torch.Tensor = model_output["policy_logits"]
+    if float(weights.get("w_policy", 0.0)) != 0.0:
+        _check_legal_rows(legal_mask)
+        _check_targets_in_range(targets, logits.shape[1])
+        _check_targets_legal(legal_mask, targets)
+    if (
+        float(weights.get("w_placement", 0.0)) != 0.0
+        and "placement_logits" in model_output
+        and "placement_target" in batch
+    ):
+        pl_logits: torch.Tensor = model_output["placement_logits"]
+        pl_target: torch.Tensor = batch["placement_target"]
+        if (
+            pl_logits.dim() == 3
+            and pl_target.dim() == 2
+            and tuple(pl_logits.shape[1:]) == (4, 4)
+            and pl_target.shape == (pl_logits.shape[0], 4)
+        ):
+            _check_placement_range(pl_target)
+
+
+def supervised_loss_kernel(
     model_output: dict[str, Any],
     batch: dict[str, Any],
     weights: dict[str, Any],
 ) -> dict[str, Any]:
-    """Compute SPEC 20 supervised loss.
+    """Check-free supervised-loss math (COMPILED fast path; see loop Perf-B).
 
-    Formula:
+    Callers MUST pre-validate via :func:`validate_supervised_inputs` (the
+    loop does) or call :func:`compute_supervised_loss`.  Data-dependent
+    checks below are gated on ``not torch.compiler.is_compiling()`` so the
+    inductor graph holds zero host syncs; key/shape/dtype checks stay inline
+    (trace-safe, constant-folded).  Math is identical to the validating path.
+
+    SPEC 20 formula:
+
         L = w_policy * masked_cross_entropy(label_smoothing)
           + w_placement * placement_loss
           + w_value * value_mse
@@ -342,17 +472,8 @@ def compute_supervised_loss(
                 raise ContractError(
                     f"placement: per-seat target must be [B,4], got {tuple(pl_target.shape)}"
                 )
-            if torch.compiler.is_compiling():
-                torch._check_tensor_all(
-                    (pl_target >= 0) & (pl_target <= 3),
-                    lambda: "placement: per-seat target 0-based in [0,3]",
-                )
-            elif bool((((pl_target < 0) | (pl_target > 3)).any()).item()) is True:  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for contract validation.
-                _lo = int(pl_target.min().item())  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for error range.
-                _hi = int(pl_target.max().item())  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for error range.
-                raise ContractError(
-                    f"placement: per-seat target 0-based in [0,3], got [{_lo},{_hi}]"
-                )
+            if not torch.compiler.is_compiling():
+                _check_placement_range(pl_target)
             ploss = F.cross_entropy(
                 pl_logits.reshape(-1, 4), pl_target.reshape(-1).long(), reduction="mean"
             )
@@ -452,12 +573,27 @@ def compute_supervised_loss(
     losses["_belief_per_head"] = belief_losses
 
     losses["total"] = total
-    # Finite check on total
-    if torch.compiler.is_compiling():
-        torch._check_tensor_all(torch.isfinite(total), lambda: "total loss non-finite")
-    elif bool(torch.isfinite(total).item()) is False:  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for finite check; alternative loses validation. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
-        raise ContractError(f"total loss non-finite: {total.item()}")  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for error message; alternative loses diagnostics. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
+    # Finite check on total (eager-only; the compiled loop post-gates via
+    # _check_total_finite on the kernel output — same message, same error).
+    if not torch.compiler.is_compiling():
+        _check_total_finite(total)
     return losses
+
+
+def compute_supervised_loss(
+    model_output: dict[str, Any],
+    batch: dict[str, Any],
+    weights: dict[str, Any],
+) -> dict[str, Any]:
+    """SPEC 20 supervised loss with eager pre-validation (see kernel docstring).
+
+    Validates inputs (raising the identical errors the kernel skips under
+    compile), then runs :func:`supervised_loss_kernel` eagerly.  Replay,
+    tests, and direct callers use this; the compiled training loop calls
+    :func:`validate_supervised_inputs` + the kernel + ``_check_total_finite``.
+    """
+    validate_supervised_inputs(model_output, batch, weights)
+    return supervised_loss_kernel(model_output, batch, weights)
 
 
 def _validate_metric_inputs(
@@ -548,7 +684,7 @@ def _ece_from_confidence(confidences: torch.Tensor, accuracies: torch.Tensor) ->
             bin_acc = accuracies[mask].mean().item()  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for metric; alternative loses metric. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
             bin_conf = confidences[mask].mean().item()  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for metric; alternative loses metric. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
             ece += (mask.float().mean().item()) * abs(bin_acc - bin_conf)  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for ECE; alternative loses metric. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
-    return float(ece)
+    return ece
 
 
 def _support_min_max(predictions: torch.Tensor) -> tuple[int, int]:
@@ -572,7 +708,14 @@ def _per_type_breakdown(
     legal_mask: torch.Tensor,
     action_kinds: Sequence[str],
 ) -> dict[str, dict[str, float]]:
-    """Per-action-type ``{n, nll, top1, top3, ece}`` over validated tensors."""
+    """Per-action-type ``{n, nll, top1, top3, ece, recall, low_support}``.
+
+    ``recall`` is the within-kind exact-match rate: kinds label the target
+    action, so per-kind true-positive rate coincides with per-kind top-1
+    accuracy by construction (same value, both keys emitted for eval
+    consumers).  ``low_support`` is ``1.0`` when ``n < _PER_TYPE_MIN_N``
+    (informational only, report path; never affects loss).
+    """
     kinds = list(action_kinds)
     if len(kinds) != logits_fp32.shape[0]:
         raise ContractError(f"action_kinds length {len(kinds)} != batch {logits_fp32.shape[0]}")
@@ -593,7 +736,17 @@ def _per_type_breakdown(
             logits_fp32[sel], targets_long[sel], legal_mask[sel], k=min(3, logits_fp32.shape[1])
         )
         ece = _ece_from_confidence(confidences[sel], accuracies[sel])
-        out[kind] = {"n": float(n), "nll": nll, "top1": top1, "top3": k3, "ece": ece}
+        recall = top1  # by construction: kinds label the target, so kind recall == kind top1
+        low_support = 1.0 if n < _PER_TYPE_MIN_N else 0.0
+        out[kind] = {
+            "n": float(n),
+            "nll": nll,
+            "top1": top1,
+            "top3": k3,
+            "ece": ece,
+            "recall": recall,
+            "low_support": low_support,
+        }
     return out
 
 
@@ -603,7 +756,7 @@ def compute_per_type_metrics(
     legal_mask: torch.Tensor,
     action_kinds: Sequence[str],
 ) -> dict[str, dict[str, float]]:
-    """Per-action-type NLL/top-k/ECE over the legal subspace.
+    """Per-action-type NLL/top-k/ECE/recall over the legal subspace.
 
     Args:
         logits/targets/legal_mask: same contract as :func:`compute_metrics`.
@@ -611,8 +764,11 @@ def compute_per_type_metrics(
             ``"ron"``); length MUST equal the batch size.
 
     Returns:
-        ``{kind: {"n", "nll", "top1", "top3", "ece"}}`` with kinds in
-        sorted order.  ECE uses the frozen 10-bin grid.  Deterministic.
+        ``{kind: {"n", "nll", "top1", "top3", "ece", "recall",
+        "low_support"}}`` with kinds in sorted order.  ECE uses the frozen
+        10-bin grid.  ``recall`` equals ``top1`` by construction (kinds label
+        the target); ``low_support`` is ``1.0`` when ``n < 30``
+        (informational, report-only).  Deterministic.
     """
     logits_fp32, masked_logits, log_prob, targets_long = _validate_metric_inputs(
         logits, targets, legal_mask
@@ -661,11 +817,12 @@ def fit_temperature_scaling(
         masked = scaled.masked_fill(~lmask, _MASKED_LOGIT_NEG)
         lp = F.log_softmax(masked, dim=-1)
         loss = -lp[fit_idx, tgt].mean()
-        loss.backward()
+        _ = loss.backward()  # intentionally discarded: backward populates grads in place
         return loss
 
     try:
-        _ = optimizer.step(closure)
+        # intentionally discarded: LBFGS step returns loss
+        _: torch.Tensor | None = optimizer.step(closure)
         fitted = float(
             torch.exp(log_temp.detach()).clamp(min=_TEMPERATURE_MIN, max=_TEMPERATURE_MAX).item()  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for calibration scalar; alternative loses metric. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
         )
@@ -682,11 +839,11 @@ def fit_temperature_scaling(
     if not math.isfinite(fitted) or nll_after > nll_before + 1e-6:
         fitted, nll_after, ece_after = 1.0, nll_before, ece_before
     return {
-        "temperature": float(fitted),
-        "nll_before": float(nll_before),
-        "nll_after": float(nll_after),
-        "ece_before": float(ece_before),
-        "ece_after": float(ece_after),
+        "temperature": fitted,
+        "nll_before": nll_before,
+        "nll_after": nll_after,
+        "ece_before": ece_before,
+        "ece_after": ece_after,
     }
 
 
@@ -703,9 +860,12 @@ def compute_metrics(
     Args:
         action_kinds: optional one kind string per row.  When given, the
             result also carries flattened per-type keys
-            ``per_type/<kind>/{n,nll,top1,top3,ece}`` and ``strata`` counts
-            the kinds present; when ``None`` (default) the legacy
-            placeholders (``strata``/``confusion`` ``0.0``) are kept.
+            ``per_type/<kind>/{n,nll,top1,top3,ece,recall,low_support}``
+            and ``strata`` counts the kinds present; when ``None``
+            (default) the legacy placeholders (``strata``/``confusion``
+            ``0.0``) are kept.  ``recall`` equals ``top1`` by construction
+            (kinds label the target); ``low_support`` flags ``n < 30``
+            kinds as informational (report-only, never loss).
 
     Returns dict with keys:
       masked_nll, top1, top3, top5, calibration_ece, legal_uniform_nll,
@@ -759,10 +919,12 @@ def compute_metrics(
         )
         for kind in sorted(per_type):
             metrics = per_type[kind]
-            result[f"per_type/{kind}/n"] = float(metrics["n"])
-            result[f"per_type/{kind}/nll"] = float(metrics["nll"])
-            result[f"per_type/{kind}/top1"] = float(metrics["top1"])
-            result[f"per_type/{kind}/top3"] = float(metrics["top3"])
-            result[f"per_type/{kind}/ece"] = float(metrics["ece"])
+            result[f"per_type/{kind}/n"] = metrics["n"]
+            result[f"per_type/{kind}/nll"] = metrics["nll"]
+            result[f"per_type/{kind}/top1"] = metrics["top1"]
+            result[f"per_type/{kind}/top3"] = metrics["top3"]
+            result[f"per_type/{kind}/ece"] = metrics["ece"]
+            result[f"per_type/{kind}/recall"] = metrics["recall"]
+            result[f"per_type/{kind}/low_support"] = metrics["low_support"]
         result["strata"] = float(len(per_type))
     return result

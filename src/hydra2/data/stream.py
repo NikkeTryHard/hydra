@@ -180,7 +180,7 @@ def _ratios_match(cached: object, expected: Mapping[str, float]) -> bool:
         if not isinstance(raw, (int, float)) or isinstance(raw, bool):
             return False
         try:
-            if abs(float(raw) - float(value)) > 1e-9:
+            if abs(float(raw) - value) > 1e-9:
                 return False
         except (TypeError, ValueError):
             return False
@@ -210,7 +210,8 @@ def load_scan_cache(
     if not isinstance(raw, dict):
         return None
     try:
-        if int(raw.get("version", -1)) != SCAN_CACHE_VERSION:
+        version: object = raw.get("version", -1)
+        if version != SCAN_CACHE_VERSION:
             return None
         if raw.get("manifest_digest") != manifest_digest:
             return None
@@ -231,7 +232,7 @@ def load_scan_cache(
             return None
         if any(not isinstance(w, str) for w in val_walls):
             return None
-        if set(train_walls) & set(val_walls):
+        if len(set(train_walls) & set(val_walls)) > 0:
             return None
         counts: dict[str, object] = {}
         for key in (
@@ -292,8 +293,9 @@ def save_scan_cache(
             },
         }
         tmp = target.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        tmp.replace(target)
+        # Atomic cache write/publish is the effect; counts/paths discarded.
+        _ = tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        _ = tmp.replace(target)
     except (OSError, ValueError, TypeError, KeyError, AttributeError):
         return
 
@@ -306,7 +308,8 @@ def serialize_shuffle_rng(rng: random.Random) -> dict[str, object]:
         raise ContractError("shuffle RNG state malformed")
     if gauss_next is not None and not isinstance(gauss_next, float):
         raise ContractError("shuffle RNG gauss state malformed")
-    return {"version": version, "state": [int(x) for x in internal], "gauss_next": gauss_next}
+    internal_seq: tuple[int, ...] = internal
+    return {"version": version, "state": list(internal_seq), "gauss_next": gauss_next}
 
 
 def parse_shuffle_rng(raw: object) -> tuple[int, tuple[int, ...], float | None]:
@@ -316,8 +319,9 @@ def parse_shuffle_rng(raw: object) -> tuple[int, tuple[int, ...], float | None]:
     version = raw.get("version")
     internal = raw.get("state")
     gauss_next = raw.get("gauss_next")
-    unknown = sorted(k for k in raw if k not in ("version", "state", "gauss_next"))
-    if unknown:
+    raw_map: dict[str, object] = raw
+    unknown = sorted(k for k in raw_map if k not in ("version", "state", "gauss_next"))
+    if len(unknown) > 0:
         raise ContractError(f"shuffle buffer_rng_state unknown keys {unknown}")
     if isinstance(version, bool) or not isinstance(version, int):
         raise ContractError("shuffle buffer_rng_state.version must be an int")
@@ -331,7 +335,8 @@ def parse_shuffle_rng(raw: object) -> tuple[int, tuple[int, ...], float | None]:
     ):
         raise ContractError("shuffle buffer_rng_state.gauss_next must be a float or null")
     gauss: float | None = None if gauss_next is None else float(gauss_next)
-    return (version, tuple(int(x) for x in internal), gauss)
+    internal_list: list[int] = internal
+    return (version, tuple(internal_list), gauss)
 
 
 def fetch_game_at(
@@ -384,6 +389,7 @@ def fetch_game_at(
         wall_hash=wall_hash,
         validation_hash=validation_hash,
         split=assigned,
+        raw=found,
     )
 
 
@@ -516,6 +522,11 @@ class StreamGame:
     wall_hash: str | None
     validation_hash: str | None
     split: str = "train"
+    #: Raw framed game bytes (verbatim decompressed payload, trailing newline
+    #: included). Lets the Rust pull path walk the original bytes instead of
+    #: re-serializing parsed events; ephemeral like the record itself (buffer
+    #: entries refetch by path/offset, never by value).
+    raw: bytes = b""
 
 
 @dataclass(slots=True)
@@ -562,7 +573,7 @@ class ZstdLineStream:
             if not isinstance(value, dict):
                 return None
             found = value.get("type")
-            return str(found) if isinstance(found, str) else None
+            return found if isinstance(found, str) else None
 
         def _feed(line: bytes, line_start: int, *, final: bool) -> list[tuple[int, bytes]]:
             nonlocal pending, pending_start, in_game
@@ -692,7 +703,8 @@ class GameStream:
             raise ContractError(f"unknown split {split!r}")
         self._split = split
         # Eager ratio validation: raise before any I/O on bad specs.
-        assign_split(group_key="__validate__", seed=self._seed, ratios=ratios)
+        # Assigned split discarded.
+        _ = assign_split(group_key="__validate__", seed=self._seed, ratios=ratios)
         self._ratios = dict(ratios)
         self._shuffle_buffer = _check_int("shuffle_buffer", shuffle_buffer)
         if not isinstance(drop_duplicates, bool):
@@ -724,8 +736,9 @@ class GameStream:
             for entry in shuffle_restore_entries:
                 if not isinstance(entry, dict):
                     raise ContractError("shuffle restore entry must be a mapping")
-                unknown = sorted(k for k in entry if k not in ("key", "path", "offset"))
-                if unknown:
+                entry_map: dict[str, object] = entry
+                unknown = sorted(k for k in entry_map if k not in ("key", "path", "offset"))
+                if len(unknown) > 0:
                     raise ContractError(f"shuffle restore entry unknown keys {unknown}")
                 key, path, offset = entry.get("key"), entry.get("path"), entry.get("offset")
                 if not isinstance(key, str) or key == "":
@@ -735,7 +748,8 @@ class GameStream:
                 if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
                     raise ContractError("shuffle restore entry offset must be non-negative int")
             # Fail fast on malformed RNG (parsed again at iter time).
-            parse_shuffle_rng(shuffle_restore_rng)
+            # Parsed triple discarded.
+            _ = parse_shuffle_rng(shuffle_restore_rng)
             self._shuffle_restore_entries = list(shuffle_restore_entries)
             self._shuffle_restore_rng = dict(shuffle_restore_rng)
         # Prefix dedup seed (S1 hardening): verified count+digest upstream; shape
@@ -775,9 +789,10 @@ class GameStream:
             raise ContractError("cursor seed/epoch does not match this stream")
         if cursor.file_index > len(self._manifest.files):
             raise ContractError(f"cursor file_index {cursor.file_index} beyond manifest")
-        _check_int("cursor.byte_offset", cursor.byte_offset)
-        _check_int("cursor.games_seen", cursor.games_seen)
-        _check_int("cursor.shuffle_pos", cursor.shuffle_pos)
+        # Cursor validation is the effect; checked values discarded.
+        _ = _check_int("cursor.byte_offset", cursor.byte_offset)
+        _ = _check_int("cursor.games_seen", cursor.games_seen)
+        _ = _check_int("cursor.shuffle_pos", cursor.shuffle_pos)
         self._file_index = cursor.file_index
         self._byte_offset = cursor.byte_offset
         self._games_seen = cursor.games_seen
@@ -850,6 +865,7 @@ class GameStream:
             wall_hash=wall_hash,
             validation_hash=validation_hash,
             split=assigned,
+            raw=game_bytes,
         )
 
     def _decode_inline(
@@ -901,9 +917,9 @@ class GameStream:
         for game in self._active_buf:
             entries.append(
                 {
-                    "key": str(game.game.raw_bytes_sha256),
+                    "key": game.game.raw_bytes_sha256,
                     "path": game.path.as_posix(),
-                    "offset": int(game.offset),
+                    "offset": game.offset,
                 }
             )
         return (entries, serialize_shuffle_rng(self._active_rng))
@@ -937,7 +953,8 @@ class GameStream:
         # Dedup set seeds from the verified prefix record (count+digest checked
         # upstream before construction), so future membership matches the
         # full-replay prefix set even when duplicates exist.
-        prefix: set[str] = set(self._shuffle_restore_prefix_hashes or ())
+        saved_prefix = self._shuffle_restore_prefix_hashes
+        prefix: set[str] = set(saved_prefix if saved_prefix is not None else ())
         run.hashes.update(prefix)
         return _ShuffleState(buf=buf, rng=rng)
 
@@ -947,12 +964,13 @@ class GameStream:
         if self._shuffle_buffer <= 0:
             if self._shuffle_restore_entries is not None:
                 raise ContractError("shuffle restore requires a positive shuffle_buffer")
+            saved = self._shuffle_restore_prefix_hashes
             run = _Run(
                 file_index=self._file_index,
                 byte_offset=self._byte_offset,
                 games_seen=self._games_seen,
                 stats=stats,
-                hashes=set(self._shuffle_restore_prefix_hashes or ()),
+                hashes=set(saved if saved is not None else ()),
             )
             for game in self._ordered_source(run):
                 self._shuffle_pos += 1
@@ -1041,7 +1059,7 @@ class PrefetchGameStream(GameStream):
         shuffle_buffer: int = 0,
         start: StreamCursor | None = None,
         drop_duplicates: bool = True,
-        prefetch: int = 16,
+        prefetch: int = 64,
         max_workers: int | None = None,
         shuffle_restore_entries: list[dict[str, object]] | None = None,
         shuffle_restore_rng: dict[str, object] | None = None,

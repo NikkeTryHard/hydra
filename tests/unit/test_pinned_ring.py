@@ -5,7 +5,9 @@ Covers :mod:`hydra2.training.pinned_ring` only: slot geometry follows
 record-on-consume / synchronize-before-refill order (fake-event log), the CPU
 roundtrip preserves values, unpinnable allocation and mismatched batches raise
 ``ContractError``, and the B=1024/T=256 buffer math matches the plan budget.
-Fast CPU lane except the single real-CUDA transfer test (``gpu`` mark).
+Fast CPU lane for pure geometry; ring-open tests are ``serial`` (pin_memory
+needs the CUDA driver; device="cpu" values stay host-side, zero VRAM) except
+the single real-CUDA transfer test (``gpu`` mark).
 """
 
 from __future__ import annotations
@@ -119,6 +121,7 @@ def test_slot_shapes_follow_schema_field_order() -> None:
     assert layout["legal_mask"] == ((2, BASELINE_ACTION_COUNT), torch.bool)
 
 
+@pytest.mark.serial  # pin_memory needs CUDA driver; device="cpu" values stay host-side, zero VRAM
 def test_open_next_stats_close_roundtrip_cpu() -> None:
     layout = slot_layout(_SMALL_B, _SMALL_T, action_count=_SMALL_A)
     batch_a = _make_batch(layout)
@@ -161,6 +164,7 @@ def test_open_next_stats_close_roundtrip_cpu() -> None:
     assert ring.stats()["open"] is False
 
 
+@pytest.mark.serial  # pin_memory needs CUDA driver; device="cpu" values stay host-side, zero VRAM
 def test_event_recycling_order() -> None:
     depth = 2
     log: list[str] = []
@@ -183,6 +187,7 @@ def test_event_recycling_order() -> None:
     ]
 
 
+@pytest.mark.serial  # pin_memory needs CUDA driver; device="cpu" values stay host-side, zero VRAM
 def test_next_rejects_mismatched_batch() -> None:
     layout = slot_layout(_SMALL_B, _SMALL_T, action_count=_SMALL_A)
     batch = _make_batch(layout)
@@ -201,6 +206,7 @@ def test_next_rejects_mismatched_batch() -> None:
             ring.next({**batch, "privileged": torch.zeros(1)})
 
 
+@pytest.mark.serial  # pin_memory needs CUDA driver; device="cpu" values stay host-side, zero VRAM
 def test_fail_closed() -> None:
     layout = slot_layout(_SMALL_B, _SMALL_T, action_count=_SMALL_A)
     with pytest.raises(ContractError):

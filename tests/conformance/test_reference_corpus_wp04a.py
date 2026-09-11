@@ -53,11 +53,11 @@ _MANIFEST = rules_manifest_from_payload(_RULES_PAYLOAD["payload"])
 
 DOCUMENTED_UNSUPPORTED: dict[str, str] = {
     "suufon_renda": (
-        "RiichiEnv 0.4.8 never emits the four-winds abortive ryukyoku: four "
+        "RiichiEnv 0.4.10 never emits the four-winds abortive ryukyoku: four "
         "first-turn own-wind discards leave the hand running (probe DUT-1)."
     ),
     "scoring_tables": (
-        "owner_decision D1: RiichiEnv 0.4.8 omits the dealer-discarder x2 "
+        "owner_decision D1: RiichiEnv 0.4.10 omits the dealer-discarder x2 "
         "payment multiplier (child ron off dealer pays 1300 where Tenhou "
         "tables require 2600); counterexample WP04A-04a.json. Expectations "
         "stay Tenhou-correct; upstream fix or adapter correction layer is "
@@ -463,7 +463,7 @@ def test_wp04a_02_chankan_and_rinshan_payout() -> None:
 
 def test_wp04a_11_suufon_renda_documented_unsupported() -> None:
     """Four first-turn own-wind discards must abort (suufon_renda is a declared
-    manifest rule); RiichiEnv 0.4.8 keeps playing. EXPECTED mismatch resolved
+    manifest rule); RiichiEnv 0.4.10 keeps playing. EXPECTED mismatch resolved
     through DOCUMENTED_UNSUPPORTED."""
     hands = {
         0: {
@@ -1179,7 +1179,7 @@ def test_wp04a_04a_temp_furiten_clears_then_ron_lands() -> None:
             "tenhou.net/man furiten: temporary furiten ends at own discard",
             "engine flag missed_agari_doujun maps to 'temporary' (state.py D-WP03A-3)",
             "probe: riichienv.calculate_score(han,fu,is_oya=is WINNER only) pay_ron child=1300 "
-            "oya=2000; dealer-discarder x2 multiplier absent in RiichiEnv 0.4.8",
+            "oya=2000; dealer-discarder x2 multiplier absent in RiichiEnv 0.4.10",
             "shape: seat1 haku ankoh + 234m 678m 123s, 9s tanki; 40fu 1han; dealer pays 2600",
         ),
         hands={
@@ -1669,7 +1669,7 @@ def assert_documented_mismatch(result: CaseResult, case_id: str) -> None:
 
 DOCUMENTED_DEVIATIONS: dict[str, str] = {
     "WP04A-04a": (
-        "RiichiEnv 0.4.8 pays the CHILD table value when a child rons off a DEALER "
+        "RiichiEnv 0.4.10 pays the CHILD table value when a child rons off a DEALER "
         "discard (calculate_score models only the WINNER's rank; the dealer-pays-"
         "double channel-hon rule is absent): observed [-1300,1300,0,0] vs Tenhou "
         "40fu 1han dealer-discarder 2600."
@@ -1767,11 +1767,21 @@ def test_wp04a_12_sanchahou_triple_ron_abort() -> None:
         env = abortive[0]
         if str(env.payload.reason) != "sanchahou":
             return f"abortive reason {env.payload.reason!r} != 'sanchahou'"
+        # Engine 0.4.10 deducts the 1000 stick from scores() at declaration
+        # (upstream deposit rework #231/#232; matches Tenhou, where the score
+        # display drops the moment riichi is declared). The abort therefore
+        # reports zero score movement; the netting is locked here via the
+        # abortive payload scores and below via the kyotaku carry + boundary.
         score_deltas = [d.value for d in env.public_delta if tuple(d.path) == ("scores",)]
-        if not score_deltas or [int(v) for v in score_deltas[0]] != [-1000, -1000, -1000, 0]:
+        if not score_deltas or [int(v) for v in score_deltas[0]] != [0, 0, 0, 0]:
             return (
-                "abortive deltas must move exactly the three posted sticks into the "
-                f"pot and pay the feeder nothing, got {score_deltas}"
+                "abortive deltas must report no score movement (sticks netted at "
+                f"declaration since engine 0.4.10) and pay the feeder nothing, got {score_deltas}"
+            )
+        if tuple(int(s) for s in env.payload.scores) != (24000, 24000, 24000, 25000):
+            return (
+                "abortive payload scores must leave each declarer one stick down "
+                f"and the feeder untouched, got {tuple(int(s) for s in env.payload.scores)}"
             )
         nxt = next(
             (e for e in events if e.kind == "round_start" and e.sequence > env.sequence), None
@@ -1968,7 +1978,7 @@ def test_wp04a_14b_west_entry_sudden_death_expected_mismatch() -> None:
     (all_last_policy='south_west_entry_renchan_extension',
     sudden_death_policy='ge_return_points_excluding_sticks_dealer_priority',
     man L1019-1021 「サドンデス…30000点(供託未収)以上になった時点で終了」).
-    RiichiEnv 0.4.8 YON_HANCHAN instead emits game_end 'hanchan_complete' -
+    RiichiEnv 0.4.10 YON_HANCHAN instead emits game_end 'hanchan_complete' -
     the same class of missing-rule deviation as WP04A-11 suufon_renda.
     EXPECTED-MISMATCH: the failure IS the documented evidence and must be
     persisted as a counterexample, never weakened."""
