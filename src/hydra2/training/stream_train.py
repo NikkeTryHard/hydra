@@ -52,6 +52,7 @@ import io
 import json
 import os
 import re
+import threading
 import time
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
@@ -3070,6 +3071,35 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
                 f"resume seek landed on {drained!r} but checkpoint records "
                 f"{seek_start!r}: {resume.checkpoint}"
             )
+    # Eager first fill: warm the shuffle reservoir + first microbatch on a
+    # daemon thread while the main thread builds model/optimizer/scheduler/
+    # handle/feed/sampler below (~3.6s of overlap). Single puller (this
+    # thread) preserves stream order exactly; join before loop build
+    # re-raises fill failures. Deterministic: same rows, same batches.
+    _eager_fill_error: list[BaseException] = []
+    _eager_need = int(microbatch)
+
+    def _eager_fill() -> None:
+        try:
+            dataset._fill(_eager_need)
+        except BaseException as exc:  # re-raised on join, never swallowed
+            _eager_fill_error.append(exc)
+
+    _t_eager = time.perf_counter()
+    _eager_thread = threading.Thread(target=_eager_fill, name="hydra2-eager-fill", daemon=True)
+    _eager_thread.start()
+    _eager_joined = False
+
+    def _join_eager_fill() -> None:
+        """Wait for the eager first fill; re-raise its failure (idempotent)."""
+        nonlocal _eager_joined
+        if _eager_joined:
+            return
+        _eager_joined = True
+        _eager_thread.join()
+        if _eager_fill_error:
+            raise _eager_fill_error[0]
+        print(f"phase: eager-fill joined t={time.perf_counter() - _t_eager:.1f}s", flush=True)
 
     model = _build_model(config)
     optimizer = _build_optimizer(config, model)
@@ -3216,6 +3246,9 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
     )
     if resume is not None:
         # Payload identity fully verified above; now mutate live objects.
+        # Join the eager fill first: _apply_resume_payload snapshots dataset
+        # state (get_sampler_state) which the fill thread mutates.
+        _join_eager_fill()
         _apply_resume_payload(loop=loop, dataset=dataset, payload=payload, ckpt=resume.checkpoint)
 
     ckpt_every = config.loop.checkpoint_frequency_updates
@@ -3262,6 +3295,8 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
     # holds that starve the main thread mid-backward and crater GPU util).
     # Frozen heap is never scanned or freed; only per-update garbage (batches,
     # grads, decoded games) stays collectable. Zero training-math effect.
+    # Join the eager fill first: freezing mid-fill would pin in-flight batches.
+    _join_eager_fill()
     with contextlib.suppress(Exception):
         gc.collect()
         gc.freeze()
