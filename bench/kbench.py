@@ -46,6 +46,7 @@ from hydra2.models.schema import (
 from hydra2.training.adapters import model_output_to_loss_dict
 from hydra2.training.objectives import (
     _check_total_finite,
+    compute_hot_scalars,
     global_grad_norm_is_finite,
     supervised_loss_kernel,
     validate_supervised_inputs,
@@ -187,7 +188,7 @@ def main() -> int:
         _fail(f"action_count {a} != baseline (kbench pins production shapes)")
 
     model = st._build_model(cfg)
-    optimizer = st._build_optimizer(cfg)
+    optimizer = st._build_optimizer(cfg, model)
     scheduler = st._build_scheduler(cfg, optimizer)
     spec = RuntimeSpec(
         adapter_id=cfg.runtime.adapter_id,  # type: ignore[arg-type]
@@ -263,6 +264,13 @@ def main() -> int:
         optimizer.step()
         scheduler.step()
         optimizer.zero_grad(set_to_none=True)
+        # Logging-phase hot diagnostics mirror (loop.py ~1574): per-update
+        # masked-NLL/top1 recompute kernels. No loop-carried state.
+        _ = compute_hot_scalars(
+            model_out["policy_logits"].detach(),
+            loss_batch["chosen_action_id"].detach(),
+            loss_batch["legal_mask"].detach(),
+        )
         return float(total.detach().cpu().item())
 
     _ = compiled_model.train()

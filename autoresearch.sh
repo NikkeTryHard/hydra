@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
-# Autoresearch harness: KERNEL ENGINEERING phase (production streaming path).
+# Autoresearch harness: KERNEL ENGINEERING phase v3 (kbench + production gate).
 # Workload: configs/training/probe-recompiles.yaml, 150 supervised updates,
 # fixed seed, Tenhou houou 2024 slice, full production path (prefetch workers,
 # expand pool, pinned-ring H2D, compiled model, GC freeze). Deterministic work:
 # same seed + same corpus order every run; update 0 absorbs inductor compile.
-# Primary: mean steady per-update compute_ms over global_update 1..149
-# (lower = better; update 0 excluded: cold inductor compile, not kernel work).
-# SAME-THING GATE (harness-enforced, fail closed): per-update losses must match
+# STAGE 1 (primary): bench/kbench.py replays the production step on fixed
+# schema-driven batches (all buckets, imported builders, identical compile)
+# timed by torch.profiler CUDA-kernel sums. Primary: kbench_kernel_ms
+# (lower = better). Instrument frozen after baseline: any kbench.py edit = new
+# segment. STAGE 2 (gate): the production 150-update run. SAME-THING GATE
+# (harness-enforced, fail closed): per-update losses must match
 # bench/kernel_loss_reference.json (frozen converged tree, ledger run #76)
 # with max abs diff <= 1e-4, plus identical train/val game counts. A kernel
 # change that moves loss beyond tolerance emits NO metric.
+# KEEP RULE: kbench_kernel_ms improves AND parity holds AND production
+# compute_mean_ms does not regress beyond noise (coverage guard: the fixed
+# kbench batch must never diverge from real-data behavior).
 # Anti-gaming (ALL must pass or NO metric is emitted):
 #  1. CUDA required (nvidia-smi present, dmon yields windowed samples; CPU lane fails).
 #  2. HYDRA2_DATA_ROOT must hold tenhou-houou-mjai-2024 (fail closed, no tiny-corpus shortcut).
@@ -18,6 +24,7 @@
 #  5. dual-clock: windowed 1Hz SM sample count vs external elapsed agree within 8s.
 #  6. work pins emitted (config digest, corpus file-list hash, train/val game counts).
 #  7. loss parity vs frozen reference (max abs diff <= 1e-4); reference missing = fail.
+#  8. kbench stage must print all KBENCH lines with finite loss (fail closed).
 set -u
 set -o pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -50,8 +57,18 @@ export HYDRA2_ARTIFACT_ROOT="${SCRATCH}/artifacts"
 [ "$(ls -U "${HYDRA2_DATA_ROOT}/tenhou-houou-mjai-2024" | grep -c '\.zst$')" -gt 1000 ] \
     || fail "corpus slice looks truncated (need the full 2024 slice)"
 
-# --- timed production run + timestamped SM sampler ---
+# --- STAGE 1: kbench kernel-time primary (fixed work, profiler-timed) ---
+pixi run python bench/kbench.py --config "${CFG}" --out "${SCRATCH}/kbench.json" \
+    >"${SCRATCH}/kbench.log" 2>&1 \
+    || { tail -20 "${SCRATCH}/kbench.log" >&2; fail "kbench failed"; }
+KB_KERNEL="$(grep -oP '^KBENCH kernel_ms_per_update=\K\S+' "${SCRATCH}/kbench.log" | head -1)"
+KB_WALL="$(grep -oP '^KBENCH wall_ms_per_update=\K\S+' "${SCRATCH}/kbench.log" | head -1)"
+KB_LAUNCH="$(grep -oP '^KBENCH launches_per_update=\K\S+' "${SCRATCH}/kbench.log" | head -1)"
+grep -q '^KBENCH loss_finite=true' "${SCRATCH}/kbench.log" || fail "kbench loss not finite"
+[ -n "${KB_KERNEL:-}" ] && [ -n "${KB_WALL:-}" ] && [ -n "${KB_LAUNCH:-}" ] \
+    || fail "kbench metric parse failed"
 LOAD_BEFORE="$(cat /proc/loadavg)"
+# --- STAGE 2: production run gate (parity + coverage) ---
 nvidia-smi dmon -s u -o DT -d 1 -f "${SCRATCH}/sm.log" >/dev/null 2>&1 &
 SM_PID=$!
 cleanup_sm() { kill "${SM_PID}" 2>/dev/null || true; wait "${SM_PID}" 2>/dev/null || true; }
@@ -178,6 +195,7 @@ BUNDLE="${HOME}/tmp/harness-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "${BUNDLE}"
 cp "${SCRATCH}/train.log" "${SCRATCH}/sm.log" "${SCRATCH}/metrics.txt" "${BUNDLE}/"
 cp "${FEED}" "${METRICS_JSONL}" "${BUNDLE}/"
+cp "${SCRATCH}/kbench.log" "${SCRATCH}/kbench.json" "${BUNDLE}/"
 cp "${RUN_DIR}/logs/verbose-telemetry.jsonl" "${BUNDLE}/" 2>/dev/null || true
 {
     echo "load_before: ${LOAD_BEFORE}"; echo "load_after: ${LOAD_AFTER}"
@@ -186,6 +204,9 @@ cp "${RUN_DIR}/logs/verbose-telemetry.jsonl" "${BUNDLE}/" 2>/dev/null || true
 EXT_MS="$(( (EXT_END - EXT_START) / 1000000 ))"
 UPS="$(awk -v e="$EXT_MS" 'BEGIN {printf "%.3f", 150/(e/1000)}')"
 
+echo "METRIC kbench_kernel_ms=${KB_KERNEL}"
+echo "METRIC kbench_wall_ms=${KB_WALL}"
+echo "METRIC kbench_launches=${KB_LAUNCH}"
 echo "METRIC compute_mean_ms=${compute_mean}"
 echo "METRIC gpu_sm_util_pct=${sm_mean}"
 echo "METRIC sm_p50_pct=${sm_p50}"
