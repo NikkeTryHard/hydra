@@ -1812,7 +1812,7 @@
    ],
    "kind": "cutover-source",
    "relpath": "src/hydra2/training/stream_train.py",
-   "sha256": "sha256:2128ef132602863c21200a9481ee4ef224148ea98b5dad6f7a234b74221fd8f6"
+   "sha256": "sha256:c725f2705ca2eaee784e6ad05163778189a7cf5799fd0cae9734f6089b28b136"
   },
   {
    "fixtures": [
@@ -1937,6 +1937,6 @@
    "module": "tests.parity.test_parity_gates_g1_g7_wp0b"
   }
  ],
- "manifest_digest": "sha256:ff83c4d15fde2111d06c795825285a29c39ca22b5d54b7f832f87920b457d41d",
+ "manifest_digest": "sha256:3b2bb613bf1ac3663b3cbcd8b80b9e6e50f2dea9e6b7f81bff6becb53a262eca",
  "manifest_version": "2"
 }
