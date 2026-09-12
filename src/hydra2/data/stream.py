@@ -1057,32 +1057,38 @@ _DECODE_PROC_MAX_WORKERS = 16
 
 
 def _decode_frames_worker(
-    frames: list[tuple[str, bytes]],
-) -> list[tuple[GameRecord | None, str | None]]:
-    """Decode+validate one ordered frame batch in a spawn worker (pure function).
+    files: list[tuple[int, str, int]],
+) -> list[tuple[int, int, bytes, GameRecord | None, str | None]]:
+    """Frame+decode+validate one ordered file batch in a spawn worker.
 
+    Input ``(file_index, path, base)`` mirrors :meth:`GameStream._framed_from`
+    offset semantics; output matches the old per-frame ``_decode_job`` tuple
+    ``(file_index, end, game_bytes, game, validation_hash)`` in file order.
     Per-game results are identical to :meth:`GameStream._decode_inline`: the
     same ``(ContractError, CorruptArtifactError, ValueError)`` maps to
-    ``(None, None)``; anything else propagates and fails the stream closed
-    (via ``future.result()``, same as the threaded path — an unpicklable
-    bug exception surfaces as a pickling error instead of itself, still loud,
-    never silent). Spawn re-imports this module (pyarrow/msgspec/zstd, no torch).
+    ``(None, None)``; anything else propagates and fails the stream closed.
+    Moving framing off the main thread removes ~6.5s of serial file
+    open+decompress from the 10k-game reservoir warmup (measured).
     """
     # No local imports: spawn re-imports this module, so module globals
     # (decode_game_object, validate_game, stem_of, Path, contracts) are present.
-
-    out: list[tuple[GameRecord | None, str | None]] = []
-    for path_str, game_bytes in frames:
-        try:
-            game = decode_game_object(
-                object_id=stem_of(Path(path_str)),
-                packaged_object_id=stem_of(Path(path_str)),
-                decoded_bytes=game_bytes,
-            )
-        except (ContractError, CorruptArtifactError, ValueError):
-            out.append((None, None))
-            continue
-        out.append((game, validate_game(game).validation_hash))
+    out: list[tuple[int, int, bytes, GameRecord | None, str | None]] = []
+    for file_index, path_str, base in files:
+        stem = stem_of(Path(path_str))
+        for offset, game_bytes in ZstdLineStream(Path(path_str)).iter_games():
+            if offset < base:
+                continue
+            try:
+                game = decode_game_object(
+                    object_id=stem,
+                    packaged_object_id=stem,
+                    decoded_bytes=game_bytes,
+                )
+            except (ContractError, CorruptArtifactError, ValueError):
+                out.append((file_index, offset + len(game_bytes), game_bytes, None, None))
+                continue
+            vhash = validate_game(game).validation_hash
+            out.append((file_index, offset + len(game_bytes), game_bytes, game, vhash))
     return out
 
 
@@ -1134,18 +1140,21 @@ class PrefetchGameStream(GameStream):
         self._max_workers = max_workers
 
     def _ordered_source(self, run: _Run) -> Iterator[StreamGame]:
-        # Spawn-process decode: CPython's json holds the GIL through the whole
-        # parse, so decode threads serialize (8-thread pull == serial speed,
-        # measured). Spawn workers decode truly in parallel; frames keep
-        # sequence numbers so the emitted order is bit-identical to GameStream.
-        # Spawn (never fork: the caller may hold pool threads already).
-        pending: dict[int, Future[list[tuple[GameRecord | None, str | None]]]] = {}
-        framed: dict[int, list[tuple[int, int, bytes]]] = {}
+        # Spawn-process frame+decode: CPython's json holds the GIL through the
+        # whole parse, so decode threads serialize (8-thread pull == serial
+        # speed, measured); framing threads only add GIL/future overhead
+        # (rejected twice, measured). Spawn workers frame+decode truly in
+        # parallel; file batches keep sequence numbers so the emitted order
+        # is bit-identical to GameStream. Spawn (never fork: the caller may
+        # hold pool threads already).
+        pending: dict[int, Future[list[tuple[int, int, bytes, GameRecord | None, str | None]]]] = {}
         waits = 0
         sequence = 0
         due = 0
         inflight = 0
-        source = self._framed_from(run)
+        files = self._manifest.files
+        nxt = run.file_index
+        first_base = run.byte_offset
         exhausted = False
         workers = self._max_workers or os.cpu_count() or 8
         workers = max(1, min(int(workers), _DECODE_PROC_MAX_WORKERS))
@@ -1153,19 +1162,16 @@ class PrefetchGameStream(GameStream):
         with ProcessPoolExecutor(max_workers=workers, mp_context=ctx) as pool:
             while True:
                 while inflight < self._prefetch and not exhausted:
-                    batch: list[tuple[int, int, bytes]] = []
-                    while len(batch) < _DECODE_BATCH_GAMES and not exhausted:
-                        try:
-                            batch.append(next(source))
-                        except StopIteration:
-                            exhausted = True
+                    batch: list[tuple[int, str, int]] = []
+                    while len(batch) < _DECODE_BATCH_GAMES and nxt < len(files):
+                        base = first_base if nxt == run.file_index else 0
+                        batch.append((nxt, files[nxt].path.as_posix(), base))
+                        nxt += 1
+                    if nxt >= len(files):
+                        exhausted = True
                     if len(batch) == 0:
                         break
-                    framed[sequence] = batch
-                    pending[sequence] = pool.submit(
-                        _decode_frames_worker,
-                        [(self._manifest.files[i].path.as_posix(), gb) for i, _, gb in batch],
-                    )
+                    pending[sequence] = pool.submit(_decode_frames_worker, batch)
                     inflight += len(batch)
                     sequence += 1
                 if due not in pending:
@@ -1176,9 +1182,7 @@ class PrefetchGameStream(GameStream):
                 results = future.result()
                 inflight -= len(results)
                 due += 1
-                for (file_index, end, game_bytes), (game, validation_hash) in zip(
-                    framed.pop(due - 1), results, strict=True
-                ):
+                for file_index, end, game_bytes, game, validation_hash in results:
                     emitted = self._finish_decode(
                         run, file_index, end, game_bytes, game, validation_hash
                     )
