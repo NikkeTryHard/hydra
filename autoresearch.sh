@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Autoresearch harness: KERNEL ENGINEERING phase v3 (kbench + production gate).
+# Autoresearch harness: KERNEL ENGINEERING seg4 (autotune depth + kbench + production gate).
 # Workload: configs/training/probe-recompiles.yaml, 150 supervised updates,
 # fixed seed, Tenhou houou 2024 slice, full production path (prefetch workers,
 # expand pool, pinned-ring H2D, compiled model, GC freeze). Deterministic work:
@@ -53,6 +53,14 @@ fi
 
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 export PYTHONUNBUFFERED=1
+# Segment-4 autotune depth (exact-math tile/tiling search only; no fast-math):
+# coordinate-descent GEMM tuning + pointwise search + CUTLASS templates.
+# Isolated cache dir: autotune results must never leak across segments
+# (stale-cache carryover would silently void the comparison).
+export TORCHINDUCTOR_COORDINATE_DESCENT_TUNING=1
+export TORCHINDUCTOR_MAX_AUTOTUNE_POINTWISE=1
+export TORCHINDUCTOR_MAX_AUTOTUNE_GEMM_BACKENDS=CUTLASS,TRITON,ATEN,CPP
+export TORCHINDUCTOR_CACHE_DIR="${HOME}/.cache/hydra2/inductor-seg4"
 export HYDRA2_ARTIFACT_ROOT="${SCRATCH}/artifacts"
 [ "$(ls -U "${HYDRA2_DATA_ROOT}/tenhou-houou-mjai-2024" | grep -c '\.zst$')" -gt 1000 ] \
     || fail "corpus slice looks truncated (need the full 2024 slice)"
