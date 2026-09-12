@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
-# Autoresearch harness: sustained-GPU training (production streaming path).
+# Autoresearch harness: KERNEL ENGINEERING phase (production streaming path).
 # Workload: configs/training/probe-recompiles.yaml, 150 supervised updates,
 # fixed seed, Tenhou houou 2024 slice, full production path (prefetch workers,
 # expand pool, pinned-ring H2D, compiled model, GC freeze). Deterministic work:
 # same seed + same corpus order every run; update 0 absorbs inductor compile.
-# Primary: mean SM utilization % inside the exact run window (higher = fewer gaps).
+# Primary: mean steady per-update compute_ms over global_update 1..149
+# (lower = better; update 0 excluded: cold inductor compile, not kernel work).
+# SAME-THING GATE (harness-enforced, fail closed): per-update losses must match
+# bench/kernel_loss_reference.json (frozen converged tree, ledger run #76)
+# with max abs diff <= 1e-4, plus identical train/val game counts. A kernel
+# change that moves loss beyond tolerance emits NO metric.
 # Anti-gaming (ALL must pass or NO metric is emitted):
 #  1. CUDA required (nvidia-smi present, dmon yields windowed samples; CPU lane fails).
 #  2. HYDRA2_DATA_ROOT must hold tenhou-houou-mjai-2024 (fail closed, no tiny-corpus shortcut).
@@ -12,6 +17,7 @@
 #  4. loss finite on all 150 metrics.jsonl rows; stdout must read `train: updates 0->150`.
 #  5. dual-clock: windowed 1Hz SM sample count vs external elapsed agree within 8s.
 #  6. work pins emitted (config digest, corpus file-list hash, train/val game counts).
+#  7. loss parity vs frozen reference (max abs diff <= 1e-4); reference missing = fail.
 set -u
 set -o pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -77,6 +83,8 @@ export HARNESS_FEED="${FEED}" HARNESS_MJSONL="${METRICS_JSONL}" HARNESS_SM="${SC
 export HARNESS_OUT="${SCRATCH}/metrics.txt" HARNESS_CORPUS="${HYDRA2_DATA_ROOT}/tenhou-houou-mjai-2024"
 export HARNESS_EXT_S="$(( (EXT_END - EXT_START) / 1000000000 ))"
 export HARNESS_WIN_START="${WIN_START}" HARNESS_WIN_END="${WIN_END}"
+export HARNESS_REF="${ROOT}/bench/kernel_loss_reference.json" HARNESS_TOL="1e-4"
+[ -f "${HARNESS_REF}" ] || fail "loss reference missing: ${HARNESS_REF} (freeze it first)"
 pixi run python - >"${SCRATCH}/extract.log" 2>&1 <<'PYEOF' || { tail -20 "${SCRATCH}/extract.log" >&2; fail "extract failed"; }
 import hashlib, json, math, os, re, statistics
 feed, mj, smpath, outp = (os.environ["HARNESS_FEED"], os.environ["HARNESS_MJSONL"],
@@ -100,9 +108,21 @@ with open(mj) as fh:
 assert len(loss_rows) == 150, f"metrics rows {len(loss_rows)} != 150"
 for r in loss_rows:
     assert math.isfinite(float(r["total"])), f"non-finite loss at update {r.get('global_update')}"
+if all("global_update" in r for r in loss_rows):
+    assert [int(r["global_update"]) for r in loss_rows] == list(range(1, 151)), "loss rows out of order"
 comp = sorted(r["compute_ms"] for r in mb)
+steady = sorted(r["compute_ms"] for r in mb if r["global_update"] >= 1)
+assert len(steady) == 149, f"steady rows {len(steady)} != 149"
 fetch = sorted(r["fetch_decode_ms"] for r in mb)
 queue = sorted(r["queue_wait_ms"] for r in mb)
+# --- same-thing gate: loss parity vs frozen converged reference ---
+with open(os.environ["HARNESS_REF"]) as fh:
+    ref = json.load(fh)["losses"]
+assert len(ref) == 150, f"reference rows {len(ref)} != 150"
+tol = float(os.environ["HARNESS_TOL"])
+diffs = [abs(float(r["total"]) - float(e)) for r, e in zip(loss_rows, ref)]
+pworst = max(diffs)
+assert pworst <= tol, f"LOSS PARITY BROKEN: max abs diff {pworst:.3e} > {tol}"
 w0, w1 = os.environ["HARNESS_WIN_START"], os.environ["HARNESS_WIN_END"]
 sm_col = None
 sm = []
@@ -140,10 +160,12 @@ with open(outp, "w") as fh:
     fh.write(f"sm_mean={statistics.fmean(sm):.2f}\n")
     fh.write(f"sm_p50={statistics.median(sm):.2f}\n")
     fh.write(f"sm_n={len(sm)}\n")
+    fh.write(f"compute_mean={statistics.fmean(steady):.3f}\n")
     fh.write(f"compute_worst={comp[-1]:.1f}\n")
     fh.write(f"compute_p99={comp[int(0.99 * (len(comp) - 1))]:.1f}\n")
     fh.write(f"fetch_worst={fetch[-1]:.1f}\n")
     fh.write(f"queue_worst={queue[-1]:.1f}\n")
+    fh.write(f"parity_worst={pworst:.3e}\n")
     fh.write(f"corpus_hash={h.hexdigest()[:16]}\n")
     fh.write(f"corpus_files={len(names)}\n")
 PYEOF
@@ -161,9 +183,10 @@ cp "${RUN_DIR}/logs/verbose-telemetry.jsonl" "${BUNDLE}/" 2>/dev/null || true
     echo "load_before: ${LOAD_BEFORE}"; echo "load_after: ${LOAD_AFTER}"
     echo "config_digest: ${CONFIG_DIGEST}"
 } >"${BUNDLE}/provenance.txt"
-
 EXT_MS="$(( (EXT_END - EXT_START) / 1000000 ))"
 UPS="$(awk -v e="$EXT_MS" 'BEGIN {printf "%.3f", 150/(e/1000)}')"
+
+echo "METRIC compute_mean_ms=${compute_mean}"
 echo "METRIC gpu_sm_util_pct=${sm_mean}"
 echo "METRIC sm_p50_pct=${sm_p50}"
 echo "METRIC updates_per_sec=${UPS}"
@@ -171,6 +194,7 @@ echo "METRIC compute_worst_ms=${compute_worst}"
 echo "METRIC compute_p99_ms=${compute_p99}"
 echo "METRIC fetch_worst_ms=${fetch_worst}"
 echo "METRIC queue_worst_ms=${queue_worst}"
+echo "METRIC loss_parity_max_abs_diff=${parity_worst}"
 echo "METRIC wall_seconds=$(awk -v e="$EXT_MS" 'BEGIN {printf "%.3f", e/1000}')"
 echo "METRIC corpus_hash=${corpus_hash}"
 echo "METRIC corpus_files=${corpus_files}"
