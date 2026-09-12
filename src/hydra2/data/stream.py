@@ -53,7 +53,7 @@ from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from multiprocessing import get_context as _mp_get_context
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 import zstandard as zstd
 
@@ -838,6 +838,7 @@ class GameStream:
         game_bytes: bytes,
         game: GameRecord | None,
         validation_hash: str | None,
+        precomputed: tuple[str | None, str | None] | None = None,
     ) -> StreamGame | None:
         """Shared validate/quarantine/dedup/split tail; advances the run."""
         run.file_index = file_index
@@ -858,10 +859,17 @@ class GameStream:
                 return None
             run.hashes.add(game.raw_bytes_sha256)
         entry = self._manifest.files[file_index]
-        wall_hash = compute_wall_hash(game)
-        assigned = assign_split(
-            group_key=group_key_for_path(entry.path), seed=self._seed, ratios=self._ratios
-        )
+        if precomputed is not None:
+            wall_hash, assigned_maybe = precomputed
+            # Worker-computed split is always str for valid games (assign_split
+            # returns str; None-games return before this point). Cast pins the
+            # invariant the type cannot express.
+            assigned = cast("str", assigned_maybe)
+        else:
+            wall_hash = compute_wall_hash(game)
+            assigned = assign_split(
+                group_key=group_key_for_path(entry.path), seed=self._seed, ratios=self._ratios
+            )
         if self._split is not None and assigned != self._split:
             if stats is not None:
                 stats.skipped_split += 1
@@ -1048,8 +1056,16 @@ class GameStream:
             yield batch
 
 
-#: Frames per prefetch decode future. Amortizes per-future/GIL handoff cost
-#: (dominant in the 10k-game shuffle-reservoir warmup) while keeping ≤64
+#: Cap for spawn decode workers (mirrors the expansion-pool bound; decode is
+#: pure Python+C without torch, so workers are light but numerous).
+_DECODE_PROC_MAX_WORKERS = 16
+
+#: One worker file-batch result: per game ``(file_index, end, game_bytes,
+#: game, validation_hash, wall_hash, assigned_split)`` (``None`` payload
+#: for undecodable games; the tail ignores hashes when the game is ``None``).
+_WorkerBatchResult = list[
+    tuple[int, int, bytes, GameRecord | None, str | None, str | None, str | None]
+]
 #: frames in flight, matching the previous per-frame depth bound.
 _DECODE_BATCH_GAMES = 16
 #: Cap for spawn decode workers (mirrors the expansion-pool bound; decode is
@@ -1082,17 +1098,19 @@ _DECODE_WORKER_TASKS = 0
 
 def _decode_frames_worker(
     files: list[tuple[int, str, int]],
-) -> list[tuple[int, int, bytes, GameRecord | None, str | None]]:
+    *,
+    seed: int,
+    ratios: dict[str, float],
+) -> _WorkerBatchResult:
     """Frame+decode+validate one ordered file batch in a spawn worker.
 
     Input ``(file_index, path, base)`` mirrors :meth:`GameStream._framed_from`
-    offset semantics; output matches the old per-frame ``_decode_job`` tuple
-    ``(file_index, end, game_bytes, game, validation_hash)`` in file order.
-    Per-game results are identical to :meth:`GameStream._decode_inline`: the
-    same ``(ContractError, CorruptArtifactError, ValueError)`` maps to
-    ``(None, None)``; anything else propagates and fails the stream closed.
-    Moving framing off the main thread removes ~6.5s of serial file
-    open+decompress from the 10k-game reservoir warmup (measured).
+    offset semantics; output per game ``(file_index, end, game_bytes, game,
+    validation_hash, wall_hash, assigned_split)`` in file order (``None``
+    payload trio for undecodable games, exactly like :meth:`_decode_inline`).
+    ``wall_hash``/``assigned_split`` use the identical pure functions the
+    shared :meth:`_finish_decode` tail applies, so main-thread results are
+    bit-identical with ~0.06ms/game of hashing moved off the consumer.
     """
     # No local imports: spawn re-imports this module, so module globals
     # (decode_game_object, validate_game, stem_of, Path, contracts) are present.
@@ -1103,12 +1121,15 @@ def _decode_frames_worker(
 
         with contextlib.suppress(Exception):
             _gc.collect()
-    out: list[tuple[int, int, bytes, GameRecord | None, str | None]] = []
+    out: _WorkerBatchResult = []
     for file_index, path_str, base in files:
-        stem = stem_of(Path(path_str))
-        for offset, game_bytes in ZstdLineStream(Path(path_str)).iter_games():
+        fpath = Path(path_str)
+        stem = stem_of(fpath)
+        group_key = group_key_for_path(fpath)
+        for offset, game_bytes in ZstdLineStream(fpath).iter_games():
             if offset < base:
                 continue
+            end = offset + len(game_bytes)
             try:
                 game = decode_game_object(
                     object_id=stem,
@@ -1116,10 +1137,20 @@ def _decode_frames_worker(
                     decoded_bytes=game_bytes,
                 )
             except (ContractError, CorruptArtifactError, ValueError):
-                out.append((file_index, offset + len(game_bytes), game_bytes, None, None))
+                out.append((file_index, end, game_bytes, None, None, None, None))
                 continue
             vhash = validate_game(game).validation_hash
-            out.append((file_index, offset + len(game_bytes), game_bytes, game, vhash))
+            out.append(
+                (
+                    file_index,
+                    end,
+                    game_bytes,
+                    game,
+                    vhash,
+                    compute_wall_hash(game),
+                    assign_split(group_key=group_key, seed=seed, ratios=ratios),
+                )
+            )
     return out
 
 
@@ -1178,7 +1209,7 @@ class PrefetchGameStream(GameStream):
         # parallel; file batches keep sequence numbers so the emitted order
         # is bit-identical to GameStream. Spawn (never fork: the caller may
         # hold pool threads already).
-        pending: dict[int, Future[list[tuple[int, int, bytes, GameRecord | None, str | None]]]] = {}
+        pending: dict[int, Future[_WorkerBatchResult]] = {}
         waits = 0
         sequence = 0
         due = 0
@@ -1190,6 +1221,8 @@ class PrefetchGameStream(GameStream):
         workers = self._max_workers or os.cpu_count() or 8
         workers = max(1, min(int(workers), _DECODE_PROC_MAX_WORKERS))
         ctx = _mp_get_context("spawn")
+        worker_seed: int = self._seed
+        worker_ratios: dict[str, float] = dict(self._ratios)
         with ProcessPoolExecutor(
             max_workers=workers, mp_context=ctx, initializer=_decode_worker_init
         ) as pool:
@@ -1204,7 +1237,9 @@ class PrefetchGameStream(GameStream):
                         exhausted = True
                     if len(batch) == 0:
                         break
-                    pending[sequence] = pool.submit(_decode_frames_worker, batch)
+                    pending[sequence] = pool.submit(
+                        _decode_frames_worker, batch, seed=worker_seed, ratios=worker_ratios
+                    )
                     inflight += len(batch)
                     sequence += 1
                 if due not in pending:
@@ -1215,9 +1250,10 @@ class PrefetchGameStream(GameStream):
                 results = future.result()
                 inflight -= len(results)
                 due += 1
-                for file_index, end, game_bytes, game, validation_hash in results:
+                for item in results:
+                    fi, end, gbytes, game, vhash, whash, assigned = item
                     emitted = self._finish_decode(
-                        run, file_index, end, game_bytes, game, validation_hash
+                        run, fi, end, gbytes, game, vhash, precomputed=(whash, assigned)
                     )
                     if emitted is not None:
                         yield emitted
