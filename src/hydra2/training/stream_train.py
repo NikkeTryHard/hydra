@@ -426,6 +426,7 @@ def _expand_streamed_chunk(
     is message-based); anything else propagates fail-closed. No shared
     mutable state (spawn-pool safe).
     """
+    _t_task = time.perf_counter()
     if len(payloads) == 0:
         return []
     backend = payloads[0][2]
@@ -478,6 +479,10 @@ def _expand_streamed_chunk(
                 out.append(("ok", row_dicts, priv_pairs, sim_path))
             except ContractError as exc:
                 out.append(("quarantine", str(exc), None, None))
+        if os.environ.get("HYDRA2_FILL_DEBUG") == "1":
+            _dt_task = time.perf_counter() - _t_task
+            if _dt_task >= 0.3:
+                print(f"phase: slow-task games={len(payloads)} t={_dt_task:.2f}s", flush=True)
         return out
     out = []
     for game, split, _b, need_priv, _raw in payloads:
@@ -924,8 +929,11 @@ class _StreamDataset:
         _t_fill = time.perf_counter() if debug_fill else 0.0
         _fill_rounds = 0
         _fill_games = 0
+        _fill_rows = 0
         _fill_pull = 0.0
         _fill_expand = 0.0
+        _fill_submit = 0.0
+        _fill_maxchunk = 0.0
         while self._live_count() < need:
             first_fill = self._offset == 0
             timed = first_fill or debug_fill
@@ -945,6 +953,7 @@ class _StreamDataset:
             _t_pull = time.perf_counter() if timed else 0.0
             size = max(1, (len(batch) + workers - 1) // workers)
             chunks = [batch[i : i + size] for i in range(0, len(batch), size)]
+            _t_submit = time.perf_counter() if timed else 0.0
             futures = [
                 pool.submit(
                     _expand_streamed_chunk,
@@ -961,25 +970,40 @@ class _StreamDataset:
                 )
                 for chunk in chunks
             ]
+            _t_submitted = time.perf_counter() if timed else 0.0
             for chunk, future in zip(chunks, futures, strict=True):
+                _t_chunk = time.perf_counter() if timed else 0.0
                 try:
                     results = future.result()
                 except ContractError as exc:
                     for _streamed in chunk:
                         self._count_quarantine(exc)
                     continue
+                if timed:
+                    _dt_chunk = time.perf_counter() - _t_chunk
+                    if _dt_chunk > _fill_maxchunk:
+                        _fill_maxchunk = _dt_chunk
+                    if _dt_chunk >= 0.15:
+                        _ev = sum(len(s.game.events) for s in chunk)
+                        print(
+                            f"phase: slow-chunk games={len(chunk)} events={_ev} t={_dt_chunk:.2f}s",
+                            flush=True,
+                        )
                 for streamed, result in zip(chunk, results, strict=True):
                     if result[0] == "quarantine":
                         self._count_quarantine(ContractError(str(result[1])))
                         continue
                     _, row_dicts, priv_pairs, sim_path = result
                     self._merge_expanded(streamed, (row_dicts, priv_pairs, sim_path))
+                    if timed:
+                        _fill_rows += len(row_dicts)
             if timed:
                 _now = time.perf_counter()
                 _fill_rounds += 1
                 _fill_games += len(batch)
-                _fill_pull += _now - _t_round - (_now - _t_pull)
+                _fill_pull += _t_pull - _t_round
                 _fill_expand += _now - _t_pull
+                _fill_submit += _t_submitted - _t_pull
                 if first_fill:
                     print(
                         f"phase: fill games={len(batch)} pull={_t_pull - _t_round:.1f}s "
@@ -989,7 +1013,8 @@ class _StreamDataset:
         if debug_fill:
             print(
                 f"phase: fill-done need={need} rounds={_fill_rounds} games={_fill_games} "
-                f"pull={_fill_pull:.1f}s expand={_fill_expand:.1f}s "
+                f"rows={_fill_rows} pull={_fill_pull:.1f}s expand={_fill_expand:.1f}s "
+                f"submit={_fill_submit:.1f}s maxchunk={_fill_maxchunk:.2f}s "
                 f"total={time.perf_counter() - _t_fill:.1f}s",
                 flush=True,
             )
