@@ -920,12 +920,19 @@ class _StreamDataset:
         _t_pool = time.perf_counter() if self._offset == 0 else 0.0
         pool = self._get_expand_pool()
         workers = max(1, self._expand_workers)
+        debug_fill = os.environ.get("HYDRA2_FILL_DEBUG") == "1"
+        _t_fill = time.perf_counter() if debug_fill else 0.0
+        _fill_rounds = 0
+        _fill_games = 0
+        _fill_pull = 0.0
+        _fill_expand = 0.0
         while self._live_count() < need:
             first_fill = self._offset == 0
+            timed = first_fill or debug_fill
             if first_fill and _t_pool > 0.0:
                 print(f"phase: pool init={time.perf_counter() - _t_pool:.1f}s", flush=True)
                 _t_pool = 0.0
-            _t_round = time.perf_counter() if first_fill else 0.0
+            _t_round = time.perf_counter() if timed else 0.0
             batch = self._pull_streamed_batch(self._expand_batch_games)
             if len(batch) == 0:
                 if self._live_count() == 0 and self._offset == 0:
@@ -935,7 +942,7 @@ class _StreamDataset:
                     "(single-pass: stream end with updates remaining; "
                     "rescope loop.max_updates to supply)"
                 )
-            _t_pull = time.perf_counter() if first_fill else 0.0
+            _t_pull = time.perf_counter() if timed else 0.0
             size = max(1, (len(batch) + workers - 1) // workers)
             chunks = [batch[i : i + size] for i in range(0, len(batch), size)]
             futures = [
@@ -967,13 +974,25 @@ class _StreamDataset:
                         continue
                     _, row_dicts, priv_pairs, sim_path = result
                     self._merge_expanded(streamed, (row_dicts, priv_pairs, sim_path))
-            if first_fill:
+            if timed:
                 _now = time.perf_counter()
-                print(
-                    f"phase: fill games={len(batch)} pull={_t_pull - _t_round:.1f}s "
-                    f"expand={_now - _t_pull:.1f}s",
-                    flush=True,
-                )
+                _fill_rounds += 1
+                _fill_games += len(batch)
+                _fill_pull += _now - _t_round - (_now - _t_pull)
+                _fill_expand += _now - _t_pull
+                if first_fill:
+                    print(
+                        f"phase: fill games={len(batch)} pull={_t_pull - _t_round:.1f}s "
+                        f"expand={_now - _t_pull:.1f}s",
+                        flush=True,
+                    )
+        if debug_fill:
+            print(
+                f"phase: fill-done need={need} rounds={_fill_rounds} games={_fill_games} "
+                f"pull={_fill_pull:.1f}s expand={_fill_expand:.1f}s "
+                f"total={time.perf_counter() - _t_fill:.1f}s",
+                flush=True,
+            )
 
     def _track_buffered(self, streamed: Any, row_count: int) -> None:
         """Index one buffered game for fast-resume verbatim rebuild (whole-game)."""

@@ -45,10 +45,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import random
 import re
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
+from multiprocessing import get_context as _mp_get_context
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -1049,10 +1051,43 @@ class GameStream:
 #: (dominant in the 10k-game shuffle-reservoir warmup) while keeping ≤64
 #: frames in flight, matching the previous per-frame depth bound.
 _DECODE_BATCH_GAMES = 16
+#: Cap for spawn decode workers (mirrors the expansion-pool bound; decode is
+#: pure Python+C without torch, so workers are light but numerous).
+_DECODE_PROC_MAX_WORKERS = 16
+
+
+def _decode_frames_worker(
+    frames: list[tuple[str, bytes]],
+) -> list[tuple[GameRecord | None, str | None]]:
+    """Decode+validate one ordered frame batch in a spawn worker (pure function).
+
+    Per-game results are identical to :meth:`GameStream._decode_inline`: the
+    same ``(ContractError, CorruptArtifactError, ValueError)`` maps to
+    ``(None, None)``; anything else propagates and fails the stream closed
+    (via ``future.result()``, same as the threaded path — an unpicklable
+    bug exception surfaces as a pickling error instead of itself, still loud,
+    never silent). Spawn re-imports this module (pyarrow/msgspec/zstd, no torch).
+    """
+    # No local imports: spawn re-imports this module, so module globals
+    # (decode_game_object, validate_game, stem_of, Path, contracts) are present.
+
+    out: list[tuple[GameRecord | None, str | None]] = []
+    for path_str, game_bytes in frames:
+        try:
+            game = decode_game_object(
+                object_id=stem_of(Path(path_str)),
+                packaged_object_id=stem_of(Path(path_str)),
+                decoded_bytes=game_bytes,
+            )
+        except (ContractError, CorruptArtifactError, ValueError):
+            out.append((None, None))
+            continue
+        out.append((game, validate_game(game).validation_hash))
+    return out
 
 
 class PrefetchGameStream(GameStream):
-    """Game stream with threaded background decode.
+    """Game stream with spawn-process background decode.
 
     Frames are submitted in order with sequence numbers; results are
     processed strictly in sequence order, never completion order, so the
@@ -1098,37 +1133,24 @@ class PrefetchGameStream(GameStream):
         self._prefetch = prefetch
         self._max_workers = max_workers
 
-    def _decode_job(
-        self, file_index: int, end: int, game_bytes: bytes
-    ) -> tuple[int, int, bytes, GameRecord | None, str | None]:
-        entry = self._manifest.files[file_index]
-        game, validation_hash = self._decode_inline(stem_of(entry.path), game_bytes)
-        return file_index, end, game_bytes, game, validation_hash
-
-    def _decode_batch(
-        self, frames: list[tuple[int, int, bytes]]
-    ) -> list[tuple[int, int, bytes, GameRecord | None, str | None]]:
-        """Decode one ordered frame batch (same per-game job, fewer handoffs).
-
-        Per-game results are bit-identical to individual :meth:`_decode_job`
-        submissions; batching only amortizes future/GIL handoff cost (~0.3ms
-        per future dominated the 10k-game shuffle-reservoir warmup).
-        """
-        return [
-            self._decode_job(file_index, end, game_bytes) for file_index, end, game_bytes in frames
-        ]
-
     def _ordered_source(self, run: _Run) -> Iterator[StreamGame]:
-        pending: dict[int, Future[list[tuple[int, int, bytes, GameRecord | None, str | None]]]] = {}
+        # Spawn-process decode: CPython's json holds the GIL through the whole
+        # parse, so decode threads serialize (8-thread pull == serial speed,
+        # measured). Spawn workers decode truly in parallel; frames keep
+        # sequence numbers so the emitted order is bit-identical to GameStream.
+        # Spawn (never fork: the caller may hold pool threads already).
+        pending: dict[int, Future[list[tuple[GameRecord | None, str | None]]]] = {}
+        framed: dict[int, list[tuple[int, int, bytes]]] = {}
         waits = 0
         sequence = 0
         due = 0
         inflight = 0
         source = self._framed_from(run)
         exhausted = False
-        with ThreadPoolExecutor(
-            max_workers=self._max_workers, thread_name_prefix="stream-decode"
-        ) as pool:
+        workers = self._max_workers or os.cpu_count() or 8
+        workers = max(1, min(int(workers), _DECODE_PROC_MAX_WORKERS))
+        ctx = _mp_get_context("spawn")
+        with ProcessPoolExecutor(max_workers=workers, mp_context=ctx) as pool:
             while True:
                 while inflight < self._prefetch and not exhausted:
                     batch: list[tuple[int, int, bytes]] = []
@@ -1139,7 +1161,11 @@ class PrefetchGameStream(GameStream):
                             exhausted = True
                     if len(batch) == 0:
                         break
-                    pending[sequence] = pool.submit(self._decode_batch, batch)
+                    framed[sequence] = batch
+                    pending[sequence] = pool.submit(
+                        _decode_frames_worker,
+                        [(self._manifest.files[i].path.as_posix(), gb) for i, _, gb in batch],
+                    )
                     inflight += len(batch)
                     sequence += 1
                 if due not in pending:
@@ -1150,7 +1176,9 @@ class PrefetchGameStream(GameStream):
                 results = future.result()
                 inflight -= len(results)
                 due += 1
-                for file_index, end, game_bytes, game, validation_hash in results:
+                for (file_index, end, game_bytes), (game, validation_hash) in zip(
+                    framed.pop(due - 1), results, strict=True
+                ):
                     emitted = self._finish_decode(
                         run, file_index, end, game_bytes, game, validation_hash
                     )
