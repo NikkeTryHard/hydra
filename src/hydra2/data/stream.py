@@ -43,6 +43,7 @@ completion order), and counts consumer ``waits`` as the starvation signal.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -1056,6 +1057,29 @@ _DECODE_BATCH_GAMES = 16
 _DECODE_PROC_MAX_WORKERS = 16
 
 
+#: Decode tasks between periodic worker collections. Bounds cyclic-garbage
+#: growth (autograd-free data: rare cycles) while keeping each pause ~10ms on
+#: one worker — absorbed by the other seven behind prefetch depth.
+_DECODE_WORKER_COLLECT_EVERY = 32
+
+
+def _decode_worker_init() -> None:
+    """Freeze import-time heap in spawn decode workers (initializer).
+
+    Moves everything allocated during spawn import (pyarrow, msgspec, zstd,
+    module state) to the permanent generation so per-task nursery scans stay
+    fast; cyclic task garbage is reclaimed by the periodic collect below.
+    """
+    import gc as _gc
+
+    with contextlib.suppress(Exception):
+        _gc.collect()
+        _gc.freeze()
+
+
+_DECODE_WORKER_TASKS = 0
+
+
 def _decode_frames_worker(
     files: list[tuple[int, str, int]],
 ) -> list[tuple[int, int, bytes, GameRecord | None, str | None]]:
@@ -1072,6 +1096,13 @@ def _decode_frames_worker(
     """
     # No local imports: spawn re-imports this module, so module globals
     # (decode_game_object, validate_game, stem_of, Path, contracts) are present.
+    global _DECODE_WORKER_TASKS
+    _DECODE_WORKER_TASKS += 1
+    if _DECODE_WORKER_TASKS % _DECODE_WORKER_COLLECT_EVERY == 0:
+        import gc as _gc
+
+        with contextlib.suppress(Exception):
+            _gc.collect()
     out: list[tuple[int, int, bytes, GameRecord | None, str | None]] = []
     for file_index, path_str, base in files:
         stem = stem_of(Path(path_str))
@@ -1159,7 +1190,9 @@ class PrefetchGameStream(GameStream):
         workers = self._max_workers or os.cpu_count() or 8
         workers = max(1, min(int(workers), _DECODE_PROC_MAX_WORKERS))
         ctx = _mp_get_context("spawn")
-        with ProcessPoolExecutor(max_workers=workers, mp_context=ctx) as pool:
+        with ProcessPoolExecutor(
+            max_workers=workers, mp_context=ctx, initializer=_decode_worker_init
+        ) as pool:
             while True:
                 while inflight < self._prefetch and not exhausted:
                     batch: list[tuple[int, str, int]] = []
