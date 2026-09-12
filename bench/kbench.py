@@ -56,6 +56,36 @@ from hydra2.training.run_config import load_run_config
 _SYNTH_SEED = 20260912
 
 
+def kernel_sum_from_chrome_trace(path: str) -> tuple[float, int, dict[str, float]]:
+    """GPU-kernel time from a chrome trace (nsys-grade methodology).
+
+    Sums ``dur`` over ``cat == 'kernel'`` events and counts them as
+    launches — the identical extraction used for production ground truth
+    (independent of torch.profiler's key_averages attribution, which
+    misattributes ATEN/cuBLAS kernels to CPU rows in torch 2.14). memcpy /
+    memset / runtime cats are excluded by construction.
+    """
+    import gzip as _gzip
+
+    opener = _gzip.open if str(path).endswith(".gz") else open
+    with opener(path, "rt", encoding="utf-8") as fh:  # type: ignore[arg-type]
+        doc = json.load(fh)
+    events = doc.get("traceEvents", doc if isinstance(doc, list) else [])
+    total_us, launches = 0.0, 0
+    by_name: dict[str, float] = {}
+    for e in events:
+        if not isinstance(e, dict) or e.get("cat") != "kernel":
+            continue
+        dur = float(e.get("dur", 0.0) or 0.0)
+        name = str(e.get("name", "?"))
+        if name.startswith(("Memcpy", "Memset", "Memory")):
+            continue
+        total_us += dur
+        launches += 1
+        by_name[name] = by_name.get(name, 0.0) + dur
+    return total_us, launches, by_name
+
+
 def _fail(msg: str) -> NoReturn:
     print(f"KBENCH FAIL: {msg}", file=sys.stderr, flush=True)
     sys.exit(2)
@@ -304,6 +334,7 @@ def main() -> int:
 
     per_bucket_kernel_ms: dict[int, float] = {}
     per_bucket_launches: dict[int, int] = {}
+    trace_dir = os.environ.get("KBENCH_TRACE_DIR") or None
     try:
         for t in buckets:
             with torch.profiler.profile(
@@ -311,23 +342,21 @@ def main() -> int:
             ) as prof:
                 for _ in range(args.steps_per_bucket):
                     step(t)
-            ka = prof.key_averages()
-            kus, launches = 0.0, 0
-            for e in ka:
-                try:
-                    is_cuda = str(getattr(e, "device_type", "")) == "DeviceType.CUDA"
-                except Exception:
-                    is_cuda = False
-                if not is_cuda:
-                    continue
-                nm = str(getattr(e, "name", ""))
-                if nm.startswith(("Memcpy", "Memset", "Memory")):
-                    continue
-                kus += float(getattr(e, "self_device_time_total", 0.0))
-                launches += int(getattr(e, "count", 0) or 0)
-                kernel_agg[nm] = kernel_agg.get(nm, 0.0) + float(
-                    getattr(e, "self_device_time_total", 0.0)
-                )
+            # Chrome export + event-level parse: identical methodology to
+            # production ground truth (immune to key_averages attribution).
+            import tempfile as _tf
+
+            with _tf.NamedTemporaryFile(suffix=f".kb-t{t}.json", delete=False) as tmp:
+                prof.export_chrome_trace(tmp.name)
+                kus, launches, by_name = kernel_sum_from_chrome_trace(tmp.name)
+            with contextlib.suppress(Exception):
+                os.unlink(tmp.name)
+            if trace_dir is not None:
+                with contextlib.suppress(Exception):
+                    os.makedirs(trace_dir, exist_ok=True)
+                    prof.export_chrome_trace(os.path.join(trace_dir, f"kb-t{t}.json"))
+            for nm, u in by_name.items():
+                kernel_agg[nm] = kernel_agg.get(nm, 0.0) + u
             per_bucket_kernel_ms[t] = kus / 1000.0 / args.steps_per_bucket
             per_bucket_launches[t] = launches // args.steps_per_bucket
     except Exception as exc:
