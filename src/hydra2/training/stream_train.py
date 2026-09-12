@@ -46,6 +46,7 @@ histories match fresh histories.
 from __future__ import annotations
 
 import contextlib
+import gc
 import hashlib
 import io
 import json
@@ -534,6 +535,39 @@ def _sidecar_window_hash(entries: list[dict[str, Any]], rows: list[dict[str, Any
     return "sha256:" + h.hexdigest()
 
 
+def _history_bucket_of(row: dict[str, Any]) -> int:
+    """History-bucket ceil for one buffered row (homogeneous-take grouping key).
+
+    Reads ``len(row["actor_observation"]["visible_history"])`` (live
+    :class:`ActorObservation` or its validated-dict form) and returns the
+    smallest ``HISTORY_BUCKET_LENGTHS`` entry covering it. Missing,
+    malformed, or over-cap lengths map to the max bucket: grouping must
+    never mask errors — over-cap rows still fail closed at encode time with
+    the proper error. Rows without an actor observation (Rust slim rows
+    carry ``_t_len`` planes instead) group at max bucket, so the
+    default-Rust feed keeps its legacy order bit-for-bit.
+    """
+    from hydra2.models.schema import HISTORY_BUCKET_LENGTHS
+
+    buckets = HISTORY_BUCKET_LENGTHS
+    try:
+        obs = row.get("actor_observation")
+        hist = (
+            obs.get("visible_history")
+            if isinstance(obs, dict)
+            else getattr(obs, "visible_history", None)
+        )
+        length = len(hist)  # type: ignore[arg-type]
+    except (AttributeError, TypeError):
+        return buckets[-1]
+    if isinstance(length, bool) or not isinstance(length, int):
+        return buckets[-1]
+    for bucket in buckets:
+        if length <= bucket:
+            return bucket
+    return buckets[-1]
+
+
 class _StreamDataset:
     """Loop-facing microbatch source over a lazily-pulled game stream.
 
@@ -565,9 +599,12 @@ class _StreamDataset:
         expand_workers: int = 0,
         expand_batch_games: int = 64,
         pin_memory: bool = True,
+        homogeneous_buckets: bool = False,
     ) -> None:
         if drop_last is not True:
             raise ContractError(f"single-pass requires drop_last=true, got {drop_last!r}")
+        if not isinstance(homogeneous_buckets, bool):
+            raise ContractError(f"homogeneous_buckets must be a bool, got {homogeneous_buckets!r}")
         if (
             isinstance(expand_workers, bool)
             or not isinstance(expand_workers, int)
@@ -616,6 +653,7 @@ class _StreamDataset:
         # slots. The driver clears this once the feed is open; the sync path
         # keeps it set so non_blocking H2D still overlaps.
         self.pin_memory = pin_memory
+        self._homogeneous_buckets = homogeneous_buckets
         self._buffered_entries: list[dict[str, Any]] = []
 
     @property
@@ -1010,10 +1048,44 @@ class _StreamDataset:
                 "rescope loop.max_updates to supply)"
             )
 
+    def _group_unconsumed_by_bucket(self, start: int) -> None:
+        """Stably partition the unconsumed window by history bucket (in place).
+
+        Sort key is ``(bucket, global arrival index)``: equal buckets keep
+        pull order, so default-off runs are untouched and reruns reproduce
+        bit-for-bit. Consumed rows always tile ``_rows[0:start]`` (grouping
+        never moves them; takes extend the consumed prefix contiguously),
+        so take slicing plus :meth:`_compact` counts stay exact and only
+        whole consumed games are ever reclaimed. Resume needs no snapshot
+        *format* change: the flag itself rides the run digest (flipping it
+        fails closed on drift before any state is applied), and the live
+        layout rides the optional ``row_order`` snapshot key (absent when
+        the flag is off, so old snapshots restore via the legacy pull-order
+        path untouched) — takes stay contiguous-prefix advances over
+        (``_rows``, ``_offset``), so sampler offset/hash/counter semantics
+        are unchanged. Whole-game entry alignment degrades gracefully (a
+        grouped take may strand partial games; bounded by pull size).
+        """
+        window = self._rows[start:]
+        if len(window) < 2:
+            return
+        keys = [_history_bucket_of(row) for row in window]
+        if all(key == keys[0] for key in keys):
+            return
+        base = self._dropped + start
+        order = sorted(range(len(window)), key=lambda i: (keys[i], base + i))
+        self._rows[start:] = [window[i] for i in order]
+
     def _consume_microbatch(self, batch_size: int) -> list[dict[str, Any]]:
         """Advance exactly one microbatch through the fill machine."""
         self._fill(batch_size)
         start = self._offset - self._dropped
+        if self._homogeneous_buckets:
+            # Stable bucket-grouped take: the contiguous-prefix take below
+            # then carries a single bucket (batch pads to one bucket ceil
+            # instead of the batch max). Default False preserves
+            # byte-identical legacy order.
+            self._group_unconsumed_by_bucket(start)
         taken = self._rows[start : start + batch_size]
         self._offset += len(taken)
         self._microbatches_in_epoch += 1
@@ -1104,7 +1176,7 @@ class _StreamDataset:
             raise ContractError(
                 f"buffer index drift: {total} indexed rows != {len(self._rows)} buffered"
             )
-        return {
+        snap: dict[str, Any] = {
             "entries": [dict(entry) for entry in self._buffered_entries],
             "offset": self._offset,
             "dropped": self._dropped,
@@ -1118,11 +1190,22 @@ class _StreamDataset:
             "total_rows": len(self._rows),
             "replay_backend": self._replay_backend,
         }
+        if self._homogeneous_buckets:
+            # Grouped-order history: takes consume grouped (non-pull-order)
+            # prefixes, so (offset, entries) alone underdetermines the live
+            # layout — snapshot the decision_id permutation to restore it
+            # exactly. Optional key (absent when the flag is off): old
+            # snapshots restore via the legacy pull-order path untouched.
+            snap["row_order"] = [str(row["decision_id"]) for row in self._rows]
+        return snap
 
     def restore_buffer(self, snapshot: Mapping[str, Any]) -> None:
         """Rebuild ``_rows`` verbatim from snapshot entries (fail-closed).
         Re-expands each buffered game through the identical serial entry points
-        as live pulls, then verifies length + row hash before restoring logical
+        as live pulls, reorders to the optional ``row_order`` permutation when
+        present (grouped layouts consume non-pull-order prefixes, so offset
+        alone underdetermines them; absent key keeps the legacy pull-order
+        path), then verifies length + row hash before restoring logical
         counters. Only the buffered tail is re-expanded (``O(buffer)``), never
         the epoch.
         """
@@ -1220,6 +1303,36 @@ class _StreamDataset:
                 sim_replayed += 1
             else:
                 replayed += 1
+        if (order := snapshot.get("row_order")) is not None:
+            # Grouped-order restore: re-expansion yields pull order, but the
+            # live layout may be grouped (takes consume non-pull-order
+            # prefixes). Reorder the rebuilt rows to the snapshotted
+            # decision_id permutation before the hash check, so restore is
+            # bit-exact and subsequent takes match the uninterrupted run.
+            # Absent key (old snapshots, flag-off runs): legacy pull-order
+            # path. Any id/count mismatch fails closed; content tamper still
+            # fails on the positional row hash below.
+            if not isinstance(order, list) or any(not isinstance(v, str) for v in order):
+                raise ContractError("dataset buffer row_order must be a list of str")
+            if len(order) != len(rebuilt_rows):
+                raise ContractError("dataset buffer row_order length mismatch on restore")
+            slots: dict[str, list[int]] = {}
+            for pos, row in enumerate(rebuilt_rows):
+                did = row.get("decision_id")
+                if not isinstance(did, str):
+                    raise ContractError("dataset buffer row lacks a decision_id on restore")
+                slots.setdefault(did, []).append(pos)
+            perm: list[int] = []
+            for did in order:
+                queue = slots.get(did)
+                if not queue:
+                    raise ContractError(
+                        "dataset buffer row_order references an unknown decision id on restore"
+                    )
+                perm.append(queue.pop(0))
+            if any(queue for queue in slots.values()):
+                raise ContractError("dataset buffer row_order omits buffered rows on restore")
+            rebuilt_rows = [rebuilt_rows[pos] for pos in perm]
         # Verify verbatim before mutating live state (game-keyed sidecar hash).
         actual_hash = _sidecar_window_hash(entries, rebuilt_rows)  # type: ignore[arg-type]
         if actual_hash != expected_hash:
@@ -1584,6 +1697,12 @@ def _parse_dataset_buffer_sidecar(raw: Any, *, ckpt: Path) -> dict[str, Any]:
     row_hash = raw.get("row_hash")
     if not isinstance(row_hash, str) or not row_hash.startswith("sha256:"):
         raise ContractError(f"checkpoint dataset_buffer row_hash invalid: {ckpt}")
+    # Optional grouped-order permutation (homogeneous takes only; absent in
+    # old snapshots and flag-off runs, which restore via the legacy path).
+    if (row_order := raw.get("row_order")) is not None and (
+        not isinstance(row_order, list) or any(not isinstance(v, str) for v in row_order)
+    ):
+        raise ContractError(f"checkpoint dataset_buffer row_order invalid: {ckpt}")
     exhausted = raw.get("stream_exhausted", False)
     if not isinstance(exhausted, bool):
         raise ContractError(f"checkpoint dataset_buffer stream_exhausted invalid: {ckpt}")
@@ -2468,7 +2587,7 @@ def _open_gated_feed(
         from hydra2.training.pinned_ring import PinnedRing, slot_layout
 
         layout = slot_layout(microbatch, max(HISTORY_BUCKET_LENGTHS), action_count=action_count)
-        ring = PinnedRing.open(layout, depth=2, device=resolved)
+        ring = PinnedRing.open(layout, depth=3, device=resolved)
     except Exception:
         return None
     return _GatedOverlapFeed(ring, resolved)
@@ -2578,6 +2697,28 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
         raise ContractError(
             f"stream training is single-process v1 (world_size 1), got {config.data.world_size}"
         )
+    # Deterministic matmul pins (idempotent process locks): the bf16 path
+    # must never inherit a tf32 accident-of-default. These touch
+    # float32-matmul only (zero bf16-path effect): "highest" disables tf32
+    # for fp32 GEMMs, the cudnn flags mirror it, and benchmark off removes
+    # timing-dependent algorithm choice. Set directly (never suppressed:
+    # silent numerics misconfiguration is worse than a version error).
+    # TORCHINDUCTOR_CACHE_DIR setdefault mirrors tests/conftest.py
+    # (explicit env wins; version-keyed so torch/triton upgrades cannot
+    # poison the cache).
+    torch.set_float32_matmul_precision("highest")
+    torch.backends.cudnn.allow_tf32 = False
+    torch.backends.cudnn.benchmark = False
+    _inductor_ver = "".join(
+        c if (c.isalnum() or c in "._-") else "_" for c in str(torch.__version__)
+    )
+    _inductor_base = os.environ.get("XDG_CACHE_HOME") or os.path.join(
+        os.path.expanduser("~"), ".cache"
+    )
+    os.environ.setdefault(
+        "TORCHINDUCTOR_CACHE_DIR",
+        os.path.join(_inductor_base, "hydra2", f"inductor-torch{_inductor_ver}"),
+    )
     run_digest = run_config_digest(config)
     if resume is not None:
         # Verify-before-mutate: every identity gate BEFORE layout/stream/loop.
@@ -2740,6 +2881,7 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
         # and sizes the bounded (16-max) expansion pool.
         expand_workers=config.data.num_workers,
         expand_batch_games=config.data.expand_batch_games,
+        homogeneous_buckets=config.data.homogeneous_buckets,
     )
     payload: Any = None
     if resume is not None and envelope is not None:
@@ -2888,13 +3030,14 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
         with contextlib.suppress(Exception):
             mlflow_id_file.parent.mkdir(parents=True, exist_ok=True)
             mlflow_id_file.write_text(started_mlflow_run, encoding="utf-8")
-    # Gated overlap feed (caller-owned): one depth-2 CUDA PinnedRing over the
-    # fixed max-bucket-T schema layout (B=microbatch, A=action_count). The
-    # probe workload buckets every full microbatch at T=256, so the ring
-    # shape-matches every batch exactly (byte-identical); off-bucket batches
-    # fall back to the sync move inside the feed. None on CPU or when
-    # CUDA/pinned is unavailable (sync fallback, CPU-safe); the loop never
-    # opens or closes the handle.
+    # Gated overlap feed (caller-owned): one depth-3 CUDA PinnedRing over the
+    # fixed max-bucket-T schema layout (B=microbatch, A=action_count). Depth 3
+    # covers fetch+compute+H2D overlap with one spare slot (~19MB per slot at
+    # B2048/T256, so +~20MB vs depth 2). The probe workload buckets every
+    # full microbatch at T=256, so the ring shape-matches every batch exactly
+    # (byte-identical); off-bucket batches fall back to the sync move inside
+    # the feed. None on CPU or when CUDA/pinned is unavailable (sync
+    # fallback, CPU-safe); the loop never opens or closes the handle.
     feed = _open_gated_feed(
         microbatch=microbatch, action_count=config.model.action_count, device=handle.device
     )
@@ -2959,6 +3102,16 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
             profile_updates.add(_boundary)
     _device = getattr(loop, "device", "cpu")
     _profile_cuda = str(getattr(_device, "type", _device)) == "cuda"
+    # GC freeze: move everything allocated so far (model, optimizer, dataset,
+    # pools, imports) to the permanent generation so per-update nursery scans
+    # skip it. Proven by gc_collections telemetry: 64-game decode waves were
+    # firing 100+ gen0 collections inside single updates (stop-the-world GIL
+    # holds that starve the main thread mid-backward and crater GPU util).
+    # Frozen heap is never scanned or freed; only per-update garbage (batches,
+    # grads, decoded games) stays collectable. Zero training-math effect.
+    with contextlib.suppress(Exception):
+        gc.collect()
+        gc.freeze()
     try:
         while done < remaining:
             step = min(ckpt_every, remaining - done)

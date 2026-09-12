@@ -466,3 +466,96 @@ def test_multi_group_gather_matches_python(rust_extension: object) -> None:
         assert torch.equal(have["legal_mask"], want["actor_batch"].legal_mask)
         assert have["_decision_ids"] == [str(r["decision_id"]) for r in py_mixed]
         assert have["_action_kinds"] == [str(r["action_kind"]) for r in py_mixed]
+
+
+@pytest.mark.parametrize(
+    ("t_len", "bucket"),
+    [(5, 32), (32, 32), (33, 64), (40, 64), (129, 256), (200, 256), (256, 256)],
+)
+def test_assemble_slim_batch_snaps_t_to_bucket_ceil(t_len: int, bucket: int) -> None:
+    """Off-bucket batch max-T snaps UP to the model bucket ceil.
+
+    Guards the torch.compile shape bound: every assembled batch carries one
+    of (32, 64, 128, 256) so new game lengths stop minting fresh inductor
+    shapes (recompile drizzle + H2D ring fallback churn). Real prefix values
+    survive verbatim; padding is 0/False and model-masked.
+    """
+    import numpy as np
+
+    from hydra2.models.schema import BASELINE_ACTION_COUNT
+    from hydra2.training.rust_batch import assemble_slim_batch
+    from hydra2.training.rust_stream import _HOT_PLANES
+
+    n = 3
+    blob: dict[str, bytes] = {}
+    for name, cols, dtype in _HOT_PLANES:
+        if name == "legal_packed":
+            continue
+        if cols == "T":
+            if name == "history_event_kind":
+                arr = (np.arange(n * t_len, dtype=np.int64).reshape(n, t_len) % 21).astype(np.int64)
+            else:
+                arr = np.zeros((n, t_len), dtype=np.bool_)
+                for i in range(n):
+                    arr[i, : min(t_len, 7 * (i + 1))] = True
+        elif cols is None:
+            if name == "chosen_action_id":
+                arr = np.full((n,), 5, dtype=np.int64)
+            elif dtype == "bool":
+                arr = np.zeros((n,), dtype=np.bool_)
+            elif dtype == "int32":
+                arr = np.zeros((n,), dtype=np.int32)
+            else:
+                arr = np.zeros((n,), dtype=np.int64)
+        else:
+            arr = np.zeros((n, cols), dtype=np.dtype(dtype))
+        blob[name] = arr.tobytes()
+    legal_ids = np.zeros((n, 32), dtype=np.int32)
+    legal_ids[:, 0] = 5
+    blob["legal_ids"] = legal_ids.tobytes()
+    blob["legal_len"] = np.ones((n,), dtype=np.int64).tobytes()
+    rows = [
+        {
+            "decision_id": f"g:d{i:04d}",
+            "chosen_action_id": 5,
+            "action_kind": "play",
+            "_planes": blob,
+            "_row": i,
+            "_t_len": t_len,
+        }
+        for i in range(n)
+    ]
+    have = assemble_slim_batch(rows, action_count=BASELINE_ACTION_COUNT)
+    kind = have["actor_batch"].features["history_event_kind"]
+    mask = have["actor_batch"].features["history_mask"]
+    assert kind.shape == (n, bucket)
+    assert mask.shape == (n, bucket)
+    want_kind = (np.arange(n * t_len, dtype=np.int64).reshape(n, t_len) % 21).astype(np.int64)
+    assert torch.equal(kind[:, :t_len], torch.from_numpy(want_kind))
+    assert not bool(kind[:, t_len:].any())
+    for i in range(n):
+        live = min(t_len, 7 * (i + 1))
+        assert int(mask[i].sum()) == live
+        assert not bool(mask[i, t_len:].any())
+
+
+def test_assemble_slim_batch_rejects_over_bucket_cap() -> None:
+    """Batch max-T above 256 still fails closed (never silently truncated)."""
+    from hydra2.contracts.common import ContractError
+    from hydra2.models.schema import BASELINE_ACTION_COUNT
+    from hydra2.training.rust_batch import assemble_slim_batch
+
+    with pytest.raises(ContractError, match="bucket cap"):
+        assemble_slim_batch(
+            [
+                {
+                    "decision_id": "g:d0000",
+                    "chosen_action_id": 5,
+                    "action_kind": "play",
+                    "_planes": {},
+                    "_row": 0,
+                    "_t_len": 300,
+                }
+            ],
+            action_count=BASELINE_ACTION_COUNT,
+        )

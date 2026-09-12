@@ -118,6 +118,58 @@ def _write_game(
     path.write_bytes(zstd.ZstdCompressor().compress(raw.encode()))
 
 
+def _write_long_game(path: Path, game_id: str, *, cycles: int = 47) -> None:
+    """Long wall-less game: row histories span buckets 32/64/128 (mixed).
+
+    Wall-less games replay through the sim path (draws in log order), so
+    arbitrary tsumogiri cycles expand; the tile rotation uses 20 strings
+    untouched by the golden tehais (tile conservation holds: every string
+    drawn at most 3 times). Framing mirrors the existing wall-less
+    fixture (ryukyoku/end_kyoku/bare end_game). Odd ``cycles`` keeps the
+    per-game row count odd, so batch-2 takes strand a tail row at every
+    game boundary and the post-boundary window mixes buckets — grouping
+    genuinely reorders (never same-bucket-locked).
+    """
+    events = _golden_events(game_id)
+    events[0].pop("wall", None)
+    head = events[:2]
+    tiles = (
+        "E",
+        "S",
+        "W",
+        "N",
+        "P",
+        "F",
+        "C",
+        "1s",
+        "2s",
+        "3s",
+        "4s",
+        "6s",
+        "7s",
+        "8s",
+        "9s",
+        "5p",
+        "6p",
+        "7p",
+        "8p",
+        "9p",
+    )
+    mid: list[dict[str, object]] = []
+    for turn in range(cycles):
+        actor = turn % 4
+        pai = tiles[turn % len(tiles)]
+        mid.append({"type": "tsumo", "actor": actor, "pai": pai})
+        mid.append({"type": "dahai", "actor": actor, "pai": pai, "tsumogiri": True})
+    tail: list[dict[str, object]] = [
+        {"type": "ryukyoku", "reason": "exhaustive_draw", "deltas": [0, 0, 0, 0]},
+        {"type": "end_kyoku"},
+        {"type": "end_game"},
+    ]
+    raw = "\n".join(json.dumps(event) for event in [*head, *mid, *tail]) + "\n"
+    path.write_bytes(zstd.ZstdCompressor().compress(raw.encode()))
+
+
 def _write_invalid(path: Path) -> None:
     path.write_bytes(zstd.ZstdCompressor().compress(b'{"type": "nope"}\n'))
 
@@ -875,3 +927,249 @@ class TestTrainSegment:
         )
         assert done == 8
         assert calls == [3]
+
+
+class TestHomogeneousBuckets:
+    """Item 9: stable bucket-grouped takes (opt-in; default is legacy order).
+
+    CPU-only: synthetic rows plus real corpora, fixed seeds, no CUDA
+    context. ``homogeneous_buckets=True`` sorts the unconsumed window by
+    ``(bucket, arrival index)`` before each contiguous-prefix take; the
+    default (False) preserves byte-identical legacy order. Resume and
+    residency tests use long mixed-bucket games (histories span 32/64/128)
+    so grouping is genuinely active — never same-bucket-locked.
+    """
+
+    _SPECS: tuple[tuple[str, int], ...] = (
+        ("r0", 10),
+        ("r1", 200),
+        ("r2", 40),
+        ("r3", 5),
+        ("r4", 100),
+        ("r5", 33),
+        ("r6", 120),
+        ("r7", 250),
+    )
+
+    def _synthetic_rows(self) -> list[dict[str, Any]]:
+        # Bucket counts are multiples of the take size (2): r0/r3 -> 32,
+        # r2/r5 -> 64, r4/r6 -> 128, r1/r7 -> 256, so every grouped take is
+        # exactly single-bucket.
+        return [
+            {
+                "decision_id": name,
+                "chosen_action_id": 0,
+                "action_kind": "unknown",
+                "actor_observation": {"visible_history": [None] * length},
+            }
+            for name, length in self._SPECS
+        ]
+
+    def _dataset(self, **kwargs: Any) -> Any:
+        import hydra2.training.stream_train as driver
+
+        def _never_pull() -> Any:
+            raise AssertionError("grouped-take test pre-buffers rows; no pulls expected")
+
+        return driver._StreamDataset(
+            stream_factory=_never_pull,
+            num_actions=6792,
+            feature_dim=64,
+            seed=DATA_SEED,
+            drop_last=True,
+            need_privileged=False,
+            **kwargs,
+        )
+
+    def test_grouped_take_single_bucket_and_default_identical(self) -> None:
+        """Flag on: every take single-bucket; flag off: legacy order kept."""
+        from hydra2.training.stream_train import _history_bucket_of
+
+        # Bucket-ceil unit pins (boundary + over-cap/malformed fallbacks).
+        assert _history_bucket_of({"actor_observation": {"visible_history": [None] * 32}}) == 32
+        assert _history_bucket_of({"actor_observation": {"visible_history": [None] * 33}}) == 64
+        assert _history_bucket_of({"actor_observation": {"visible_history": [None] * 256}}) == 256
+        assert _history_bucket_of({"actor_observation": {"visible_history": [None] * 257}}) == 256
+        assert _history_bucket_of({}) == 256
+        assert _history_bucket_of({"actor_observation": None}) == 256
+
+        grouped = self._dataset(homogeneous_buckets=True)
+        grouped._rows = self._synthetic_rows()
+        takes = [grouped._consume_microbatch(2) for _ in range(4)]
+        assert [r["decision_id"] for take in takes for r in take] == [
+            "r0",
+            "r3",
+            "r2",
+            "r5",
+            "r4",
+            "r6",
+            "r1",
+            "r7",
+        ]
+        for take in takes:
+            assert len({_history_bucket_of(row) for row in take}) == 1
+
+        legacy = self._dataset()
+        legacy._rows = self._synthetic_rows()
+        legacy_takes = [legacy._consume_microbatch(2) for _ in range(4)]
+        assert [r["decision_id"] for take in legacy_takes for r in take] == [
+            name for name, _ in self._SPECS
+        ]
+        # Grouping is a permutation: no row lost, none duplicated.
+        assert sorted(r["decision_id"] for take in takes for r in take) == sorted(
+            r["decision_id"] for take in legacy_takes for r in take
+        )
+        assert grouped.get_sampler_state()["offset"] == legacy.get_sampler_state()["offset"] == 8
+
+    def _long_manifest(self, tmp_path: Path, *, games: int = 4) -> Any:
+        from hydra2.data.stream import build_manifest
+
+        train_stems, _ = _pick_stems(need_train=games, need_val=0)
+        corpus = tmp_path / "corpus" / "tenhou"
+        corpus.mkdir(parents=True, exist_ok=True)
+        for index, stem in enumerate(train_stems):
+            _write_long_game(corpus / f"{stem}.mjai.json.zst", f"homog-long-{index}")
+        return build_manifest(corpus)
+
+    def _long_dataset(self, manifest: Any, **kwargs: Any) -> Any:
+        import hydra2.training.stream_train as driver
+        from hydra2.data.stream import GameStream
+
+        # Python backend rows carry live ActorObservation histories, so the
+        # visible_history key path is exercised end to end over histories
+        # spanning buckets 32/64/128.
+        return driver._StreamDataset(
+            stream_factory=lambda: GameStream(
+                manifest,
+                seed=DATA_SEED,
+                ratios=dict(_RATIOS),
+                epoch=0,
+                split="train",
+                shuffle_buffer=0,
+            ),
+            num_actions=6792,
+            feature_dim=64,
+            seed=DATA_SEED,
+            drop_last=True,
+            need_privileged=False,
+            replay_backend="python",
+            **kwargs,
+        )
+
+    def test_resume_roundtrip_mixed_buckets(self, tmp_path: Path) -> None:
+        """Snapshot/restore past a game boundary replays takes exactly.
+
+        Takes run past the first game boundary (odd row counts strand a
+        tail, so the window mixes buckets and grouping genuinely reorders:
+        the grouped run provably differs from the pull-order control).
+        The snapshot carries the grouped decision_id permutation
+        (``row_order``); restore re-expands pull order, reorders to it,
+        then hash-verifies — revived takes match the uninterrupted run
+        bit-for-bit. Tampered permutations fail closed.
+        """
+        manifest = self._long_manifest(tmp_path)
+        live = self._long_dataset(manifest, homogeneous_buckets=True)
+        plain = self._long_dataset(manifest)
+        live_takes: list[list[str]] = []
+        plain_takes: list[list[str]] = []
+        # Cross the first game boundary (buffered entries >= 2), then two
+        # more takes so the snapshot window is regrouped-mixed, not pull
+        # order. Bounded loop: valid games always pull whole batches.
+        for _ in range(200):
+            live_takes.append([r["decision_id"] for r in live._consume_microbatch(2)])
+            plain_takes.append([r["decision_id"] for r in plain._consume_microbatch(2)])
+            if len(live._buffered_entries) >= 2 and len(live_takes) >= 26:
+                break
+        assert len(live._buffered_entries) >= 2
+        assert live_takes != plain_takes
+        snap = live.buffer_snapshot()
+        assert isinstance(snap.get("row_order"), list)
+        assert len(snap["row_order"]) == len(live._rows)
+
+        revived = self._long_dataset(manifest, homogeneous_buckets=True)
+        revived.restore_buffer(snap)
+        assert [r["decision_id"] for r in revived._rows] == [r["decision_id"] for r in live._rows]
+        assert revived.buffered_row_hash() == live.buffered_row_hash()
+        assert revived.get_sampler_state() == live.get_sampler_state()
+        # Window covers several more takes without new pulls (revived never
+        # touches its stream), so subsequent takes match exactly.
+        for _ in range(5):
+            assert [r["decision_id"] for r in revived._consume_microbatch(2)] == [
+                r["decision_id"] for r in live._consume_microbatch(2)
+            ]
+        assert revived._stream is None
+        assert revived.replayed == live.replayed
+        assert revived.sim_replayed == live.sim_replayed
+
+        # Tampered permutations fail closed (unknown id, dropped row, bad shape).
+        import copy
+
+        from hydra2.contracts.common import ContractError
+
+        bad_unknown = copy.deepcopy(snap)
+        bad_unknown["row_order"] = ["no-such-decision", *bad_unknown["row_order"][1:]]
+        bad_short = copy.deepcopy(snap)
+        bad_short["row_order"] = bad_short["row_order"][:-1]
+        bad_shape = copy.deepcopy(snap)
+        bad_shape["row_order"] = "not-a-list"
+        for bad in (bad_unknown, bad_short, bad_shape):
+            with pytest.raises(ContractError):
+                self._long_dataset(manifest, homogeneous_buckets=True).restore_buffer(bad)
+
+    def test_grouped_residency_bounded(self, tmp_path: Path, monkeypatch: Any) -> None:
+        """Grouped takes strand at most 3x the resident games of plain takes.
+
+        Small compact bound forces whole-game reclamation on both sides;
+        both runs pull the same games on the same schedule (identical
+        2-row takes keep live counts in lockstep), so the comparison is
+        apples-to-apples over mixed-bucket windows.
+        """
+        import hydra2.training.stream_train as driver
+
+        manifest = self._long_manifest(tmp_path)
+        monkeypatch.setattr(driver, "_BUFFER_COMPACT_ROWS", 6)
+
+        def _run(flag: bool) -> Any:
+            ds = self._long_dataset(manifest, homogeneous_buckets=flag)
+            for _ in range(200):
+                ds._consume_microbatch(2)
+                if ds.replayed + ds.sim_replayed >= 3 and ds.rows_consumed_in_epoch >= 80:
+                    break
+            return ds
+
+        grouped = _run(True)
+        plain = _run(False)
+        assert grouped.replayed + grouped.sim_replayed >= 3
+        assert plain.replayed + plain.sim_replayed >= 3
+        assert grouped.rows_consumed_in_epoch == plain.rows_consumed_in_epoch
+        assert len(plain._buffered_entries) > 0 and len(plain._rows) > 0
+        assert len(grouped._buffered_entries) <= 3 * len(plain._buffered_entries)
+        assert len(grouped._rows) <= 3 * len(plain._rows)
+
+    def test_sidecar_parse_accepts_optional_row_order(self, tmp_path: Path) -> None:
+        """Checkpoint sidecar validation passes row_order through, strictly.
+
+        Pure validation (no training): absent key (old snapshots, flag-off
+        runs) restores via the legacy path; present key must be a list of
+        str or the checkpoint fails closed before any state is applied.
+        """
+        from hydra2.contracts.common import ContractError
+        from hydra2.training.stream_train import _parse_dataset_buffer_sidecar
+
+        manifest = self._long_manifest(tmp_path)
+        live = self._long_dataset(manifest, homogeneous_buckets=True)
+        for _ in range(3):
+            live._consume_microbatch(2)
+        snap = live.buffer_snapshot()
+        ckpt = tmp_path / "ckpt-000001.pt"
+        parsed = _parse_dataset_buffer_sidecar(dict(snap), ckpt=ckpt)
+        assert parsed["row_order"] == snap["row_order"]
+
+        legacy = dict(snap)
+        del legacy["row_order"]
+        assert "row_order" not in _parse_dataset_buffer_sidecar(legacy, ckpt=ckpt)
+
+        bad = dict(snap)
+        bad["row_order"] = [1, 2, 3]
+        with pytest.raises(ContractError, match="row_order"):
+            _parse_dataset_buffer_sidecar(bad, ckpt=ckpt)

@@ -19,6 +19,7 @@ forward pass (see :data:`FORBIDDEN_BATCH_KEYS`).
 from __future__ import annotations
 
 import contextlib
+import gc
 import hashlib
 import json
 import math
@@ -539,10 +540,16 @@ class MicrobatchTelemetry:
     compute_ms: float
     producer_wait_s: float = 0.0
     # Wave-3C stage split: forward/loss/backward partition of compute_ms
-    # (sum ≈ compute_ms; defaults preserve old construction call sites).
     forward_ms: float = 0.0
     loss_ms: float = 0.0
     backward_ms: float = 0.0
+    # GC attribution: cumulative CPython collections per generation at record
+    # time (monotone counters; deltas computed offline). Correlates
+    # stop-the-world pauses with compute/fetch spikes without changing GC
+    # behavior (read-only gc.get_stats, defaults preserve old call sites).
+    gc_collections_gen0: int = 0
+    gc_collections_gen1: int = 0
+    gc_collections_gen2: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -557,6 +564,9 @@ class MicrobatchTelemetry:
             "forward_ms": self.forward_ms,
             "loss_ms": self.loss_ms,
             "backward_ms": self.backward_ms,
+            "gc_collections_gen0": self.gc_collections_gen0,
+            "gc_collections_gen1": self.gc_collections_gen1,
+            "gc_collections_gen2": self.gc_collections_gen2,
         }
 
 
@@ -831,6 +841,14 @@ class SupervisedLoop:
         # Wave-3C update-stage timings (optimizer/logging per global update;
         # summary-only, reset per train() alongside microbatch records).
         self.update_records: list[UpdateTelemetry] = []
+        # Item 3: bf16 attention path — opt into bf16 SDPA math under
+        # bf16_mixed. Duck-typed (no models import): any submodule carrying
+        # an attn_bf16 switch gets enabled. Inert on CPU (forward gates on
+        # is_cuda); effective on CUDA under loop-owned autocast.
+        if self.config.precision == "bf16_mixed":
+            for _m in self.model.modules():
+                if hasattr(_m, "attn_bf16"):
+                    _m.attn_bf16 = True  # type: ignore[attr-defined]
 
         # Ensure model is on device
         with contextlib.suppress(Exception):
@@ -853,13 +871,27 @@ class SupervisedLoop:
             except Exception:
                 _is_compiling = False
             if not _is_compiling and not torch.are_deterministic_algorithms_enabled():
+                # isolate_recompiles: per-region recompile budget (a region
+                # exhausting its budget falls back to eager for that region
+                # only, never fails the step). 2.13 fallback via try/except
+                # TypeError (protocol.py precedent).
                 with contextlib.suppress(Exception):
-                    _compiled: Any = torch.compile(
-                        self.model,
-                        mode="max-autotune-no-cudagraphs",
-                        dynamic=True,
-                        fullgraph=False,
-                    )
+                    _torch_compile: Any = torch.compile
+                    try:
+                        _compiled: Any = _torch_compile(
+                            self.model,
+                            mode="max-autotune-no-cudagraphs",
+                            dynamic=True,
+                            fullgraph=False,
+                            isolate_recompiles=True,
+                        )
+                    except TypeError:
+                        _compiled = _torch_compile(
+                            self.model,
+                            mode="max-autotune-no-cudagraphs",
+                            dynamic=True,
+                            fullgraph=False,
+                        )
                     if isinstance(_compiled, nn.Module):
                         self.model = _compiled
         # Compiled supervised loss (same guards): the smoothing path is
@@ -882,13 +914,26 @@ class SupervisedLoop:
             except Exception:
                 _loss_compiling = False
             if not _loss_compiling and not torch.are_deterministic_algorithms_enabled():
+                # isolate_recompiles: per-region recompile budget (same
+                # eager-fallback semantics as the model compile above).
+                # 2.13 fallback via try/except TypeError.
                 with contextlib.suppress(Exception):
-                    _compiled_loss: Any = torch.compile(
-                        supervised_loss_kernel,
-                        mode="max-autotune-no-cudagraphs",
-                        dynamic=False,
-                        fullgraph=False,
-                    )
+                    _torch_compile_loss: Any = torch.compile
+                    try:
+                        _compiled_loss: Any = _torch_compile_loss(
+                            supervised_loss_kernel,
+                            mode="max-autotune-no-cudagraphs",
+                            dynamic=False,
+                            fullgraph=False,
+                            isolate_recompiles=True,
+                        )
+                    except TypeError:
+                        _compiled_loss = _torch_compile_loss(
+                            supervised_loss_kernel,
+                            mode="max-autotune-no-cudagraphs",
+                            dynamic=False,
+                            fullgraph=False,
+                        )
                     if callable(_compiled_loss):
                         self._compiled_loss = _compiled_loss
         # Observer mirror (see hydra2.tracking): disabled by default; when
@@ -1066,6 +1111,15 @@ class SupervisedLoop:
         backward_ms: float = 0.0,
     ) -> None:
         """Append one microbatch record (memory always; JSONL when configured)."""
+        try:
+            gc_stats = gc.get_stats()
+            gc_counts = (
+                int(gc_stats[0].get("collections", 0)),
+                int(gc_stats[1].get("collections", 0)),
+                int(gc_stats[2].get("collections", 0)),
+            )
+        except Exception:
+            gc_counts = (0, 0, 0)
         record = MicrobatchTelemetry(
             microstep=self.state.microstep,
             global_update=self.state.global_update,
@@ -1077,6 +1131,9 @@ class SupervisedLoop:
             forward_ms=forward_ms,
             loss_ms=loss_ms,
             backward_ms=backward_ms,
+            gc_collections_gen0=gc_counts[0],
+            gc_collections_gen1=gc_counts[1],
+            gc_collections_gen2=gc_counts[2],
         )
         self.telemetry_records.append(record)
         telemetry_path = self.telemetry_path

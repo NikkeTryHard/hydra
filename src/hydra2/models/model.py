@@ -144,9 +144,13 @@ class _TransformerLayer(nn.Module):
         self.n_heads = n_heads
         self.head_dim = d_model // n_heads
         self.d_model = d_model
-        self.q_proj = nn.Linear(d_model, d_model, bias=False)
-        self.k_proj = nn.Linear(d_model, d_model, bias=False)
-        self.v_proj = nn.Linear(d_model, d_model, bias=False)
+        # Perf-B (QKV fuse, item 1): single Linear[D,3D] reads x once instead of
+        # 3x; chunk restores q/k/v views, autograd splits per slice.
+        # Lean: qkv_concat_equiv PROVED (~/tmp/w2qkvfuse/QkvFuse.lean).
+        # Measured (B2048 train step): wall-neutral (+-0.1%); eval B32 forward
+        # ~7-8% faster (launch amortization where it counts). Kept for exact
+        # math + eval latency, not training wall.
+        self.qkv_proj = nn.Linear(d_model, 3 * d_model, bias=False)
         self.out_proj = nn.Linear(d_model, d_model, bias=False)
         self.ffn = nn.Sequential(
             nn.Linear(d_model, d_ff),
@@ -172,14 +176,24 @@ class _TransformerLayer(nn.Module):
         batch: int = int(cast("Any", x.shape[0]))  # pyrefly: ignore[explicit-any]  # reason: deliberate Any for dynamic shape; int() validates
         seq_len: int = int(cast("Any", x.shape[1]))  # pyrefly: ignore[explicit-any]  # reason: deliberate Any for dynamic shape; int() validates
 
-        queries: torch.Tensor = (
-            self.q_proj(x).view(batch, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
+        # Perf-B (QKV fuse): chunk restores the three [B,T,D] views; the SAME
+        # view/transpose blocks run on the chunks (Lean qkv_concat_equiv).
+        qkv: torch.Tensor = self.qkv_proj(x)
+        q, k, v = qkv.chunk(3, dim=-1)
+        queries: torch.Tensor = q.view(
+            batch, seq_len, self.n_heads, self.head_dim
+        ).transpose(
+            1, 2
         )  # reason: single logical reshape; splitting harms scan. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.view.html
-        keys: torch.Tensor = (
-            self.k_proj(x).view(batch, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
+        keys: torch.Tensor = k.view(
+            batch, seq_len, self.n_heads, self.head_dim
+        ).transpose(
+            1, 2
         )  # reason: single logical reshape; splitting harms scan. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.view.html
-        values: torch.Tensor = (
-            self.v_proj(x).view(batch, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
+        values: torch.Tensor = v.view(
+            batch, seq_len, self.n_heads, self.head_dim
+        ).transpose(
+            1, 2
         )  # reason: single logical reshape; splitting harms scan. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.view.html
         # Perf-A §4.1: bool mask dispatch without O(B·T²) float alloc.
         # Evidence: SDPA tutorial
@@ -230,6 +244,62 @@ class _TransformerLayer(nn.Module):
         x = self.norm2(x)
         x = self.ffn(x)
         return residual2 + x
+
+
+def _migrate_legacy_fused_keys(state_dict: Mapping[str, Any]) -> dict[str, Any]:
+    """Remap legacy unfused QKV/head keys to fused names (fail-closed).
+
+    For each ``<prefix>.q_proj.weight`` with the full q/k/v trio present and no
+    ``<prefix>.qkv_proj.weight``, stacks ``cat(dim=0)`` in q,k,v order and drops
+    the legacy keys. Root ``placement/value/event/belief_head.{weight,bias}``
+    concatenate (weights dim 0, biases flat, same order) when both
+    ``small_heads.weight`` and ``small_heads.bias`` are absent. Partial legacy
+    sets are left untouched so strict load raises (fail closed, never
+    half-migrate). Identity unchanged by fusion (arch params identical); only
+    state-dict keys changed.
+    """
+    migrated: dict[str, Any] = dict(state_dict)
+    prefixes: set[str] = set()
+    for _key in list(migrated.keys()):
+        if _key.endswith(".q_proj.weight"):
+            prefixes.add(_key[: -len(".q_proj.weight")])
+    for _prefix in sorted(prefixes):
+        _qk: str = f"{_prefix}.q_proj.weight"
+        _kk: str = f"{_prefix}.k_proj.weight"
+        _vk: str = f"{_prefix}.v_proj.weight"
+        _fk: str = f"{_prefix}.qkv_proj.weight"
+        if _fk in migrated:
+            continue
+        if _qk in migrated and _kk in migrated and _vk in migrated:
+            migrated[_fk] = torch.cat([migrated[_qk], migrated[_kk], migrated[_vk]], dim=0)
+            del migrated[_qk]
+            del migrated[_kk]
+            del migrated[_vk]
+        # Partial trio left untouched: strict load then raises (fail closed).
+    _w: list[str] = [
+        "placement_head.weight",
+        "value_head.weight",
+        "event_head.weight",
+        "belief_head.weight",
+    ]
+    _b: list[str] = [
+        "placement_head.bias",
+        "value_head.bias",
+        "event_head.bias",
+        "belief_head.bias",
+    ]
+    if (
+        "small_heads.weight" not in migrated
+        and "small_heads.bias" not in migrated
+        and all(_k in migrated for _k in _w)
+        and all(_k in migrated for _k in _b)
+    ):
+        migrated["small_heads.weight"] = torch.cat([migrated[_k] for _k in _w], dim=0)
+        migrated["small_heads.bias"] = torch.cat([migrated[_k] for _k in _b], dim=0)
+        for _k in _w + _b:
+            del migrated[_k]
+    # Partial head sets left untouched: strict load then raises (fail closed).
+    return migrated
 
 
 class Hydra2BaselineModel(nn.Module):
@@ -322,13 +392,13 @@ class Hydra2BaselineModel(nn.Module):
             [_TransformerLayer(d_model, n_heads, d_ff, dropout) for _ in range(n_layers)]
         )
         self.final_norm = nn.LayerNorm(d_model)
-
-        # Heads
+        # Heads (policy stays separate: name pinned by run_config LR group +
+        # stream_train _POLICY_HEAD_PREFIX + tests; small heads fused item 2).
+        # Slice map on small_heads out [B,20+2E]: [0:16) placement / [16:20)
+        # value / [20:20+E) event / [20+E:20+2E) belief (E=_NUM_EVENT_KINDS).
+        # Lean: heads_slice_equiv PROVED (~/tmp/w2qkvfuse/QkvFuse.lean).
         self.policy_head = nn.Linear(d_model * 2, action_count)
-        self.placement_head = nn.Linear(d_model * 2, 16)  # 4x4
-        self.value_head = nn.Linear(d_model * 2, 4)
-        self.event_head = nn.Linear(d_model * 2, _NUM_EVENT_KINDS)
-        self.belief_head = nn.Linear(d_model * 2, _NUM_EVENT_KINDS)
+        self.small_heads = nn.Linear(d_model * 2, 20 + 2 * _NUM_EVENT_KINDS)
 
         # Deterministic init
         self._init_weights()
@@ -337,11 +407,54 @@ class Hydra2BaselineModel(nn.Module):
         self._model_identity = self._compute_model_identity()
 
     def _init_weights(self) -> None:
-        for module in self.modules():
+        for name, module in self.named_modules():
             if isinstance(module, nn.Linear):
-                _weight: torch.Tensor = nn.init.xavier_uniform_(module.weight)
-                if module.bias is not None:
-                    _bias: torch.Tensor = nn.init.zeros_(module.bias)
+                if name.endswith("qkv_proj"):
+                    # Stacked init (RNG-identical to legacy): legacy drew q,k,v as
+                    # three separate same-shape xaviers in module order; three temp
+                    # [D,D] draws in q,k,v order reproduce the RNG sequence exactly,
+                    # then cat(dim=0) stacks without consuming RNG.
+                    # Lean caveat: xavier_fanout_differs (fresh [3D,D] draw differs).
+                    with torch.no_grad():
+                        _q: torch.Tensor = nn.init.xavier_uniform_(
+                            module.weight.new_empty(
+                                module.weight.shape[0] // 3, module.weight.shape[1]
+                            )
+                        )
+                        _k: torch.Tensor = nn.init.xavier_uniform_(
+                            module.weight.new_empty(
+                                module.weight.shape[0] // 3, module.weight.shape[1]
+                            )
+                        )
+                        _v: torch.Tensor = nn.init.xavier_uniform_(
+                            module.weight.new_empty(
+                                module.weight.shape[0] // 3, module.weight.shape[1]
+                            )
+                        )
+                        module.weight.copy_(torch.cat([_q, _k, _v], dim=0))
+                elif name.endswith("small_heads"):
+                    # Stacked init: 4 draws [16,2D],[4,2D],[E,2D],[E,2D] in
+                    # placement/value/event/belief order; bias zeros_ (no RNG).
+                    with torch.no_grad():
+                        _in: int = int(module.weight.shape[1])
+                        _ne: int = int(_NUM_EVENT_KINDS)
+                        _pl: torch.Tensor = nn.init.xavier_uniform_(
+                            module.weight.new_empty(16, _in)
+                        )
+                        _va: torch.Tensor = nn.init.xavier_uniform_(module.weight.new_empty(4, _in))
+                        _ev: torch.Tensor = nn.init.xavier_uniform_(
+                            module.weight.new_empty(_ne, _in)
+                        )
+                        _be: torch.Tensor = nn.init.xavier_uniform_(
+                            module.weight.new_empty(_ne, _in)
+                        )
+                        module.weight.copy_(torch.cat([_pl, _va, _ev, _be], dim=0))
+                        if module.bias is not None:
+                            nn.init.zeros_(module.bias)
+                else:
+                    _weight: torch.Tensor = nn.init.xavier_uniform_(module.weight)
+                    if module.bias is not None:
+                        _bias: torch.Tensor = nn.init.zeros_(module.bias)
             elif isinstance(module, nn.Embedding):
                 _emb: torch.Tensor = nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
@@ -370,6 +483,18 @@ class Hydra2BaselineModel(nn.Module):
     @property
     def model_identity(self) -> DigestText:
         return self._model_identity
+
+    def load_state_dict(  # type: ignore[override]  # reason: remap legacy keys then delegate; signature matches nn.Module.
+        self,
+        state_dict: Mapping[str, Any],
+        strict: bool = True,
+        assign: bool = False,
+    ) -> Any:
+        # Legacy compat: remap unfused keys to fused names (fail-closed partials).
+        # model_identity UNCHANGED by fusion (arch params identical); only
+        # state-dict keys changed, handled here so all callers migrate free.
+        migrated: dict[str, Any] = _migrate_legacy_fused_keys(state_dict)
+        return super().load_state_dict(migrated, strict=strict, assign=assign)
 
     def forward(self, batch: ActorTensorBatch) -> ModelOutput:  # type: ignore[override]  # reason: nn.Module forward signature narrow; intentional override. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.nn.Module.html
         return self.evaluate(batch)
@@ -419,10 +544,16 @@ class Hydra2BaselineModel(nn.Module):
         trunk: torch.Tensor = torch.cat([pooled, scalar_emb], dim=-1)  # [B, 2D]
 
         policy_logits: torch.Tensor = self.policy_head(trunk)  # [B,A]
-        placement_logits: torch.Tensor = self.placement_head(trunk).view(batch_size, 4, 4)
-        value_vector: torch.Tensor = self.value_head(trunk)  # [B,4]
-        event_logits_single: torch.Tensor = self.event_head(trunk)  # [B, E]
-        belief_logits_single: torch.Tensor = self.belief_head(trunk)
+        # Fused small heads (item 2): slice restores the four outputs exactly.
+        # Bounds from _NUM_EVENT_KINDS (trace-safe Python ints; inductor folds).
+        # Placement slice needs .contiguous() before .view: slice stride (62,1)
+        # breaks .view (131KB @B2048, negligible); other slices need no view.
+        small_out: torch.Tensor = self.small_heads(trunk)  # [B,20+2E]
+        _e: int = int(_NUM_EVENT_KINDS)
+        placement_logits: torch.Tensor = small_out[..., 0:16].contiguous().view(batch_size, 4, 4)
+        value_vector: torch.Tensor = small_out[..., 16:20]  # [B,4]
+        event_logits_single: torch.Tensor = small_out[..., 20 : 20 + _e]  # [B, E]
+        belief_logits_single: torch.Tensor = small_out[..., 20 + _e : 20 + 2 * _e]
 
         # Validate output shapes before returning.
         if policy_logits.shape != (batch_size, self.action_count):

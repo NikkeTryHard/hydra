@@ -1,7 +1,11 @@
+# E1 feed-alignment experiment (overlay of local-rtx5070.yaml; canonical untouched).
+# Burst/depth alignment: expand 64->16 (fill ~110ms), loop depth 3->16 (~160ms
+# cover). Promote to canonical only on flatline evidence. Isolated root:
+# HYDRA2_ARTIFACT_ROOT=/home/cachybtw/dev/hydra2-artifacts-e1
 run:
-  id: local-rtx5070-tenhou2024
+  id: local-rtx5070-tenhou2024-e1
   kind: supervised
-  description: 'Canonical RTX 5070 config: mb2048, bf16, max-autotune, telemetry on.'
+  description: 'E1: expand16 + depth16 feed alignment; canonical otherwise.'
 data:
   root: ${HYDRA2_DATA_ROOT}/tenhou-houou-mjai-2024
   scope: tenhou-4p-hanchan
@@ -18,7 +22,7 @@ data:
   world_size: 1
   replay_backend: rust
   decode_prefetch: 64 # src/hydra2/data/stream.py PrefetchGameStream; cover one expansion batch.
-  expand_batch_games: 64 # src/hydra2/training/stream_train.py _fill_parallel; games per fill round.
+  expand_batch_games: 16 # E1: quarter the burst; fill ~110ms vs depth-16 cover ~160ms.
 model:
   architecture_id: hydra2_baseline_transformer_v1
   action_count: 6792
@@ -55,7 +59,7 @@ loop:
   precision: bf16_mixed
   keep_last_checkpoints: null
   log_per_type_metrics: false
-  fetch_prefetch_depth: 3 # src/hydra2/training/loop.py train; depth >= ceil(fetch_ms/compute_ms)+1.
+  fetch_prefetch_depth: 16 # E1: max validated depth; cover >= one shrunk fill.
 seeds:
   data_seed: 0
   train_seed: 0

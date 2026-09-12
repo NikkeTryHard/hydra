@@ -12,10 +12,12 @@ Value contract (proven by ``tests/unit/test_rust_batch.py`` against
 element-identical to the encoder's output. Rust planes already carry
 encoder-mapped ids (seat/round winds pre-mapped 27-30 to 0-3, furiten 0-3,
 phase/riichi kind ids, history kind ids); only dtypes need casts and the
-packed legal ids need a scatter. History width is the fill ``t_len`` rather
-than the encoder's per-batch bucket ceil — values on the real prefix are
-identical and both pad with 0/False, which the model masks out exactly
-(verified bitwise-equal logits in the parity test).
+packed legal ids need a scatter. History width is the batch max-``t_len``
+snapped UP to the model bucket ceil (same ``bucket_for_length`` the encoder
+uses) — values on the real prefix are identical and both pad with 0/False,
+which the model masks out exactly (verified bitwise-equal logits in the
+parity test). Snapping bounds torch.compile to four T shapes and lets the
+H2D ring shape-match bucketed batches instead of falling back per batch.
 
 ``observation_hashes`` is empty: row identity never enters training math
 (the loop only passes it through; loss reads logits + ``chosen_action_id``
@@ -31,7 +33,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 from hydra2.contracts.common import ContractError
-from hydra2.models.encoder import ActorTensorBatch
+from hydra2.models.encoder import ActorTensorBatch, bucket_for_length
 from hydra2.models.schema import BASELINE_ACTION_COUNT, HISTORY_BUCKET_LENGTHS
 
 if TYPE_CHECKING:
@@ -280,7 +282,8 @@ def assemble_slim_batch(
     Rows carry a shared per-game planes blob (``_planes`` name→bytes) plus
     ``_row`` offset and ``_t_len``. Consecutive rows sharing one blob form
     one zero-copy slice group; groups concat (histories padded to the batch
-    max-T) and :func:`assemble_training_batch` finishes. Returns
+    max-T snapped UP to the model bucket ceil) and :func:`assemble_training_batch`
+    finishes. Returns
     ``{"actor_batch", "chosen_action_id", "legal_mask", "_decision_ids",
     "_action_kinds"}`` — the exact training/eval batch contract. Any row
     without ``_planes`` fails closed (a mixed-backend buffer would silently
@@ -298,6 +301,17 @@ def assemble_slim_batch(
         t_len = int(row["_t_len"])
         if t_len > t_max:
             t_max = t_len
+    if t_max > HISTORY_BUCKET_LENGTHS[-1]:
+        raise ContractError(
+            f"rust history width {t_max} exceeds model bucket cap {HISTORY_BUCKET_LENGTHS[-1]}; "
+            "rows are never truncated"
+        )
+    # Bucket-snap: pad histories to the bucket ceil, not the raw batch max.
+    # Every batch then carries one of (32, 64, 128, 256), so torch.compile sees
+    # at most four T shapes (no per-length recompile drizzle) and the H2D ring
+    # shape-matches more often. Values on the real prefix are identical and
+    # padding is model-masked, matching the encoder path exactly.
+    t_pad = bucket_for_length(t_max)
     groups: list[tuple[dict[str, bytes], int, int, int]] = []
     for row in rows:
         blob = row["_planes"]
@@ -307,7 +321,7 @@ def assemble_slim_batch(
         else:
             groups.append((blob, int(row["_row"]), 1, int(row["_t_len"])))
     parts = [
-        _slice_game_planes(blob, start, count, t_len, t_max, names, schema)
+        _slice_game_planes(blob, start, count, t_len, t_pad, names, schema)
         for blob, start, count, t_len in groups
     ]
     if len(parts) == 1:

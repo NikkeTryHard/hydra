@@ -152,8 +152,8 @@ def masked_cross_entropy(
             would leak mass to illegals; this variant conserves mass on the
             legal subspace (sums to exactly ``1``) and degrades gracefully
             to ``1.0`` on the target for single-legal rows.
-
     Returns:
+
         Scalar loss (mean over batch).  Gradients for illegal logits are
         exactly zero (masked to ``-inf`` before softmax).
     """
@@ -190,10 +190,17 @@ def masked_cross_entropy(
     batch_idx = torch.arange(targets.shape[0], device=targets.device)
     if not torch.compiler.is_compiling():
         _check_targets_legal(legal_mask, targets)
-    # Mask illegal to -inf so illegal probability exactly zero (exp(-inf)=0, gradient zero)
+    # Dense masked math (byte-identical): mask illegals to -inf over full
+    # [B,A].  A legal-subspace gather was tried here (static-Lb scatter):
+    # measured 2.5x SLOWER wall (0.30 vs 0.12ms @B2048/A6792/Lb64) and +110MB
+    # peak — the int64 cumsum/scatter index traffic (2x111MB) exceeds the CE
+    # passes it removes, and scatter requires int64 indices.  The fused-CE
+    # direction (indexed target + online LSE, no full read) stays bakeoff-13
+    # conditional on a purpose-built kernel; plain gather cannot win here.
     masked_logits = logits.masked_fill(~legal_mask, _MASKED_LOGIT_NEG)
+    targets_long = targets.long()
     if eps == 0.0:
-        loss = F.cross_entropy(masked_logits, targets.long(), reduction="mean")
+        loss = F.cross_entropy(masked_logits, targets_long, reduction="mean")
     else:
         # Legal-only smoothing: (1-eps) on the target plus eps/L on every
         # legal action (target included).  Illegal log-probs are -inf, so
@@ -201,7 +208,7 @@ def masked_cross_entropy(
         log_prob = F.log_softmax(masked_logits.float(), dim=-1)
         legal_counts = legal_mask.sum(dim=1).float()
         smooth = eps / legal_counts
-        target_logp = log_prob[batch_idx, targets.long()]
+        target_logp = log_prob[batch_idx, targets_long]
         legal_logp_sum = log_prob.masked_fill(~legal_mask, 0.0).sum(dim=1)
         loss = -((1.0 - eps) * target_logp + smooth * legal_logp_sum).mean()
     # No CE-local finite gate: any non-finite CE poisons the weighted total,
@@ -260,7 +267,8 @@ def _generic_ce_loss(
     """Unmasked cross-entropy helper for auxiliary heads."""
     if logits.shape[0] != targets.shape[0]:
         raise ContractError(f"{name}: logits/targets batch mismatch")
-    return F.cross_entropy(logits, targets.long(), reduction="mean")
+    # Aux pin: fp32 compute (widening cast is exact; also fixes bf16-CPU dtype).
+    return F.cross_entropy(logits.to(torch.float32), targets.long(), reduction="mean")
 
 
 def _generic_mse_loss(
@@ -271,7 +279,8 @@ def _generic_mse_loss(
 ) -> torch.Tensor:
     if pred.shape != target.shape:
         raise ContractError(f"{name}: shape mismatch {tuple(pred.shape)} vs {tuple(target.shape)}")
-    return F.mse_loss(pred, target.float(), reduction="mean")
+    # Aux pin: fp32 compute (both casts widen exactly; matches target.float() position).
+    return F.mse_loss(pred.to(torch.float32), target.to(torch.float32), reduction="mean")
 
 
 def _check_legal_rows(legal_mask: torch.Tensor) -> None:
@@ -474,15 +483,21 @@ def supervised_loss_kernel(
                 )
             if not torch.compiler.is_compiling():
                 _check_placement_range(pl_target)
+            # Aux pin: fp32 entry edge (same family as _generic_ce_loss).
             ploss = F.cross_entropy(
-                pl_logits.reshape(-1, 4), pl_target.reshape(-1).long(), reduction="mean"
+                pl_logits.reshape(-1, 4).to(torch.float32),
+                pl_target.reshape(-1).long(),
+                reduction="mean",
             )
         elif pl_target.dim() == 1:
             ploss = _generic_ce_loss(pl_logits, pl_target, name="placement")
         else:
             # Distribution: KL or MSE? Use MSE for simplicity if distribution
+            # Aux pin: fp32 softmax (removes the bf16 residue class).
             ploss = _generic_mse_loss(
-                F.softmax(pl_logits, dim=-1), pl_target.float(), name="placement_dist"
+                F.softmax(pl_logits.to(torch.float32), dim=-1),
+                pl_target.float(),
+                name="placement_dist",
             )
         losses["placement"] = ploss
         total = total + w_placement * ploss

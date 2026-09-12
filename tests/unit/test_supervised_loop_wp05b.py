@@ -152,6 +152,9 @@ class StubPolicyModel(nn.Module):
     ) -> None:
         super().__init__()
         self.linear = nn.Linear(feature_dim, num_actions)
+        # Mirrors the production attention bf16 switch (model.py attn_bf16):
+        # plain bool, never a parameter/buffer, so state_dict is unaffected.
+        self.attn_bf16: bool = False
 
     def forward(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         x = batch["features"]  # [B,F]
@@ -219,6 +222,7 @@ def _build_loop(
     checkpoint_subdir: str = "checkpoints",
     gradient_clip_norm: float | None = 1.0,
     max_updates: int = 4,
+    precision: str = "fp32",
 ) -> tuple[SupervisedLoop, AuthoritativeParquetDataset, nn.Module]:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
@@ -253,6 +257,7 @@ def _build_loop(
         max_updates=max_updates,
         checkpoint_frequency_updates=10,  # avoid auto-checkpoint during small tests; explicit saves
         seed=seed,
+        precision=precision,  # type: ignore[arg-type]
     )
     ckpt_dir = tmp_path / checkpoint_subdir
     loop = SupervisedLoop(
@@ -2212,3 +2217,98 @@ def test_device_assert_trips_live_on_cuda() -> None:
     assert "cudaErrorAssert" in proc.stderr or "device-side assert" in proc.stderr, (
         f"expected device-assert text; stderr={proc.stderr[-2000:]}"
     )
+
+
+def test_bf16_precision_enables_attn_bf16(tmp_path: Path, actor_parquet_factory) -> None:
+    """bf16_mixed opts attention into bf16 math; fp32 leaves it off (CPU-only).
+
+    The flag is device-independent at construction (the forward gates on
+    is_cuda, so it stays inert on CPU) — this pins the loop wiring without
+    needing a CUDA device. Fails pre-change (bf16 loop leaves it False).
+    """
+    parquet_dir = actor_parquet_factory(num_rows=8)
+    bf16_loop, _, _ = _build_loop(
+        tmp_path / "bf16", parquet_dir, precision="bf16_mixed", checkpoint_subdir="ckpt"
+    )
+    flagged = [m for m in bf16_loop.model.modules() if hasattr(m, "attn_bf16")]
+    assert len(flagged) > 0, "expected at least one attn_bf16 switch"
+    assert all(m.attn_bf16 is True for m in flagged)
+    fp32_loop, _, _ = _build_loop(
+        tmp_path / "fp32", parquet_dir, precision="fp32", checkpoint_subdir="ckpt"
+    )
+    fp32_flagged = [m for m in fp32_loop.model.modules() if hasattr(m, "attn_bf16")]
+    assert len(fp32_flagged) > 0, "expected at least one attn_bf16 switch"
+    assert all(m.attn_bf16 is False for m in fp32_flagged)
+
+
+def test_aux_losses_fp32_output() -> None:
+    """Aux losses compute in fp32 from bf16 inputs (CPU-only).
+
+    Fails pre-pin: ``F.cross_entropy`` on bf16 returns bf16 (and the per-seat
+    placement path inherits it).  The mse pin documents the exact-widening
+    contract (promotion already yields fp32 there).  Error strings are pinned
+    unchanged by ``test_loss_validator_matches_public_errors``.
+    """
+    import torch.nn.functional as functional
+
+    from hydra2.training.objectives import _generic_ce_loss, _generic_mse_loss
+
+    torch.manual_seed(21)
+    # Unmasked CE helper: fp32 dtype + finite + exact vs same-input fp32 math.
+    ce_logits = (torch.randn(8, 5) * 2).to(torch.bfloat16)
+    ce_targets = torch.randint(0, 5, (8,))
+    ce_got = _generic_ce_loss(ce_logits, ce_targets, name="event[probe]")
+    assert ce_got.dtype == torch.float32, f"expected fp32, got {ce_got.dtype}"
+    assert torch.isfinite(ce_got).all()
+    ce_ref = functional.cross_entropy(ce_logits.to(torch.float32), ce_targets.long())
+    assert torch.equal(ce_got, ce_ref)
+    assert torch.allclose(
+        ce_got, functional.cross_entropy(ce_logits.float(), ce_targets), atol=1e-2, rtol=1e-2
+    )
+    # MSE helper: both sides widened exactly to fp32.
+    mse_pred = (torch.randn(4, 4)).to(torch.bfloat16)
+    mse_target = torch.randn(4, 4)
+    mse_got = _generic_mse_loss(mse_pred, mse_target, name="value")
+    assert mse_got.dtype == torch.float32, f"expected fp32, got {mse_got.dtype}"
+    assert torch.isfinite(mse_got).all()
+    assert torch.equal(
+        mse_got, functional.mse_loss(mse_pred.to(torch.float32), mse_target.to(torch.float32))
+    )
+    # Per-seat placement path through the kernel with bf16 logits.
+    batch_size, width = 4, 32
+    policy_logits = torch.randn(batch_size, width)
+    legal_mask = torch.zeros(batch_size, width, dtype=torch.bool)
+    legal_mask[:, :8] = True
+    batch = {
+        "chosen_action_id": torch.zeros(batch_size, dtype=torch.long),
+        "legal_mask": legal_mask,
+        "placement_target": torch.randint(0, 4, (batch_size, 4)),
+    }
+    seat_logits = (torch.randn(batch_size, 4, 4)).to(torch.bfloat16)
+    seat_losses = compute_supervised_loss(
+        {"policy_logits": policy_logits, "placement_logits": seat_logits},
+        batch,
+        {"w_policy": 0.0, "w_placement": 1.0},
+    )
+    assert seat_losses["placement"].dtype == torch.float32, (
+        f"expected fp32, got {seat_losses['placement'].dtype}"
+    )
+    assert torch.isfinite(seat_losses["placement"])
+    seat_ref = functional.cross_entropy(
+        seat_logits.to(torch.float32).reshape(-1, 4), batch["placement_target"].reshape(-1).long()
+    )
+    assert torch.equal(seat_losses["placement"], seat_ref)
+    # Distribution placement path: fp32 softmax pin.
+    dist_logits = (torch.randn(batch_size, 6)).to(torch.bfloat16)
+    dist_target = functional.softmax(torch.randn(batch_size, 6), dim=-1)
+    dist_losses = compute_supervised_loss(
+        {"policy_logits": policy_logits, "placement_logits": dist_logits},
+        {**batch, "placement_target": dist_target},
+        {"w_policy": 0.0, "w_placement": 1.0},
+    )
+    assert dist_losses["placement"].dtype == torch.float32
+    assert torch.isfinite(dist_losses["placement"])
+    dist_ref = functional.mse_loss(
+        functional.softmax(dist_logits.to(torch.float32), dim=-1), dist_target.float()
+    )
+    assert torch.allclose(dist_losses["placement"], dist_ref, atol=1e-6, rtol=1e-5)

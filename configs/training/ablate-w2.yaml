@@ -1,7 +1,13 @@
+# Ablation: CPU-contention discriminator (overlay of probe-recompiles.yaml).
+# num_workers 8->2 shrinks decode threads AND spawn expand procs. Same seed =>
+# same batches at same updates. If the ~1.2s queue/compute spikes at updates
+# ~11/26/41/57/87 vanish or move, the cause is CPU-side (GIL/GC/allocator),
+# not device-side (autotune would be worker-count insensitive).
+# HYDRA2_ARTIFACT_ROOT=/home/cachybtw/dev/hydra2-artifacts-w2
 run:
-  id: local-rtx5070-tenhou2024
+  id: local-rtx5070-tenhou2024-w2
   kind: supervised
-  description: 'Canonical RTX 5070 config: mb2048, bf16, max-autotune, telemetry on.'
+  description: 'Ablation: 2 workers, CPU-contention discriminator.'
 data:
   root: ${HYDRA2_DATA_ROOT}/tenhou-houou-mjai-2024
   scope: tenhou-4p-hanchan
@@ -14,7 +20,7 @@ data:
   dataset_manifest_hash: null
   shuffle_buffer_size: 10000
   drop_last: true
-  num_workers: 8
+  num_workers: 2
   world_size: 1
   replay_backend: rust
   decode_prefetch: 64 # src/hydra2/data/stream.py PrefetchGameStream; cover one expansion batch.
@@ -50,7 +56,7 @@ loop:
   microbatch_size: 2048
   accumulation_steps: 1
   gradient_clip_norm: 1.0
-  max_updates: 2500
+  max_updates: 150
   checkpoint_frequency_updates: 500
   precision: bf16_mixed
   keep_last_checkpoints: null
@@ -87,7 +93,7 @@ output:
   run_id: null
 rl: null
 telemetry:
-  mlflow_enabled: true
+  mlflow_enabled: false
   verbose_enabled: true
   verbose_interval_ms: 50
   profiler_captures: 0

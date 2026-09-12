@@ -1,7 +1,12 @@
+# Probe: recompile attribution (overlay of local-rtx5070.yaml; canonical untouched).
+# Short 150-update run under TORCH_LOGS=recompiles,guards,dynamic to name the
+# failing guard (prediction: history-T size mismatch from unbucketed assembly).
+# Launch with: TORCH_LOGS=recompiles,guards,dynamic and an isolated root:
+# HYDRA2_ARTIFACT_ROOT=/home/cachybtw/dev/hydra2-artifacts-probe
 run:
-  id: local-rtx5070-tenhou2024
+  id: local-rtx5070-tenhou2024-probe
   kind: supervised
-  description: 'Canonical RTX 5070 config: mb2048, bf16, max-autotune, telemetry on.'
+  description: 'Probe: 150 updates, recompile attribution; canonical otherwise.'
 data:
   root: ${HYDRA2_DATA_ROOT}/tenhou-houou-mjai-2024
   scope: tenhou-4p-hanchan
@@ -50,7 +55,7 @@ loop:
   microbatch_size: 2048
   accumulation_steps: 1
   gradient_clip_norm: 1.0
-  max_updates: 2500
+  max_updates: 150
   checkpoint_frequency_updates: 500
   precision: bf16_mixed
   keep_last_checkpoints: null
@@ -87,7 +92,7 @@ output:
   run_id: null
 rl: null
 telemetry:
-  mlflow_enabled: true
+  mlflow_enabled: false
   verbose_enabled: true
   verbose_interval_ms: 50
   profiler_captures: 0

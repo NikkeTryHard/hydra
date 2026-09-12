@@ -744,3 +744,150 @@ def test_attn_bf16_matches_fp32_decisions() -> None:
         select_actions(ref.policy_logits, batch.legal_mask),
     )
     assert torch.isfinite(out.policy_logits[batch.legal_mask]).all()
+
+
+# ---------------------------------------------------------------------------
+# 12 fused QKV + small-heads compat (Slice A)
+# ---------------------------------------------------------------------------
+
+
+def test_legacy_qkv_heads_state_dict_migrates() -> None:
+    """Legacy unfused checkpoints remap to fused keys with bitwise parity."""
+    torch.manual_seed(7)
+    template = Hydra2BaselineModel()
+    template.eval()
+    fused_keys = template.state_dict()
+    d_model: int = int(template.d_model)
+    n_layers: int = int(template.n_layers)
+    n_small_in: int = int(template.small_heads.in_features)
+    n_events: int = len(EVENT_KINDS)
+    torch.manual_seed(1234)
+    legacy: dict[str, torch.Tensor] = {}
+    for key, value in fused_keys.items():
+        if key.endswith("qkv_proj.weight") or key in ("small_heads.weight", "small_heads.bias"):
+            continue
+        legacy[key] = value.clone()
+    for layer in range(n_layers):
+        for proj in ("q", "k", "v"):
+            legacy[f"layers.{layer}.{proj}_proj.weight"] = torch.randn(d_model, d_model)
+    legacy["placement_head.weight"] = torch.randn(16, n_small_in)
+    legacy["placement_head.bias"] = torch.randn(16)
+    legacy["value_head.weight"] = torch.randn(4, n_small_in)
+    legacy["value_head.bias"] = torch.randn(4)
+    legacy["event_head.weight"] = torch.randn(n_events, n_small_in)
+    legacy["event_head.bias"] = torch.randn(n_events)
+    legacy["belief_head.weight"] = torch.randn(n_events, n_small_in)
+    legacy["belief_head.bias"] = torch.randn(n_events)
+    assert "small_heads.weight" not in legacy
+    assert not any(key.endswith("qkv_proj.weight") for key in legacy)
+    migrated_model = Hydra2BaselineModel()
+    migrated_model.eval()
+    result = migrated_model.load_state_dict(legacy, strict=True)
+    assert list(result.missing_keys) == []
+    assert list(result.unexpected_keys) == []
+    # Second model gets the fused stacks assigned directly (independent cat in
+    # test code); forward must then agree bitwise with the migrated model.
+    expected: dict[str, torch.Tensor] = dict(legacy)
+    for layer in range(n_layers):
+        expected[f"layers.{layer}.qkv_proj.weight"] = torch.cat(
+            [
+                legacy[f"layers.{layer}.q_proj.weight"],
+                legacy[f"layers.{layer}.k_proj.weight"],
+                legacy[f"layers.{layer}.v_proj.weight"],
+            ],
+            dim=0,
+        )
+        del expected[f"layers.{layer}.q_proj.weight"]
+        del expected[f"layers.{layer}.k_proj.weight"]
+        del expected[f"layers.{layer}.v_proj.weight"]
+    expected["small_heads.weight"] = torch.cat(
+        [
+            legacy["placement_head.weight"],
+            legacy["value_head.weight"],
+            legacy["event_head.weight"],
+            legacy["belief_head.weight"],
+        ],
+        dim=0,
+    )
+    expected["small_heads.bias"] = torch.cat(
+        [
+            legacy["placement_head.bias"],
+            legacy["value_head.bias"],
+            legacy["event_head.bias"],
+            legacy["belief_head.bias"],
+        ],
+        dim=0,
+    )
+    for key in (
+        "placement_head.weight",
+        "placement_head.bias",
+        "value_head.weight",
+        "value_head.bias",
+        "event_head.weight",
+        "event_head.bias",
+        "belief_head.weight",
+        "belief_head.bias",
+    ):
+        del expected[key]
+    direct_model = Hydra2BaselineModel()
+    direct_model.eval()
+    direct_result = direct_model.load_state_dict(expected, strict=True)
+    assert list(direct_result.missing_keys) == []
+    assert list(direct_result.unexpected_keys) == []
+    batch = encode_observations([_make_observation(history=_history_of_length(4))])
+    with torch.no_grad():
+        out_migrated = migrated_model.evaluate(batch)
+        out_direct = direct_model.evaluate(batch)
+    assert torch.isfinite(out_migrated.policy_logits).all()
+    assert torch.equal(out_migrated.policy_logits, out_direct.policy_logits)
+    assert torch.equal(out_migrated.placement_logits, out_direct.placement_logits)
+    assert torch.equal(out_migrated.value_vector, out_direct.value_vector)
+    assert torch.equal(
+        out_migrated.event_logits["next_event"], out_direct.event_logits["next_event"]
+    )
+    assert torch.equal(
+        out_migrated.belief_logits["next_event"], out_direct.belief_logits["next_event"]
+    )
+
+
+def test_fused_forward_matches_contract_shapes() -> None:
+    """Fused heads keep contract shapes incl. the all-padding row."""
+    torch.manual_seed(0)
+    model = Hydra2BaselineModel()
+    model.eval()
+    n_events: int = len(EVENT_KINDS)
+    assert model.small_heads.in_features == model.d_model * 2
+    assert model.small_heads.out_features == 20 + 2 * n_events
+    assert model.policy_head.out_features == BASELINE_ACTION_COUNT
+    assert model.policy_head.in_features == model.d_model * 2
+    batch = encode_observations(
+        [_make_observation(history=_history_of_length(5)), _make_observation(history=())]
+    )
+    assert batch.history_mask.shape[0] == 2
+    assert not batch.history_mask[1].any()
+    out = model.evaluate(batch)
+    assert out.policy_logits.shape == (2, BASELINE_ACTION_COUNT)
+    assert out.placement_logits.shape == (2, 4, 4)
+    assert out.value_vector.shape == (2, 4)
+    assert out.event_logits["next_event"].shape == (2, n_events)
+    assert out.belief_logits["next_event"].shape == (2, n_events)
+    assert out.policy_logits.dtype == torch.float32
+    assert out.placement_logits.dtype == torch.float32
+    assert out.value_vector.dtype == torch.float32
+    assert torch.isfinite(out.policy_logits).all()
+    assert torch.isfinite(out.placement_logits).all()
+    assert torch.isfinite(out.value_vector).all()
+    assert torch.isfinite(out.event_logits["next_event"]).all()
+    assert torch.isfinite(out.belief_logits["next_event"]).all()
+    # Event/belief widths pin the off-by-E slice bounds.
+    assert out.event_logits["next_event"].shape[1] == n_events
+    assert out.belief_logits["next_event"].shape[1] == n_events
+    # Legal gating still holds on the fused path (illegal exact zero).
+    probs = masked_policy(out.policy_logits, batch.legal_mask)
+    assert torch.all(probs[~batch.legal_mask] == 0)
+    assert torch.allclose(probs.sum(dim=1), torch.ones(2), atol=1e-6)
+    picked = select_actions(out.policy_logits, batch.legal_mask)
+    for row, idx in enumerate(picked.tolist()):
+        assert batch.legal_mask[row, idx].item() is True
+    assert int(out.diagnostics["history_length"][0].item()) == 5
+    assert int(out.diagnostics["history_length"][1].item()) == 0

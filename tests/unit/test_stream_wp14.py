@@ -79,6 +79,25 @@ def test_framer_offsets_and_boundaries(tmp_path: Path) -> None:
     assert offsets[2] == len(games[0]) + len(games[1])
 
 
+def test_framer_prefilter_parity_on_tricky_lines(tmp_path: Path) -> None:
+    """Superset prefilter must frame byte-identically to full-parse framing."""
+    lines = [
+        b'{"type":"start_game"}',
+        b'{"type": "tsumo", "actor": 0, "pai": "5m"}',
+        b'{"type":"dahai","restart_count":1}',
+        b'{"nested": {"type": "start_game"}, "type": "dahai"}',
+        b'{"type":"st\\u0061rt_game"}',
+        b'{"type": "end_game"}',
+    ]
+    raw = b"\n".join(lines) + b"\n"
+    target = tmp_path / "q.mjai.json.zst"
+    target.write_bytes(zstd.ZstdCompressor().compress(raw))
+    frames = list(ZstdLineStream(target).iter_games())
+    assert len(frames) == 2
+    assert frames[0][1] == b"\n".join(lines[:4]) + b"\n"
+    assert frames[1][1] == b"\n".join(lines[4:]) + b"\n"
+
+
 def test_manifest_order_is_sha256_hex_and_stable(tmp_path: Path) -> None:
     for name in ("b.mjai.json.zst", "a.mjai.json.zst", "c.mjai.json.zst"):
         _write(tmp_path / name, [_game_bytes(name)])

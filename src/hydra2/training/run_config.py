@@ -208,6 +208,13 @@ class DataConfig:
     #: spawn workers (``_fill_parallel`` in ``src/hydra2/training/stream_train.py``,
     #: one bridge FFI per chunk via ``expand_game_batch``).
     expand_batch_games: int = 64
+    #: Stable bucket-grouped takes: when true, ``_StreamDataset`` stably
+    #: partitions the unconsumed window by history bucket before each
+    #: contiguous-prefix take (one bucket per microbatch, less pad waste).
+    #: Default False is byte-identical legacy order. Part of the run digest:
+    #: flipping it churns the digest once (same precedent as
+    #: ``fetch_prefetch_depth``) and old checkpoints fail closed on drift.
+    homogeneous_buckets: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -820,6 +827,7 @@ def _parse_data(raw: Any) -> DataConfig:
             "replay_backend",
             "decode_prefetch",
             "expand_batch_games",
+            "homogeneous_buckets",
         ),
         where="data",
     )
@@ -849,6 +857,9 @@ def _parse_data(raw: Any) -> DataConfig:
     drop_last = fields.get("drop_last", True)
     if not isinstance(drop_last, bool):
         raise ContractError(f"data.drop_last must be a bool, got {drop_last!r}")
+    homogeneous_buckets = fields.get("homogeneous_buckets", False)
+    if not isinstance(homogeneous_buckets, bool):
+        raise ContractError(f"data.homogeneous_buckets must be a bool, got {homogeneous_buckets!r}")
     replay_backend = fields.get("replay_backend", "rust")
     if replay_backend not in ("python", "rust"):
         raise ContractError(
@@ -883,6 +894,7 @@ def _parse_data(raw: Any) -> DataConfig:
         )
         if "expand_batch_games" in fields
         else 64,
+        homogeneous_buckets=homogeneous_buckets,
     )
 
 
@@ -1520,6 +1532,7 @@ def run_config_to_dict(config: RunConfig) -> dict[str, Any]:
             "replay_backend": config.data.replay_backend,
             "decode_prefetch": config.data.decode_prefetch,
             "expand_batch_games": config.data.expand_batch_games,
+            "homogeneous_buckets": config.data.homogeneous_buckets,
         },
         "model": {
             "architecture_id": config.model.architecture_id,

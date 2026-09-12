@@ -26,7 +26,7 @@
   "thresholds": null
  },
  "created_utc": "2026-09-11T16:30:00+00:00",
- "description": "Wave-G1 single re-pin at Wave-F close: every entry recomputed (cutover code + F10 decision-primary corpus); every local entry pinned by sha256; external probe entries resolved+hashed at bench time. The manifest_digest binds every entry and threshold: ANY byte change voids thresholds. 8a2f baseline stays frozen. WP-14 telemetry re-pin: stream_train.py (mlflow/sampler/profiler hooks) + run_config.py (telemetry section); thresholds stay blank-null. Desync re-pin: rust_observations.py entry removed (module deleted, plane feed supersedes); stream_train.py (device-gate validators, hot scalars, chunked workers, YAML feed knobs) + run_config.py (decode_prefetch/expand_batch_games/fetch_prefetch_depth); thresholds stay blank-null.",
+ "description": "Wave-G1 single re-pin at Wave-F close: every entry recomputed (cutover code + F10 decision-primary corpus); every local entry pinned by sha256; external probe entries resolved+hashed at bench time. The manifest_digest binds every entry and threshold: ANY byte change voids thresholds. 8a2f baseline stays frozen. WP-14 telemetry re-pin: stream_train.py (mlflow/sampler/profiler hooks) + run_config.py (telemetry section); thresholds stay blank-null. Desync re-pin: rust_observations.py entry removed (module deleted, plane feed supersedes); stream_train.py (device-gate validators, hot scalars, chunked workers, YAML feed knobs) + run_config.py (decode_prefetch/expand_batch_games/fetch_prefetch_depth); thresholds stay blank-null. Slice-E re-pin 2026-09-12: stream_train.py (homogeneous-buckets grouping, entry pins, ring depth 3, lint/format) + run_config.py (homogeneous_buckets flag, lint/format); thresholds stay blank-null.",
  "entries": [
   {
    "fixtures": [
@@ -1812,7 +1812,7 @@
    ],
    "kind": "cutover-source",
    "relpath": "src/hydra2/training/stream_train.py",
-   "sha256": "sha256:cb6e61a85c1f6de6199a3924b35f2108b5e9db0379bbcbe9fac14c8fd7f3721c"
+   "sha256": "sha256:2128ef132602863c21200a9481ee4ef224148ea98b5dad6f7a234b74221fd8f6"
   },
   {
    "fixtures": [
@@ -1820,7 +1820,7 @@
    ],
    "kind": "cutover-source",
    "relpath": "src/hydra2/training/run_config.py",
-   "sha256": "sha256:91dfbc5dc4523474b4dd8f2848efff5abcd5ae23f1940c3cec85a13915c8473b"
+   "sha256": "sha256:3b7431d6da80cf1ae7b2b4697d97faaa47164b653f814fb02f786389a6bec350"
   },
   {
    "fixtures": [
@@ -1937,6 +1937,6 @@
    "module": "tests.parity.test_parity_gates_g1_g7_wp0b"
   }
  ],
- "manifest_digest": "sha256:66d72b14d4c8f95b32e5c6f22e87924d2ec32937e2f426fa4e5dee17f64b9055",
+ "manifest_digest": "sha256:ff83c4d15fde2111d06c795825285a29c39ca22b5d54b7f832f87920b457d41d",
  "manifest_version": "2"
 }

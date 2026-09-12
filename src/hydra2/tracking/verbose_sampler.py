@@ -169,6 +169,7 @@ class VerboseSampler:
         self._nvml_handle: Any = None
         self._psutil_process: Any = None
         self._cpu_prev: dict[int, tuple[float, float]] | None = None
+        self._cpu_prev_at: float | None = None
 
     # -- lifecycle ------------------------------------------------------
 
@@ -413,7 +414,6 @@ class VerboseSampler:
         try:
             import psutil
 
-            interval_s = self._interval_s
             threads: list[dict[str, Any]] = []
             try:
                 current = {
@@ -422,14 +422,19 @@ class VerboseSampler:
             except Exception:
                 current = {}
             prev = self._cpu_prev
+            prev_at = self._cpu_prev_at
+            now_mono = time.monotonic()
             self._cpu_prev = current
-            if prev is not None and interval_s > 0:
+            self._cpu_prev_at = now_mono
+            gap_s = now_mono - prev_at if prev_at is not None else 0.0
+            if prev is not None and gap_s > 0:
                 for tid, (user, system) in current.items():
                     old = prev.get(tid)
                     if old is None:
                         continue
                     busy = max(0.0, (user - old[0]) + (system - old[1]))
-                    threads.append({"tid": tid, "busy_pct": round(100.0 * busy / interval_s, 1)})
+                    pct = 100.0 * busy / gap_s
+                    threads.append({"tid": tid, "busy_pct": round(min(pct, 100.0), 1)})
                 threads.sort(key=lambda entry: entry["busy_pct"], reverse=True)
                 threads = threads[:16]
             try:

@@ -566,6 +566,13 @@ class ZstdLineStream:
         in_game = False
 
         def _peek_type(line: bytes) -> str | None:
+            # Hot-path superset prefilter: every boundary name in _START_TYPES /
+            # _END_TYPES contains b"start" or b"end", so lines without either
+            # cannot frame and skip the parse. A \u-escaped type value would
+            # defeat the substring test, so such lines fall through to the
+            # exact parse below; json.loads stays the authority in all cases.
+            if b"\\u" not in line and b"start" not in line and b"end" not in line:
+                return None
             try:
                 value = json.loads(line)
             except ValueError:
