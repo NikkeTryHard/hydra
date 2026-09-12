@@ -56,7 +56,7 @@ import zstandard as zstd
 
 from hydra2.artifacts.canonical import canonical_bytes
 from hydra2.contracts.common import ContractError, CorruptArtifactError
-from hydra2.data.decode import GameRecord, decode_game_object
+from hydra2.data.decode import GameRecord, decode_game_object, decode_json_line
 from hydra2.data.parquet import FORBIDDEN_IN_ACTOR
 from hydra2.data.validate import validate_game
 
@@ -570,11 +570,11 @@ class ZstdLineStream:
             # _END_TYPES contains b"start" or b"end", so lines without either
             # cannot frame and skip the parse. A \u-escaped type value would
             # defeat the substring test, so such lines fall through to the
-            # exact parse below; json.loads stays the authority in all cases.
+            # exact parse below; decode_json_line stays the authority in all cases.
             if b"\\u" not in line and b"start" not in line and b"end" not in line:
                 return None
             try:
-                value = json.loads(line)
+                value = decode_json_line(line)
             except ValueError:
                 return None
             if not isinstance(value, dict):
@@ -1045,6 +1045,12 @@ class GameStream:
             yield batch
 
 
+#: Frames per prefetch decode future. Amortizes per-future/GIL handoff cost
+#: (dominant in the 10k-game shuffle-reservoir warmup) while keeping ≤64
+#: frames in flight, matching the previous per-frame depth bound.
+_DECODE_BATCH_GAMES = 16
+
+
 class PrefetchGameStream(GameStream):
     """Game stream with threaded background decode.
 
@@ -1099,37 +1105,57 @@ class PrefetchGameStream(GameStream):
         game, validation_hash = self._decode_inline(stem_of(entry.path), game_bytes)
         return file_index, end, game_bytes, game, validation_hash
 
+    def _decode_batch(
+        self, frames: list[tuple[int, int, bytes]]
+    ) -> list[tuple[int, int, bytes, GameRecord | None, str | None]]:
+        """Decode one ordered frame batch (same per-game job, fewer handoffs).
+
+        Per-game results are bit-identical to individual :meth:`_decode_job`
+        submissions; batching only amortizes future/GIL handoff cost (~0.3ms
+        per future dominated the 10k-game shuffle-reservoir warmup).
+        """
+        return [
+            self._decode_job(file_index, end, game_bytes) for file_index, end, game_bytes in frames
+        ]
+
     def _ordered_source(self, run: _Run) -> Iterator[StreamGame]:
-        pending: dict[int, Future[tuple[int, int, bytes, GameRecord | None, str | None]]] = {}
+        pending: dict[int, Future[list[tuple[int, int, bytes, GameRecord | None, str | None]]]] = {}
         waits = 0
         sequence = 0
         due = 0
+        inflight = 0
         source = self._framed_from(run)
         exhausted = False
         with ThreadPoolExecutor(
             max_workers=self._max_workers, thread_name_prefix="stream-decode"
         ) as pool:
             while True:
-                while len(pending) < self._prefetch and not exhausted:
-                    try:
-                        file_index, end, game_bytes = next(source)
-                    except StopIteration:
-                        exhausted = True
+                while inflight < self._prefetch and not exhausted:
+                    batch: list[tuple[int, int, bytes]] = []
+                    while len(batch) < _DECODE_BATCH_GAMES and not exhausted:
+                        try:
+                            batch.append(next(source))
+                        except StopIteration:
+                            exhausted = True
+                    if len(batch) == 0:
                         break
-                    pending[sequence] = pool.submit(self._decode_job, file_index, end, game_bytes)
+                    pending[sequence] = pool.submit(self._decode_batch, batch)
+                    inflight += len(batch)
                     sequence += 1
                 if due not in pending:
                     break
                 future = pending.pop(due)
                 if not future.done():
                     waits += 1
-                file_index, end, game_bytes, game, validation_hash = future.result()
+                results = future.result()
+                inflight -= len(results)
                 due += 1
-                emitted = self._finish_decode(
-                    run, file_index, end, game_bytes, game, validation_hash
-                )
-                if emitted is not None:
-                    yield emitted
+                for file_index, end, game_bytes, game, validation_hash in results:
+                    emitted = self._finish_decode(
+                        run, file_index, end, game_bytes, game, validation_hash
+                    )
+                    if emitted is not None:
+                        yield emitted
         if run.stats is not None:
             run.stats.waits += waits
 

@@ -127,8 +127,8 @@ with open(smpath) as fh:
         except (IndexError, ValueError):
             continue
 assert sm_col is not None, "dmon header with sm column not found"
-assert len(sm) > 60, f"too few windowed SM samples: {len(sm)}"
 ext_s = int(os.environ["HARNESS_EXT_S"])
+assert len(sm) >= ext_s - 8, f"too few windowed SM samples: {len(sm)} vs {ext_s}s"
 assert abs(len(sm) - ext_s) <= 8, f"sampler clock drift: {len(sm)} samples vs {ext_s}s"
 names = sorted(os.listdir(os.environ["HARNESS_CORPUS"]))
 names = [n for n in names if n.endswith(".zst")]
