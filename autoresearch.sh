@@ -24,7 +24,16 @@ fail() { echo "HARNESS FAIL: $1" >&2; exit 1; }
 cd "${ROOT}" || exit 1
 command -v nvidia-smi >/dev/null 2>&1 || fail "nvidia-smi missing (GPU harness)"
 command -v pixi >/dev/null 2>&1 || fail "pixi missing"
-[ -f "${CFG}" ] || fail "probe config missing: ${CFG}"
+# Machine-local mounts arrive via an UNCOMMITTED env file (never a literal
+# path in this script). Explicit environment always wins over the file.
+if [ -z "${HYDRA2_DATA_ROOT:-}" ]; then
+    _LOCAL_ENV="${HYDRA2_LOCAL_ENV:-${HOME}/.config/hydra2/local-env.sh}"
+    if [ -f "${_LOCAL_ENV}" ]; then
+        # shellcheck disable=SC1090
+        . "${_LOCAL_ENV}"
+        echo "harness: sourced ${_LOCAL_ENV}" >&2
+    fi
+fi
 [ -n "${HYDRA2_DATA_ROOT:-}" ] || fail "HYDRA2_DATA_ROOT unset (mount the corpus)"
 [ -d "${HYDRA2_DATA_ROOT}/tenhou-houou-mjai-2024" ] \
     || fail "tenhou-houou-mjai-2024 missing under HYDRA2_DATA_ROOT"
@@ -147,6 +156,7 @@ BUNDLE="${HOME}/tmp/harness-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "${BUNDLE}"
 cp "${SCRATCH}/train.log" "${SCRATCH}/sm.log" "${SCRATCH}/metrics.txt" "${BUNDLE}/"
 cp "${FEED}" "${METRICS_JSONL}" "${BUNDLE}/"
+cp "${RUN_DIR}/logs/verbose-telemetry.jsonl" "${BUNDLE}/" 2>/dev/null || true
 {
     echo "load_before: ${LOAD_BEFORE}"; echo "load_after: ${LOAD_AFTER}"
     echo "config_digest: ${CONFIG_DIGEST}"

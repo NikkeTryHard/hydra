@@ -56,6 +56,7 @@ import time
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from multiprocessing import get_context as _mp_get_context
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import torch
@@ -100,7 +101,6 @@ from hydra2.training.run_config import create_run_layout, run_config_digest
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping
-    from pathlib import Path
 
     from hydra2.data.decode import GameRecord
     from hydra2.data.parquet import DecisionRow
@@ -1584,6 +1584,44 @@ def _scan_corpus_parallel(
     )
 
 
+def _shared_scan_cache_path(
+    *,
+    manifest: StreamManifest,
+    stream_digest: str,
+    seed: int,
+    ratios: dict[str, float],
+    train_split: str,
+    val_split: str,
+) -> Path:
+    """Machine-local scan-cache path shared across run dirs (same key family).
+
+    The run-dir copy stays authoritative for audit/resume; this path only
+    avoids re-scanning an immutable corpus on every fresh run_dir. Keyed by
+    the identical fields ``load_scan_cache`` re-validates plus a per-file
+    ``(path, size, mtime_ns)`` fingerprint, so any add/remove/resize/touch
+    misses to a full scan (same staleness semantics as ``make``). Override
+    the directory with ``HYDRA2_SCAN_CACHE_DIR`` (never inside a data root).
+    """
+    from hydra2.data.stream import SCAN_CACHE_VERSION
+
+    base_raw = os.environ.get("HYDRA2_SCAN_CACHE_DIR") or os.path.join(
+        os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "hydra2", "scan"
+    )
+    files = hashlib.sha256()
+    for entry in manifest.files:
+        try:
+            fingerprint_stat = entry.path.stat()
+            stamp = f"{fingerprint_stat.st_size}:{fingerprint_stat.st_mtime_ns}"
+        except OSError:
+            stamp = "missing"
+        files.update(f"{entry.path.as_posix()}:{stamp}\n".encode())
+    fingerprint = repr(
+        (SCAN_CACHE_VERSION, stream_digest, seed, sorted(ratios.items()), train_split, val_split)
+    )
+    key = hashlib.sha256((fingerprint + files.hexdigest()).encode()).hexdigest()[:32]
+    return Path(base_raw) / f"scan-{key}.json"
+
+
 def _scan_corpus_cached(
     manifest: StreamManifest,
     *,
@@ -1598,6 +1636,14 @@ def _scan_corpus_cached(
     closed to a full scan (never raise, never partial).
     """
     cache_file = scan_cache_path(run_dir)
+    shared = _shared_scan_cache_path(
+        manifest=manifest,
+        stream_digest=stream_digest,
+        seed=config.seeds.data_seed,
+        ratios=ratios,
+        train_split=config.data.train_split,
+        val_split=config.data.val_split,
+    )
     cached = load_scan_cache(
         cache_file,
         manifest_digest=stream_digest,
@@ -1606,6 +1652,26 @@ def _scan_corpus_cached(
         train_split=config.data.train_split,
         val_split=config.data.val_split,
     )
+    if cached is None:
+        cached = load_scan_cache(
+            shared,
+            manifest_digest=stream_digest,
+            seed=config.seeds.data_seed,
+            ratios=ratios,
+            train_split=config.data.train_split,
+            val_split=config.data.val_split,
+        )
+        if cached is not None:
+            print("phase: scan-cache shared hit", flush=True)
+            save_scan_cache(
+                cache_file,
+                manifest_digest=stream_digest,
+                seed=config.seeds.data_seed,
+                ratios=ratios,
+                train_split=config.data.train_split,
+                val_split=config.data.val_split,
+                scan=dict(cached),
+            )
     if cached is not None:
         try:
             return _scan_report(
@@ -1626,6 +1692,26 @@ def _scan_corpus_cached(
     report = _scan_corpus(manifest, config=config, ratios=ratios)
     save_scan_cache(
         cache_file,
+        manifest_digest=stream_digest,
+        seed=config.seeds.data_seed,
+        ratios=ratios,
+        train_split=config.data.train_split,
+        val_split=config.data.val_split,
+        scan={
+            "train_walls": sorted(report.train_walls),
+            "val_walls": sorted(report.val_walls),
+            "train_games": report.train_games,
+            "val_games": report.val_games,
+            "train_sim_games": report.train_sim_games,
+            "val_sim_games": report.val_sim_games,
+            "framed": report.framed,
+            "emitted": report.emitted,
+            "quarantined": report.quarantined,
+            "duplicates": report.duplicates,
+        },
+    )
+    save_scan_cache(
+        shared,
         manifest_digest=stream_digest,
         seed=config.seeds.data_seed,
         ratios=ratios,
@@ -2739,7 +2825,10 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
             raise ContractError(f"resume checkpoint missing: {resume.checkpoint}")
 
     run_dir = create_run_layout(config)
+    _t_launch = time.perf_counter()
     manifest = build_manifest(config.data.root)
+    _dt = time.perf_counter() - _t_launch
+    print(f"phase: manifest files={len(manifest)} t={_dt:.1f}s", flush=True)
     if len(manifest) == 0:
         raise ContractError(f"stream manifest empty under {config.data.root}")
     stream_digest = manifest_digest(manifest)
@@ -2752,8 +2841,13 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
 
     # Pre-train scan: wall-disjointness + eval ledger + quarantine counts,
     # all before any runtime object exists (content-hash cache; miss → scan).
+    _t_scan = time.perf_counter()
     scan = _scan_corpus_cached(
         manifest, config=config, ratios=ratios, stream_digest=stream_digest, run_dir=run_dir
+    )
+    print(
+        f"phase: scan train_games={scan.train_games} elapsed={time.perf_counter() - _t_scan:.1f}s",
+        flush=True,
     )
     if scan.train_games == 0:
         raise ContractError(f"train split empty: no games in {config.data.train_split!r}")
@@ -3093,6 +3187,7 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
         counters_fn=lambda: (int(_sampled_loop.state.global_update), 0),
     )
     _ = sampler.start()
+    print(f"phase: runtime-ready elapsed={time.perf_counter() - _t_launch:.1f}s", flush=True)
     # Profiler captures: first K checkpoint boundaries past warmup (compile
     # noise), bounded by the run window. Each captures exactly one update.
     profile_updates: set[int] = set()
@@ -3113,6 +3208,7 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
         gc.collect()
         gc.freeze()
     try:
+        _t_first = time.perf_counter()
         while done < remaining:
             step = min(ckpt_every, remaining - done)
             done = _train_segment(
@@ -3124,7 +3220,9 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
                 train_log=run_dir / "logs" / "train.log",
                 cuda_ok=_profile_cuda,
             )
-            # Accumulate this segment's per-microbatch walls (observer-only).
+            if done <= ckpt_every:
+                _dt = time.perf_counter() - _t_first
+                print(f"phase: seg updates={done} t={_dt:.1f}s", flush=True)
             telemetry_all.extend(loop.telemetry_records)
             telemetry_updates.extend(loop.update_records)
             with open(telemetry_path, "a", encoding="utf-8") as sink:

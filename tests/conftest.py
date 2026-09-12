@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 from datetime import UTC, datetime
 
 os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
@@ -27,6 +28,13 @@ os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 # fast (no file-store writes, no system-metrics monitor thread). Mirror tests
 # re-enable explicitly via monkeypatch.
 os.environ.setdefault("HYDRA2_MLFLOW_DISABLED", "1")
+# Shared scan cache: production defaults to ~/.cache (cross-run reuse);
+# tests stay hermetic in a per-process scratch dir (tmp_path-only rule).
+# Precedent: TORCHINDUCTOR_CACHE_DIR below is likewise process-scoped.
+os.environ.setdefault(
+    "HYDRA2_SCAN_CACHE_DIR",
+    tempfile.mkdtemp(prefix=f"hydra2-test-scan-cache-{os.getpid()}-"),
+)
 # Device-side asserts (_assert_async) poison the shared CUDA context on fire,
 # which would cascade across the serial lane. Tests pin the exact host
 # ContractError/IllegalActionError instead; production (unset) takes the
