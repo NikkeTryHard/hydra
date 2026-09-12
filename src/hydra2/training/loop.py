@@ -1431,7 +1431,9 @@ class SupervisedLoop:
             # Wave-3C: optimizer phase timed (probe+clip+step+scheduler+zero);
             # logging phase timed separately below (deferred single-sync means).
             _opt_t0 = time.perf_counter()
+            _opt_debug = os.environ.get("HYDRA2_OPT_DEBUG") == "1" and self.state.global_update < 8
             _grads_finite, _grad_norm = global_grad_norm_is_finite(self.model)
+            _t_probe = time.perf_counter()
             if not _grads_finite:
                 self.optimizer.zero_grad(set_to_none=True)
                 _optimizer_ms = (time.perf_counter() - _opt_t0) * 1000.0
@@ -1503,11 +1505,22 @@ class SupervisedLoop:
                     self.model.parameters(), self.config.gradient_clip_norm
                 )
 
+            _t_clip = time.perf_counter()
             self.optimizer.step()
+            _t_step = time.perf_counter()
             if self.scheduler is not None:
                 self.scheduler.step()
             self.optimizer.zero_grad(set_to_none=True)
             _optimizer_ms = (time.perf_counter() - _opt_t0) * 1000.0
+            if _opt_debug:
+                print(
+                    f"phase: opt u={self.state.global_update} "
+                    f"probe={(_t_probe - _opt_t0) * 1000:.1f}ms "
+                    f"clip={(_t_clip - _t_probe) * 1000:.1f}ms "
+                    f"step={(_t_step - _t_clip) * 1000:.1f}ms "
+                    f"tail={(_optimizer_ms - (_t_step - _opt_t0) * 1000):.1f}ms",
+                    flush=True,
+                )
 
             self.state.global_update += 1
             snap_epoch2: int = (
