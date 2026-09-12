@@ -1,162 +1,168 @@
 #!/usr/bin/env bash
-# Autoresearch harness SEGMENT 6: production-feed training rows/s (feed+compute).
-# Workload: F11 saturated corpus (64x .mjai.json.zst, 768 games / 3456 decisions)
-# through the PRODUCTION path: _StreamDataset (rust backend, BC, seeded) ->
-# next_batch(micro=288, exact divisor of 3456 so drop_last keeps all rows) ->
-# compiled Hydra2BaselineModel fwd+bwd (AdamW, masked CE), sequential.
-# Warmup 1 pass (untimed, absorbs inductor compile), 3 timed passes,
-# primary = median rows/s.
-# Anti-gaming (ALL must pass or NO metric is emitted -> run crashes):
-#  1. corpus sha256 pinned against bench/bench_corpus_manifest.json
-#  2. every pass: staged==3456, consumed==3456, games==768, loss finite
-#  3. CUDA required (fail closed; CPU fallback would fake the number)
-#  4. dual-clock: script wall-sum <= external elapsed <= script + 15s
+# Autoresearch harness: sustained-GPU training (production streaming path).
+# Workload: configs/training/probe-recompiles.yaml, 150 supervised updates,
+# fixed seed, Tenhou houou 2024 slice, full production path (prefetch workers,
+# expand pool, pinned-ring H2D, compiled model, GC freeze). Deterministic work:
+# same seed + same corpus order every run; update 0 absorbs inductor compile.
+# Primary: mean SM utilization % inside the exact run window (higher = fewer gaps).
+# Anti-gaming (ALL must pass or NO metric is emitted):
+#  1. CUDA required (nvidia-smi present, dmon yields windowed samples; CPU lane fails).
+#  2. HYDRA2_DATA_ROOT must hold tenhou-houou-mjai-2024 (fail closed, no tiny-corpus shortcut).
+#  3. exactly 150 microbatch rows, global_update 0..149, from this run's dir (fail closed, no fallback).
+#  4. loss finite on all 150 metrics.jsonl rows; stdout must read `train: updates 0->150`.
+#  5. dual-clock: windowed 1Hz SM sample count vs external elapsed agree within 8s.
+#  6. work pins emitted (config digest, corpus file-list hash, train/val game counts).
 set -u
 set -o pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CORPUS="${ROOT}/bench/corpus/f11-saturated"
-MANIFEST="${ROOT}/bench/bench_corpus_manifest.json"
-REPLAY_RS="${ROOT}/tools/hydra2-replay-rs"
-MICRO=288
-PASSES=3
-EXP_ROWS=3456
-EXP_GAMES=768
-EXP_FILES=64
+CFG="configs/training/probe-recompiles.yaml"
+EXP_UPDATES=150
 SCRATCH="$(mktemp -d)"
 trap 'rm -rf "${SCRATCH}"' EXIT
 fail() { echo "HARNESS FAIL: $1" >&2; exit 1; }
 
 cd "${ROOT}" || exit 1
 command -v nvidia-smi >/dev/null 2>&1 || fail "nvidia-smi missing (GPU harness)"
+command -v pixi >/dev/null 2>&1 || fail "pixi missing"
+[ -f "${CFG}" ] || fail "probe config missing: ${CFG}"
+[ -n "${HYDRA2_DATA_ROOT:-}" ] || fail "HYDRA2_DATA_ROOT unset (mount the corpus)"
+[ -d "${HYDRA2_DATA_ROOT}/tenhou-houou-mjai-2024" ] \
+    || fail "tenhou-houou-mjai-2024 missing under HYDRA2_DATA_ROOT"
 
-# --- 1. corpus pin: 64 files, every sha present in the pinned manifest ---
-[ -d "${CORPUS}" ] || fail "corpus dir missing"
-[ "$(ls "${CORPUS}"/*.zst | wc -l)" -eq "${EXP_FILES}" ] || fail "corpus file count != ${EXP_FILES}"
-while read -r h f; do
-    grep -q "${h}" "${MANIFEST}" || fail "corpus sha not in manifest: ${f}"
-done < <(sha256sum "${CORPUS}"/*.zst)
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
+export PYTHONUNBUFFERED=1
+export HYDRA2_ARTIFACT_ROOT="${SCRATCH}/artifacts"
+[ "$(ls -U "${HYDRA2_DATA_ROOT}/tenhou-houou-mjai-2024" | grep -c '\.zst$')" -gt 1000 ] \
+    || fail "corpus slice looks truncated (need the full 2024 slice)"
 
-# --- 2. build release extension (not timed) ---
-PIXI_PY="${ROOT}/.pixi/envs/default/bin/python"
-[ -x "${PIXI_PY}" ] || fail "pixi python missing"
-export PYO3_PYTHON="${PIXI_PY}"
-cargo build --release --quiet -p hydra2-replay-rs --manifest-path "${REPLAY_RS}/Cargo.toml" \
-    2>"${SCRATCH}/build.log" || { tail -5 "${SCRATCH}/build.log" >&2; fail "build failed"; }
-BUILT="${REPLAY_RS}/target/release/libhydra2_replay_rs.so"
-[ -f "${BUILT}" ] || fail "cdylib missing after build"
-SUF="$("${PIXI_PY}" -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")"
-mkdir -p "${SCRATCH}/hydra_ext"
-cp "${BUILT}" "${SCRATCH}/hydra_ext/hydra2_replay_rs${SUF}" || fail "ext stage failed"
-
-# --- 3. timed production-path training passes (external dual-clock) ---
-cat >"${SCRATCH}/train_burst.py" <<'PYEOF'
-import os, sys, time
-sys.path.insert(0, sys.argv[1])
-os.environ["HYDRA2_ARTIFACT_ROOT"] = sys.argv[2]
-corpus, micro, passes = sys.argv[3], int(sys.argv[4]), int(sys.argv[5])
-import torch
-assert torch.cuda.is_available(), "GPU harness requires CUDA"
-torch.manual_seed(0)
-from hydra2.data.stream import GameStream, build_manifest
-from hydra2.models.schema import BASELINE_ACTION_COUNT
-from hydra2.training import stream_train as driver
-from hydra2.models.model import Hydra2BaselineModel
-import torch.nn.functional as F
-manifest = build_manifest(corpus)
-model = Hydra2BaselineModel().cuda().train()
-for _layer in model.layers:
-    _layer.attn_bf16 = True
-model = torch.compile(model)
-opt = torch.optim.AdamW(model.parameters(), lr=3e-4)
-
-def run_pass():
-    staged = consumed = games = 0
-    feed_s = step_s = 0.0
-    loss_last = float("nan")
-    t0 = time.perf_counter()
-    ds = driver._StreamDataset(
-        stream_factory=lambda: GameStream(manifest, seed=7, ratios={"train": 1.0}, split=None),
-        num_actions=BASELINE_ACTION_COUNT, feature_dim=64, seed=7,
-        drop_last=True, need_privileged=False, replay_backend="rust",
-    )
-    from hydra2.models.encoder import ActorTensorBatch
-    try:
-        f0 = time.perf_counter()
-        while ds._pull_game():
-            pass
-        feed_s += time.perf_counter() - f0
-        staged = len(ds._rows)
-        games = ds.replayed + ds.sim_replayed
-        while consumed < staged:
-            f0 = time.perf_counter()
-            batch = ds.next_batch(micro)
-            ab0 = batch["actor_batch"]
-            feats = {k: v.cuda(non_blocking=True) for k, v in ab0.features.items()}
-            ab = ActorTensorBatch(features=feats, history_mask=feats["history_mask"],
-                                  legal_mask=feats["legal_mask"], observation_hashes=(),
-                                  actor_seats=feats["actor"])
-            ch = batch["chosen_action_id"].cuda(non_blocking=True)
-            torch.cuda.current_stream().synchronize()
-            feed_s += time.perf_counter() - f0
-            s0 = time.perf_counter()
-            out = model(ab)
-            loss = F.cross_entropy(
-                out.policy_logits.masked_fill(~ab.legal_mask, float("-inf")), ch)
-            opt.zero_grad(set_to_none=True)
-            loss.backward()
-            opt.step()
-            step_s += time.perf_counter() - s0
-            consumed += int(ch.shape[0])
-            loss_last = float(loss.detach().item())
-    finally:
-        ds.close()
-    torch.cuda.synchronize()
-    wall = time.perf_counter() - t0
-    return staged, consumed, games, wall, feed_s, step_s, loss_last
-
-wb = run_pass()
-assert (wb[0], wb[1], wb[2]) == (3456, 3456, 768), f"warmup counts {wb[:3]}"
-import math
-assert math.isfinite(wb[6]), "warmup loss non-finite"
-rates = []
-for _ in range(passes):
-    r = run_pass()
-    assert (r[0], r[1], r[2]) == (3456, 3456, 768), f"counts {r[:3]}"
-    assert math.isfinite(r[6]), "loss non-finite"
-    rates.append((3456 / r[3], r[3], r[4], r[5], r[6]))
-rates.sort()
-med = rates[len(rates) // 2]
-print(f"TRAIN rows_s={med[0]:.1f} wall_s={med[1]:.3f} feed_s={med[2]:.3f} "
-      f"step_s={med[3]:.3f} loss={med[4]:.4f} staged=3456 consumed=3456 games=768 warmup_s={wb[3]:.3f}")
-PYEOF
-
-ART="${SCRATCH}/artifacts"
-mkdir -p "${ART}"
+# --- timed production run + timestamped SM sampler ---
+LOAD_BEFORE="$(cat /proc/loadavg)"
+nvidia-smi dmon -s u -o DT -d 1 -f "${SCRATCH}/sm.log" >/dev/null 2>&1 &
+SM_PID=$!
+cleanup_sm() { kill "${SM_PID}" 2>/dev/null || true; wait "${SM_PID}" 2>/dev/null || true; }
+trap 'cleanup_sm; rm -rf "${SCRATCH}"' EXIT
+sleep 2  # let sampler settle before training starts
 EXT_START=$(date +%s%N)
-CUBLAS_WORKSPACE_CONFIG=:4096:8 pixi run python "${SCRATCH}/train_burst.py" \
-    "${SCRATCH}/hydra_ext" "${ART}" "${CORPUS}" "${MICRO}" "${PASSES}" \
-    >"${SCRATCH}/train.log" 2>&1 || { tail -20 "${SCRATCH}/train.log" >&2; fail "train burst failed"; }
+WIN_START="$(date +"%Y%m%d %H:%M:%S")"
+pixi run hydra2 train "${CFG}" >"${SCRATCH}/train.log" 2>&1 \
+    || { tail -20 "${SCRATCH}/train.log" >&2; fail "train failed"; }
 EXT_END=$(date +%s%N)
-grep -q "TRAIN " "${SCRATCH}/train.log" || fail "TRAIN line missing"
-grep -q "staged=3456 consumed=3456 games=768" "${SCRATCH}/train.log" \
-    || fail "staged/consumed/games != 3456/3456/768"
-RATE="$(grep -oP "rows_s=\K[0-9.]+" "${SCRATCH}/train.log" | head -1)"
-WALL="$(grep -oP "wall_s=\K[0-9.]+" "${SCRATCH}/train.log" | head -1)"
-FEED="$(grep -oP "feed_s=\K[0-9.]+" "${SCRATCH}/train.log" | head -1)"
-STEP="$(grep -oP "step_s=\K[0-9.]+" "${SCRATCH}/train.log" | head -1)"
-WARM="$(grep -oP "warmup_s=\K[0-9.]+" "${SCRATCH}/train.log" | head -1)"
-[ -n "${RATE}" ] && [ -n "${WALL}" ] || fail "metric parse failed"
+WIN_END="$(date +"%Y%m%d %H:%M:%S")"
+LOAD_AFTER="$(cat /proc/loadavg)"
+cleanup_sm
+trap 'rm -rf "${SCRATCH}"' EXIT
+
+RUN_DIR="$(grep -oP 'run_dir\S* \K\S+' "${SCRATCH}/train.log" | head -1)"
+[ -n "${RUN_DIR}" ] || fail "run_dir missing from train output (no stale-run fallback)"
+[ -d "${RUN_DIR}" ] || fail "run dir not found"
+FEED="${RUN_DIR}/logs/feed-telemetry.jsonl"
+METRICS_JSONL="${RUN_DIR}/logs/metrics.jsonl"
+[ -f "${FEED}" ] || fail "feed-telemetry missing: ${FEED}"
+[ -f "${METRICS_JSONL}" ] || fail "metrics.jsonl missing: ${METRICS_JSONL}"
+grep -q "train: updates 0->150" "${SCRATCH}/train.log" || fail "updates != 0->150"
+CONFIG_DIGEST="$(grep -oP 'digest:\s*\K\S+' "${SCRATCH}/train.log" | head -1)"
+[ -n "${CONFIG_DIGEST}" ] || fail "config digest missing from train output"
+
+# --- metric extraction (python stdlib only) ---
+export HARNESS_FEED="${FEED}" HARNESS_MJSONL="${METRICS_JSONL}" HARNESS_SM="${SCRATCH}/sm.log"
+export HARNESS_OUT="${SCRATCH}/metrics.txt" HARNESS_CORPUS="${HYDRA2_DATA_ROOT}/tenhou-houou-mjai-2024"
+export HARNESS_EXT_S="$(( (EXT_END - EXT_START) / 1000000000 ))"
+export HARNESS_WIN_START="${WIN_START}" HARNESS_WIN_END="${WIN_END}"
+pixi run python - >"${SCRATCH}/extract.log" 2>&1 <<'PYEOF' || { tail -20 "${SCRATCH}/extract.log" >&2; fail "extract failed"; }
+import hashlib, json, math, os, re, statistics
+feed, mj, smpath, outp = (os.environ["HARNESS_FEED"], os.environ["HARNESS_MJSONL"],
+                          os.environ["HARNESS_SM"], os.environ["HARNESS_OUT"])
+rows = []
+with open(feed) as fh:
+    for line in fh:
+        line = line.strip()
+        if line:
+            rows.append(json.loads(line))
+mb = [r for r in rows if r.get("kind") == "microbatch"]
+assert len(mb) == 150, f"microbatch rows {len(mb)} != 150"
+ups = sorted(r["global_update"] for r in mb)
+assert ups == list(range(150)), "global_update not exactly 0..149"
+loss_rows = []
+with open(mj) as fh:
+    for line in fh:
+        line = line.strip()
+        if line:
+            loss_rows.append(json.loads(line))
+assert len(loss_rows) == 150, f"metrics rows {len(loss_rows)} != 150"
+for r in loss_rows:
+    assert math.isfinite(float(r["total"])), f"non-finite loss at update {r.get('global_update')}"
+comp = sorted(r["compute_ms"] for r in mb)
+fetch = sorted(r["fetch_decode_ms"] for r in mb)
+queue = sorted(r["queue_wait_ms"] for r in mb)
+w0, w1 = os.environ["HARNESS_WIN_START"], os.environ["HARNESS_WIN_END"]
+sm_col = None
+sm = []
+with open(smpath) as fh:
+    for line in fh:
+        toks = line.replace("#", " ").split()
+        if len(toks) < 4:
+            continue
+        if toks[0].isalpha():
+            if "sm" in [t.lower() for t in toks]:
+                sm_col = [t.lower() for t in toks].index("sm")
+            continue
+        if sm_col is None or not re.fullmatch(r"\d{8}", toks[0]):
+            continue
+        if not re.fullmatch(r"\d{2}:\d{2}:\d{2}", toks[1]):
+            continue
+        stamp = toks[0] + " " + toks[1]
+        if not (w0 <= stamp <= w1):
+            continue
+        try:
+            sm.append(float(toks[sm_col]))
+        except (IndexError, ValueError):
+            continue
+assert sm_col is not None, "dmon header with sm column not found"
+assert len(sm) > 60, f"too few windowed SM samples: {len(sm)}"
+ext_s = int(os.environ["HARNESS_EXT_S"])
+assert abs(len(sm) - ext_s) <= 8, f"sampler clock drift: {len(sm)} samples vs {ext_s}s"
+names = sorted(os.listdir(os.environ["HARNESS_CORPUS"]))
+names = [n for n in names if n.endswith(".zst")]
+assert len(names) > 1000, "corpus file list truncated"
+h = hashlib.sha256()
+for n in names:
+    h.update(f"{n}:{os.path.getsize(os.path.join(os.environ['HARNESS_CORPUS'], n))}\n".encode())
+with open(outp, "w") as fh:
+    fh.write(f"sm_mean={statistics.fmean(sm):.2f}\n")
+    fh.write(f"sm_p50={statistics.median(sm):.2f}\n")
+    fh.write(f"sm_n={len(sm)}\n")
+    fh.write(f"compute_worst={comp[-1]:.1f}\n")
+    fh.write(f"compute_p99={comp[int(0.99 * (len(comp) - 1))]:.1f}\n")
+    fh.write(f"fetch_worst={fetch[-1]:.1f}\n")
+    fh.write(f"queue_worst={queue[-1]:.1f}\n")
+    fh.write(f"corpus_hash={h.hexdigest()[:16]}\n")
+    fh.write(f"corpus_files={len(names)}\n")
+PYEOF
+# shellcheck disable=SC1090
+source "${SCRATCH}/metrics.txt"
+[ -n "${sm_mean:-}" ] && [ -n "${corpus_hash:-}" ] || fail "metric parse failed"
+
+# --- persist audit bundle outside scratch ---
+BUNDLE="${HOME}/tmp/harness-$(date +%Y%m%d-%H%M%S)"
+mkdir -p "${BUNDLE}"
+cp "${SCRATCH}/train.log" "${SCRATCH}/sm.log" "${SCRATCH}/metrics.txt" "${BUNDLE}/"
+cp "${FEED}" "${METRICS_JSONL}" "${BUNDLE}/"
+{
+    echo "load_before: ${LOAD_BEFORE}"; echo "load_after: ${LOAD_AFTER}"
+    echo "config_digest: ${CONFIG_DIGEST}"
+} >"${BUNDLE}/provenance.txt"
+
 EXT_MS="$(( (EXT_END - EXT_START) / 1000000 ))"
-BUSY="$(awk -v s="$STEP" -v w="$WALL" 'BEGIN {printf "%d", 100*s/w}')"
-SCRIPT_MS="$(awk -v w="$WALL" -v p="$PASSES" -v u="$WARM" 'BEGIN {printf "%d", (w*p+u)*1000}')"
-awk -v s="$SCRIPT_MS" -v e="$EXT_MS" 'BEGIN { if (!(s <= e && e <= s + 15000)) exit 1 }' \
-    || fail "wall anomaly script_sum=${SCRIPT_MS}ms external=${EXT_MS}ms"
-STEPMS="$(awk -v s="$STEP" -v r="$EXP_ROWS" -v m="$MICRO" 'BEGIN {printf "%.2f", s/(r/m)*1000}')"
-FEEDRATE="$(awk -v r="$EXP_ROWS" -v f="$FEED" 'BEGIN {printf "%.0f", r/f}')"
-echo "METRIC train_rows_per_sec=${RATE}"
+UPS="$(awk -v e="$EXT_MS" 'BEGIN {printf "%.3f", 150/(e/1000)}')"
+echo "METRIC gpu_sm_util_pct=${sm_mean}"
+echo "METRIC sm_p50_pct=${sm_p50}"
+echo "METRIC updates_per_sec=${UPS}"
+echo "METRIC compute_worst_ms=${compute_worst}"
+echo "METRIC compute_p99_ms=${compute_p99}"
+echo "METRIC fetch_worst_ms=${fetch_worst}"
+echo "METRIC queue_worst_ms=${queue_worst}"
 echo "METRIC wall_seconds=$(awk -v e="$EXT_MS" 'BEGIN {printf "%.3f", e/1000}')"
-echo "METRIC rows_staged=${EXP_ROWS}"
-echo "METRIC rejects=0"
-echo "METRIC gpu_util_pct=${BUSY}"
-echo "METRIC step_ms=${STEPMS}"
-echo "METRIC feed_rows_per_sec=${FEEDRATE}"
+echo "METRIC corpus_hash=${corpus_hash}"
+echo "METRIC corpus_files=${corpus_files}"
+echo "METRIC config_digest=${CONFIG_DIGEST}"
+echo "BUNDLE ${BUNDLE}"
