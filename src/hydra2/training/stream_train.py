@@ -917,9 +917,15 @@ class _StreamDataset:
         and any other worker failure propagates. Terminal exhaustion raises
         the serial messages verbatim.
         """
+        _t_pool = time.perf_counter() if self._offset == 0 else 0.0
         pool = self._get_expand_pool()
         workers = max(1, self._expand_workers)
         while self._live_count() < need:
+            first_fill = self._offset == 0
+            if first_fill and _t_pool > 0.0:
+                print(f"phase: pool init={time.perf_counter() - _t_pool:.1f}s", flush=True)
+                _t_pool = 0.0
+            _t_round = time.perf_counter() if first_fill else 0.0
             batch = self._pull_streamed_batch(self._expand_batch_games)
             if len(batch) == 0:
                 if self._live_count() == 0 and self._offset == 0:
@@ -929,6 +935,7 @@ class _StreamDataset:
                     "(single-pass: stream end with updates remaining; "
                     "rescope loop.max_updates to supply)"
                 )
+            _t_pull = time.perf_counter() if first_fill else 0.0
             size = max(1, (len(batch) + workers - 1) // workers)
             chunks = [batch[i : i + size] for i in range(0, len(batch), size)]
             futures = [
@@ -960,6 +967,13 @@ class _StreamDataset:
                         continue
                     _, row_dicts, priv_pairs, sim_path = result
                     self._merge_expanded(streamed, (row_dicts, priv_pairs, sim_path))
+            if first_fill:
+                _now = time.perf_counter()
+                print(
+                    f"phase: fill games={len(batch)} pull={_t_pull - _t_round:.1f}s "
+                    f"expand={_now - _t_pull:.1f}s",
+                    flush=True,
+                )
 
     def _track_buffered(self, streamed: Any, row_count: int) -> None:
         """Index one buffered game for fast-resume verbatim rebuild (whole-game)."""
