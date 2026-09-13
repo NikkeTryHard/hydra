@@ -190,6 +190,15 @@ def masked_cross_entropy(
     batch_idx = torch.arange(targets.shape[0], device=targets.device)
     if not torch.compiler.is_compiling():
         _check_targets_legal(legal_mask, targets)
+    # Fused-CE fast path (exact formula, Triton custom op; see fused_ce.py):
+    # CUDA + triton + bf16/fp32 dense logits only. Trace-safe gates, zero
+    # syncs; lazy import keeps CPU-only import cost at zero. The eager
+    # fallback below is unchanged for all other cases.
+    if logits.is_cuda and logits.dtype in (torch.bfloat16, torch.float32):
+        from hydra2.training.fused_ce import TRITON_AVAILABLE, fused_masked_ce_row_losses
+
+        if TRITON_AVAILABLE and legal_mask.is_cuda and targets.is_cuda:
+            return fused_masked_ce_row_losses(logits, legal_mask, targets.long(), eps).mean()
     # Dense masked math (byte-identical): mask illegals to -inf over full
     # [B,A].  A legal-subspace gather was tried here (static-Lb scatter):
     # measured 2.5x SLOWER wall (0.30 vs 0.12ms @B2048/A6792/Lb64) and +110MB

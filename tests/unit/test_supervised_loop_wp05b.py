@@ -306,6 +306,53 @@ def test_masked_bc_objective_ignores_illegal_logits() -> None:
     assert float(logits.grad[1, 0].item()) == pytest.approx(0.0, abs=1e-6)
 
 
+@pytest.mark.gpu
+def test_fused_ce_matches_eager_forward_backward(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fused Triton CE agrees with the eager path (production fast path).
+
+    Guards the masked_cross_entropy CUDA branch: identical loss (tight),
+    close grads (reduction-order noise only), exact-zero illegal grads.
+    Fails without the fused kernel (no reference to agree with) and on any
+    formula drift in either path.
+    """
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA device")
+    fused_ce = pytest.importorskip("hydra2.training.fused_ce")
+    if not fused_ce.TRITON_AVAILABLE:
+        pytest.skip("needs triton")
+    gen = torch.Generator(device="cpu").manual_seed(20260912)
+    b, a = 64, 1536
+    logits = (torch.randn(b, a, generator=gen) * 3).to(torch.bfloat16).cuda()
+    legal = (torch.rand(b, a, generator=gen) < 0.02).cuda()
+    legal[torch.arange(b), torch.randint(a, (b,), generator=gen)] = True
+    tgt_list = []
+    for i in range(b):
+        li = torch.nonzero(legal[i], as_tuple=False).squeeze(1)
+        tgt_list.append(int(li[int(torch.randint(len(li), (1,), generator=gen).item())]))
+    targets = torch.tensor(tgt_list, dtype=torch.long).cuda()
+    eps = 0.03
+    # Eager reference: force the fallback path via the availability flag
+    # (same function, untaken branch — otherwise this test is a tautology).
+    monkeypatch.setattr(fused_ce, "TRITON_AVAILABLE", False)
+    le = logits.detach().clone().requires_grad_(True)
+    loss_e = masked_cross_entropy(le, targets, legal, label_smoothing=eps)
+    loss_e.backward()
+    monkeypatch.setattr(fused_ce, "TRITON_AVAILABLE", True)
+    lf = logits.detach().clone().requires_grad_(True)
+    row = fused_ce.fused_masked_ce_row_losses(lf, legal, targets, eps)
+    loss_f = row.mean()
+    loss_f.backward()
+    d = (le.grad.detach().float() - lf.grad.detach().float()).abs()
+    assert float(d.max()) < 1e-3, float(d.max())
+    assert float(lf.grad.detach()[~legal].abs().max()) == 0.0
+    assert abs(float(loss_e) - float(loss_f)) < 1e-4, (float(loss_e), float(loss_f))
+    # Production wiring: masked_cross_entropy's fused branch must return the
+    # same mean (pins branch-taken + reduction, not just the op).
+    loss_w = masked_cross_entropy(logits.detach(), targets, legal, label_smoothing=eps)
+    assert abs(float(loss_w) - float(loss_f)) < 1e-6, (float(loss_w), float(loss_f))
+
+
 def test_masked_bc_rejects_illegal_target_and_all_false(tmp_path: Path) -> None:
     logits = torch.randn(2, 4)
     legal_mask = torch.ones(2, 4, dtype=torch.bool)
