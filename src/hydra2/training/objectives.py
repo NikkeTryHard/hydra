@@ -257,6 +257,19 @@ def compute_hot_scalars(
     (:func:`compute_metrics`). Keys mirror the :func:`compute_metrics`
     subset so hot entries keep ``masked_nll``/``top1`` continuity.
     """
+    # Fused reporting fast path (exact NLL + top1, one Triton op; see
+    # fused_ce.py): CUDA + triton + bf16/fp32 only. Same 2 host syncs, same
+    # keys; the eager fallback below is unchanged for all other cases.
+    if logits.is_cuda and logits.dtype in (torch.bfloat16, torch.float32):
+        from hydra2.training.fused_ce import TRITON_AVAILABLE, fused_hot_scalars
+
+        if TRITON_AVAILABLE and legal_mask.is_cuda and targets.is_cuda:
+            targets_long = targets.long() if targets.dtype != torch.long else targets
+            nll_vec, ok_vec = fused_hot_scalars(logits, legal_mask, targets_long)
+            return {
+                "masked_nll": float(nll_vec.mean().item()),
+                "top1": float(ok_vec.float().mean().item()),
+            }
     logits_fp32 = logits.to(torch.float32)
     masked_logits = logits_fp32.masked_fill(~legal_mask, _MASKED_LOGIT_NEG)
     log_prob = F.log_softmax(masked_logits, dim=-1)

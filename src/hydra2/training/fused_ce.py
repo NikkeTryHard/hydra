@@ -44,7 +44,7 @@ except Exception:
 triton = cast(Any, triton)  # noqa: TC006  # reason: pyrefly needs the Any object, not the string form
 tl = cast(Any, tl)  # noqa: TC006  # reason: same
 
-__all__ = ["TRITON_AVAILABLE", "fused_masked_ce_row_losses"]
+__all__ = ["TRITON_AVAILABLE", "fused_hot_scalars", "fused_masked_ce_row_losses"]
 
 TRITON_AVAILABLE: bool = _TRITON_OK
 
@@ -144,6 +144,49 @@ if tl is not None and triton is not None:
             dx = tl.where(mk, dx * g, 0.0)
             tl.store(dx_ptr + row + a, dx.to(tl.bfloat16), mask=ok)
 
+    @triton.jit
+    def _hot_kernel(
+        x_ptr,
+        mask_ptr,
+        tgt_ptr,
+        nll_ptr,
+        ok_ptr,
+        A: tl.constexpr,
+        BLOCK: tl.constexpr,
+    ):
+        """Per-row NLL + top1-correct. Argmax fuses into the max pass."""
+        b = tl.program_id(0)
+        offs = tl.arange(0, BLOCK)
+        row = b * A
+        # Pass 1: legal max + its (first, lowest-index) position.
+        m = float("-inf")
+        am = 0
+        for a0 in range(0, A, BLOCK):
+            a = a0 + offs
+            ok = a < A
+            mk = tl.load(mask_ptr + row + a, mask=ok)
+            xv = tl.load(x_ptr + row + a, mask=ok, other=float("-inf")).to(tl.float32)
+            xm = tl.where(mk, xv, float("-inf"))
+            bm = tl.max(xm)
+            take = bm > m
+            # tl.argmax returns the first (lowest) max position, matching
+            # topk(k=1) order on non-tied rows (ties are measure-zero).
+            am = tl.where(take, (a0 + tl.argmax(xm, axis=0)).to(tl.int32), am)
+            m = tl.maximum(m, bm)
+        # Pass 2: exp-sum for the LSE.
+        Q = 0.0
+        for a0 in range(0, A, BLOCK):
+            a = a0 + offs
+            ok = a < A
+            mk = tl.load(mask_ptr + row + a, mask=ok)
+            xv = tl.load(x_ptr + row + a, mask=ok, other=float("-inf")).to(tl.float32)
+            Q += tl.sum(tl.where(mk, tl.exp(xv - m), 0.0))
+        lse = m + tl.log(Q)
+        xt = tl.load(x_ptr + row + tl.load(tgt_ptr + b)).to(tl.float32)
+        t = tl.load(tgt_ptr + b).to(tl.int32)
+        tl.store(nll_ptr + b, lse - xt)
+        tl.store(ok_ptr + b, (am == t).to(tl.int32))
+
 
 @torch.library.custom_op("hydra2::fused_masked_ce", mutates_args=())
 def fused_masked_ce_row_losses(
@@ -210,3 +253,32 @@ def _fused_ce_backward(ctx: Any, grad_out: torch.Tensor) -> tuple[Any, None, Non
 torch.library.register_autograd(
     "hydra2::fused_masked_ce", _fused_ce_backward, setup_context=_fused_ce_setup
 )
+
+
+@torch.library.custom_op("hydra2::fused_hot_scalars", mutates_args=())
+def fused_hot_scalars(
+    logits: torch.Tensor, legal_mask: torch.Tensor, targets: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Per-row reporting pair: ``(nll fp32 [B], correct int32 [B])``.
+
+    Reporting-only (no autograd formula): callers pass detached tensors
+    (the loop does). Exact NLL; top1 matches topk(k=1) on non-tied rows
+    (first-max tie order, ties measure-zero on real logits).
+    """
+    if not TRITON_AVAILABLE or triton is None:
+        raise RuntimeError("fused_hot_scalars needs triton")
+    b, a = logits.shape
+    nll = torch.empty((b,), device=logits.device, dtype=torch.float32)
+    ok = torch.empty((b,), device=logits.device, dtype=torch.int32)
+    _hot_kernel[(b,)](logits, legal_mask, targets, nll, ok, a, 2048, num_warps=8)
+    return nll, ok
+
+
+@fused_hot_scalars.register_fake
+def _hot_fake(
+    logits: torch.Tensor, legal_mask: torch.Tensor, targets: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    return (
+        torch.empty((logits.shape[0],), device=logits.device, dtype=torch.float32),
+        torch.empty((logits.shape[0],), device=logits.device, dtype=torch.int32),
+    )

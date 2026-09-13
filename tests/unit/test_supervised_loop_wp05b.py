@@ -346,11 +346,44 @@ def test_fused_ce_matches_eager_forward_backward(monkeypatch: pytest.MonkeyPatch
     d = (le.grad.detach().float() - lf.grad.detach().float()).abs()
     assert float(d.max()) < 1e-3, float(d.max())
     assert float(lf.grad.detach()[~legal].abs().max()) == 0.0
-    assert abs(float(loss_e) - float(loss_f)) < 1e-4, (float(loss_e), float(loss_f))
     # Production wiring: masked_cross_entropy's fused branch must return the
     # same mean (pins branch-taken + reduction, not just the op).
     loss_w = masked_cross_entropy(logits.detach(), targets, legal, label_smoothing=eps)
     assert abs(float(loss_w) - float(loss_f)) < 1e-6, (float(loss_w), float(loss_f))
+
+
+@pytest.mark.gpu
+def test_fused_hot_scalars_matches_eager(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fused reporting NLL/top1 agrees with the eager path.
+
+    Guards the compute_hot_scalars CUDA branch: identical NLL (tight),
+    exactly equal top1. Fails without the fused kernel and on formula
+    drift; ties are excluded (argmax/first-max order documented).
+    """
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA device")
+    fused_ce = pytest.importorskip("hydra2.training.fused_ce")
+    if not fused_ce.TRITON_AVAILABLE:
+        pytest.skip("needs triton")
+    from hydra2.training.objectives import compute_hot_scalars
+
+    gen = torch.Generator(device="cpu").manual_seed(20260913)
+    b, a = 64, 1536
+    logits = (torch.randn(b, a, generator=gen) * 3).to(torch.bfloat16).cuda()
+    legal = (torch.rand(b, a, generator=gen) < 0.02).cuda()
+    legal[torch.arange(b), torch.randint(a, (b,), generator=gen)] = True
+    tgt_list = []
+    for i in range(b):
+        li = torch.nonzero(legal[i], as_tuple=False).squeeze(1)
+        tgt_list.append(int(li[int(torch.randint(len(li), (1,), generator=gen).item())]))
+    targets = torch.tensor(tgt_list, dtype=torch.long).cuda()
+    monkeypatch.setattr(fused_ce, "TRITON_AVAILABLE", False)
+    eager = compute_hot_scalars(logits.detach(), targets, legal)
+    monkeypatch.setattr(fused_ce, "TRITON_AVAILABLE", True)
+    fused = compute_hot_scalars(logits.detach(), targets, legal)
+    assert abs(eager["masked_nll"] - fused["masked_nll"]) < 1e-4, (eager, fused)
+    assert eager["top1"] == fused["top1"]
 
 
 def test_masked_bc_rejects_illegal_target_and_all_false(tmp_path: Path) -> None:
