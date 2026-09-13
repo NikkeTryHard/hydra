@@ -49,6 +49,7 @@ import json
 import os
 import random
 import re
+import struct
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from multiprocessing import get_context as _mp_get_context
@@ -70,7 +71,7 @@ if TYPE_CHECKING:
 __all__ = [
     "DEFAULT_GROUPING_KEYS",
     "PARTITION_ORDER",
-    "SCAN_CACHE_VERSION",
+    "RESERVOIR_BLOB_VERSION",
     "FileEntry",
     "GameStream",
     "PrefetchGameStream",
@@ -91,12 +92,13 @@ __all__ = [
     "load_scan_cache",
     "manifest_digest",
     "parse_shuffle_rng",
+    "read_reservoir_blob",
     "save_scan_cache",
     "scan_cache_path",
     "serialize_shuffle_rng",
-    "slice_microbatches",
     "stem_of",
     "verify_no_privileged_leakage",
+    "write_reservoir_blob",
 ]
 
 #: Partition names in :mod:`partition.py` cumulative-threshold order.
@@ -194,6 +196,85 @@ def manifest_digest(manifest: StreamManifest) -> str:
         h.update(canonical_bytes({"bytes": entry.bytes, "path": entry.path.as_posix()}))
     h.update(b"]")
     return "sha256:" + h.hexdigest()
+
+
+#: Reservoir-blob layout version (bump on format change; mismatch → miss).
+RESERVOIR_BLOB_VERSION = 1
+_RESERVOIR_MAGIC = b"HYDRARS1"
+
+
+def write_reservoir_blob(
+    raws: list[bytes], path: Path | str, *, level: int = 1
+) -> dict[str, object]:
+    """Write length-prefixed per-game zstd frames for a shuffle buffer.
+
+    Layout: magic(8) + version u32le + count u32le, then per game
+    ``[u32le frame-len][frame]`` in buffer order. Returns the index record
+    ``{version, count, uncompressed_bytes, blob_sha256}``. Corrupt/truncated
+    blobs fail closed in :func:`read_reservoir_blob` (miss, never partial).
+    """
+    out_path = Path(path)
+    cctx = zstd.ZstdCompressor(level=level)
+    h = hashlib.sha256()
+    uncompressed = 0
+    with open(out_path, "wb") as fh:
+        header = _RESERVOIR_MAGIC + struct.pack("<II", RESERVOIR_BLOB_VERSION, len(raws))
+        fh.write(header)
+        h.update(header)
+        for raw in raws:
+            frame = cctx.compress(raw)
+            fh.write(struct.pack("<I", len(frame)))
+            fh.write(frame)
+            h.update(struct.pack("<I", len(frame)))
+            h.update(frame)
+            uncompressed += len(raw)
+    return {
+        "version": RESERVOIR_BLOB_VERSION,
+        "count": len(raws),
+        "uncompressed_bytes": uncompressed,
+        "blob_sha256": "sha256:" + h.hexdigest(),
+    }
+
+
+def read_reservoir_blob(path: Path | str) -> list[bytes]:
+    """Read + decompress a reservoir blob into per-game raw bytes (in order).
+
+    Raises :class:`ContractError` on any corruption (callers treat as a
+    snapshot miss and fall back to the normal fill). Transient peak is the
+    decompressed buffer (~600MB for a full 10k prime); freed after decode.
+    """
+    try:
+        data = Path(path).read_bytes()
+    except OSError as exc:
+        raise ContractError(f"reservoir blob unreadable: {path} ({exc})") from exc
+    try:
+        dctx = zstd.ZstdDecompressor()
+        off = 0
+        if data[off : off + 8] != _RESERVOIR_MAGIC:
+            raise ContractError(f"reservoir blob bad magic: {path}")
+        off += 8
+        (version, count) = struct.unpack_from("<II", data, off)
+        off += 8
+        if version != RESERVOIR_BLOB_VERSION:
+            raise ContractError(
+                f"reservoir blob version {version} != {RESERVOIR_BLOB_VERSION}: {path}"
+            )
+        raws: list[bytes] = []
+        for _ in range(count):
+            (flen,) = struct.unpack_from("<I", data, off)
+            off += 4
+            frame = data[off : off + flen]
+            if len(frame) != flen:
+                raise ContractError(f"reservoir blob truncated: {path}")
+            raws.append(dctx.decompress(frame))
+            off += flen
+        if off != len(data):
+            raise ContractError(f"reservoir blob trailing bytes: {path}")
+    except (ContractError, CorruptArtifactError):
+        raise
+    except Exception as exc:
+        raise ContractError(f"reservoir blob corrupt: {path} ({exc})") from exc
+    return raws
 
 
 #: Scan-cache envelope version (bump on schema change; mismatch → miss).
@@ -738,6 +819,7 @@ class GameStream:
         shuffle_restore_entries: list[dict[str, object]] | None = None,
         shuffle_restore_rng: dict[str, object] | None = None,
         shuffle_restore_prefix_hashes: list[str] | tuple[str, ...] | None = None,
+        snapshot_blob: Path | str | None = None,
     ) -> None:
         self._manifest = manifest
         self._seed = _check_int("seed", seed)
@@ -795,6 +877,15 @@ class GameStream:
             _ = parse_shuffle_rng(shuffle_restore_rng)
             self._shuffle_restore_entries = list(shuffle_restore_entries)
             self._shuffle_restore_rng = dict(shuffle_restore_rng)
+        # Reservoir snapshot blob: per-game raw bytes in entry order, replacing
+        # corpus refetch in _restore_shuffle_state (same decode+validate tail).
+        # Requires restore entries (unmappable bytes otherwise); entries alone
+        # keep the legacy refetch path.
+        self._snapshot_blob: Path | None = (
+            Path(snapshot_blob) if snapshot_blob is not None else None
+        )
+        if self._snapshot_blob is not None and self._shuffle_restore_entries is None:
+            raise ContractError("snapshot_blob needs shuffle restore entries")
         # Prefix dedup seed (S1 hardening): verified count+digest upstream; shape
         # checked here, seeded into the resume _Run so future membership matches
         # the full-replay prefix set even when duplicates exist. Independent of
@@ -983,6 +1074,52 @@ class GameStream:
             return []
         return sorted(self._active_run.hashes)
 
+    def _materialize_from_snapshot_blob(self) -> list[StreamGame]:
+        """Materialize the shuffle buffer from snapshot raw bytes (no refetch).
+
+        Reads :attr:`_snapshot_blob` (length-prefixed per-game zstd frames in
+        buffer order), decodes each through the identical inline path as live
+        pulls, and enforces the same gates (sha vs entry key, split match).
+        Any corruption raises (the caller treats it like a fill failure, and
+        the driver only selects this path after hash-verifying the snapshot).
+        No stats touched and no dedup membership added here — like the
+        refetch path, dedup seeds from the prefix record (done by caller).
+        """
+        assert self._snapshot_blob is not None
+        assert self._shuffle_restore_entries is not None
+        raws = read_reservoir_blob(self._snapshot_blob)
+        entries = self._shuffle_restore_entries
+        if len(raws) != len(entries):
+            raise ContractError(f"snapshot blob holds {len(raws)} games for {len(entries)} entries")
+        buf: list[StreamGame] = []
+        for entry, raw in zip(entries, raws, strict=True):
+            key = str(entry["key"])
+            fpath = Path(str(entry["path"]))
+            game_offset = int(entry["offset"])  # type: ignore[arg-type]
+            game, validation_hash = self._decode_inline(stem_of(fpath), raw)
+            if game is None or validation_hash is None:
+                raise ContractError(f"snapshot game undecodable at {fpath}:{game_offset}")
+            if game.raw_bytes_sha256 != key:
+                raise ContractError(f"snapshot game key mismatch at {fpath}:{game_offset}")
+            wall_hash = compute_wall_hash(game)
+            assigned = assign_split(
+                group_key=group_key_for_path(fpath), seed=self._seed, ratios=self._ratios
+            )
+            if self._split is not None and assigned != self._split:
+                raise ContractError("restored shuffle game split mismatch")
+            buf.append(
+                StreamGame(
+                    path=fpath,
+                    offset=game_offset,
+                    game=game,
+                    wall_hash=wall_hash,
+                    validation_hash=validation_hash,
+                    split=assigned,
+                    raw=raw,
+                )
+            )
+        return buf
+
     def _restore_shuffle_state(self, run: _Run) -> _ShuffleState:
         """Materialize the verbatim shuffle buffer + RNG (fast resume, no replay)."""
         assert self._shuffle_restore_entries is not None
@@ -991,16 +1128,19 @@ class GameStream:
         rng = random.Random()
         rng.setstate((version, tuple(internal), gauss_next))
         buf: list[StreamGame] = []
-        for entry in self._shuffle_restore_entries:
-            key = str(entry["key"])
-            fpath = Path(str(entry["path"]))
-            game_offset = int(entry["offset"])  # type: ignore[arg-type]
-            fetched = fetch_game_at(
-                fpath, game_offset, seed=self._seed, ratios=self._ratios, expected_sha=key
-            )
-            if self._split is not None and fetched.split != self._split:
-                raise ContractError("restored shuffle game split mismatch")
-            buf.append(fetched)
+        if self._snapshot_blob is not None:
+            buf = self._materialize_from_snapshot_blob()
+        else:
+            for entry in self._shuffle_restore_entries:
+                key = str(entry["key"])
+                fpath = Path(str(entry["path"]))
+                game_offset = int(entry["offset"])  # type: ignore[arg-type]
+                fetched = fetch_game_at(
+                    fpath, game_offset, seed=self._seed, ratios=self._ratios, expected_sha=key
+                )
+                if self._split is not None and fetched.split != self._split:
+                    raise ContractError("restored shuffle game split mismatch")
+                buf.append(fetched)
         # Dedup set seeds from the verified prefix record (count+digest checked
         # upstream before construction), so future membership matches the
         # full-replay prefix set even when duplicates exist.
@@ -1213,6 +1353,7 @@ class PrefetchGameStream(GameStream):
         shuffle_restore_entries: list[dict[str, object]] | None = None,
         shuffle_restore_rng: dict[str, object] | None = None,
         shuffle_restore_prefix_hashes: list[str] | tuple[str, ...] | None = None,
+        snapshot_blob: Path | str | None = None,
     ) -> None:
         super().__init__(
             manifest,
@@ -1226,6 +1367,7 @@ class PrefetchGameStream(GameStream):
             shuffle_restore_entries=shuffle_restore_entries,
             shuffle_restore_rng=shuffle_restore_rng,
             shuffle_restore_prefix_hashes=shuffle_restore_prefix_hashes,
+            snapshot_blob=snapshot_blob,
         )
         if type(prefetch) is not int or prefetch < 1:
             raise ContractError(f"prefetch must be a positive int, got {prefetch!r}")

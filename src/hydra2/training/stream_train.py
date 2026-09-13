@@ -2552,6 +2552,175 @@ def _apply_resume_payload(
     _ = loop.model.train()
 
 
+def _capture_prime_snapshot(
+    *,
+    dataset: Any,
+    index_path: Path,
+    stream_digest: str,
+    buffer_size: int,
+) -> Path | None:
+    """Capture the post-join reservoir into a snapshot (fresh runs only).
+
+    Reads the live stream's buffer entries + RNG (post-eager-join: the full
+    prime buffer, verbatim order), pulls the matching raw bytes out of the
+    live buffered games keyed by entry order, writes the zstd blob beside
+    the index, and saves the index atomically. Miss-on-anything: returns
+    the blob path on success, None on any anomaly (normal fill continues).
+    """
+    from hydra2.data.stream import write_reservoir_blob
+
+    if buffer_size <= 0:
+        return None
+    stream = getattr(dataset, "_stream", None)
+    if stream is None:
+        return None
+    snap = stream.shuffle_snapshot()
+    if snap is None:
+        return None
+    entries, rng_state = snap
+    if len(entries) == 0:
+        return None
+    # LIVE-STATE OWNERSHIP: same hazard as the resume path — the fill thread
+    # mutates _active_buf while we read it. Main-thread snapshot barrier
+    # only (call sites: post-eager-join); the fill thread is joined there.
+    buf = list(getattr(stream, "_active_buf", None) or [])
+    raws = [bytes(game.raw) for game in buf]
+    if len(raws) != len(entries):
+        return None
+    live_entries = [
+        {
+            "key": str(game.game.raw_bytes_sha256),
+            "path": game.path.as_posix(),
+            "offset": int(game.offset),
+        }
+        for game in buf
+    ]
+    if [str(e.get("key")) for e in entries] != [e["key"] for e in live_entries]:
+        return None
+    live_cursor = stream.cursor()
+    live_prefix = stream.prefix_hashes_snapshot()
+    blob_path = index_path.with_name(index_path.stem + ".zst")
+    try:
+        index = write_reservoir_blob(raws, blob_path)
+    except OSError:
+        return None
+    _save_prime_snapshot(
+        path=index_path,
+        payload={
+            "resolver": "reservoir-v1",
+            "stream_digest": stream_digest,
+            "buffer_entries": live_entries,
+            "buffer_rng_state": rng_state,
+            "stream_cursor": live_cursor.to_dict(),
+            "prefix_hashes": live_prefix,
+            "blob_path": str(blob_path),
+            "blob_sha256": index["blob_sha256"],
+            "blob": index,
+        },
+    )
+    return blob_path
+
+
+def _prime_cache_path(
+    *,
+    manifest: StreamManifest,
+    stream_digest: str,
+    seed: int,
+    ratios: dict[str, float],
+    train_split: str,
+    val_split: str,
+    buffer_size: int,
+) -> Path:
+    """Machine-local reservoir-snapshot index path (same key family as scan)."""
+    base_raw = os.environ.get("HYDRA2_SCAN_CACHE_DIR") or os.path.join(
+        os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "hydra2", "scan"
+    )
+    files = hashlib.sha256()
+    for entry in manifest.files:
+        try:
+            fingerprint_stat = entry.path.stat()
+            stamp = f"{fingerprint_stat.st_size}:{fingerprint_stat.st_mtime_ns}"
+        except OSError:
+            stamp = "missing"
+        files.update(f"{entry.path.as_posix()}:{stamp}\n".encode())
+    fingerprint = repr(
+        (
+            "reservoir-v1",
+            stream_digest,
+            seed,
+            sorted(ratios.items()),
+            train_split,
+            val_split,
+            buffer_size,
+        )
+    )
+    key = hashlib.sha256((fingerprint + files.hexdigest()).encode()).hexdigest()[:32]
+    return Path(base_raw) / f"reservoir-{key}.json"
+
+
+def _save_prime_snapshot(*, path: Path, payload: Mapping[str, Any]) -> None:
+    """Best-effort atomic snapshot-index write (never fails training on I/O)."""
+    try:
+        blob = json.dumps(dict(payload), indent=2, sort_keys=True).encode("utf-8")
+        atomic_replace_bytes(path, blob)
+    except OSError:
+        pass
+
+
+def _load_prime_snapshot(*, path: Path, stream_digest: str) -> dict[str, Any] | None:
+    """Load a prime snapshot index on exact key match, else None (miss)."""
+    try:
+        raw_text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        raw: object = json.loads(raw_text)
+    except ValueError:
+        return None
+    if not isinstance(raw, dict):
+        return None
+    if raw.get("stream_digest") != stream_digest:
+        return None
+    entries = raw.get("buffer_entries")
+    rng_state = raw.get("buffer_rng_state")
+    blob_path = raw.get("blob_path")
+    blob_sha = raw.get("blob_sha256")
+    if (
+        not isinstance(entries, list)
+        or len(entries) == 0
+        or not isinstance(rng_state, dict)
+        or not isinstance(blob_path, str)
+        or not isinstance(blob_sha, str)
+        or blob_sha == ""
+    ):
+        return None
+    blob = Path(blob_path)
+    try:
+        data = blob.read_bytes()
+    except OSError:
+        return None
+    if "sha256:" + hashlib.sha256(data).hexdigest() != blob_sha:
+        return None
+    cursor_raw = raw.get("stream_cursor")
+    prefix_raw = raw.get("prefix_hashes")
+    try:
+        cursor = DataStreamCursor.from_dict(cursor_raw)  # type: ignore[arg-type]
+    except (ContractError, AttributeError, TypeError):
+        return None
+    if not isinstance(prefix_raw, list) or any(
+        not isinstance(sha, str) or not sha.startswith("sha256:") or sha == "sha256:"
+        for sha in prefix_raw
+    ):
+        return None
+    return {
+        "buffer_entries": entries,
+        "buffer_rng_state": rng_state,
+        "blob_path": blob_path,
+        "stream_cursor": cursor,
+        "prefix_hashes": list(prefix_raw),
+    }
+
+
 @dataclass(slots=True)
 class _ResumeEnvelope:
     """Verified resume inputs: sidecar extras, payload bytes, drain position."""
@@ -2942,6 +3111,7 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
     seek_entries: list[dict[str, Any]] | None = None
     seek_rng: dict[str, Any] | None = None
     seek_prefix: list[str] | None = None
+    seek_blob: Path | str | None = None
     if envelope is not None and resume is not None:
         if not envelope.has_fast_path:
             raise ContractError(
@@ -2988,6 +3158,34 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
             seek_entries = entries
             seek_rng = rng_state
 
+    # Reservoir snapshot (fresh runs only): restores a verified pre-prime
+    # buffer via the resume machinery (miss → normal fill, hash-gated).
+    # Hit path is env-gated (HYDRA2_RESERVOIR_SNAPSHOT=1) until the
+    # capture-position fix lands: an un-gated hit restores divergent data
+    # (measured 1.37e-01). Capture always runs (miss path populates).
+    _prime_index: Path | None = None
+    _prime_hit: dict[str, Any] | None = None
+    _prime_hit_enabled = os.environ.get("HYDRA2_RESERVOIR_SNAPSHOT", "").strip() == "1"
+    if resume is None and config.data.shuffle_buffer_size > 0:
+        _prime_index = _prime_cache_path(
+            manifest=manifest,
+            stream_digest=stream_digest,
+            seed=config.seeds.data_seed,
+            ratios=ratios,
+            train_split=config.data.train_split,
+            val_split=config.data.val_split,
+            buffer_size=config.data.shuffle_buffer_size,
+        )
+        _prime_hit = _load_prime_snapshot(path=_prime_index, stream_digest=stream_digest)
+        if _prime_hit is not None and not _prime_hit_enabled:
+            _prime_hit = None
+        if _prime_hit is not None:
+            seek_entries = _prime_hit["buffer_entries"]
+            seek_rng = _prime_hit["buffer_rng_state"]
+            seek_blob = _prime_hit["blob_path"]
+            seek_start = _prime_hit["stream_cursor"]
+            seek_prefix = _prime_hit["prefix_hashes"]
+
     def _train_stream_factory() -> GameStream:
         common: dict[str, Any] = {
             "seed": config.seeds.data_seed,
@@ -3000,12 +3198,11 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
             return PrefetchGameStream(
                 manifest,
                 **common,
-                max_workers=config.data.num_workers,
-                prefetch=config.data.decode_prefetch,
                 start=seek_start,
                 shuffle_restore_entries=seek_entries,  # type: ignore[arg-type]
                 shuffle_restore_rng=seek_rng,  # type: ignore[arg-type]
                 shuffle_restore_prefix_hashes=seek_prefix,  # type: ignore[arg-type]
+                snapshot_blob=seek_blob,
             )
         return GameStream(
             manifest,
@@ -3014,6 +3211,7 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
             shuffle_restore_entries=seek_entries,  # type: ignore[arg-type]
             shuffle_restore_rng=seek_rng,  # type: ignore[arg-type]
             shuffle_restore_prefix_hashes=seek_prefix,  # type: ignore[arg-type]
+            snapshot_blob=seek_blob,
         )
 
     # Game-pull expansion (both backends): the dataset owns one GameStream and
@@ -3297,6 +3495,18 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
     # grads, decoded games) stays collectable. Zero training-math effect.
     # Join the eager fill first: freezing mid-fill would pin in-flight batches.
     _join_eager_fill()
+    # Reservoir capture (fresh runs, miss only): prime buffer is fully
+    # resident post-join; persist raw bytes + RNG for the next fresh run.
+    # Best-effort (run continues on write failure); never on resume (the
+    # checkpoint machinery owns buffer state there), never after a hit
+    # (identical bytes would just rewrite themselves).
+    if resume is None and _prime_index is not None and _prime_hit is None:
+        _capture_prime_snapshot(
+            dataset=dataset,
+            index_path=_prime_index,
+            stream_digest=stream_digest,
+            buffer_size=config.data.shuffle_buffer_size,
+        )
     with contextlib.suppress(Exception):
         gc.collect()
         gc.freeze()

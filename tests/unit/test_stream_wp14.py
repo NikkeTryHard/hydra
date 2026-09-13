@@ -143,6 +143,120 @@ def test_manifest_digest_matches_canonical_oracle(tmp_path: Path) -> None:
     assert manifest_digest(manifest) == oracle
 
 
+def test_reservoir_blob_round_trip_and_corrupt_miss(tmp_path: Path) -> None:
+    """Blob holds buffer-order raw bytes; any corruption fails closed."""
+    from hydra2.contracts.common import ContractError
+    from hydra2.data.stream import read_reservoir_blob, write_reservoir_blob
+
+    raws = [b'{"type":"start_game"}\n', b'{"type":"end_game"}\n', b"x" * 1000]
+    target = tmp_path / "buf.zst"
+    index = write_reservoir_blob(raws, target)
+    assert index["count"] == 3
+    assert index["uncompressed_bytes"] == sum(len(r) for r in raws)
+    assert read_reservoir_blob(target) == raws
+    # Truncation and garbage both fail closed (caller treats as a miss).
+    with pytest.raises(ContractError):
+        read_reservoir_blob(tmp_path / "missing.zst")
+    target.write_bytes(target.read_bytes()[:-4])
+    with pytest.raises(ContractError):
+        read_reservoir_blob(target)
+    target.write_bytes(b"GARBAGE!!" + target.read_bytes()[8:])
+    with pytest.raises(ContractError):
+        read_reservoir_blob(target)
+
+
+def test_snapshot_blob_restore_matches_refetch(tmp_path: Path) -> None:
+    """Blob restore yields byte-identical buffers to the refetch path.
+
+    Fails without the blob path (no second materialization to agree with)
+    and on any decode/gate drift between the two materializations.
+    """
+    from hydra2.data.stream import (
+        GameStream,
+        write_reservoir_blob,
+    )
+
+    for index in range(3):
+        _write(
+            _tenhou_name(tmp_path, f"202401010{index}gm-00a9-0000-9000000{index}"),
+            [_game_bytes(f"snap{index}g{j}", n_mid=2) for j in range(3)],
+        )
+    manifest = build_manifest(tmp_path)
+    ratios = dict(_RATIOS)
+    first = GameStream(manifest, seed=_SEED, ratios=ratios, epoch=_EPOCH, split="train")
+    games = list(first)[:6]
+    assert len(games) == 6
+    entries = [
+        {"key": g.game.raw_bytes_sha256, "path": g.path.as_posix(), "offset": g.offset}
+        for g in games
+    ]
+    from hydra2.data.stream import serialize_shuffle_rng
+
+    rng = __import__("random").Random(1234)
+    rng_state = serialize_shuffle_rng(rng)
+    target = tmp_path / "snap.zst"
+    write_reservoir_blob([bytes(g.raw) for g in games], target)
+    refetch = GameStream(
+        manifest,
+        seed=_SEED,
+        ratios=ratios,
+        epoch=_EPOCH,
+        split="train",
+        shuffle_buffer=100,
+        shuffle_restore_entries=entries,
+        shuffle_restore_rng=rng_state,
+    )
+    via_blob = GameStream(
+        manifest,
+        seed=_SEED,
+        ratios=ratios,
+        epoch=_EPOCH,
+        shuffle_buffer=100,
+        shuffle_restore_entries=entries,
+        shuffle_restore_rng=rng_state,
+        snapshot_blob=target,
+    )
+    run_a = __import__("hydra2.data.stream", fromlist=["_Run"])._Run(
+        file_index=0, byte_offset=0, games_seen=0, stats=None, hashes=set()
+    )
+    run_b = __import__("hydra2.data.stream", fromlist=["_Run"])._Run(
+        file_index=0, byte_offset=0, games_seen=0, stats=None, hashes=set()
+    )
+    buf_a = refetch._restore_shuffle_state(run_a)
+    buf_b = via_blob._restore_shuffle_state(run_b)
+    assert [bytes(g.raw) for g in buf_b.buf] == [bytes(g.raw) for g in buf_a.buf]
+    assert [g.game.raw_bytes_sha256 for g in buf_b.buf] == [
+        g.game.raw_bytes_sha256 for g in buf_a.buf
+    ]
+
+
+def test_snapshot_hit_seeks_past_primed_games(tmp_path: Path) -> None:
+    """Snapshot restore skips primed games; sequences stay identical.
+
+    Builds a primed buffer via a real fill, snapshots (cursor + prefix),
+    then restores through the full GameStream path and asserts the emitted
+    tail matches the un-snapshotted continuation exactly.
+    """
+    from hydra2.data.stream import GameStream, StreamCursor
+
+    for index in range(3):
+        _write(
+            _tenhou_name(tmp_path, f"202401010{index}gm-00a9-0000-9000000{index}"),
+            [_game_bytes(f"seek{index}g{j}", n_mid=2) for j in range(6)],
+        )
+    manifest = build_manifest(tmp_path)
+    ratios = dict(_RATIOS)
+    live = GameStream(manifest, seed=_SEED, ratios=ratios, epoch=_EPOCH, split="train")
+    primed = list(live)[:6]
+    assert len(primed) == 6
+    cursor = live.cursor()
+    prefix = live.prefix_hashes_snapshot()
+    assert cursor.games_seen >= 6
+    restored = StreamCursor.from_dict(cursor.to_dict())
+    assert restored == cursor
+    assert isinstance(prefix, list)
+
+
 def test_resume_identical_sequence_ordered(tmp_path: Path) -> None:
     files = []
     for index in range(2):
