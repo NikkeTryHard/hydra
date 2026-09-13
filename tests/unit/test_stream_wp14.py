@@ -112,6 +112,37 @@ def test_manifest_order_is_sha256_hex_and_stable(tmp_path: Path) -> None:
     assert manifest_digest(first) == manifest_digest(second)
 
 
+def test_manifest_digest_matches_canonical_oracle(tmp_path: Path) -> None:
+    """Incremental digest must equal the canonical-bytes digest exactly.
+
+    Covers the fast path (plain/space names) and the fallback (names
+    needing JSON escapes: quotes, backslashes, controls, non-ASCII). Any
+    divergence breaks scan-cache keys loudly, so both paths are pinned
+    against the one-liner oracle here.
+    """
+    from hydra2.artifacts.canonical import canonical_bytes
+
+    names = [
+        "2024010100gm-00a9-0000-90110010.mjai.json.zst",
+        'quote"name.mjai.json.zst',
+        "back\\slash.mjai.json.zst",
+        "sp ace.mjai.json.zst",
+        "ünïcode.mjai.json.zst",
+        "new\nline.mjai.json.zst",
+    ]
+    for name in names:
+        _write(tmp_path / name, [_game_bytes(name)])
+    manifest = build_manifest(tmp_path)
+    assert len(manifest) == len(names)
+    oracle = (
+        "sha256:"
+        + hashlib.sha256(
+            canonical_bytes([{"bytes": e.bytes, "path": e.path.as_posix()} for e in manifest.files])
+        ).hexdigest()
+    )
+    assert manifest_digest(manifest) == oracle
+
+
 def test_resume_identical_sequence_ordered(tmp_path: Path) -> None:
     files = []
     for index in range(2):

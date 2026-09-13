@@ -158,9 +158,42 @@ def build_manifest(root: Path | str, pattern: str = "*.mjai.json.zst") -> Stream
 
 
 def manifest_digest(manifest: StreamManifest) -> str:
-    """Bind the file list for RunSpec provenance."""
-    payload = [{"bytes": entry.bytes, "path": entry.path.as_posix()} for entry in manifest.files]
-    return "sha256:" + hashlib.sha256(canonical_bytes(payload)).hexdigest()
+    """Bind the file list for RunSpec provenance.
+
+    Byte-identical to ``sha256(canonical_bytes([{bytes, path}, ...]))`` by
+    construction in both paths below (the canonical list encoding is ``[``
+    + comma-joined elements + ``]``; element key order is ``bytes`` <
+    ``path`` by UTF-16BE). Fast path assembles the same bytes directly
+    when every path is escape-free ASCII (single C-speed scan proves it);
+    anything else takes the element-wise canonical path. Any divergence
+    breaks scan-cache keys loudly (miss → full scan), never silently.
+    """
+
+    files = manifest.files
+    paths = [entry.path.as_posix() for entry in files]
+    if paths and re.search(r"[^\x20\x21\x23-\x5b\x5d-\x7e]", "".join(paths)) is None:
+        # Escape-free: no `"`, `\`, controls, or non-ASCII anywhere, so raw
+        # interpolation equals the canonical string encoding on every path.
+        h = hashlib.sha256()
+        h.update(b"[")
+        for i, entry in enumerate(files):
+            if i:
+                h.update(b",")
+            h.update(b'{"bytes":')
+            h.update(str(entry.bytes).encode("ascii"))
+            h.update(b',"path":"')
+            h.update(paths[i].encode("ascii"))
+            h.update(b'"}')
+        h.update(b"]")
+        return "sha256:" + h.hexdigest()
+    h = hashlib.sha256()
+    h.update(b"[")
+    for i, entry in enumerate(files):
+        if i:
+            h.update(b",")
+        h.update(canonical_bytes({"bytes": entry.bytes, "path": entry.path.as_posix()}))
+    h.update(b"]")
+    return "sha256:" + h.hexdigest()
 
 
 #: Scan-cache envelope version (bump on schema change; mismatch → miss).
