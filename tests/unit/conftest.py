@@ -3,7 +3,7 @@
 Registers the ``contract_package`` marker so ``--strict-markers`` stays green
 for marked unit tests regardless of which conftest owns ``--package``
 selection. Intentionally defines NO options: package filtering lives in one
-place only (tests/conftest.py per WP-03A cutover).
+place only (tests/conftest.py).
 """
 
 from __future__ import annotations

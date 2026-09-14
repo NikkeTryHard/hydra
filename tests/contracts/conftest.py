@@ -2,7 +2,7 @@
 
 The BUILD §1 package-selection machinery and the canonical report writer
 previously lived here; they were consolidated into the repo-root
-``tests/conftest.py`` during the WP-03A/WP-03C single-source cutover because
+``tests/conftest.py`` when selection/reporting became single-source, because
 pytest scopes ``pytest_runtest_logreport`` hookimpls to their conftest's
 directory subtree, which silently produced empty reports whenever a matrix
 row selected modules outside ``tests/contracts/`` (first observed with

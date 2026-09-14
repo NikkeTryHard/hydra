@@ -188,7 +188,7 @@ def test_differential_zero_mismatch_and_token_issued() -> None:
         capture, rules_id=make_digest_text(payload["token"]["rules_id"])
     )
     object.__setattr__(tampered, "jax_version", "0.0.0-tampered")
-    with pytest.raises(Exception):  # noqa: B017
+    with pytest.raises(Exception):  # noqa: B017  # reason: hard-failure contract asserts any raise never silent skip; pinning subclass would over-constrain
         shell2 = MahJaxQuarantineShell()
         shell2.qualify(tampered, rules_id=make_digest_text(payload["token"]["rules_id"]))
 

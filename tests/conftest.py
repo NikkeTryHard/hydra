@@ -5,7 +5,7 @@ torch.use_deterministic_algorithms to cover GEMMs; this module is imported
 before test modules by pytest.
 
 Single source of truth for work-package selection AND the BUILD §1 report
-writer (WP-03A/WP-03C cutover): ``--package WP-ID`` (or ``HYDRA2_TEST_PACKAGE``)
+writer: ``--package WP-ID`` (or ``HYDRA2_TEST_PACKAGE``)
 keeps only tests marked ``@pytest.mark.contract_package("<WP-ID>")``, and the
 per-module outcomes are aggregated into named checklist fields and published
 atomically under ``$HYDRA2_ARTIFACT_ROOT/reports/<package-or-ALL>/``. The
@@ -111,7 +111,7 @@ if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
 #: module basename -> named report fields asserted by that module. Moved
-#: verbatim from tests/contracts/conftest.py during the single-source cutover.
+#: verbatim from tests/contracts/conftest.py when selection/reporting became single-source.
 CHECKLIST_FIELDS_BY_MODULE = {
     "test_art_canon_001_golden.py": (
         "fixture_ART-CANON-001",
