@@ -144,12 +144,9 @@ class _TransformerLayer(nn.Module):
         self.n_heads = n_heads
         self.head_dim = d_model // n_heads
         self.d_model = d_model
-        # Perf-B (QKV fuse, item 1): single Linear[D,3D] reads x once instead of
-        # 3x; chunk restores q/k/v views, autograd splits per slice.
-        # Lean: qkv_concat_equiv PROVED (~/tmp/w2qkvfuse/QkvFuse.lean).
-        # Measured (B2048 train step): wall-neutral (+-0.1%); eval B32 forward
-        # ~7-8% faster (launch amortization where it counts). Kept for exact
-        # math + eval latency, not training wall.
+        # Fused QKV (item 1): single Linear[D,3D] reads x once instead of 3x;
+        # chunk restores q/k/v views, autograd splits per slice. Kept for
+        # exact math + eval latency, not training wall.
         self.qkv_proj = nn.Linear(d_model, 3 * d_model, bias=False)
         self.out_proj = nn.Linear(d_model, d_model, bias=False)
         self.ffn = nn.Sequential(
@@ -170,14 +167,16 @@ class _TransformerLayer(nn.Module):
         self.attn_bf16: bool = False
 
     def forward(self, x: torch.Tensor, key_padding_mask: torch.Tensor) -> torch.Tensor:
-        # x: [B,T,D], key_padding_mask: [B,T] bool True=padding (masked out)
+        # x: [B,T,D], key_padding_mask: [B,T] bool True=padding (masked out).
+        # Mask polarity: history_mask/legal_mask use True=participate while
+        # key_padding_mask uses True=padding (single ~ inversion at :214).
         residual: torch.Tensor = x
         x = self.norm1(x)
         batch: int = int(cast("Any", x.shape[0]))  # pyrefly: ignore[explicit-any]  # reason: deliberate Any for dynamic shape; int() validates
         seq_len: int = int(cast("Any", x.shape[1]))  # pyrefly: ignore[explicit-any]  # reason: deliberate Any for dynamic shape; int() validates
 
-        # Perf-B (QKV fuse): chunk restores the three [B,T,D] views; the SAME
-        # view/transpose blocks run on the chunks (Lean qkv_concat_equiv).
+        # Chunk restores the three [B,T,D] views; the SAME view/transpose
+        # blocks run on the chunks.
         qkv: torch.Tensor = self.qkv_proj(x)
         q, k, v = qkv.chunk(3, dim=-1)
         queries: torch.Tensor = q.view(
@@ -195,18 +194,17 @@ class _TransformerLayer(nn.Module):
         ).transpose(
             1, 2
         )  # reason: single logical reshape; splitting harms scan. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.view.html
-        # Perf-A §4.1: bool mask dispatch without O(B·T²) float alloc.
-        # Evidence: SDPA tutorial
-        #  https://pytorch.org/tutorials/intermediate/scaled_dot_product_attention_tutorial.html  # noqa: E501  # reason: URL cannot wrap without breaking link; alternative loses precision
-        #  — math backend 3.7x slower vs mem_efficient, Flash rejects any attn_mask per  # noqa: E501  # reason: comment documents perf invariant; wrapping splits sentence
-        #  https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/native/transformers/sdp_utils_cpp.h#L check_for_attn_mask.  # noqa: E501  # reason: URL cannot wrap without breaking link; alternative loses precision
-        # Docs: https://docs.pytorch.org/docs/2.14/generated/torch.nn.functional.scaled_dot_product_attention.html  # noqa: E501  # reason: URL cannot wrap without breaking link; alternative loses precision
-        #  — bool attn_mask True=participate (inverse of key_padding_mask). Bool [B,1,1,T]
-        #  broadcasts to [B,H,T,T] without materializing [B,1,T,T] (8 MiB + float copy
-        #  per layer at B=32,T=256).
-        # Bucket invariance preserved: padded keys get False identically for 32/64/128
-        #  buckets; guarded by tests/unit/test_model_inference_wp05a.py::
-        #  test_cache_full_history_encoding_agreement.
+        # Bool mask dispatch avoids O(B·T²) float alloc: bool [B,1,1,T]
+        # broadcasts to [B,H,T,T] without materializing [B,1,T,T] (8 MiB +
+        # float copy per layer at B=32,T=256).
+        # Evidence: SDPA bool attn_mask True=participate (inverse of
+        # key_padding_mask); see SDPA tutorial + SDPA docs links below.
+        # https://pytorch.org/tutorials/intermediate/scaled_dot_product_attention_tutorial.html
+        # https://docs.pytorch.org/docs/2.14/generated/torch.nn.functional.scaled_dot_product_attention.html
+        # Bucket invariance preserved: padded keys get False identically for
+        # 32/64/128 buckets; guarded by
+        # tests/unit/test_model_inference_wp05a.py::
+        # test_cache_full_history_encoding_agreement.
         if key_padding_mask.dtype != torch.bool:
             raise ContractError("key_padding_mask must be bool")
         # SDPA bool attn_mask True=attend, so invert padding -> participate mask.
@@ -234,8 +232,9 @@ class _TransformerLayer(nn.Module):
                 dropout_p=dropout_p,
                 is_causal=False,
             )
-        # Perf-A §4.1 transpose/view fuse: inductor fuses transpose+reshape under max-autotune;
-        #  avoid contiguous().view copy (4 MiB at B=32,T=256,D=128) in eager. Evidence: https://docs.pytorch.org/docs/2.14/generated/torch.compile.html
+        # Transpose/view fuse: inductor fuses transpose+reshape under
+        # max-autotune; avoid contiguous().view copy (4 MiB at B=32,T=256,D=128).
+        # Evidence: https://docs.pytorch.org/docs/2.14/generated/torch.compile.html
         attended = attended.transpose(1, 2).reshape(batch, seq_len, self.d_model)
         attended = self.out_proj(attended)
         x = residual + attended
@@ -320,6 +319,7 @@ class Hydra2BaselineModel(nn.Module):
         n_heads: int = _DEFAULT_N_HEADS,
         d_ff: int = _DEFAULT_D_FF,
         dropout: float = _DEFAULT_DROPOUT,
+        # hanchan = full game; utility_id names the full-game placement target.
         utility_id: str = "expected_final_placement_tenhou_4p_hanchan_v1",
         utility_manifest_hash: DigestText | None = None,
         history_buckets: tuple[int, ...] = HISTORY_BUCKET_LENGTHS,
@@ -366,12 +366,10 @@ class Hydra2BaselineModel(nn.Module):
         self.history_embedding = nn.Embedding(_NUM_EVENT_KINDS, d_model)
         max_bucket = max(history_buckets)
         self.pos_embedding = nn.Embedding(max_bucket, d_model)
-        # Perf-A §4.1: hoist arange pos_ids to buffer to avoid per-forward [B,T]
-        # int64 alloc (8 KiB at T=256) and host→device transfer each step.
-        # Evidence: inductor docs recommend hoisting constants out of forward;
-        # buffer is device-resident and sliced without alloc.
-        # https://docs.pytorch.org/docs/2.13/generated/torch.compile.html — constants
-        # hoisted enable fusion.
+        # Hoist arange pos_ids to a buffer: avoids per-forward [B,T] int64
+        # alloc (8 KiB at T=256) and host→device transfer each step. Buffer
+        # is device-resident and sliced without alloc; hoisted constants
+        # enable fusion.
         self.register_buffer(
             "pos_ids", torch.arange(max_bucket, dtype=torch.long), persistent=False
         )  # reason: single logical buffer registration; splitting harms scan
@@ -396,7 +394,6 @@ class Hydra2BaselineModel(nn.Module):
         # stream_train _POLICY_HEAD_PREFIX + tests; small heads fused item 2).
         # Slice map on small_heads out [B,20+2E]: [0:16) placement / [16:20)
         # value / [20:20+E) event / [20+E:20+2E) belief (E=_NUM_EVENT_KINDS).
-        # Lean: heads_slice_equiv PROVED (~/tmp/w2qkvfuse/QkvFuse.lean).
         self.policy_head = nn.Linear(d_model * 2, action_count)
         self.small_heads = nn.Linear(d_model * 2, 20 + 2 * _NUM_EVENT_KINDS)
 
@@ -413,8 +410,8 @@ class Hydra2BaselineModel(nn.Module):
                     # Stacked init (RNG-identical to legacy): legacy drew q,k,v as
                     # three separate same-shape xaviers in module order; three temp
                     # [D,D] draws in q,k,v order reproduce the RNG sequence exactly,
-                    # then cat(dim=0) stacks without consuming RNG.
-                    # Lean caveat: xavier_fanout_differs (fresh [3D,D] draw differs).
+                    # then cat(dim=0) stacks without consuming RNG (a fresh [3D,D]
+                    # draw would differ).
                     with torch.no_grad():
                         _q: torch.Tensor = nn.init.xavier_uniform_(
                             module.weight.new_empty(
@@ -515,13 +512,13 @@ class Hydra2BaselineModel(nn.Module):
         hist_emb: torch.Tensor = self.history_embedding(
             history_kind.clamp(min=0, max=_NUM_EVENT_KINDS - 1)
         )  # reason: single logical embedding lookup; splitting harms scan
-        # Perf-A §4.1: use buffer pos_ids sliced instead of torch.arange per forward.
-        # Avoids [B,T] int64 alloc + H2D each step; buffer is persistent=False
-        # device-resident, sliced via view.
+        # Slice buffer pos_ids instead of torch.arange per forward: avoids
+        # [B,T] int64 alloc + H2D each step (buffer is persistent=False,
+        # device-resident, sliced via view).
         positions: torch.Tensor = self.pos_ids[:seq_len].unsqueeze(0).expand(batch_size, -1)
         hist_emb = hist_emb + self.pos_embedding(positions)
 
-        # SDPA expects padding mask True=masked out. So invert.
+        # SDPA bool mask uses True=attend, so invert participate -> padding.
         key_padding_mask: torch.Tensor = ~history_mask  # [B,T] True where padding
 
         x: torch.Tensor = hist_emb
@@ -530,9 +527,8 @@ class Hydra2BaselineModel(nn.Module):
 
         x: torch.Tensor = self.final_norm(x)
 
-        # Masked mean pool over history — padded positions excluded.
-        # AMP F3: dtype-following mask (was .float()); under bf16 autocast the
-        # trunk is bf16 so the mask follows x.dtype; fp32 default is identical.
+        # Masked mean pool over history — padded positions excluded. The mask
+        # follows x.dtype (bf16 trunk under autocast, fp32 default identical).
         mask_f: torch.Tensor = history_mask.to(x.dtype).unsqueeze(-1)  # [B,T,1]
         # When history empty (all padding), denominator zero; use zero vector.
         denom: torch.Tensor = mask_f.sum(dim=1).clamp(min=1.0)  # [B,1]
@@ -544,10 +540,10 @@ class Hydra2BaselineModel(nn.Module):
         trunk: torch.Tensor = torch.cat([pooled, scalar_emb], dim=-1)  # [B, 2D]
 
         policy_logits: torch.Tensor = self.policy_head(trunk)  # [B,A]
-        # Fused small heads (item 2): slice restores the four outputs exactly.
-        # Bounds from _NUM_EVENT_KINDS (trace-safe Python ints; inductor folds).
-        # Placement slice needs .contiguous() before .view: slice stride (62,1)
-        # breaks .view (131KB @B2048, negligible); other slices need no view.
+        # Fused small heads: slice restores the four outputs exactly. Bounds
+        # from _NUM_EVENT_KINDS (trace-safe Python ints; inductor folds).
+        # Placement slice needs .contiguous() before .view: slice stride
+        # (62,1) breaks .view (131KB @B2048, negligible).
         small_out: torch.Tensor = self.small_heads(trunk)  # [B,20+2E]
         _e: int = int(_NUM_EVENT_KINDS)
         placement_logits: torch.Tensor = small_out[..., 0:16].contiguous().view(batch_size, 4, 4)
@@ -562,8 +558,9 @@ class Hydra2BaselineModel(nn.Module):
         event_logits: dict[str, torch.Tensor] = {"next_event": event_logits_single}
         belief_logits: dict[str, torch.Tensor] = {"next_event": belief_logits_single}
 
-        # Diagnostics: actor-visible derived tensors only (no hidden info).
-        # Provide deterministic, visible quantities: history length, concealed counts sum, etc.
+        # Diagnostics: actor-visible derived tensors only — history length,
+        # concealed counts, legal count. Excludes wall order, hidden hands,
+        # and privileged labels.
         hist_len = history_mask.sum(dim=1).to(torch.int32)  # [B]
         concealed_sum = batch.features["concealed_hand_counts"].sum(
             dim=1
@@ -589,12 +586,10 @@ class Hydra2BaselineModel(nn.Module):
     def _build_scalar_features(
         self, batch: ActorTensorBatch, *, dtype: torch.dtype | None = None
     ) -> torch.Tensor:
-        # Compose 64-dim scalar feature vector from actor-visible fields.
-        # All inputs are actor-visible; no hidden state.
-        # AMP F4: dtype-following normalizations (was .float()). evaluate passes
-        # x.dtype so bf16 autocast keeps the scalar branch in bf16 while the
-        # fp32 default (None) is identical. -inf fills, LayerNorm,
-        # masked_policy untouched.
+        # Compose 64-dim scalar feature vector from actor-visible fields
+        # (no wall order, hidden hands, or privileged labels). Normalizations
+        # follow the trunk dtype: evaluate passes x.dtype so bf16 autocast
+        # keeps the scalar branch in bf16 while the fp32 default is identical.
         compute_dtype: torch.dtype = dtype if dtype is not None else torch.float32
         feats: list[torch.Tensor] = []
 
@@ -632,34 +627,31 @@ class Hydra2BaselineModel(nn.Module):
         feats.append(seat_emb)
 
         # Scalar ints normalized
-        honba = batch.features["honba"].to(compute_dtype).unsqueeze(-1) / 10.0  # [B,1]
+        honba = batch.features["honba"].to(compute_dtype).unsqueeze(-1) / 10.0
         riichi_sticks = batch.features["riichi_sticks"].to(compute_dtype).unsqueeze(-1) / 10.0
+        # Live wall = undealt count (public), not wall contents/order.
         live_wall = (
             batch.features["live_wall_tiles_remaining"].to(compute_dtype).unsqueeze(-1) / 70.0
         )
         kan_count = batch.features["kan_count"].to(compute_dtype).unsqueeze(-1) / 4.0
         round_index = batch.features["round_index"].to(compute_dtype).unsqueeze(-1) / 10.0
         hand_number = batch.features["hand_number"].to(compute_dtype).unsqueeze(-1) / 10.0
-        feats.extend([honba, riichi_sticks, live_wall, kan_count, round_index, hand_number])  # +6
+        feats.extend([honba, riichi_sticks, live_wall, kan_count, round_index, hand_number])
 
-        # Dora + own drawn tile one-hot-ish normalized
+        # Dora + own drawn tile, linearly scaled by tile id/136 (not one-hot).
         dora = batch.features["dora_indicators"].to(compute_dtype) / 136.0  # [B,5]
-        feats.append(dora)  # 5
-        own_drawn = (
-            batch.features["own_drawn_tile"].to(compute_dtype).unsqueeze(-1) / 136.0
-        )  # [B,1]
-        feats.append(own_drawn)  # 1
+        feats.append(dora)
+        own_drawn = batch.features["own_drawn_tile"].to(compute_dtype).unsqueeze(-1) / 136.0
+        feats.append(own_drawn)
 
-        # Concealed counts normalized
-        concealed = (
-            batch.features["concealed_hand_counts"].to(compute_dtype) / 4.0
-        )  # [B,34] -> compress to sum?
-        # Reduce to 4 stats: mean, max, etc. to keep dim 64 bounded
+        # Concealed counts normalized: 34-dim counts reduced to mean+max per
+        # side to bound the 64-dim budget.
+        concealed = batch.features["concealed_hand_counts"].to(compute_dtype) / 4.0
         concealed_mean = concealed.mean(dim=1, keepdim=True)  # [B,1]
         concealed_max = concealed.max(dim=1).values.unsqueeze(-1)  # [B,1]
-        feats.extend([concealed_mean, concealed_max])  # +2
+        feats.extend([concealed_mean, concealed_max])
 
-        # Visible discards counts similarly
+        # Visible discards counts reduced to mean+max, same budget rule.
         vis_disc = batch.features["visible_discards_counts"].to(compute_dtype) / 4.0
         vis_mean = vis_disc.mean(dim=1, keepdim=True)
         vis_max = vis_disc.max(dim=1).values.unsqueeze(-1)
@@ -680,8 +672,8 @@ class Hydra2BaselineModel(nn.Module):
         can_tsumo = batch.features["actor_can_tsumo"].to(compute_dtype).unsqueeze(-1)
         feats.extend([can_riichi, can_tsumo])
 
-        concat = torch.cat(feats, dim=-1).to(compute_dtype)  # should be 64
-        # Pad or truncate to exactly 64
+        # Segment widths sum to 64; pad/truncate guards the concat boundary.
+        concat = torch.cat(feats, dim=-1).to(compute_dtype)
         if concat.shape[-1] < 64:
             pad = torch.zeros(
                 (concat.shape[0], 64 - concat.shape[-1]), device=concat.device, dtype=concat.dtype

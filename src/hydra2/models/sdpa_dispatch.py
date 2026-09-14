@@ -1,22 +1,13 @@
 """SDPA dispatch pinning — perf arm (a), dispatch-only, no math change.
 
-Provenance: DispatchProbe numbers (torch 2.14.0+cu130, RTX 5070 sm120,
-exact model shapes B8/H4/Dh32, bool [B,1,1,T] mask, 10wu+30it synced):
-mem-efficient healthy 16/16 at dropout 0.0 AND 0.1 (issue #176093 NOT
-reproduced — no containment needed); Flash True ONLY for bf16+mask-None
-(bool mask and fp32 both gate it out); cuDNN can_use False under
-deterministic algorithms; default dispatch == efficient on 32/32 cases
-(pinned ~= default, math ~2x slower, math peak-mem ~57MB vs eff ~35MB
-at T=256). Full table: tests/integration/test_attention_dispatch_wp13.py.
-
-``pinned_sdpa_kernel`` pins flash -> efficient -> math with explicit
-priority and restores on exit. cuDNN is excluded: nondeterministic per
-the SDPA 2.14 docs (``torch.backends.cudnn.deterministic`` pays perf
-for determinism) and already unavailable under deterministic
-algorithms. MATH stays listed so the pin degrades to the same fallback
-the default path would take — never an error, never a silent new kernel.
-No SM version is hardcoded anywhere: health is probed at runtime with
-:func:`backend_health` on real-shaped inputs.
+Pins flash -> efficient -> math with explicit priority and restores on
+exit (``sdpa_kernel`` guarantee). cuDNN is excluded: nondeterministic per
+the SDPA docs and already unavailable under deterministic algorithms.
+MATH stays listed so the pin degrades to the same fallback the default
+path would take — never an error, never a silent new kernel. No SM
+version is hardcoded anywhere: health is probed at runtime with
+:func:`backend_health` on real-shaped inputs. Full backend table:
+tests/integration/test_attention_dispatch_wp13.py.
 """
 
 from __future__ import annotations
@@ -53,7 +44,7 @@ def pinned_sdpa_kernel() -> Generator[None, None, None]:
 
     Exit restores the previous backend flags (``sdpa_kernel`` guarantee).
     Dispatch-only: identical math to the default path whenever the default
-    path would have picked one of the three (the probe-measured case).
+    path would have picked one of the three pinned backends.
     """
     with sdpa_kernel(list(_PINNED_BACKENDS), set_priority=True):
         yield
@@ -111,10 +102,9 @@ def describe_sdpa_runtime() -> dict[str, str | bool | None]:
 def documented_a100_expectation() -> dict[str, str]:
     """Doc-derived A100 (sm80) guesses — UNMEASURED, kept for the table only.
 
-    No A100 hours were spent (ledger deferred): flash healthy on sm80 for
-    fp16/bf16 mask-None, mem-efficient healthy on sm80 (the #176093 gap was
-    SM100+ codegen only), cuDNN opt-in. Replace with measured numbers when
-    an A100 run lands; never treat these as evidence.
+    Unmeasured on A100 hardware: flash healthy on sm80 for fp16/bf16
+    mask-None, mem-efficient healthy on sm80, cuDNN opt-in. Replace with
+    measured numbers when an A100 run lands; never treat these as evidence.
     """
     return {
         "status": "UNMEASURED doc guess — not evidence",

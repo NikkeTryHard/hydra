@@ -38,13 +38,13 @@ JSON_SAFE_INT_MAX: int = 2**53 - 1
 # changing them is a new schema identity (digest changes). Powers of two
 # additionally bound ``torch.compile`` recompilation: each distinct ``T`` would
 # recompile up to ``recompile_limit=8`` without ``dynamic=True`` /
-# ``isolate_recompiles=True`` (see perf-A §4.1/§8.3 and
-# https://docs.pytorch.org/docs/2.13/generated/torch.compile.html). The float
-# additive mask in ``models/model.py`` (``_TransformerLayer``) is intentionally
-# kept alongside these buckets to guarantee bucket-size invariance — bool-mask
-# SDPA showed sequence-length dependent outputs in earlier PyTorch releases
-# (ported from perf-A §4.1/§8.2; SDPA bool semantics:
-# https://docs.pytorch.org/docs/2.13/generated/torch.nn.functional.scaled_dot_product_attention.html).
+# ``isolate_recompiles=True`` (see
+# https://docs.pytorch.org/docs/2.13/generated/torch.compile.html). Attention
+# uses a bool participate-mask (``True`` = attend) over these buckets, so
+# padded keys read ``False`` identically at every bucket size — bucket-size
+# invariance holds by construction, guarded by
+# tests/unit/test_model_inference_wp05a.py::
+# test_cache_full_history_encoding_agreement.
 # Device-agnostic: no hardcoded ``sm_120``/``sm_*`` or ``cuda:0`` here; device
 # is carried by tensors (``targets.device`` / ``hist_emb.device``).
 HISTORY_BUCKET_LENGTHS: tuple[int, ...] = (32, 64, 128, 256)
@@ -341,6 +341,8 @@ def _baseline_fields() -> tuple[TensorFieldSpec, ...]:
             valid_max=3,
             mask_field=None,
         ),
+        # Dora = bonus-indicator tile: public indicators only (padding -1);
+        # wall contents/order never encoded.
         TensorFieldSpec(
             name="dora_indicators",
             dtype="int32",
@@ -413,6 +415,8 @@ def _baseline_fields() -> tuple[TensorFieldSpec, ...]:
             valid_max=None,
             mask_field=None,
         ),
+        # Live wall = undealt count: remaining-tile COUNT (public), not wall
+        # contents/order (privileged, never encoded).
         TensorFieldSpec(
             name="live_wall_tiles_remaining",
             dtype="int32",
@@ -513,7 +517,6 @@ def _baseline_fields() -> tuple[TensorFieldSpec, ...]:
             mask_field=None,
         ),
     ]
-    # Already alphabetical — verify.
     assert [f.name for f in fields] == sorted(f.name for f in fields)
     return tuple(fields)
 
@@ -600,9 +603,8 @@ def _default_head_specs() -> tuple[ModelHeadSpec, ...]:
             # Per-seat placement-credit semantics (day-one trainable):
             # logits [B,4,4] where dim-1 = seat 0..3, dim-2 = rank-logits
             # for ranks 1..4; target [B,4] per-seat rank indices; loss is
-            # per-seat cross-entropy then mean over seats (Lean
-            # paired_argmax_suboptimality). Field table untouched — input
-            # digest sha256:222c9eeb... unchanged; model_spec digest churns.
+            # per-seat cross-entropy then mean over seats. Field table
+            # untouched — input digest unchanged; model_spec digest churns.
             parameters={
                 "logits_shape": [4, 4],
                 "ranks": 4,

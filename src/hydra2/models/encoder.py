@@ -39,6 +39,7 @@ _WIND_TO_ID: dict[int, int] = {27: 0, 28: 1, 29: 2, 30: 3}
 
 
 def _bucket_length(actual: int, buckets: tuple[int, ...] = HISTORY_BUCKET_LENGTHS) -> int:
+    """Ceil ``actual`` to the next bucket; over-cap callers fail closed."""
     for bucket in buckets:
         if actual <= bucket:
             return bucket
@@ -46,6 +47,7 @@ def _bucket_length(actual: int, buckets: tuple[int, ...] = HISTORY_BUCKET_LENGTH
 
 
 def _concealed_counts(observation: ActorObservation) -> list[int]:
+    """Count the actor's own concealed hand; drawn tile stays separate."""
     counts = [0] * 34
     for tile in observation.concealed_hand:
         counts[int(tile) // 4] += 1
@@ -54,14 +56,15 @@ def _concealed_counts(observation: ActorObservation) -> list[int]:
 
 
 def _visible_discards_counts(observation: ActorObservation) -> list[int]:
+    """Discards plus public meld tiles as visible; dora excluded, clamped to 4."""
     counts = [0] * 34
     for river in observation.visible_discards:
         for tile in river:
             counts[int(tile) // 4] += 1
     for row in observation.visible_melds:
         for meld in row:
-            # Public meld tiles count once via meld; discards already exclude claimed tile?
-            # For baseline we aggregate meld tiles as visible as well.
+            # Public meld tiles count once via meld and aggregate as visible
+            # alongside discards (dora excluded below, clamped to 4 per type).
             for tile in meld.tiles:
                 counts[int(tile) // 4] += 1
     # Dora indicators are not discards — excluded. Clamp to 4 per tile type max for schema.
@@ -70,7 +73,12 @@ def _visible_discards_counts(observation: ActorObservation) -> list[int]:
 
 @dataclass(frozen=True, slots=True)
 class ActorTensorBatch:
-    """Batched actor-visible tensors (SPEC 11.1)."""
+    """Batched actor-visible tensors (SPEC 11.1).
+
+    Mask polarity: ``history_mask``/``legal_mask`` use ``True`` = participate,
+    while ``key_padding_mask`` in models/model.py uses ``True`` = padding
+    (single ``~`` inversion at the encode-to-model boundary).
+    """
 
     features: dict[str, torch.Tensor]
     history_mask: torch.Tensor  # [B,T] bool True=participate
@@ -113,19 +121,11 @@ def encode_observations(
             "rows are never truncated"
         )
     bucket_len = _bucket_length(max_len, buckets)
-    # --- Perf-B P1 vectorized alloc: numpy backing + from_numpy zero-copy ---
-    # Before: 9x torch.tensor(list(...)) per row (seat_winds, scores, ippatsu, riichi,
-    # concealed, dora, visible, legal_mask, etc.) + per-event kind assignment via
-    # torch indexing — each torch.tensor copies list→C via Python alloc (GIL) and breaks
-    # zero-copy pyarrow→numpy→torch chain (perf-A §4.2). After: single numpy alloc per
-    # field outside loop, scalar slice assignment inside loop (no per-row torch alloc),
-    # then one torch.from_numpy per field (zero-copy view). Evidence:
-    # https://docs.pytorch.org/docs/2.13/generated/torch.from_numpy.html (zero-copy),
-    # https://arrow.apache.org/docs/python/index.html (numpy zero-copy),
-    # ruff PERF401/PERF403 (perflint) now advisory for training/models.
-    # History: avoidable zero-init via empty+fill — torch.zeros memset is wasted if
-    # overwritten; explicit empty+fill documents intent and elides double zeroing when
-    # compiler proves full overwrite (here padding stays 0, so we fill 0 once, but
+    # Vectorized alloc: single numpy buffer per field outside the loop, scalar
+    # slice fill inside (no per-row torch alloc), then one torch.from_numpy
+    # per field (zero-copy view). Padding is 0/False, filled once up front so
+    # unwritten tails stay valid without per-row init.
+    # Evidence: https://docs.pytorch.org/docs/2.13/generated/torch.from_numpy.html
     history_event_kind_np = np.empty((batch_size, bucket_len), dtype=np.int64)
     history_event_kind_np.fill(0)
     history_mask_np = np.empty((batch_size, bucket_len), dtype=np.bool_)
@@ -141,12 +141,16 @@ def encode_observations(
     concealed_hand_counts_np = np.empty((batch_size, 34), dtype=np.int32)
     concealed_hand_counts_np.fill(0)
     dealer_np = np.empty((batch_size,), dtype=np.int64)
+    # Dora = bonus-indicator tile: public indicators only (padding -1);
+    # wall contents/order never encoded.
     dora_indicators_np = np.empty((batch_size, 5), dtype=np.int32)
     dora_indicators_np.fill(-1)
     hand_number_np = np.empty((batch_size,), dtype=np.int32)
     honba_np = np.empty((batch_size,), dtype=np.int32)
     ippatsu_active_np = np.empty((batch_size, 4), dtype=np.bool_)
     kan_count_np = np.empty((batch_size,), dtype=np.int32)
+    # Live wall = undealt count: remaining-tile COUNT (public), not wall
+    # contents/order (privileged, never encoded).
     live_wall_tiles_remaining_np = np.empty((batch_size,), dtype=np.int32)
     own_drawn_tile_np = np.empty((batch_size,), dtype=np.int32)
     own_drawn_tile_np.fill(-1)
@@ -281,16 +285,12 @@ def encode_observations(
         "turn_actor": turn_actor,
         "visible_discards_counts": visible_discards_counts,
     }
-    # Perf-A §4.2/4.4: pin_memory for cuda H2D overlap.
-    # Evidence: pin_memory background thread
-    # (torch/utils/data/_utils/pin_memory.py) + docs:
-    # https://docs.pytorch.org/docs/2.13/generated/torch.Tensor.pin_memory.html
-    # — non_blocking=True in _move_batch_to_device requires pinned
-    # memory to overlap; without it flag is no-op.
-    # Maintainability: keep pure CPU alloc path for cpu-only tests;
-    # pin only when cuda available to avoid overhead.
-    # Perf-C P2b: pin_memory() is out-of-place (returns a pinned copy), so
-    # the results must be rebound — discarding them pinned nothing and every
+    # Pin CPU memory for CUDA H2D overlap: non_blocking=True in
+    # _move_batch_to_device requires pinned memory to overlap; without it
+    # the flag is a no-op. Keep the pure CPU path for cpu-only tests (pin
+    # only when CUDA is available). pin_memory() is out-of-place (returns
+    # a pinned copy), so the results must be rebound.
+    # Evidence: https://docs.pytorch.org/docs/2.13/generated/torch.Tensor.pin_memory.html
     if pin_memory and torch.cuda.is_available():
         try:
             features = {
@@ -300,7 +300,7 @@ def encode_observations(
             history_mask = features["history_mask"]
             legal_mask = features["legal_mask"]
             actor_seats = features["actor_seats"]
-        except Exception as exc:
+        except Exception as exc:  # why-broad: any pin failure falls back to pageable
             logger.warning("encoder pin_memory failed, using pageable fallback: %s", exc)
 
     # Schema guard: every field in _BASELINE_FIELDS must be present, no extras besides
@@ -372,8 +372,7 @@ def validate_batch_against_schema(batch: ActorTensorBatch) -> None:
             # mask True => participate; validate only those positions.
             if spec.valid_min is not None or spec.valid_max is not None:
                 valid_mask = mask
-                # For history fields, mask is [B,T]; tensor is [B,T] same shape.
-                # For other fields with different mask shape, we skip range check for now.
+                # Range check applies only where mask shape == tensor shape.
                 if valid_mask.shape == tensor.shape:
                     values = tensor[valid_mask]
                     if values.numel() > 0:
