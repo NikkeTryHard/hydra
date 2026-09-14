@@ -15,8 +15,6 @@ import sys
 LIMITS = {"src": 600, "tests": 1000, "lean": 800, "tools": 2000}
 GRANDFATHERED = {
     # src (leaves first; god-driver last)
-    "src/hydra2/contracts/event.py",
-    "src/hydra2/contracts/observation.py",
     "src/hydra2/contracts/action.py",
     "src/hydra2/contracts/rules.py",
     "src/hydra2/data/stream.py",
