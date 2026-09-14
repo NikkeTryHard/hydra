@@ -32,7 +32,6 @@ GRANDFATHERED = {
     "src/hydra2/engines/mahjax/differential.py",
     "src/hydra2/search/candidate0.py",
     "src/hydra2/search/gumbel.py",
-    "src/hydra2/search/pbrf.py",
     "src/hydra2/search/local_resolving.py",
     "src/hydra2/search/joint_type_world.py",
     # registry file; split with its package if ever
