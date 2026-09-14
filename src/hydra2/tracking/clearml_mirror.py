@@ -36,7 +36,8 @@ Call sites: ``SupervisedLoop`` / ``ActorLearnerReplay`` construct via
 ``make_mirror(manifest_hashes=..., loop_config={...})`` + ``start_run()``
 and log ``log_update`` + ``log_checkpoint`` after each published
 checkpoint. ``log_eval_report`` / ``log_promotion`` /
-``log_duplicate_audit`` have no production callers yet (future builders).
+``log_duplicate_audit`` are reserved builders (covered by mirror unit
+tests; no production callers yet).
 """
 
 from __future__ import annotations
@@ -68,8 +69,8 @@ EXPERIMENT_DEFAULT = "hydra2-tenhou-4p"
 TASK_DEFAULT = "hydra2-training"
 
 #: Scalar keys allowed into ClearML. ``global_update`` travels as the
-#: report iteration, never as a series. Same key set as the removed MLflow
-#: mirror (placement/value/event/belief heads included).
+#: report iteration, never as a series. Same key set as the MLflow mirror,
+#: which shares :func:`_filter_metrics` (placement/value/event/belief heads).
 METRIC_ALLOWLIST = frozenset(
     {
         "total",
@@ -399,7 +400,11 @@ class ClearmlMirror:
         telemetry_digest: str | None = None,
         sidecar: Mapping[str, Any] | None = None,
     ) -> None:
-        """Tag duplicate-wall digests and upload the confirmation sidecar."""
+        """Tag duplicate-wall digests and upload the confirmation sidecar.
+
+        Duplicate wall: the dedup gate proving no training game repeats
+        (manifest + telemetry digests); the sidecar is its evidence JSON.
+        """
         if not self._enabled or self._task is None:
             return
         try:

@@ -41,7 +41,8 @@ Call sites: ``run_stream_training`` constructs via
 ``make_mirror(manifest_hashes=..., loop_config={...})`` + ``start_run()``
 and logs ``log_update`` + ``log_checkpoint`` after each published
 checkpoint. ``log_eval_report`` / ``log_promotion`` /
-``log_duplicate_audit`` have no production callers yet (future builders).
+``log_duplicate_audit`` are reserved builders (covered by mirror unit
+tests; no production callers yet).
 """
 
 import contextlib
@@ -340,7 +341,11 @@ class MlflowMirror:
         telemetry_digest: str | None = None,
         sidecar: Mapping[str, Any] | None = None,
     ) -> None:
-        """Tag duplicate-wall digests and attach the confirmation sidecar."""
+        """Tag duplicate-wall digests and attach the confirmation sidecar.
+
+        Duplicate wall: the dedup gate proving no training game repeats
+        (manifest + telemetry digests); the sidecar is its evidence JSON.
+        """
         if not self._enabled or self._run_id is None:
             return
         try:

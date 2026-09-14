@@ -5,7 +5,8 @@ shares, per-thread CPU deltas via psutil, and ``torch.cuda.memory_stats``
 every 20-50ms and appends one JSON row per tick to
 ``logs/verbose-telemetry.jsonl`` under the run dir. Rows carry
 ``(run_id, global_update, microstep)`` join keys plus dual wall/monotonic
-clocks so offline analysis can join them to ``feed-telemetry.jsonl`` rows
+clocks (wall = wall-clock epoch seconds, not the mahjong tile wall) so
+offline analysis can join them to ``feed-telemetry.jsonl`` rows
 and ``train.log`` lines.
 
 Honesty notes (read before analyzing the output):
@@ -291,6 +292,7 @@ class VerboseSampler:
             self._backends["torch"] = f"absent-{exc.__class__.__name__}"
 
     def _tick(self) -> None:
+        """Append one JSON row (gpu/proc/cpu/torch); stop on sink failure."""
         handle = self._handle
         if handle is None:
             return
@@ -319,6 +321,7 @@ class VerboseSampler:
             self.stop()
 
     def _sample_gpu(self) -> tuple[dict[str, Any] | None, list[dict[str, Any]] | None]:
+        """Snapshot device counters + per-PID shares; drop group after 100 errors."""
         nvml = self._nvml
         handle = self._nvml_handle
         if nvml is None or handle is None or self._gpu_dropped:
@@ -408,6 +411,7 @@ class VerboseSampler:
             return (None, None)
 
     def _sample_cpu(self) -> dict[str, Any] | None:
+        """Snapshot RSS, per-TID busy%, children, loadavg; None when psutil absent."""
         proc = self._psutil_process
         if proc is None:
             return None
@@ -485,6 +489,7 @@ class VerboseSampler:
             return None
 
     def _sample_torch(self) -> dict[str, Any] | None:
+        """Snapshot CUDA allocator stats; None unless the torch backend is cuda."""
         if not str(self._backends.get("torch", "")).startswith("cuda"):
             return None
         try:

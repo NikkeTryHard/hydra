@@ -43,39 +43,33 @@ VALID_TEST_RESULTS = ("passed", "failed", "skipped")
 
 # Wave-graph dependency edges relevant to registry verification. A package's
 # dependencies MUST already be registered before its own record verifies.
+# Later edges entered under the authorized cutover treatment used for the
+# WP-02A edge (see wp01-record deviations); per-edge notes keep only the
+# semantic half (what each edge means), tuples untouched.
 DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "WP-00B": ("WP-00A",),
     "WP-01": ("WP-00A",),
     "WP-02A": ("WP-01",),
     # BUILD §Wave2: WP-02B (rules/utility) and WP-02C (action contract) both
-    # enter after WP-02A; added under the authorized cutover treatment used
-    # for the WP-02A edge (see wp01-record deviations).
+    # enter after WP-02A.
     "WP-02B": ("WP-02A",),
     "WP-02C": ("WP-02A",),
     # BUILD §Wave2: WP-02D (events/observation) consumes the WP-02B rules
-    # identity and the WP-02C action table; added under the authorized cutover
-    # treatment used for the earlier wave-graph edges.
+    # identity and the WP-02C action table.
     "WP-02D": ("WP-02B", "WP-02C"),
-    # BUILD §6: WP-03C (MahJax quarantine shell) enters after WP-01 and
-    # WP-02D; added under the authorized cutover treatment used for the
-    # earlier wave-graph edges.
+    # BUILD §6: WP-03C (MahJax quarantine shell) enters after WP-01 and WP-02D.
     "WP-03C": ("WP-01", "WP-02D"),
-    # BUILD §6: WP-03A (RiichiEnv reference engine) enters after WP-01 and
-    # WP-02D; added under the authorized cutover treatment used for the
-    # earlier wave-graph edges.
+    # BUILD §6: WP-03A (RiichiEnv reference engine) enters after WP-01 and WP-02D.
     "WP-03A": ("WP-01", "WP-02D"),
     # BUILD §6: WP-03B (evaluation schemas and synthetic statistics) consumes
-    # the rules, action, and event/observation contracts; added under the
-    # same authorized cutover treatment.
+    # the rules, action, and event/observation contracts.
     "WP-03B": ("WP-02B", "WP-02C", "WP-02D"),
     # BUILD §6: WP-04A (reference conformance corpus) replays cases through
-    # the WP-03A reference adapter against the WP-02B/D rules and event
-    # contracts; added under the same authorized cutover treatment.
+    # the WP-03A reference adapter against the WP-02B/D rules and event contracts.
     "WP-04A": ("WP-01", "WP-02D", "WP-03A"),
     # BUILD §9: WP-06 duplicate-block match qualification reuses WP-03B
     # schedules/blocks/telemetry, the WP-04A exact-game corpus lineage, and
-    # the WP-05C frozen baseline; added under the same authorized cutover
-    # treatment.
+    # the WP-05C frozen baseline.
     "WP-06": ("WP-03B", "WP-04A", "WP-05C"),
     # BUILD §8 Wave 5 supervised baseline; WP-05A model/inference, WP-05B loop,
     # WP-05C qualification — all consume WP-04A + WP-04B lineage where applicable.
@@ -86,7 +80,7 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "WP-07A": ("WP-03B", "WP-04A", "WP-05C"),
     "WP-07B": ("WP-05C", "WP-06"),
     # BUILD §11 Wave 8 frozen policy baseline; entry per spec: WP-02B-D, WP-04A,
-    # WP-05C, WP-07A. Added under the same authorized cutover.
+    # WP-05C, WP-07A.
     "WP-08A": ("WP-02B", "WP-02C", "WP-02D", "WP-04A", "WP-05C", "WP-07A"),
     "WP-08B": ("WP-02B", "WP-02C", "WP-02D", "WP-04A", "WP-05C", "WP-07A"),
     "WP-08C": ("WP-02B", "WP-02C", "WP-02D", "WP-04A", "WP-05C", "WP-07A"),
@@ -102,10 +96,11 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     # Depends on natural belief (WP-07A), fresh baselines (WP-08A/B/C), PBRF (WP-09A).
     "WP-09D": ("WP-07A", "WP-08A", "WP-08B", "WP-08C", "WP-09A"),
     "WP-09E": ("WP-07A", "WP-08A", "WP-08B", "WP-08C"),
-    # BUILD §13 Wave 10 Candidate 7 Teacher Distillation; entry: WP-09C/D/E persistence & resolving & gumbel  # noqa: E501
-    # plus 5-gate teacher-eligibility (contract/exact/search/match/analysis). For registry gate, depend on  # noqa: E501
-    # WP-09C/D/E plus WP-12 analysis gates; analysis compute_only enforced inside teacher selection logic  # noqa: E501
-    # (missing/ineligible gate raises ContractError — WP-10 blocked, never synthetic fallback).  # noqa: E501
+    # BUILD §13 Wave 10 Candidate 7 Teacher Distillation; entry: WP-09C/D/E
+    # persistence/resolving/gumbel plus 5-gate teacher-eligibility
+    # (contract/exact/search/match/analysis) and WP-12 analysis gates;
+    # a missing/ineligible gate raises ContractError (WP-10 blocked, never
+    # synthetic fallback).
     "WP-10": ("WP-09C", "WP-09D", "WP-09E", "WP-12"),
     # BUILD §14 Wave 11 Optional custom self-play RL; entry: WP-05C, WP-06.
     "WP-11": ("WP-05C", "WP-06"),
@@ -195,10 +190,12 @@ def validate_record(raw: Any) -> dict[str, Any]:
 
 
 def _parse_utc(value: str) -> datetime:
+    """Parse an ISO-8601 UTC timestamp with a trailing ``Z``."""
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 def _validate_inputs(raw: dict[str, Any]) -> None:
+    """Require an input array of ``{id, sha256}`` objects."""
     inputs = raw.get("inputs")
     if not isinstance(inputs, list):
         raise ContractError("inputs must be an array")
@@ -212,6 +209,7 @@ def _validate_inputs(raw: dict[str, Any]) -> None:
 
 
 def _validate_outputs(raw: dict[str, Any]) -> None:
+    """Require an output array of ``{path, sha256}`` objects."""
     outputs = raw.get("outputs")
     if not isinstance(outputs, list):
         raise ContractError("outputs must be an array")
@@ -225,6 +223,7 @@ def _validate_outputs(raw: dict[str, Any]) -> None:
 
 
 def _validate_commands(raw: dict[str, Any]) -> None:
+    """Require a non-empty command array (argv, int exit_code)."""
     commands = raw.get("commands")
     if not isinstance(commands, list) or len(commands) == 0:
         raise ContractError("commands must be a non-empty array")
@@ -247,6 +246,7 @@ def _validate_commands(raw: dict[str, Any]) -> None:
 
 
 def _validate_tests(raw: dict[str, Any]) -> None:
+    """Require a non-empty test array with id/result/evidence."""
     tests = raw.get("tests")
     if not isinstance(tests, list) or len(tests) == 0:
         raise ContractError("tests must be a non-empty array")

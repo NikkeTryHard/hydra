@@ -289,6 +289,8 @@ def make_analysis_spec(gameplay_spec: Any) -> Any:
         if gp_v is not None and an_v is None:
             raise ContractError(f"analysis {name} must stay finite when gameplay is finite")
     # Preserve max_particles exactly or at least not reduced; allow same.
+    # Removing the checks above would let analysis shrink caps or reuse the
+    # gameplay deadline — uncharged compute the gate must reject.
     # Construct new spec with identical semantic fields, only budget replaced.
     spec = CandidateSpec(
         candidate_id=gameplay_spec.candidate_id,
@@ -319,6 +321,7 @@ def make_analysis_spec(gameplay_spec: Any) -> Any:
 
 
 def _derive_generic_analysis_budget(gp: Any) -> Any:
+    """Enlarge gameplay caps 4x (30s deadline) for unknown candidates."""
     from hydra2.search.common import ResourceBudget
 
     def _enlarge(v: int | None, fallback: int) -> int:
@@ -430,7 +433,8 @@ def verify_compute_only(gameplay_spec: Any, analysis_spec: Any) -> bool:
         raise ContractError(
             f"analysis deadline {an_b.deadline_ms} must exceed gameplay {gp_b.deadline_ms}"
         )
-    # Caps must not shrink when gameplay is finite
+    # Caps must not shrink when gameplay is finite: a smaller analysis cap
+    # is uncharged reduction, so the gate rejects it.
     for name in ("max_model_calls", "max_transitions", "max_particles"):
         gv = getattr(gp_b, name)
         av = getattr(an_b, name)
@@ -449,7 +453,8 @@ def check_no_privileged_leak(spec: Any, observation: Any) -> None:
 
     - observation must be actor-visible (ActorObservation or synthetic stub
       with observation_hash)
-    - No privileged fields like full_world, hidden wall, opponent hand.
+    - No privileged fields like full_world, hidden wall (unseen tile wall),
+      opponent hand.
     - No extra fields beyond actor-visible schema.
 
     Raises VisibilityViolationError or ContractError on leak.
@@ -496,7 +501,8 @@ def check_no_privileged_leak(spec: Any, observation: Any) -> None:
     # Also reject if serialized observation bytes contain privileged marker
     for name in dir(observation):
         if "privileged" in name.lower() or "hidden_wall" in name.lower():
-            # Allow the method name itself? but if attribute is present and truthy, it's leak
+            # Methods are callable and skipped below; a present, truthy,
+            # non-callable privileged/hidden_wall attribute is a leak.
             try:
                 v = getattr(observation, name)
                 if v is not None and v != () and v != {} and v != "" and not callable(v):
@@ -703,6 +709,7 @@ def compare_gameplay_analysis(
 
 
 def _spec_hash(spec: Any) -> str:
+    """Content-address a CandidateSpec via its canonical hash."""
     from hydra2.search.common import candidate_spec_hash
 
     return str(candidate_spec_hash(spec))
@@ -766,6 +773,7 @@ def compute_only_proof(gameplay_spec: Any, analysis_spec: Any) -> bool:
 
 
 def _utc_now() -> str:
+    """Current UTC time as ``YYYY-MM-DDTHH:MM:SSZ``."""
     from datetime import UTC, datetime
 
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -781,7 +789,7 @@ def _load_default_hashes_for_spec() -> dict[str, str]:
     path is prod-reachable (gate records), so derivation failure raises
     loudly instead of fabricating a manifest (BUILD S17).
     """
-    # Portable repo root via marker walk — not parents[2] brittle (analysis/ depth).
+    # repo_root() walks to the marker so this survives the analysis/ depth.
     from hydra2.config import repo_root
     from hydra2.search.common import _require_real_file
 
@@ -829,7 +837,7 @@ def _load_default_hashes_for_spec() -> dict[str, str]:
 
 
 def _make_gameplay_spec_for(candidate_id: str) -> Any:
-    """Test helper: synthesize a gameplay spec for candidate_id using factories or generic fallback."""
+    """Synthesize a gameplay spec for candidate_id (factories, else file-backed fallback)."""
     # Try per-candidate factories first
     try:
         if candidate_id == "candidate0":
@@ -1150,9 +1158,10 @@ def generate_hashed_analysis_report(
     digest = "sha256:" + hashlib.sha256(canonical_bytes(report_payload)).hexdigest()
     report_payload["digest"] = digest
 
-    # Atomic write to run-id directory and to latest
+    # Atomic write to run-id directory and to latest. The first stamp is
+    # superseded by the canonical microsecond run_id (kept for ordering).
     run_id = _utc_now().replace(":", "").replace("-", "")  # compact but still UTC-like
-    # Use canonical microsecond run_id for uniqueness
+    # Canonical microsecond run_id for uniqueness (supersedes the stamp above).
     from datetime import UTC, datetime
 
     run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
