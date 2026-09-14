@@ -4,11 +4,12 @@ Greenfield YAML surface (no materialized parquet shards required): the YAML
 file is the single authority for a training run. It binds twelve sections
 (``run`` / ``data`` / ``model`` / ``weights`` / ``optimizer`` / ``scheduler``
 / ``runtime`` / ``loop`` / ``seeds`` / ``selection`` / ``mirror`` / ``eval`` /
-``output``) into the frozen :class:`RunConfig` dataclass. Real training
-execution (stream reader, loop binding) lands in the next wave; this module
-owns parsing, validation, output layout, and resume-plan resolution only.
+``output``) into the frozen :class:`RunConfig` dataclass. This module owns
+parsing, validation, output layout, and resume-plan resolution only;
+execution (stream reader, loop binding) lives in
+``stream_train.py``/``loop.py``.
 
-Contract lock (streaming work, 2026-09-06; recorded here, not silent-picked):
+Contract lock:
 
 - No materialized shards does NOT mean no validation. Ephemeral rows MUST
   carry the identical contracts as the parquet path: ingest
@@ -212,8 +213,9 @@ class DataConfig:
     #: partitions the unconsumed window by history bucket before each
     #: contiguous-prefix take (one bucket per microbatch, less pad waste).
     #: Default False is byte-identical legacy order. Part of the run digest:
-    #: flipping it churns the digest once (same precedent as
-    #: ``fetch_prefetch_depth``) and old checkpoints fail closed on drift.
+    #: flipping it churns the digest, so a stale checkpoint fails closed on
+    #: drift instead of resuming on reordered rows (same precedent as
+    #: ``fetch_prefetch_depth``).
     homogeneous_buckets: bool = False
 
 

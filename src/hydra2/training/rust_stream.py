@@ -1,4 +1,4 @@
-"""Thin plane-filling handoff over the PyO3 boundary (K1 cutover: sole replay path).
+"""Thin plane-filling handoff over the PyO3 boundary (sole replay path).
 
 Thin Python side of the ``hydra2-replay-rs`` bridge (``PyHydraStream``):
 Rust stages framed per-game inputs and fills caller-owned pinned plane
@@ -129,7 +129,7 @@ class RustPlaneQuarantine:
 
 
 class RustPlaneStream:
-    """Plane-filling stream over caller-pinned slots (K1 cutover: sole handoff).
+    """Plane-filling stream over caller-pinned slots (sole replay handoff).
     Rust fills pinned ring slots DIRECTLY via ``data_ptr`` — no JSON, no
     per-row copies — and ``next_into_planes`` moves the valid prefix to
     device on a single transfer stream with slot-local ``wait_event``
@@ -375,7 +375,7 @@ def open_rust_plane_stream(
     device: str = "cuda",
 ) -> RustPlaneStream:
     """Open a plane-filling stream (see :class:`RustPlaneStream`).
-    Sole replay handoff (K1 cutover): the JSON path is deleted.
+    Sole replay handoff: no JSON path exists on this bridge.
     """
     return RustPlaneStream(
         data_dirs=data_dirs,

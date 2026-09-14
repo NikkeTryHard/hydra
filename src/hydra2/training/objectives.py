@@ -65,7 +65,7 @@ _ECE_NUM_BINS: int = 10
 # ``n < 30`` carry ``low_support = 1.0`` (informational only, report path;
 # kinds never enter the loss, so support never affects training).
 _PER_TYPE_MIN_N: int = 30
-# SOTA-quoted default for legal-only label smoothing (masked-LS: soft mass
+# Pinned default for legal-only label smoothing (masked-LS: soft mass
 # spreads over legal actions only; naive full-vocab LS leaks mass to
 # illegals).  Code default stays ``0.0`` (disabled, byte-identical resume);
 # the r1 recipe overlay sets ``0.03``.
@@ -423,19 +423,19 @@ def supervised_loss_kernel(
     ``placement_logits`` is ``[B,4,4]`` (dim-1 seat 0..3, dim-2 rank-logits
     1..4) vs 0-based ``placement_target`` ``[B,4]`` per-seat rank indices
     (0..3; bridge to utility() 1..4 is target = utility_rank - 1) (Lean
-    paired_argmax_suboptimality + grp_telescope_error). Legacy
+    paired_argmax_suboptimality + grp_telescope_error). Pre-per-seat
     ``[B]``-class and ``[B,C]``-distribution paths are byte-identical.
     Value loss is MSE of ``value_vector`` ``[B,4]`` vs ``value_target``
     ``[B,4]`` UtilityVector.values (Lean valueMSE_controls_mean_error).
 
     Args:
         model_output: must contain ``policy_logits`` ``[B,A]``; optional
-            ``placement_logits`` ``[B,4,4]`` per-seat (or legacy ``[B,4]``
-            / ``[B,num_classes]``), ``value_vector`` ``[B,4]``,
+            ``placement_logits`` ``[B,4,4]`` per-seat (or pre-per-seat
+            ``[B,4]`` / ``[B,num_classes]``), ``value_vector`` ``[B,4]``,
             ``event_logits`` dict.
         batch: must contain ``chosen_action_id`` ``[B]``, ``legal_mask``
             ``[B,A]``; optional auxiliary targets:
-            ``placement_target`` ``[B,4]`` per-seat (or legacy ``[B]``),
+            ``placement_target`` ``[B,4]`` per-seat (or pre-per-seat ``[B]``),
             ``value_target`` ``[B,4]``, ``event_targets`` dict
             ``{head_id: [B]}``.
         weights: dict with keys ``w_policy``, ``w_placement``, ``w_value``,
@@ -480,7 +480,7 @@ def supervised_loss_kernel(
         # Even when weight zero, we still compute for reporting if logits present,
         # but do not require it.  For determinism we put zero.
         losses["policy"] = torch.zeros((), device=logits.device, dtype=torch.float32)
-    # Placement auxiliary — per-seat [B,4,4] vs [B,4] first, legacy byte-identical.
+    # Placement auxiliary — per-seat [B,4,4] vs [B,4] first, pre-per-seat byte-identical.
     if w_placement != 0.0:
         if "placement_logits" not in model_output:
             raise ContractError("w_placement>0 but model_output missing 'placement_logits'")
@@ -899,10 +899,10 @@ def compute_metrics(
             result also carries flattened per-type keys
             ``per_type/<kind>/{n,nll,top1,top3,ece,recall,low_support}``
             and ``strata`` counts the kinds present; when ``None``
-            (default) the legacy placeholders (``strata``/``confusion``
-            ``0.0``) are kept.  ``recall`` equals ``top1`` by construction
+            (default) the checklist-compat constants (``strata``/``confusion``
+            ``0.0``, never bound downstream) are kept.  ``recall`` equals
+            ``top1`` by construction
             (kinds label the target); ``low_support`` flags ``n < 30``
-            kinds as informational (report-only, never loss).
 
     Returns dict with keys:
       masked_nll, top1, top3, top5, calibration_ece, legal_uniform_nll,
@@ -945,8 +945,8 @@ def compute_metrics(
         "legal_uniform_gap": float(uniform_nll - nll),  # positive means better than uniform
         "support_min": float(sup_min),
         "support_max": float(sup_max),
-        # Legacy placeholders: populated below when action_kinds is given
-        # (strata = kinds present); confusion stays 0.0 for checklist compat.
+        # Checklist-compat constants: populated below when action_kinds is given
+        # (strata = kinds present); confusion stays 0.0, never bound downstream.
         "strata": 0.0,
         "confusion": 0.0,
     }

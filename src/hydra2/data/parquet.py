@@ -303,9 +303,9 @@ def write_privileged_shards(
             for r in rows
         ],
     }
-    # Reuse hoisted privileged schema (P-B05)
+    # Reuse hoisted privileged schema instead of per-call construction.
     table = pa.table(table_dict, schema=_PRIVILEGED_SCHEMA)
-    # P0-1: shard name MUST match the oracle loader glob (privileged-*.parquet,
+    # Shard name must match the oracle loader glob (privileged-*.parquet,
     # mirroring actor-*.parquet sharding). The bare "privileged.parquet" name was
     # invisible to the loader and silently yielded zero rows.
     out_path = destination / "privileged-000.parquet"

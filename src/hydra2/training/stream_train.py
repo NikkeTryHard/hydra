@@ -147,9 +147,9 @@ def _quarantine_class(exc: ContractError) -> str:
 
 #: Replay backends. ``"rust"`` is the default (Rust per-game walk over raw
 #: framed bytes + tensor-native batch assembly, no per-row Python);
-#: ``"python"`` is the oracle shim (byte-identical rows, parity only). The
-#: ``rust_json`` JSON handoff was deleted in the K1 cutover.
-#: Wall-bound games never leave :func:`expand_game` on the python path.
+#: ``"python"`` is the oracle shim (byte-identical rows, parity only). No
+#: JSON handoff exists: the rust plane path is the sole handoff, and an
+#: unknown backend id fails closed in ``_require_replay_backend``.
 _REPLAY_BACKENDS: tuple[str, ...] = ("python", "rust")
 
 
@@ -204,8 +204,8 @@ def _expand_game_planes(
     re-serializing every parsed event in Python (which costs more than the
     walk itself). Walled games bind ``game.wall_tiles`` (136 ints, fail
     closed otherwise); wall-less games walk the embedded content verbatim.
-    Empty ``raw`` (hand-built games in tests) falls back to the legacy
-    re-serialization, which parses to identical events.
+    Empty ``raw`` (hand-built games in tests) falls back to the
+    ``_expand_game_planes`` re-serialization, which parses to identical events.
     """
     from hydra2.training.rust_batch import replay_game_planes_raw
 
@@ -473,13 +473,16 @@ def _expand_streamed_chunk(
                     sim_path = game.wall_tiles is None
                 else:
                     # Hand-built games (tests) carry no framed bytes:
-                    # legacy rebuilt path, same rows as the serial pull.
+                    # ``_expand_game_planes`` rebuilt path, same rows as the serial pull.
                     row_dicts, sim_path = _expand_game_planes(game, split, b"")
                 priv_rows = expand_privileged_rows(game, split=split) if need_priv else []
                 priv_pairs = [(str(p.decision_id), dict(p.privileged_label)) for p in priv_rows]
                 out.append(("ok", row_dicts, priv_pairs, sim_path))
             except ContractError as exc:
                 out.append(("quarantine", str(exc), None, None))
+        # phase:-log contract (observer-only): no tool parses stdout and
+        # stdout-redirect silences all of it; the 0.3s/0.15s tripwires below
+        # are debug thresholds, not SLOs. Never env-gate these prints.
         if os.environ.get("HYDRA2_FILL_DEBUG") == "1":
             _dt_task = time.perf_counter() - _t_task
             if _dt_task >= 0.3:
@@ -816,7 +819,7 @@ class _StreamDataset:
                         sim_path = streamed.game.wall_tiles is None
                     else:
                         # Hand-built games (tests) carry no framed bytes:
-                        # legacy rebuilt path, same rows as the serial pull.
+                        # ``_expand_game_planes`` rebuilt path, same rows as the serial pull.
                         row_dicts, sim_path = _expand_game_planes(
                             streamed.game, streamed.split, b""
                         )
@@ -915,8 +918,10 @@ class _StreamDataset:
         chunks in the bounded spawn pool (:func:`_expand_streamed_chunk` —
         one bridge FFI per chunk on rust, per-game oracle inside the chunk
         on python), and merges strictly in pull order via per-chunk futures
-        — never ``pool.map`` (one game's failure cancels the batch tail
-        there). Rows, counters, and quarantine classes match the serial
+        (strict pairing keeps chunk↔future↔row alignment — silent skew would
+        surface only as a restore_buffer hash failure); never ``pool.map``
+        (one game's failure cancels the batch tail there). Rows, counters,
+        and quarantine classes match the serial
         :meth:`_fill` game-for-game; per-game :class:`ContractError`
         quarantines-and-counts (fail closed, never a silent drop) while a
         chunk-level failure quarantines each game it carried (same reason)
@@ -1119,8 +1124,8 @@ class _StreamDataset:
         *format* change: the flag itself rides the run digest (flipping it
         fails closed on drift before any state is applied), and the live
         layout rides the optional ``row_order`` snapshot key (absent when
-        the flag is off, so old snapshots restore via the legacy pull-order
-        path untouched) — takes stay contiguous-prefix advances over
+        the flag is off, so old snapshots restore via the pre-``row_order``
+        snapshot path untouched) — takes stay contiguous-prefix advances
         (``_rows``, ``_offset``), so sampler offset/hash/counter semantics
         are unchanged. Whole-game entry alignment degrades gracefully (a
         grouped take may strand partial games; bounded by pull size).
@@ -1143,7 +1148,7 @@ class _StreamDataset:
             # Stable bucket-grouped take: the contiguous-prefix take below
             # then carries a single bucket (batch pads to one bucket ceil
             # instead of the batch max). Default False preserves
-            # byte-identical legacy order.
+            # byte-identical pre-``row_order`` snapshot order.
             self._group_unconsumed_by_bucket(start)
         taken = self._rows[start : start + batch_size]
         self._offset += len(taken)
@@ -1168,8 +1173,8 @@ class _StreamDataset:
         )
         batch["_decision_ids"] = [str(row["decision_id"]) for row in taken]
         batch["_epoch"] = torch.tensor(self._epoch)
-        # Wave-3C: explicit per-row kinds for per-type scorecards (honest
-        # "unknown" fallback when the table misses; never parsed/encoded).
+        # Per-row action kinds for per-type scorecards (honest "unknown"
+        # fallback when the table misses; observer-only, never parsed/encoded).
         kinds: list[str] = []
         for row in taken:
             raw_kind = row.get("action_kind", "unknown")
@@ -1254,7 +1259,7 @@ class _StreamDataset:
             # prefixes, so (offset, entries) alone underdetermines the live
             # layout — snapshot the decision_id permutation to restore it
             # exactly. Optional key (absent when the flag is off): old
-            # snapshots restore via the legacy pull-order path untouched.
+            # snapshots restore via the pre-``row_order`` snapshot path untouched.
             snap["row_order"] = [str(row["decision_id"]) for row in self._rows]
         return snap
 
@@ -1368,9 +1373,9 @@ class _StreamDataset:
             # prefixes). Reorder the rebuilt rows to the snapshotted
             # decision_id permutation before the hash check, so restore is
             # bit-exact and subsequent takes match the uninterrupted run.
-            # Absent key (old snapshots, flag-off runs): legacy pull-order
-            # path. Any id/count mismatch fails closed; content tamper still
-            # fails on the positional row hash below.
+            # Absent key (old snapshots, flag-off runs): pre-``row_order``
+            # snapshot path. Any id/count mismatch fails closed; content tamper
+            # still fails on the positional row hash below.
             if not isinstance(order, list) or any(not isinstance(v, str) for v in order):
                 raise ContractError("dataset buffer row_order must be a list of str")
             if len(order) != len(rebuilt_rows):
@@ -1843,7 +1848,7 @@ def _parse_dataset_buffer_sidecar(raw: Any, *, ckpt: Path) -> dict[str, Any]:
     if not isinstance(row_hash, str) or not row_hash.startswith("sha256:"):
         raise ContractError(f"checkpoint dataset_buffer row_hash invalid: {ckpt}")
     # Optional grouped-order permutation (homogeneous takes only; absent in
-    # old snapshots and flag-off runs, which restore via the legacy path).
+    # old snapshots and flag-off runs, which restore via the pre-``row_order`` path).
     if (row_order := raw.get("row_order")) is not None and (
         not isinstance(row_order, list) or any(not isinstance(v, str) for v in row_order)
     ):
@@ -2045,8 +2050,8 @@ def _build_scheduler(config: RunConfig, optimizer: Any) -> Any:
         unknown = sorted(k for k in parameters if k != "end_factor")
         if len(unknown) > 0:
             raise ContractError(f"scheduler.parameters unknown keys {unknown}")
-        # Canonical final_factor wins; legacy parameters end_factor preserved
-        # when explicitly set (back-compat for pre-factor configs).
+        # Canonical final_factor wins; ``end_factor`` preserved when explicitly
+        # set (back-compat for pre-factor-config runs).
         end_factor = float(parameters["end_factor"]) if "end_factor" in parameters else final_factor
         if not 0.0 <= end_factor <= 1.0:
             raise ContractError(f"scheduler end_factor must lie in [0, 1], got {end_factor}")
@@ -2660,6 +2665,7 @@ def _prime_cache_path(
 
 def _save_prime_snapshot(*, path: Path, payload: Mapping[str, Any]) -> None:
     """Best-effort atomic snapshot-index write (never fails training on I/O)."""
+    # Best-effort write: I/O failure skips the cache, the run continues warm.
     try:
         blob = json.dumps(dict(payload), indent=2, sort_keys=True).encode("utf-8")
         atomic_replace_bytes(path, blob)
@@ -2669,6 +2675,8 @@ def _save_prime_snapshot(*, path: Path, payload: Mapping[str, Any]) -> None:
 
 def _load_prime_snapshot(*, path: Path, stream_digest: str) -> dict[str, Any] | None:
     """Load a prime snapshot index on exact key match, else None (miss)."""
+    # Exact-key match fails safe: a stale cache returns miss, so the run
+    # re-primes instead of diverging the reservoir on reordered rows.
     try:
         raw_text = Path(path).read_text(encoding="utf-8")
     except OSError:
@@ -3161,8 +3169,8 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
     # Reservoir snapshot (fresh runs only, env-gated both directions):
     # HYDRA2_RESERVOIR_SNAPSHOT=1 enables load (hit) AND capture (miss);
     # unset (default) skips both — a capture nothing reads back is pure I/O.
-    # Hit path stays gated until the capture-position fix lands: an un-gated
-    # hit restores divergent data (measured 1.37e-01).
+    # Hit path stays gated: an un-gated hit restores divergent data instead
+    # of the recorded prefix, so resume fails closed on the prefix-hash check.
     _prime_index: Path | None = None
     _prime_hit: dict[str, Any] | None = None
     _prime_hit_enabled = os.environ.get("HYDRA2_RESERVOIR_SNAPSHOT", "").strip() == "1"
@@ -3269,7 +3277,7 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
             )
     # Eager first fill: warm the shuffle reservoir + first microbatch on a
     # daemon thread while the main thread builds model/optimizer/scheduler/
-    # handle/feed/sampler below (~3.6s of overlap). Single puller (this
+    # handle/feed/sampler below (fill overlaps build). Single puller (this
     # thread) preserves stream order exactly; join before loop build
     # re-raises fill failures. Deterministic: same rows, same batches.
     _eager_fill_error: list[BaseException] = []
@@ -3486,9 +3494,10 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
     _profile_cuda = str(getattr(_device, "type", _device)) == "cuda"
     # GC freeze: move everything allocated so far (model, optimizer, dataset,
     # pools, imports) to the permanent generation so per-update nursery scans
-    # skip it. Proven by gc_collections telemetry: 64-game decode waves were
-    # firing 100+ gen0 collections inside single updates (stop-the-world GIL
-    # holds that starve the main thread mid-backward and crater GPU util).
+    # skip it. Evidence: ``gc_collections_*`` of ``MicrobatchTelemetry``
+    # (loop.py): 64-game decode waves were firing 100+ gen0 collections
+    # inside single updates (stop-the-world GIL holds that starve the main
+    # thread mid-backward and crater GPU util).
     # Frozen heap is never scanned or freed; only per-update garbage (batches,
     # grads, decoded games) stays collectable. Zero training-math effect.
     # Join the eager fill first: freezing mid-fill would pin in-flight batches.
@@ -3509,7 +3518,7 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
             buffer_size=config.data.shuffle_buffer_size,
         )
         print(f"phase: reservoir-capture t={time.perf_counter() - _t_capture:.1f}s", flush=True)
-    with contextlib.suppress(Exception):
+    with contextlib.suppress(Exception):  # why-broad: freeze must never fail training
         gc.collect()
         gc.freeze()
     try:

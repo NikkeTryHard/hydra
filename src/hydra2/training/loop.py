@@ -223,7 +223,7 @@ class TrainingLoopConfig:
     # torch.autocast(cuda, bfloat16) with fp32 master weights, fp32
     # accumulate/optimizer/clip and NO GradScaler. fp16 excluded by design.
     precision: Literal["fp32", "bf16_mixed"] = "fp32"
-    # Wave-3B recipe threading (defaults carry the SOTA-quoted constant):
+    # Recipe threading (defaults carry the pinned constants below):
     # legal-only label-smoothing eps in [0, 1) (0.0 = disabled, plain CE;
     # default 0.03 spreads mass over the LEGAL set only, illegal mass stays
     # exactly zero); sampler/scorecard knobs carried for observability
@@ -360,7 +360,7 @@ def _model_forward(model: nn.Module, batch: dict[str, Any]) -> dict[str, Any]:
         # and forward() delegates to evaluate() — calling .evaluate bypasses compilation
         # (0 dynamo graphs). Uncompiled models behave identically (forward→evaluate).
         return model_output_to_loss_dict(model(actor_batch))
-    # Legacy dict path (Wp05A): evaluate(dict) when present else forward(dict).
+    # Pre-Wp05A dict path: evaluate(dict) when present else forward(dict).
     if hasattr(model, "evaluate") and callable(model.evaluate):
         out = model.evaluate(batch)
     else:
@@ -539,7 +539,7 @@ class MicrobatchTelemetry:
     h2d_ms: float
     compute_ms: float
     producer_wait_s: float = 0.0
-    # Wave-3C stage split: forward/loss/backward partition of compute_ms
+    # Stage split: forward/loss/backward partition of compute_ms
     forward_ms: float = 0.0
     loss_ms: float = 0.0
     backward_ms: float = 0.0
@@ -838,7 +838,7 @@ class SupervisedLoop:
             with contextlib.suppress(Exception):
                 self._h2d_stream = torch.cuda.Stream(device=self.device)
         self.telemetry_records: list[MicrobatchTelemetry] = []
-        # Wave-3C update-stage timings (optimizer/logging per global update;
+        # Update-stage timings (optimizer/logging per global update;
         # summary-only, reset per train() alongside microbatch records).
         self.update_records: list[UpdateTelemetry] = []
         # Item 3: bf16 attention path — opt into bf16 SDPA math under
@@ -1325,7 +1325,7 @@ class SupervisedLoop:
                 )
                 _fetched += 1
         while self.state.global_update < target_global:
-            # Accumulation window — Wave-3C: loss scalars stay on-device as
+            # Accumulation window — loss scalars stay on-device as
             # tensors (no per-microbatch .item() syncs); logging aggregates
             # once per update in the logging phase below.
             micro_total_tensors: list[torch.Tensor] = []
@@ -1364,7 +1364,7 @@ class SupervisedLoop:
                 )
                 batch, queue_wait_ms, h2d_ms = self._h2d_batch(raw_batch)
                 # AMP: autocast covers forward+loss only; backward/clip/step below stay fp32.
-                # Wave-3C stage split: forward vs loss timed separately inside
+                # Stage split: forward vs loss timed separately inside
                 # the shared autocast scope; backward outside; compute_ms keeps
                 # the total wall for back-compat.
                 compute_t0 = time.perf_counter()
@@ -1428,7 +1428,7 @@ class SupervisedLoop:
             # never poisoned. Mid-window non-finite *loss* still raises
             # ContractError inside compute_supervised_loss (before backward),
             # so there is no double-count: this gate only sees grads.
-            # Wave-3C: optimizer phase timed (probe+clip+step+scheduler+zero);
+            # Optimizer phase timed (probe+clip+step+scheduler+zero);
             # logging phase timed separately below (deferred single-sync means).
             _opt_t0 = time.perf_counter()
             _opt_debug = os.environ.get("HYDRA2_OPT_DEBUG") == "1" and self.state.global_update < 8
@@ -1532,7 +1532,7 @@ class SupervisedLoop:
             self.state.semantic_rng_state = None  # populated at checkpoint via capture_rng_state
 
             # Logging: mean over accumulation window + per-head metrics on last microbatch
-            # Wave-3C: single-sync means over the deferred window tensors (one
+            # Single-sync means over the deferred window tensors (one
             # host sync per head per update, not per microbatch); metrics on
             # the last microbatch stay lawful peeks. Checkpoint save stays
             # outside logging_ms (cadence stall reviewed separately).
