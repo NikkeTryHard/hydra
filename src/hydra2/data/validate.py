@@ -27,7 +27,8 @@ __all__ = [
     "validate_game",
 ]
 
-# Red tile physical IDs per SPEC 4.1 / tenhou_4p_hanchan_v1
+# Red tile physical IDs per SPEC 4.1 / tenhou_4p_hanchan_v1 (aka-dora: ids
+# 16/52/88 are the red fives).
 RED_TILE_IDS = (16, 52, 88)
 LOGICAL_TYPES = range(34)
 
@@ -58,7 +59,7 @@ def _load_event_schema_ordering() -> dict[str, object]:
     # Portable schema path: repo_root() marker walk (pyproject.toml/.git) is
     # invocation-dir independent; importlib.resources fallback is zip/wheel-safe.
     # Evidence: https://docs.python.org/3/library/importlib.resources.html#files
-    # Evidence: https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html  # noqa: E501 — XDG spec URL length unavoidable
+    # Evidence: https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html  # noqa: E501  # reason: evidence URL cannot wrap without breaking link
     from hydra2.config import repo_root
 
     schema_path = repo_root() / "configs" / "contracts" / "event_schema_v1.json"
@@ -69,7 +70,7 @@ def _load_event_schema_ordering() -> dict[str, object]:
             schema_path = Path(
                 str(_ir.files("hydra2") / "configs" / "contracts" / "event_schema_v1.json")
             )
-        except Exception:
+        except Exception:  # why-broad: resource probe failed; retry repo path
             schema_path = repo_root() / "configs" / "contracts" / "event_schema_v1.json"
     data_obj: object = json.loads(schema_path.read_bytes())
     if not isinstance(data_obj, dict):
@@ -107,7 +108,8 @@ def validate_game(record: GameRecord) -> ValidationOutcome:
     try:
         _ = _event_schema()
         checks["event_order"] = "ok"
-    except Exception as exc:
+    except Exception as exc:  # why-broad: schema probe may fail anywhere;
+        # invalid schema quarantines the game, never raises.
         return ValidationOutcome(
             game_id=record.game_id,
             object_id=record.object_id,
@@ -232,9 +234,11 @@ def validate_game(record: GameRecord) -> ValidationOutcome:
             wall_sched = WallSchedule(
                 schedule_id=f"wp04b-{record.game_id}",
                 physical_tiles=tuple(int(t) for t in record.wall_tiles),  # type: ignore[arg-type]
+                # reason: wall tuple is object-typed; int raises on misuse
                 digest=wall_schedule_digest(
                     f"wp04b-{record.game_id}",
                     tuple(int(t) for t in record.wall_tiles),  # type: ignore[arg-type]
+                    # reason: wall tuple object-typed; int raises on misuse
                 ),
             )
             import json as _json
@@ -251,7 +255,7 @@ def validate_game(record: GameRecord) -> ValidationOutcome:
                             _ir2.files("hydra2") / "configs" / "rules" / "tenhou_4p_hanchan_v1.json"
                         )
                     )
-                except Exception:
+                except Exception:  # why-broad: resource probe failed; retry repo
                     rules_path = (
                         _validate_repo_root() / "configs" / "rules" / "tenhou_4p_hanchan_v1.json"
                     )
@@ -270,7 +274,8 @@ def validate_game(record: GameRecord) -> ValidationOutcome:
                 wall=wall_sched,
                 seat_permutation=(Seat(0), Seat(1), Seat(2), Seat(3)),
             )
-        except Exception as exc:
+        except Exception as exc:  # why-broad: adapter probe may fail anywhere;
+            # legality degrades to skipped, never raises.
             checks["legality"] = f"skipped_adapter_error:{type(exc).__name__}"
         else:
             checks["legality"] = "ok"

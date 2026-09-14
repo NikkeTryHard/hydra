@@ -64,7 +64,7 @@ FORBIDDEN_IN_ACTOR = {
     "privileged",
     "full_world",
 }
-# Hoisted schema — P-B05: avoid per-call pa.schema construction; reuse const.
+# Hoisted schema: avoid per-call pa.schema construction; reuse the const.
 # Evidence: https://arrow.apache.org/docs/python/generated/pyarrow.parquet.write_table.html
 # write_table schema is reused; constructing once saves CPU per shard.
 _ACTOR_SCHEMA = pa.schema(
@@ -176,7 +176,8 @@ def _actor_observation_is_privileged_free(obs: dict[str, object]) -> None:
             for sub in obs[key]:  # type: ignore[union-attr]  # reason: obs values statically object; isinstance narrows dict but checker cannot narrow subscript
                 if sub in FORBIDDEN_IN_ACTOR:
                     raise ContractError(f"privileged nested field leakage: {key}.{sub}")
-    # Dora shape must be (5,) never (4,)
+    # Dora shape must be (5,) never (4,); dora is the 5 indicator tiles
+    # fixing the bonus-tile mapping ((5,) exact, never the (4,) shim).
     for k in ("dora_indicators", "dora", "indicators"):
         v = obs.get(k)
         if isinstance(v, list) and len(v) == 4:
@@ -205,7 +206,7 @@ def write_actor_shards(
             if isinstance(di, list) and len(di) == 4:
                 raise ContractError(f"dora shim (4,) in row {r.decision_id}")
 
-    # P-B05 single-pass bucket: O(rows*fields) vs O(splits*fields*rows) ~7.8M checks.
+    # Single-pass bucket: O(rows*fields) vs O(splits*fields*rows) ~7.8M checks.
     # Evidence: arrow write_table docs; hoisted _ACTOR_SCHEMA reused per shard.
     # https://arrow.apache.org/docs/python/generated/pyarrow.parquet.write_table.html
     buckets: dict[str, dict[str, list[object]]] = {}
@@ -229,7 +230,7 @@ def write_actor_shards(
     shard_hashes: dict[str, str] = {}
     for split in sorted(buckets):
         split_dict = buckets[split]
-        # Reuse hoisted const schema (P-B05) instead of per-shard pa.schema().
+        # Reuse hoisted const schema instead of per-shard pa.schema().
         split_table = pa.table(split_dict, schema=_ACTOR_SCHEMA)
         out_path = destination / f"actor-{split}.parquet"
         # Explicit opts: zstd + dict (arrow write_table docs)
@@ -250,7 +251,7 @@ def write_actor_shards(
             for chunk in iter(lambda: f.read(1 << 20), b""):
                 hasher.update(chunk)
         shard_hashes[split] = "sha256:" + hasher.hexdigest()
-        # P-B06: use ParquetFile metadata/schema.names not full read_table for leakage.
+        # Read column names via ParquetFile metadata, not a full read_table.
         # Evidence https://arrow.apache.org/docs/python/generated/pyarrow.parquet.ParquetFile.html
         try:
             pf = pq.ParquetFile(out_path)
@@ -262,10 +263,12 @@ def write_actor_shards(
             else:
                 # Fallback via metadata
                 md = pf.metadata
-                col_names = [md.schema.column(i).name for i in range(md.num_columns)]  # type: ignore[attr-defined]  # reason: metadata schema is dynamic pyarrow type; hasattr-guarded, fallback covers
-        except Exception:
-            # Fallback to lightweight read of schema only (no row data)
-            col_names = pq.read_schema(out_path).names  # type: ignore[attr-defined]  # reason: read_schema returns dynamic Arrow Schema; attribute exists at runtime
+                col_names = [md.schema.column(i).name for i in range(md.num_columns)]  # type: ignore[attr-defined]
+                # reason: metadata schema dynamic pyarrow type; guarded fallback
+        except Exception:  # why-broad: schema probe may fail on any backend;
+            # fall back to schema-only read (no row data).
+            col_names = pq.read_schema(out_path).names  # type: ignore[attr-defined]
+            # reason: read_schema returns dynamic Arrow Schema at runtime
         for col in col_names:
             if col in FORBIDDEN_IN_ACTOR:
                 raise ContractError(f"shard {out_path} leaks privileged column {col!r}")

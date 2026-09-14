@@ -45,7 +45,8 @@ def cache_key_digest(key: CacheKey) -> str:
 
 
 def _cache_path(cache_root: Path, digest: str) -> Path:
-    # Content-addressed: cache_root/<hex>/tensor.pt
+    # Two-level fan-out keeps any one directory small at corpus scale;
+    # digest-addressed so identical keys share bytes.
     hexpart = digest.removeprefix("sha256:")
     return cache_root / hexpart[:2] / hexpart[2:4] / f"{hexpart}.pt"
 
@@ -69,8 +70,8 @@ def build_cache(
         # Verify existing cache matches key's dtype/shape; if incompatible, do not reshape
         try:
             existing = torch.load(dest, map_location="cpu", weights_only=False)
-        except Exception:
-            # Corrupt cache: treat as miss and rebuild
+        except Exception:  # why-broad: any load failure is corrupt-or-bad;
+            # treat as miss and rebuild below (incompatible raises after).
             pass
         else:
             meta = existing.get("__metadata__", {}) if isinstance(existing, dict) else {}

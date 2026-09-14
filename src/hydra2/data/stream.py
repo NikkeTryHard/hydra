@@ -9,13 +9,14 @@ silently skipped. Split assignment reuses the :mod:`partition.py`
 FNV — with the default ``(source, time)`` grouping (player grouping is
 attested-weak, so it is not a default).
 
-Scale honesty (SplitScalePlan): real Tenhou MJAI carries no wall field,
-so ``wall_hash`` is null across the corpus and wall-disjointness reduces
-to game-disjointness (filename-stem identity, one game per file) plus
-exact decoded-hash dedup. :func:`check_wall_disjoint` still enforces the
-cross-split wall predicate wherever walls exist (synthetic fixtures).
-``FileEntry.game_count`` / ``wall_hashes`` stay ``None`` here: populating
-them at 6.8M-file scale is the header-scan pass's job, not the reader's.
+Scale honesty (SplitScalePlan): real Tenhou MJAI carries no wall field
+(wall: the 136-tile deal order), so ``wall_hash`` is null across the corpus
+and wall-disjointness reduces to game-disjointness (filename-stem identity,
+one game per file) plus exact decoded-hash dedup. :func:`check_wall_disjoint`
+still enforces the cross-split wall predicate wherever walls exist
+(synthetic fixtures). ``FileEntry.game_count`` / ``wall_hashes`` stay ``None``
+here: populating them at 6.8M-file scale is the header-scan pass's job, not
+the reader's.
 
 Actor/privileged firewall: :func:`actor_payload` projects the safe subset
 (no events — ``tehais`` are private hands) and
@@ -175,7 +176,9 @@ def manifest_digest(manifest: StreamManifest) -> str:
     paths = [entry.path.as_posix() for entry in files]
     if paths and re.search(r"[^\x20\x21\x23-\x5b\x5d-\x7e]", "".join(paths)) is None:
         # Escape-free: no `"`, `\`, controls, or non-ASCII anywhere, so raw
-        # interpolation equals the canonical string encoding on every path.
+        # interpolation equals the canonical string encoding on every path
+        # (only `"`/`\` are escaped in ASCII; controls/non-ASCII take the
+        # element-wise path below).
         h = hashlib.sha256()
         h.update(b"[")
         for i, entry in enumerate(files):
@@ -287,7 +290,12 @@ def scan_cache_path(run_dir: Path | str) -> Path:
 
 
 def _ratios_match(cached: object, expected: Mapping[str, float]) -> bool:
-    """Exact-ish ratio comparison (JSON round-trip safe, fail-closed to miss)."""
+    """Exact-ish ratio comparison (JSON round-trip safe, fail-closed to miss).
+
+    1e-9 tolerates JSON round-trip without admitting a different split;
+    bool is excluded because bool is an int subclass (True == 1 would pass
+    a count check).
+    """
     if not isinstance(cached, dict):
         return False
     if set(cached) != set(expected):
@@ -349,6 +357,8 @@ def load_scan_cache(
             return None
         if any(not isinstance(w, str) for w in val_walls):
             return None
+        # Re-checks disjointness on load: a cache written before a wall fix
+        # must not resurrect cross-split walls — fail closed to miss.
         if len(set(train_walls) & set(val_walls)) > 0:
             return None
         counts: dict[str, object] = {}
@@ -363,6 +373,7 @@ def load_scan_cache(
             "duplicates",
         ):
             value = scan.get(key)
+            # bool excluded (isinstance(True, int)): counts are true ints.
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 return None
             counts[key] = value
@@ -385,7 +396,12 @@ def save_scan_cache(
     val_split: str,
     scan: Mapping[str, object],
 ) -> None:
-    """Best-effort atomic cache write (never fails training on I/O error)."""
+    """Best-effort atomic cache write (never fails training on I/O error).
+
+    tmp+replace publishes atomically: a crash leaves old or new, never
+    torn. Sorted walls make the payload deterministic; every failure
+    returns silently because cache is advisory.
+    """
     try:
         target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -397,6 +413,8 @@ def save_scan_cache(
             "train_split": train_split,
             "val_split": val_split,
             "scan": {
+                # reason: type arg-type on scan payload object; sorted/int
+                # re-validated by isinstance guards on load, fail-closed miss.
                 "train_walls": sorted(scan["train_walls"]),  # type: ignore[arg-type]
                 "val_walls": sorted(scan["val_walls"]),  # type: ignore[arg-type]
                 "train_games": int(scan["train_games"]),  # type: ignore[arg-type]
@@ -418,7 +436,11 @@ def save_scan_cache(
 
 
 def serialize_shuffle_rng(rng: random.Random) -> dict[str, object]:
-    """JSON-safe snapshot of a shuffle ``random.Random`` (fail-closed on misuse)."""
+    """JSON-safe snapshot of a shuffle ``random.Random`` (fail-closed on misuse).
+
+    Stores the version+internal+gauss_next getstate triple; misuse fails
+    closed via ContractError so a corrupt sidecar resumes from origin.
+    """
     state = rng.getstate()
     version, internal, gauss_next = state[0], state[1], state[2]
     if not isinstance(version, int) or not isinstance(internal, tuple):
@@ -557,6 +579,8 @@ def assign_split(*, group_key: str, seed: int, ratios: Mapping[str, float]) -> s
         raise ContractError("split ratios must not be empty")
     weights: dict[str, float] = {}
     for name, value in ratios.items():
+        # reason: type arg-type on ratios mapping value; float() guarded
+        # below, ContractError on non-numeric.
         try:
             weight = float(value)  # type: ignore[arg-type]
         except (TypeError, ValueError) as exc:
@@ -880,7 +904,7 @@ class GameStream:
         # Reservoir snapshot blob: per-game raw bytes in entry order, replacing
         # corpus refetch in _restore_shuffle_state (same decode+validate tail).
         # Requires restore entries (unmappable bytes otherwise); entries alone
-        # keep the legacy refetch path.
+        # keep the corpus-refetch path (no blob → fetch by path/offset).
         self._snapshot_blob: Path | None = (
             Path(snapshot_blob) if snapshot_blob is not None else None
         )
@@ -1095,6 +1119,8 @@ class GameStream:
         for entry, raw in zip(entries, raws, strict=True):
             key = str(entry["key"])
             fpath = Path(str(entry["path"]))
+            # reason: type arg-type on restore-entry object; int() guarded
+            # by offset validation at construction, raises on misuse.
             game_offset = int(entry["offset"])  # type: ignore[arg-type]
             game, validation_hash = self._decode_inline(stem_of(fpath), raw)
             if game is None or validation_hash is None:
@@ -1134,6 +1160,8 @@ class GameStream:
             for entry in self._shuffle_restore_entries:
                 key = str(entry["key"])
                 fpath = Path(str(entry["path"]))
+                # reason: type arg-type on restore-entry object; non-neg-int
+                # validated at construction, int() raises on misuse.
                 game_offset = int(entry["offset"])  # type: ignore[arg-type]
                 fetched = fetch_game_at(
                     fpath, game_offset, seed=self._seed, ratios=self._ratios, expected_sha=key
@@ -1229,8 +1257,8 @@ class GameStream:
             yield batch
 
 
-#: Cap for spawn decode workers (mirrors the expansion-pool bound; decode is
-#: pure Python+C without torch, so workers are light but numerous).
+#: Cap for spawn decode workers (bounded pool; decode is pure Python+C
+#: without torch, so workers stay light but numerous).
 _DECODE_PROC_MAX_WORKERS = 16
 
 #: One worker file-batch result: per game ``(file_index, end, game_bytes,
@@ -1239,11 +1267,9 @@ _DECODE_PROC_MAX_WORKERS = 16
 _WorkerBatchResult = list[
     tuple[int, int, bytes, GameRecord | None, str | None, str | None, str | None]
 ]
-#: frames in flight, matching the previous per-frame depth bound.
+#: File-batch size bounding in-flight work (prefetch sequences x this many
+#: files); sized with the prefetch default below so emission stays ordered.
 _DECODE_BATCH_GAMES = 16
-#: Cap for spawn decode workers (mirrors the expansion-pool bound; decode is
-#: pure Python+C without torch, so workers are light but numerous).
-_DECODE_PROC_MAX_WORKERS = 16
 
 
 #: Decode tasks between periodic worker collections. Bounds cyclic-garbage
@@ -1330,7 +1356,8 @@ def _decode_frames_worker(
 class PrefetchGameStream(GameStream):
     """Game stream with spawn-process background decode.
 
-    Frames are submitted in order with sequence numbers; results are
+    prefetch=64 sequences x _DECODE_BATCH_GAMES=16 files bounds in-flight
+    work. Frames are submitted in order with sequence numbers; results are
     processed strictly in sequence order, never completion order, so the
     emitted sequence is bit-identical to :class:`GameStream`. ``waits``
     counts how often the consumer blocked on the next sequence — the
@@ -1452,7 +1479,7 @@ def count_decisions(games: Iterable[StreamGame]) -> int:
 
 
 def check_wall_disjoint(games: Iterable[StreamGame]) -> None:
-    """Fail if one wall lands in two splits; vacuous when all hashes are null."""
+    """Fail if one wall is shared by two splits; vacuous when hashes are null."""
     seen: dict[str, str] = {}
     for game in games:
         if game.wall_hash is None:

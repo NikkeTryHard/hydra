@@ -121,6 +121,7 @@ def decode_game_object(
         w = _w
         if isinstance(w, list) and len(w) == 136 and all(isinstance(x, int) for x in w):
             wall = tuple(int(x) for x in w)  # type: ignore[arg-type]
+            # reason: arg-type — payload list object-typed; gated above, int raises
             break
     raw_sha = "sha256:" + hashlib.sha256(decoded_bytes).hexdigest()
     return GameRecord(

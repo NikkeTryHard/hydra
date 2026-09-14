@@ -35,7 +35,8 @@ def _sha_hex(data: bytes) -> str:
 def _require_digest(text: str, *, name: str) -> DigestText:
     try:
         return make_digest_text(text)
-    except Exception as exc:
+    except Exception as exc:  # why-broad: any digest-shape failure is one
+        # ContractError with the offending name and value.
         raise ContractError(f"{name} must be sha256:<64 hex>, got {text!r}") from exc
 
 
@@ -141,9 +142,8 @@ class PackagedObjectRow:
 
     def verify_seal(self) -> None:
         expected = _sha_hex(self.canonical_bytes(include_id=False))
-        # stored id includes sha256: prefix in python but rust stores bare hex?
-        # Rust stores hex without prefix? Check: integrity.rs to_hex => bare hex,
-        # but python spec says DigestText is sha256:<hex>. We normalize both.
+        # Transport ids carry the sha256: prefix; bare-hex inputs normalize
+        # at parse (pre-WP-01 compat); both forms compare equal after norm().
         stored_hex = self.packaged_object_id.removeprefix("sha256:")
         if stored_hex != expected:
             raise ContractError(

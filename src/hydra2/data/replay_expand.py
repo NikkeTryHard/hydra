@@ -110,10 +110,10 @@ _RULES_RELPATH = Path("configs") / "rules" / "tenhou_4p_hanchan_v1.json"
 _RULES_CACHE: RulesManifest | None = None
 _ADAPTER_HASH_CACHE: str | None = None
 _EXPANDER_CACHE: ReplayExpander | None = None
-#: Live-observation handoff (Perf-C P1a): per-decision_id cache of the
-#: validated :class:`ActorObservation` built at capture time, so the encoder
-#: consumes live objects instead of re-serializing/re-parsing/re-validating
-#: row dicts. Keyed by row ``decision_id`` (``{game_id}:d{seq}``, unique per
+#: Live-observation handoff: per-decision_id cache of the validated
+#: :class:`ActorObservation` built at capture time, so the encoder consumes
+#: live objects instead of re-serializing/re-parsing/re-validating row
+#: dicts. Keyed by row ``decision_id`` (``{game_id}:d{seq}``, unique per
 #: game), consume-once via :func:`pop_live_observation` so steady-state size
 #: tracks the in-flight buffer, never the epoch. A miss (parquet rows,
 #: cross-process rows not yet re-stashed, over-cap drops) falls back to the
@@ -152,7 +152,7 @@ def _load_rules() -> RulesManifest:
             rules_path = Path(
                 str(_ir.files("hydra2") / "configs" / "rules" / "tenhou_4p_hanchan_v1.json")
             )
-        except Exception:
+        except Exception:  # why-broad: rules-path probe failed; retry repo
             rules_path = repo_root() / _RULES_RELPATH
     raw: object = json.loads(rules_path.read_bytes())
     if not isinstance(raw, dict):
@@ -537,8 +537,9 @@ class ReplayExpander:
             )
         obs_hash = str(observation.observation_hash)
         decision_id = f"{game.game_id}:d{seq:04d}"
-        # Perf-C P1a: hand the validated live object to the encoder out of
-        # band (row dict content below is byte-identical either way).
+        # Hand the validated live object to the encoder out of band; row
+        # dict bytes below are identical either way, so skipping the
+        # re-serialize/re-parse/re-validate round trip cannot diverge output.
         stash_live_observation(decision_id, observation)
         wall_digest = sim._schedule_digest
         derivation = str(

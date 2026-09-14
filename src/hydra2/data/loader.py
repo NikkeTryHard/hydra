@@ -82,13 +82,13 @@ def _load_manifest(manifest_path: Path) -> DatasetManifest:
 
 
 def _hash_file_stream(path: Path) -> str:
-    """Stream hash via 1 MiB chunks (P-B02) — helper alias for spec.
+    """Stream hash via 1 MiB chunks — helper alias for spec.
 
     Evidence: https://docs.python.org/3/library/hashlib.html chunked update
     pattern avoids loading entire shard via read_bytes().
     """
     hasher = hashlib.sha256()
-    # 1 MiB chunks: iter(lambda: f.read(1<<20), b"") keeps peak ~1 MiB vs shard size.
+    # 1 MiB chunks: iter(lambda: f.read(1<<20), b"") keeps peak ~1 MiB.
     with path.open("rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             hasher.update(chunk)
@@ -96,7 +96,7 @@ def _hash_file_stream(path: Path) -> str:
 
 
 def _sha256_file_chunked(path: Path) -> str:
-    """Stream hash via 1 MiB chunks (P-B02).
+    """Stream hash via 1 MiB chunks.
 
     Evidence: https://docs.python.org/3/library/hashlib.html chunked update
     pattern avoids loading entire shard via read_bytes().
@@ -123,10 +123,10 @@ def verify_and_load_batch(
     corrupt shard ignored (must raise).
 
     Perf:
-    - P-B02: shard hashes via 1 MiB chunked streaming + per-path cache avoids
+    - Shard hashes via 1 MiB chunked streaming + per-path cache avoids
       rehashing same actor_parquet when fallback missing.
       Evidence https://docs.python.org/3/library/hashlib.html
-    - P-B03/P-B04 zero-copy: pq.read_table(..., memory_map=True, pre_buffer=True,
+    - Zero-copy: pq.read_table(..., memory_map=True, pre_buffer=True,
       use_threads=True) + table.slice(0, batch_size) + to_pydict/to_batches.
       Parse actor_observation JSON once per row and reuse for dora/legal/phase.
       Evidence https://arrow.apache.org/docs/python/generated/pyarrow.parquet.read_table.html
@@ -140,8 +140,8 @@ def verify_and_load_batch(
     if not dataset_manifest.is_file():
         raise CorruptArtifactError(f"dataset manifest missing: {dataset_manifest}")
     manifest = _load_manifest(dataset_manifest)
-    # Verify shard hash matches manifest — cache per path to avoid duplicate hashing
-    # when multiple splits fallback to same actor_parquet file (P-B02).
+    # Verify shard hash matches manifest — cache per path to avoid duplicate
+    # hashing when multiple splits fallback to same actor_parquet file.
     actual_by_path: dict[Path, str] = {}
     for split, recorded_hash in manifest.shards.items():
         # Find shard file for this split (actor-{split}.parquet or actor shard itself)
@@ -202,7 +202,8 @@ def verify_and_load_batch(
     # string columns we bound Python object creation to batch size via pydict.
     try:
         cols = batch_table.to_pydict()
-    except Exception:
+    except Exception:  # why-broad: to_pydict fallback to to_batches;
+        # both produce the same cols mapping.
         # Fallback to to_batches if to_pydict unavailable (should not happen)
         cols = {}
         for batch in batch_table.to_batches(max_chunksize=n_rows):

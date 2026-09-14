@@ -1,4 +1,4 @@
-# ruff: noqa: E501 — portable evidence URLs in docstrings/comments unavoidably long (>100)
+# ruff: noqa: E501  # reason: E501 portable evidence URLs stay long; wrap would break copy-paste
 """Attestation handling for WP-04B — parameterized join with synthetic + real D-017.
 
 Real Tenhou Houou corpus is a private Tenhou Houou corpus
@@ -48,14 +48,14 @@ def _repo_attestation_path() -> Path:
             import importlib.resources as _ir
 
             return Path(str(_ir.files("hydra2") / "configs" / "attestations" / "D-017.json"))
-        except Exception:
+        except Exception:  # why-broad: wheel probe failed; keep repo candidate below
             return candidate
-    except Exception:
+    except Exception:  # why-broad: repo_root import failed; probe importlib next
         try:
             import importlib.resources as _ir2
 
             return Path(str(_ir2.files("hydra2") / "configs" / "attestations" / "D-017.json"))
-        except Exception:
+        except Exception:  # why-broad: resource probe failed; marker walk follows
             # No hardcoded depth fallback remains — caller will handle missing file via is_file() check.
             # Keep portable: return candidate-like repo-anchored path via temp discovery without parents[N].
             # As last resort, walk from __file__ parents searching for pyproject.toml (marker walk, not fixed depth).
@@ -142,6 +142,7 @@ def _attestation_from_dict(raw: dict[str, object], *, kind: str = "real") -> Att
     if isinstance(pp, str):
         pp = (pp,)
     pp_tuple = tuple(str(x) for x in pp)  # type: ignore[arg-type]
+    # reason: arg-type — payload is object-typed; str() normalizes entries
     _dc_raw = raw.get("disclosure_class")
     if _dc_raw is None or _dc_raw == "":
         _dc_raw = raw.get("disclosureClass")
@@ -205,7 +206,7 @@ def load_attestation(path: Path | None = None) -> Attestation:
 try:
     if D017_ATTESTATION_PATH.is_file() or _artifact_attestation_path().is_file():
         REAL_ATTESTATION = load_attestation()
-except Exception:
+except Exception:  # why-broad: import-time probe; absent stays None for synthetic paths
     REAL_ATTESTATION = None
 
 

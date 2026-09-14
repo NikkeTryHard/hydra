@@ -1,15 +1,16 @@
 """Offline tensor shards + mmap-ready manifest (Phase 4 builder).
 
-Pipeline: parallel expand (bounded spawn pool, same topology as the landed
-Phase-1 pool in ``training.stream_train``) -> firewall / quarantine / D-017
+Pipeline: parallel expand (bounded spawn pool, same bound as
+``training.stream_train``: clamp, never unbounded) -> firewall /
 checks -> encode once -> per-plane contiguous files.
 
 Layout: one UNCOMPRESSED Arrow IPC Tensor file per (plane, chunk). The hot
 path stays uncompressed on purpose: C++ IPC reads off mmap/BufferReader are
 zero-copy, while compressed buffers force a transform + copy on every read
-(RschArrowMmap, RschZstd). Cold archives may stay Parquet-ZSTD; that is not
-this module. Chunks default to 8192 rows (~74MB @9KB/row, inside the 64-256MB
-/ ~7-28k-row LitData guidance); small builds collapse to a single chunk.
+(per internal mmap/zstd read-path analysis). Cold archives may stay
+Parquet-ZSTD; that is not this module. Chunks default to 8192 rows (~74MB
+@9KB/row, inside the 64-256MB / ~7-28k-row LitData guidance); small builds
+collapse to a single chunk.
 
 Varlen history is stored fixed ``[N, 256]`` (the frozen bucket cap) plus an
 explicit ``history_len`` plane: ``ListArray`` cannot ``to_numpy``-view, so
@@ -98,8 +99,8 @@ HISTORY_LEN_PLANE = "history_len"
 DECISION_IDS_FILENAME = "decision_ids.json"
 OBSERVATION_HASHES_FILENAME = "observation_hashes.json"
 
-#: Max parallel game-expansion workers (same bound as the Phase-1 pool:
-#: larger requests clamp here, never spawn unbounded processes).
+#: Max parallel game-expansion workers (bounded at 16 workers: larger
+#: requests clamp here, never spawn unbounded processes).
 _SHARD_MAX_WORKERS = 16
 
 #: Order kinds accepted by :func:`build_shards`.
@@ -109,10 +110,10 @@ _ORDER_KINDS = ("canonical", "perm")
 def _pool_worker_init() -> None:
     """Clamp per-worker thread pools (spawn-pool initializer).
 
-    Same rationale as the Phase-1 pool: a fresh spawn worker inherits a
-    full-size torch/OpenMP thread pool, so ``N`` workers x ``C`` threads
-    oversubscribe ``C`` cores. One thread per worker keeps parallelism at
-    exactly ``max_workers`` processes. Runs in workers only.
+    A fresh spawn worker inherits a full-size torch/OpenMP thread pool, so
+    ``N`` workers x ``C`` threads oversubscribe ``C`` cores. One thread per
+    spawn worker keeps parallelism at exactly ``max_workers`` processes.
+    Runs in workers only.
     """
     # Env clamp is the effect; prior values discarded.
     _ = os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -204,7 +205,7 @@ def _firewall_check_row(row: dict[str, Any]) -> None:
 
 
 def _require_workers(expand_workers: int) -> int:
-    """Validate the worker knob (mirrors the Phase-1 guard) and clamp."""
+    """Validate the worker knob (non-negative int) and clamp to the bound."""
     if (
         isinstance(expand_workers, bool)
         or not isinstance(expand_workers, int)

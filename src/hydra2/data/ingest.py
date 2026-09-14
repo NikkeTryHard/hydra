@@ -51,8 +51,9 @@ def decode_zstd_verified(path: Path, expected_sha256: str, expected_len: int) ->
     try:
         # closefd=False keeps fh lifecycle with outer context; reader closes
         # its own decompression stream without closing fh twice.
-        # Evidence stream_reader closefd param: python-zstandard stream_reader docs.
-        with path.open("rb") as fh, dctx.stream_reader(fh, closefd=False) as reader:  # type: ignore[call-arg]  # reason: zstandard stubs miss closefd kwarg; runtime accepts it, verified by decode path
+        # Evidence stream_reader closefd param: python-zstandard docs.
+        # reason: type call-arg — stubs miss closefd kwarg; runtime accepts it.
+        with path.open("rb") as fh, dctx.stream_reader(fh, closefd=False) as reader:  # type: ignore[call-arg]
             chunks: list[bytes] = []
             total = 0
             while True:
