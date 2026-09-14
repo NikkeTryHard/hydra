@@ -1,4 +1,7 @@
 # ruff: noqa
+# reason: E501 fixture literals + F841/RUF059 stub-probe leftovers + B905
+#   non-strict replay zip + TC003 runtime Path use; qualification pins
+#   fail-closed gates, narrowing would churn asserts.
 """WP-12 Analysis Qualification — contract_package WP-12.
 
 Covers BUILD §15 checklist:
