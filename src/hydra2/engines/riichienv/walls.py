@@ -27,7 +27,6 @@ Evidence:
 
 from __future__ import annotations
 
-import copy  # noqa: F401  # retained for parity; clone optimization uses copy.copy
 import hashlib
 
 from hydra2.contracts.common import TileId

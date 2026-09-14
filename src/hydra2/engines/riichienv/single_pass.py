@@ -1027,7 +1027,7 @@ def _fold_offer(raw: Any) -> Any:
         tile_raw: Any = raw.tile
         folded_tile = None if tile_raw is None else int(physical_of(mjai_string_of(int(tile_raw))))
         folded_consume = _distinct_copies(tuple(int(t) for t in raw.consume_tiles))
-    except Exception:
+    except Exception:  # why-broad: folding never invents ids; use-site fails closed
         return raw
     return SimpleNamespace(
         action_type=raw.action_type,

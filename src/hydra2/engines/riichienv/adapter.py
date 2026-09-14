@@ -585,6 +585,8 @@ class RiichiEnvExactSimulator:
                 new_builder._public = dict(builder._public)  # type: ignore[attr-defined]  # reason: external builder lacks stubs; attrs exist at runtime
                 replica._builder = new_builder  # type: ignore[assignment]  # reason: replica via __new__; builder assignment valid at runtime
             except Exception:  # pragma: no cover - defensive fallback
+                # why-broad: shallow-copy shim touches untyped builder attrs;
+                # any shape falls back to deepcopy.
                 replica._builder = copy.deepcopy(builder)  # type: ignore[assignment]  # reason: fallback preserves semantics; checker cannot narrow __new__ replica
         replica._events = list(self._events)
         replica._applied = list(self._applied)

@@ -4,7 +4,7 @@ Drives the pinned RiichiEnv reference adapter and the quarantined mahjax
 distribution through IDENTICAL stochastic inputs (one wall) and IDENTICAL
 decision scripts, comparing a declared projection of observable state at
 every checkpoint. Zero mismatch across the declared rule intersection is the
-precondition for issuing a real qualification token (see ``token.py``).
+precondition for WP-04C issuing a real qualification token.
 
 Wall translation (both representations decoded by the prior recon agents):
 
@@ -66,6 +66,7 @@ try:  # prefer modern jax.tree (JAX 0.11 idiomatic)
     _tree_flatten = _jax_tree.flatten  # type: ignore[attr-defined]  # reason: jax compat
     _tree_map = _jax_tree.map  # type: ignore[attr-defined]  # reason: jax compat
 except Exception:  # pragma: no cover - fallback for older JAX
+    # why-broad: any JAX-version import shape falls back to tree_util.
     import jax.tree_util as _jax_tree_util  # type: ignore[import-not-found]  # reason: jax pin compat
 
     _tree_flatten = _jax_tree_util.tree_flatten  # type: ignore[attr-defined]  # reason: jax compat
@@ -477,7 +478,7 @@ def _mahjax_discard_types(state: Any) -> set[int]:
             ld = int(cast("Any", state.round_state.last_draw))  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
             if 0 <= ld < 34:
                 types.add(ld)
-        except Exception:
+        except Exception:  # why-broad: best-effort last-draw read; failure keeps probed set
             pass
     return types
 
@@ -500,7 +501,7 @@ def _reference_shanten(sim: Any, actor: int) -> int:
     engine_pid = int(cast("Any", sim._perm[actor])) if hasattr(sim, "_perm") else actor  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
     try:
         hand_list = [int(t) for t in sim._engine.hands[engine_pid]]  # type: ignore[attr-defined]  # reason: no stubs; runtime
-    except Exception:
+    except Exception:  # why-broad: _engine/_env probe; any shape tries _env
         hand_list = [
             int(cast("Any", t)) for t in sim._env.hands[engine_pid]
         ]  # fallback  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
@@ -536,10 +537,10 @@ def _reference_dora_types(sim: Any) -> tuple[int, ...]:
     """Reference dora indicator types (physical//4)."""
     try:
         indicators = list(sim._engine.dora_indicators)  # type: ignore[attr-defined]  # reason: no stubs; runtime
-    except Exception:
+    except Exception:  # why-broad: attr probe; any shape falls back to _env, then ()
         try:
             indicators = list(sim._env.dora_indicators)  # type: ignore[attr-defined]  # reason: no stubs; runtime
-        except Exception:
+        except Exception:  # why-broad: attr probe; unknown shape reports ()
             return ()
     types = tuple(
         type_id(int(cast("Any", t)))
@@ -566,7 +567,7 @@ def _reference_ura_types(sim: Any) -> tuple[int, ...]:
             return tuple(
                 type_id(int(cast("Any", t))) for t in cast("Any", ura) if int(cast("Any", t)) != -1
             )
-    except Exception:
+    except Exception:  # why-broad: ura probe; any shape reports ()
         pass
     return ()
 
@@ -760,7 +761,7 @@ def _compare_projections(
                             dimension="current_player",
                             detail=f"ref actor {ref_actor} != mj current {mj_current}",
                         )
-                except Exception:
+                except Exception:  # why-broad: total comparator; reports CheckpointFailure
                     return CheckpointFailure(
                         case_id=scenario.case_id,
                         step_index=step_index,
@@ -791,7 +792,7 @@ def _compare_projections(
                 _mj_has_pass_win and not _ref_has_pass_win
             ):
                 return None
-    except Exception:
+    except Exception:  # why-broad: window probe; any shape keeps comparing
         pass
     # If either engine is already terminal, defer all checks
     # (settlement is outside intersection for single-round)
@@ -849,7 +850,7 @@ def _compare_projections(
                             dimension="discard_legality_projection",
                             detail=f"ref discard types {sorted(ref_disc)} != mj {sorted(mj_disc)}",
                         )
-            except Exception:
+            except Exception:  # why-broad: total comparator; reports CheckpointFailure
                 ref_disc = _reference_discard_types(cast("Any", sim), int(cast("Any", ref_actor)))
                 mj_disc = _mahjax_discard_types(cast("Any", mj_state))
                 if ref_disc != mj_disc:
@@ -879,6 +880,7 @@ def _compare_projections(
                     detail=f"ref shanten {ref_sh} != mj {mj_sh}",
                 )
         except Exception as exc:  # pragma: no cover
+            # why-broad: total comparator; every failure reports CheckpointFailure.
             return CheckpointFailure(
                 case_id=scenario.case_id,
                 step_index=step_index,
@@ -902,6 +904,7 @@ def _compare_projections(
                     detail=f"ref win {ref_win} != mj win {mj_win} for actor {ref_actor}",
                 )
         except Exception as exc:  # pragma: no cover
+            # why-broad: total comparator; every failure reports CheckpointFailure.
             return CheckpointFailure(
                 case_id=scenario.case_id,
                 step_index=step_index,
@@ -928,7 +931,7 @@ def _compare_projections(
                     if _reference_win_offer(cast("Any", sim), _a):
                         ref_has_ron = True
                         break
-                except Exception:
+                except Exception:  # why-broad: ron scan; unparseable seats skipped
                     continue
             if mj_has_ron != ref_has_ron:
                 return CheckpointFailure(
@@ -938,6 +941,7 @@ def _compare_projections(
                     detail=f"chankan ron mismatch mj {mj_has_ron} vs ref {ref_has_ron}",
                 )
         except Exception as exc:  # pragma: no cover
+            # why-broad: total comparator; every failure reports CheckpointFailure.
             return CheckpointFailure(
                 case_id=scenario.case_id,
                 step_index=step_index,
@@ -975,6 +979,7 @@ def _compare_projections(
                         ),
                     )
             except Exception as exc:  # pragma: no cover
+                # why-broad: total comparator; every failure reports CheckpointFailure.
                 return CheckpointFailure(
                     case_id=scenario.case_id,
                     step_index=step_index,
@@ -1009,7 +1014,7 @@ def _compare_projections(
             if ref_scores is not None and mj_scaled is not None and ref_scores != mj_scaled:
                 # only fail if both non-empty and mismatch, but dealer multiplier excluded, so allow
                 pass
-        except Exception:
+        except Exception:  # why-broad: scale probe; any shape skips compare
             pass
     return None
 
@@ -1097,7 +1102,7 @@ def _reference_auto_action(sim: Any, actor: int) -> Any:
         )
         if drawn is None:
             drawn = cast("Any", sim)._env.drawn_tile if hasattr(cast("Any", sim), "_env") else None
-    except Exception:
+    except Exception:  # why-broad: drawn-tile probe; any shape tries discards
         drawn = None
     if drawn is not None:
         tsumogiri = [
@@ -1513,7 +1518,7 @@ def _digest(state: object) -> str:
             h.update(hashlib.sha256(arr.tobytes()).digest())
             h.update(str(arr.shape).encode())
             h.update(str(arr.dtype).encode())
-        except Exception:
+        except Exception:  # why-broad: leaf digest; any shape uses repr
             h.update(repr(leaf).encode())
     return "sha256:" + h.hexdigest()
 
@@ -1552,7 +1557,7 @@ def execution_mode_sweep(
     _build_cpu: Any = None  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
     try:
         _build_cpu = jax.devices("cpu")[0]  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-    except Exception:
+    except Exception:  # why-broad: device probe; any shape leaves _build_cpu None
         _build_cpu = None
     wall: tuple[int, ...]
     deck: tuple[int, ...]
@@ -2169,7 +2174,6 @@ def run_differential(
         # Portable payload path: repo_root() marker walk (not parents[3] depth).
         # Evidence: https://docs.python.org/3/library/pathlib.html#pathlib.Path.resolve
         # Evidence: https://github.com/fsspec/universal_pathlib
-        # Legacy: previously Path(__file__).resolve().parents[3] brittle to re-layout.
 
         payload_path = _diff_repo_root() / "configs" / "rules" / "tenhou_4p_hanchan_v1.json"
         # fallback to importlib.resources for wheel installs (zip-safe)

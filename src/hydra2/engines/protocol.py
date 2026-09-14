@@ -22,7 +22,7 @@ from hydra2.contracts.common import (
     make_seat,
     make_tile_id,
 )
-from hydra2.contracts.rules import RULES_ID as _CANONICAL_RULES_ID  # noqa: F401
+from hydra2.contracts.rules import RULES_ID as _CANONICAL_RULES_ID  # noqa: F401  # reason: canary
 
 if TYPE_CHECKING:
     from hydra2.contracts.action import CanonicalAction
