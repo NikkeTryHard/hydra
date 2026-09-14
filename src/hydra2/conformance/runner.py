@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from hydra2.contracts.action import CanonicalAction
-    from hydra2.contracts.event import EventEnvelope
+    from hydra2.contracts.event_envelope import EventEnvelope
     from hydra2.contracts.rules import RulesManifest
 __all__ = [
     "CaseResult",

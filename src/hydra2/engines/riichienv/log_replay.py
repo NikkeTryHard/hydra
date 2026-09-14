@@ -684,7 +684,7 @@ def _table() -> Any:
 
 def _event_schema_hash() -> str:
     from hydra2.config import repo_root
-    from hydra2.contracts.event import EVENT_SCHEMA_RELPATH, parse_event_schema
+    from hydra2.contracts.event_schema import EVENT_SCHEMA_RELPATH, parse_event_schema
 
     root = str(repo_root())
     if root not in _EVENT_SCHEMA_HASH_CACHE:
@@ -701,7 +701,10 @@ def _event_schema_hash() -> str:
 
 def _packet_boundary_hash() -> str:
     from hydra2.config import repo_root
-    from hydra2.contracts.event import build_packet_boundary_payload, compute_event_schema_digest
+    from hydra2.contracts.event_packet import (
+        build_packet_boundary_payload,
+        compute_event_schema_digest,
+    )
 
     # Perf-C P1b: the boundary payload is process-constant; hashing it per
     # builder (per kyoku) re-ran canonicalization for an identical digest.

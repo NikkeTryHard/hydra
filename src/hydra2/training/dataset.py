@@ -38,7 +38,7 @@ import pyarrow.parquet as pq
 import torch
 
 from hydra2.contracts.common import ContractError, CorruptArtifactError, make_digest_text
-from hydra2.contracts.event import EventEnvelope, EventPayload, PublicStateDelta
+from hydra2.contracts.event_envelope import EventEnvelope, EventPayload, PublicStateDelta
 from hydra2.contracts.observation import ActorObservation, VisibleMeld
 from hydra2.data.parquet import (
     ACTOR_FIELDS,

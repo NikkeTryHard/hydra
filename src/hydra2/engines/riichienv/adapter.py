@@ -68,12 +68,11 @@ from hydra2.contracts.common import (
     make_sequence_no,
     make_tile_id,
 )
-from hydra2.contracts.event import (
-    EVENT_SCHEMA_RELPATH,
+from hydra2.contracts.event_packet import (
     build_packet_boundary_payload,
     compute_event_schema_digest,
-    parse_event_schema,
 )
+from hydra2.contracts.event_schema import EVENT_SCHEMA_RELPATH, parse_event_schema
 from hydra2.contracts.observation import (
     VISIBILITY_VALIDATOR,
     ObservationBuilder,
@@ -105,7 +104,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from hydra2.contracts.action import ActionTable, Phase
-    from hydra2.contracts.event import EventEnvelope
+    from hydra2.contracts.event_envelope import EventEnvelope
     from hydra2.contracts.observation import ActorObservation
     from hydra2.contracts.rules import RulesManifest
     from hydra2.contracts.utility import RawOutcome, SettlementFact

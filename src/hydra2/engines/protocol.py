@@ -26,7 +26,7 @@ from hydra2.contracts.rules import RULES_ID as _CANONICAL_RULES_ID  # noqa: F401
 
 if TYPE_CHECKING:
     from hydra2.contracts.action import CanonicalAction
-    from hydra2.contracts.event import EventEnvelope
+    from hydra2.contracts.event_envelope import EventEnvelope
     from hydra2.contracts.observation import ActorObservation
     from hydra2.contracts.rules import RulesManifest
     from hydra2.contracts.utility import RawOutcome

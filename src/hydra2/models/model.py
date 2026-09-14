@@ -18,7 +18,7 @@ import torch.nn as nn
 import torch.nn.functional as F  # noqa: N812  # reason: canonical PyTorch alias; upstream docs use F. Evidence: https://docs.pytorch.org/docs/stable/nn.functional.html
 
 from hydra2.contracts.common import ContractError, DigestText, make_digest_text
-from hydra2.contracts.event import EVENT_KINDS
+from hydra2.contracts.event_vocab import EVENT_KINDS
 from hydra2.models.schema import (
     BASELINE_ACTION_COUNT,
     HISTORY_BUCKET_LENGTHS,

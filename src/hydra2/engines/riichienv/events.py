@@ -24,18 +24,17 @@ from hydra2.contracts.common import (
     make_sequence_no,
     make_tile_id,
 )
-from hydra2.contracts.event import (
-    EVENT_KINDS,
+from hydra2.contracts.event_envelope import (
     EventEnvelope,
     EventPayload,
     PublicStateDelta,
-    _require_enum,
 )
+from hydra2.contracts.event_vocab import EVENT_KINDS, _require_enum
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from hydra2.contracts.event import DeltaOperation, EventKind, Visibility
+    from hydra2.contracts.event_vocab import DeltaOperation, EventKind, Visibility
 
 __all__ = [
     "ABORTIVE_REASONS",

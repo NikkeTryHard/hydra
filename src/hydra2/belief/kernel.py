@@ -26,10 +26,9 @@ from hydra2.contracts.common import (
     make_digest_text,
     make_seat,
 )
-from hydra2.contracts.event import (
+from hydra2.contracts.event_envelope import EventEnvelope, EventPayload
+from hydra2.contracts.event_packet import (
     ActorVisiblePacket,
-    EventEnvelope,
-    EventPayload,
     make_actor_visible_packet,
     public_state_chain_hash,
 )

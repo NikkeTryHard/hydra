@@ -186,7 +186,7 @@ def _load_default_hashes() -> dict[str, str]:
         logger.debug("candidate0: model_input_schema_digest fallback", exc_info=exc)
         pass
     try:
-        from hydra2.contracts.event import load_event_schema
+        from hydra2.contracts.event_schema import load_event_schema
 
         evt: Any = load_event_schema(repo / "configs/contracts/event_schema_v1.json")
         tmp_digest: Any = getattr(evt, "digest", None)

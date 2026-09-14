@@ -73,7 +73,7 @@ except ImportError:  # pragma: no cover
     PolicySet = Any
 
 try:
-    from hydra2.contracts.event import ActorVisiblePacket
+    from hydra2.contracts.event_packet import ActorVisiblePacket
 
     _HAS_PACKET = True
 except ImportError:  # pragma: no cover

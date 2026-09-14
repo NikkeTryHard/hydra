@@ -528,7 +528,10 @@ def _case_observation(
     if actor not in (0, 1, 2, 3):
         raise ContractError(f"actor must be 0..3, got {actor}")
     from hydra2.contracts.common import make_digest_text
-    from hydra2.contracts.event import build_event_schema_payload, compute_event_schema_digest
+    from hydra2.contracts.event_schema import (
+        build_event_schema_payload,
+        compute_event_schema_digest,
+    )
     from hydra2.contracts.observation import (
         DORA_SENTINEL,
         make_actor_observation,

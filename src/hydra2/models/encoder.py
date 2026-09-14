@@ -15,7 +15,7 @@ import numpy as np
 import torch
 
 from hydra2.contracts.common import ContractError, DigestText, make_digest_text
-from hydra2.contracts.event import EVENT_KINDS
+from hydra2.contracts.event_vocab import EVENT_KINDS
 from hydra2.contracts.observation import PHASES, ActorObservation
 from hydra2.models.schema import (
     _BASELINE_FIELDS,

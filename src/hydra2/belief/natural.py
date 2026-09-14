@@ -25,7 +25,7 @@ from hydra2.contracts.common import (
     make_parent_id,
     make_seat,
 )
-from hydra2.contracts.event import ActorVisiblePacket
+from hydra2.contracts.event_packet import ActorVisiblePacket
 from hydra2.contracts.observation import ActorObservation
 
 if TYPE_CHECKING:
