@@ -2,7 +2,7 @@
 # Short 150-update run under TORCH_LOGS=recompiles,guards,dynamic to name the
 # failing guard (prediction: history-T size mismatch from unbucketed assembly).
 # Launch with: TORCH_LOGS=recompiles,guards,dynamic and an isolated root:
-# HYDRA2_ARTIFACT_ROOT=/home/cachybtw/dev/hydra2-artifacts-probe
+# HYDRA2_ARTIFACT_ROOT=$HOME/<checkout>-artifacts-probe
 run:
   id: local-rtx5070-tenhou2024-probe
   kind: supervised

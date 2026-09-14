@@ -656,3 +656,18 @@ Update this plan and the algorithm blueprint together when changing a contract, 
    qualification for every teacher-eligible outcome → M10 five-gate-promoted
    teacher selection). M11 stays cost-justified-only; M13 stays blocked on the
    confidential split/calibration protocol.
+
+## 15. Status Addendum — 2026-09-14 (hygiene comment pass, no normative
+change)
+
+> Addendum only; §§1–13 stay verbatim. Normative order remains
+> `docs/BUILD_EXECUTION_PLAN.md`; normative APIs remain
+> `docs/IMPLEMENTATION_SPEC.md`. No statement here promotes software
+> (§13 still applies).
+
+| Plan item | Reality 2026-09-14 | Citation |
+| --- | --- | --- |
+| D-006 torch pin | Tree runs `torch ==2.14.0`; lockfile wins until promoted | `pyproject.toml:39` |
+| D-007/D-008 mirrors | W&B-era prose maps to MLflow + ClearML | `IMPLEMENTATION_SPEC.md:34` |
+| D-009 crates | Second crate `hydra2-replay-rs/` is replay-only | `FULL_CORPUS_ROADMAP.md:63` |
+| Pin citation | §14.1 names `ruff ==0.16.5`; authority `ruff ==0.16.6` | `pyproject.toml:48-51` |

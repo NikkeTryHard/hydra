@@ -25,9 +25,9 @@ below is judged by average final placement over many nights, not by flashy wins.
   excerpt runs end to end through the teacher/oracle path (refs
   `lean/Formal/Blueprint/Opponent.lean`, `lean/Formal/Blueprint/Belief.lean`).
 - [ ] Spec re-pin. Gate: `docs/IMPLEMENTATION_SPEC.md` matches the frozen Python
-  surface (known drift: tracking tree still lists
-  `tracking/{protocol.py,wandb_mirror.py}`; actual is
-  `tracking/{__init__.py,clearml_mirror.py}`). No training runs until this matches.
+  surface (known drift at audit time: tracking tree listed fewer files;
+  actual is `tracking/{__init__.py,clearml_mirror.py,mlflow_mirror.py,
+  verbose_sampler.py}`). No training runs until this matches.
 
 ## 3. BASELINE — first real training run
 

@@ -136,7 +136,7 @@ markers = [
 #  - 7 blanket `# pyrefly: ignore` files hid ~652 diagnostics (gumbel, pbrf, joint, local_resolving, distill/teacher x2, qualification).
 #  - 416 unused ignores (407 type + 9 pyrefly) indicated over-suppression drift.
 # After: blankets removed, 409 unused cleaned (see `pixi run pyrefly check --remove-unused-ignores=all`), 427 suppressed remain (real per-line hides).
-# Promotion per audit /home/cachybtw/tmp/pyrefly-suppressed.md §5 & §8:
+# Promotion per audit $TMPDIR/pyrefly-suppressed.md (workstation-local, unvendored) §5 & §8:
 #  - 16 codes → error (319 hidden at default+zuban: bad-argument-type 211, missing-argument 25, etc.) — real contract bugs (Seat/TileId, None deref, missing args).
 #  - 10 codes → warn (275 hidden: implicit-bool 120 + unknown-argument-type 155 dominant) — hygiene, not CI-blocking.
 #  - 9 Any-related → keep suppressed (explicit-any 255 etc.) — JAX/torch bridge uses Any intentionally (mahjax, riichienv, torch Tensor are untyped C++/CUDA extensions; annotating 400+ Any would churn with zero bug value). Documented in audit §9.

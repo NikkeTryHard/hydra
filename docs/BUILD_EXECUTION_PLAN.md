@@ -146,6 +146,11 @@ Parallelism:
 **Owned paths:** `tools/mjai-dataset-packager/tests/`, fixture directory chosen inside crate, crate test-only edits.  
 **Never change:** production packager behavior, CLI, archive precedence, bounds, source manifests.
 
+> Footnote 2026-09-14: WP-00A/§3 history above is packager-only by design.
+> The replay-only Rust core (`tools/hydra2-replay-rs/`, Package C) arrived
+> later — see `docs/FULL_CORPUS_ROADMAP.md:63-71` and
+> `docs/rust-dependency-migration-guide.md:1`.
+
 Checklist:
 
 - [ ] Create raw `.mjai.json` fixture with deterministic content.
@@ -480,12 +485,13 @@ Exit commands: `pixi run test-conformance --package WP-04C`; `pixi run hydra2 wo
 
 ### WP-05B Project-Owned Supervised Loop
 
-- [ ] Masked behavior cloning objective.
 - [ ] Value/event auxiliary objectives with explicit weights.
 - [ ] Project-owned optimizer/scheduler/accumulation/checkpoint.
 - [ ] Plain PyTorch and optional Fabric adapters use identical loop state.
 - [ ] Resume restores model, optimizer, scheduler, step, RNG, sampler, manifest identities.
 - [ ] Local artifacts authoritative; W&B mirror cannot overwrite.
+  (Addendum 2026-09-14: W&B-era wording; mirrors are MLflow-quiet +
+  ClearML-legacy per `docs/IMPLEMENTATION_SPEC.md:34-46`.)
 - [ ] Report masked NLL, top-k, calibration, support/confusion, strata, legal-uniform comparison.
 
 ### WP-05C Baseline Qualification

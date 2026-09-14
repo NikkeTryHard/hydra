@@ -8,14 +8,17 @@ re-baseline: every sweep row references the pinned manifest digest.
 All commands via pixi (sole authority); never bare `python`/`pytest`:
 
 ```sh
-Defaults: `--leg stream --corpus f10 --chunk 32 --zstd 1 --B 32 --T 64
---depth 2 --pin` (threads = affinity count), seed 7. F10 is the
-decision-bearing primary (real dahai/hora rows; decisions/sec non-vacuous);
-F2/F8 are framing-only legs (turn_advance, wall-less — emitted_games units).
-## 1. Sweep grid (one axis at a time; hold the rest at defaults)
+# Canonical defaults (f10 decision-bearing primary; S1 grid inherits these,
+# each row varies one axis only):
+# `--leg stream --corpus f10 --chunk 32 --zstd 1 --B 32 --T 64
+# --depth 2 --pin` (threads = affinity count), seed 7. F10 is the
+# decision-bearing primary (real dahai/hora rows; decisions/sec
+# non-vacuous); F2/F8 are framing-only legs (turn_advance, wall-less —
+# emitted_games units).
+```
 
-Defaults: `--leg stream --corpus f2 --chunk 32 --zstd 1 --B 32 --T 64
---depth 2 --pin` (threads = affinity count), seed 7.
+## 1. Sweep grid (one axis at a time; hold the rest at the canonical
+defaults above)
 
 | Axis    | Values              | Flag               | Notes                                  |
 |---------|---------------------|--------------------|----------------------------------------|
@@ -23,12 +26,16 @@ Defaults: `--leg stream --corpus f2 --chunk 32 --zstd 1 --B 32 --T 64
 | chunk   | 1, 8, 32, 128       | `--chunk`          | microbatch slice width                 |
 | B       | 32, 256, 1024       | `--B`              | ring probe + geometry row              |
 | T       | 64, 256             | `--T`              | ring probe + geometry row              |
-| depth   | 2, 3                | `--depth`          | depth 1 forbidden (no overlap)         |
-| leg     | expand, stream      | `--leg`            | expand=F1 rows/s; stream=F8 games/s    |
+| leg     | expand, stream      | `--leg`            | expand=F1 rows/s; stream=F2/F8 games/s |
 
 Headline metric: **warm-median decisions/sec** (cold reported alongside,
-never averaged with warm). Decisions = expanded rows (expand leg) or emitted
-games (stream leg); the artifact `unit` field states which.
+never averaged with warm). Decisions = expanded rows (expand leg) or
+emitted games (stream leg); the artifact `unit` field states which.
+
+Saturated leg: F11 (`bench/corpus/f11-saturated/`, decision-primary like
+F10) is the steady-state choice; F10 (`bench/corpus/f10-decisions/`) is
+the baseline. Both emit real dahai/hora rows, so decisions/sec stays
+non-vacuous either way (see `bench/corpus_entries.json` F10/F11 entries).
 
 ## 2. sonic-vs-simd A/B rotation (ingest codec candidates)
 
@@ -39,8 +46,9 @@ faster on **BOTH** legs (cold fresh-process median AND warm 5-timed median)
 gate vetoes regardless of speed.
 
 ```sh
-# A leg (incumbent) then B leg (challenger), same manifest + config slug:
-pixi run python bench/feed_rate.py run --leg stream --corpus f2 --chunk 32 --pin
+# A leg (incumbent) then B leg (challenger), same manifest + config slug.
+# Canonical decision-bearing leg first; framing-only second:
+pixi run python bench/feed_rate.py run --leg stream --corpus f10 --chunk 32 --pin
 pixi run python bench/feed_rate.py run --leg expand --corpus f1 --chunk 32 --pin
 ```
 
@@ -81,4 +89,7 @@ bench/perf_wrap.sh "pixi run python bench/feed_rate.py run-once --leg stream --c
 - `ring.sync_wait_ms_p99 >> h2d_ms_p99`: consumer starves the ring (raise
   depth 2 -> 3 per grid); inverse: transfer-bound.
 - `stream_counters.quarantined > 0` on F2/F8 (clean synth): harness bug,
-  stop and fix — never sweep over quarantine noise.
+  stop and fix — never sweep over quarantine noise. This zero budget
+  applies to clean synth only; real corpora carry a quota (~8%, see
+  `docs/FULL_CORPUS_ROADMAP.md` cross-cutting rules). Multi-ron support
+  is a separate ticket.

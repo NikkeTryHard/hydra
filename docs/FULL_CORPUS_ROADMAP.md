@@ -13,7 +13,8 @@ dbs immutable; torch transformer stays.
 SKIPPED 2026-09-07: seed→wall exact walls. Reason: walls appear in neither BC inputs
 (actor never sees them) nor labels (played moves); wall-less replay is the permanent
 path and filename-identity + exact-hash dedup stays the disjoint mechanism. Design
-retained in agent transcripts (SeedWallPlan) if a future belief/rollout package needs it.
+retained in parked history (SeedWallPlan transcript), not a repo path, if
+a future belief/rollout package needs it.
 
 DELETE POLICY 2026-09-08 (operator intent + workstation law): Python counterparts go
 once proven worse than Rust — but each deletion still needs its exact enumerated path

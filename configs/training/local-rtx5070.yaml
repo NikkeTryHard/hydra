@@ -17,8 +17,10 @@ data:
   num_workers: 8
   world_size: 1
   replay_backend: rust
-  decode_prefetch: 64 # src/hydra2/data/stream.py PrefetchGameStream; cover one expansion batch.
-  expand_batch_games: 64 # src/hydra2/training/stream_train.py _fill_parallel; games per fill round.
+  decode_prefetch: 64 # WHY: background decode pool (src/hydra2/data/stream.py
+  # PrefetchGameStream); cover one expansion batch.
+  expand_batch_games: 64 # WHY: games per fill round, one bridge FFI per chunk
+  # (src/hydra2/training/stream_train.py _fill_parallel).
 model:
   architecture_id: hydra2_baseline_transformer_v1
   action_count: 6792
