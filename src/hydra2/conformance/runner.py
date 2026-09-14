@@ -81,10 +81,14 @@ class ScriptedDecision:
 
 
 def _auto_action(sim: RiichiEnvExactSimulator, actor: int) -> CanonicalAction:
+    """Neutral continuation: pass when offered, else tsumogiri/discard drawn tile."""
     actions = sim.legal_actions(Seat(actor))
     passes = [a for a in actions if a.kind == "pass"]
     if len(passes) != 0:
         return passes[0]
+    # White-box harness: private engine surface is the observation point
+    # (legals/draw state), not an encapsulation break; expectations stay
+    # manifest-derived.
     assert sim._env is not None
     drawn = sim._env.drawn_tile if sim._mode == "draw" else None
     if drawn is not None:
@@ -108,6 +112,7 @@ def _find_action(
     actor: int,
     decision: ScriptedDecision,
 ) -> CanonicalAction:
+    """Resolve one ScriptedDecision against current legals (mismatch is a bug)."""
     actions = sim.legal_actions(Seat(actor))
     if decision.kind == "pass":
         passes = [a for a in actions if a.kind == "pass"]
@@ -193,6 +198,7 @@ def _drive(
 
 
 def _action_row(action: CanonicalAction, actor: int) -> dict[str, Any]:
+    """Canonical applied-action row for counterexample + hash inputs."""
     return {
         "kind": str(action.kind),
         "actor": actor,
@@ -347,6 +353,10 @@ class ReferenceTraceRunner:
         finish_to_terminal: bool = True,
         seat_permutation: tuple[Seat, ...] = (Seat(0), Seat(1), Seat(2), Seat(3)),
     ) -> CaseResult:
+        """Run one case through a fresh simulator.
+        Short scripts fall back deterministically when finish_to_terminal holds;
+        returns CaseResult, persisting a counterexample on first mismatch.
+        """
         schedule = wall_schedule_for(case_id, wall_tiles)
         sim = RiichiEnvExactSimulator()
         # D-WP04A-FIX2: the driver assumes a reset game (haipai dealt from the
@@ -493,6 +503,7 @@ class ReferenceTraceRunner:
 
 
 def _envelope_row(envelope: EventEnvelope) -> dict[str, Any]:
+    """Canonical event-envelope row for counterexample + hash inputs."""
     return {
         "sequence": int(envelope.sequence),
         "kind": envelope.kind,

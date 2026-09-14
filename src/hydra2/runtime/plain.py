@@ -17,15 +17,10 @@ from hydra2.runtime.protocol import (
 
 
 def _is_accelerator_available() -> bool:
-    """Unified accelerator availability — torch.accelerator (2.14) with cuda fallback.
+    """Unified accelerator availability — torch.accelerator with cuda fallback.
 
     Evidence:
-    - https://docs.pytorch.org/docs/2.14/accelerator/index.html
-      unified torch.accelerator entrypoint
-    - https://pytorch.org/docs/main/accelerator.html
-      is_available() delegates without runtime bring-up (same cost)
-    - https://pytorch.org/blog/pytorch-2-14-release-blog/
-      2.14 GA announcement (accelerator, CuTeDSL)
+    https://docs.pytorch.org/docs/2.14/accelerator/index.html
     Keep cuda-specific torch.cuda.get_arch_list / set_device /
     get_rng_state_all as-is (no generic accelerator equiv).
     """
@@ -103,11 +98,10 @@ class PlainPytorchAdapter:
 
 
 def _move_optimizer_state(optimizer: Any, device: Any) -> None:
-    # Portable H2D: use non_blocking when device is CUDA to overlap copy with compute.
+    # Portable H2D: non_blocking overlaps copy with compute when the
+    # device is CUDA; safe for pinned source memory.
     # Evidence: https://docs.pytorch.org/docs/2.13/generated/torch.Tensor.to.html
     #  (`non_blocking` flag) and https://docs.pytorch.org/docs/2.13/notes/cuda.html#pinned-memory
-    #  and tutorial https://pytorch.org/tutorials/beginner/blitz/cifar10_tutorial.html
-    #  SDPA/compile idioms keep eager plain adapter simple; non_blocking is safe for pinned.
     state_values: Any = cast("Any", optimizer.state.values())
     # Detect CUDA device portably (handles torch.device("cuda") and str "cuda:0").
     is_cuda = getattr(device, "type", "") == "cuda" or str(device).startswith("cuda")

@@ -27,6 +27,7 @@ RandomStreamSchema — purpose/field matrix
   address exactly one game instance; environment-level purposes — wall
   generation, evaluation schedules, statistical-method streams, training
   streams — must leave both null because their identity is experiment-wide).
+* Wall = the 136-tile stack a game deals from (``wall_id`` names it).
 * Distinctness of natural / proposal / actor-policy / root-selection /
   transition / confirmation streams is structural: the purpose literal is
   part of the hashed payload, so two purposes can never collide even with
@@ -285,11 +286,11 @@ def _validate_field_value(name: str, value: object) -> None:
     if value is None:
         return
     if name == "root_seat":
-        make_seat(value)  # type: ignore[arg-type]
+        make_seat(value)  # type: ignore[arg-type]  # reason: value statically object; None filtered above, validated inside make_seat
     elif name == "belief_epoch":
-        make_belief_epoch_id(value)  # type: ignore[arg-type]
+        make_belief_epoch_id(value)  # type: ignore[arg-type]  # reason: value statically object; None filtered above, validated inside make_belief_epoch_id
     elif name == "action_id":
-        make_action_id(value)  # type: ignore[arg-type]
+        make_action_id(value)  # type: ignore[arg-type]  # reason: value statically object; None filtered above, validated inside make_action_id
     elif name in ("parent_id", "packet_id", "case_id", "candidate_id", "wall_id"):
         if not isinstance(value, str) or value == "":
             raise ContractError(f"{name} must be a nonempty str")
@@ -315,7 +316,7 @@ def make_random_stream_key(**kwargs: object) -> RandomStreamKey:
             raise ContractError(f"missing required field {name}")
     if "purpose" not in kwargs:
         raise ContractError("missing required field purpose")
-    key = RandomStreamKey(**full)  # type: ignore[arg-type]
+    key = RandomStreamKey(**full)  # type: ignore[arg-type]  # reason: full dict[str, object] from _KEY_FIELDS with unknown/missing checks above; validate_key re-validates next line
     return RandomStreamSchema.validate_key(key)
 
 

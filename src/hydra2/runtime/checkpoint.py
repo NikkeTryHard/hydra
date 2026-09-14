@@ -443,13 +443,12 @@ def _as_byte_tensor(value: Any) -> Any:
 
 
 def _fsync_dir(directory: Path) -> None:
-    # Portable directory fsync: Windows NT cannot open a directory with
-    # os.open(O_RDONLY) (PermissionError/OSError); directory fsync is a
-    # no-op on NTFS where file-handle fsync already guarantees durability.
-    # Evidence: https://docs.python.org/3/library/os.html#os.fsync
-    # Evidence: https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-flushfilebuffers
-    # Evidence: https://github.com/tox-dev/platformdirs
-    # Evidence: https://github.com/fsspec/universal_pathlib (XDG/portable)
+    # Durable publish needs file-handle fsync plus directory fsync on
+    # POSIX; on Windows NT directory open fails, so file-handle fsync
+    # alone carries durability and this is a no-op.
+    # Evidence:
+    # https://docs.python.org/3/library/os.html#os.fsync
+    # https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-flushfilebuffers
     if os.name == "nt":
         return
     try:

@@ -42,21 +42,16 @@ class RuntimeSpec:
     fullgraph: bool = False
     dynamic: bool | None = None
     backward_pass_autocast: Literal["off"] | None = None
-    # Perf-A §4.7: compile tuning for bucketed seq len (32/64/128/256).
-    # Evidence: torch.compile docs (dynamic=True avoids 4x recompiles;
-    # 2.14 stable, same URL as below).
+    # Compile tuning: dynamic=True compiles one kernel for varying
+    # shapes instead of one per shape; cudagraph modes require static
+    # shapes, so dynamic input pairs with max-autotune-no-cudagraphs.
+    # Evidence:
     # https://docs.pytorch.org/docs/2.14/generated/torch.compile.html
-    # recompile_limit=8 default fallback to eager; mode max-autotune
-    # enables cudagraphs which require static shapes (see mode docs:
-    # max-autotune-no-cudagraphs disables them for dynamic). Devlog:
-    # https://docs.pytorch.org/devlogs/dynamo/2026-05-04-dynamo-isolate-recompiles/
-    # isolate_recompiles=True gives per-compile cache bucket, fixing
-    # factory-pattern collisions; guarded try/except TypeError for
-    # older torch without kwarg (2.13 fallback, stable in 2.14).
-    # For hydra bucketed histories use dynamic=True +
-    # max-autotune-no-cudagraphs + isolate_recompiles when available.
-    # See also:
-    # https://docs.pytorch.org/docs/2.14/generated/torch.compiler.config.html
+    # isolate_recompiles scopes each compile to its own cache bucket,
+    # so factory-built models stop colliding in the shared cache.
+    # TypeError fallback covers torch without the kwarg; the floor is
+    # an open question (lockfile pins 2.14, older notes name 2.13), so
+    # the fallback stays until the floor is decided.
     isolate_recompiles: bool = True
     recompile_limit: int | None = None
 
@@ -167,17 +162,11 @@ def build_runtime(
             return m
         import torch
 
-        # Perf-A §4.7: dynamic=True recommended for bucketed seq len
-        # to avoid 4x recompiles; guard determinism.
-        # Evidence:
-        # https://docs.pytorch.org/docs/2.14/generated/torch.compile.html
-        # dynamic=None defers dynamism until recompilation,
-        # dynamic=True up-front dynamic kernel. Bucketed histories
-        # (32/64/128/256) would recompile 4x under None.
-        # Mode max-autotune enables cudagraphs (static-shape only);
-        # use max-autotune-no-cudagraphs for dynamic.
-        # Guard: if deterministic algorithms enabled, cudagraphs
-        # disabled anyway falls back to eager-safe path.
+        # Varying shapes compile one kernel under dynamic=True; see the
+        # RuntimeSpec field comment for the cudagraph pairing. Torch
+        # itself refuses cudagraph capture under deterministic
+        # algorithms — this code only passes the mode through, it
+        # disables nothing.
         compile_kwargs: dict[str, object] = {
             "backend": "inductor",
             "mode": spec.compile_mode,
@@ -186,30 +175,25 @@ def build_runtime(
         }
         if spec.recompile_limit is not None:
             compile_kwargs["recompile_limit"] = spec.recompile_limit
-        # isolate_recompiles: stable in 2.14 (torch.compile docs +
-        # devlog 2026-05-04 isolate-recompiles, same URLs as above);
-        # 2.13 fallback via try/except TypeError. When set, isolates
-        # factory-pattern cache buckets.
-        # Keep try/except for backward compat (2.13 without kwarg) —
-        # zero-cons, no behavior change on 2.14.
+        # isolate_recompiles buckets each compile separately; the
+        # TypeError fallback covers torch without the kwarg. Floor is
+        # an open question (see RuntimeSpec field comment); keep the
+        # fallback — removing it is out of scope.
         # Route the calls through Any: pyrefly's torch stubs lag the
         # 2.14 runtime (no isolate_recompiles/recompile_limit), so a
         # typed torch.compile call cannot verify. Runtime behavior is
         # unchanged; the TypeError fallback still covers 2.13.
         torch_compile: Any = torch.compile
         try:
-            # Try new API if available
             return torch_compile(
                 cast("Any", m),
                 **compile_kwargs,
                 isolate_recompiles=spec.isolate_recompiles,
             )
         except TypeError:
-            # 2.13 path: fallback without isolate_recompiles;
-            # emulated isolation via recompile_limit guard.
-            # When isolate_recompiles is unavailable, the shared cache
-            # could collide across factory calls; recompile_limit
-            # increase mitigates.
+            # Fallback without isolate_recompiles; recompile_limit
+            # bounds the shared cache so factory-built models collide
+            # less often without per-compile buckets.
             return torch_compile(
                 cast("Any", m),
                 **compile_kwargs,
@@ -221,20 +205,28 @@ def build_runtime(
                 "compiled non-fp32 precision requires backward_pass_autocast == 'off'; "
                 f"got {spec.backward_pass_autocast!r}"
             )
-        # Functorch shim: torch._functorch is private; public path is
-        # torch.compiler (2.14) and torch.func, but
-        # backward_pass_autocast stays private (torch.compiler.config
-        # lacks the key). Guarded try/except with fallback to no-op;
-        # no extra dep, behavior unchanged.
-        # https://docs.pytorch.org/docs/2.14/generated/torch.compiler.html
-        # https://docs.pytorch.org/docs/2.14/generated/torch.func.html
+        # Functorch shim: backward_pass_autocast is missing from the
+        # public torch.compiler.config in 2.14, so the private import
+        # stays with a nullcontext fallback; no extra dep, behavior
+        # unchanged.
+        # Evidence:
         # https://docs.pytorch.org/docs/2.14/generated/torch.compiler.config.html
         try:  # runtime import inside branch, not top
-            import torch._functorch.config as functorch_config  # type: ignore[import-not-found, no-redef]  # private still required for backward_pass_autocast; public torch.compiler.config lacks key in 2.14 (https://docs.pytorch.org/docs/2.14/generated/torch.compiler.config.html); fallback to no-op if unavailable; see https://docs.pytorch.org/docs/2.14/generated/torch.func.html (functorch→torch.func)
-            import torch.compiler  # noqa: F401  # pyrefly: ignore[missing-import]  # 2.14 public surface verify (https://docs.pytorch.org/docs/2.14/generated/torch.compiler.html)
+            # Private import stays: backward_pass_autocast is missing
+            # from the public config (Evidence above), so the shim
+            # falls back to a no-op when this surface is unavailable.
+            # torch.compiler verifies the 2.14 public surface
+            # (compile-order side effect).
+            # Evidence:
+            # https://docs.pytorch.org/docs/2.14/generated/torch.func.html
+            # https://docs.pytorch.org/docs/2.14/generated/torch.compiler.html
+            import torch._functorch.config as functorch_config  # type: ignore[import-not-found, no-redef]
+            import torch.compiler  # noqa: F401  # pyrefly: ignore[missing-import]
         except ImportError:
             try:
-                import torch.compiler.config as functorch_config  # type: ignore[import-not-found, no-redef]  # public fallback (lacks backward_pass_autocast, will fallback to no-op)
+                # Public fallback lacks backward_pass_autocast, so the
+                # nullcontext below absorbs it (no-op path).
+                import torch.compiler.config as functorch_config  # type: ignore[import-not-found, no-redef]
             except ImportError:
                 # No functorch surface; None selects nullcontext below.
                 # Ignore covers assigning None to the module alias.

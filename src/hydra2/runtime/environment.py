@@ -42,14 +42,10 @@ IMPORTABLE_RUNTIME_MODULES = (
 def _pixi_lock_hash() -> str:
     """Return pixi.lock sha256 or MISSING sentinel (portable fallback).
 
-    Graceful degradation matches ``dist_version()`` ``MISSING`` pattern at
-    capture_environment_manifest (line 93). Strict mode opt-in via
-    ``HYDRA2_REQUIRE_PIXI_LOCK=1`` raises instead of degrading.
-
-    Evidence:
-    - os.environ.get https://docs.python.org/3/library/os.html#os.environ
-    - Path.is_file https://docs.python.org/3/library/pathlib.html#pathlib.Path.is_file
-    - shutil.which guard pattern https://docs.python.org/3/library/shutil.html#shutil.which
+    Graceful degradation matches the ``dist_version()`` ``MISSING``
+    pattern below: degrade to a sentinel instead of raising on
+    missing input. Strict mode via ``HYDRA2_REQUIRE_PIXI_LOCK=1``
+    raises instead of degrading.
     """
     try:
         lock = repo_root() / "pixi.lock"
@@ -68,14 +64,8 @@ def _pixi_lock_hash() -> str:
 def _nvidia_smi_gpus() -> list[dict[str, Any]]:
     """Query GPUs via nvidia-smi with graceful degrade (portable).
 
-    Portable pattern mirrors P-009 pixi fallback: return [] when binary
-    absent or subprocess fails, never raise. Timeout reduced 30->5s for
-    manifest capture responsiveness.
-
-    Evidence:
-    - shutil.which https://docs.python.org/3/library/shutil.html#shutil.which
-    - subprocess.run timeout https://docs.python.org/3/library/subprocess.html#subprocess.run
-    - warnings.warn https://docs.python.org/3/library/warnings.html#warnings.warn
+    Return [] when the binary is absent or the query fails, never
+    raise; a 5s timeout keeps capture responsive.
     """
     binary = shutil.which("nvidia-smi")
     if binary is None:

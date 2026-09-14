@@ -111,13 +111,13 @@ def _validate_json_value(value: Any, *, where: str) -> None:
         return
     if isinstance(value, (list, tuple)):
         for i, item in enumerate(value):
-            _validate_json_value(item, where=f"{where}[{i}]")  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
+            _validate_json_value(item, where=f"{where}[{i}]")  # pyrefly: ignore[unknown-argument-type]  # reason: isinstance branches narrow only the container; item stays object
         return
     if isinstance(value, Mapping):
         for key, item in value.items():
             if not isinstance(key, str):
                 raise ContractError(f"{where}: object keys must be strings")
-            _validate_json_value(item, where=f"{where}.{key}")  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
+            _validate_json_value(item, where=f"{where}.{key}")  # pyrefly: ignore[unknown-argument-type]  # reason: isinstance branches narrow only the container; item stays object
         return
     raise ContractError(f"{where}: type {type(value).__name__} is outside the JSON domain")
 

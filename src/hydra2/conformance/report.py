@@ -127,8 +127,6 @@ def write_intersection_report(document: dict[str, Any], destination: Path) -> st
     """Atomically publish the report; returns its sha256 digest text."""
     import json
 
-    from hydra2.artifacts.digest import sha256_digest  # noqa: F401
-
     payload = json.dumps(document, sort_keys=True, indent=1).encode()
     atomic_replace_bytes(destination, payload)
     from hydra2.artifacts.digest import of_bytes

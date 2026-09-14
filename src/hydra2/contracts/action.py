@@ -18,12 +18,12 @@ contract modules). This module owns:
 Boundary notes:
 - ``Phase``/``PHASES``, ``MeldKind``/``MELD_KINDS``, ``VisibleMeld``, and
   ``visible_meld_id`` are canonically defined in
-  :mod:`hydra2.contracts.observation` (SPEC section 8 owns them; WP-02D clean
-  cutover) and re-exported here for the codec's callers.
+  :mod:`hydra2.contracts.observation` (SPEC section 8 owns them) and
+  re-exported here for the codec's callers.
 - ``canonical_json_bytes`` lives in the dependency-free leaf
-  :mod:`hydra2.contracts.canonical` (moved verbatim, WP-02D cutover) and is
-  re-exported; it stays byte-equal with the WP-02A authority
-  ``hydra2.artifacts.canonical`` (pinned by tests).
+  :mod:`hydra2.contracts.canonical` (defined once there, re-exported here so
+  existing importers are unaffected); it stays byte-equal with the
+  ``hydra2.artifacts.canonical`` authority (pinned by tests).
 """
 
 from __future__ import annotations
@@ -216,17 +216,17 @@ def _validate_json_value(value: object) -> None:
         return
     if isinstance(value, list):
         for item in value:
-            _validate_json_value(item)  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
+            _validate_json_value(item)  # pyrefly: ignore[unknown-argument-type]  # reason: isinstance branches narrow only the container; item stays object
         return
     if isinstance(value, tuple):
         for item in value:
-            _validate_json_value(item)  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
+            _validate_json_value(item)  # pyrefly: ignore[unknown-argument-type]  # reason: isinstance branches narrow only the container; item stays object
         return
     if isinstance(value, Mapping):
         for key, item in value.items():
             if not isinstance(key, str):
                 raise ContractError(f"metadata object keys must be str: {key!r}")
-            _validate_json_value(item)  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
+            _validate_json_value(item)  # pyrefly: ignore[unknown-argument-type]  # reason: isinstance branches narrow only the container; item stays object
         return
 
 
@@ -1134,7 +1134,7 @@ def _table_from_document(document: object, *, origin: str) -> ActionTable:
     if not isinstance(raw_actions, list) or len(raw_actions) == 0:
         raise ContractError(f"{origin}: actions must be a non-empty array")
     templates = tuple(
-        _template_from_json(entry, origin=origin)  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
+        _template_from_json(entry, origin=origin)  # pyrefly: ignore[unknown-argument-type]  # reason: raw_actions list-checked above; element type unchecked until _template_from_json validates
         for entry in raw_actions
     )  # type: ignore[attr-defined]  # reason: raw_actions isinstance-checked as list above; checker cannot narrow object
     recomputed = compute_table_digest(templates, make_schema_version(envelope_version))
@@ -1165,7 +1165,7 @@ def _template_from_json(entry: object, *, origin: str) -> CanonicalActionTemplat
         if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
             raise ContractError(f"{origin}: {name} must be null or int")
     offset: object = entry["source_offset"]  # type: ignore[index]  # reason: entry Mapping-checked above; checker cannot narrow object index
-    if offset is not None and (isinstance(offset, bool) or offset not in (-1, 0, 1, 2)):  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
+    if offset is not None and (isinstance(offset, bool) or offset not in (-1, 0, 1, 2)):  # pyrefly: ignore[unknown-argument-type]  # reason: offset None/bool-filtered here; membership check is the validation
         raise ContractError(f"{origin}: source_offset invalid: {offset!r}")
     kind: object = entry["kind"]  # type: ignore[index]  # reason: entry Mapping-checked above; checker cannot narrow object index
     if not isinstance(kind, str) or kind not in ACTION_KIND_ORDINALS:
@@ -1179,6 +1179,6 @@ def _template_from_json(entry: object, *, origin: str) -> CanonicalActionTemplat
         called_tile=entry["called_tile"],  # type: ignore[arg-type]  # reason: null-or-int checked above; ctor re-validates
         consumed_tiles=tuple(consumed_raw),  # type: ignore[arg-type]  # reason: list-of-ints checked above
         source_offset=offset,  # type: ignore[arg-type]  # reason: offset range-checked above
-        declares_riichi=entry["declares_riichi"],  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
-        meld_ref_required=entry["meld_ref_required"],  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
+        declares_riichi=entry["declares_riichi"],  # pyrefly: ignore[unknown-argument-type]  # reason: bool-checked in the loop above; ctor re-validates
+        meld_ref_required=entry["meld_ref_required"],  # pyrefly: ignore[unknown-argument-type]  # reason: bool-checked in the loop above; ctor re-validates
     )

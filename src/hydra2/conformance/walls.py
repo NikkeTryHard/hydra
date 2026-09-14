@@ -103,6 +103,7 @@ def copies(tile_type: int):
 
 
 def first_copy_of_type(tile_type: int) -> int:
+    """First physical id of tile_type (copy 0)."""
     return 4 * tile_type
 
 

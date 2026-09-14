@@ -23,8 +23,9 @@ This module is the CANONICAL home (owner decision D-WP02D-1) of:
   concealed hands through :meth:`set_concealed_hand` into that seat slot only.
   Discard rivers, melds, dora indicators, riichi states, kan counts, and drawn
   tiles derive exclusively from ingested events, so the observation can never
-  contain wall/dead-wall, opponent concealed tiles, unrevealed dora/ura, RNG,
-  future events, server-private events, opponent legal masks, or privileged
+  contain wall/dead-wall (136-tile stack / 14-tile reserve), opponent concealed
+  tiles, unrevealed dora/ura, RNG, future events, server-private events,
+  opponent legal masks, or privileged
   labels: those fields do not exist on the type.
 - ``VisibilityValidator``: rejects any event a seat may not hold and validates
   assembled observations against the same boundary. Debug representations and
@@ -94,6 +95,7 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # Fixed dora indicator shape (BUILD checklist: `(5,)`, declared sentinel).
 # ---------------------------------------------------------------------------
+# Dora = bonus-indicator tiles; unrevealed slots carry -1, never a tile.
 
 #: Sentinel for an unrevealed dora indicator slot.
 DORA_SENTINEL = -1
@@ -291,10 +293,11 @@ def visible_meld_id(meld: VisibleMeld) -> str:
 class ActorObservation:
     """One actor's complete legal view at one decision point (SPEC 8).
 
-    The closed slot set IS the visibility boundary: wall/dead wall, opponent
-    concealed tiles, unrevealed dora/ura, engine RNG, future events,
-    server-private events, opponent legal masks, and privileged labels have no
-    field to occupy. ``observation_hash`` binds the identity document.
+    The closed slot set IS the visibility boundary: wall (136-tile stack) /
+    dead wall (14-tile reserve), opponent concealed tiles, unrevealed dora/ura,
+    engine RNG, future events, server-private events, opponent legal masks,
+    and privileged labels have no field to occupy. ``observation_hash`` binds
+    the identity document.
     """
 
     game_id: str
@@ -370,7 +373,7 @@ class ActorObservation:
             name="seat_winds",
             validator=_validate_wind_type,
         )
-        if sorted(int(w) for w in winds) != list(_WIND_TILE_TYPES):  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
+        if sorted(int(w) for w in winds) != list(_WIND_TILE_TYPES):  # pyrefly: ignore[unknown-argument-type]  # reason: winds quad-validated above; int() coerces each entry
             raise ContractError("seat_winds must permute East/South/West/North aligned by seat")
         object.__setattr__(self, "seat_winds", winds)
         object.__setattr__(
@@ -473,7 +476,7 @@ class ActorObservation:
             _quad(
                 self.riichi_states,
                 name="riichi_states",
-                validator=lambda v, name: _require_enum(v, name=name, allowed=_RIICHI_STATES),  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
+                validator=lambda v, name: _require_enum(v, name=name, allowed=_RIICHI_STATES),  # pyrefly: ignore[unknown-argument-type]  # reason: snapshot statically object; _require_enum validates the value
             ),
         )
         indicators = self.dora_indicators
@@ -900,7 +903,7 @@ def parse_observation_schema(raw_bytes: bytes) -> dict[str, object]:
     expected = compute_observation_schema_digest(
         {k: v for k, v in payload.items() if k != "digest"}  # type: ignore[attr-defined]  # reason: payload Mapping-narrowed above; checker flags .items on bare Mapping
     )
-    recorded = make_digest_text(str(payload["digest"]))  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict  # type: ignore[index]  # reason: payload Mapping-narrowed above; index on bare Mapping
+    recorded = make_digest_text(str(payload["digest"]))  # pyrefly: ignore[unknown-argument-type]  # reason: payload Mapping-narrowed above; str() coerces; Any intentional for raw dict  # type: ignore[index]  # reason: payload Mapping-narrowed above; index on bare Mapping
     if not hmac.compare_digest(str(recorded), str(expected)):
         raise DigestMismatchError(
             f"observation_schema digest mismatch: recorded {recorded} != recomputed {expected}"
@@ -1229,11 +1232,11 @@ class ObservationBuilder:
             winds = _quad(
                 snapshot["seat_winds"],
                 name="seat_winds",
-                validator=lambda v, name: TileType(  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
-                    _require_plain_int(v, name=name, minimum=27, maximum=33)  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
+                validator=lambda v, name: TileType(  # pyrefly: ignore[unknown-argument-type]  # reason: snapshot statically object; range-validated to 27..33 below
+                    _require_plain_int(v, name=name, minimum=27, maximum=33)  # pyrefly: ignore[unknown-argument-type]  # reason: snapshot statically object; range-validated to 27..33 here
                 ),
             )
-            if sorted(int(w) for w in winds) != list(_WIND_TILE_TYPES):  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
+            if sorted(int(w) for w in winds) != list(_WIND_TILE_TYPES):  # pyrefly: ignore[unknown-argument-type]  # reason: winds quad-validated above; int() coerces each entry
                 raise ContractError("seat_winds must permute East/South/West/North")
             self._public["seat_winds"] = winds
         if "honba" in snapshot:

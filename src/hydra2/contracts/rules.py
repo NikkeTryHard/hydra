@@ -164,8 +164,8 @@ CHANKAN_POLICIES = ("permitted",)
 #: Replacement draws come from a 14-tile dead wall (owner decision d2; page
 #: states only the 3-player count 「嶺上牌は8枚」 L1098).
 RINSHAN_POLICIES = ("dead_wall_14",)
-#: Ankan kan-dora immediate; open meld/kakan revealed after discard or just
-#: before following rinshan draw (L1045).
+#: Ankan kan-dora immediate (dora = bonus-indicator tiles); open meld/kakan
+#: revealed after discard or just before following rinshan draw (L1045).
 KAN_DORA_REVEAL_POLICIES = ("ankan_immediate_open_delayed",)
 #: Kan ura-dora exists (L1044); reveal timing unstated (near-gap recorded).
 KAN_URA_POLICIES = ("present",)
@@ -352,7 +352,7 @@ def _serialize(value: Any) -> str:
     if isinstance(value, str):
         return _serialize_string(value)
     if isinstance(value, list):
-        return "[" + ",".join(_serialize(item) for item in value) + "]"  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
+        return "[" + ",".join(_serialize(item) for item in value) + "]"  # pyrefly: ignore[unknown-argument-type]  # reason: list-checked above; recursion validates each item
     if isinstance(value, dict):
         for key in value:
             if not isinstance(key, str):
@@ -360,7 +360,7 @@ def _serialize(value: Any) -> str:
                     f"object key {key!r} is not a string; JSON objects are string-keyed only"
                 )
         ordered_keys = sorted(value, key=lambda key: key.encode("utf-16-be"))  # RFC 8785 §3.2.3
-        members = (f"{_serialize_string(key)}:{_serialize(value[key])}" for key in ordered_keys)  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
+        members = (f"{_serialize_string(key)}:{_serialize(value[key])}" for key in ordered_keys)  # pyrefly: ignore[unknown-argument-type]  # reason: keys str-checked above; recursion validates each member
         return "{" + ",".join(members) + "}"
     raise CanonicalizationError(
         f"value of type {type(value).__name__} is outside the canonical JSON domain"
@@ -708,7 +708,7 @@ def resolve_final_ranks(final_scores: Sequence[int]) -> tuple[int, int, int, int
     scores = _require_quad_ints(
         final_scores, name="final_scores", minimum=-(10**12), maximum=10**12
     )
-    order = sorted(range(4), key=lambda seat: (-scores[seat], seat))  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
+    order = sorted(range(4), key=lambda seat: (-scores[seat], seat))  # pyrefly: ignore[unknown-argument-type]  # reason: scores quad-validated above; key indexes validated ints
     ranks = [0, 0, 0, 0]
     for position, seat in enumerate(order):
         ranks[seat] = position + 1
@@ -769,9 +769,9 @@ def _source_from_payload(raw: Any) -> SourceAuthority:
     if not isinstance(raw, Mapping) or set(raw) != {"url", "retrieved_at_utc", "content_sha256"}:
         raise ContractError("payload['source'] must map url/retrieved_at_utc/content_sha256")
     return SourceAuthority(
-        url=raw["url"],  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
-        retrieved_at_utc=raw["retrieved_at_utc"],  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
-        content_sha256=raw["content_sha256"],  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
+        url=raw["url"],  # pyrefly: ignore[unknown-argument-type]  # reason: raw Mapping shape-checked above; ctor validates each field
+        retrieved_at_utc=raw["retrieved_at_utc"],  # pyrefly: ignore[unknown-argument-type]  # reason: raw Mapping shape-checked above; ctor validates each field
+        content_sha256=raw["content_sha256"],  # pyrefly: ignore[unknown-argument-type]  # reason: raw Mapping shape-checked above; ctor validates each field
     )
 
 
@@ -784,8 +784,8 @@ def _clocks_from_payload(raw: Any) -> tuple[ClockRule, ...]:
             raise ContractError(f"payload['clocks'][{i}] must map base_seconds/increment_seconds")
         clocks.append(
             ClockRule(
-                base_seconds=entry["base_seconds"],  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
-                increment_seconds=entry["increment_seconds"],  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
+                base_seconds=entry["base_seconds"],  # pyrefly: ignore[unknown-argument-type]  # reason: entry Mapping shape-checked above; ctor validates each field
+                increment_seconds=entry["increment_seconds"],  # pyrefly: ignore[unknown-argument-type]  # reason: entry Mapping shape-checked above; ctor validates each field
             )
         )
     return tuple(clocks)
@@ -802,9 +802,9 @@ def _adapters_from_payload(raw: Any) -> tuple[AdapterCompatibility, ...]:
             )
         adapters.append(
             AdapterCompatibility(
-                adapter_id=entry["adapter_id"],  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
-                status=entry["status"],  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
-                rules_hash=entry["rules_hash"],  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
+                adapter_id=entry["adapter_id"],  # pyrefly: ignore[unknown-argument-type]  # reason: entry Mapping shape-checked above; ctor validates each field
+                status=entry["status"],  # pyrefly: ignore[unknown-argument-type]  # reason: entry Mapping shape-checked above; ctor validates each field
+                rules_hash=entry["rules_hash"],  # pyrefly: ignore[unknown-argument-type]  # reason: entry Mapping shape-checked above; ctor validates each field
             )
         )
     return tuple(adapters)

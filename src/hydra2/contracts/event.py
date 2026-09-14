@@ -20,11 +20,10 @@ This module owns:
   ``packet_id = sha256(canonical bytes excluding packet_id)`` and the
   ``PacketBoundarySpec`` published at ``configs/contracts/packet_boundary_v1.json``.
 
-Boundary notes:
 - Contracts import stdlib and sibling contract modules only (SPEC 1); RFC 8785
   identity bytes come from :func:`hydra2.contracts.canonical.canonical_json_bytes`
-  (moved verbatim out of action.py in the WP-02D cutover), byte-equal to the
-  WP-02A authority (pinned by tests).
+  (defined once in contracts.canonical, re-exported by action.py),
+  byte-equal to the ``hydra2.artifacts.canonical`` authority (pinned by tests).
 - Owner decision D-WP02D-1: ``call_window`` is a public, tile-free marker; the
   offered responses reach seats exclusively through their legal masks. The
   complete offered/priority outcome travels in the server_private
@@ -279,13 +278,13 @@ def _validate_json_value(value: object) -> None:
         return
     if isinstance(value, (list, tuple)):
         for item in value:
-            _validate_json_value(item)  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
+            _validate_json_value(item)  # pyrefly: ignore[unknown-argument-type]  # reason: isinstance branches narrow only the container; item stays object
         return
     if isinstance(value, Mapping):
         if not all(isinstance(key, str) for key in value):
             raise ContractError("delta object keys must be strings")
         for item in value.values():
-            _validate_json_value(item)  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
+            _validate_json_value(item)  # pyrefly: ignore[unknown-argument-type]  # reason: isinstance branches narrow only the container; item stays object
         return
     raise ContractError(f"delta value outside JSON domain: {type(value).__name__}")
 
@@ -305,7 +304,7 @@ _DELTA_ROOTS: frozenset[str] = frozenset(
         "riichi_states",
         "ippatsu",
         "kan_count",
-        "live_wall_tiles_remaining",
+        "live_wall_tiles_remaining",  # tiles left in the live wall (wall = 136-tile stack).
     }
 )
 _PATH_ACTOR_PLACEHOLDER = "actor"
@@ -386,6 +385,7 @@ def _validate_delta_value(path: tuple[str | int, ...], operation: str, value: ob
             raise ContractError("delta round_index supports operation 'set' only")
         _plain_int(value, "round_index.set")
         return
+    # Dora = bonus-indicator tiles; each append reveals one indicator TileId.
     if root == "dora_indicators":
         if operation != "append":
             raise ContractError("delta dora_indicators supports operation 'append' only")
@@ -398,7 +398,7 @@ def _validate_delta_value(path: tuple[str | int, ...], operation: str, value: ob
             sorted(_MELD_OBJECT_KEYS)
         ):
             raise ContractError("melds.append requires the canonical meld object shape")
-        _ = _require_str(value["meld_id"], name="meld.meld_id")  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
+        _ = _require_str(value["meld_id"], name="meld.meld_id")  # pyrefly: ignore[unknown-argument-type]  # reason: Mapping shape-checked above; field validators narrow each field
         meld_kind: object = value["kind"]
         _ = _require_enum(
             meld_kind,
@@ -410,7 +410,7 @@ def _validate_delta_value(path: tuple[str | int, ...], operation: str, value: ob
             make_seat(value["source_seat"])  # type: ignore[arg-type]  # reason: meld field statically object; validated inside make_seat
         if value["called_tile"] is not None:
             make_tile_id(value["called_tile"])  # type: ignore[arg-type]  # reason: meld field statically object; validated inside make_tile_id
-        _ = _tile_tuple(value["tiles"], name="meld.tiles")  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
+        _ = _tile_tuple(value["tiles"], name="meld.tiles")  # pyrefly: ignore[unknown-argument-type]  # reason: Mapping shape-checked above; field validators narrow each field
         return
     if root == "riichi_states":
         if operation != "set":
@@ -1402,7 +1402,7 @@ def parse_event_schema(raw_bytes: bytes) -> dict[str, object]:
     if not isinstance(payload, Mapping) or "digest" not in payload:  # type: ignore[attr-defined, operator]  # reason: isinstance-narrowed Mapping; checker flags 'in' on bare Mapping
         raise ContractError("event_schema payload missing digest")
     expected = compute_event_schema_digest({k: v for k, v in payload.items() if k != "digest"})  # type: ignore[attr-defined]  # reason: payload Mapping-narrowed above; checker flags .items on bare Mapping
-    recorded = make_digest_text(str(payload["digest"]))  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict  # type: ignore[index]  # reason: payload Mapping-narrowed above; index on bare Mapping
+    recorded = make_digest_text(str(payload["digest"]))  # pyrefly: ignore[unknown-argument-type]  # reason: payload Mapping-narrowed above; str() coerces; Any intentional for raw dict  # type: ignore[index]  # reason: payload Mapping-narrowed above; index on bare Mapping
     if not hmac.compare_digest(str(recorded), str(expected)):
         from hydra2.contracts.common import DigestMismatchError
 
@@ -1821,7 +1821,7 @@ def partition_actor_packets(
                 public_state_hash_after=after,
                 observation_hash_after=cast(  # pyrefly: ignore[explicit-any]  # reason: deliberate Any passthrough; digest produced by observation_hash_of
                     "Any",
-                    observation_hash_of(view, int(segment[-1].sequence)),  # pyrefly: ignore[unknown-argument-type] # Any intentional for raw dict
+                    observation_hash_of(view, int(segment[-1].sequence)),  # pyrefly: ignore[unknown-argument-type]  # reason: segments hold validated envelopes; int() coerces the sequence
                 ),
             )
         )
