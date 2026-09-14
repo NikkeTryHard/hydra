@@ -40,8 +40,6 @@ GRANDFATHERED = {
     "src/hydra2/search/persistence_factorial.py",
     # registry file; split with its package if ever
     "src/hydra2/search/modules/__init__.py",
-    "src/hydra2/analysis/qualification.py",
-    "src/hydra2/eval/baseline.py",
     # tests
     "tests/unit/test_supervised_loop_wp05b.py",
     "tests/conformance/test_reference_corpus_wp04a.py",
