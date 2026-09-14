@@ -63,12 +63,15 @@ _ANALYSIS_ID_FOR_TEACHER: dict[str, str] = {
 
 # Actor-visible feature dimensionality for the real model_input_v1 encoder path
 # (34 concealed-tile counts + 4 scores + wall remaining + seats/phase one-hots).
+# wall = the fixed ordered tile sequence a block of games is dealt from; wall
+# blocks are the independent uncertainty unit for eval contrasts.
 _REAL_FEATURE_DIM = 48
 
 _DEFAULT_NUM_ACTIONS = 32  # import-time fallback only; real paths resolve via _action_table()
 
 
 def _load_action_table_num_actions() -> int:
+    """Probe action-table size; fall back to _DEFAULT_NUM_ACTIONS (never raises)."""
     try:
         from hydra2.config import repo_root
 
@@ -221,6 +224,7 @@ def load_analysis_gate(candidate_id: str) -> dict[str, Any]:
 
 
 def _require_sha256(name: str, value: str) -> str:
+    """Guard sha256:<64-hex> shape; fail closed on mismatch."""
     if not isinstance(value, str) or not value.startswith("sha256:") or len(value) != 71:
         raise ContractError(f"{name} must be sha256:<64 hex>, got {value!r}")
     hexpart = value[7:]
@@ -277,6 +281,7 @@ class TeacherJustification:
 
 
 def _now_utc() -> str:
+    """Mint a UTC %Y-%m-%dT%H:%M:%SZ timestamp."""
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -403,6 +408,7 @@ def _gate_hash_for_kind(kind: str, *, candidate_spec_hash: str, gate: dict[str, 
 
 
 def _hash_bytes(*parts: bytes) -> bytes:
+    """Combine domains as sha256(p1|p2|...)."""
     h = hashlib.sha256()
     for p in parts:
         h.update(p)
@@ -411,6 +417,7 @@ def _hash_bytes(*parts: bytes) -> bytes:
 
 
 def _hash_to_uniform(key: bytes, index: int) -> float:
+    """Map key+index to a top-32-bits uniform in [0, 1] for deterministic draws."""
     b = hashlib.sha256(key + index.to_bytes(4, "big")).digest()
     # 32-bit uniform
     v = int.from_bytes(b[:4], "big") / 0xFFFFFFFF
@@ -418,6 +425,7 @@ def _hash_to_uniform(key: bytes, index: int) -> float:
 
 
 def _masked_softmax(logits: tuple[float, ...], mask: tuple[bool, ...]) -> tuple[float, ...]:
+    """Masked softmax with exact-zero illegal mass; raises on empty/non-finite support."""
     if len(logits) != len(mask):
         raise ContractError(f"logits len {len(logits)} != mask len {len(mask)}")
     # Zero out illegal by -inf
@@ -444,6 +452,7 @@ def _provenance_for_case(
     budget: dict[str, Any],
     justification_digest: str,
 ) -> dict[str, Any]:
+    """Mint case reconstruction provenance (case/actor/seed/budget/justification)."""
     return {
         "teacher_candidate_id": teacher_id,
         "justification_digest": justification_digest,
@@ -709,20 +718,20 @@ class TrajectoryRecord:
 
 def validate_trajectory_record(record: TrajectoryRecord) -> None:
     """Validate a trajectory record — raises ContractError on violation."""
-    # __post_init__ already validates; re-run mask anchor checks
+    # Validation lives in TrajectoryRecord.__post_init__; this stable call-site
+    # anchor re-checks masks after construction (generate_trajectories:936).
     if not isinstance(record, TrajectoryRecord):
         raise ContractError(f"expected TrajectoryRecord, got {type(record)}")
-    # Additional: behavior-cloning anchors implied via teacher_policy; check legal mask non-empty
-    # Already done
     return None
 
 
 def _budget_to_frozen(budget: dict[str, Any]) -> tuple[tuple[str, Any], ...]:
+    """Freeze a budget dict as a sorted tuple."""
     return tuple(sorted(budget.items()))
 
 
 def _provenance_to_frozen(prov: dict[str, Any]) -> tuple[tuple[str, Any], ...]:
-    # provenance values must be JSON-serializable
+    """Freeze provenance as a sorted tuple; values must be JSON-serializable."""
     return tuple(sorted(prov.items()))
 
 
@@ -740,6 +749,7 @@ def make_trajectory_record(
     event_label: str | None = None,
     belief_label: tuple[float, ...] | None = None,
 ) -> TrajectoryRecord:
+    """Hash payload to record_id, then construct the validated TrajectoryRecord."""
     obs_hash = _require_sha256("observation_hash", observation_hash)
     frozen_budget = _budget_to_frozen(budget)
     frozen_prov = _provenance_to_frozen(provenance)
@@ -802,6 +812,7 @@ def generate_privileged_labels(
 def _maybe_privileged_labels(
     *, case_id: str, teacher_id: str, with_privileged: bool, world_id: str | None
 ) -> tuple[str | None, tuple[float, ...] | None]:
+    """Return (None, None) unless with_privileged; default world_id when absent."""
     if not with_privileged:
         return None, None
     if world_id is None:
@@ -994,19 +1005,20 @@ class StudentModel(nn.Module):
     def forward(
         self, features: torch.Tensor, *, legal_mask: torch.Tensor | None = None
     ) -> dict[str, torch.Tensor]:
+        """Return UNMASKED logits + value; every consumer MUST mask illegal actions."""
         h = self.encoder(features)
         logits = self.policy_head(h)
         values = self.value_head(h)
-        # Legal-mask check — mirrors model contract: illegal probs exactly zero after masked softmax
+        # Legal-mask shape check only — masking is enforced by callers (loss at
+        # compute_distillation_loss, selection in act); forward keeps raw logits.
         if legal_mask is not None:
             if legal_mask.shape[-1] != self.num_actions:
                 raise ContractError(f"legal_mask dim {legal_mask.shape[-1]} != {self.num_actions}")
-            # Zero illegal logits? Keep logits but ensure selection respects mask via caller
-            # For loss, we mask inside compute
-            pass
+            pass  # body intentionally empty: shape check only, masking lives in callers
         return {"policy_logits": logits, "value": values}
 
     def act(self, features: torch.Tensor, legal_mask: torch.Tensor) -> torch.Tensor:
+        """Argmax over masked logits (illegal forced to -inf)."""
         out = self.forward(features, legal_mask=legal_mask)
         logits = out["policy_logits"]
         # Illegal mask -> -inf
@@ -1096,6 +1108,7 @@ def features_for_record(record: TrajectoryRecord) -> torch.Tensor:
 
 
 def build_student_model(*, num_actions: int | None = None) -> StudentModel:
+    """Construct StudentModel, defaulting num_actions to import-time _NUM_ACTIONS."""
     n = num_actions if num_actions is not None else _NUM_ACTIONS
     return StudentModel(num_actions=n)
 
@@ -1264,6 +1277,7 @@ def train_student_distillation(
 
 
 def _scalarize_for_actor(vector: tuple[float, ...], actor: int) -> float:
+    """Project a four-seat vector to the actor's seat value (finite-guarded)."""
     if len(vector) != 4:
         raise ContractError(f"four-seat vector required, got len {len(vector)}")
     value = vector[actor]

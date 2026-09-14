@@ -1,6 +1,7 @@
 """Hydra2 distillation package — WP-10 Candidate 7 Teacher Distillation.
 
 Owned: distillation/teacher (BUILD §13 / SPEC 16.8).
+This is the compat alias; canonical owner is hydra2.distillation.teacher.
 """
 
 from __future__ import annotations
