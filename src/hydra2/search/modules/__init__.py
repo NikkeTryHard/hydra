@@ -1,11 +1,11 @@
 # ruff: noqa: N806  # reason: kept, not narrowed; uppercase registry locals intentional
-"""WP-09B Candidate 4 Modules — one at a time.
+"""Candidate 4 modules — one at a time.
 
-Implements BUILD Wave 9M §11.1-11.10 and SPEC 16.5:
+Implements SPEC 16.5 and Blueprint §11.1-11.10 (one module at a time):
 
 - Each module remains behind one flag (exactly one enabled per CandidateSpec).
 - Every module uses a named CandidateSpec, passes its tiny oracle, then fresh matched confirmation.
-- No module except WP-09B9 (persistent_forest) is an entry gate for persistence.
+- No module except persistent_forest is an entry gate for persistence.
 - Cumulative builds name promoted modules and re-pass every gate; unpromoted never merged.
 - Normalized finite-particle ratios are search-only; not called unbiased.
 
@@ -34,20 +34,20 @@ import torch
 from hydra2.contracts.common import ContractError
 
 # ---------------------------------------------------------------------------
-# Module identities — one per WP-09B1..B10
+# Module identities — one per Blueprint §11.1-11.10
 # ---------------------------------------------------------------------------
 
 VALID_MODULE_IDS: tuple[str, ...] = (
-    "rao_blackwell",  # WP-09B1
-    "defensive_mis",  # WP-09B2
-    "structural_crn",  # WP-09B3
-    "fixed_mlmc",  # WP-09B4
-    "rqmc",  # WP-09B5
-    "coreset",  # WP-09B6
-    "pruning",  # WP-09B7
-    "controlled_smc",  # WP-09B8
-    "persistent_forest",  # WP-09B9 — required before WP-09C
-    "voc_routing",  # WP-09B10
+    "rao_blackwell",
+    "defensive_mis",
+    "structural_crn",
+    "fixed_mlmc",
+    "rqmc",
+    "coreset",
+    "pruning",
+    "controlled_smc",
+    "persistent_forest",  # required before persistence factorial
+    "voc_routing",
 )
 
 PERSISTENCE_GATE_MODULE = "persistent_forest"
@@ -92,8 +92,8 @@ class PbrfContext:
     - candidate_id / case_id bind determinism
     - evidence_hashes are accumulated by module.evidence()
 
-    Full PBRF forest (WP-09A/WP-09C) owns parent IDs, successor deltas,
-    normalizers, and packet epoch — this harness does not replicate that
+    Full PBRF forest (core + persistence factorial) owns parent IDs, successor
+    deltas, normalizers, and packet epoch — this harness does not replicate that
     surface and remains isolated from belief internals by design.
     """
 
@@ -246,7 +246,7 @@ class RaoBlackwellModule(_BaseModule):
 
 
 # ---------------------------------------------------------------------------
-# WP-09B2 Defensive targeted MIS
+# Defensive targeted MIS
 # ---------------------------------------------------------------------------
 
 
@@ -314,7 +314,7 @@ class DefensiveMISModule(_BaseModule):
 
 
 # ---------------------------------------------------------------------------
-# WP-09B3 Structural CRN
+# Structural CRN
 # ---------------------------------------------------------------------------
 
 
@@ -387,7 +387,7 @@ class StructuralCRNModule(_BaseModule):
 
 
 # ---------------------------------------------------------------------------
-# WP-09B4 Fixed MLMC
+# Fixed MLMC
 # ---------------------------------------------------------------------------
 
 
@@ -443,7 +443,7 @@ class FixedMLMCModule(_BaseModule):
 
 
 # ---------------------------------------------------------------------------
-# WP-09B5 RQMC
+# RQMC
 # ---------------------------------------------------------------------------
 
 
@@ -508,7 +508,7 @@ class RQMCModule(_BaseModule):
 
 
 # ---------------------------------------------------------------------------
-# WP-09B6 Scenario coreset
+# Scenario coreset
 # ---------------------------------------------------------------------------
 
 
@@ -566,7 +566,7 @@ class ScenarioCoresetModule(_BaseModule):
 
 
 # ---------------------------------------------------------------------------
-# WP-09B7 Primal-dual pruning (simultaneous)
+# Primal-dual pruning (simultaneous)
 # ---------------------------------------------------------------------------
 
 
@@ -611,7 +611,7 @@ class PrimalDualPruningModule(_BaseModule):
 
 
 # ---------------------------------------------------------------------------
-# WP-09B8 Controlled SMC
+# Controlled SMC
 # ---------------------------------------------------------------------------
 
 
@@ -723,7 +723,7 @@ class ControlledSMCModule(_BaseModule):
 
 
 # ---------------------------------------------------------------------------
-# WP-09B9 Persistent event forest
+# Persistent event forest
 # ---------------------------------------------------------------------------
 
 
@@ -769,7 +769,7 @@ class PersistentForestModule(_BaseModule):
 
 
 # ---------------------------------------------------------------------------
-# WP-09B10 VOC routing
+# VOC routing
 # ---------------------------------------------------------------------------
 
 
@@ -1018,7 +1018,7 @@ def make_candidate4_spec(
     tie_break: str = "greedy",
     extra_parameters: dict[str, Any] | None = None,
 ) -> Any:
-    """Factory for a one-module CandidateSpec (WP-09B).
+    """Factory for a one-module CandidateSpec (Candidate 4).
 
     Fuses frozen hashes with module-specific pilot-frozen defaults so each
     spec is distinct and hash-stable.
@@ -1028,6 +1028,7 @@ def make_candidate4_spec(
     if module_id not in VALID_MODULE_IDS:
         raise ContractError(f"module_id must be one of {VALID_MODULE_IDS}, got {module_id!r}")
     # defaults for pilot-frozen, non-utility hashes
+    # dummy-until-real: pilot default, replaced by _canonical_hashes/caller before commit.
     dummy = "sha256:" + "a" * 64
     rules_hash = rules_hash if rules_hash is not None else dummy
     action_table_hash = action_table_hash if action_table_hash is not None else dummy
@@ -1104,6 +1105,7 @@ def make_core_control_spec(
     """Frozen control (no module) — the Candidate 3 core baseline."""
     from hydra2.search.common import CandidateSpec, ResourceBudget
 
+    # dummy-until-real: pilot default, replaced by _canonical_hashes/caller before commit.
     dummy = "sha256:" + "a" * 64
     return CandidateSpec(
         candidate_id="candidate4_core_control",

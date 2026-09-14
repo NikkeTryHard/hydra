@@ -1,5 +1,5 @@
-# ruff: noqa: F401, SIM102, SIM108, B905, N814
-"""WP-08B Candidate 1 Natural ISMCTS — natural worlds only, vector backup.
+# ruff: noqa: F401, SIM102, SIM108, B905, N814  # reason: legacy blanket kept, not narrowed — narrowing surfaces unrelated mid-flight noise outside the owned error set (F401 optional-dep fallback imports; SIM102/SIM108 nested contract guards; B905 intentionally non-strict action/legal zips; N814 upstream belief symbol casing). Evidence: https://docs.astral.sh/ruff/rules/
+"""Candidate 1 natural ISMCTS — natural worlds only, vector backup.
 
 Implements blueprint §8 (Candidate 1) and SPEC 16.2:
 
@@ -13,11 +13,12 @@ Implements blueprint §8 (Candidate 1) and SPEC 16.2:
 - Vector backups carry four-seat ``UtilityVector``; scalarization applies only
   at root selection.
 - Re-determinization requires a named conditional law with exact ratio
-  applied once; until proof it remains disabled (hard error).
+  applied once; without a proof it stays disabled (hard error).
 - Budget (simulations / transitions / model calls / deadline / Joules view)
   is enforced and accounted deterministically.
 - Determinism is via semantic counter-based seeds derived from
   ``(candidate_id, case_id / epoch, replicate)``; retries add ``attempt_id``.
+  Wall = undealt tile stock: live = drawable, dead = dora-indicator reserve.
 """
 
 from __future__ import annotations
@@ -74,6 +75,7 @@ except ImportError:  # fallback minimal contracts compatible with SPEC 15
         rules_hash: str = "sha256:" + "a" * 64
         utility_id: str = "expected_final_placement"
         utility_manifest_hash: str = "sha256:" + "b" * 64
+        # dummy-until-real: pilot default, replaced by _canonical_hashes/caller before commit.
         action_table_hash: str = "sha256:" + "c" * 64
         observation_schema_hash: str = "sha256:" + "d" * 64
         packet_boundary_hash: str = "sha256:" + "e" * 64
@@ -195,7 +197,7 @@ def is_redeterminization_enabled() -> bool:
 
     SPEC 16.2: ``q_j(x | I_j, immutable_constraints)`` must preserve public reach,
     root-known tiles and observed packets, with exact ratio applied once. Until
-    the tiny-state proof lands, this flag remains ``False`` and any call that
+    the tiny-state proof, this flag remains ``False`` and any call that
     attempts conditional re-sampling raises ``ContractError``.
     """
     return False
@@ -306,6 +308,8 @@ def terminal_vector_for_world(world: Any) -> tuple[float, float, float, float]:
     # Hash to settlement: first seat gets higher when hand sum larger
     h = hashlib.sha256(f"{wid}:terminal".encode()).digest()
     # Produce bounded scores then convert to placement-like values
+    # Test proxy only: deterministic hash-derived vectors stand in for
+    # model scores in unit tests; never feed them to real utility.
     scores = tuple((b % 50) - 25 for b in h[:4])  # -25..24
     # Convert to utility-like ranks: softmax would be zero-sum but we keep raw vector
     # For test preservation we keep values finite and distinct.
@@ -1158,6 +1162,7 @@ class NaturalISMCTSPlanner(Planner):  # type: ignore[misc]
                 selected_action=res["selected_action"],
                 candidate_actions=res["candidate_actions"],
                 value_vectors=res["value_vectors"],
+                # NEVER-bind: fallback digest, not a verified binding.
                 candidate_spec_hash=getattr(
                     request.candidate_spec, "candidate_spec_hash", "sha256:" + "a" * 64
                 ),
@@ -1190,6 +1195,7 @@ class NaturalISMCTSPlanner(Planner):  # type: ignore[misc]
         try:
             spec_hash = _csh(request.candidate_spec)  # type: ignore[call-arg]
         except Exception:
+            # NEVER-bind: fallback digest, not a verified binding.
             spec_hash = "sha256:" + "a" * 64
         try:
             _telemetry_dict: Any = res["telemetry"]  # pyrefly: ignore[explicit-any]

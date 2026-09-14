@@ -1,4 +1,4 @@
-"""WP-09C Persistence Factorial — B/F/R/P/C state-machine, commitment, reporting.
+"""Persistence factorial — B/F/R/P/C state-machine, commitment, reporting.
 
 Implements SPEC 17 PersistenceArm and blueprint §11.11:
 
@@ -13,8 +13,8 @@ Implements SPEC 17 PersistenceArm and blueprint §11.11:
 - Ponder only between emitted action and next visible packet for P.
 - Surprise/miss/recovery stratification.
 - Deterministic semantic seeds (counter-based sha256).
-- Frozen whole-block factorial report with bootstrap uncertainty over
-  wall blocks.
+- Frozen whole-block factorial report with bootstrap uncertainty over wall
+  blocks. Wall = undealt tile stock: live = drawable, dead = dora reserve.
 """
 
 from __future__ import annotations
@@ -91,6 +91,7 @@ except ImportError:
         candidate_id: str = "persistence-B"
         algorithm: str = "persistence_factorial"
         algorithm_version: str = "1.0.0"
+        # dummy-until-real: pilot default, replaced by _canonical_hashes/caller before commit.
         rules_hash: str = "sha256:" + PLACEHOLDER_A
         utility_id: str = "expected_final_placement"
         utility_manifest_hash: str = "sha256:" + PLACEHOLDER_B

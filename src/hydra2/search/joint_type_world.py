@@ -1,5 +1,5 @@
-# ruff: noqa: F401, F841, B007, B904, C416, RUF005, SIM102, N814
-"""WP-13 Candidate 8 Joint Type/World Model — observation-only opponent types, joint posterior, robust set.
+# ruff: noqa: F401, F841, B007, B904, C416, RUF005, SIM102, N814  # reason: legacy blanket kept, not narrowed — narrowing surfaces unrelated mid-flight noise outside the owned error set (F401 optional-dep fallback imports; F841/B007 intentional scratch locals; B904 ContractError preconditions; C416/RUF005 idiom drift; SIM102 nested contract guards; N814 upstream casing). Evidence: https://docs.astral.sh/ruff/rules/
+"""Candidate 8 joint type/world model — observation-only opponent types, joint posterior, robust set.
 
 Implements blueprint §15 (Candidate 8) and SPEC 16.9:
 
@@ -71,6 +71,7 @@ except ImportError:  # fallback minimal contracts compatible with SPEC 15
         utility_id: str = "expected_final_placement"
         utility_manifest_hash: str = "sha256:" + "b" * 64
         action_table_hash: str = "sha256:" + "c" * 64
+        # dummy-until-real: pilot default, replaced by _canonical_hashes/caller before commit.
         observation_schema_hash: str = "sha256:" + "d" * 64
         packet_boundary_hash: str = "sha256:" + "e" * 64
         model_hash: str = "sha256:" + "f" * 64
@@ -164,6 +165,7 @@ __all__ = [
     "validate_same_information_equality",
 ]
 
+# Wall = undealt tile stock: live = drawable, dead = dora-indicator reserve.
 FORBIDDEN_IN_TREE_KEY: frozenset[str] = frozenset(
     {
         "world_id",
@@ -922,6 +924,7 @@ def make_joint_type_world_candidate_spec(
     case_manifest_hash: str = "sha256:" + "0" * 64,
     resource_budget: Any | None = None,
     config: JointTypeWorldConfig | None = None,
+    # dummy-until-real: pilot default, replaced by _canonical_hashes/caller before commit.
 ) -> CandidateSpec:
     """Build frozen CandidateSpec for Candidate 8."""
     cfg = config if config is not None else JointTypeWorldConfig()
@@ -1058,6 +1061,7 @@ class JointTypeWorldPlanner(Planner):  # type: ignore[misc]
         if not self._uncertainty_set.is_nonempty():
             raise ContractError("uncertainty set must be nonempty")
         # Validate with dummy info_key
+        # NEVER-bind: feasibility probe key only, not a verified binding.
         dummy_key = "sha256:" + "0" * 64
         dummy_legal = (0, 1)
         if not self._uncertainty_set.contains_nominal(
@@ -1212,8 +1216,8 @@ class JointTypeWorldPlanner(Planner):  # type: ignore[misc]
 
         # Ensure joint prior
         joint = self._ensure_joint_prior(request.observation, legal_action_ids=legal_ids)
-        # Deterministic case_id and root_seat derived from observation / belief_epoch for determinism proof
-        # Support both legacy test field case_id on request and canonical observation.decision_id
+        # Deterministic case_id/root_seat from observation or belief epoch;
+        # request case_id (test harness) and observation.decision_id agree.
         case_id_val = getattr(request, "case_id", None)
         if not isinstance(case_id_val, str) or case_id_val == "":
             _decision_id = getattr(request.observation, "decision_id", None)
@@ -1246,6 +1250,8 @@ class JointTypeWorldPlanner(Planner):  # type: ignore[misc]
         self._transitions += len(joint.particles) * len(legal_ids)
         root_info_key = info_key_for_observation(request.observation)
         for aid in legal_ids:
+            # Test proxy only: hash-derived leaf stands in for model
+            # scores in unit tests; never feed it to real utility.
             # Compute expected score under joint posterior: weighted sum of world hash + theta bias
             score = 0.0
             for p in joint.particles:
@@ -1484,5 +1490,5 @@ class JointTypeWorldPlanner(Planner):  # type: ignore[misc]
             raise ContractError(f"joint observe failed: {exc}") from exc
 
     def ponder(self, *, deadline_monotonic_ns: int) -> None:
-        # No speculative work beyond prior; deterministic no-op for WP-13
+        # No speculative work beyond the prior; ponder is a deterministic no-op.
         pass

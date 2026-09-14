@@ -8,7 +8,9 @@ Gate selection from held-out win rates is prohibited.
 
 Jobs identity (exact): round r holds M/2^r survivors x 4.2^r added jobs = 4M per
 round over log2(M) rounds, so jobs = 4M.log2(M); exact transitions <= jobs x H.
-The comparator below measures accounting only; wall-block confirmation decides.
+The comparator below measures accounting only; wall-block confirmation
+decides. Wall = undealt tile stock: live = drawable, dead = dora-indicator
+reserve.
 """
 
 from __future__ import annotations

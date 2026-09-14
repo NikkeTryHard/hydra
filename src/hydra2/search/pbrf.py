@@ -1,5 +1,5 @@
 # ruff: noqa: N814, B007, B904, F841, SIM105  # reason: legacy blanket kept, not narrowed — narrowing surfaces unrelated mid-flight noise outside the owned error set (SIM105 fallback-chain try/except-pass idiom; B007/F841 intentional scratch loop locals; B904 ContractError preconditions; N814 upstream casing). Evidence: https://docs.astral.sh/ruff/rules/
-"""WP-09A Candidate 3 PBRF Core — natural immutable parent population, packet forest.
+"""Candidate 3 PBRF core — natural immutable parent population, packet forest.
 
 Implements SPEC 16.4 + Blueprint §10 PBRF core:
 
@@ -14,7 +14,7 @@ Implements SPEC 16.4 + Blueprint §10 PBRF core:
 - Deterministic semantic seeds, actor-visible only keys, privileged world_ref isolation.
 - ``successor_world_ref`` mandatory, ``successor_delta`` verified via reconstruction.
 
-Ownership: WP-09A owns this module; peers must not redefine its contracts.
+Ownership: this module owns the PBRF core contracts; peers extend without redefinition.
 """
 
 from __future__ import annotations
@@ -1077,6 +1077,7 @@ def commit(
             source: str = "carried"
             log_target_density: float = logp
             log_proposal_density: float = logp
+            # dummy-until-real: pilot default, overwritten before commit.
             proposal_id: str = "sha256:" + "0" * 64
             ancestors: tuple[str, ...] = (*e.ancestors, e.parent_id)
 
@@ -1088,6 +1089,7 @@ def commit(
             source="carried",
             log_target_density=logp,
             log_proposal_density=logp,
+            # dummy-until-real: pilot default, overwritten before commit.
             proposal_id="sha256:" + "0" * 64,
             ancestors=(*e.ancestors, e.parent_id),
         )
@@ -1101,8 +1103,8 @@ def commit(
     promoted_children: dict[tuple[int, str], tuple[ChildEntry, ...]] = {
         promoted_key: tuple(rekeyed)
     }
-    # Allocations for promoted counts? For promoted forest, search batches have been consumed; reset allocations to fresh allocation for that single child?
-    # For determinism, we will reallocate fixed batches across remaining children (just one)
+    # Promoted search batches are consumed, so reallocate the fixed budget
+    # across the single surviving child for determinism.
     try:
         promoted_alloc = fixed_allocate(
             cast(
@@ -1137,6 +1139,7 @@ def _file_sha256(path: Any) -> DigestText:
     from pathlib import Path
 
     p = Path(path)
+    # dummy-until-real: file content hash wins when the config is present.
     if not p.exists():
         return make_digest_text("sha256:" + "0" * 64)
     return make_digest_text("sha256:" + hashlib.sha256(p.read_bytes()).hexdigest())
@@ -1162,6 +1165,7 @@ def _load_default_hashes() -> dict[str, str]:
     ]:
         try:
             p = repo / rel
+            # dummy-until-real: file content hash wins when the config is present.
             if p.exists():
                 defaults[key] = str(_file_sha256(p))
             else:
@@ -1473,6 +1477,7 @@ class PbrfPlanner(Planner):  # type: ignore[misc]
                 wall_id: Any = None
                 case_id: str = case_id
                 candidate_spec_hash: str = spec_hash
+                # NEVER-bind: fallback digest, not a verified binding.
                 hardware_hash: str = "sha256:" + "0" * 64
                 environment_hash: str = "sha256:" + "0" * 64
                 cold_start: bool = False
@@ -1498,7 +1503,9 @@ class PbrfPlanner(Planner):  # type: ignore[misc]
             wall_id=None,
             case_id=case_id,
             candidate_spec_hash=make_digest_text(spec_hash),
+            # NEVER-bind: fallback digest, not a verified binding.
             hardware_hash=make_digest_text("sha256:" + "0" * 64),
+            # NEVER-bind: fallback digest, not a verified binding.
             environment_hash=make_digest_text("sha256:" + "0" * 64),
             cold_start=False,
             synchronized_elapsed_ms=elapsed_ms,
@@ -1662,7 +1669,8 @@ class PbrfPlanner(Planner):  # type: ignore[misc]
         _budget_raw: Any = getattr(cand_spec, "resource_budget", None)
         budget: Any = _budget_raw if _budget_raw is not None else self._budget()
         if hasattr(budget, "resource_budget"):
-            budget = getattr(budget, "resource_budget")  # noqa: B009  # type: ignore[attr-defined]
+            budget = getattr(budget, "resource_budget")  # noqa: B009
+            # reason: B009 narrowing to inner budget — spec wrappers nest it.
         deadline_ns = getattr(request, "deadline_monotonic_ns", None)
         spec_hash = self._spec_hash()
 
@@ -1712,9 +1720,9 @@ class PbrfPlanner(Planner):  # type: ignore[misc]
             if _HAS_BELIEF:
                 try:
                     belief = NaturalBelief()  # type: ignore[call-arg]
-                    # Ensure epoch is registered in this belief's store
-                    # If belief_epoch came from different belief instance, we need to adopt it
-                    # For test determinism, we will create a new epoch from the same observation if needed
+                    # Adopt epochs across belief instances for determinism:
+                    # rebuild from the same observation when the epoch came
+                    # from a different belief store.
                     obs2 = getattr(request, "observation", None)
                     if obs2 is not None:
                         try:

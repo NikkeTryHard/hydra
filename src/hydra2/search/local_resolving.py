@@ -1,5 +1,5 @@
 # ruff: noqa: F401  # reason: legacy blanket kept, not narrowed — narrowing surfaces unrelated mid-flight noise outside the owned error set (F401 optional-dependency fallback shims + re-exported spec symbols). Evidence: https://docs.astral.sh/ruff/rules/
-"""WP-09D Candidate 5 Local Resolving — public-history subgame, information-set strategies.
+"""Candidate 5 local resolving — public-history subgame, information-set strategies.
 
 Implements Blueprint §12 (Candidate 5) and SPEC 16.6:
 
@@ -35,7 +35,7 @@ from hydra2.search.common import (
     SearchResult,
 )
 
-_COMMON_AVAILABLE = True  # common always available via direct import (shim deleted)
+_COMMON_AVAILABLE = True  # common.py is the single authority, imported directly above
 
 try:
     from hydra2.artifacts.canonical import canonical_bytes
@@ -229,6 +229,8 @@ def model_vector_for_world(
 
 def terminal_vector_for_world(world: Any) -> tuple[float, float, float, float]:
     """Exact terminal settlement vector derived from concealed hands + wall."""
+    # Test proxy only: deterministic hash-derived vectors stand in for
+    # model scores in unit tests; never feed them to real utility.
     try:
         hands = getattr(world, "concealed_hands", ((0,),) * 4)
         # sum tiles per seat as strength proxy
@@ -244,6 +246,7 @@ def terminal_vector_for_world(world: Any) -> tuple[float, float, float, float]:
         centered = tuple((s - mean) / 10.0 for s in sums)
         # add wall influence
         try:
+            # Wall = undealt tile stock: live = drawable, dead = dora reserve.
             wall = getattr(world, "live_wall", ())
             wall_sum = sum(int(t) for t in wall) / 100.0
             centered = tuple(
@@ -1880,6 +1883,7 @@ class LocalResolvingPlanner(Planner):  # type: ignore[misc]
 
             spec_hash = candidate_spec_hash(request.candidate_spec)  # type: ignore[arg-type]
         except Exception:
+            # NEVER-bind: fallback digest, not a verified binding.
             spec_hash = "sha256:" + "0" * 64
         # Build telemetry object if common result expects ResourceTelemetry
         # Use dict for simplicity but wrap into object if needed by tests
@@ -1945,7 +1949,9 @@ class LocalResolvingPlanner(Planner):  # type: ignore[misc]
                     wall_id=None,
                     case_id=None,
                     candidate_spec_hash=spec_hash,
+                    # NEVER-bind: fallback digest, not a verified binding.
                     hardware_hash="sha256:" + "0" * 64,
+                    # NEVER-bind: fallback digest, not a verified binding.
                     environment_hash="sha256:" + "0" * 64,
                     cold_start=False,
                     synchronized_elapsed_ms=float(elapsed_any),

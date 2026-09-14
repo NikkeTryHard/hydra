@@ -1,12 +1,10 @@
-"""Hydra2 search package — frozen candidate and baselines (Wave 8-9).
+"""Hydra2 search package — frozen candidate and baselines.
 
-Wave 8 owns: common (CandidateSpec/Search API), candidate0 (frozen policy),
-ismcts_natural, despot_natural (peers own the latter two).
-Wave 9A owns: pbrf (Candidate 3 PBRF core).
-Wave 9B owns: modules (Candidate 4 modules one-at-a-time).
-Wave 9C owns: persistence_factorial (B/F/R/P/C factorial).
-Wave 9D owns: local_resolving (Candidate 5).
-Wave 9E owns: gumbel (Candidate 6).
+Ownership: common holds the CandidateSpec/Search API; candidate0 the frozen
+policy; ismcts_natural and despot_natural the natural planners; pbrf the PBRF
+core; modules the one-at-a-time modules; persistence_factorial,
+local_resolving, gumbel, joint_type_world, and profiles the remaining
+candidates and profiles.
 This __init__ re-exports the shared search surface without hard dependency on
 torch until candidate0 is imported.
 """

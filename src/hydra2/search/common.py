@@ -1,11 +1,12 @@
-"""Wave 8 shared search contracts — SPEC 15 CandidateSpec/Search API.
+"""Shared search contracts — SPEC 15 CandidateSpec/Search API.
 
 This module is the single authority for ``ResourceBudget``, ``CandidateSpec``,
-``SearchRequest``, ``SearchResult`` and the ``Planner`` protocol. Wave 8
-candidates (0,1,2) all import from here so that ``candidate_spec_hash`` and
+``SearchRequest``, ``SearchResult`` and the ``Planner`` protocol. All
+candidates import from here so that ``candidate_spec_hash`` and
 ``resource_budget`` semantics have one implementation.
 
-Ownership: WP-08A creates the file; peers extend without redefinition.
+Ownership: this file is the single authority; peers extend without
+redefinition.
 Contracts depend only on stdlib + ``hydra2.contracts.*`` + ``hydra2.artifacts.*``.
 """
 
@@ -66,6 +67,7 @@ VALID_TIE_BREAKS: frozenset[str] = frozenset(
 # Legacy: previously Path(__file__).resolve().parents[3] (brittle if layout changes).
 REPO_ROOT: Path = repo_root()
 DEPLOYABLE_DEADLINE_MS: int = 5000
+# dummy-until-real: pilot default, replaced by _canonical_hashes/caller before commit.
 MISSING_HASH: str = "0" * 64
 PLACEHOLDER_A: str = "a" * 64
 PLACEHOLDER_B: str = "b" * 64
@@ -145,6 +147,8 @@ def _require_opt_nonneg_int(name: str, value: object) -> int | None:
     return value
 
 
+# WHY strict binding: non-sha256 digests are rejected so hashes from
+# different artifacts cannot mix (tuple variant below shares the rule).
 def _require_digest(name: str, value: object) -> DigestText:
     if not isinstance(value, str):
         raise ContractError(f"{name} must be sha256 digest, got {type(value).__name__}")

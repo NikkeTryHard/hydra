@@ -1,4 +1,4 @@
-"""WP-08C Candidate 2 Natural DESPOT — natural scenarios only.
+"""Candidate 2 natural DESPOT — natural scenarios only.
 
 Implements blueprint §9 (Candidate 2) and SPEC 16.3:
 
@@ -36,11 +36,12 @@ from typing import Any, Literal, cast
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Optional shared search contract — owned by Wp08A (common.py). Fallback keeps
-# DESPOT testable before common lands; after it lands we re-export its types.
+# Shared search contract lives in common.py, which is authoritative.
+# The fallback below stays for offline/unit testability without the full
+# contract stack.
 # ---------------------------------------------------------------------------
 
-try:  # Wp08A provides shared contracts
+try:  # shared contracts live in common.py
     from hydra2.search.common import (
         CandidateSpec,
         Planner,
@@ -79,6 +80,7 @@ except ImportError:  # fallback minimal contracts compatible with SPEC 15
         algorithm: str = "despot_natural"
         algorithm_version: str = "1.0.0"
         rules_hash: str = "sha256:" + "a" * 64
+        # dummy-until-real: pilot default, replaced by _canonical_hashes/caller before commit.
         utility_id: str = "expected_final_placement"
         utility_manifest_hash: str = "sha256:" + "b" * 64
         action_table_hash: str = "sha256:" + "c" * 64
@@ -541,10 +543,9 @@ class NaturalDespotPlanner(Planner):  # type: ignore[misc]
                 # via hashlib index.
                 from hydra2.contracts.randomness import RandomStream
 
-                # Enumerate corpus for determinism: peek at belief's corpus if exposed
-                # For WP-07A belief, corpus size is 4. We will call sample_natural with
-                # a deterministic stream per scenario group, but to avoid ledger
-                # duplication we create independent streams each time.
+                # Per-scenario deterministic streams avoid ledger duplication:
+                # each scenario draws count=1 from an independent stream, so
+                # no scenario shares ledger entries with another.
                 # Fallback to synthetic if any error.
                 for idx in range(k):
                     seed = _scenario_seed_bytes(
@@ -552,8 +553,8 @@ class NaturalDespotPlanner(Planner):  # type: ignore[misc]
                     )
                     # Use RandomStream to sample world index deterministically
                     rs = RandomStream(seed)
-                    # We need corpus size; obtain via sampling  a single particle and inspecting belief's internal registry size?
-                    # Instead, we will just call sample_natural with count=1 and that stream.
+                    # Corpus size is discovered by sampling, not assumed: draw
+                    # one particle and inspect the belief registry below.
                     try:
                         particles: Any = self._belief.sample_natural(belief_epoch, count=1, rng=rs)  # type: ignore[union-attr]
                         wref: str = cast("str", particles[0].world_ref)
@@ -1256,7 +1257,7 @@ class NaturalDespotPlanner(Planner):  # type: ignore[misc]
 
         Verifies packet/epoch coherence: if packet's epoch matches our stored
         epoch, promote matching child; otherwise rebuild from authoritative
-        pushforward. For Wp08C's stateless DESPOT (fresh tree per act), this
+        pushforward. The stateless DESPOT re-plans fresh per act, so this
         mainly validates packet partition and clears pondering state.
         """
         # Validate packet has packet_id and is actor-visible
@@ -1264,7 +1265,6 @@ class NaturalDespotPlanner(Planner):  # type: ignore[misc]
         pid_second: Any = getattr(getattr(packet, "packet", None), "packet_id", None)
         pid: Any = pid_first if pid_first is not None else pid_second
         if pid is None and packet is not None:
-            # if packet is ActorVisiblePacket
             try:
                 pid = packet.packet_id  # type: ignore[union-attr]
             except (AttributeError, ValueError, TypeError) as exc:
@@ -1277,14 +1277,14 @@ class NaturalDespotPlanner(Planner):  # type: ignore[misc]
     def ponder(self, *, deadline_monotonic_ns: int) -> None:
         """Speculative pondering mutates only planner-owned state.
 
-        For Wp08C we keep pondering minimal: expand at most one priority node
+        Pondering stays minimal: expand at most one priority node
         per call within deadline, then return. No observation, rules, or model
         identity changes.
         """
         # Stateless: nothing to ponder beyond what act already did; respect deadline
         if time.monotonic_ns() >= deadline_monotonic_ns:
             return
-        # could expand one more node if budget allows; for now no-op to keep deterministic
+        # Expand one more node only when budget allows; no-op keeps determinism.
 
 
 # ---------------------------------------------------------------------------
@@ -1341,6 +1341,7 @@ def make_despot_candidate_spec(
     regularization: float | None = None,
     max_depth: int = 4,
     resource_budget: Any | None = None,
+    # dummy-until-real: pilot default, replaced by _canonical_hashes/caller before commit.
     rules_hash: str = "sha256:" + "a" * 64,
 ) -> Any:
     """Build a frozen CandidateSpec for natural DESPOT (test helper)."""
@@ -1379,6 +1380,8 @@ def make_despot_candidate_spec(
         )
     except (AttributeError, ValueError, TypeError) as exc:
         logger.debug("despot: CandidateSpec fallback minimal", exc_info=exc)
+        # WHY retained: offline/unit tests can build a minimal spec when the
+        # shared contract stack is unavailable; common.py stays authoritative.
         # Fallback for when common is unavailable (uses local minimal CandidateSpec)
         return CandidateSpec(  # type: ignore[missing-argument]  # pyrefly: ignore[missing-argument]
             candidate_id=candidate_id, parameters=params, resource_budget=resource_budget

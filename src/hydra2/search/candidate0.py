@@ -1,4 +1,4 @@
-"""WP-08A Candidate 0 Frozen Policy — SPEC 16.1, Blueprint §7.
+"""Candidate 0 frozen policy — SPEC 16.1, Blueprint §7.
 
 One model evaluation only, no particles/search/pondering/learning. Greedy,
 frozen-temperature and value tie-break arms. Deadline fallback is Candidate 0
@@ -153,6 +153,7 @@ def _load_default_hashes() -> dict[str, str]:
         ("model_input_hash", "configs/models/model_input_v1.json"),
     ):
         p = repo / rel
+        # dummy-until-real: file hash wins when the config is present.
         out[key] = _file_sha256(p) if p.exists() else "sha256:" + MISSING_HASH
     # Try to upgrade to canonical contract digests where modules available
     try:
@@ -265,10 +266,12 @@ def make_candidate0_spec(
             from hydra2.models.model import Hydra2BaselineModel
 
             probe: Any = Hydra2BaselineModel() if model is None else model
+            # dummy-until-real: live model digest wins when available.
             probe_hash_raw: Any = getattr(probe, "utility_manifest_hash", "sha256:" + MISSING_HASH)
             utility_manifest_hash = str(probe_hash_raw)
         except (ImportError, AttributeError, ValueError, TypeError, OSError) as exc:
             logger.debug("candidate0: utility_manifest_hash fallback", exc_info=exc)
+            # dummy-until-real: live model digest wins when available.
             utility_manifest_hash = "sha256:" + PLACEHOLDER_1
         rules_hash = defaults["rules_hash"]
         # Prefer verified manifest digest when file contains envelope

@@ -1,5 +1,5 @@
 # ruff: noqa: F401, SIM102, B905, N814  # reason: legacy blanket kept, not narrowed — narrowing surfaces unrelated mid-flight noise outside the owned error set (F401 optional-dep fallback imports; SIM102 nested contract guards; B905 intentionally non-strict action/legal zips; N814 upstream belief symbol casing). Evidence: https://docs.astral.sh/ruff/rules/
-"""WP-09E Candidate 6 Gumbel Search — deterministic root Gumbels, sequential halving, exact rules.
+"""Candidate 6 Gumbel search — deterministic root Gumbels, sequential halving, exact rules.
 
 Implements blueprint §13 (Candidate 6) and SPEC 16.7:
 
@@ -12,6 +12,7 @@ Implements blueprint §13 (Candidate 6) and SPEC 16.7:
 - PUCT comparator shares the same budget semantics for matched comparison.
 - Learned-rules negative control: attempting to predict transitions via the model raises.
 - Cached / full-history encoding agreement and hidden-permutation invariance are explicitly validated.
+  Wall = undealt tile stock: live = drawable, dead = dora-indicator reserve.
 """
 
 from __future__ import annotations
@@ -226,6 +227,8 @@ def model_vector_for_world(
 
 
 def terminal_vector_for_world(world: Any) -> tuple[float, float, float, float]:
+    # Test proxy only: deterministic hash-derived vectors stand in for
+    # model scores in unit tests; never feed them to real utility.
     """Exact terminal utility placeholder — distinct per world, four-seat."""
     _wid2: Any | None = getattr(world, "world_id", None)
     wid: str = _wid2 if isinstance(_wid2, str) and _wid2 != "" else str(world)
@@ -1049,8 +1052,8 @@ class GumbelSearchPlanner(Planner):  # type: ignore[misc]
                 self._config.max_model_calls is not None
                 and self._model_calls >= self._config.max_model_calls
             ):
-                # Allow one more round only if it would be terminal? For determinism, allow continuing
-                # if survivors >1 but we lack model calls, we will use terminal fallback vectors
+                # Budget-exhausted rounds fall through to terminal fallback
+                # vectors; the return rule below picks the max-Gumbel survivor.
                 pass
 
         # Final selection: survivor with max gumbel score
@@ -1179,6 +1182,7 @@ class GumbelSearchPlanner(Planner):  # type: ignore[misc]
                 selected_action=res["selected_action"],
                 candidate_actions=res["candidate_actions"],
                 value_vectors=res["value_vectors"],
+                # NEVER-bind: fallback digest, not a verified binding.
                 candidate_spec_hash=getattr(
                     request.candidate_spec, "candidate_spec_hash", "sha256:" + "a" * 64
                 ),
@@ -1220,6 +1224,7 @@ class GumbelSearchPlanner(Planner):  # type: ignore[misc]
         try:
             spec_hash = _csh(request.candidate_spec)  # type: ignore[call-arg]
         except Exception:
+            # NEVER-bind: fallback digest, not a verified binding.
             spec_hash = "sha256:" + "a" * 64
         try:
             telem = _mrt(
