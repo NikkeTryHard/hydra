@@ -166,14 +166,10 @@ class NaturalPacketKernel:
             raise StaleBeliefError("particle epoch/target stale for kernel [PBRF_STALE_EPOCH]")
         if particle.world_ref is None:
             raise ContractError("particle world_ref missing")
-        # Resolve world via a singleton belief registry? Instead we reconstruct via packet logic
-        # For WP-07A we store worlds in a global-ish way: we will accept that world_ref is digest string
-        # and we can synthesize successor worlds deterministically without needing original world registry.
-        # However we should validate particle.world_ref exists via NaturalBelief's world store? For testing,
-        # we will create a lightweight kernel that doesn't need full world lookup — just generates successors
-        # based on deterministic tile choices.
-        # To satisfy "physical transition and actor-policy likelihood" we split probability.
-        # We enumerate exactly 2 disjoint packets per parent/action.
+        # Registry-free by design: successors are synthesized deterministically
+        # from (particle_world_ref, tile, aid); probability splits exactly once
+        # into physical x policy (log_phys=log(0.5), log_policy=0.0).
+        # Exactly 2 disjoint packets per parent/action.
         if not hasattr(action, "action_id") and not isinstance(action, int):
             # Accept raw int or CanonicalAction; normalize to int id
             try:

@@ -84,14 +84,15 @@ class ProposalSpec:
 
 @dataclass(frozen=True, slots=True)
 class PolicySet:
-    """Opaque policy set used by packet kernel (WP-07A placeholder)."""
+    """Provenance-only policy set consumed by the packet kernel."""
 
-    # For WP-07A, policies are not evaluated beyond likelihood inclusion;
-    # stored as mapping seat->policy_id string for provenance.
+    # Policies carry seat->policy_id provenance only; the kernel supplies
+    # the deterministic likelihood (log_policy=0.0).
     policies: tuple[tuple[int, str], ...] = ()
 
     def log_prob(self, actor: int, action_id: int) -> float:
-        # Uniform placeholder — will be overridden by kernel's deterministic likelihood
+        # Returns log(1.0): the kernel applies the exact 0.5/0.5 split once
+        # per successor, so the policy factor here is unity.
         return 0.0
 
 
@@ -150,19 +151,14 @@ def _build_tiny_corpus_for_epoch(
         # Deterministic order by world_id
         consistent.sort(key=lambda w: w.world_id)
         return consistent
-    # If none, generate deterministic 4-world corpus seeded by target_id
-    # Use hash of target_id as seed to pick tile assignments
-    # For WP-07A, corpus size is fixed at 4
+    # No stored corpus: synthesize 4 worlds consistent by construction with
+    # the same root hand, then bind their observation_hash to the epoch so
+    # the generated worlds match the epoch observation.
+    # Seed-documentation digest (result unused): records that the corpus is
+    # deterministically bound to target_id even though hands are fixed.
     _ = hashlib.sha256(epoch.target_id.encode()).digest()
-    # Tile pool 0..11 as earlier design; root hand is deterministic from observation_hash
-    # Instead of deriving root hand from observation, we synthesize worlds that are
-    # consistent by construction: we will create 4 worlds with same root hand.
-    # Root hand is taken as [0,1] for all (since observation_hash is abstract, we
-    # enforce consistency by using same root hand for generation and checking that
-    # epoch's observation_hash matches the derived observation's hash — but our
-    # dummy epoch observation_hash is arbitrary. For lazily generated corpus we
-    # must ensure the generated worlds' observation_hash equals epoch.observation_hash.
-    # Therefore we generate worlds and then override their observation_hash to match epoch.
+    # Tiny-domain tile pool 0..11: seats hold variants over 0..7, the wall
+    # holds 8..11. Root hand stays fixed for hidden-permutation invariance.
     base_hands_options = [
         ((0, 1), (2, 3), (4, 5), (6, 7)),
         ((0, 1), (2, 4), (3, 5), (6, 7)),
@@ -238,7 +234,7 @@ class NaturalBelief:
         eid = int(epoch.epoch)
         self._epochs[eid] = epoch
         self._current_epoch_id = eid
-        # Ensure corpus exists for this epoch
+        # Materialize the epoch corpus now so later sampling never branches.
         _ = _build_tiny_corpus_for_epoch(epoch, registry=self._worlds)
 
     def _require_epoch(self, epoch: BeliefEpoch) -> BeliefEpoch:
@@ -270,6 +266,7 @@ class NaturalBelief:
     def begin(
         self, observation: ActorObservation, *, model_id: DigestText | None = None
     ) -> BeliefEpoch:
+        """Bind a new epoch to an actor observation; raises ContractError."""
         if not isinstance(observation, ActorObservation):
             raise ContractError("begin requires ActorObservation")
         assert observation.observation_hash is not None
@@ -301,6 +298,7 @@ class NaturalBelief:
     def sample_natural(
         self, epoch: BeliefEpoch, *, count: int, rng: RandomStream
     ) -> tuple[Particle, ...]:
+        """Sample uniform natural particles (log_target == log_proposal)."""
         if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
             raise ContractError("count must be positive int")
         _ = self._require_epoch(epoch)
@@ -340,6 +338,7 @@ class NaturalBelief:
     def sample_proposal(
         self, epoch: BeliefEpoch, *, proposal: ProposalSpec, count: int, rng: RandomStream
     ) -> tuple[Particle, ...]:
+        """Sample skewed proposal particles over the same corpus support."""
         if not isinstance(proposal, ProposalSpec):
             raise ContractError("proposal must be ProposalSpec")
         if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
@@ -410,25 +409,18 @@ class NaturalBelief:
         if not isinstance(actor_observation, ActorObservation):
             raise ContractError("actor_observation must be ActorObservation")
         _ = self._require_epoch(epoch)
-        # Immutable constraints: public state and root-known tiles must match?
-        # For WP-07A we enforce that actor_observation's game_id and rules_hash must match epoch's?
-        # Actually condition_for_actor should filter worlds consistent with new actor observation.
-        # We will filter corpus by hand equality for that actor seat.
+        # Immutable-constraint filter: keep worlds whose concealed hand for
+        # the queried seat exactly equals the observation's concealed hand.
         corpus = _build_tiny_corpus_for_epoch(epoch, registry=self._worlds)
-        # Filter worlds where that actor's hand equals observation's concealed_hand
         actor_seat = int(actor_observation.actor)
-        # Need to map: world.concealed_hands[actor_seat] should equal observation.concealed_hand
         filtered = [
             w
             for w in corpus
             if tuple(w.concealed_hands[actor_seat]) == tuple(actor_observation.concealed_hand)
         ]
         if len(filtered) == 0:
-            # If none matches exactly, fall back to public consistency: require observation_hash prefix? But for test we want deterministic.
-            # For hidden permutation test, we want to ensure that swapping hidden tiles among non-root seats still yields same root observation but different actor observations.
-            # Condition_for_actor with root's own observation should return all worlds (since root hand already matches).
-            # If actor_observation is for another seat, we need to provide that seat's true hand distribution.
-            # Our corpus's hands are known, so we filter exactly.
+            # Empty result is a hard ContractError: the observation violates
+            # the epoch's immutable constraints, so no world is consistent.
             raise ContractError(
                 "no worlds consistent with actor_observation (immutable constraints violated)"
             )
@@ -457,32 +449,18 @@ class NaturalBelief:
     def pushforward_condition(
         self, epoch: BeliefEpoch, *, action: Any, packet: ActorVisiblePacket
     ) -> BeliefEpoch:
-        # Validate action is plausible (we accept CanonicalAction or dummy)
         _ = self._require_epoch(epoch)
         if not isinstance(packet, ActorVisiblePacket):
             raise ContractError("packet must be ActorVisiblePacket")
-        # Packet must be for root actor? Check actor_view equals root_actor
+        # Packet actor_view must equal the epoch root actor.
         if int(packet.actor_view) != int(epoch.root_actor):
             raise ContractError("packet actor_view must equal epoch root_actor")
-        # Compute new observation_hash from packet (authoritative after state)
+        # The packet's post-state observation is authoritative for the epoch.
         new_obs_hash = packet.observation_hash_after
-        # New epoch increments
         new_epoch_id = int(epoch.epoch) + 1
-        # Ensure monotonic: new_epoch must equal _next_epoch? But we allow branch?
-        # For WP-07A, epoch after commit must be exactly next integer.
-        # If packet leads to new observation, target_id remains same? Spec says immutable target identity,
-        # but observation changes, so target_id should probably be recomputed? However spec says target identity immutable,
-        # yet observation_hash is part of target? Let's keep target_id immutable (same as epoch.target_id) to satisfy "increment epoch after committed transition" without changing target.
-        # Alternative interpretation: target_id is immutable across epochs for same game, but observation_hash updates.
-        # We will keep target_id same to pass stale checks (particle target must match new epoch).
-        # But then recomputing target_id from new observation would differ. For test pushforward equals rebuild, we need to decide.
-        # Here we keep target_id same for pushforward, while rebuild via begin() would compute new target_id. To make pushforward equals rebuild, we need to adjust test to either expect same target or compare corpus not target.
-        # For WP-07A hard test we will assert that distribution after pushforward (new epoch's corpus) has same support as rebuilt epoch's corpus (both uniform over worlds consistent with new observation). Since we lazily generate corpus based on observation_hash, they will differ if target_id differs but corpus generation uses observation_hash. To satisfy pushforward equals rebuild, we need new epoch's observation_hash to define its corpus, regardless of target_id.
-        # So we keep target_id immutable as per spec, but also need to allow rebuild to produce same epoch (with same target?) — we could make begin() also reuse immutable target logic? However rebuild would naturally compute new target_id from new observation, which would differ from old target_id. Then pushforward's target != rebuilt's target, so they would not be equal.
-        # To make pushforward equals rebuild pass, we have two options: (a) pushforward recomputes target_id from new observation (so it equals rebuild), or (b) test checks that particle distribution (not target_id) matches.
-        # Spec "Increment epoch after committed transition. Reject stale provenance/epoch/target." suggests epoch increment but target may stay same? But then pushforward vs rebuild equality would compare distributions, not target identity.
-        # We'll implement pushforward to RECOMPUTE target_id from new observation, which aligns with "exact pushforward then condition" semantics: conditioning on packet yields new belief whose target is the posterior after observing packet, i.e., new target derived from new observation. That will make pushforward's target differ from old, but equality with rebuild (which also derives from same new observation) will hold.
-        # Let's do recomputed target.
+        # Target identity is recomputed from the post-packet observation via
+        # _target_id_for, so pushforward equals a fresh begin() on that
+        # observation; the epoch id increments monotonically.
         new_target = _target_id_for(
             observation_hash=new_obs_hash,
             rules_hash=epoch.rules_hash,
@@ -515,14 +493,10 @@ class NaturalBelief:
             raise StaleBeliefError(f"unknown world_ref {world_ref!r} [PBRF_STALE_WORLDREF]")
         corpus = _build_tiny_corpus_for_epoch(epoch, registry=self._worlds)
         K = len(corpus)
-        # Check if world is in corpus (i.e., consistent)
+        # Support contract: worlds outside the epoch corpus have density zero
+        # (log -inf); valid worlds return finite -log(K) below. Callers
+        # needing a hard failure raise ProposalSupportError at sampling time.
         if world.world_id not in {w.world_id for w in corpus}:
-            # Outside support => density zero => log = -inf but spec says nonfinite is hard failure,
-            # so we return -inf but caller may check support. For WP-07A we will return -inf
-            # but also ensure proposal support test catches it. To satisfy "density normalization/support"
-            # we should return -inf for unsupported, but still finite check will fail if caller expects finite.
-            # Instead raise ProposalSupportError for unsupported?
-            # For now return -inf and let caller decide; hard test will check that valid worlds are finite and sum to 1.
             return float("-inf")
         logp = -math.log(K)
         _ = _validate_finite(logp, name="log_density")

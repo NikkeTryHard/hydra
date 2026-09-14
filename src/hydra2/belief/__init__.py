@@ -4,7 +4,8 @@ WP-07A owns: natural.py, kernel.py, corpus.py, confirmation.py, world.py
 WP-07B owns: oracle_loader.py, oracle_distillation.py
 
 This __init__ re-exports both namespaces without cross-import leakage.
-Natural imports are deferred to avoid hard dependency before WP-07A lands.
+Natural imports stay inside try/except ImportError guards so the package
+remains importable when optional torch/parquet extras are absent.
 """
 
 from __future__ import annotations
@@ -42,8 +43,7 @@ try:
     )
 except ImportError:
     pass
-
-# WP-07A natural harness — deferred, optional until WP-07A lands
+# WP-07A natural harness (guarded: importable without optional extras)
 try:
     from hydra2.belief.confirmation import (
         ConfirmationCase,
