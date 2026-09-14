@@ -31,7 +31,6 @@ GRANDFATHERED = {
     "src/hydra2/engines/riichienv/single_pass.py",
     "src/hydra2/engines/mahjax/differential.py",
     "src/hydra2/search/candidate0.py",
-    "src/hydra2/search/despot_natural.py",
     "src/hydra2/search/gumbel.py",
     "src/hydra2/search/pbrf.py",
     "src/hydra2/search/local_resolving.py",
