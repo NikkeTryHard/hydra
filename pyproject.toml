@@ -66,6 +66,7 @@ test-analysis = { cmd = "pytest tests --package WP-12" }
 lint = { cmd = "ruff check src tests" }
 format-check = { cmd = "ruff format --check src tests" }
 typecheck = { cmd = "pyrefly check src" }
+loc-gate = { cmd = "python scripts/check_loc.py" }
 config-check = { cmd = "python -m hydra2.config_check" }
 env-manifest = { cmd = "python -m hydra2.runtime.environment" }
 runtime-probe = { cmd = "python -m hydra2.probe" }
