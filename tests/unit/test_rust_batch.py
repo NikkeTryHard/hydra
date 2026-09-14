@@ -60,7 +60,7 @@ def _golden_tmpdir(*, walled: bool) -> Path:
     (true takes), matching :func:`expand_game`; wall-less text walks fold,
     matching SIM replay.
     """
-    from tests.unit.test_replay_expand_wp14 import _golden_events
+    from tests.unit._replay_helpers import _golden_events
 
     events = _golden_events()
     if walled:
