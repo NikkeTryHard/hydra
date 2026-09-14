@@ -485,6 +485,7 @@ Exit commands: `pixi run test-conformance --package WP-04C`; `pixi run hydra2 wo
 
 ### WP-05B Project-Owned Supervised Loop
 
+- [ ] Masked behavior cloning objective.
 - [ ] Value/event auxiliary objectives with explicit weights.
 - [ ] Project-owned optimizer/scheduler/accumulation/checkpoint.
 - [ ] Plain PyTorch and optional Fabric adapters use identical loop state.
