@@ -35,7 +35,6 @@ GRANDFATHERED = {
     "src/hydra2/search/pbrf.py",
     "src/hydra2/search/local_resolving.py",
     "src/hydra2/search/joint_type_world.py",
-    "src/hydra2/search/persistence_factorial.py",
     # registry file; split with its package if ever
     "src/hydra2/search/modules/__init__.py",
     # tests
