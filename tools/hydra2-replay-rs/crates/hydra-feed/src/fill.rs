@@ -1,6 +1,7 @@
 //! S4 fill — Scratch-once staging into caller pinned memory (`feed::fill`).
 //!
-//! OWNER: FillBuilder (P3-A). Plan §6.4 + #EF78 staging semantics, verbatim names.
+//! Stage-then-commit staging (§6.4 semantics, verbatim names): pick T
+//! BEFORE committing rows; whole-game prefix commits only, remainder stays.
 //!
 //! Staging order (breaks the `t_len`/`rows` circle — the stager picks T BEFORE
 //! committing rows):
@@ -629,6 +630,8 @@ impl Scratch {
                 continue;
             }
             let need = commit_rows * ROW_BYTES_FIXED[i];
+            // SAFETY: `ptrs[i]`/`byte_caps[i]` are caller-pinned per the
+            // caller-contract block above; `need` is the verified footprint.
             let dst = unsafe { checked_slice(ptrs[i], need, byte_caps[i]) };
             let dst = dst.map_err(|e| self.plane_err(e, i, need))?;
             dst.copy_from_slice(&self.planes[i][..need]);
@@ -638,6 +641,9 @@ impl Scratch {
         {
             let stride = t_len * 8;
             let need = commit_rows * stride;
+            // SAFETY: caller-pinned plane buffer (see caller contract);
+            // `need = commit_rows * stride` is the verified footprint, and
+            // the borrow ends before `drain_prefix` below.
             let dst = unsafe { checked_slice(ptrs[PLANE_HIST_KIND], need, byte_caps[PLANE_HIST_KIND]) };
             let dst = dst.map_err(|e| self.plane_err(e, PLANE_HIST_KIND, need))?;
             let src = &self.planes[PLANE_HIST_KIND];
@@ -656,6 +662,9 @@ impl Scratch {
         {
             let stride = t_len;
             let need = commit_rows * stride;
+            // SAFETY: caller-pinned plane buffer (see caller contract);
+            // `need = commit_rows * stride` is the verified footprint, and
+            // the borrow ends before `drain_prefix` below.
             let dst = unsafe { checked_slice(ptrs[PLANE_HIST_MASK], need, byte_caps[PLANE_HIST_MASK]) };
             let dst = dst.map_err(|e| self.plane_err(e, PLANE_HIST_MASK, need))?;
             let src = &self.planes[PLANE_HIST_MASK];

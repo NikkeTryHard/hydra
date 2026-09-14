@@ -31,7 +31,7 @@
 //!   failures through the same type via the `empty`/`blank_line`/…
 //!   constructors.
 //!
-//! Reason codes (hub-agreed u8 taxonomy; [`reason_name`] renders the cold
+//! Reason codes (u8 taxonomy; [`reason_name`] renders the cold
 //! string for sink / lineage / histogram joins):
 //! - 0 `ok` — accepted (never emitted as a verdict).
 //! - 1 `framing` — `Err` (payload shape; ingest constructors).
@@ -155,7 +155,7 @@ impl GateReject {
         }
     }
 
-    // -- Ingest framing constructors (hub-agreed names; all const, zero-alloc).
+    // -- Ingest framing constructors (all const, zero-alloc).
     // -- Reason mapping: shape → 1, unusable type → 2, blank → 3,
     // -- boundary/count → 4, wall → 5.
     /// Empty payload (no records at all).
@@ -522,8 +522,8 @@ fn hora_span_has_quad(span: &[u8]) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Tests (unit scope only; full oracle histogram agreement runs at P1-DONE
-// over real ingest output — these pin every gate-owned rule + the F4 table).
+// Tests (unit scope only; oracle histogram agreement runs over real ingest
+// output — these pin every gate-owned rule + the F4 table).
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]

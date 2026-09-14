@@ -1,10 +1,9 @@
 //! S1 ingest — one-pass span framing (`feed::ingest`).
 //!
-//! OWNER: IngestBuilder (P1-B). Plan §6.1 shapes + kind-LUT constants agreed
-//! over hub (see contract block below); `feed::gate` (P1-C) compiles and
-//! tests against them verbatim.
+//! §6.1 shapes + kind-LUT constants: the cross-crate contract `feed::gate`
+//! compiles and tests against verbatim (see contract block below).
 //!
-//! Hub-agreed contract (2026-09-09):
+//! Cross-crate contract:
 //! - kind-LUT (u8): 0=Start, 1=End, 2=Dahai, 3=Chi, 4=Pon, 5=Daiminkan,
 //!   6=Ankan, 7=Kakan, 8=Hora, 9=Dora, 10=Reach, 11=ReachAccepted, 12=Tsumo,
 //!   13=StartKyoku, 14=EndKyoku, 15=Ryukyoku, 16=TransparentOther (reserved,
@@ -17,12 +16,11 @@
 //!   or empty, else the marker bytes; actor/target = `0xFF` unless the JSON
 //!   value is a u64 `0..=3`.
 //!
-//! Two paths (Main directive 2026-09-09; swap iteration 2026-09-10):
+//! Two paths:
 //! - [`frame_spans`] (DEFAULT): hand-rolled span parser, zero
 //!   `Value`/`String`: one `memchr` pass, kind-LUT, tile-LUT, inline wall
-//!   capture. Promoted on measured +18.1% rows/s (frame -72.8%, parity
-//!   432/96/0 on all runs); verdict-identical to the serde baseline on
-//!   every input (71 feed tests + 22 parity + F1 vectors + counts).
+//!   capture. Verdict-identical to the serde baseline on every input
+//!   (71 feed tests + 22 parity + F1 vectors + counts).
 //! - [`frame_spans_serde`] (BASELINE): serde_json reference. `memchr` line
 //!   framing + one `serde_json::Value` per line; serde owns ALL number
 //!   parsing (seats, wall ints). Replaces `mjai_event::frame_events`
@@ -37,8 +35,7 @@
 //! accept/reject on the pinned fixtures (see `baseline_and_fast_agree`).
 //!
 //! File level ([`frame_file`] (DEFAULT, fast) / [`frame_file_serde`]
-//! (BASELINE, serde) / [`frame_file_fast`] (alias of the default),
-//! plan update #8B7D):
+//! (BASELINE, serde) / [`frame_file_fast`] (alias of the default)):
 //! whole files (single `.jsonl` games, F8-style 22-game packs, tar-bundled
 //! concatenations) split at start markers into per-game chunks, each framed
 //! by the unchanged single-game core. One `Vec` entry per game in file
@@ -1101,7 +1098,10 @@ fn decode_into(raw: &[u8], out: &mut [u8]) -> StrDec {
                     let n = utf8_encode(cp, &mut tmp);
                     // HOT-PATH: dual-slice copy (tmp read, out[w] write with manual w);
                     // index form retains bound-check elision, no rows/s proof yet.
-                    #[allow(clippy::needless_range_loop)]
+                    #[allow(
+                        clippy::needless_range_loop,
+                        reason = "index form retains bound-check elision on the hot copy"
+                    )]
                     for k in 0..n {
                         if w >= out.len() {
                             return StrDec::Overflow;

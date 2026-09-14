@@ -1,12 +1,13 @@
-//! S6 sink — quarantine lineage + accounting + terminal-hora han/fu (cold leg).
+//! S6 sink — quarantine lineage + accounting + terminal-hora han/fu
+//! (scoring units / minipoints; cold leg).
 //!
-//! OWNER: SinkBuilder (P4-A). Cold only: everything here runs AFTER the hot
+//! Cold only: everything here runs AFTER the hot
 //! verdict (post-close lineage IO, accounting asserts, rare terminal-hora
 //! recompute). The hot path never calls in: gate/walk/fill take no dependency
 //! on this module. Same-crate `stream.rs` calls only [`quarantine_reason_name`]
 //! while capturing quarantines, never the file/score legs.
 //!
-//! Shape (plan §6.6 + P4-A + Wave-C post-claim rule):
+//! Shape (plan §6.6 + post-claim rule):
 //! - reason renderer: [`quarantine_reason_name`] (`reason < 10` → gate names,
 //!   else walk names; unknown bytes stay `"other"` and MUST grow the
 //!   vocabulary, never pass silently — the histogram test asserts `"other"`
@@ -50,7 +51,7 @@ pub const SINK_FRAMING: &str = "framing";
 /// Sink bucket: vocabulary (unknown kinds / unmapped reasons / ids).
 pub const SINK_VOCAB: &str = "vocab";
 /// Sink bucket: tile conservation (ledger/copy/claim/offer family, incl the
-/// Wave-C post-claim reject — reused code, no taxonomy churn).
+/// post-claim reject — reused code, no taxonomy churn).
 pub const SINK_CONSERVATION: &str = "conservation";
 /// Sink bucket: hora mismatch (shape / turn-order / desync / kyushu family).
 pub const SINK_HORA_MISMATCH: &str = "hora-mismatch";
@@ -72,7 +73,7 @@ pub const SINK_VOCABULARY: [&str; 6] = [
 
 /// Coarsen a verdict byte to its closed sink bucket.
 ///
-/// Mapping (hub-agreed; every `REASON_*` / `WALK_*` const is covered):
+/// Mapping (every `REASON_*` / `WALK_*` const is covered):
 /// - framing ← payload shape / blank line / boundary (1, 3, 4);
 /// - vocab ← unknown-event (2, 17), unmapped ryukyoku (15), unresolved id (20);
 /// - conservation ← bare-dora (6, 18), double-ron (7, 19), tile ledger (11),

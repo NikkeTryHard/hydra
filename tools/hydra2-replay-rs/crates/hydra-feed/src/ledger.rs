@@ -1,6 +1,7 @@
 //! S3 walk state — u8 ledger DIRECT to planes (`feed::ledger`).
 //!
-//! OWNER: LedgerWalker (P2-A). Plan §6.3 shapes, verbatim names.
+//! u8 ledger DIRECT to minimal hot planes (§6.3 shapes, verbatim names;
+//! aka shares its type, offers/shapes/furiten are type-level reads).
 //!
 //! Kills (vs `hydra-shard/src/decisions.rs`, read-only reference):
 //! - `reported_hand` string roundtrip (:617-646, 2× `HashMap<String,..>` +

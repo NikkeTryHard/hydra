@@ -116,6 +116,7 @@ struct PassOut {
 fn usage() -> ! {
     eprintln!("usage: feed_duel [--dir <corpus>] [--threads <n>] [--runs <n>] [--expect-rows <n>] [--expect-games <n>]");
     eprintln!("  defaults: --dir /home/cachybtw/dev/hydra2/bench/corpus/f10-decisions --threads 20 --runs 5 --expect-rows 432 --expect-games 96");
+    // NOTE: bench-only default corpus path above; override with `--dir`.
     std::process::exit(2);
 }
 

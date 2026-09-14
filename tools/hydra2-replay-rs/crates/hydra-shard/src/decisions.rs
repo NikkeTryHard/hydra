@@ -795,7 +795,10 @@ impl<'a> Walker<'a> {
         out
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "row capture takes explicit context args; grouping churns cold walker"
+    )]
     fn capture_row(
         &mut self,
         seat: u8,
@@ -1081,7 +1084,10 @@ impl<'a> Walker<'a> {
     /// Expected decision actor, if any (`None` on terminal/idle — mirrors
     /// `sim._expected_actor_or_none`: terminal => None, window => min
     /// pending, draw => drawer).
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "mirrors sim expected-actor for walled gate; wall-less keeps frozen checks"
+    )]
     pub(crate) fn expected_actor_or_none(&self) -> Option<u8> {
         match self.walker_mode() {
             WalkerMode::Idle | WalkerMode::Terminal => None,

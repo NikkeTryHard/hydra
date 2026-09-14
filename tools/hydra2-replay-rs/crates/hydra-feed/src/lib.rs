@@ -8,10 +8,9 @@
 //! FORBIDS (see manifest — this crate must never gain): Python bindings,
 //! memory maps, hashing, or columnar formats.
 //!
-//! Module owners (WAVE-C): `gate` (GateBuilder, §6.2), `ingest` + `tiles`
-//! (IngestBuilder, §6.1), `ledger` + `walk` (LedgerWalker/P2-A, §6.3:
-//! u8 ledger DIRECT to minimal hot planes; engine.rs rules ported to u8,
-//! never imported). `fill` lands with P3-A.
+//! Modules: `gate` (§6.2), `ingest` + `tiles` (§6.1), `ledger` + `walk`
+//! (§6.3: u8 ledger DIRECT to minimal hot planes; engine.rs rules ported
+//! to u8, never imported), `fill` (§6.4 stage-then-commit).
 pub mod fill;
 pub mod gate;
 pub mod ingest;

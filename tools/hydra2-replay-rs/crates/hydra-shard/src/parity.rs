@@ -4,8 +4,9 @@
 //! (actor-visible field discipline) and `src/hydra2/contracts/observation.py`
 //! (`ActorObservation` closed slot set). The privileged fields have no slot
 //! here by construction: wall/dead-wall, opponent concealed tiles,
-//! unrevealed dora/ura, RNG, future events, server-private events, opponent
-//! legal masks, and privileged labels are unrepresentable in `ReplayRow`.
+//! unrevealed dora (bonus-indicator tiles)/ura, RNG, future events,
+//! server-private events, opponent legal masks, and privileged labels are
+//! unrepresentable in `ReplayRow`.
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -176,7 +177,7 @@ pub struct Quarantine {
 }
 
 // ---------------------------------------------------------------------------
-// DecisionRow-JSON emission (Slice 3 + Slice 7 walled binding).
+// DecisionRow-JSON emission (walled + wall-less derivation binding).
 // ---------------------------------------------------------------------------
 //
 // Reference (read-only): `src/hydra2/data/parquet.py` `ACTOR_FIELDS` (13
@@ -357,8 +358,11 @@ pub fn derivation_hash_for(
 /// Walled `derivation_hash` mirroring `replay_expand._emit_row`: game,
 /// decision, observation hash, chosen id, REAL `wall_digest`, adapter hash —
 /// with NO `derivation` mark (the SIM mark is retired for walled rows).
-/// `wall_digest` must be a non-empty `sha256:` digest (the schedule digest);
-/// anything else is a caller bug and panics in debug (the walker always
+/// `wall_digest` must be a non-empty `sha256:` digest (the schedule digest).
+///
+/// # Panics
+///
+/// Anything else is a caller bug and panics in debug (the walker always
 /// mints it via [`wall_schedule_digest`]).
 pub fn derivation_hash_for_walled(
     game_id: &str,
@@ -1231,7 +1235,7 @@ mod privileged_tests {
 // (`rules_identity_hash`: envelope-canonical recompute fallback). Rule
 // order reused; code written fresh.
 //
-// Digest rules (Slice 5):
+// Digest rules:
 // - `rules_hash` is sha256 over the PUBLISHED rules-file bytes (the pinned
 //   `configs/rules/tenhou_4p_hanchan_v1.json` baked in at compile time).
 //   Published bytes win exactly like the adapter's `_rules_identity`; the

@@ -1,24 +1,25 @@
 //! S3 walk — u8 ledger DIRECT to minimal hot planes (`feed::walk`).
 //!
-//! OWNER: LedgerWalker (P2-A). Plan §6.3 + FusedHotPathDesigner S3.
+//! §6.3 shapes: u8 ledger DIRECT to minimal hot planes (this module).
 //!
 //! Engine move: the `engine.rs → feed::walk` rules live here as pure `u8`
-//! functions (win shape, tenpai, chi/pon/window responder predicates, draw
-//! offers). `hydra-shard/src/engine.rs` keeps serving the cold/oracle path;
+//! functions (win shape, tenpai (one tile from a win), chi/pon/window
+//! responder predicates, draw offers). `hydra-shard/src/engine.rs` keeps
+//! serving the cold/oracle path;
 //! this module ports its V1 (drained-oracle) semantics rule-by-rule onto the
 //! copy-slot ledger — no `String`, no `HashMap`, no heap on the row path.
 //! V2 (live single-pass deltas) is out of scope, with one evidence-backed
 //! exception: the nine-terminals abort offer on qualifying first draws
 //! matches live riichienv (differential-proven; user-approved V2 item).
-//! Chi-completeness, kuikae-strictness, and take conservation stay V1.
+//! Chi-completeness, kuikae-strictness (no turn-around swap after a chi),
+//! and take conservation stay V1.
 //!
-//! Oracle pin (Main ruling 2026-09-09): the wall-less replay oracle reports
-//! COLLAPSED takes on pre-reach discards (F1 golden
-//! `[192,193,193,193,196]`), while the walled expander reports true takes
-//! (`[192,…,196]`). This walk has no wall takes by construction, so F1
-//! bitwise matches the wall-less collapse (== shard walk, == F7 frozen
-//! rows). Walled true-takes assert ONLY under F3 via the borrowed context
-//! digest — never as an F1 target.
+//! Oracle pin: the wall-less replay oracle reports COLLAPSED takes on
+//! pre-reach discards (F1 golden `[192,193,193,193,196]`), while the walled
+//! expander reports true takes. This walk has no wall takes by
+//! construction, so F1 bitwise matches the wall-less collapse (== shard
+//! walk, == F7 frozen rows). Walled true-takes assert ONLY under F3 via
+//! the borrowed context digest — never as an F1 target.
 //!
 //! Allocation audit (row hot path — tsumo/dahai/claim/kan/hora dispatch,
 //! offers, legal, window eval + peek, plane appends):
@@ -1293,7 +1294,8 @@ struct WalkState {
     last_discard_idx: usize,
     /// Last non-kan claim (pon/chi seat + called take) with no intervening
     /// discard or kan: a same-seat tsumo while armed would deal a 15th
-    /// ledger take the oracle never deals (Wave-C conservation tripwire).
+    /// ledger take (12 concealed + 3 meld) the wall-less oracle desyncs on.
+    /// Conservation tripwire (fail-closed): reject as tile-conservation.
     /// Draw offers also withhold the just-claimed string while armed.
     last_claim: Option<(u8, u8)>,
     opened_by_discard: bool,
@@ -2589,13 +2591,13 @@ fn do_tsumo(
     if l.draws >= MAX_DRAWS {
         return Err(rej(ctx.game_idx, idx, WALK_DRAW_PAST_WALL));
     }
-    // Wave-C conservation (fail-closed favors oracle): a non-kan claim
+    // Post-claim conservation (fail-closed favors oracle): a non-kan claim
     // (pon/chi) leaves the claimer holding a full ledger (pair consumed,
     // called tile melded, no discard yet); a same-seat tsumo with no
     // intervening discard and no rinshan pending would deal a 15th take
-    // (12 concealed + 3 meld on the pon_ext vector) the strict wall-less
-    // oracle desyncs on. Reject as tile-conservation (G5 closed set, no
-    // taxonomy churn). Kans disarm below (rinshan replacement is real).
+    // (12 concealed + 3 meld) the wall-less oracle desyncs on. Reject as
+    // tile-conservation (G5 closed set, no taxonomy churn). Kans disarm
+    // below (rinshan replacement is real).
     if st.last_claim.map(|(s, _)| s) == Some(actor) && !l.kan_pending {
         return Err(rej(ctx.game_idx, idx, WALK_TILE_CONSERVATION));
     }
@@ -3358,8 +3360,8 @@ fn do_claim(
     if kind == KIND_DAIMINKAN {
         l.kan_count = l.kan_count.saturating_add(1);
     }
-    // Arm (pon/chi) or disarm (daiminkan: rinshan pending) the Wave-C
-    // post-claim conservation tripwire.
+    // Arm (pon/chi) or disarm (daiminkan: rinshan pending) the post-claim
+    // conservation tripwire.
     st.last_claim = if kind == KIND_DAIMINKAN { None } else { Some((actor, called)) };
     st.push_public(claim_history_kind(kind));
     st.last_discard = None;
@@ -4143,7 +4145,7 @@ pub fn walk_game(
 }
 
 // ---------------------------------------------------------------------------
-// Tests (P2-A walk gates: F1 bitwise, ids, quarantine agreement).
+// Tests (walk gates: F1 bitwise, ids, quarantine agreement).
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -4481,11 +4483,10 @@ mod walk_tests {
 
     #[test]
     fn pon_ext_post_claim_draw_is_conservation_reject() {
-        // Wave-C closure (was: open parity item, feed accepted 3 rows
-        // [4,4444,196]): a claimer tsumo after a non-kan claim with no
+        // Post-claim closure: a claimer tsumo after a non-kan claim with no
         // intervening discard and no rinshan pending deals a 15th ledger
-        // take (12 concealed + 3 meld) the strict wall-less oracle desyncs
-        // on (whole-game quarantine, zero rows). Fail-closed favors the
+        // take (12 concealed + 3 meld) the wall-less oracle desyncs on
+        // (whole-game quarantine, zero rows). Fail-closed favors the
         // oracle: conservation reject, no taxonomy churn. The V1 prefix
         // (pon_claim_rows_match_oracle_exact) still walks 2 rows.
         let text = pon_text();

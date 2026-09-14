@@ -4,7 +4,7 @@
 //! CI triple-grep enforces). FORBIDS: parse/encode/hash/pool logic —
 //! arg-check + detach + struct return only.
 //!
-//! P3-B: owns the full `py_stream` handoff (the root facade is deleted).
+//! Owns the full `py_stream` handoff (plan §6.5).
 //! The extension module keeps its legacy name (`import hydra2_replay_rs`)
 //! with the plane-filling `PyHydraStream` surface (plan §6.5).
 

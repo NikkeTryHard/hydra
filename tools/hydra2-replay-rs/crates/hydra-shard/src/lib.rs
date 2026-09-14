@@ -1,17 +1,17 @@
 //! hydra-shard: cold/offline pipeline + parity (NO hot-path import).
 //!
-//! WAVE-B legacy homes, moved verbatim with NO logic change (only module-path
-//! remaps `hydra2_row → parity`, `decision_ids → ids`):
+//! Legacy homes (module-path remaps `hydra2_row → parity`,
+//! `decision_ids → ids`):
 //! - `decisions` / `stream` / `engine` / `tile` / `mjai_event`: legacy replay
-//!   pipeline (engine.rs promotes to feed::walk with P2-A; the S1 wall scan
-//!   is superseded by feed::ingest `frame_spans` at the K8 cutover).
+//!   pipeline (engine.rs promotes to feed::walk; the S1 wall scan is
+//!   superseded by feed::ingest `frame_spans`).
 //! - `parity`: row + privileged + provenance cold-collate surface
 //!   (hydra2_row + privileged + provenance concatenated).
 //! - `ids`: positional decision/round id strings (hot path uses numeric keys).
 //! - `replay`: frozen `replay_game_text` orchestration entry points.
 //!
-//! P4-B adds compact/mmap/collate/full-26/parquet-join here (cold only).
-//! FORBIDS: pyo3. The root facade re-exports this API until P3-B.
+//! Adds compact/mmap/collate/full-26/parquet-join here (cold only).
+//! FORBIDS: pyo3. The root facade re-exports this API.
 
 pub mod collate;
 pub mod compact;
