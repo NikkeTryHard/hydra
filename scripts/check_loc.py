@@ -17,7 +17,6 @@ GRANDFATHERED = {
     # src (leaves first; god-driver last)
     "src/hydra2/data/replay_expand.py",
     "src/hydra2/data/shard_build.py",
-    "src/hydra2/training/replay.py",
     "src/hydra2/training/loop.py",
     "src/hydra2/training/run_config.py",
     "src/hydra2/training/stream_train.py",
