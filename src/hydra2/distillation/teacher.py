@@ -83,12 +83,12 @@ def _load_action_table_num_actions() -> int:
                 from importlib.resources import files as _files  # pyrefly: ignore[import-error]
 
                 cand = _files("hydra2").joinpath("../../../configs/contracts/action_table_v1.json")
-                try:
+                try:  # why-broad: package-data probe — any layout failure falls through
                     if cand.is_file():  # type: ignore[attr-defined]
                         p = Path(str(cand))
                 except Exception:
                     pass
-            except Exception:
+            except Exception:  # why-broad: package-data probe — any layout failure falls through
                 pass
             if not p.is_file():
                 raise FileNotFoundError(
@@ -121,7 +121,7 @@ def _load_action_table_num_actions() -> int:
             except ValueError:
                 return _DEFAULT_NUM_ACTIONS
         return _DEFAULT_NUM_ACTIONS
-    except Exception:
+    except Exception:  # why-broad: import-time probe must never raise; real paths fail closed
         return _DEFAULT_NUM_ACTIONS
 
 
@@ -1210,11 +1210,10 @@ def train_student_distillation(
     """
     cfg = config if config is not None else DistillationConfig()
     n_actions = len(records[0].legal_mask) if len(records) > 0 else _NUM_ACTIONS
-    _ = torch.manual_seed(seed)
-    with contextlib.suppress(Exception):
+    _ = torch.manual_seed(seed)  # seeded init pins parameter order (see docstring)
+    with contextlib.suppress(Exception):  # why-broad: determinism opt-in is best-effort
         torch.use_deterministic_algorithms(True)
     student = build_student_model(num_actions=n_actions)
-    # Init deterministically — torch.manual_seed already
     optimizer = torch.optim.AdamW(
         student.parameters(), lr=cfg.learning_rate, weight_decay=cfg.l2_reg
     )
@@ -1262,7 +1261,7 @@ def train_student_distillation(
             # Gradient clipping per spec
             _ = torch.nn.utils.clip_grad_norm_(student.parameters(), max_norm=1.0)
             _ = optimizer.step()
-        # Record epoch loss (last batch total)
+        # Trace the last batch total per epoch (empty run traces 0.0).
         if len(losses) > 0:
             losses_trace.append(float(losses["total"].detach().item()))  # pyrefly: ignore[pytorch-efficiency-lint-item-call]
         else:
@@ -1534,8 +1533,8 @@ def evaluate_five_arms(
         "games_per_wall": TOTAL_GAMES_PER_WALL,
         "budget_charged": True,
     }
-    # PR4 additive sidecar: schedule commitment + exclusions beside (never instead
-    # of) the hand-rolled hashes above. Decision outputs stay byte-identical;
+    # Additive confirmation sidecar: schedule commitment + exclusions beside (never
+    # instead of) the hand-rolled hashes above. Decision outputs stay byte-identical;
     # failures here block loudly per the file's fail-closed ethos.
     try:
         from hydra2.eval.blocks import BlockAggregateResult
@@ -1636,12 +1635,10 @@ def check_teacher_replacement_invalidates(
     if dependent_justification_digest != old_digest:
         raise ContractError("dependent does not reference old justification — leak")
 
-    # Replacement invalidates if any dependent still ties to old digest
-    # Caller should regenerate; here we return True to signal correctly flagged
+    # True = invalidation required; caller must regenerate dependents.
     if dependent_record_ids is None:
         raise ContractError("dependent_record_ids required")
-    # If records exist, replacement is invalid until regenerated
-    return len(dependent_record_ids) > 0  # true means invalidation required
+    return len(dependent_record_ids) > 0
 
 
 # ---------------------------------------------------------------------------
@@ -1699,12 +1696,14 @@ def student_plus_search_policy(
 def frozen_split_manifest(
     *, train_case_ids: tuple[str, ...], held_case_ids: tuple[str, ...]
 ) -> dict[str, Any]:
+    """Return {train, held, version} manifest plus its content digest."""
     payload = {"train": list(train_case_ids), "held": list(held_case_ids), "version": "1.0.0"}
     digest = "sha256:" + hashlib.sha256(canonical_bytes(payload)).hexdigest()
     return {"manifest": payload, "digest": digest}
 
 
 def frozen_checkpoint_identity(*, model: StudentModel) -> str:
+    """Return sha256 over the sorted-keys state_dict JSON."""
     state = model.state_dict()
     # Hash state deterministically via sorted keys
     buf = json.dumps(
@@ -1716,6 +1715,7 @@ def frozen_checkpoint_identity(*, model: StudentModel) -> str:
 def calibration_report(
     *, student: StudentModel, records: tuple[TrajectoryRecord, ...]
 ) -> dict[str, Any]:
+    """Report teacher-student KL over records (ece=min(0.1, avg_kl*0.05))."""
     # Real calibration: teacher-student KL over records with REAL encoder features.
     total_kl = 0.0
     for r in records:
