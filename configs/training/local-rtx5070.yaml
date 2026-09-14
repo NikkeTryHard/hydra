@@ -18,7 +18,7 @@ data:
   world_size: 1
   replay_backend: rust
   decode_prefetch: 64 # src/hydra2/data/stream.py PrefetchGameStream; cover one expansion batch.
-  expand_batch_games: 16 # src/hydra2/training/stream_train.py _fill_parallel; 16-game rounds: 6x-smaller fill lumps (~60ms not ~200ms) fit depth-3 cover; same consumed batches (tighter tail packing only), loss parity 9.5e-5 (session keep b18320b).
+  expand_batch_games: 64 # src/hydra2/training/stream_train.py _fill_parallel; games per fill round.
 model:
   architecture_id: hydra2_baseline_transformer_v1
   action_count: 6792
