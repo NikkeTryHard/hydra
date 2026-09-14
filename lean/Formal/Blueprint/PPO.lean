@@ -333,7 +333,15 @@ end CombinedLoss
 
 section OracleGuiding
 
-/-- Suphx Eq.5 oracle guiding (SuphxPipe scout, ar5iv 2003.13590 §3.3): privileged features (opp privates + wall) enter with Bernoulli keep-prob `γ_t : P(δ_t=1)=γ_t`, decayed `1 → 0`; at `γ=0` the oracle has transited to a normal agent (then continue with `LR×0.1` + importance-weight rejection). Linear schedule `γ_t = 1 - t/T`: starts at oracle (`t=0`), ends at normal (`t=T`), antitone in between. Plain distillation without the schedule fails (`far beyond the capacity of a normal agent`), so the gradual path is the load-bearing part. Maps to `DistillationConfig` (`gamma_schedule`, `post_oracle_lr_scale`, `iw_reject_threshold`). -/
+/-- Suphx Eq.5 oracle guiding (Suphx 2019, arXiv:2003.13590 §3.3):
+  privileged features (opp privates + wall) enter with Bernoulli keep-prob
+  `γ_t : P(δ_t=1)=γ_t`, decayed `1 → 0`; at `γ=0` the oracle has transited
+  to a normal agent (then continue with `LR×0.1` + importance-weight
+  rejection). Linear schedule `γ_t = 1 - t/T`: starts at oracle (`t=0`),
+  ends at normal (`t=T`), antitone in between. Plain distillation without
+  the schedule fails (`far beyond the capacity of a normal agent`), so the
+  gradual path is the load-bearing part. Maps to `DistillationConfig`
+  (`gamma_schedule`, `post_oracle_lr_scale`, `iw_reject_threshold`). -/
 noncomputable def oracleDropout (T t : ℕ) : ℝ := 1 - (t : ℝ) / (T : ℝ)
 
 theorem oracleDropout_at_zero (T : ℕ) : oracleDropout T 0 = 1 := by
@@ -366,13 +374,13 @@ end OracleGuiding
 
 section VLOG
 
-/-- VLOG diagonal-Gaussian KL (Han et al. ICLR2022, code-primary
-FrostHan/vlog `models.py` EQ1, via IdeaVlog scout:
-`KL(q‖p) = Σ_d [ls_p - ls_q + ((μ_p-μ_q)² + exp(2·ls_q))/(2·exp(2·ls_p)) - 1/2]`
-with prior `(μp,ls_p)` from the executor encoder and posterior `(μq,ls_q)` from
-the oracle encoder). Pure `Finset`/`Real` transcription — no `MeasureTheory`;
-continuous-KL nonneg stays harness-side (same split as discrete Gibbs
-`ppo_kl_nonneg` vs continuous). -/
+/-- VLOG diagonal-Gaussian KL (Han et al. ICLR2022, FrostHan/vlog
+  `models.py` EQ1:
+  `KL(q‖p) = Σ_d [ls_p - ls_q + ((μ_p-μ_q)² + exp(2·ls_q))/(2·exp(2·ls_p)) - 1/2]`
+  with prior `(μp,ls_p)` from the executor encoder and posterior `(μq,ls_q)`
+  from the oracle encoder). Pure `Finset`/`Real` transcription — no
+  `MeasureTheory`; continuous-KL nonneg stays harness-side (same split as
+  discrete Gibbs `ppo_kl_nonneg` vs continuous). -/
 noncomputable def gaussDiagKL (d : Nat) (mup lsp muq lsq : Fin d → ℝ) : ℝ :=
   ∑ i : Fin d, (lsp i - lsq i
     + ((mup i - muq i) ^ 2 + Real.exp (2 * lsq i)) / (2 * Real.exp (2 * lsp i))
@@ -424,9 +432,9 @@ section ValueMSEBound
 
 variable {State : Type}
 
-/-- Wave-3 Python consumer: value branch (`batchValueLoss`): mean-prediction error
-    controlled by root-MSE (finite Jensen / Cauchy-Schwarz over the batch).
-    Needs `0 < states.card` so division by the batch size is valid. -/
+/-- Downstream invariant: value branch (`batchValueLoss`): mean-prediction
+  error controlled by root-MSE (finite Jensen / Cauchy-Schwarz over the
+  batch). Needs `0 < states.card` so division by the batch size is valid. -/
 theorem valueMSE_controls_mean_error
     (states : Finset State) (v_target v_pred : State → ℝ)
     (hpos : 0 < states.card) :
@@ -463,16 +471,16 @@ end ValueMSEBound
 
 section AdvantageStdSanity
 
-/-- Wave-3 Python consumer: standardization sanity (advantage branch):
-    standardizing at the mean gives exactly zero. -/
+/-- Downstream invariant: standardization sanity (advantage branch):
+  standardizing at the mean gives exactly zero. -/
 theorem advantageStd_zero_at_mean (mean var_eps : ℝ) :
     advantageStd mean mean var_eps = 0 := by
   unfold advantageStd
   simp
 
-/-- Wave-3 Python consumer: standardization sanity (advantage branch):
-    standardized advantage is monotone in the raw advantage for fixed
-    `mean` and `var_eps > 0` (positive denominator preserves order). -/
+/-- Downstream invariant: standardization sanity (advantage branch):
+  standardized advantage is monotone in the raw advantage for fixed `mean`
+  and `var_eps > 0` (positive denominator preserves order). -/
 theorem advantageStd_monotone (mean var_eps : ℝ) (hvar : 0 < var_eps)
     {a₁ a₂ : ℝ} (h : a₁ ≤ a₂) :
     advantageStd a₁ mean var_eps ≤ advantageStd a₂ mean var_eps := by

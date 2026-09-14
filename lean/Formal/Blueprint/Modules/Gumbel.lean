@@ -22,7 +22,7 @@ Lean, zero `ideas/gumbel*`): deterministic inverse-CDF sampler
 `score = g + q` L1012-1013/L1051, halving keep `ceil(n/2)` L1024-1029,
 final argmax L1044-1065.
 
-Paper chain (GumbelMiner, Wave 1):
+Paper chain (GumbelMiner):
 - C1 Gumbel-Max: `argmax_i{phi_i + G_i} ~ Categorical(softmax phi)`
   (Kool et al. ICML19 §2.3; derivation Princeton LIPS 2013).
   URLs: https://ar5iv.labs.arxiv.org/html/1903.06059

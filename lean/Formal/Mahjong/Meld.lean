@@ -32,7 +32,8 @@ Faithful Lean port of:
 
 Invariants:
 
-* chi: 2 distinct physical + consecutive logical + same suit + honors forbidden; source = previous seat
+* chi: 2 distinct physical + consecutive logical + same suit + honors
+  forbidden; source = previous seat
 * pon: 2 same logical
 * daiminkan: 3 same logical
 * ankan: 4 same logical no source

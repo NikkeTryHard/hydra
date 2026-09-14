@@ -194,7 +194,8 @@ theorem scoringUma_sum_zero :
     scoringUmaByRankRef ⟨2, by omega⟩ + scoringUmaByRankRef ⟨3, by omega⟩ = 0 := by
   native_decide
 
-/-- Starting / return points — SPEC literals (file://src/hydra2/contracts/rules.py#STARTING_POINTS). -/
+/-- Starting / return points — SPEC literals
+  (file://src/hydra2/contracts/rules.py#STARTING_POINTS). -/
 def tenhouStartingPoints : Nat := 25000
 def tenhouReturnPoints : Nat := 30000
 
@@ -206,7 +207,8 @@ theorem starting_le_return : tenhouStartingPoints ≤ tenhouReturnPoints := by n
 
 theorem return_minus_starting : tenhouReturnPoints - tenhouStartingPoints = 5000 := by native_decide
 
-/-- Oka pool for half_return: (return - start)*4 = 20000 (file://formal/Formal/Mahjong/Scoring.lean#okaPool). -/
+/-- Oka pool for half_return: (return - start)*4 = 20000
+  (file://formal/Formal/Mahjong/Scoring.lean#okaPool). -/
 def tenhouOkaPoolHalfReturn : Int := 20000
 
 theorem oka_pool_eq : tenhouOkaPoolHalfReturn = 20000 := rfl
@@ -246,7 +248,8 @@ theorem tenhouUmaOka_uma_sum_zero :
 --    SPEC §4.1/§5.1: red_tile_ids = (16,52,88) for types 4,13,22.
 -- ---------------------------------------------------------------------------
 
-/-- Aka flag — Tenhou 4p hanchan uses three aka tiles (file://formal/Formal/Mahjong/Tile.lean#redTileIds). -/
+/-- Aka flag — Tenhou 4p hanchan uses three aka tiles
+  (file://formal/Formal/Mahjong/Tile.lean#redTileIds). -/
 def tenhouAkaFlag : Bool := true
 
 theorem akaFlag_true : tenhouAkaFlag = true := rfl
@@ -448,7 +451,8 @@ theorem rules_manifest_uma_is_15_5 :
   refine ⟨rfl, rfl, rfl, rfl⟩
 
 -- ---------------------------------------------------------------------------
--- 11. Additional lemmas to reach LOC target and ensure clean build (no placeholders)
+-- 11. Manifest/policy consistency lemmas (nonemptiness, distinctness, oka
+-- arithmetic)
 -- ---------------------------------------------------------------------------
 
 theorem tenhou_yakuPolicies_nonempty : tenhou_4p_hanchan_v1.yakuPolicies.length > 0 := by native_decide

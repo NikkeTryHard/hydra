@@ -128,7 +128,14 @@ The stochastic content (counts are random, only their conditional expectation is
 is the HARD-skipped `PMF`/`Binomial` extension. -/
 theorem resampling_counts_sum_deterministic {n : ℕ} (counts : Fin n → ℝ) (N : ℝ)
     (h : ∑ i, counts i = N) : ∑ i, counts i = N := h
-/-- Time-reversal weight identity (Dai `arXiv:2007.11936` §2.1 Eq.2.1 `w_t = γ_t·L_{t-1}/(γ_{t-1}·M_t)` + §2.3 time-reversal `L = π_t·M/π_t`, via BackwardKern scout; cites `Del Moral et al. 2006 §3.3`). With the reversal choice the forward kernel cancels: `w = γ_t·π_{t-1}/(γ_{t-1}·π_t)`. Finite field core: `M` moves (mutation kernels) need no longer be tracked per-particle once `L` is the reversal. Variance-minimality of `L^opt = π_{t-1}M/q_t` (`w = γ_t/q_t`) needs `MeasureTheory` expectations over the joint proposal (HARD-skipped); the cancellation identity below is real. -/
+/-- Time-reversal weight identity (Dai arXiv:2007.11936 §2.1 Eq.2.1
+  `w_t = γ_t·L_{t-1}/(γ_{t-1}·M_t)` + §2.3 time-reversal `L = π_t·M/π_t`;
+  cites Del Moral et al. 2006 §3.3). With the reversal choice the forward
+  kernel cancels: `w = γ_t·π_{t-1}/(γ_{t-1}·π_t)`. Finite field core: `M`
+  moves (mutation kernels) need no longer be tracked per-particle once `L`
+  is the reversal. Variance-minimality of `L^opt = π_{t-1}M/q_t`
+  (`w = γ_t/q_t`) needs `MeasureTheory` expectations over the joint
+  proposal (HARD-skipped); the cancellation identity below is real. -/
 theorem timereversal_weight_cancel (gt gtm1 pi_tm1 pi_t M : ℝ)
     (hM : M ≠ 0) (hgtm1 : gtm1 ≠ 0) (hpt : pi_t ≠ 0) :
     gt * (pi_tm1 * M / pi_t) / (gtm1 * M) = gt * pi_tm1 / (gtm1 * pi_t) := by
@@ -154,10 +161,14 @@ theorem apf_second_stage_ratio (lik likMu trans prior : ℝ)
   field_simp
 
 /-- Resampling variance ordering (Douc et al. 2005): residual and stratified
-provably reduce conditional variance vs multinomial universally;
-systematic does NOT always dominate (explicit counterexample in paper).
-Example `N=2`, `w=[1/2,1/2]`: multinomial `Var[N_i]=N w_i(1-w_i)=1/2`,
-stratified `Var=0` (one particle per stratum deterministic). `Douc` `Cappé` `Moulines` `2005` `Comparison of Resampling Schemes` `arXiv cs/0507025` `residual/stratified ≤ multinomial` `systematic counterexample` `conditional variance` `N=2` `Var_mult=1/2` `Var_strat=0` `proven` `Fin.sum_univ_two` `norm_num`. -/
+  provably reduce conditional variance vs multinomial universally;
+  systematic does NOT always dominate (explicit counterexample in paper).
+  Example `N=2`, `w=[1/2,1/2]`: multinomial `Var[N_i]=N w_i(1-w_i)=1/2`,
+  stratified `Var=0` (one particle per stratum deterministic). `Douc`
+  `Cappé` `Moulines` `2005` `Comparison of Resampling Schemes`
+  `arXiv cs/0507025` `residual/stratified ≤ multinomial`
+  `systematic counterexample` `conditional variance` `N=2` `Var_mult=1/2`
+  `Var_strat=0` `proven` `Fin.sum_univ_two` `norm_num`. -/
 theorem resampling_variance_stratified_le_multinomial_example :
     ∃ (w : Fin 2 → ℝ) (_h_sum : ∑ i : Fin 2, w i = 1) (_h_nonneg : ∀ i, 0 ≤ w i) (_h_pos : ∀ i, w i > 0),
       let varMultinomial : ℝ := 2 * w ⟨0, by omega⟩ * (1 - w ⟨0, by omega⟩)
@@ -206,11 +217,19 @@ theorem independent_populations_are_unit (v : ℝ) :
   · unfold popMeanVariance
     simp
 
-/-- Infinity-ESS (Huggins–Roy `arXiv:1503.00966` Def 4.5 `ESS_inf = ‖W‖₁/‖W‖_∞`, i.e. `1/max[w̄]`; BackwardKern scout. Adaptive trigger: resample when `ESS ≤ ηN` else copy (Sec 1.1/2.2/Rmk 3.1); `ESS_2` is Kish `1/∑w̄²`, `ESS_1` perplexity (aakinshin corroboration). Finite core: `essInf` def + range `[1, card]` + trigger predicate below. Divergence bounds (Thms 1.1/1.5/1.7, Props 5.2/5.3) need `PMF`/kernels/tower law (HARD-skipped, same class as `gammaHat_unbiased_stochastic`). -/
+/-- Infinity-ESS (Huggins–Roy arXiv:1503.00966 Def 4.5
+  `ESS_inf = ‖W‖₁/‖W‖_∞`, i.e. `1/max[w̄]`). Adaptive trigger: resample when
+  `ESS ≤ ηN` else copy (Sec 1.1/2.2/Rmk 3.1); `ESS_2` is Kish `1/∑w̄²`,
+  `ESS_1` perplexity (aakinshin corroboration). Finite core: `essInf` def +
+  range `[1, card]` + trigger predicate below. Divergence bounds (Thms
+  1.1/1.5/1.7, Props 5.2/5.3) need `PMF`/kernels/tower law (HARD-skipped,
+  same class as `gammaHat_unbiased_stochastic`). -/
 noncomputable def essInf (weights : Finset ℝ) (hne : weights.Nonempty) : ℝ :=
   1 / weights.max' hne
 
-/-- Max weight is at least the mean: some particle carries `≥ 1/card`. Contrapositive of collapse — if every weight were below the mean, the sum could not reach `1` (`Finset.sum_le_sum` + `nsmul`). -/
+/-- Max weight is at least the mean: some particle carries `≥ 1/card`.
+  Contrapositive of collapse — if every weight were below the mean, the sum
+  could not reach `1` (`Finset.sum_le_sum` + `nsmul`). -/
 theorem maxWeight_ge_inv_card (weights : Finset ℝ) (h_sum_one : ∑ w ∈ weights, w = 1)
     (hne : weights.Nonempty) :
     1 / (weights.card : ℝ) ≤ weights.max' hne := by
@@ -249,7 +268,10 @@ theorem essInf_le_card (weights : Finset ℝ) (h_sum_one : ∑ w ∈ weights, w 
   rw [h2] at h
   exact h
 
-/-- `essInf` is at least `1` (uniform weights give exactly `card`; degeneracy drives it down toward `1`, never below — Scipedia collapse case). Needs each weight `≤ 1` (from `∑w = 1`, nonneg, erase argument as in `ESS_range`). -/
+/-- `essInf` is at least `1` (uniform weights give exactly `card`;
+  degeneracy drives it down toward `1`, never below — Scipedia collapse
+  case). Needs each weight `≤ 1` (from `∑w = 1`, nonneg, erase argument as
+  in `ESS_range`). -/
 theorem essInf_ge_one (weights : Finset ℝ) (h_sum_one : ∑ w ∈ weights, w = 1)
     (h_nonneg : ∀ w ∈ weights, 0 ≤ w) (hne : weights.Nonempty) :
     1 ≤ essInf weights hne := by
@@ -272,7 +294,8 @@ theorem essInf_ge_one (weights : Finset ℝ) (h_sum_one : ∑ w ∈ weights, w =
   have h := one_div_le_one_div_of_le hmax_pos hle
   simpa using h
 
-/-- Huggins adaptive trigger predicate: resample when `essInf ≤ η·N`, else copy current population. -/
+/-- Huggins adaptive trigger predicate: resample when `essInf ≤ η·N`, else
+  copy current population. -/
 def essInfTrigger (weights : Finset ℝ) (hne : weights.Nonempty) (eta : ℝ) (N : ℕ) : Prop :=
   essInf weights hne ≤ eta * (N : ℝ)
 

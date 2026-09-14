@@ -141,11 +141,16 @@ theorem visibility_not_serverPrivate_is_visible (v : Visibility) (h : v.isServer
 
 The five ctors are exactly the assignment surface:
 
-* `CallWindow`   — public call window opened after a discard (`call_window`, public, tile-free)
-* `CallResolved` — server-private resolution with full offer/accept sets (`call_resolved`, server_private)
-* `Ron`          — winning by discard (`ron`, public, requires actor/tile/action_id/source_seat)
-* `Tsumo`        — winning by self-draw (`tsumo`, public, requires actor/tile/action_id)
-* `Ryukyoku`     — exhaustive/abortive draw (`draw_end` / `abortive_draw`, public, requires scores/reason)
+* `CallWindow` — public call window opened after a discard (`call_window`,
+  public, tile-free)
+* `CallResolved` — server-private resolution with full offer/accept sets
+  (`call_resolved`, server_private)
+* `Ron` — winning by discard (`ron`, public, requires actor/tile/action_id
+  /source_seat)
+* `Tsumo` — winning by self-draw (`tsumo`, public, requires
+  actor/tile/action_id)
+* `Ryukyoku` — exhaustive/abortive draw (`draw_end` / `abortive_draw`,
+  public, requires scores/reason)
 
 All other SPEC EventKinds (21 total) map injectively into these five via the
 `EventSchemaRows` closed vocabulary; this minimal inductive captures the packet

@@ -152,11 +152,11 @@ digit vector `Fin k → Fin b`; Owen's nested uniform scramble (Owen 1995
 sub-trees of the root, then recurse into each subtree`) coherently permutes
 digit positions, `maximally randomizing while preserving multidimensional
 stratification` (Burley JCGT 2020). Finite core: position permutation is a
-bijection on digit vectors, so scrambled point sets keep their counts — the
-same reindexing principle as `rqmcShift_bijective` (OwenDepth scout F5
-`lean_use`). Digit-*value* permutations within each subtree + `(t,s)`-net
-preservation are out of scope (honest gap); the full scramble-beats-shift rate
-stays axiomatized (`axiom_RQMC_rate_smooth`). -/
+  bijection on digit vectors, so scrambled point sets keep their counts — the
+  same reindexing principle as `rqmcShift_bijective`. Digit-*value*
+  permutations within each subtree + `(t,s)`-net preservation are out of
+  scope (honest gap); the full scramble-beats-shift rate stays axiomatized
+  (`axiom_RQMC_rate_smooth`). -/
 noncomputable def digitPermute (k b : Nat) (σ : Equiv.Perm (Fin k))
     (f : Fin k → Fin b) : Fin k → Fin b :=
   f ∘ ⇑σ
@@ -184,7 +184,15 @@ theorem digitPermute_bijective (k b : Nat) (σ : Equiv.Perm (Fin k)) :
    fun y => ⟨digitPermute k b σ.symm y, digitPermute_right_inv k b σ y⟩⟩
 
 
-/-- Gain-counting kernel `K(x) = x(1-x)` (Owen–Pan `arXiv:2308.08035` §5 Eq.16 `G̃(u,k,n') = Σ_v H(u,v) m(u,v,k) ε'_v(1-ε'_v)` with `ε' = n'/m - ⌊n'/m⌋` the fractional part, `K(x) = x(1-x)`; WalshRetry scout. Via `C = n²/m + m·ε(1-ε)` Eq.11 the `ε(1-ε)` factor carries the `n`-dependence of the gain `G(u,k,n)` in Eq.4, the multi-base generalization of Owen 1997 SINUM Thm.2). Finite core: on `[0,1]`, `0 ≤ K ≤ 1/4` (max at `1/2`) — the elementary bound behind `Γ ≤ [b/(b-1)]^{d-1} ≤ e` (Faure) and `Γ_d = O(log d)` (Halton Cor.3/Thm.4). Full gain combinatorics (`H`, `m`, `C` closed forms Eqs.5-11) stay future work. -/
+/-- Gain-counting kernel `K(x) = x(1-x)` (Owen–Pan arXiv:2308.08035 §5 Eq.16
+  `G̃(u,k,n') = Σ_v H(u,v) m(u,v,k) ε'_v(1-ε'_v)` with `ε' = n'/m - ⌊n'/m⌋`
+  the fractional part, `K(x) = x(1-x)`). Via `C = n²/m + m·ε(1-ε)` Eq.11 the
+  `ε(1-ε)` factor carries the `n`-dependence of the gain `G(u,k,n)` in Eq.4,
+  the multi-base generalization of Owen 1997 SINUM Thm.2). Finite core: on
+  `[0,1]`, `0 ≤ K ≤ 1/4` (max at `1/2`) — the elementary bound behind
+  `Γ ≤ [b/(b-1)]^{d-1} ≤ e` (Faure) and `Γ_d = O(log d)` (Halton
+  Cor.3/Thm.4). Full gain combinatorics (`H`, `m`, `C` closed forms Eqs.5-11)
+  stay future work. -/
 noncomputable def rqmcGainK (x : ℝ) : ℝ := x * (1 - x)
 
 theorem rqmcGainK_nonneg (x : ℝ) (h0 : 0 ≤ x) (h1 : x ≤ 1) :

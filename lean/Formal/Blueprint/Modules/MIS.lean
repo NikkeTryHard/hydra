@@ -116,7 +116,8 @@ noncomputable def balanceWeight1 (q0 q1 : State → ℝ) (n0 n1 : Nat) (hn : 0 <
   if mixture q0 q1 n0 n1 hn x = 0 then 0
   else (n1 : ℝ) * q1 x / (((n0 : ℝ) + (n1 : ℝ)) * mixture q0 q1 n0 n1 hn x)
 
-/-- Balance weights sum to one where `m(x)≠0`; with `m=0→0` convention the sum is `0` outside support. -/
+/-- Balance weights sum to one where `m(x)≠0`; with `m=0→0` convention the
+  sum is `0` outside support. -/
 theorem balanceWeights_sum_one (q0 q1 : State → ℝ) (n0 n1 : Nat) (hn : 0 < n0 + n1) (x : State)
     (hm : mixture q0 q1 n0 n1 hn x ≠ 0) :
     balanceWeight0 q0 q1 n0 n1 hn x + balanceWeight1 q0 q1 n0 n1 hn x = 1 := by
@@ -186,9 +187,9 @@ theorem misWeight_defensive_le_div_eps (bL : State → ℝ) (q0 q1 : State → �
   exact div_le_div_of_nonneg_left hbL hEps hfloor
 
 /-- Defensive second-moment bound (finite-variance core): with `m_ε ≥ ε > 0`
-everywhere, `∑ m_ε·(bL·g/m_ε)² ≤ (1/ε)·∑ (bL·g)²`. Needs no sign hypothesis
-(squares are nonneg); see `defensiveMIS_second_moment_ticket` for the
-`∑ bL·(g²)` ticket shape under `0 ≤ bL ≤ 1`. -/
+  everywhere, `∑ m_ε·(bL·g/m_ε)² ≤ (1/ε)·∑ (bL·g)²`. Needs no sign
+  hypothesis (squares are nonneg); see `defensiveMIS_second_moment_ticket`
+  for the `∑ bL·(g²)` target shape under `0 ≤ bL ≤ 1`. -/
 theorem defensiveMIS_second_moment_le (bL g : State → ℝ) (q0 q1 : State → ℝ) (n0 n1 : Nat)
     (hn : 0 < n0 + n1) (eps : ℝ) (hEps : 0 < eps) :
     ∑ x : State, defensiveMixture q0 q1 n0 n1 hn eps x
@@ -213,8 +214,8 @@ theorem defensiveMIS_second_moment_le (bL g : State → ℝ) (q0 q1 : State → 
           div_le_div_of_nonneg_left (sq_nonneg _) hEps hfloor
       _ = (1 / eps) * (bL x * g x) ^ 2 := by ring
 
-/-- Ticket-shape second moment: under `0 ≤ bL ≤ 1`, `(bL·g)² ≤ bL·(g²)`
-pointwise, so the core bound upgrades to RHS `(1/ε)·∑ bL·(g²)`. -/
+/-- Weighted second moment: under `0 ≤ bL ≤ 1`, `(bL·g)² ≤ bL·(g²)`
+  pointwise, so the core bound upgrades to RHS `(1/ε)·∑ bL·(g²)`. -/
 theorem defensiveMIS_second_moment_ticket (bL g : State → ℝ) (q0 q1 : State → ℝ) (n0 n1 : Nat)
     (hn : 0 < n0 + n1) (eps : ℝ) (hEps : 0 < eps)
     (hbL0 : ∀ x, 0 ≤ bL x) (hbL1 : ∀ x, bL x ≤ 1) :

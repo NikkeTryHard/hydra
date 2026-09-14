@@ -266,7 +266,14 @@ theorem settlement_conserved_implies_not_utility_conserved :
 theorem settlement_zero_sum_always (s : Settlement) : (∑ i : Seat, (s.deltas i : ℝ)) = 0 := by
   have h := s.conserved
   exact_mod_cast h
-/-- Suphx Eq.4 global reward prediction (SotaMahjong/SupxDetails/PpoRl scouts): per-round shaped reward `Phi(x^k)-Phi(x^{k-1})` from a final-score predictor (2-layer GRU over round features). Telescopes to final minus initial, so per-round credit preserves the game-level objective while fixing round-vs-final failure (final-only blurs 8-12 hands; per-round points trains All-Last push-everything). Finite core behind Hydra2 placement utility `s_i(U_T(R_a))`: use predicted-final differences, not raw round deltas. -/
+/-- Suphx Eq.4 global reward prediction (Suphx Eq.4, arXiv:2003.13590):
+  per-round shaped reward `Phi(x^k)-Phi(x^{k-1})` from a final-score
+  predictor (2-layer GRU over round features). Telescopes to final minus
+  initial, so per-round credit preserves the game-level objective while
+  fixing round-vs-final failure (final-only blurs 8-12 hands; per-round
+  points trains All-Last push-everything). Finite core behind Hydra2
+  placement utility `s_i(U_T(R_a))`: use predicted-final differences,
+  not raw round deltas. -/
 noncomputable def grpReward (Phi : ℕ → ℝ) (k : ℕ) : ℝ := Phi (k + 1) - Phi k
 theorem grp_telescope (Phi : ℕ → ℝ) (T : ℕ) :
     ∑ k ∈ Finset.range T, grpReward Phi k = Phi T - Phi 0 := by
@@ -573,9 +580,10 @@ end AcqArgmax
 
 section TelescopeError
 
-/-- Wave-3 Python consumer: telescope propagation (GRP reward shaping):
-    uniform `e`-close potential estimates keep the telescoped return within `2 * e`
-    of the true `Phi T - Phi 0` (triangle inequality over `grp_telescope`). -/
+/-- Downstream invariant: telescope propagation (GRP reward shaping):
+  uniform `e`-close potential estimates keep the telescoped return within
+  `2 * e` of the true `Phi T - Phi 0` (triangle inequality over
+  `grp_telescope`). -/
 theorem grp_telescope_error
     (Phi Phihat : ℕ → ℝ) (T : ℕ) (e : ℝ)
     (herr : ∀ k, k ≤ T → |Phihat k - Phi k| ≤ e) :
@@ -603,9 +611,10 @@ end TelescopeError
 
 section PairedArgmax
 
-/-- Wave-3 Python consumer: selection rule (paired comparison):
-    a uniform `e`-close surrogate keeps the surrogate-argmax within `2 * e`
-    of optimal under the true scores (finite `Fin 3` argmax via `ei_argmax_exists`). -/
+/-- Downstream invariant: selection rule (paired comparison):
+  a uniform `e`-close surrogate keeps the surrogate-argmax within `2 * e`
+  of optimal under the true scores (finite `Fin 3` argmax via
+  `ei_argmax_exists`). -/
 theorem paired_argmax_suboptimality
     (f fhat : Fin 3 → ℝ) (e : ℝ)
     (herr : ∀ r, |fhat r - f r| ≤ e) :

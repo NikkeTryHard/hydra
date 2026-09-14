@@ -353,7 +353,11 @@ theorem ESS_range (weights : Finset ℝ) (h_sum_one : ∑ w ∈ weights, w = 1) 
       nlinarith
     linarith
   exact ⟨h_one_le_div, h_div_le_card⟩
-/-- ESS-gated refresh (ASMC Eq.7 Kong et al. 1994 `N_eff=(∑w)²/∑w²`, AR triggers at `N_eff<νN`; ancestry operational `ν=0.5` standard adaptive vs `0.95` aggressive): `ESS<N` means weights are skewed — some `w>1/card`. Finite core behind PBRF `C`-factor rejuvenation (reweight child views / MCMC move) without touching the immutable parent. -/
+/-- ESS-gated refresh (ASMC Eq.7 Kong et al. 1994 `N_eff=(∑w)²/∑w²`, AR
+  triggers at `N_eff<νN`; ancestry operational `ν=0.5` standard adaptive vs
+  `0.95` aggressive): `ESS<N` means weights are skewed — some `w>1/card`.
+  Finite core behind PBRF `C`-factor rejuvenation (reweight child views /
+  MCMC move) without touching the immutable parent. -/
 theorem ESS_low_implies_skewed (weights : Finset ℝ) (h_sum_one : ∑ w ∈ weights, w = 1) (h_nonneg : ∀ w ∈ weights, 0 ≤ w) (hne : weights.Nonempty) (hESS : ESS weights h_sum_one h_nonneg < (weights.card : ℝ)) :
     ∃ w ∈ weights, 1 / (weights.card : ℝ) < w := by
   have hcard_pos_nat : 0 < weights.card := Finset.card_pos.mpr hne
@@ -398,7 +402,13 @@ theorem ESS_low_implies_skewed (weights : Finset ℝ) (h_sum_one : ∑ w ∈ wei
     rw [h2] at h1
     exact h1
   linarith
-/-- Sharper skew (Elvira et al. 2019 `ESShat = N/(1+CV²)` Eq.27: low ESS ⟺ high weight-CV; EssSmc scout. Generalizes `ESS_low_implies_skewed` from threshold `card` to any positive `m`: `ESS ≤ m` forces some weight `≥ 1/m` (contrapositive: all weights `< 1/m` give `∑w² < 1/m`, i.e. `ESS > m`, via `Finset.sum_lt_sum` with strictness from the positive-mass particle that `∑w = 1` guarantees). Corroborated by Scipedia collapse case (`ESS` close to 1) and Elvira §4.2 `1/max[w]` metric. -/
+/-- Sharper skew (Elvira et al. 2019 `ESShat = N/(1+CV²)` Eq.27: low ESS ⟺
+  high weight-CV. Generalizes `ESS_low_implies_skewed` from threshold `card`
+  to any positive `m`: `ESS ≤ m` forces some weight `≥ 1/m`
+  (contrapositive: all weights `< 1/m` give `∑w² < 1/m`, i.e. `ESS > m`,
+  via `Finset.sum_lt_sum` with strictness from the positive-mass particle
+  that `∑w = 1` guarantees). Corroborated by Scipedia collapse case (`ESS`
+  close to 1) and Elvira §4.2 `1/max[w]` metric. -/
 theorem ESS_le_implies_max_weight (weights : Finset ℝ) (h_sum_one : ∑ w ∈ weights, w = 1)
     (h_nonneg : ∀ w ∈ weights, 0 ≤ w) (_hne : weights.Nonempty)
     (m : ℝ) (hm : 0 < m) (hESS : ESS weights h_sum_one h_nonneg ≤ m) :

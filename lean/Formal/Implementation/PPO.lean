@@ -46,7 +46,8 @@ parameter constraints. The full loss gradient direction is admitted where contin
 The matched-group requirement (same rollout, batches, optimizer, seeds, runtime) is
 documented as a provenance constraint (see `Formal.Implementation.Training`).
 
-External: PPO from Schulman et al. 2017, TorchSDPA, AdamW, etc. (see PPOACHScout).
+  External: PPO from Schulman et al. 2017, TorchSDPA, AdamW, etc. (see
+  Schulman et al. 2017; IMPLEMENTATION_SPEC.md §20).
 -/
 
 namespace Hydra2.Implementation.PPO
@@ -55,7 +56,9 @@ section MaskedSoftmax
 
 variable {Action : Type} [Fintype Action] [DecidableEq Action]
 
-/-- Legal mask: `true` iff action is legal in this observation. -/
+/-- Legal mask: `true` iff the action is legal in this observation.
+  Without any legal action the masked softmax is undefined — callers must
+  supply a witness `∃ legal`. -/
 def LegalMask (Action : Type) [Fintype Action] := Action → Bool
 
 /-- `legal_softmax(z)_a = exp(z_a)/∑_{legal j} exp(z_j)` if `legal a`, else `0`.
@@ -127,7 +130,14 @@ theorem ppo_surrogate_clamp_mem (ratio clip_eps : ℝ) (h : 0 < clip_eps ∧ cli
   · exact le_min (le_max_right _ _) (by linarith [h.1])
   · exact min_le_right _ _
 theorem ppo_advantage_norm_stop_gradient (A mu var_eps : ℝ) (h_var : 0 ≤ var_eps) :
-    let A_std := (A - mu) / Real.sqrt (var_eps) -- `stop_gradient` on `μ, var` means `A_std` denominator frozen; gradient flows only through `A` numerator, not `μ/var` computation — runtime invariant `whitening` `advantage` `per` `minibatch` `zero` `mean` `unit` `variance` `scale-sensitive` `SB3` `normalize_advantage` `per` `minibatch` `n_steps*n_envs>1` `ratio` `finite` `0<π_old≤1` `exp` `log` `finite` `not proven` beyond `sqrt_nonneg` `HARD skip` `batch` `mean`/`std` `not` `formalized` `batch` `whitening` `ratio` `finite`
+    -- `stop_gradient` on `μ, var`: `A_std` denominator is frozen; the
+    -- gradient flows only through the `A` numerator, not the `μ/var`
+    -- computation. Runtime invariant: per-minibatch whitening with zero
+    -- mean and unit variance is scale-sensitive (`SB3`
+    -- `normalize_advantage`, `n_steps*n_envs>1`); `0<π_old≤1` plus finite
+    -- `exp`/`log` stay beyond `sqrt_nonneg` (HARD skip — batch mean/std
+    -- whitening and ratio finiteness are not formalized here).
+    let A_std := (A - mu) / Real.sqrt (var_eps)
     0 ≤ Real.sqrt (var_eps) := Real.sqrt_nonneg _
 theorem ppo_clip_range (ratio clip_eps : ℝ) (h1 : 0 < clip_eps) (h2 : clip_eps < 1) :
     let lo := 1 - clip_eps

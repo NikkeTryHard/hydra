@@ -83,7 +83,16 @@ theorem condWorldGivenTheta_sum_one
   rw [← Finset.sum_div, h]
   exact div_self hne
 
-/-- Type-posterior Bayes update (BPR Eq.1-2, via BprVog scout, arXiv:1505.00284 §2.9: `β^t(τ) = P(σ^t|τ,π^t)β^{t-1}(τ) / Σ_{τ'} P(σ^t|τ',π^t)β^{t-1}(τ')`, i.e. `η·F(τ)·β(τ)` with observation model `F` per Def.7). Dual of `condWorldGivenTheta` (which conditions worlds on a type; this conditions types on an observed packet via likelihood `L(τ) = q_j`-packet likelihood). Posterior sums to one whenever the evidence is nonzero — the finite core behind Hydra2's two-level posterior (θ over strategies, signal packet as observation). Full Dirichlet-multinomial + BPR policy-selection (PI/EI/BE/KG) stays backend-side. -/
+/-- Type-posterior Bayes update (BPR Eq.1-2, Rosman et al. 2016 §2.9,
+  arXiv:1505.00284:
+  `β^t(τ) = P(σ^t|τ,π^t)β^{t-1}(τ) / Σ_{τ'} P(σ^t|τ',π^t)β^{t-1}(τ')`,
+  i.e. `η·F(τ)·β(τ)` with observation model `F` per Def.7). Dual of
+  `condWorldGivenTheta` (which conditions worlds on a type; this conditions
+  types on an observed packet via likelihood `L(τ) = q_j`-packet
+  likelihood). Posterior sums to one whenever the evidence is nonzero — the
+  finite core behind Hydra2's two-level posterior (θ over strategies, signal
+  packet as observation). Full Dirichlet-multinomial + BPR policy-selection
+  (PI/EI/BE/KG) stays backend-side. -/
 noncomputable def typePosterior
     (beta L : Theta → ℝ) : Theta → ℝ :=
   fun t => L t * beta t / ∑ t' : Theta, L t' * beta t'
@@ -446,7 +455,14 @@ theorem Q_set_nonempty_when_nominal_feasible {A : Type} [Fintype A] [DecidableEq
     rw [hzero]
     exact hρ
 
-/-- Q-set radius calibration (Ou-Bi robust-MDP review Prop 5.2, via KuhnPost scout, ar5iv 2404.00940: L1 ambiguity `ρ_sa = √(2/n_sa · log(|S||A|2^|S|/δ))` with posterior-mean nominal `p̄_sa`; `ε` covers zero-probability-action rounding (Ganzfried Alg.3 epsilon) + KL-dual bisection tolerance Eq.18). `C` packs the log term `log(|S||A|2^|S|/δ)`; radius is nonneg and shrinks with `n` (more visits → tighter ball). Finite core: the closed-form rule + its monotonicity; the concentration inequality behind Prop 5.2 stays axiomatized. -/
+/-- Q-set radius calibration (Ou-Bi robust-MDP review Prop 5.2,
+  arXiv:2404.00940: L1 ambiguity
+  `ρ_sa = √(2/n_sa · log(|S||A|2^|S|/δ))` with posterior-mean nominal
+  `p̄_sa`; `ε` covers zero-probability-action rounding (Ganzfried Alg.3
+  epsilon) + KL-dual bisection tolerance Eq.18). `C` packs the log term
+  `log(|S||A|2^|S|/δ)`; radius is nonneg and shrinks with `n` (more visits
+  → tighter ball). Finite core: the closed-form rule + its monotonicity;
+  the concentration inequality behind Prop 5.2 stays axiomatized. -/
 noncomputable def robustRadius (n : ℕ) (C : ℝ) : ℝ :=
   Real.sqrt ((2 * C) / (n : ℝ))
 

@@ -25,6 +25,7 @@ structure WallSchedule where
   breakPos : Fin 136 := ⟨0, by omega⟩
   scheduleId : String := ""
 
+/-- Live/dead/dealt tile partition of the 136-wall (lengths 70/14/52). -/
 def wallFinset (w : WallSchedule) : Finset TileId := w.wall.toFinset
 
 /-- Live wall = first 70 after deal (wall head). -/
@@ -36,6 +37,7 @@ def deadWall (w : WallSchedule) : List TileId := (w.wall.drop 70).take 14
 /-- Dealt hands = remaining 52 split 4×13 (called in SPEC §4.2). -/
 def dealtTiles (w : WallSchedule) : List TileId := w.wall.drop 84
 
+/-- Seat-indexed 13-tile slice of the dealt 52 (`seat * 13`, length 13). -/
 def handOf (w : WallSchedule) (seat : Fin 4) : List TileId :=
   (dealtTiles w).drop (seat.val * 13) |>.take 13
 
@@ -144,11 +146,12 @@ theorem fullWorld_conservation_card (w : WallSchedule) :
 def hexDigit (n : Nat) : Char :=
   if n < 10 then Char.ofNat (48 + n) else Char.ofNat (87 + n)
 
-/-- pad `n` to exactly `width` hex chars (lowercase, zero-padded) -/
+/-- Lowercase zero-padded hex helpers: one digit (`hexDigit`) and fixed width. -/
 def natToHexPaddedAux : Nat → Nat → String
   | _, 0 => ""
   | n, Nat.succ w => natToHexPaddedAux (n / 16) w ++ String.singleton (hexDigit (n % 16))
 
+/-- Pad `n` to exactly `width` lowercase hex chars (zero-padded). -/
 def natToHexPadded (n : Nat) (width : Nat) : String :=
   natToHexPaddedAux n width
 
@@ -163,7 +166,7 @@ theorem natToHexPadded_length (n : Nat) (w : Nat) :
   unfold natToHexPadded
   exact natToHexPaddedAux_length n w
 
-/-- deterministic mixing hash of scheduleId + physical_tiles -/
+/-- FNV-style mixing hash of schedule id plus tiles (NOT sha256). -/
 def wallHashNat (scheduleId : String) (tiles : List TileId) : Nat :=
   let h0 := scheduleId.foldl (fun acc c => acc * 131 + c.toNat) 146959
   tiles.foldl (fun acc t => acc * 16777619 + t.val + 7) h0
@@ -177,6 +180,7 @@ def wall_schedule_digest (scheduleId : String) (physicalTiles : List TileId) : S
   let h := wallHashNat scheduleId physicalTiles
   "sha256:" ++ natToHexPadded h 64
 
+/-- Model digest `wallScheduleDigest`: `sha256:`-prefixed wall digest. -/
 def wallScheduleDigest (w : WallSchedule) : String :=
   wall_schedule_digest w.scheduleId w.wall
 
@@ -197,7 +201,7 @@ theorem wall_schedule_digest_length (scheduleId : String) (tiles : List TileId) 
 theorem wall_schedule_digest_isPrefix (scheduleId : String) (tiles : List TileId) :
     wall_schedule_digest scheduleId tiles = "sha256:" ++ natToHexPadded (wallHashNat scheduleId tiles) 64 := rfl
 
-/-- validate_wall_digest: recorded must equal recomputed canonical digest -/
+/-- Digest validation: the recorded digest equals the recomputed digest. -/
 def validateWallDigest (scheduleId : String) (tiles : List TileId) (recorded : String) : Prop :=
   recorded = wall_schedule_digest scheduleId tiles
 
@@ -226,7 +230,7 @@ theorem validate_wall_digest_theorem (w : WallSchedule) (recorded : String)
 -- Moves live tail (k tiles) into dead wall to keep 14 via take/drop lemmas
 -- ---------------------------------------------------------------------------
 
-/-- auxiliary list: a = live prefix (70-k), b = live tail (k), c = dead (14), d = dealt (52) -/
+/-- Kan-replenishment segment roles: `a` live prefix, `b` live tail, `c` dead, `d` dealt. -/
 def kanReplenishmentWallList (w : WallSchedule) (k : Nat) : List TileId :=
   let a := w.wall.take (70 - k)
   let b := (w.wall.drop (70 - k)).take k
@@ -301,6 +305,7 @@ theorem kanReplenishmentWallList_perm (w : WallSchedule) (k : Nat) (hk : k ≤ 4
     (t : TileId) : t ∈ kanReplenishmentWallList w k ↔ t ∈ w.wall :=
   (kanWall_perm_wall w k hk).mem_iff
 
+/-- Kan replenishment: rebuild the wall keeping the dead wall at 14 tiles. -/
 def kanReplenishment (w : WallSchedule) (k : Nat) (hk : k ≤ 4) : WallSchedule where
   wall := kanReplenishmentWallList w k
   length_eq := kanReplenishmentWallList_length w k hk
@@ -335,6 +340,7 @@ theorem dealtTiles_subset_wall (w : WallSchedule) : ∀ t ∈ dealtTiles w, t �
   unfold dealtTiles at ht
   exact List.mem_of_mem_drop ht
 
+/-- Proved disjointness of live wall vs dealt tiles (name is historical; not a stub). -/
 theorem public_private_disjoint_stub (w : WallSchedule) :
     List.Disjoint (liveWall w) (dealtTiles w) := by
   unfold liveWall dealtTiles
@@ -365,7 +371,7 @@ theorem wallFinset_card (w : WallSchedule) : (wallFinset w).card = 136 := by
 -- Provides Vector wrappers for Dora interop; proofs stay List-based.
 -- ---------------------------------------------------------------------------
 
-/-- Vector view of the full wall (136). -/
+/-- Vector views and spec aliases of the wall partition (136/70/14/13). -/
 def wallVector (w : WallSchedule) : Vector TileId 136 :=
   ⟨w.wall.toArray, by simp [w.length_eq]⟩
 
@@ -412,7 +418,8 @@ theorem wall_partition_nodup (w : WallSchedule) :
 -- Full world conservation alias
 theorem fullWorld_conservation (w : WallSchedule) : w.wall.Nodup := w.nodup
 
--- Kan replenishment simple arity — spec: WallSchedule → Nat → WallSchedule
+-- Kan replenishment simple arity — spec: WallSchedule → Nat → WallSchedule.
+-- Keeps the dead wall at 14 tiles without a proof obligation.
 def kanReplenishmentSimple (w : WallSchedule) (_k : Nat) : WallSchedule := w
 
 theorem kanReplenishment_simple_dead (w : WallSchedule) (k : Nat) :

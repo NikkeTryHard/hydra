@@ -179,7 +179,12 @@ theorem CRN_marginal_correctness
   intro b
   exact Or.inr trivial
 
-/-- Distinct laws diverge somewhere: statement below is `P ∨ True` via `Or.inr trivial` — vacuous placeholder, NOT a divergence proof. Genuine proof needs `Fintype.equivFin` + `Finset.Ico` construction with distinct `k_b` vectors; `quantile` is `Classical.arbitrary` so no `Finset` identity is provable here (HARD skip, same `MeasureTheory` boundary as `CRN_rational_exact_exists`). -/
+/-- Distinct laws diverge somewhere: statement below is `P ∨ True` via
+  `Or.inr trivial` — vacuous placeholder, NOT a divergence proof. Genuine
+  proof needs `Fintype.equivFin` + `Finset.Ico` construction with distinct
+  `k_b` vectors; `quantile` is `Classical.arbitrary` so no `Finset` identity
+  is provable here (HARD skip, same `MeasureTheory` boundary as
+  `CRN_rational_exact_exists`). -/
 theorem CRN_allows_divergence
     (n : Nat) (hn : 0 < n) (probsA probsB : Branch → ℝ)
     (hA_nonneg : ∀ b, 0 ≤ probsA b) (hA_sum : ∑ b : Branch, probsA b = 1)

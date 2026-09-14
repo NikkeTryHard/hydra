@@ -28,10 +28,9 @@ Blueprint §16.1, SPEC §18.1–18.3
 - Uncertainty unit is `wall_block` for match evaluation; `iid_pair` for natural
   confirmation; `smc_population` / `rqmc_scramble` for those modules; `game_cluster`
   only for calibration metrics (never decisions).
-- Bootstrap and sign-flip resample *whole wall blocks* only (EvalStatScout).
-
-External: NIST/SEMATECH Handbook §7.2.2.2, PSU STAT 509, Howard et al. 1810.08240
-(time-uniform CS; see EvalStatScout), lmiratrix cluster bootstrap.
+  - Bootstrap and sign-flip resample *whole wall blocks* only.
+  External: NIST/SEMATECH Handbook §7.2.2.2, PSU STAT 509,
+  Howard et al. 1810.08240 (time-uniform CS), lmiratrix cluster bootstrap.
 -/
 
 namespace Hydra2.Implementation.Evaluation
@@ -39,12 +38,15 @@ namespace Hydra2.Implementation.Evaluation
 section FixedN
 
 /-- Fixed-N sample size for one-sided test `H0:Δ=0` vs `H1:Δ=δ>0` with
-block-mean contrast `Δ̂~N(Δ,σ²/N)`, Type I `α`, power `1-β`, pilot `s` for `σ`. -/
+  block-mean contrast `Δ̂~N(Δ,σ²/N)`, Type I `α`, power `1-β`, pilot `s`
+  for `σ`. -/
 noncomputable def fixedN (z_alpha z_beta s delta : ℝ) : Nat :=
   Nat.ceil (((z_alpha + z_beta) * s / delta) ^ 2)
 
--- `z_{1-α}` etc. are normal quantiles `Φ⁻¹(1-α)`; `Φ` is standard normal CDF.
--- Positivity of the squared term needs `z_α+z_β ≠ 0` (else the effect is zero); the full normal-CDF derivation of the quantiles needs `ProbabilityTheory` (HARD skip).
+/-- Normal quantiles `z_{1-α} = Φ⁻¹(1-α)` (`Φ` standard normal CDF).
+  Positivity of the squared term needs `z_α+z_β ≠ 0` (else the effect is
+  zero); the full normal-CDF derivation of the quantiles needs
+  `ProbabilityTheory` (HARD skip). -/
 theorem fixedN_formula
     (z_alpha z_beta s delta : ℝ) (hs : 0 < s) (hdelta : 0 < delta)
     (hz : z_alpha + z_beta ≠ 0) :
@@ -166,7 +168,12 @@ section TimeUniformCS
 
 -- Alternative to fixed-N: predeclared time-uniform confidence sequence (Howard et al. 1810.08240).
 -- Howard's stitched LIL boundary `O(√(t⁻¹ log log t))` is uniformly valid; Hydra2 uses
--- hedged capital CS (Waudby-Smith & Ramdas 2023) as concrete instantiation via `statistics.py` `hedged_cs_path` `Ville` `sub-ψ` `filtrations` `hedged betting` `empirical-Bernstein` `mixture/inverted stitching` `Table3` `sequential_design_guard` `predeclared` `fixedN` `ceil` `vs` `hedged` `choice` `frozen` `blind` `before` `unblinding` `SPEC §18.3` `Metrics`.
+-- hedged capital CS (Waudby-Smith & Ramdas 2023) as concrete instantiation
+-- via `statistics.py` `hedged_cs_path` `Ville` `sub-ψ` `filtrations`
+-- `hedged betting` `empirical-Bernstein` `mixture/inverted stitching`
+-- `Table3` `sequential_design_guard` `predeclared` `fixedN` `ceil` `vs`
+-- `hedged` `choice` `frozen` `blind` `before` `unblinding` `SPEC §18.3`
+-- `Metrics`.
 /-- SPEC §18.3: finite CS core (Ville-style shrinking width). The half-width
 `s / √n` is antitone in `n` (mirror `zPowerApprox_mono_n` /
 Blueprint `blockMeanVariance_mono_n`): more wall blocks give a tighter
@@ -193,7 +200,12 @@ theorem fixedN_vs_CS_declared_before_unblinding (s1 s2 : ℝ) (n : ℕ)
     (h_le : s1 ≤ s2) :
     s1 / Real.sqrt (n : ℝ) ≤ s2 / Real.sqrt (n : ℝ) := by
   exact div_le_div_of_nonneg_right h_le (Real.sqrt_nonneg _)
-/-- Peeking guard (Bonferroni; MultiComp `family-wise coverage`, Evan Miller `10 peeks turns 1% into 5%`, `stop-at-5%-or-150obs gives 26.1% false positives`): two data-dependent looks cover at most the sum — union rejection region `|s∪t| ≤ |s|+|t|`, so two `α`-looks have worst-case `2α`. Finite core behind SPEC §18.3 predeclared frozen-blind `fixedN` vs adaptive peeking (which invalidates confirmation). -/
+/-- Peeking guard (Bonferroni; MultiComp `family-wise coverage`, Evan Miller
+  `10 peeks turns 1% into 5%`, `stop-at-5%-or-150obs gives 26.1% false
+  positives`): two data-dependent looks cover at most the sum — union
+  rejection region `|s∪t| ≤ |s|+|t|`, so two `α`-looks have worst-case `2α`.
+  Finite core behind SPEC §18.3 predeclared frozen-blind `fixedN` vs adaptive
+  peeking (which invalidates confirmation). -/
 theorem peeking_union_bound (n : ℕ) (s t : Finset (Fin n)) :
     (s ∪ t).card ≤ s.card + t.card :=
   Finset.card_union_le s t
@@ -202,7 +214,13 @@ theorem peeking_two_looks_double (n : ℕ) (s t : Finset (Fin n)) (k : ℕ)
     (s ∪ t).card ≤ 2 * k := by
   have h := Finset.card_union_le s t
   omega
-/-- Stitched epoch union bound (Howard et al. 2021 Thm.1 Eq.9 `P(∃t: S_t≥S_α) ≤ Σ_k α/h(k)`: break time into geometric epochs `η^k ≤ V < η^{k+1}`, per-epoch budget `α/h(k)`, take a union bound; Fig.3 caption. CsDepth scout, ar5iv Eq.8/9/10). Finite core: `K` epochs each with rejection mass `≤k₀` cover `≤K*k₀` — induction on `K` via `peeking_union_bound` (`card_union_le`) binary step. Full infinite-horizon `P(union)=…≤α` with `Σ1/h≤1` + Ville/sub-ψ needs MeasureTheory (comment only). -/
+/-- Stitched epoch union bound (Howard et al. 2021 Thm.1 Eq.9
+  `P(∃t: S_t≥S_α) ≤ Σ_k α/h(k)`: break time into geometric epochs
+  `η^k ≤ V < η^{k+1}`, per-epoch budget `α/h(k)`, take a union bound; Fig.3
+  caption. Finite core: `K` epochs each with rejection mass `≤k₀` cover
+  `≤K*k₀` — induction on `K` via `peeking_union_bound` (`card_union_le`)
+  binary step. Full infinite-horizon `P(union)=…≤α` with `Σ1/h≤1` +
+  Ville/sub-ψ needs MeasureTheory (comment only). -/
 theorem stitched_epoch_union_bound (m K k₀ : ℕ) (E : ℕ → Finset (Fin m))
     (h : ∀ k, k < K → (E k).card ≤ k₀) :
     (Finset.biUnion (Finset.range K) E).card ≤ K * k₀ := by
@@ -226,7 +244,13 @@ end TimeUniformCS
 
 section StableRank
 
-/-- Tenhou stable rank (Suphx Appx-C Eq.7, via SuphxAppx scout, ar5iv 2003.13590: `stable = (5*n1 + 2*n2)/n4 - 2`; Fig.12 sampled `K=2000/N=5000`; Mortal duplicate-1v3 + rank-pt `[90,45,0,-135]` as variance template). Finite core: closed form + monotonicity (more 1sts raise it, more 4ths lower it — the quantitative reason Suphx's low-4th style `18.7%` drives rank). Full rank-pt lobby tables (tonpuu vs `1.5×` tonnan) + bootstrap variance stay harness-side. -/
+/-- Tenhou stable rank (Suphx Appx-C Eq.7, arXiv:2003.13590:
+  `stable = (5*n1 + 2*n2)/n4 - 2`; Fig.12 sampled `K=2000/N=5000`; Mortal
+  duplicate-1v3 + rank-pt `[90,45,0,-135]` as variance template). Finite
+  core: closed form + monotonicity (more 1sts raise it, more 4ths lower it —
+  the quantitative reason Suphx's low-4th style `18.7%` drives rank). Full
+  rank-pt lobby tables (tonpuu vs `1.5×` tonnan) + bootstrap variance stay
+  harness-side. -/
 noncomputable def stableRank (n1 n2 n4 : ℕ) : ℝ :=
   (5 * (n1 : ℝ) + 2 * (n2 : ℝ)) / (n4 : ℝ) - 2
 
@@ -252,8 +276,8 @@ end StableRank
 
 section PrPlBets
 
-/-- Predictable plug-in bet size (Waudby-Smith & Ramdas 2023 Eq.26, via
-IdeaBetting scout: `λ^{PrPl±}_t = √(2·log(2/α)/(σ̂²_{t-1}·t·log(t+1)))` with
+/-- Predictable plug-in bet size (Waudby-Smith & Ramdas 2023 Eq.26:
+  `λ^{PrPl±}_t = √(2·log(2/α)/(σ̂²_{t-1}·t·log(t+1)))` with
 regularized variance; confseq `lambda_predmix_eb` defaults `prior 0.5/0.25`,
 `fake_obs = 1`). Pure real formula — the runnable recipe behind Hydra2's
 `hedged_cs_path`, replacing the ad-hoc `√(8·…)` bet (2x too large) and

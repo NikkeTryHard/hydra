@@ -21,7 +21,8 @@ identity behind it (L35-36: a length-`k+1` backward view splits batch `B`
 into shards of width `B/(k+1)`, L21-23). Shard math and the reuse predicate
 are finite (`ℕ`/`Bool`/`Finset`); the U-curve device argmax (L78-106) stays
 a documented re-sweep obligation since Fig.12 values are not transcribed
-(doc §5 Gap), and return-optimality over cadence needs an env model.
+(open question, doc §5), and return-optimality over cadence needs an env
+model.
 Boundary note: `gating.md` L107 `gateTreeReuse = true` (within-kyoku
 draw-subtree carry) is the maximal live reuse this rule permits.
 -/
@@ -104,8 +105,8 @@ def trainIterMCTS : Phase → ℕ
 theorem decouple_zeroes_train_mcts : trainIterMCTS .Offline = 0 := rfl
 
 /-- Reanalyze cadence menu, §5.3 ablation (`requiem.md` L68-73; replay
-ratio 0.25, reanalyze ratio 1). Length only — no return-optimality
-claim (needs an env model, doc §5 Gap). -/
+  ratio 0.25, reanalyze ratio 1). Length only — no return-optimality
+  claim (needs an env model, open question, doc §5). -/
 def reanalyzeGrid : List ℚ := [1 / 3, 1, 2]
 
 theorem reanalyzeGrid_length : reanalyzeGrid.length = 3 := rfl

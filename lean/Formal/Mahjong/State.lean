@@ -215,8 +215,9 @@ theorem initial_hand_plus_wall_eq_136 (s : GameState) (hHands : totalHandTiles s
     totalTilesConservation s = 136 := by
   simp [totalTilesConservation, totalWallRemaining, remainingLive, deadWallSize, hHands, hMelds, hDiscards, hPos]
 
--- General hand+meld+discard+wall =136 under valid partition (when wallPos accounts for draws)
--- For any state where totalHand + meld + discards + remaining =136 — this is the main conservation shape.
+-- General hand+meld+discard+wall =136 under valid partition (when wallPos
+-- accounts for draws). For any state where totalHand + meld + discards +
+-- remaining =136 — this is the main conservation shape.
 theorem conservation_shape (nHand nMeld nDiscard remain : Nat) (h : nHand + nMeld + nDiscard + remain = 136) :
     nHand + nMeld + nDiscard + remain = 136 := h
 

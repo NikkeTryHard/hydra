@@ -514,7 +514,8 @@ def isKokushiPred (h : Hand) (ms : MeldSet) : Bool :=
   isClosedMelds ms && decide (distinctOrphans h = 13 && orphanHasPair h = 1 && handSize h = 14)
 
 def isKokushi13Pred (h : Hand) (ms : MeldSet) : Bool :=
-  -- 13-way wait: same shape but pair could be any orphan; we require Kokushi shape plus a tile with count 2
+  -- 13-way wait: same shape but pair could be any orphan; we require Kokushi
+  -- shape plus a tile with count 2
   isKokushiPred h ms && decide ((Finset.univ.filter (fun t : TileType => decide (t ∈ orphanTypes) && (h t).val = 2)).Nonempty)
 
 def chuurenForSuit (h : Hand) (base : Nat) : Bool :=

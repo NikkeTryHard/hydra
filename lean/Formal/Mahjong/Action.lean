@@ -40,10 +40,9 @@ Faithful Lean port of:
 -- 0. ActionKind — frozen ordinal vocabulary (SPEC 6.1, action.py)
 -- ---------------------------------------------------------------------------
 
-/-- Canonical action kinds — ticket surface collapsed from 13 frozen Python kinds.
-    Mirrors `file://riichienv-core/src/legal_actions.rs#Action` and
-    `file://src/hydra2/contracts/action.py#ActionKind`.
--/
+/-- Canonical action kinds — surface collapsed from 13 frozen Python kinds.
+  Mirrors `file://riichienv-core/src/legal_actions.rs#Action` and
+  `file://src/hydra2/contracts/action.py#ActionKind`. -/
 inductive ActionKind where
   | Discard (tile : TileId)
   | Tsumogiri (tile : TileId)

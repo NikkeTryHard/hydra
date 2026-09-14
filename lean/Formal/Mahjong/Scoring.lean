@@ -328,7 +328,8 @@ theorem basePoints_le_8000 (hanVal fuVal : Nat) : basePoints hanVal fuVal ≤ 80
 -- 8. Scoring — Ron/Tsumo, Ko/Oya, Honba
 -- ---------------------------------------------------------------------------
 
-/-- Scoring for ko ron — `ceil(base*4)` — matches `riichienv.calculate_score(han,fu,False,False,0).pay_ron`. -/
+/-- Scoring for ko ron — `ceil(base*4)` — matches
+  `riichienv.calculate_score(han,fu,False,False,0).pay_ron`. -/
 def scoring (hanVal : Han) (fuVal : Fu) : Points :=
   ceil100 (basePoints hanVal fuVal * 4)
 

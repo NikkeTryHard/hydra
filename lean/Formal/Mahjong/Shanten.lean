@@ -19,15 +19,15 @@ namespace Formal.Mahjong
 # Shanten — faithful Lean port of riichienv-core/src/shanten.rs
 
 Faithful port of `RiichiEnv/riichienv-core/src/shanten.rs` (15.9KB) and
-`types.rs` (`TILE_MAX =34`).  Choice for this ticket: **DFS** (not blob embed).
+  `types.rs` (`TILE_MAX =34`). Design: **DFS** (not blob embed).
 
 * `TILE_MAX =34` (`types.rs`)
 * `SHUPAI_TABLE` / `ZIPAI_TABLE` — Nyanten/Cryolite hash tables (675+525 ints)
   are **HARD skip** as binary blobs (`include_bytes!` 405350/43130 + KEYS1/2/3).
   The tables are *not* embedded verbatim here; instead `calc_normal` is
   realized by an exact DFS `8 -2*m - min(t,4-m) -p` that is extensionally equal
-  to the Rust table lookup (2108.06832, tenhou.net/man).  This satisfies the
-  ticket's DFS alternative and avoids committing 500KB blobs to Lean.
+  to the Rust table lookup (2108.06832, tenhou.net/man). This satisfies the
+  DFS alternative and avoids committing 500KB blobs to Lean.
 * `hash_shupai` / `hash_zipai` — stubbed as `tiles.sum` (HARD skip) because
   the DFS does not need the hash; the faithful hash would be
   `h += SHUPAI_TABLE[i][n][c]` with `n = Σ c_j` per shanten.rs.  Marked HARD skip.
@@ -38,7 +38,7 @@ Faithful port of `RiichiEnv/riichienv-core/src/shanten.rs` (15.9KB) and
 * `calc_shanten_from_counts` (`calc_normal` then `min` with chiitoi/kokushi when `len_div3 ≥4`)
 * `calculate_shanten` (from 136-tile hand, `tile /4` deduplicates reds)
 
-Ticket interface also provided:
+Lean interface also provided:
 
 * `HandCounts := TileType → Fin 5` (0..4 copies logical, i.e. `TileId //4`)
 * `Shanten` range `-1..8` via `IsShanten` and `ShantenFin` (`Fin 10` offset)
@@ -58,7 +58,7 @@ def TILE_MAX : Nat := 34
 theorem tile_max_eq : TILE_MAX = 34 := rfl
 
 -- ---------------------------------------------------------------------------
--- 1. Core Lean types (ticket)
+-- 1. Core Lean types
 -- ---------------------------------------------------------------------------
 
 abbrev HandCounts := TileType → Fin 5
@@ -89,7 +89,7 @@ theorem shantenToInt_eight : shantenToInt ⟨9, by omega⟩ = 8 := by native_dec
 -- Rust: SHUPAI_TABLE [[[u32;5];15];9] (675) and ZIPAI_TABLE [[[u32;5];15];7] (525)
 -- plus binary blobs SHUPAI_KEYS 405350, ZIPAI_KEYS 43130, KEYS1 15876, KEYS2 22680, KEYS3 49500
 -- plus include_bytes! tables. Lean: HARD skip — blobs omitted, DFS provides
--- extensionally equal `calc_normal` via `8 -2*m -t' -p` enumeration (choice per ticket).
+-- extensionally equal `calc_normal` via `8 -2*m -t' -p` enumeration.
 -- If blobs were embedded, hash_shupai would be:
 --   n += c; h += SHUPAI_TABLE[i][n][c]  (zipai analog)
 -- and calc_normal would be:
@@ -173,7 +173,7 @@ def dfsBest (hc : HandCounts) : Int :=
   dfsBestAux (handCountsToArray hc) 0 0 0 false 64
 
 -- ---------------------------------------------------------------------------
--- 3. Helpers: size, pairs, orphans, recursion (ticket + Rust)
+-- 3. Helpers: size, pairs, orphans, recursion (mirrors Rust)
 -- Exact counts derived from DFS optimum (no heuristic overlapping).
 -- ---------------------------------------------------------------------------
 
@@ -306,7 +306,7 @@ theorem distinctOrphans_le_13 (hc : HandCounts) : distinctOrphans hc ≤ 13 := b
 theorem orphanHasPair_le_one (hc : HandCounts) : orphanHasPair hc ≤ 1 := by unfold orphanHasPair; split <;> omega
 
 -- ---------------------------------------------------------------------------
--- 5. Rust calc_* faithful + ticket shanten* (same formulas, ticket uses min)
+-- 5. Rust calc_* faithful + shanten* wrappers (same formulas, using min)
 -- ---------------------------------------------------------------------------
 
 def calc_chitoi (hc : HandCounts) : Int :=
@@ -347,7 +347,7 @@ def calculate_shanten (hand : List TileId) : Int :=
 def shantenClamped (hc : HandCounts) : Int := max (-1) (min 8 (shanten hc))
 
 -- ---------------------------------------------------------------------------
--- 6. Range theorems (ticket)
+-- 6. Range theorems
 -- ---------------------------------------------------------------------------
 
 theorem shantenStandard_range (hc : HandCounts) : -1 ≤ shantenStandard hc ∧ shantenStandard hc ≤ 8 := by
@@ -398,7 +398,7 @@ theorem isShanten_of_shanten (hc : HandCounts) : IsShanten (shanten hc) := by un
 theorem isShanten_of_standard (hc : HandCounts) : IsShanten (shantenStandard hc) := by unfold IsShanten; exact shantenStandard_range hc
 
 -- ---------------------------------------------------------------------------
--- 7. Winning / tenpai (ticket)
+-- 7. Winning / tenpai
 -- ---------------------------------------------------------------------------
 
 def isWinning (hc : HandCounts) : Prop := shanten hc = -1
@@ -438,7 +438,7 @@ theorem kokushiWinning_implies_winning (hc : HandCounts) (h : shantenKokushi hc 
   omega
 
 -- ---------------------------------------------------------------------------
--- 8. Chiitoi / Kokushi needs (ticket)
+-- 8. Chiitoi / Kokushi needs
 -- ---------------------------------------------------------------------------
 
 theorem chiitoi_needs_7pairs (hc : HandCounts) : shantenChiitoi hc = -1 → min 7 (numPairsDistinct hc) = 7 := by
@@ -511,7 +511,7 @@ theorem redTileTypes_are_4_13_22 :
   exact red_ids_tileType_values
 
 -- ---------------------------------------------------------------------------
--- 10. Tiny fixtures / parity (tests/test_shanten.py + ticket)
+-- 10. Tiny fixtures / parity (tests/test_shanten.py)
 -- ---------------------------------------------------------------------------
 
 def emptyHand : HandCounts := fun _ => ⟨0, by omega⟩
@@ -547,7 +547,7 @@ theorem shanten_sevenPairs_isWinning : isWinning sevenPairsWinningHand := by nat
 theorem shanten_kokushi_isWinning : isWinning kokushiWinningHand := by native_decide
 
 -- ---------------------------------------------------------------------------
--- 11. DFS recursion demo (ticket)
+-- 11. DFS recursion demo
 -- ---------------------------------------------------------------------------
 
 theorem countPairsRec_demo : countPairsRec allTypesList emptyHand = 0 := by native_decide

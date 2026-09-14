@@ -109,7 +109,7 @@ inductive TurnEvent where
   | Draw (actor : Fin 4) (tile : TileId)
   deriving DecidableEq, Repr
 
--- Back-compat aliases for the exact ticket syntax `Fin4`
+-- Back-compat aliases for the external `Fin4` surface
 abbrev Fin4 := Fin 4
 
 -- ---------------------------------------------------------------------------
@@ -220,7 +220,7 @@ theorem turnEvent_observedTile_draw_other {a obs : Fin 4} (t : TileId) (h : obs 
   simp [TurnEvent.observedTile, h]
 
 -- ---------------------------------------------------------------------------
--- 4. Public vs private distinction — the ticket's two named theorems
+-- 4. Public vs private distinction — the two named visibility theorems
 -- ---------------------------------------------------------------------------
 
 /-- `advance_is_public`: `turn_advance(actor)` is public — every actor
@@ -559,7 +559,7 @@ theorem server_private_never_affects_modelInput
     (hists : TurnHistories) (ev : TurnServerPrivateEvent) (actor : Fin 4) :
     modelInputOfTurnHistory (routeServerPrivate hists ev) actor = modelInputOfTurnHistory hists actor := rfl
 
-/-- The main isolation theorem named in the ticket: server-private must never
+/-- The main isolation theorem: server-private must never
     enter actor observation, planner key, cache, log, or model input.
 
 Bundles the four sub-theorems above; this single theorem is the acceptance
@@ -576,7 +576,7 @@ theorem server_private_must_never_enter_actor_observation_or_planner_key_or_cach
     modelInputOfTurnHistory (routeServerPrivate hists ev) actor = modelInputOfTurnHistory hists actor := by
   refine ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
 
-/-- Alias required by the ticket phrasing verbatim. -/
+/-- Alias kept for the external `Fin4` phrasing (do not rename). -/
 theorem server_private_must_never_enter_actor_observation
     (ev : TurnServerPrivateEvent) (actor : Fin 4) :
     turnServerPrivateVisibleToActor ev actor = false ∧
@@ -786,7 +786,7 @@ theorem fixture_single_draw_modelInput_isolated (t : TileId) (hists : TurnHistor
     modelInputOfTurnHistory hists (2 : Fin 4) := by
   simp [modelInputOfTurnHistory, routeTurnEvent, show (2 : Fin 4) ≠ (0 : Fin 4) from by decide]
 
--- 15. Summary philosophy (for reviewers)
+-- 15. Visibility invariant, stated constructively
 -- ---------------------------------------------------------------------------
 
 /-!
