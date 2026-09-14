@@ -128,6 +128,8 @@ def make_resource_telemetry(**kwargs: object) -> ResourceTelemetry:
     if not isinstance(mode, str) or mode == "":
         raise TypeError("mode must be a nonempty str")
     for digest_name in ("candidate_spec_hash", "hardware_hash", "environment_hash"):
+        # reason: type arg-type on kwargs object value; validate_digest
+        # runtime-validates the digest and raises on mismatch.
         validate_digest(kwargs[digest_name])  # type: ignore[arg-type]
     for identifier in ("wall_id", "case_id"):
         value = kwargs[identifier]
@@ -137,6 +139,9 @@ def make_resource_telemetry(**kwargs: object) -> ResourceTelemetry:
     if invalid_reason is not None and (not isinstance(invalid_reason, str) or invalid_reason == ""):
         raise TypeError("invalid_reason must be None or a nonempty str")
 
+    # reason: type arg-type on kwargs[...] values (statically object);
+    # wall/case ids None/str-checked above, digests validated in the loop
+    # above, remaining fields validated by _require_* helpers at runtime.
     return ResourceTelemetry(
         mode=mode,
         wall_id=kwargs["wall_id"],  # type: ignore[arg-type]

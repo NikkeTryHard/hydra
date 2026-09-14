@@ -96,6 +96,9 @@ def placement_block_contrast(blocks: tuple[WallBlock, ...]) -> tuple[float, ...]
     contrasts (``case.PRIMARY_METRIC``); this helper only collapses via
     :func:`aggregate_wall_block` sorted by wall_id. Feed the result — never
     per-game contrasts — to :func:`bootstrap_blocks` / sign-flip / CS.
+
+    Placement contrast is the mean expected-final-placement difference for
+    the declared arm pair (lower-better S1); wall order stable.
     """
     if len(blocks) == 0:
         raise ContractError("need at least one wall block for a contrast")
@@ -133,22 +136,15 @@ def bootstrap_blocks(
     Blocks are resampled WITH replacement as atomic units — individual games
     within a block never separate.
 
-    Vectorized path (perf-A §4.6): uses ``numpy`` ``Generator.integers`` +
-    ``take``/``mean``/``sort``/``quantile``-style indexing to avoid 2000x
-    Python loops. Determinism via seeded ``Generator`` derived from
-    ``RandomStream.get_bytes`` (counter-based, seekable). Statistical
-    equivalence retained; exact Monte Carlo draws differ from per-element
-    ``random_below`` but CI shape/quantiles are unbiased and deterministic.
+    Vectorized over a seeded numpy Generator derived from RandomStream
+    (counter-based, reproducible); resamples whole blocks with replacement
+    as atomic units.
     """
     values = _validate_blocks(block_values)
     _validate_alpha_resamples(alpha, resamples)
     count = len(values)
-    # Deterministic seed from stream (consumes 8 bytes; keeps stream
-    # deterministic).
-    # Original loop consumed count*resamples draws; vectorized consumes
-    # one seed then uses numpy PCG64.
-    # No major correctness drawback: bootstrap is Monte Carlo; seed
-    # derivation preserves reproducibility.
+    # Seed derives from the stream (consumes 8 bytes); the numpy PCG64
+    # Generator then draws resample indices reproducibly.
     seed = int.from_bytes(stream.get_bytes(8), "big")
     rng = np.random.default_rng(seed)
     arr = np.asarray(values, dtype=np.float64)
@@ -175,8 +171,8 @@ def sign_flip_interval(
     flipping whole-block signs preserves the paired-block structure while
     generating the null distribution of the mean.
 
-    Vectorized via ``numpy`` — ``integers(0,2)`` -> signs -> ``mean`` with sorting.
-    Determinism via seeded ``Generator`` from ``RandomStream``.
+    Vectorized over a seeded numpy Generator derived from RandomStream
+    (counter-based, reproducible).
     """
     values = _validate_blocks(block_values)
     _validate_alpha_resamples(alpha, resamples)
@@ -220,6 +216,8 @@ def _hedged_capital_rejected(scaled: Sequence[float], theta: float, threshold: f
     for index, observation in enumerate(scaled, start=1):
         mu_prev = running_sum / (index - 1) if index > 1 else 0.5
         variance_term = max(mu_prev * (1.0 - mu_prev), 1e-6)
+        # Predictable lambdas use only t-1 info; removing the variance cap
+        # or lookback breaks time-uniform validity (Ville).
         lam = min(
             lam_max,
             math.sqrt(
@@ -541,6 +539,8 @@ def score_selection(
         )
     if isinstance(peek_index, bool) or not isinstance(peek_index, int) or peek_index < 1:
         raise ContractError(f"peek_index must be a positive int, got {peek_index!r}")
+    # Exclusions change the scored count; scoring len(blocks) while reporting
+    # fewer valid misrepresents evidence — hence the equality gate.
     if peek_index != len(result.valid):
         raise ContractError(
             f"peek_index {peek_index} != {len(result.valid)} valid wall blocks "

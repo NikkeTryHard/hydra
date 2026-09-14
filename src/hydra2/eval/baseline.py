@@ -149,8 +149,8 @@ def _seed_everything(seed: int) -> None:
     _ = torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-    # Deterministic algorithms already enforced via conftest fixture, but
-    # ensure callers can run deterministically even outside pytest.
+    # Enforce deterministic algorithms so library callers match the test
+    # fixture without pytest.
     with contextlib.suppress(Exception):
         torch.use_deterministic_algorithms(True)
 
@@ -199,7 +199,6 @@ def top_k_accuracy(
     logits_v = _require_logits(logits, mask)
     masked = logits_v.masked_fill(~mask, float("-inf"))
     # Number of legal per row may be < k; then top-k is at most that many.
-    # Use argsort descending per row.
     # torch.topk with k > A would error, so clamp k to A.
     k_clamped = min(k, logits_v.shape[1])
     _, topk_idx = torch.topk(masked, k=k_clamped, dim=-1)
@@ -261,7 +260,8 @@ class BaselineMetrics:
     count: int
     compile_mode: str = EAGER_ORACLE_ID
     digest: DigestText = field(
-        default=DigestText("sha256:" + "0" * 64)  # placeholder, replaced by factory
+        # Default digest; the factory overwrites it with the computed digest.
+        default=DigestText("sha256:" + "0" * 64)
     )
 
     def __post_init__(self) -> None:
@@ -651,8 +651,8 @@ def evaluate_reference_games(
     if not isinstance(payload_any, dict):
         raise ContractError("rules payload must be dict")
     rules = rules_manifest_from_payload(payload_any)
-    # Use the single game rule for speed? But we need full hanchan semantics.
-    # The adapter's reset handles either; we just run to terminal.
+    # Full-hanchan semantics; the adapter reset handles either rules payload
+    # and this loop runs each game to terminal.
     illegal = 0
     timeouts = 0
     game_hashes: list[str] = []
@@ -700,7 +700,9 @@ def evaluate_reference_games(
             # Record terminal digest for report.
             try:
                 h = sim._state_digest()
-            except Exception:
+            except Exception:  # why-broad: digest is report-only metadata;
+                # the game is already terminal, and the fallback label keeps
+                # the report total while remaining distinguishable.
                 h = f"terminal-{game_index}"
             game_hashes.append(h)
         else:

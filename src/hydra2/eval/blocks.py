@@ -147,6 +147,8 @@ def _first_disqualification(
         reason = telemetry_invalid_reason(row, tolerance)
         if reason is None:
             continue
+        # Prefix distinguishes caller-marked-invalid rows from telemetry gaps;
+        # both exclude, reasons must not merge silently.
         mapped = "row_invalid" if reason.startswith("row marked") else "missing_telemetry"
         return ExcludedBlock(
             wall_id=block.wall_id,

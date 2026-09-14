@@ -88,7 +88,6 @@ def wall_hash_from_tiles(wall_tiles: Sequence[int]) -> DigestText:
     for tile in wall_tiles:
         if not isinstance(tile, int) or isinstance(tile, bool) or not 0 <= tile < 136:
             raise ContractError(f"tile ids must be int in [0,136), got {tile!r}")
-    # Hash over the canonical representation of the tile list (order-sensitive).
     return of_canonical(list(wall_tiles))
 
 
@@ -268,6 +267,8 @@ def build_wall_blocks(
         blocks.append(WallBlock(wall_id=wall_id, game_ids=game_ids, contrasts=contrasts))
 
     # Enforce disjointness before returning.
+    # Chain: build enforces -> manifest re-checks order/disjointness ->
+    # split re-checks partitions (validate_blocks/walls_disjoint).
     validate_blocks_disjoint(tuple(blocks))
     # No silent imputation of telemetry — caller aggregates separately.
     return tuple(blocks)
@@ -392,6 +393,8 @@ def split_blocks_held_out(
     n = len(blocks)
     held_n = max(1, min(n - 1, round(n * held_out_ratio)))
     generator = torch.Generator().manual_seed(seed)
+    # reason: explicit-any on tolist(); randperm(n) yields indices in
+    # [0, n) by construction, in-range for blocks_list below.
     perm: list[int] = torch.randperm(n, generator=generator).tolist()  # pyrefly: ignore[explicit-any]
     blocks_list: list[WallBlock] = list(blocks)
     held = tuple(blocks_list[i] for i in perm[:held_n])

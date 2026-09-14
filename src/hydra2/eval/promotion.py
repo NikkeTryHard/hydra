@@ -101,6 +101,8 @@ def make_promotion_record(**kwargs: object) -> PromotionRecord:
     comparators = kwargs["comparator_spec_hashes"]
     if not isinstance(comparators, tuple) or not all(isinstance(item, str) for item in comparators):
         raise ContractError("comparator_spec_hashes must be a tuple of digest strings")
+    # reason: type arg-type on kwargs object narrowed by the tuple-of-str
+    # guard above; _require_digest runtime-validates each digest.
     comparators_t = tuple(_require_digest("comparator entry", item) for item in comparators)  # type: ignore[arg-type]
 
     resource_view = kwargs["resource_view"]
@@ -132,6 +134,8 @@ def make_promotion_record(**kwargs: object) -> PromotionRecord:
         )
     ):
         raise ContractError("confidence_bounds must be two finite floats")
+    # reason: type arg-type on object-typed bounds elements; tuple of two
+    # finite numbers validated just above, float() coerces.
     low, high = float(bounds[0]), float(bounds[1])  # type: ignore[arg-type]
     if low > high:
         raise ContractError("confidence_bounds must be ordered (low <= high)")
@@ -179,6 +183,8 @@ def make_promotion_record(**kwargs: object) -> PromotionRecord:
         case_manifest_hash=_require_digest("case_manifest_hash", kwargs["case_manifest_hash"]),
         result_table_hash=_require_digest("result_table_hash", kwargs["result_table_hash"]),
         resource_view=resource_view,
+        # reason: type arg-type on object-typed unit; membership in
+        # UNCERTAINTY_UNITS validated above, Literal narrowing is runtime.
         uncertainty_unit=unit,  # type: ignore[arg-type]
         pass_inequality=inequality,
         observed_estimate=float(estimate),

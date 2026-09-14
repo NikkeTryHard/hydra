@@ -202,6 +202,8 @@ def seat_pair_placements_exact(schedule: MatchSchedule) -> None:
     three times; over the four rotation rows the focal label visits each
     seat exactly once.
     """
+    # Pair/focal inferred from fixed row positions; relabelling without
+    # updating both builders breaks this gate (raises, fail-closed).
     pair_members = frozenset(schedule.seat_allocations[0][:2])
     focal = schedule.seat_allocations[SYMMETRIC_ALLOCATIONS_PER_WALL][0]
     for wall_index in range(len(schedule.wall_ids)):
