@@ -1077,7 +1077,6 @@ def commit(
             source: str = "carried"
             log_target_density: float = logp
             log_proposal_density: float = logp
-            # dummy-until-real: pilot default, overwritten before commit.
             proposal_id: str = "sha256:" + "0" * 64
             ancestors: tuple[str, ...] = (*e.ancestors, e.parent_id)
 
@@ -1089,7 +1088,6 @@ def commit(
             source="carried",
             log_target_density=logp,
             log_proposal_density=logp,
-            # dummy-until-real: pilot default, overwritten before commit.
             proposal_id="sha256:" + "0" * 64,
             ancestors=(*e.ancestors, e.parent_id),
         )

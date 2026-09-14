@@ -1,4 +1,4 @@
-"""WP-01 bootstrap: universal work-package completion records and registry.
+"""Work-package completion records and registry.
 
 Implements the completion-record envelope from BUILD_EXECUTION_PLAN §1:
 validation of ``hydra2.work_package_completion`` records (schema 1.0.0),
@@ -6,8 +6,7 @@ verification of recorded hashes where referenced paths exist, dependency
 record presence, exit disposition, and the atomic mutable index at
 ``$ARTIFACT_ROOT/work_packages/index.json``.
 
-Canonical serialization is stdlib deterministic JSON (see hydra2._canon);
-WP-02A upgrades to full RFC 8785 without changing this command contract.
+Canonical bytes are RFC 8785 via hydra2.artifacts (see hydra2._canon shim).
 
 Record hash definition: sha256 over the canonical bytes of the parsed
 record document (whitespace-independent).
@@ -41,25 +40,26 @@ INDEX_SCHEMA_VERSION = "1.0.0"
 VALID_STATUSES = ("passed", "failed", "blocked")
 VALID_TEST_RESULTS = ("passed", "failed", "skipped")
 
-# Wave-graph dependency edges relevant to registry verification. A package's
+# Registry dependency edges relevant to verification. A package's
 # dependencies MUST already be registered before its own record verifies.
-# Later edges entered under the authorized cutover treatment used for the
-# WP-02A edge (see wp01-record deviations); per-edge notes keep only the
-# semantic half (what each edge means), tuples untouched.
+# Each edge note states what the dependency means; the tuples are the
+# registry gate and must stay unchanged.
 DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "WP-00B": ("WP-00A",),
     "WP-01": ("WP-00A",),
     "WP-02A": ("WP-01",),
-    # BUILD §Wave2: WP-02B (rules/utility) and WP-02C (action contract) both
-    # enter after WP-02A.
+    # WP-02B (rules/utility) and WP-02C (action contract) both enter after
+    # WP-02A; each verifies against the WP-02A canonical-bytes authority.
     "WP-02B": ("WP-02A",),
     "WP-02C": ("WP-02A",),
-    # BUILD §Wave2: WP-02D (events/observation) consumes the WP-02B rules
-    # identity and the WP-02C action table.
+    # WP-02D (events/observation) consumes the WP-02B rules identity and
+    # the WP-02C action table; both must verify first.
     "WP-02D": ("WP-02B", "WP-02C"),
-    # BUILD §6: WP-03C (MahJax quarantine shell) enters after WP-01 and WP-02D.
+    # WP-03C (MahJax quarantine shell) replays through the WP-02D event
+    # contract; WP-01 + WP-02D must verify first.
     "WP-03C": ("WP-01", "WP-02D"),
-    # BUILD §6: WP-03A (RiichiEnv reference engine) enters after WP-01 and WP-02D.
+    # WP-03A (RiichiEnv reference engine) runs on the WP-02D event
+    # contract; WP-01 + WP-02D must verify first.
     "WP-03A": ("WP-01", "WP-02D"),
     # BUILD §6: WP-03B (evaluation schemas and synthetic statistics) consumes
     # the rules, action, and event/observation contracts.
@@ -71,7 +71,7 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     # schedules/blocks/telemetry, the WP-04A exact-game corpus lineage, and
     # the WP-05C frozen baseline.
     "WP-06": ("WP-03B", "WP-04A", "WP-05C"),
-    # BUILD §8 Wave 5 supervised baseline; WP-05A model/inference, WP-05B loop,
+    # BUILD §8 supervised baseline; WP-05A model/inference, WP-05B loop,
     # WP-05C qualification — all consume WP-04A + WP-04B lineage where applicable.
     "WP-05A": ("WP-04A", "WP-04B"),
     "WP-05B": ("WP-05A",),
@@ -79,38 +79,38 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     # BUILD §10 belief foundations; natural harness needs evaluation + reference.
     "WP-07A": ("WP-03B", "WP-04A", "WP-05C"),
     "WP-07B": ("WP-05C", "WP-06"),
-    # BUILD §11 Wave 8 frozen policy baseline; entry per spec: WP-02B-D, WP-04A,
+    # BUILD §11 frozen policy baseline; entry per spec: WP-02B-D, WP-04A,
     # WP-05C, WP-07A.
     "WP-08A": ("WP-02B", "WP-02C", "WP-02D", "WP-04A", "WP-05C", "WP-07A"),
     "WP-08B": ("WP-02B", "WP-02C", "WP-02D", "WP-04A", "WP-05C", "WP-07A"),
     "WP-08C": ("WP-02B", "WP-02C", "WP-02D", "WP-04A", "WP-05C", "WP-07A"),
-    # BUILD §12 Wave 9 PBRF core; entry: natural belief + reference.
+    # BUILD §12 PBRF core; entry: natural belief + reference.
     "WP-09A": ("WP-03B", "WP-04A", "WP-05C", "WP-07A", "WP-08A", "WP-08B", "WP-08C"),
-    # BUILD §12 Wave 9M Candidate 4 modules — one at a time; entry is PBRF core.
+    # BUILD §12 Candidate 4 modules — one at a time; entry is PBRF core.
     "WP-09B": ("WP-09A",),
-    # BUILD §12 Wave 9 persistence factorial; entry: core + WP-09B9 forest.
+    # BUILD §12 persistence factorial; entry: core + WP-09B9 forest.
     # Core alone does not authorize R/P reuse; WP-09C requires promoted forest.
     # For registry gate, depend on WP-09A; B9 gate enforced inside tests/report.
     "WP-09C": ("WP-09A",),
-    # BUILD §12 Wave 9 Candidate 5 local resolving; entry: WP-07A, WP-08, WP-09A.
+    # BUILD §12 Candidate 5 local resolving; entry: WP-07A, WP-08, WP-09A.
     # Depends on natural belief (WP-07A), fresh baselines (WP-08A/B/C), PBRF (WP-09A).
     "WP-09D": ("WP-07A", "WP-08A", "WP-08B", "WP-08C", "WP-09A"),
     "WP-09E": ("WP-07A", "WP-08A", "WP-08B", "WP-08C"),
-    # BUILD §13 Wave 10 Candidate 7 Teacher Distillation; entry: WP-09C/D/E
+    # BUILD §13 Candidate 7 Teacher Distillation; entry: WP-09C/D/E
     # persistence/resolving/gumbel plus 5-gate teacher-eligibility
     # (contract/exact/search/match/analysis) and WP-12 analysis gates;
     # a missing/ineligible gate raises ContractError (WP-10 blocked, never
     # synthetic fallback).
     "WP-10": ("WP-09C", "WP-09D", "WP-09E", "WP-12"),
-    # BUILD §14 Wave 11 Optional custom self-play RL; entry: WP-05C, WP-06.
+    # BUILD §14 Optional custom self-play RL; entry: WP-05C, WP-06.
     "WP-11": ("WP-05C", "WP-06"),
-    # BUILD §15 Wave 12 Offline analysis qualification; entry: completed Candidate 0-6
+    # BUILD §15 Offline analysis qualification; entry: completed Candidate 0-6
     # outcome registry and every contract/exact/search/match gate for teacher-eligible
     # outcomes. Depends on WP-08A/B/C (Candidates 0-2) and WP-09A/B/D/E (3-6) plus
     # persistence factorial WP-09C for whole-block resource view.
     "WP-12": ("WP-08A", "WP-08B", "WP-08C", "WP-09A", "WP-09B", "WP-09C", "WP-09D", "WP-09E"),
-    # BUILD §16 Wave 13 Candidate 8 joint type/world; entry: WP-04B, WP-07A, WP-10
-    # plus sufficient held-out logs (data condition). Registry gate on earlier waves.
+    # BUILD §16 Candidate 8 joint type/world; entry: WP-04B, WP-07A, WP-10
+    # plus sufficient held-out logs (data condition). Registry gate on earlier entries.
     # Gate uses WP-04A (conformance) as proxy for WP-04B lineage, plus belief/search.
     "WP-13": ("WP-04A", "WP-07A", "WP-08A", "WP-08B", "WP-08C", "WP-09A"),
 }
@@ -302,7 +302,11 @@ def find_record_path(artifact_root: Path, work_package: str) -> Path:
 
 
 def record_hash_of_file(path: Path) -> str:
-    """Record identity: sha256 over canonical bytes of the parsed document."""
+    """Record identity: sha256 over canonical bytes of the parsed document.
+
+    Pinned by tests/unit/test_canon.py and
+    tests/contracts/test_bootstrap_supersede.py (RFC 8785 number forms).
+    """
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
     return sha256_digest_of_json(raw)
 

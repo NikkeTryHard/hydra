@@ -1,12 +1,12 @@
-"""Bootstrap canonical-serialization helpers — superseded by WP-02A.
+"""Compatibility re-export shim over hydra2.artifacts (RFC 8785 canonical bytes).
 
 The qualified implementation lives in :mod:`hydra2.artifacts` (RFC 8785 JCS
 canonical bytes, ``sha256:`` digests, atomic publication). This module is a
 pure re-export shim so WP-01 callers (``completion``, ``runtime``, ``probe``,
-``config``) keep importing their historical names; the canonicalization is now
-full RFC 8785 instead of the bootstrap stdlib approximation.
+``config``) keep importing their historical names; canonicalization is full
+RFC 8785, replacing the earlier stdlib approximation.
 
-Behavior deltas vs the WP-01 bootstrap (intended, per BUILD WP-02A):
+Shim behavior contract (intended, per BUILD WP-02A entry):
 numbers follow ECMA-262 ``Number::toString`` (e.g. ``1.0 -> 1``,
 ``1e-07 -> 1e-7``, ``-0.0 -> 0``); key ordering is UTF-16 code-unit based;
 rejections raise the typed ``CanonicalizationError``.
@@ -26,8 +26,7 @@ from hydra2.contracts.common import CanonicalizationError, DigestMismatchError, 
 
 # Deprecated WP-01 compatibility surface: ``runtime.checkpoint`` predates the
 # artifacts package and imports these names from here. They delegate to the
-# qualified implementation; new code MUST use hydra2.artifacts directly and a
-# future contract migration will retire the aliases.
+# qualified implementation; new code MUST use hydra2.artifacts directly.
 NonFiniteNumberError = CanonicalizationError
 
 __all__ = [

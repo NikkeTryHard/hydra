@@ -2,8 +2,9 @@
 
 Contracts modules import stdlib and sibling contract modules only (SPEC 1), so
 the RFC 8785 recipe used by every contract artifact lives here as a
-dependency-free leaf. ``canonical_json_bytes`` is defined once here
-(action.py re-exports it so existing importers are unaffected). Byte
+dependency-free leaf. ``canonical_json_bytes`` is defined once here (owner
+decision D-WP02D-8; action.py re-exports it so existing importers are
+unaffected). Byte
 equality with the ``hydra2.artifacts.canonical.canonical_bytes`` authority
 stays pinned by tests; contracts themselves never import ``hydra2.artifacts``.
 """

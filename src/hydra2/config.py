@@ -1,4 +1,4 @@
-"""Frozen WP-01 configuration: parity tolerances, forbidden packages,
+"""Frozen runtime configuration: parity tolerances, forbidden packages,
 artifact-root resolution.
 
 Dependency pins are declared exactly once in ``pyproject.toml``
@@ -79,7 +79,8 @@ def _default_artifact_root() -> Path:
             return Path(stripped) / "hydra2" / "artifacts"
     try:
         tmpdir = tempfile.gettempdir()
-    except Exception:
+    except Exception:  # why-broad: stdlib gettempdir raises platform-dependent
+        # errors (encoding/OS); any failure falls through to the next default.
         tmpdir = ""
     if tmpdir != "" and tmpdir.strip() != "":
         return Path(tmpdir) / "hydra2-artifacts"
@@ -118,7 +119,8 @@ def _find_repo_root(start: Path) -> Path:
         legacy = Path(__file__).resolve().parents[2]
         if legacy.exists():
             return legacy
-    except Exception:
+    except Exception:  # why-broad: resolve/parents raise platform-dependent
+        # errors (encoding/OS); any failure falls through to returning cur.
         pass
     return cur
 

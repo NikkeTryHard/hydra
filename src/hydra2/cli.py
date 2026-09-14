@@ -15,6 +15,7 @@ from pathlib import Path
 from hydra2.completion import format_outcome, verify_work_package
 from hydra2.contracts.common import Hydra2Error
 
+# Disposition: pass (0), invalid-or-error (2), blocked (3), fail (4).
 DISPOSITION_EXIT_CODES = {
     "pass": 0,
     "blocked": 3,
@@ -26,7 +27,8 @@ DISPOSITION_EXIT_CODES = {
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="hydra2",
-        description="Hydra2 research stack control plane (WP-01 bootstrap).",
+        description="Hydra2 research stack control plane (work-package registry and "
+        "training runs).",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -49,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="repository root for repo-relative input/output hashes (default: repo root auto via marker walk)",  # noqa: E501
     )
     train = subparsers.add_parser(
-        "train", help="streaming-first training run (plan/resume; execution lands next wave)"
+        "train", help="streaming-first training run (plan, resume, dry-run)"
     )
     _ = train.add_argument(
         "config",
@@ -91,10 +93,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "work-package" and args.work_package_command == "verify":
+        # Precedence: --artifact-root flag > $HYDRA2_ARTIFACT_ROOT >
+        # _default_artifact_root() chain; env re-read per call so late
+        # mutations (conftest, pixi wrappers) apply — see
+        # hydra2.config.artifact_root.
         root = Path(args.artifact_root).resolve() if args.artifact_root else artifact_root()
         # Portable repo_root default: marker walk (pyproject.toml/.git), not invocation-dir cwd.
         # Evidence: https://docs.python.org/3/library/pathlib.html#pathlib.Path.cwd (cwd is fragile)
-        # Evidence: src/hydra2/config.py:90-108 repo_root() marker walk pattern
+        # Evidence: hydra2.config.repo_root/_find_repo_root marker walk (pyproject.toml/.git)
         repo_root = Path(args.repo_root).resolve() if args.repo_root else _repo_root()
         try:
             outcome = verify_work_package(args.wp_id, artifact_root=root, repo_root=repo_root)

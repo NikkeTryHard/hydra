@@ -50,6 +50,7 @@ def probe_frozen_install() -> tuple[bool, str]:
 
 
 def probe_fresh_imports() -> tuple[bool, str]:
+    """Fresh-interpreter import of every locked runtime module must succeed."""
     from hydra2.runtime.environment import IMPORTABLE_RUNTIME_MODULES
 
     for module in IMPORTABLE_RUNTIME_MODULES:
@@ -60,10 +61,12 @@ def probe_fresh_imports() -> tuple[bool, str]:
 
 
 def probe_trainer_absence() -> tuple[bool, str]:
+    """Trainer meta-packages absent and fresh import of lightning fails."""
     ok, detail = check_trainer_absence()
     if not ok:
         return False, detail
-    # Belt and braces: importing lightning must fail in a fresh interpreter.
+    # Defense in depth: metadata absence (above) plus fresh-interpreter
+    # import failure (below) are both required.
     code, _ = _run([sys.executable, "-c", "import lightning"])
     return (
         code != 0,
@@ -72,6 +75,7 @@ def probe_trainer_absence() -> tuple[bool, str]:
 
 
 def probe_sm120_support() -> tuple[bool, str]:
+    """CUDA torch wheel present with sm_120/Blackwell kernels available."""
     return verify_torch_cuda_stack(require_sm120=True)
 
 
@@ -103,6 +107,8 @@ def probe_environment_manifest_round_trip() -> tuple[bool, str]:
 
 
 def sha_of(data: bytes) -> str:
+    """Local sha256 hex helper for the probe path (stdlib-only)."""
+    # Intentionally local: stdlib-only, no import weight on the probe path.
     import hashlib
 
     return "sha256:" + hashlib.sha256(data).hexdigest()
@@ -127,7 +133,8 @@ def main() -> int:
     for title, probe in probes:
         try:
             ok, evidence = probe()
-        except Exception as exc:
+        except Exception as exc:  # why-broad: probe harness must report any
+            # probe failure as evidence, never propagate.
             ok, evidence = False, f"{type(exc).__name__}: {exc}"
         print(f"{'PASS' if ok else 'FAIL'} {title}")
         print(f"     {evidence}")
