@@ -1,18 +1,20 @@
 """LOC gate: enforced ceilings per tree (stdlib only, zero new deps).
 
-Ceilings (CutPython/CutRustLean/CutTests calibration):
-  src Python 600 | tests 1000 | Lean 800 | tools Rust 2000.
+Ceilings: src Python 600 | tests 1000 | Lean 800 | tools Rust 2000.
+600 keeps new modules inside the last high-detection review band;
+800 matches the long-standing split-past threshold (AGENTS.md ~500/800).
 Grandfather entries are exact repo-relpaths; splits remove entries, never add.
-Rust 2000 touches walk+decisions+ingest only (facade specs exist for
-fill 1446/sink 1936/parity 1402 — below 2000, split only if ceiling drops).
-Lean-HOLD past-1200 was never approved — Yaku 1013 + Turn 814 listed as-is.
+Rust 2000 covers only files above it (smaller modules below it split only
+if the ceiling drops). Lean lists Yaku + Turn as-is; larger splits need
+their own approval.
 """
+
 import pathlib
 import sys
 
 LIMITS = {"src": 600, "tests": 1000, "lean": 800, "tools": 2000}
 GRANDFATHERED = {
-    # src (SplitPython leaf-first; stream_train LAST)
+    # src (leaves first; god-driver last)
     "src/hydra2/contracts/event.py",
     "src/hydra2/contracts/observation.py",
     "src/hydra2/contracts/action.py",
@@ -49,7 +51,7 @@ GRANDFATHERED = {
     "src/hydra2/search/modules/__init__.py",
     "src/hydra2/analysis/qualification.py",
     "src/hydra2/eval/baseline.py",
-    # tests (CutTests ordered)
+    # tests
     "tests/unit/test_supervised_loop_wp05b.py",
     "tests/conformance/test_reference_corpus_wp04a.py",
     "tests/integration/test_data_lineage_wp04b.py",
@@ -60,7 +62,7 @@ GRANDFATHERED = {
     # lean (grandfathered as-is; Yaku-split past-1200 never approved)
     "lean/Formal/Mahjong/Yaku.lean",
     "lean/Formal/Mahjong/Turn.lean",
-    # tools (facade splits; 2000 touches walk+decisions+ingest only)
+    # tools (2000 covers walk+decisions+ingest only)
     "tools/hydra2-replay-rs/crates/hydra-feed/src/walk.rs",
     "tools/hydra2-replay-rs/crates/hydra-shard/src/decisions.rs",
     "tools/hydra2-replay-rs/crates/hydra-feed/src/ingest.rs",
