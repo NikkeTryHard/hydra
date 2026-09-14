@@ -3158,15 +3158,15 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
             seek_entries = entries
             seek_rng = rng_state
 
-    # Reservoir snapshot (fresh runs only): restores a verified pre-prime
-    # buffer via the resume machinery (miss → normal fill, hash-gated).
-    # Hit path is env-gated (HYDRA2_RESERVOIR_SNAPSHOT=1) until the
-    # capture-position fix lands: an un-gated hit restores divergent data
-    # (measured 1.37e-01). Capture always runs (miss path populates).
+    # Reservoir snapshot (fresh runs only, env-gated both directions):
+    # HYDRA2_RESERVOIR_SNAPSHOT=1 enables load (hit) AND capture (miss);
+    # unset (default) skips both — a capture nothing reads back is pure I/O.
+    # Hit path stays gated until the capture-position fix lands: an un-gated
+    # hit restores divergent data (measured 1.37e-01).
     _prime_index: Path | None = None
     _prime_hit: dict[str, Any] | None = None
     _prime_hit_enabled = os.environ.get("HYDRA2_RESERVOIR_SNAPSHOT", "").strip() == "1"
-    if resume is None and config.data.shuffle_buffer_size > 0:
+    if resume is None and config.data.shuffle_buffer_size > 0 and _prime_hit_enabled:
         _prime_index = _prime_cache_path(
             manifest=manifest,
             stream_digest=stream_digest,
@@ -3177,8 +3177,6 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
             buffer_size=config.data.shuffle_buffer_size,
         )
         _prime_hit = _load_prime_snapshot(path=_prime_index, stream_digest=stream_digest)
-        if _prime_hit is not None and not _prime_hit_enabled:
-            _prime_hit = None
         if _prime_hit is not None:
             seek_entries = _prime_hit["buffer_entries"]
             seek_rng = _prime_hit["buffer_rng_state"]
@@ -3495,18 +3493,22 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
     # grads, decoded games) stays collectable. Zero training-math effect.
     # Join the eager fill first: freezing mid-fill would pin in-flight batches.
     _join_eager_fill()
-    # Reservoir capture (fresh runs, miss only): prime buffer is fully
-    # resident post-join; persist raw bytes + RNG for the next fresh run.
+    # Reservoir capture (fresh runs, gated-miss only): prime buffer is fully
+    # resident post-join; persist raw bytes + RNG for the next gated run.
     # Best-effort (run continues on write failure); never on resume (the
     # checkpoint machinery owns buffer state there), never after a hit
-    # (identical bytes would just rewrite themselves).
-    if resume is None and _prime_index is not None and _prime_hit is None:
+    # (identical bytes would just rewrite themselves), and never when the
+    # snapshot gate is off (nothing would ever read it back: the load above
+    # is gated on the same var, so an ungated write is pure I/O cost).
+    if resume is None and _prime_hit_enabled and _prime_index is not None and _prime_hit is None:
+        _t_capture = time.perf_counter()
         _capture_prime_snapshot(
             dataset=dataset,
             index_path=_prime_index,
             stream_digest=stream_digest,
             buffer_size=config.data.shuffle_buffer_size,
         )
+        print(f"phase: reservoir-capture t={time.perf_counter() - _t_capture:.1f}s", flush=True)
     with contextlib.suppress(Exception):
         gc.collect()
         gc.freeze()
