@@ -22,7 +22,6 @@ from pathlib import Path
 
 import pytest
 
-from hydra2.config import artifact_root
 from hydra2.conformance.report import build_intersection_report, write_intersection_report
 from hydra2.conformance.runner import (
     CaseResult,
@@ -158,8 +157,10 @@ def _expect_abortive(reason: str):
 _RESULTS: dict[str, CaseResult] = {}
 
 
-def _run(case_id, title, rule_fields, evidence, **kwargs) -> CaseResult:
-    result = _run_case(_runner(), case_id, title, rule_fields, evidence, **kwargs)
+def _run(case_id, title, rule_fields, evidence, runner=None, **kwargs) -> CaseResult:
+    result = _run_case(
+        runner if runner is not None else _runner(), case_id, title, rule_fields, evidence, **kwargs
+    )
     _RESULTS[case_id] = result
     return result
 
@@ -211,7 +212,7 @@ def assert_supported(result: CaseResult, case_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_wp04a_01_fifth_dora_and_kan_ura_timing() -> None:
+def test_wp04a_01_fifth_dora_and_kan_ura_timing(runner=None) -> None:
     """Two dealer ankans reveal indicators 129 then 127 immediately after each
     kan; ura slots stay out of public state without a winning riichi hand."""
     hands = {
@@ -304,6 +305,7 @@ def test_wp04a_01_fifth_dora_and_kan_ura_timing() -> None:
         expectations=[_expect_dora_revealed([129, 127]), _expect_no_ura_in_public()],
         dead_wall=dead_wall,
         finish_to_terminal=True,
+        runner=runner,
     )
     assert_supported(result, "WP04A-01")
 
@@ -313,7 +315,7 @@ def test_wp04a_01_fifth_dora_and_kan_ura_timing() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_wp04a_02_chankan_and_rinshan_payout() -> None:
+def test_wp04a_02_chankan_and_rinshan_payout(runner=None) -> None:
     """s3 riichis waiting 5s/8s ryanmen WITHOUT holding a copy; s1 ponned 5s
     earlier and later kakens the fourth copy -> chankan window opens for s3.
     Payout: riichi+pinfu+chankan = 4 han 30 fu child-vs-child = 5200 + stick."""
@@ -442,6 +444,7 @@ def test_wp04a_02_chankan_and_rinshan_payout() -> None:
         script=script,
         expectations=expectations,
         finish_to_terminal=True,
+        runner=runner,
     )
     assert_supported(result, "WP04A-02")
 
@@ -451,7 +454,7 @@ def test_wp04a_02_chankan_and_rinshan_payout() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_wp04a_11_suufon_renda_documented_unsupported() -> None:
+def test_wp04a_11_suufon_renda_documented_unsupported(runner=None) -> None:
     """Four first-turn own-wind discards must abort (suufon_renda is a declared
     manifest rule); RiichiEnv 0.4.10 keeps playing. EXPECTED mismatch resolved
     through DOCUMENTED_UNSUPPORTED."""
@@ -532,6 +535,7 @@ def test_wp04a_11_suufon_renda_documented_unsupported() -> None:
         script=script,
         expectations=[_expect_abortive("suufon_renda")],
         finish_to_terminal=False,
+        runner=runner,
     )
     assert result.status == "mismatch", (
         "engine unexpectedly aborted via suufon_renda - refresh the corpus verdict"
@@ -559,37 +563,40 @@ def _record(result: CaseResult) -> CaseResult:
     return result
 
 
-def test_wp04a_intersection_report_and_disposition() -> None:
+def test_wp04a_intersection_report_and_disposition(tmp_path) -> None:
     """Publishes the supported-rule report atomically and checks disposition:
     passed only when zero unresolved mismatches remain AFTER
     documented-unsupported resolution."""
-    # Self-contained by design: invoke every sibling case test in-process
-    # (each records into _RESULTS/_WAVE_C_RESULTS on THIS worker), then
-    # aggregate. Under xdist loadscope each file pins its own worker so
-    # cross-file globals never merge (proven: -n 4 fails with coverage gap).
-    # Local imports keep collection order stable (claims/scoring/terminals
-    # register before the merge below reads them).
+    # Self-contained by design: rebuild every case in-process through a
+    # worker-local runner (counterexamples persist under tmp_path, never
+    # the shared artifact root; report publishes under tmp_path — two
+    # workers sharing a second-stamp run_id never clobber). Under xdist
+    # loadscope each file pins its own worker so cross-file globals never
+    # merge (proven: -n 4 fails with coverage gap). Every case test accepts
+    # a runner override forwarded to _run/_record (defaults keep standalone
+    # runs on the shared runner, unchanged).
     from tests.conformance import test_reference_corpus_claims_wp04a as _claims
     from tests.conformance import test_reference_corpus_scoring_wp04a as _scoring
     from tests.conformance import test_reference_corpus_terminals_wp04a as _terminals
 
-    test_wp04a_01_fifth_dora_and_kan_ura_timing()
-    test_wp04a_02_chankan_and_rinshan_payout()
-    test_wp04a_11_suufon_renda_documented_unsupported()
-    _claims.test_wp04a_03_kuikae_post_pon_same_meld_swap_barred()
-    _claims.test_wp04a_04a_temp_furiten_clears_then_ron_lands()
-    _claims.test_wp04a_04b_permanent_furiten_after_riichi_miss()
-    _claims.test_wp04a_05_double_ron_priority_packets_upstream_first()
-    _claims.test_wp04a_06_multi_ron_sticks_upstream_with_dealer_co_winner()
-    _scoring.test_wp04a_07_red_five_scoring()
-    _scoring.test_wp04a_08_pao_liability_split_and_kazoe()
-    _scoring.test_wp04a_09_kyuushu_kyuuhai_abort()
-    _scoring.test_wp04a_10_exhaustive_draw_noten_split()
-    _terminals.test_wp04a_12_sanchahou_triple_ron_abort()
-    _terminals.test_wp04a_13_rank_tie_break_and_uma_utility()
-    _terminals.test_wp04a_14a_all_last_dealer_tenpai_stop_yame()
-    _terminals.test_wp04a_14b_west_entry_sudden_death_expected_mismatch()
-    _terminals.test_wp04a_14c_tobi_score_injection_unavailable_blocked()
+    _local_runner = ReferenceTraceRunner(manifest=_MANIFEST, artifact_root_path=tmp_path)
+    test_wp04a_01_fifth_dora_and_kan_ura_timing(runner=_local_runner)
+    test_wp04a_02_chankan_and_rinshan_payout(runner=_local_runner)
+    test_wp04a_11_suufon_renda_documented_unsupported(runner=_local_runner)
+    _claims.test_wp04a_03_kuikae_post_pon_same_meld_swap_barred(runner=_local_runner)
+    _claims.test_wp04a_04a_temp_furiten_clears_then_ron_lands(runner=_local_runner)
+    _claims.test_wp04a_04b_permanent_furiten_after_riichi_miss(runner=_local_runner)
+    _claims.test_wp04a_05_double_ron_priority_packets_upstream_first(runner=_local_runner)
+    _claims.test_wp04a_06_multi_ron_sticks_upstream_with_dealer_co_winner(runner=_local_runner)
+    _scoring.test_wp04a_07_red_five_scoring(runner=_local_runner)
+    _scoring.test_wp04a_08_pao_liability_split_and_kazoe(runner=_local_runner)
+    _scoring.test_wp04a_09_kyuushu_kyuuhai_abort(runner=_local_runner)
+    _scoring.test_wp04a_10_exhaustive_draw_noten_split(runner=_local_runner)
+    _terminals.test_wp04a_12_sanchahou_triple_ron_abort(runner=_local_runner)
+    _terminals.test_wp04a_13_rank_tie_break_and_uma_utility(runner=_local_runner)
+    _terminals.test_wp04a_14a_all_last_dealer_tenpai_stop_yame(runner=_local_runner)
+    _terminals.test_wp04a_14b_west_entry_sudden_death_expected_mismatch(runner=_local_runner)
+    _terminals.test_wp04a_14c_tobi_score_injection_unavailable_blocked(runner=_local_runner)
     merged = dict(_RESULTS)
     for cid, res in _WAVE_C_RESULTS.items():
         merged.setdefault(cid, res)
@@ -623,7 +630,7 @@ def test_wp04a_intersection_report_and_disposition() -> None:
         documented_unsupported=DOCUMENTED_UNSUPPORTED,
     )
     run_id = time.strftime("%Y%m%dT%H%M%S%fZ", time.gmtime())
-    destination = artifact_root() / "reports" / "WP-04A" / run_id / "report.json"
+    destination = tmp_path / "reports" / "WP-04A" / run_id / "report.json"
     write_intersection_report(document, destination)
     assert destination.is_file()
     assert document["tally"]["mismatch"] == len(document["unresolved_mismatch_cases"])

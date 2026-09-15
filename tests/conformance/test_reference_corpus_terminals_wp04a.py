@@ -36,7 +36,7 @@ from tests.conformance.test_reference_corpus_wp04a import (
 pytestmark = pytest.mark.contract_package("WP-04A")
 
 
-def test_wp04a_12_sanchahou_triple_ron_abort() -> None:
+def test_wp04a_12_sanchahou_triple_ron_abort(runner=None) -> None:
     """p0/p1/p2 declare riichi in sequence; p3's tsumogiri of the fourth East
     completes all three waits. Tenhou RULE L1029-1030 makes 三家和了 an
     abortive draw (manifest ``abortive_draws`` lists 'sanchahou'); the hand
@@ -114,7 +114,7 @@ def test_wp04a_12_sanchahou_triple_ron_abort() -> None:
         return None
 
     result = _record(
-        _runner().run_case(
+        (runner if runner is not None else _runner()).run_case(
             "WP04A-12",
             "sanchahou: triple ron over three riichis aborts unpaid",
             rule_fields,
@@ -128,7 +128,7 @@ def test_wp04a_12_sanchahou_triple_ron_abort() -> None:
     assert_supported(result, "WP04A-12")
 
 
-def test_wp04a_13_rank_tie_break_and_uma_utility() -> None:
+def test_wp04a_13_rank_tie_break_and_uma_utility(runner=None) -> None:
     """Unit-grade proof that resolve_final_ranks + utility() honour the
     published policy fields (Tenhou L1025/L1013): equal scores place by
     East-1 seat-wind order; uma_by_rank converts through a UtilityManifest;
@@ -209,7 +209,7 @@ def test_wp04a_13_rank_tie_break_and_uma_utility() -> None:
     )
 
 
-def test_wp04a_14a_all_last_dealer_tenpai_stop_yame() -> None:
+def test_wp04a_14a_all_last_dealer_tenpai_stop_yame(runner=None) -> None:
     """All-last agari-yame, tenpai-stop branch: seat3's E1 mangan ron puts the
     future South-4 dealer on 33000 (top, >= return_points). Under neutral
     play every later hand exhausts; at South-4 the dealer is tenpai (zero
@@ -266,7 +266,7 @@ def test_wp04a_14a_all_last_dealer_tenpai_stop_yame() -> None:
         return None
 
     result = _record(
-        _runner().run_case(
+        (runner if runner is not None else _runner()).run_case(
             "WP04A-14a",
             "all-last dealer tenpai-stop yame (top >= return_points)",
             ("agari_yame_policy", "all_last_policy", "return_points"),
@@ -287,7 +287,7 @@ def test_wp04a_14a_all_last_dealer_tenpai_stop_yame() -> None:
     assert_supported(result, "WP04A-14a")
 
 
-def test_wp04a_14b_west_entry_sudden_death_expected_mismatch() -> None:
+def test_wp04a_14b_west_entry_sudden_death_expected_mismatch(runner=None) -> None:
     """Sudden-death/West entry: with the top below return_points (30000) at
     the end of South-4 the manifest demands continuation
     (all_last_policy='south_west_entry_renchan_extension',
@@ -323,7 +323,7 @@ def test_wp04a_14b_west_entry_sudden_death_expected_mismatch() -> None:
         )
 
     result = _record(
-        _runner().run_case(
+        (runner if runner is not None else _runner()).run_case(
             "WP04A-14b",
             "west entry required below return points (engine deviates)",
             ("all_last_policy", "sudden_death_policy"),
@@ -344,7 +344,7 @@ def test_wp04a_14b_west_entry_sudden_death_expected_mismatch() -> None:
     assert result.counterexample_path, "expected-mismatch case must persist its counterexample"
 
 
-def test_wp04a_14c_tobi_score_injection_unavailable_blocked() -> None:
+def test_wp04a_14c_tobi_score_injection_unavailable_blocked(runner=None) -> None:
     """Tobi (<0 immediate end; tobi_policy='negative_points_immediate_end',
     bankruptcy_threshold=0, man L1022/L1077) cannot be exercised through the
     public simulator surface: reset() sources scores exclusively from

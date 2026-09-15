@@ -24,7 +24,7 @@ from tests.conformance.test_reference_corpus_wp04a import (
 pytestmark = pytest.mark.contract_package("WP-04A")
 
 
-def test_wp04a_03_kuikae_post_pon_same_meld_swap_barred() -> None:
+def test_wp04a_03_kuikae_post_pon_same_meld_swap_barred(runner=None) -> None:
     """seat1 holds 5p {53,54,55}; dealer tedashis red 5p 52; the pon consumes
     {53,54} leaving copy 55. Discarding 55 immediately would exchange a hand
     copy for the called meld tile (kuikae) - forbidden since 2007-11-29 - so
@@ -111,11 +111,12 @@ def test_wp04a_03_kuikae_post_pon_same_meld_swap_barred() -> None:
             ),
         ],
         finish_to_terminal=True,
+        runner=runner,
     )
     assert_supported(result, "WP04A-03")
 
 
-def test_wp04a_04a_temp_furiten_clears_then_ron_lands() -> None:
+def test_wp04a_04a_temp_furiten_clears_then_ron_lands(runner=None) -> None:
     """seat1 waits 9s tanki on a concealed haku triplet hand (fanpai 1han,
     ankoh 8fu + tanki 2fu + menzen 10fu + base 20fu = 40fu). Dealer tedashis
     9s#1: seat1 passes (temporary furiten), then clears it at own tsumogiri.
@@ -227,11 +228,12 @@ def test_wp04a_04a_temp_furiten_clears_then_ron_lands() -> None:
             _expect_scores_delta([-2600, 2600, 0, 0]),
         ],
         finish_to_terminal=True,
+        runner=runner,
     )
     assert_documented_mismatch(result, "WP04A-04a")
 
 
-def test_wp04a_04b_permanent_furiten_after_riichi_miss() -> None:
+def test_wp04a_04b_permanent_furiten_after_riichi_miss(runner=None) -> None:
     """seat1 riichis waiting sou9 tanki (copy 104); dealer tedashis copy 105;
     seat1 declines (riichi miss => PERMANENT furiten). Copy 107 re-enters the
     river two turns later: the engine must never offer seat1 a ron again (the
@@ -342,11 +344,12 @@ def test_wp04a_04b_permanent_furiten_after_riichi_miss() -> None:
             expect_predicate("game reached terminal", check_terminal),
         ],
         finish_to_terminal=True,
+        runner=runner,
     )
     assert_supported(result, "WP04A-04b")
 
 
-def test_wp04a_05_double_ron_priority_packets_upstream_first() -> None:
+def test_wp04a_05_double_ron_priority_packets_upstream_first(runner=None) -> None:
     """seat1+seat2 riichi on SECOND turns (daburi impossible by definition,
     ippatsu alive), both waiting 3s/6s through 4s5s; child seat3 tedashis sou3
     83 within the same go-around. Table: seat1 riichi+ippatsu+tanyao+pinfu+aka
@@ -480,11 +483,12 @@ def test_wp04a_05_double_ron_priority_packets_upstream_first() -> None:
             _expect_scores_delta([0, 8000, 9700, -15700]),
         ],
         finish_to_terminal=True,
+        runner=runner,
     )
     assert_documented_mismatch(result, "WP04A-05")
 
 
-def test_wp04a_06_multi_ron_sticks_upstream_with_dealer_co_winner() -> None:
+def test_wp04a_06_multi_ron_sticks_upstream_with_dealer_co_winner(runner=None) -> None:
     """Dealer and seat1 riichi (SECOND turns) and both ron child seat3's sou3
     tedashi. Upstream walk from discarder 3 hits seat1 before the dealer, so
     the packet must head with seat1 and BOTH sticks belong to seat1: dealer
@@ -615,6 +619,7 @@ def test_wp04a_06_multi_ron_sticks_upstream_with_dealer_co_winner() -> None:
             _expect_scores_delta([12000, 9700, 0, -21700]),
         ],
         finish_to_terminal=True,
+        runner=runner,
     )
     assert_documented_mismatch(result, "WP04A-06")
 

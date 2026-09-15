@@ -21,7 +21,7 @@ from tests.conformance.test_reference_corpus_wp04a import (
 pytestmark = pytest.mark.contract_package("WP-04A")
 
 
-def test_wp04a_07_red_five_scoring() -> None:
+def test_wp04a_07_red_five_scoring(runner=None) -> None:
     """s3 (child) holds red 5m (16) + red 5p (52) concealed, pons red 5s (88)
     with two normal copies, completes 456p with dealer's discarded 6p.
     Yaku/dora/fu derivation (Tenhou tables):
@@ -141,11 +141,12 @@ def test_wp04a_07_red_five_scoring() -> None:
         ],
         dead_wall=dead_wall,
         finish_to_terminal=True,
+        runner=runner,
     )
     assert_supported(result, "WP04A-07")
 
 
-def test_wp04a_08_pao_liability_split_and_kazoe() -> None:
+def test_wp04a_08_pao_liability_split_and_kazoe(runner=None) -> None:
     """Dealer builds daisangen from three pons; the THIRD dragon meld is fed
     by s2 (discarding F copy 131), making s2 the pao bearer. s3 then discards
     sou9 (105) and the dealer rons. Manifest
@@ -266,11 +267,12 @@ def test_wp04a_08_pao_liability_split_and_kazoe() -> None:
             _expect_scores_delta((48000, 0, -24000, -24000)),
         ],
         finish_to_terminal=True,
+        runner=runner,
     )
     assert_supported(result, "WP04A-08")
 
 
-def test_wp04a_09_kyuushu_kyuuhai_abort() -> None:
+def test_wp04a_09_kyuushu_kyuuhai_abort(runner=None) -> None:
     """Dealer's opening draw offers 10 distinct terminal/honor kinds; the
     canonical grammar exposes the abort as action kind
     ``abort_nine_terminals`` (probed at step 0). Applying it must emit
@@ -389,11 +391,12 @@ def test_wp04a_09_kyuushu_kyuuhai_abort() -> None:
             ),
         ],
         finish_to_terminal=True,
+        runner=runner,
     )
     assert_supported(result, "WP04A-09")
 
 
-def test_wp04a_10_exhaustive_draw_noten_split() -> None:
+def test_wp04a_10_exhaustive_draw_noten_split(runner=None) -> None:
     """Wall exhausts under pure tsumogiri auto-drive (fallback policy prefers
     pass at windows and tsumogiri at draws, so nobody ever claims or wins).
     Seat 0 is the ONLY tenpai hand: 123m456p789s CCC + N tanki (verified with
@@ -515,5 +518,6 @@ def test_wp04a_10_exhaustive_draw_noten_split() -> None:
             ),
         ],
         finish_to_terminal=True,
+        runner=runner,
     )
     assert_supported(result, "WP04A-10")
