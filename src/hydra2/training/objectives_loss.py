@@ -155,10 +155,10 @@ def masked_cross_entropy(
     batch_idx = torch.arange(targets.shape[0], device=targets.device)
     if not torch.compiler.is_compiling():
         _check_targets_legal(legal_mask, targets)
-    # Fused-CE fast path (exact formula, Triton custom op; see fused_ce.py):
-    # CUDA + triton + bf16/fp32 dense logits only. Trace-safe gates, zero
-    # syncs; lazy import keeps CPU-only import cost at zero. The eager
-    # fallback below is unchanged for all other cases.
+    # Fused-CE fast path (exact masked-CE formula via the lazily-imported
+    # Triton custom op; CUDA + triton + bf16/fp32 dense-logits only,
+    # trace-safe gates, zero syncs; CPU-only import stays zero-cost):
+    # The eager fallback below is unchanged for all other cases.
     if logits.is_cuda and logits.dtype in (torch.bfloat16, torch.float32):
         from hydra2.training.fused_ce import TRITON_AVAILABLE, fused_masked_ce_row_losses
 

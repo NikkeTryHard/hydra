@@ -62,8 +62,7 @@ def _load_extension() -> Any:
         raise RuntimeError(
             "hydra2_replay_rs extension not importable; build it with "
             "`cargo build -p hydra2-replay-rs` and put the resulting "
-            "`hydra2_replay_rs` shared object on sys.path "
-            "(see tests/unit/test_rust_stream_wp14.py for the exact recipe)"
+            "`hydra2_replay_rs` shared object on sys.path"
         ) from exc
 
 

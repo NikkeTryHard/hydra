@@ -16,7 +16,7 @@ Enablement (enabled by default once the SDK is importable):
 
 - ``HYDRA2_MLFLOW_DISABLED=1`` is the kill-switch and wins over
   everything, including an explicit ``enabled=True``. The test suite sets
-  it (see ``tests/conftest.py``) so unit tests never touch the store.
+  it (the suite forces HYDRA2_MLFLOW_DISABLED=1) so unit tests never touch the store.
 - Otherwise the mirror is on when ``mlflow`` imports cleanly; explicit
   ``enabled=False`` (YAML ``telemetry.mlflow_enabled: false``) also
   forces off.

@@ -499,7 +499,7 @@ def test_controlled_smc_ess_dirichlet_curve() -> None:
     # Golden counts are exact (==): seeds are sha256-derived, numpy PCG64 is
     # deterministic in-env (frozen under numpy 2.5.2). Re-freeze GOLDEN from
     # ~/tmp/ess_dirichlet.py output if numpy is bumped — never widen to
-    # tolerances (repo bit-identical contract, cf. test_determinism).
+    # tolerances (bit-identical golden contract: exact == on sha256-seeded PCG64 draws under frozen numpy; re-freeze GOLDEN on a numpy bump, never widen to tolerances).
     GOLDEN = {0.05: 28, 0.1: 58, 0.2: 140, 0.5: 285, 1.0: 420, 2.0: 490, 5.0: 500}
     DRAWS = 500
     N = 4

@@ -15,7 +15,7 @@
 //!   `u8` history kinds + stack `[u32; 32]` legal.
 //! - per-row `Vec<String>` concealed/drawn/dora renders → `u8`/`i8` planes.
 //!
-//! Copy-slot model (oracle-exact, see `walk.rs` for the proof sketch):
+//! Copy-slot model, oracle-exact vs the drained-oracle V1 semantics (presence 0/1 per copy, monotonic takes per string class, no String/HashMap/heap on the row path):
 //! `hands[t][c]` is presence (0/1) of copy `c` of type `t` (`t = id / 4`).
 //! Takes are allocated monotonically per string class
 //! ([`Ledger::used_n`]/[`used_aka`], never reused — mirrors

@@ -267,7 +267,7 @@ theorem blocksConcat_length (k : Branch → ℕ) :
 theorem blocksConcat_take_drop (k : Branch → ℕ) (n : Nat) :
     ((blocksConcat k).take n).length + ((blocksConcat k).drop n).length
       = (blocksConcat k).length := by
-  -- Grounded: `List.take_append_drop`, `List.length_append` (cf. `Wall.lean`).
+  -- Grounded: `List.take_append_drop`, `List.length_append` (Std list-partition lemmas; same shape as the wall-partition proofs).
   have h := List.take_append_drop n (blocksConcat k)
   calc ((blocksConcat k).take n).length + ((blocksConcat k).drop n).length
       = (((blocksConcat k).take n) ++ ((blocksConcat k).drop n)).length := by

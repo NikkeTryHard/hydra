@@ -39,9 +39,7 @@ Faithful Lean port of:
 Tenhou hanchan is the *sole* ranked 4-player rule in hydra2:
 
 * `starting_points = 25000`, `return_points = 30000` (SPEC literal).
-* `uma_by_rank = (15,5,-5,-15)*1000` — Tenhou 2017+ uma 15-5 (see `rules.py` commentary
-  on placement conversion; `Scoring.lean:umaByRank` uses canonical 20-10 for parity
-  but manifest uma below is the frozen Tenhou 15-5 studied here; both sum to zero).
+* `uma_by_rank = (15,5,-5,-15)*1000` — frozen Tenhou 2017+ uma 15-5 placement conversion (both uma vectors sum to zero; `Scoring.umaByRank` keeps canonical 20-10 only for parity lemmas).
 * `oka_policy = "half_return"` → pool `(30000-25000)*4 = 20000` to top.
 * `red_tile_ids = (16,52,88)` — exactly types 4,13,22 aka 5mr/5pr/5sr.
 * `clocks = ((5,10),(3,5))`, `yaku yakuman kazoe pao kan_dora` enums as in `rules.py`.

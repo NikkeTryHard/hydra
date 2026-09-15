@@ -1,4 +1,6 @@
-"""Contract layer: primitive aliases, typed errors (see common.py).
+"""Contract layer: primitive aliases and typed errors (ContractError,
+CanonicalizationError, DigestText, action/tile/event IDs), re-exported
+from this package's common module.
 
 Full contract modules (rules, utility, tile, action, event, observation)
 arrive in WP-02; only SPEC 2.1/3 bootstrap content exists now.

@@ -679,8 +679,7 @@ theorem han_le_hanClosed (h : Hand) (ms : MeldSet) (ctx : YakuContext) :
 
 theorem han_ge_zero (h : Hand) (ms : MeldSet) (ctx : YakuContext) : 0 ≤ han h ms ctx := Nat.zero_le _
 
--- Dora bonus han is defined in Dora.lean: `def doraHan (n : Nat) : Nat := n`
--- We reuse it here; prove local bounds without redeclaring (avoid duplicate).
+-- Reuses `doraHan` (identity on Nat); local bounds are proved here without redeclaring, avoiding a duplicate.
 
 theorem yaku_doraHan_le_20 (n : Nat) (h : n ≤ 20) : doraHan n ≤ 20 := by
   unfold doraHan; exact h

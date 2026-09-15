@@ -177,7 +177,9 @@ def _validate_batch_no_privileged(batch: dict[str, Any]) -> None:
 
 
 def _move_batch_to_device(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
-    # Perf-A §4.4: non_blocking H2D (see loop.py) — requires pinned memory for overlap.
+    # Perf-A §4.4: non_blocking H2D requires a pinned-memory source for
+    # overlap (pinned in the dataset/encoder when CUDA is available);
+    # without it the flag is a no-op and the copy serializes.
     # Evidence: torch.Tensor.pin_memory + non_blocking docs; pinned in dataset/encoder.
     moved: dict[str, Any] = {}
     for k, v in batch.items():

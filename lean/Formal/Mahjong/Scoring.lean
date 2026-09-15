@@ -89,8 +89,7 @@ References:
     `13` caps at kazoe yakuman; beyond remains yakuman. -/
 abbrev Han := Nat
 
--- Fu is already defined in Yaku.lean as `abbrev Fu := Nat` (20..110 %10=0). We reuse it
--- to avoid duplicate declaration; `Han → Fu → Points` still typechecks via Yaku's Fu.
+-- Reuses the shared `Fu` abbreviation (20..110 %10=0) to avoid a duplicate declaration; `Han → Fu → Points` still typechecks via that abbreviation.
 /-- Points — per-hand payment in points (ron total or tsumo split before honba). -/
 abbrev Points := Nat
 
@@ -433,7 +432,7 @@ theorem oka_none_pool : okaPool .none = 0 := rfl
     2) leftover riichi sticks to top ( `end_top_take_abort_carry_dealin_exempt` )
     3) uma 10-20 applied. This is **not** in per-hand `scoring`. -/
 def placementNote : String :=
-  "uma 10-20 and oka half_return apply to final scores/ranks, not to per-hand scoring; see rules.py:uma_by_rank, oka_policy, placement_conversion_id"
+  "uma 10-20 and oka half_return apply to final scores/ranks, not to per-hand scoring (final-placement fields uma_by_rank, oka_policy, placement_conversion_id)"
 
 -- ---------------------------------------------------------------------------
 -- 10. Furiten interaction — ron blocked, tsumo allowed
