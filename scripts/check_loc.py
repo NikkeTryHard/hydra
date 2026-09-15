@@ -27,8 +27,6 @@ GRANDFATHERED = {
     "src/hydra2/belief/oracle_distillation.py",
     "src/hydra2/distillation/teacher.py",
     "src/hydra2/engines/riichienv/adapter.py",
-    "src/hydra2/engines/riichienv/log_replay.py",
-    "src/hydra2/engines/riichienv/single_pass.py",
     "src/hydra2/engines/mahjax/differential.py",
     "src/hydra2/search/candidate0.py",
     "src/hydra2/search/gumbel.py",
