@@ -229,7 +229,10 @@ CHECKLIST_FIELDS_BY_MODULE = {
         "WP04A-14b",
         "WP04A-14c",
     ),
-    # WP-04B Authoritative Data Lineage — BUILD 428-443 plus hard failures
+    # WP-04B Authoritative Data Lineage — BUILD 428-443 plus hard failures,
+    # one entry per module (fields partition the gate claims; each field is
+    # owned by exactly one module below).
+    # Lineage: raw join, ingest, decode, validation, quarantine, hard failures.
     "test_data_lineage_wp04b.py": (
         "raw_object_join_immutable",
         "ingest_via_packager_zstd_manifest",
@@ -238,6 +241,10 @@ CHECKLIST_FIELDS_BY_MODULE = {
         "validate_tile_conservation_red",
         "validate_legality_calls_scores_termination",
         "quarantine_invalid_with_lineage",
+        "hard_failures_silent_skip_partial_split_corrupt",
+    ),
+    # Partition/serving: whole-game splits, grouping, parquet, caches, loader.
+    "test_data_partition_wp04b.py": (
         "partition_whole_games_before_expansion",
         "partition_grouping_and_duplicates",
         "walls_disjoint",
@@ -247,7 +254,6 @@ CHECKLIST_FIELDS_BY_MODULE = {
         "content_addressed_tensor_caches",
         "loader_hash_legal_mask_verification",
         "fresh_process_batch_load",
-        "hard_failures_silent_skip_partial_split_corrupt",
     ),
     # WP-05B Supervised Loop — BUILD §8, one entry per module (fields partition
     # the gate claims; each field is owned by exactly one module below).
@@ -397,24 +403,31 @@ CHECKLIST_FIELDS_BY_MODULE = {
         "despot_candidate_spec_hash_stable",
         "despot_report",
     ),
-    # WP-09A Candidate 3 PBRF Core — BUILD §12 / SPEC 16.4 / Blueprint §10
+    # WP-09A Candidate 3 PBRF Core — BUILD §12 / SPEC 16.4 / Blueprint §10,
+    # one entry per module (fields partition the gate claims; each field is
+    # owned by exactly one module below).
+    # Core: natural parents, frozen candidates, allocation, commit, squash.
     "test_pbrf_wp09a.py": (
         "pbrf_core",
         "determinism",
         "report",
         "natural_immutable_parent_population",
         "freeze_root_candidate_generator_before_search_evidence",
+        "allocate_fixed_search_batches",
+        "commit_only_authoritative_realized_child",
+        "increment_belief_epoch_squash_incompatible_siblings_statistics",
+        "no_hidden_state_leak",
+    ),
+    # Partition: disjoint packet enumeration, provenance, tolerance, missing
+    # mass, frozen-candidate stability, stale and reversal failures.
+    "test_pbrf_partition_wp09a.py": (
         "exhaustively_enumerate_immediate_disjoint_packet_kernel_per_parent_action",
         "store_parent_id_successor_delta_raw_weight_provenance",
         "require_child_normalizer_partition_within_tolerance",
-        "allocate_fixed_search_batches",
         "freeze_candidates_before_natural_confirmation",
-        "commit_only_authoritative_realized_child",
-        "increment_belief_epoch_squash_incompatible_siblings_statistics",
         "missing_packet_mass_is_hard_failure",
         "stale_child_is_hard_failure",
         "confirmation_reversal_is_hard_failure",
-        "no_hidden_state_leak",
     ),
     # WP-09B Candidate 4 Modules — one at a time (BUILD §12 / SPEC 16.5 / Blueprint §11.1-11.10)
     "test_modules_wp09b.py": (
