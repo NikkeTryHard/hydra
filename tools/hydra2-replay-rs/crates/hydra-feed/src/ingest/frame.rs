@@ -92,8 +92,8 @@ fn frame_lines<'a>(
     parse: LineParser<'a>,
 ) -> Result<FramedGame<'a>, GateReject> {
     // No-panic-by-construction: out-of-range can only come from a caller
-    // bug (both entry points build ranges from the memchr line scan); map it
-    // to the closed empty verdict rather than indexing.
+    // bug (both entry points build ranges from memchr splits); map it to
+    // the closed empty verdict rather than indexing.
     let chunk = buf.get(range.0..range.1).unwrap_or(&[]);
     if chunk.is_empty() {
         return Err(GateReject::empty(game_idx));

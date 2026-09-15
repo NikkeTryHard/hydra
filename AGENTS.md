@@ -51,12 +51,12 @@ Layered DAG, dependencies flow one way: `contracts` (stdlib-only Tenhou vocab) <
 
 1. Versioned canonical artifacts from completed packages. 2. `docs/BUILD_EXECUTION_PLAN.md` (order, gates, evidence). 3. `docs/IMPLEMENTATION_SPEC.md` (schemas, APIs, algorithms). 4. `docs/PROJECT_PLAN.md` (direction). 5. `docs/ALGORITHM_EXPERIMENT_BLUEPRINT.md` (candidate intent). 6. External refs (rationale only; NEVER override contracts). On conflict: stop the package, record the exact conflict, NEVER silent-pick. Missing spec blocks implementation; it NEVER authorizes guessing.
 
-## Comment self-containment (Lean + Rust)
+## Comment self-containment (Lean + Rust comments)
 
-- **Comments MUST be self-contained.** State invariant + failure mode inline.
-- **ALLOWED refs:** source-file paths + online URLs ONLY.
-- **NEVER docs pointers.** No SPEC/BUILD/Wave/WP/ideas/docs/*.md/§-to-docs.
-- **No-benefit provenance? Delete it.** Numbers/thresholds MUST stay inline.
+- **Self-contained comments.** Lean/Rust comments MUST state invariant + failure mode inline.
+- **Allowed refs.** Source-file paths (`file://src/...`, `src/...`, `Formal/...`) + online URLs (`https://...`) ONLY; URLs stay full even if path contains `docs/`.
+- **Banned pointers.** NEVER bare doc pointers in comments: `SPEC §`, `per SPEC/BUILD`, `Blueprint §`, `IMPLEMENTATION_SPEC.md`, `docs/...`, `ideas/...`, `>> SPEC >>`, `file://docs/...`.
+- **No-benefit provenance.** Delete it; numbers/thresholds MUST stay inline.
 
 ## Testing rules
 

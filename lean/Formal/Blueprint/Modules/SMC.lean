@@ -312,7 +312,7 @@ theorem essInfTrigger_mono_budget (weights : Finset ℝ) (hne : weights.Nonempty
 verbatim `ESS = 1/Σᵢ(w⁽ⁱ⁾)²` (pytcl `02_particle_filters` notebook,
 https://pytcl.readthedocs.io/en/latest/notebooks/02_particle_filters.html),
 `ESSt = 1/Σ(w_t⁽ⁱ⁾)²` (metricgate,
-https://metricgate.com/ (particle-filter resample note), `ESS = 1/Σ(normwt)²`
+https://metricgate.com/docs/particle-filter-resample/ (particle-filter resample note), `ESS = 1/Σ(normwt)²`
 (jahoo, https://jahoo.github.io/posts/smc-resampling/), `(Σw)²/Σw²`
 (WeightIt, https://ngreifer.github.io/WeightIt/reference/ESS.html).
 Indexed over `Fin n` (NOT `Finset ℝ` like `essInf`): squares do not survive

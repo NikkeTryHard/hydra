@@ -56,7 +56,7 @@ pub(crate) fn do_claim(walker: &mut Walker, idx: usize, kind: &str) -> Result<()
         ));
     }
     let needed = if kind == "daiminkan" { 3 } else { 2 };
-    // Pool-first consumed resolution with ownership checked against the
+    // Pool-first consumed resolution with ownership enforced against the
     // tracked hand (unowned or missing copies fail closed).
     let consumed = resolve_claim_tiles(walker, actor, &consumed_raw, needed, Some(called))?;
     let chosen = match kind {
