@@ -320,7 +320,10 @@ CHECKLIST_FIELDS_BY_MODULE = {
         "hidden_permutation_and_split_wall_leakage_tests",
         "teacher_student_deterministic",
     ),
-    # WP-07A Natural Belief Harness — BUILD §10 / SPEC 14 (natural, packet kernel, deterministic)
+    # WP-07A Natural Belief Harness — BUILD §10 / SPEC 14 (natural, packet kernel, deterministic),
+    # one entry per module (fields partition the gate claims; each field is
+    # owned by exactly one module below).
+    # Natural: epoch, world law, proposals, kernel, pushforward/epoch, corpus.
     "test_belief_natural_wp07a.py": (
         "belief_epoch_immutable_target_identity",
         "natural_world_law_consistent_with_actor_observation",
@@ -332,6 +335,9 @@ CHECKLIST_FIELDS_BY_MODULE = {
         "epoch_increment_after_committed_transition",
         "stale_provenance_epoch_target_rejection",
         "tiny_finite_world_corpus_with_exact_probabilities",
+    ),
+    # Confirmation: full-fidelity runner plus hard packet invariants.
+    "test_belief_natural_confirm_wp07a.py": (
         "natural_full_fidelity_confirmation_runner",
         "packet_mass_one",
         "no_duplicate_missing_packet",
