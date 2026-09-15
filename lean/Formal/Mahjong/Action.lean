@@ -20,7 +20,8 @@ set_option linter.unusedVariables false
 namespace Formal.Mahjong.ActionModule
 
 /-!
-# Mahjong Action — legal-action vocabulary and IsLegal predicate (SPEC section 6)
+# Mahjong Action — legal-action vocabulary and IsLegal predicate
+One actor legal view with 13 frozen kinds; illegal actions are rejected and fail closed
 
 Faithful Lean port of:
 
@@ -37,7 +38,7 @@ Faithful Lean port of:
 -/
 
 -- ---------------------------------------------------------------------------
--- 0. ActionKind — frozen ordinal vocabulary (SPEC 6.1, action.py)
+-- 0. ActionKind — frozen ordinal vocabulary (13 kinds, `src/hydra2/contracts/action.py`)
 -- ---------------------------------------------------------------------------
 
 /-- Canonical action kinds — surface collapsed from 13 frozen Python kinds.

@@ -30,14 +30,16 @@ iterates to identity in 9/4/3 steps, and never fixes a tile.
 Reveal discipline is contiguous (`∃ k, prefix revealed`), kan adds one,
 ura remains hidden until win, and dora is a bonus (not a yaku).
 
-References: SPEC §4.2/§9, `tenhou.net/man`, `riichienv`.
+References: wall partition 136 = 52 dealt plus 70 live plus 14 dead,
+`tenhou.net/man`, `riichienv` tile table, `src/hydra2/contracts/rules.py`.
 -/
 
 -- ---------------------------------------------------------------------------
 -- 1. Sentinel & slots
 -- ---------------------------------------------------------------------------
 
-/-- Sentinel value for “no dora” in indicator arrays (SPEC §9). -/
+/-- Sentinel value for “no dora” in indicator arrays (`DORA_SENTINEL = -1`;
+wrong sentinel collides with a real tile and fails closed). -/
 def DORA_SENTINEL : Int := -1
 
 theorem dora_sentinel_eq : DORA_SENTINEL = -1 := rfl
@@ -84,7 +86,7 @@ def doraPredType (ty : TileType) : TileType :=
   else
     ⟨31 + (ty.val - 31 + 2) % 3, by omega⟩
 
--- Suited / wind / dragon predicates on TileType for case splits
+-- Suited / wind / dragon predicates on TileType for case analysis
 def isWindType (ty : TileType) : Prop := 27 ≤ ty.val ∧ ty.val < 31
 def isDragonType (ty : TileType) : Prop := 31 ≤ ty.val
 

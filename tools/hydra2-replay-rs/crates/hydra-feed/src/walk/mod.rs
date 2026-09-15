@@ -1,6 +1,6 @@
 //! S3 walk — u8 ledger DIRECT to minimal hot planes (`feed::walk`).
 //!
-//! §6.3 shapes: u8 ledger DIRECT to minimal hot planes (this module).
+//! u8 ledger DIRECT to minimal hot planes (this module).
 //!
 //! Engine move: the `engine.rs → feed::walk` rules live here as pure `u8`
 //! functions (win shape, tenpai (one tile from a win), chi/pon/window

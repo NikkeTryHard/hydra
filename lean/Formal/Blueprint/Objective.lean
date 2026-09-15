@@ -13,7 +13,7 @@ set_option linter.unusedSectionVars false
 set_option linter.style.longLine false
 set_option linter.style.whitespace false
 
-/-! # Hydra2 §3 Formal Objective — Extensive Lean Formalization -/
+/-! # Hydra2 Formal Objective — Extensive Lean Formalization -/
 namespace Hydra2.Blueprint.Objective
 
 abbrev Seat := Fin 4

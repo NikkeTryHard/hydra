@@ -22,12 +22,11 @@ namespace Formal.Mahjong
 /-!
 # Turn — `turn_advance` vs `draw_tile` visibility boundary
 
-1:1 port of the turn/order vs hidden-draw distinction required by
-`docs/IMPLEMENTATION_SPEC.md §7.1` and `ALGORITHM_EXPERIMENT_BLUEPRINT.md §2`
-and the Rust handler `riichienv-core/src/state/event_handler.rs` (33.9KB)
-via the Python contracts that replicate it.
+1:1 port of the turn/order vs hidden-draw distinction with the Rust handler
+`riichienv-core/src/state/event_handler.rs` via the Python contracts that replicate it
+(`src/hydra2/contracts/event.py`, `src/hydra2/contracts/observation.py`).
 
-SPEC §7.1 quoted invariants (file://docs/IMPLEMENTATION_SPEC.md#393-448):
+Turn visibility invariants (violation leaks hidden tiles and fails closed):
 - `turn_advance(actor)` is **public** and **tile-free** (`visible_to == (0,1,2,3)`).
 - `draw_tile(actor,tile)` is **actor_private** and carries exactly one physical `TileId`,
   addressed to the drawing seat only (`visible_to == (actor,)`).
@@ -40,8 +39,7 @@ SPEC §7.1 quoted invariants (file://docs/IMPLEMENTATION_SPEC.md#393-448):
   (file://src/hydra2/contracts/observation.py#1054-1074).
 - A turn transition can be inferable from public order while its drawn tile
   remains hidden — the schema therefore **distinguishes** the two events
-  (file://docs/ALGORITHM_EXPERIMENT_BLUEPRINT.md#104,
-   file://src/hydra2/engines/riichienv/adapter.py#1040-1051).
+  (`src/hydra2/engines/riichienv/adapter.py#1040-1051`).
 
 State integration (co-designed with `Formal.Mahjong.State`):
 `Formal.Mahjong.State` models the `wall → hand → discard → meld` state machine
@@ -74,11 +72,11 @@ This module proves:
 -/
 
 -- ---------------------------------------------------------------------------
--- 0. Visibility vocabulary — mirrors SPEC §7.1 `Visibility` literal
+-- 0. Visibility vocabulary — three-valued `Visibility` literal
 -- ---------------------------------------------------------------------------
 
-/-- Visibility lattice — mirrors `Visibility = Literal["public","actor_private","server_private"]`
-    (file://docs/IMPLEMENTATION_SPEC.md#396, file://src/hydra2/contracts/event.py#114). -/
+/-- Visibility lattice — `Visibility = Literal["public","actor_private","server_private"]`
+    (`src/hydra2/contracts/event.py#114`); a fourth value breaks routing and fails closed. -/
 inductive TurnVisibility where
   | Public
   | ActorPrivate
@@ -86,7 +84,7 @@ inductive TurnVisibility where
   deriving DecidableEq, Repr, BEq
 
 -- ---------------------------------------------------------------------------
--- 1. TurnEvent — the two distinguished events of SPEC §7.1 / event_handler.rs
+-- 1. TurnEvent — the two distinguished events (`turn_advance` vs `draw_tile`)
 -- ---------------------------------------------------------------------------
 
 /-- Distinguishes **public order** from **private draw**.
@@ -99,8 +97,7 @@ inductive TurnVisibility where
   Mirrors `event_handler.rs::on_draw` and
   `adapter.py#1051 kind="draw_tile", visibility="actor_private", visible_to=(actor,)`.
 
-References: `file://docs/IMPLEMENTATION_SPEC.md#444-445`,
-`file://src/hydra2/contracts/event.py#690-704`,
+References: `src/hydra2/contracts/event.py#690-704`,
 `file://src/hydra2/contracts/event.py#1050-1069`,
 `file://src/hydra2/contracts/observation.py#1069-1071`.
 -/
@@ -116,7 +113,7 @@ abbrev Fin4 := Fin 4
 -- 2. Accessors — mirrors `EventEnvelope.payload` projections
 -- ---------------------------------------------------------------------------
 
-/-- Acting seat of the turn event — the `actor` payload field (SPEC §7.1). -/
+/-- Acting seat of the turn event — the `actor` payload field. -/
 def TurnEvent.actor : TurnEvent → Fin 4
   | .Advance a => a
   | .Draw a _ => a
@@ -128,7 +125,8 @@ def TurnEvent.tile? : TurnEvent → Option TileId
   | .Advance _ => none
   | .Draw _ t => some t
 
-/-- Visibility assignment — the core SPEC §7.1 distinction. -/
+/-- Visibility assignment — `Advance` public tile-free, `Draw` actor-private one tile;
+swapping them leaks tiles and fails closed. -/
 def TurnEvent.visibility : TurnEvent → TurnVisibility
   | .Advance _ => .Public
   | .Draw _ _ => .ActorPrivate
@@ -150,8 +148,8 @@ def TurnEvent.visibleToActor : TurnEvent → Fin 4 → Bool
 - `Draw a t` → `some t` iff `observer = a`, otherwise `none`.
 
 This is the Lean statement of "only the drawer sees the tile identity"
-(FILE SPEC §7.1, `ALGORITHM_EXPERIMENT_BLUEPRINT.md` turn transition note,
- `file://src/hydra2/contracts/observation.py#1069-1071`). -/
+(`src/hydra2/contracts/observation.py#1069-1071`); exposing the tile to non-drawers
+leaks hidden information and fails closed. -/
 def TurnEvent.observedTile : TurnEvent → Fin 4 → Option TileId
   | .Advance _, _ => none
   | .Draw a t, obs => if obs = a then some t else none
@@ -227,8 +225,7 @@ theorem turnEvent_observedTile_draw_other {a obs : Fin 4} (t : TileId) (h : obs 
     observes the turn order and no tile is revealed.
 
 Mirrors validation `turn_advance is public` and `visible_to == (0,1,2,3)`
-(file://src/hydra2/contracts/event.py#690-694,
- file://docs/IMPLEMENTATION_SPEC.md#444). -/
+(`src/hydra2/contracts/event.py#690-694`); tile-carrying advance leaks and fails closed. -/
 theorem advance_is_public (a : Fin 4) :
     (TurnEvent.Advance a).visibility = .Public ∧
     (TurnEvent.Advance a).tile? = none ∧
@@ -247,9 +244,8 @@ theorem advance_is_public (a : Fin 4) :
 
 Mirrors `draw_tile must be actor_private addressed to the drawing actor only`
 and `actor+tile required, others forbidden`
-(file://src/hydra2/contracts/event.py#695-704,
- file://docs/IMPLEMENTATION_SPEC.md#445,
- file://src/hydra2/contracts/observation.py#1069-1071). -/
+(`src/hydra2/contracts/event.py#695-704`,
+ `src/hydra2/contracts/observation.py#1069-1071`); public draw leaks and fails closed. -/
 theorem draw_is_private (a : Fin 4) (t : TileId) :
     (TurnEvent.Draw a t).visibility = .ActorPrivate ∧
     (TurnEvent.Draw a t).tile? = some t ∧
@@ -288,7 +284,7 @@ theorem draw_orderVisible_other {a obs : Fin 4} (t : TileId) (h : obs ≠ a) :
   simp [TurnEvent.orderVisibleTo, h]
 
 -- ---------------------------------------------------------------------------
--- 5. Visibility finite-set cardinalities (SPEC 7.1 bullets 1–3)
+-- 5. Visibility finite-set cardinalities (public 4, private 1, server 0)
 -- ---------------------------------------------------------------------------
 
 theorem advance_visibleTo_card (a : Fin 4) :
@@ -331,7 +327,7 @@ Mirrors `ObservationBuilder.append_visible` (file://src/hydra2/contracts/observa
 - `public` (`Advance`) → append to all four seat histories.
 - `actor_private` (`Draw a t`) → append to `a` only.
 - `server_private` → append to none (vacuous for `TurnEvent` which has no
-  server_private constructor; the predicate version is proved in §7). -/
+  server_private constructor; the predicate version is proved for packets). -/
 def routeTurnEvent (hists : TurnHistories) (ev : TurnEvent) : TurnHistories :=
   match ev with
   | .Advance _ => fun seat => hists seat ++ [ev]
@@ -515,7 +511,7 @@ We model it as the `visible_to` projection; any concrete hash
 (`file://src/hydra2/artifacts/canonical.py`, `file://src/hydra2/contracts/observation.py#531`)
 is a pure function of this projection and therefore inherits its
 confidentiality. Mirrors `CandidateSpec` planner key binding
-(file://docs/IMPLEMENTATION_SPEC.md#1045). -/
+(`src/hydra2/contracts/event.py#plannerKey` binding; leaking server state into the key fails closed). -/
 def plannerKeyOfTurnHistory (hists : TurnHistories) (actor : Fin 4) : List TurnEvent :=
   hists actor
 
@@ -536,7 +532,7 @@ def logEntryOfTurnHistory (hists : TurnHistories) (actor : Fin 4) : Nat :=
     derived only from the actor's visible events plus public state.
 
 Mirrors `ModelSpec` input-schema derivation hash
-(file://docs/IMPLEMENTATION_SPEC.md#11.1, file://src/hydra2/models/protocol.py).
+(`src/hydra2/models/protocol.py` input-schema hash).
 We model it as the list of observed tiles (private). -/
 def modelInputOfTurnHistory (hists : TurnHistories) (actor : Fin 4) : List (Option TileId) :=
   (hists actor).map (fun ev => ev.observedTile actor)
@@ -564,8 +560,7 @@ theorem server_private_never_affects_modelInput
 
 Bundles the four sub-theorems above; this single theorem is the acceptance
 artefact. The statement quantifies over arbitrary server-private events and
-arbitrary actors, matching the RFC 2119 `MUST NOT` in
-`ALGORITHM_EXPERIMENT_BLUEPRINT.md` and `IMPLEMENTATION_SPEC.md §7.1`. -/
+arbitrary actors; server-private entering any actor structure leaks hidden state and fails closed. -/
 theorem server_private_must_never_enter_actor_observation_or_planner_key_or_cache_or_log_or_model_input
     (hists : TurnHistories) (ev : TurnServerPrivateEvent) (actor : Fin 4) :
     turnServerPrivateVisibleToActor ev actor = false ∧
@@ -790,7 +785,7 @@ theorem fixture_single_draw_modelInput_isolated (t : TileId) (hists : TurnHistor
 -- ---------------------------------------------------------------------------
 
 /-!
-`TurnEvent` enforces the SPEC §7.1 invariant at the type level:
+`TurnEvent` enforces the turn visibility invariant at the type level:
 
 - There is **no** representation for `turn_advance` carrying a `TileId`.
 - There is **no** representation for `draw_tile` with public visibility.

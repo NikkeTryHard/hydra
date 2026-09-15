@@ -13,7 +13,7 @@ set_option linter.unusedSectionVars false
 set_option linter.style.longLine false
 
 /-!
-# Hydra2 §10 PBRF Core
+# Hydra2 PBRF Core
 -/
 
 namespace Hydra2.Blueprint.PBRF
@@ -408,7 +408,8 @@ theorem ESS_low_implies_skewed (weights : Finset ℝ) (h_sum_one : ∑ w ∈ wei
   (contrapositive: all weights `< 1/m` give `∑w² < 1/m`, i.e. `ESS > m`,
   via `Finset.sum_lt_sum` with strictness from the positive-mass particle
   that `∑w = 1` guarantees). Corroborated by Scipedia collapse case (`ESS`
-  close to 1) and Elvira §4.2 `1/max[w]` metric. -/
+  close to 1) and Elvira Sec 4.2 `1/max[w]` metric (https://arxiv.org/abs/1902.03928);
+capping weights breaks unbiasedness and fails closed. -/
 theorem ESS_le_implies_max_weight (weights : Finset ℝ) (h_sum_one : ∑ w ∈ weights, w = 1)
     (h_nonneg : ∀ w ∈ weights, 0 ≤ w) (_hne : weights.Nonempty)
     (m : ℝ) (hm : 0 < m) (hESS : ESS weights h_sum_one h_nonneg ≤ m) :

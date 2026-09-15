@@ -14,17 +14,19 @@ set_option linter.unusedSectionVars false
 set_option linter.style.longLine false
 
 /-!
-# Hydra2 §11.5 Randomized QMC + §11.6 Scenario Coreset + §11.7 Primal-Dual Pruning
+# Hydra2 Randomized QMC + Scenario Coreset + Primal-Dual Pruning
 
-Sources: QMC Wikipedia (random shift `y=x+U mod1`, Owen nested scramble),
-         Giles/SMC sources (see other modules), §11.6/11.7 are heuristic (search-only).
+Sources: QMC Wikipedia (random shift `y=x+U mod1`, Owen nested scramble,
+https://en.wikipedia.org/wiki/Quasi-Monte_Carlo_method), Giles SMC notes.
+Scenario coreset and primal-dual pruning are heuristic (search-only); using them
+for confirmation overstates certainty and fails closed.
 
 RQMC: independently scrambled low-discrepancy points, mapped via inverse-CDF or
 categorical partition; one scramble = one dependent replicate; separate scrambles
 for uncertainty. Pure QMC without scramble gives error bound but no variance estimate.
 
-For editors: these modules are intentionally less formal than §11.1/11.2/11.8 because
-the blueprint marks them as heuristic / rate-dependent. Lean formalizes the structural
+For editors: these modules are intentionally less formal than the Rao-Blackwell, MIS,
+and SMC cores because they are heuristic and rate-dependent. Lean formalizes the structural
 properties (unbiasedness under scramble, one-scramble dependence).
 -/
 
@@ -184,7 +186,7 @@ theorem digitPermute_bijective (k b : Nat) (σ : Equiv.Perm (Fin k)) :
    fun y => ⟨digitPermute k b σ.symm y, digitPermute_right_inv k b σ y⟩⟩
 
 
-/-- Gain-counting kernel `K(x) = x(1-x)` (Owen–Pan arXiv:2308.08035 §5 Eq.16
+/-- Gain-counting kernel `K(x) = x(1-x)` (Owen–Pan arXiv:2308.08035 Sec 5 Eq.16, https://arxiv.org/abs/2308.08035
   `G̃(u,k,n') = Σ_v H(u,v) m(u,v,k) ε'_v(1-ε'_v)` with `ε' = n'/m - ⌊n'/m⌋`
   the fractional part, `K(x) = x(1-x)`). Via `C = n²/m + m·ε(1-ε)` Eq.11 the
   `ε(1-ε)` factor carries the `n`-dependence of the gain `G(u,k,n)` in Eq.4,
@@ -208,15 +210,15 @@ theorem rqmcGainK_le_quarter (x : ℝ) (h0 : 0 ≤ x) (h1 : x ≤ 1) :
   linarith
 
 /-- ANOVA decomposition, finite Möbius core (Owen 1997b, Ann. Statist.
-25(4):1541–1562, `https://doi.org/10.1214/aos/1031594731`, §2.3: `f = Σ_{u⊆A}
+25(4):1541–1562, `https://doi.org/10.1214/aos/1031594731`, Sec 2.3: `f = Σ_{u⊆A}
 α_u` with `α_u` averaged over `A∖u`; identity/orthogonality in Sobol form at
 https://en.wikipedia.org/wiki/Variance-based_sensitivity_analysis and
 https://tntorch.readthedocs.io/en/latest/tutorials/anova.html). The analytic
 `∫` hypotheses become `Finset.sum` hypotheses; the recursion below IS the
 effect definition, so no separate `anovaEffect` def is needed. Step 1 of the
-chain in `ideas/rqmc-anova/design.md`: unblocks the Step-2 variance
-identity toward `axiom_RQMC_rate_smooth`. Placement (honest): axiom-chain
-only — no live Lean/src caller consumes RQMC symbols. -/
+chain step 1: unblocks the Step-2 variance identity toward the proved
+permutation structure and the admitted smooth rate. Placement (honest): axiom-chain
+only — no live Lean or src caller consumes RQMC symbols. -/
 theorem anova_identity_of_recursion {d : ℕ} (f α : Finset (Fin d) → ℝ)
     (hrec : ∀ u ∈ Finset.powerset Finset.univ,
       α u = f u - ∑ v ∈ (Finset.powerset u).erase u, α v)
@@ -248,7 +250,7 @@ theorem anova_variance_split {d : ℕ} (α : Finset (Fin d) → ℝ)
   rw [h1, pow_two]
 
 /-- Gain-weighted variance identity, finite core (S1 Eq.2.1 `Var = (1/n) Σ
-Γσ²`, Owen 1997b `https://doi.org/10.1214/aos/1031594731`; S2 §2.3
+Γσ²`, Owen 1997b `https://doi.org/10.1214/aos/1031594731`; S2 Sec 2.3 (https://arxiv.org/abs/2308.08035)
 `https://arxiv.org/html/2308.08035v1`; S4 Eq.2
 `https://arxiv.org/html/2502.02266v1`). Gain stays an explicit hypothesis
 function — zero/coarse/Thm.1 rules land as separate lemmas consuming the
@@ -293,9 +295,9 @@ theorem anova_weighted_variance_bound {d : ℕ}
     _ = (1 / n) * (C * (∑ u ∈ S, α u) ^ 2) := by rw [hvar]
     _ = (C / n) * (∑ u ∈ S, α u) ^ 2 := by ring
 
-/-- Faure gain-cap analytic step (S2 §1 corollary
+/-- Faure gain-cap analytic step (S2 Sec 1 corollary, https://arxiv.org/abs/2308.08035
 `Γ ≤ [b/(b-1)]^{d-1} ≤ e`, Owen–Pan `https://arxiv.org/html/2308.08035v1`:
-`Γ ≤ exp(1) ≐ 2.718` verified verbatim in abstract + §1, `[17]` = Owen 1997a
+`Γ ≤ exp(1) ≐ 2.718` verified verbatim in abstract + Sec 1, `[17]` = Owen 1997a (https://arxiv.org/abs/2308.08035)
 SINUM). The paper elides `[b/(b-1)]^{d-1} ≤ e` as `it follows` — this pins
 it: `b ≥ d` gives `d-1 ≤ b-1`, so `(1+1/(b-1))^{d-1} ≤ (1+1/(b-1))^{b-1} ≤
 e` via `(1+1/n)^n ≤ e` from `x+1 ≤ exp x`. (Correction vs an earlier
@@ -405,7 +407,7 @@ end RQMC
 
 section Coreset
 
--- §11.6 Scenario coreset: select weighted subset only from current search population,
+-- Scenario coreset: select weighted subset only from current search population,
 -- store original scenario IDs and nonnegative weights summing to one, use weighted
 -- objective for *search* only, never for confirmation.
 /-- Coreset is search-only weighting discipline. Finite core: nonnegative weights
@@ -445,7 +447,7 @@ theorem coreset_unweighted_subset_fails :
 end Coreset
 section PrimalDual
 
--- §11.7 Primal-dual pruning: prune `b` only when `U_b < L_a` for valid simultaneous
+-- Primal-dual pruning: prune `b` only when `U_b < L_a` for valid simultaneous
 -- one-sided confidence bounds with multiplicity correction. Sampled mean alone is not a bound.
 /-- Pruning needs simultaneous valid bounds. Finite core: if `[a_lo, a_hi]` and
 `[b_lo, b_hi]` trap the true values `va, vb` and `b_hi < a_lo`, then `vb < va`.

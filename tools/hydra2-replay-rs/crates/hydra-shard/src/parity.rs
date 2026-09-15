@@ -248,9 +248,10 @@ pub struct RowProvenance {
 ///
 /// Byte-identical to `hydra2.artifacts.canonical.canonical_bytes` for the
 /// values row docs carry (null/bool/int/string/array/object; keys compared
-/// by UTF-16BE code units per RFC 8785 §3.2.3, which is byte order for the
-/// ASCII keys used here; string escapes match `_SHORT_ESCAPES` plus
-/// `\u00XX` for other controls, `\\`/`\"`, raw UTF-8 otherwise).
+/// by UTF-16BE code units per RFC 8785 section 3.2.3
+/// (https://www.rfc-editor.org/rfc/rfc8785.html#section-3.2.3), which is byte
+/// order for the ASCII keys used here; string escapes match `_SHORT_ESCAPES`
+/// plus `\u00XX` for other controls, `\\`/`\"`, raw UTF-8 otherwise).
 /// Floats never occur in row docs; they render as JSON numbers.
 pub fn canonical_json_bytes(value: &serde_json::Value) -> Vec<u8> {
     let mut out = String::new();
@@ -765,7 +766,7 @@ mod decision_json_tests {
                 "{\"adapter_hash\":\"sha256:11\",\"chosen_action_id\":7,\"decision_id\":\"g:d0000\",\"derivation\":\"sim-replay-wall-less-v1\",\"game_id\":\"g\",\"observation_hash\":\"sha256:00\",\"wall_digest\":null}",
             ),
             // Non-ASCII keys sort by UTF-16 code units (byte order for ASCII;
-            // é U+00E9 sorts after z U+007A per RFC 8785 §3.2.3).
+            // é U+00E9 sorts after z U+007A per RFC 8785 section 3.2.3).
             (
                 serde_json::json!({"z": 1, "a": 2, "é": 3}),
                 "{\"a\":2,\"z\":1,\"é\":3}",

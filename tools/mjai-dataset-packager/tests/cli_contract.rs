@@ -1,4 +1,4 @@
-//! WP-00A CLI compatibility contract: help text, collision abort, repeated-run
+//! CLI compatibility contract: help text, collision abort, repeated-run
 //! skip semantics, regeneration of corrupt outputs, and bound enforcement.
 
 mod common;

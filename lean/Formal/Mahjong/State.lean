@@ -19,7 +19,9 @@ set_option linter.unusedVariables false
 namespace Formal.Mahjong
 
 /-!
-# State — wall → hand → discard → meld state machine (SPEC §2, §4)
+# State — wall to hand to discard to meld state machine
+136 tiles split 52 dealt plus 70 live plus 14 dead with pointer 0 to 70;
+breaking conservation duplicates or loses tiles and fails closed
 
 Faithful Lean port of:
 
@@ -68,9 +70,9 @@ theorem hand_card_le_136 (h : PhysicalHand) : h.card ≤ 136 := by
 /-- Complete game state — wall schedule + live pointer + per-seat partitions + scoring.
 
 Fields (required by Hydra2 contract, 1:1 with `StateInner` + `state.py`):
-* `wall : WallSchedule` — canonical 136 permutation (SPEC §4.2, §9)
-* `wallPos : Nat` — live-wall draw pointer `0..70` (SPEC §9, `wall_pos<=70`)
-* `hands : Fin 4 → PhysicalHand` — concealed hands, 13 each at deal (SPEC §4.2)
+* `wall : WallSchedule` — canonical 136 permutation (52 dealt + 70 live + 14 dead)
+* `wallPos : Nat` — live-wall draw pointer `0..70` (`wallPos ≤ 70`; overrun draws from dead and fails closed)
+* `hands : Fin 4 → PhysicalHand` — concealed hands, 13 each at deal
 * `discards : Fin 4 → List TileId` — rivers per seat, public
 * `melds : Fin 4 → List DeclaredMeld` — calls per seat (chi/pon/kan)
 * `scores : Fin 4 → Int` — per-seat points, Σ=100000 (tenhou 25000×4)
@@ -96,7 +98,7 @@ structure GameState where
   dealer : Fin 4
 
 -- ---------------------------------------------------------------------------
--- 2. Validity predicates (SPEC §9 invariants)
+-- 2. Validity predicates (wall pointer, wind, scores)
 -- ---------------------------------------------------------------------------
 
 /-- Valid wall pointer: live draws consume first 70 tiles after deal (`wallPos ≤70`). -/
@@ -121,7 +123,7 @@ def ValidGameState (s : GameState) : Prop :=
   ValidWallPos s ∧ ValidRoundWind s
 
 -- ---------------------------------------------------------------------------
--- 3. Derived quantities (SPEC §4.2 Wall partition helpers)
+-- 3. Derived quantities (wall partition helpers 70/14/52)
 -- ---------------------------------------------------------------------------
 
 def remainingLive (s : GameState) : Nat := 70 - s.wallPos
@@ -222,7 +224,7 @@ theorem conservation_shape (nHand nMeld nDiscard remain : Nat) (h : nHand + nMel
     nHand + nMeld + nDiscard + remain = 136 := h
 
 -- ---------------------------------------------------------------------------
--- 5. State transitions — wall → hand → discard → meld (SPEC §2 state machine)
+-- 5. State transitions — wall to hand to discard to meld
 -- ---------------------------------------------------------------------------
 
 /-- Draw from live wall: tile at `wallPos` moves to `seat` hand; `wallPos+1`.
@@ -262,7 +264,8 @@ def rinshanDraw (s : GameState) (seat : Fin 4) (k : Nat) (hk : k < 14 := by omeg
   | none => none
 
 /-- Advance turn after discard — seat rotates (dealer-relative winds), wall pointer unchanged.
-Mirrors `SPEC §2 turn_advance` (visible) vs `draw_tile` (hidden). -/
+Mirrors `turn_advance` (public, tile-free) vs `draw_tile` (actor-private, one tile);
+confusing them leaks the hidden tile and fails closed. -/
 def turnAdvance (s : GameState) (nextDealer : Fin 4) : GameState :=
   { s with dealer := nextDealer }
 

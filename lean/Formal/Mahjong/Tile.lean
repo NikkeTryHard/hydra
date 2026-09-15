@@ -22,7 +22,8 @@ The encoding `id = type*4 + copy` is the Tenhou / mjlog
 sentinels `{16,52,88}` are formalized with `Finset` cardinality
 lemmas. This file is the root for `Wall`, `Dora`, `Shanten`, `Yaku`.
 
-References: `SPEC §4.1`, `tenhou.net/man`, `riichienv` tile table.
+References: 136 physical tiles `id = type*4+copy` with 34 types and red sentinels
+`{16,52,88}`, `tenhou.net/man`, `riichienv` tile table, `src/hydra2/contracts/rules.py`.
 -/
 
 namespace Formal.Mahjong

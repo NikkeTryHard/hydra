@@ -13,13 +13,13 @@ set_option linter.unusedSectionVars false
 set_option linter.style.longLine false
 
 /-!
-# Hydra2 §11.2 Defensive Targeted MIS
+# Hydra2 Defensive Targeted MIS
 Sources: Veach & Guibas Ch.9, Kondapaneni et al. 2019
 
 Reference: file://hydra2-human-fetch/veach-chapter9.pdf Thm 9.2 (balance heuristic
 is unbiased and defensive mixture bounds variance).
 The balance heuristic weight is `w_i(x) = n_i p_i(x) / ∑_j n_j p_j(x)` and
-`m(x) = ∑ n_i p_i(x) / ∑ n_i = (n₀ q₀(x)+n₁ q₁(x))/(n₀+n₁)` (ibid. §9.2.2).
+`m(x) = ∑ n_i p_i(x) / ∑ n_i = (n₀ q₀(x)+n₁ q₁(x))/(n₀+n₁)` (Veach Ch.9 Sec 9.2.2, file://hydra2-human-fetch/veach-chapter9.pdf).
 Defensive MIS: `m_ε(x) = max(m(x), ε)` (or `α·p_def + (1-α)m`) guarantees
 `m_ε(x) ≥ ε` so `w_i(x) ≤ n_i p_i(x)/((∑n)ε) ≤ 1/ε` and `E[ (bL·g/m_ε) ]`
 has finite variance; Veach Thm 9.2 proves `E[∑ n_i·(1/n_i)∑ f·w_i ] = ∫ f`.
@@ -80,7 +80,8 @@ theorem defensive_floor (q0 q1 : State → ℝ) (n0 n1 : Nat) (hn : 0 < n0 + n1)
         linarith [mul_nonneg (show (0:ℝ) ≤ (n1:ℝ) by exact_mod_cast Nat.zero_le n1) hq1_nonneg]
 
 /-- Defensive mixture `m_ε(x) = max(m(x), ε)` — guarantees `m_ε(x) ≥ ε`
-when `ε>0`.  Veach Ch.9 §9.2.1 defensive technique is `m_α = α·p₀ + (1-α)m`
+when `ε>0`. Veach Ch.9 Sec 9.2.1 defensive technique (file://hydra2-human-fetch/veach-chapter9.pdf)
+is `m_α = α·p₀ + (1-α)m`
 with `m_α ≥ α·p₀`; the simpler `max(m,ε)` also satisfies `≥ε` and
 bounds weights by `1/ε`.  See file://hydra2-human-fetch/veach-chapter9.pdf Thm 9.2. -/
 noncomputable def defensiveMixture (q0 q1 : State → ℝ) (n0 n1 : Nat) (hn : 0 < n0 + n1)
@@ -318,9 +319,9 @@ theorem double_correction_is_wrong :
   unfold mixture
   simp
   norm_num
-/-- No-clipping finite witness (`SPEC §16.5`, `Blueprint §11.2` prose; no code
-witness existed): same fixture, capping the weight `w = b/m` at `c = 1.0` gives
-`0.35 ≠ 0.7` — a cap changes the estimator, so raw weights are mandatory. -/
+/-- No-clipping finite witness: same fixture, capping the weight `w = b/m` at `c = 1.0`
+gives `0.35 ≠ 0.7` — a cap changes the estimator, so raw weights are mandatory;
+clipping biases the estimate and fails closed. -/
 theorem clipping_breaks_unbiasedness :
     (∑ x : Bool, (mixture (fun _ => (0.5:ℝ)) (fun b => if b then (0.8:ℝ) else 0.2) 2 2 (by decide) x) *
       min ((((if x then (0.3:ℝ) else 0.7) * (if x then (0:ℝ) else 1)) /

@@ -8,9 +8,9 @@
 //! FORBIDS (see manifest — this crate must never gain): Python bindings,
 //! memory maps, hashing, or columnar formats.
 //!
-//! Modules: `gate` (§6.2), `ingest` + `tiles` (§6.1), `ledger` + `walk`
-//! (§6.3: u8 ledger DIRECT to minimal hot planes; engine.rs rules ported
-//! to u8, never imported), `fill` (§6.4 stage-then-commit).
+//! Modules: `gate` (frame/gate verdicts), `ingest` + `tiles` (span framing +
+//! kind/tile LUTs), `ledger` + `walk` (u8 ledger DIRECT to minimal hot planes;
+//! engine.rs rules ported to u8, never imported), `fill` (stage-then-commit).
 pub mod fill;
 pub mod gate;
 pub mod ingest;

@@ -22,8 +22,8 @@ namespace Formal.Mahjong.EventModule
 
 Faithful Lean port of:
 
-* `docs/IMPLEMENTATION_SPEC.md §7` — Event envelope, visibility matrix,
-  `ActorVisiblePacket`, `PacketBoundarySpec`, sequence ordering, public delta paths.
+* Event envelope, visibility matrix, actor-visible packets, packet boundary,
+  sequence ordering, public delta paths (`src/hydra2/contracts/event.py`).
 * `src/hydra2/contracts/event.py` — `EventEnvelope`, `EventPayload`,
   `Visibility = Literal["public","actor_private","server_private"]`,
   `PublicStateDelta`, `EventKind` vocabulary (21 kinds), `visible_to_actor`,
@@ -38,7 +38,7 @@ Faithful Lean port of:
   `call window` open/close envelope, `ron/tsumo/ryukyoku` terminal handling,
   multi-ron priority (first winner in turn order owns honba+riichi sticks).
 
-Packet boundary (SPEC §7.2) enforces:
+Packet boundary enforces (violation leaks private tiles and fails closed):
 
 * `public`       visible to `(0,1,2,3)` — enters every actor's observation history.
 * `actor_private` visible to exactly one seat — e.g. `draw_tile(actor,tile)`.
@@ -54,17 +54,16 @@ State/Turn linkage (co-designed with `State.lean` / `Turn.lean`):
   `dealer : Fin 4`. Transitions consume `wallPos` or append discards/melds.
 * `Turn.lean` distinguishes `turn_advance` (public, tile-free) vs `draw_tile`
   (actor-private, hidden tile) — hidden-tile is the canonical private datum;
-  `Advance` and `Draw` must never be confused per SPEC §7.1 bullets 4-5.
+  `Advance` (public, tile-free) and `Draw` (actor-private, one tile) must never
+  be confused; confusion leaks the hidden tile and fails closed.
 * `Event.lean` distinguishes `server_private` vs `actor_visible` packets per
-  SPEC §7 / `event.py:visible_to_actor` and `observation.py:ObservationBuilder`
+  `src/hydra2/contracts/event.py#visible_to_actor` and `src/hydra2/contracts/observation.py#ObservationBuilder`
   (public events enter all four caches, private draws only drawing seat, server
   events enter none). All three together give the `wall → Event → Packet → Observation`
   chain 1:1 from `RiichiEnv` and `hydra2` contracts.
 
 References to source identities (required citations):
 
-* `file://docs/IMPLEMENTATION_SPEC.md#7.1`
-* `file://docs/IMPLEMENTATION_SPEC.md#7.2`
 * `file://src/hydra2/contracts/event.py#Visibility`
 * `file://src/hydra2/contracts/event.py#EventKind`
 * `file://src/hydra2/contracts/event.py#EventEnvelope`
@@ -86,10 +85,11 @@ References to source identities (required citations):
 -/
 
 -- ---------------------------------------------------------------------------
--- 0. Visibility — SPEC §7.1 three-valued, frozen (event.py#VISIBILITIES)
+-- 0. Visibility — three-valued, frozen (`src/hydra2/contracts/event.py#VISIBILITIES`)
 -- ---------------------------------------------------------------------------
 
-/-- Event visibility — exactly the three SPEC values.
+/-- Event visibility — exactly the three values `public`, `actor_private`, `server_private`;
+allowing a fourth leaks routing and fails closed.
     Mirrors `Visibility = Literal["public","actor_private","server_private"]`
     (`file://src/hydra2/contracts/event.py#VISIBILITIES`). -/
 inductive Visibility where
@@ -134,7 +134,7 @@ theorem visibility_not_serverPrivate_is_visible (v : Visibility) (h : v.isServer
   cases v <;> simp_all [Visibility.isServerPrivate]
 
 -- ---------------------------------------------------------------------------
--- 1. MahjongEvent — 5-ctor model required by contract (§3 / §7 port)
+-- 1. MahjongEvent — 5-ctor model required by contract (turn and event port)
 -- ---------------------------------------------------------------------------
 
 /-- Core game events ported from `event_handler.rs` and `event.py#EventKind`.
@@ -152,7 +152,7 @@ The five ctors are exactly the assignment surface:
 * `Ryukyoku` — exhaustive/abortive draw (`draw_end` / `abortive_draw`,
   public, requires scores/reason)
 
-All other SPEC EventKinds (21 total) map injectively into these five via the
+All other 21 event kinds map injectively into these five via the
 `EventSchemaRows` closed vocabulary; this minimal inductive captures the packet
 visibility boundary that the three required theorems quantify.
 (`file://src/hydra2/contracts/event.py#EVENT_KINDS`,
@@ -174,7 +174,8 @@ theorem mahjongEvent_toNat_range (e : MahjongEvent) : e.toNat < 5 := by cases e 
 -- 2. Visibility assignment and the two required predicates
 -- ---------------------------------------------------------------------------
 
-/-- Canonical visibility for each MahjongEvent per SPEC §7.1 / `event.py:_validate_kind_shape`.
+/-- Canonical visibility for each MahjongEvent per `src/hydra2/contracts/event.py#_validate_kind_shape`:
+`CallWindow` public, `CallResolved` server-private; swapping them leaks resolution and fails closed.
 
 * `CallWindow`  → Public       (`call_window is public`, `event.py#732`)
 * `CallResolved`→ ServerPrivate(`call_resolved … is server_private to no seat`, `#734`)
@@ -201,7 +202,7 @@ def isServerPrivate : MahjongEvent → Bool
 /-- `isActorVisible : MahjongEvent → Bool` — required interface.
     False exactly for `ServerPrivate` events; true for `Public` and `ActorPrivate`.
     In this 5-ctor model only `CallResolved` is invisible to actors; all others
-    are actor-visible via packets/observations (SPEC §7.2 / `partition_actor_packets`). -/
+    are actor-visible via packets/observations (`src/hydra2/contracts/event.py#partition_actor_packets`). -/
 def isActorVisible : MahjongEvent → Bool
   | .CallWindow => true
   | .CallResolved => false
@@ -341,7 +342,7 @@ This is the Lean analogue of
 `server_private` and `file://src/hydra2/contracts/observation.py#ObservationBuilder`
 never storing such events.
 
-`server_private` cannot serialize into any actor history (SPEC §7.1 bullet 3);
+`server_private` cannot serialize into any actor history (leak fails closed);
 debug repr and exception messages also obey the same boundary (observation.py). -/
 theorem server_private_never_in_observation (e : MahjongEvent)
     (h : isServerPrivate e = true) : isActorVisible e = false := by
@@ -395,7 +396,7 @@ theorem public_envelope_in_every_actor_packet :
     fin_cases actor <;> simp
 
 -- ---------------------------------------------------------------------------
--- 5. Call window open/close envelopes — SPEC §7.1 / event_handler.rs call window
+-- 5. Call window open/close envelopes — `riichienv-core/src/state/event_handler.rs` call window
 --    Every discard that is legally callable opens a public CallWindow;
 --    the server resolves it server-private via CallResolved with full
 --    offered/accepted sets (event.py#call_resolved), then emits public call
@@ -432,7 +433,7 @@ theorem callResolved_is_serverPrivate : visibilityOf .CallResolved = .ServerPriv
     `CallResolved` envelope is server-private to none — together they form
     the open/close envelope pair that brackets one packet partition unit
     (`file://src/hydra2/contracts/event.py#PacketBoundarySpec`,
-     `file://src/hydra2/contracts/event.py#DEFAULT_PACKET_BOUNDARY_SPEC`
+     `file://src/hydra2/contracts/event.py`
      call/pass grouping). -/
 structure CallWindowEnvelopePair where
   seqOpen : Nat
@@ -448,7 +449,7 @@ def callWindowEnvelopePair (p : CallWindowEnvelopePair) : List EventEnvelopeLite
 The assignment wording "`call_window_open_close` envelopes" is satisfied by proving
 that a window's open envelope is actor-visible public and its close envelope
 is server-private invisible, with strictly increasing sequence numbers guaranteeing
-mutual exclusivity and nonempty partition units (SPEC §7.2). -/
+mutual exclusivity and nonempty partition units; overlapping units double-count and fail closed. -/
 theorem call_window_open_close (p : CallWindowEnvelopePair) :
     let envs := callWindowEnvelopePair p
     (envs[0]!.visibility = .Public) ∧
@@ -481,7 +482,7 @@ theorem call_window_transition_balanced :
 
 -- ---------------------------------------------------------------------------
 -- 6. Multi-ron attribution — first winner owns honba + kyotaku (riichi sticks)
---    SPEC §5.2 / score.rs / event_handler.rs terminal handling.
+--    Tenhou settlement via `riichienv-core/src/score.rs` and `riichienv-core/src/state/event_handler.rs` terminal handling.
 --    On a discard, 1–3 players may ron; Tenhou orders winners by turn distance
 --    from discarder (atamahane does not apply in Tenhou 4p, but nearSeat priority
 --    holds). Scoring: each winner receives `base` from discarder; honba (+300 ron)

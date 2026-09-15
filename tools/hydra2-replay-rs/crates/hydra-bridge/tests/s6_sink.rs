@@ -8,9 +8,8 @@
 //!   `"other"`), and the quarantine artifact round-trips the lineage file +
 //!   game join.
 //! - A synthetic post-claim game (claimer tsumo after a non-kan claim, no
-//!   intervening discard — the Wave-C pon_ext shape) quarantines end-to-end
-//!   with `tile-conservation`, zero rows, balanced accounting, and
-//!   post-close readable quarantines.
+//!   intervening discard) quarantines end-to-end with `tile-conservation`,
+//!   zero rows, balanced accounting, and post-close readable quarantines.
 
 use std::path::PathBuf;
 
@@ -21,7 +20,7 @@ use hydra2_replay_rs::sink::{
 use hydra2_replay_rs::stream::{FeedOpen, FeedStream};
 
 /// Max row stride per plane (fixed planes + T256 history pair), mirroring
-/// the §7 plane table: `[34,34,20,16,2048,256,8,8,8,8,8,32,136,8,8,4,4,4,4,4,4,4,4,32,1,1]`.
+/// the canonical 26-plane stride table: `[34,34,20,16,2048,256,8,8,8,8,8,32,136,8,8,4,4,4,4,4,4,4,4,32,1,1]`.
 const MAX_STRIDE: [usize; 26] = [
     34, 34, 20, 16, 2048, 256, 8, 8, 8, 8, 8, 32, 136, 8, 8, 4, 4, 4, 4, 4, 4, 4, 4,
     32, 1, 1,
@@ -138,8 +137,8 @@ fn s6_corpus_drain_balances_and_lineage_round_trips() {
 }
 
 fn pon_ext_game() -> Vec<u8> {
-    // Wave-C pon_ext shape (mirrors the feed walk vector): seat 1 ponns
-    // seat 0's 1m, then draws 6p with no intervening discard.
+    // Synthetic post-claim shape: seat 1 ponns seat 0's 1m, then draws 6p
+    // with no intervening discard; the walk must quarantine it (tile-conservation).
     let tehais = [
         ["1m", "1m", "9m", "9m", "9m", "9m", "2p", "2p", "2p", "3p", "3p", "3p", "4p"],
         ["1m", "1m", "6m", "6m", "6m", "6m", "1p", "1p", "1p", "1p", "7s", "7s", "7s"],
@@ -207,7 +206,7 @@ fn s6_post_claim_draw_quarantines_end_to_end() {
     write_lineage_file(&path, &[record.clone()]).expect("lineage write");
     let back = read_lineage_file(&path).expect("lineage read");
     assert_eq!(back, vec![record]);
-    // Readable post-close (plan §6.5).
+    // Readable post-close: `close` takes the stream, stats/quarantines stay readable.
     stream.close();
     assert!(stream.is_closed());
     let tail = stream.quarantines().to_vec();

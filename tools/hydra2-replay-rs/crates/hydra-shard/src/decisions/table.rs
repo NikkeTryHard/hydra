@@ -30,7 +30,7 @@ const TEMPLATE_JSON_FIELDS: [&str; 7] = [
     "source_offset",
     "tile",
 ];
-/// Frozen kind -> ordinal mapping (SPEC 6.1, `ACTION_KIND_ORDINALS`).
+/// Frozen kind -> ordinal mapping: 13 kinds, fixed 0..12; unknown kind fails closed (`ACTION_KIND_ORDINALS`).
 const ACTION_KIND_ORDINALS: [(&str, u32); 13] = [
     ("pass", 0),
     ("discard", 1),
@@ -88,8 +88,8 @@ fn kind_ordinal(kind: &str) -> Option<u32> {
         .map(|(_, ordinal)| *ordinal)
 }
 
-/// SPEC 6.3 generation order: lexicographic, `None` before integers
-/// (`template_sort_key`).
+/// Generation order: kind ordinal, then tile/called/consumed/offset with
+/// `None` before integers, then riichi/meldref flags (`template_sort_key`).
 fn template_sort_key(
     template: &Template,
 ) -> (u32, (u8, i64), (u8, i64), Vec<u8>, (u8, i64), bool, bool) {

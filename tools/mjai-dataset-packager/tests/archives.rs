@@ -1,4 +1,4 @@
-//! WP-00A archive coverage: member layout, traversal hostility, unsupported
+//! Archive coverage: member layout, traversal hostility, unsupported
 //! members, empty archives, and same-stem extracted-directory precedence.
 
 mod common;

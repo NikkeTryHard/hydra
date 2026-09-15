@@ -17,9 +17,9 @@ set_option linter.unusedSectionVars false
 set_option linter.style.longLine false
 
 /-!
-# Hydra2 §11.3 Structural CRN — quantile coupling `y = x + U mod 1`
+# Hydra2 Structural CRN — quantile coupling `y = x + U mod 1`
 
-Blueprint §11.3: shared primitive uniforms `u` mapped through branch-specific
+Shared primitive uniforms `u` mapped through branch-specific
 `F_a^{-1}(u)`, `F_b^{-1}(u)`. Discrete analogue uses `Fin n` uniforms
 `{0,…,n-1}/n` and cyclic shift `y = (x+U) mod n` which is the
 `n`-point discretization of `y = x+U mod 1` on `[0,1)`. The shift preserves
@@ -29,7 +29,7 @@ statement when the quantile partition is exact; for arbitrary real `q` the
 exact equality needs `n → ∞` or MeasureTheory, so the full marginal is marked
 HARD with a Finset-sum proof for the shift part.
 
-References: blueprint 11.3, Owen scramble `y=x⊕U`, `y=x+U mod 1` uniform shift.
+References: Owen scramble `y=x⊕U`, `y=x+U mod 1` uniform shift (https://arxiv.org/abs/0805.4338).
 -/
 
 namespace Hydra2.Blueprint.Modules.CRN
@@ -204,11 +204,12 @@ theorem crnShift_sum_preservation (n : Nat) (hn : 0 < n) (shift : Fin n)
   Fintype.sum_bijective _ (crnShift_bijective n hn shift) _ _ fun _ => rfl
 
 /-- Finite `Var(X - Y) = VarX + VarY - 2·Cov` second-moment identity: with common
-uniforms, the difference second moment splits into marginal moments minus twice
+uniforms, the difference second moment partitions into marginal moments minus twice
 the synchronized cross term — so CRN reduces variance iff that cross term
 (`Cov > 0` via monotone synchronized coupling: Glasserman-Yao, Management
-Science 38:6 884-908, monotone continuous event-timing recursions; Blueprint
-§17 causal OT 0.00082 vs independent 1.09 vs common uniform 2.24) is positive.
+Science 38:6 884-908, monotone continuous event-timing recursions; causal OT 0.00082
+vs independent 1.09 vs common uniform 2.24) is positive; negative cross term
+inflates variance and fails closed.
 The stochastic extension (expectations, monotone recursions) needs
 MeasureTheory; this finite sum identity is the machine-checked core. -/
 theorem CRN_covariance_sign (n : Nat) (f g : Fin n → ℝ) :

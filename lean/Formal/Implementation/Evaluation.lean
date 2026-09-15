@@ -14,23 +14,25 @@ set_option linter.unusedSectionVars false
 set_option linter.style.longLine false
 
 /-!
-# Hydra2 §16 / SPEC §18 — Evaluation Block Independence & Fixed-N
+# Hydra2 Evaluation Block Independence and Fixed-N
 
-Blueprint §16.1, SPEC §18.1–18.3
+Wall-block independence with fixed-N power; wall blocks are the independent unit
 
 - Wall block is the independent unit: games within a wall share wall randomness
   and call-altered draw ownership (calls move wall pointer, rinshan draws from
   dead wall `14` `wanpai` dora/rinshan, each `kan` tops up from live wall shortening by `1`, live-wall exhaustion → `ryuukyoku`; `chi/pon/kan` steal turn skip `1-2` draws `ALBAN` — verified via `MahjongMaster`/`ALBAN` `NIST` `lmiratrix` cluster bootstrap), so they are not independent. `∑_e Z` logic already showed this.
   Only whole wall blocks are IID (walls drawn i.i.d. via semantic RNG `RandomStreamKey` `purpose=evaluation_schedule`).
 - Fixed-N power: `N = ceil(((z_{1-α}+z_{1-β})·s/δ)²)` with pilot `s`, `α,β,δ`
-  frozen blind to arm labels before unblinding (SPEC §18.3). `s` estimates
-  SD of *wall-block* contrasts, not game contrasts.
+  frozen blind to arm labels before unblinding; peeking invalidates confirmation
+  and fails closed. `s` estimates SD of *wall-block* contrasts, not game contrasts;
+  using game contrasts underestimates variance and fails closed.
 - Uncertainty unit is `wall_block` for match evaluation; `iid_pair` for natural
   confirmation; `smc_population` / `rqmc_scramble` for those modules; `game_cluster`
   only for calibration metrics (never decisions).
   - Bootstrap and sign-flip resample *whole wall blocks* only.
-  External: NIST/SEMATECH Handbook §7.2.2.2, PSU STAT 509,
-  Howard et al. 1810.08240 (time-uniform CS), lmiratrix cluster bootstrap.
+  External: NIST/SEMATECH Handbook Sec 7.2.2.2 (https://www.itl.nist.gov/div898/handbook/),
+  Howard et al. 1810.08240 (https://arxiv.org/abs/1810.08240) time-uniform CS, lmiratrix cluster bootstrap.
+  Resampling games instead of whole blocks breaks independence and fails closed.
 -/
 
 namespace Hydra2.Implementation.Evaluation
@@ -97,8 +99,9 @@ end FixedN
 section WallBlock
 
 /-- `WallBlock` mean is the primary estimator; bootstrap/sign-flip resample blocks,
-not games. `WallBlock` contains `6` symmetric + `4` rotation games (SPEC §18.1).
-SPEC §18.1: wall block is the independent unit. Finite analogue of
+not games. `WallBlock` contains `6` symmetric + `4` rotation games.
+Wall block is the independent unit; resampling games breaks independence and fails closed.
+Finite analogue of
 `axiom_wallBlock_independent_unit` (see `Formal/Blueprint/EvaluationAxioms.lean`):
 disjoint wall-block sets have additive sums (`Finset.sum_union`, cf. Blueprint
 `block_sum_partition`), and variance adds when the cross-term vanishes
@@ -118,10 +121,11 @@ theorem wallBlock_is_independent_unit {n : ℕ} (f : Fin n → ℝ)
       _ = 0 := by ring
     nlinarith [sq_nonneg a, sq_nonneg b, sq_nonneg (a + b)]
 
-/-- SPEC §18.2: block bootstrap resamples whole wall blocks with replacement.
+/-- Block bootstrap resamples whole wall blocks with replacement; resampling games
+breaks dependence structure and fails closed.
 Finite core: uniform weights `wᵢ = 1/n` preserve the mean —
 `∑ᵢ wᵢ xᵢ = (∑ᵢ xᵢ)/n` (convex combo; weights sum to 1 when `n ≠ 0`).
-NIST Handbook §1.3.3.4 (Efron with-replacement at block level), lmiratrix
+NIST Handbook Sec 1.3.3.4 (Efron with-replacement at block level), lmiratrix
 cluster bootstrap (sample clusters with replacement), tidyecology blocks
 preserve dependence. Full multinomial-resample `MeasureTheory` version
 (expected count 1 per block, as SMC expected children) needs `PMF`
@@ -133,7 +137,8 @@ theorem blockBootstrap_resamples_blocks {n : ℕ} (x : Fin n → ℝ) :
   rw [h, div_eq_mul_one_div (∑ i, x i) (n : ℝ)]
   exact mul_comm _ _
 
-/-- SPEC §18.2: sign-flip resamples whole wall blocks (Rademacher).
+/-- Sign-flip resamples whole wall blocks (Rademacher); flipping games instead of
+blocks breaks the dependence structure and fails closed.
 Finite core: the two Rademacher signs cancel —
 `∑_{s : Fin 2} (-1)^{s} = 0`, i.e. mean 0 over all `2^n` sign vectors
 (paired-block `sign_flip_interval`, mean preserving). Full randomization
@@ -143,7 +148,7 @@ theorem signFlip_resamples_blocks :
   rw [Fin.sum_univ_two]
   simp
 
-/-- SPEC §18.1: whole-block aggregation is primary — mean over 10 games per
+/-- Whole-block aggregation is primary — mean over 10 games per
 wall (`6` C42 symmetric `2v2` + `4` rotation) via `blocks.py`
 `aggregate_wall_block`. Finite core: `blockMean * 10 = ∑` for
 `Fin 10` wall games. -/
@@ -151,7 +156,7 @@ theorem wholeBlockAggregation_is_primary (x : Fin 10 → ℝ) :
     ((∑ i, x i) / 10 : ℝ) * 10 = ∑ i, x i := by
   exact div_mul_cancel₀ _ (by norm_num)
 
-/-- SPEC §18.1 / Blueprint §16.1: schedule commitment before play —
+/-- Schedule commitment before play —
 `walls_hash = of_canonical(ids)`, `latency_schedule_hash`, semantic seed
 `evaluation_schedule` per game, `seed_protocol_hash` via `hydra2_rng_v1`
 canonical JSON sha256, `rules_hash`, seat allocations `6` C42 symmetric `2v2`
@@ -172,9 +177,9 @@ section TimeUniformCS
 -- via `statistics.py` `hedged_cs_path` `Ville` `sub-ψ` `filtrations`
 -- `hedged betting` `empirical-Bernstein` `mixture/inverted stitching`
 -- `Table3` `sequential_design_guard` `predeclared` `fixedN` `ceil` `vs`
--- `hedged` `choice` `frozen` `blind` `before` `unblinding` `SPEC §18.3`
+-- `hedged` `choice` `frozen` `blind` `before` `unblinding`
 -- `Metrics`.
-/-- SPEC §18.3: finite CS core (Ville-style shrinking width). The half-width
+/-- Finite CS core (Ville-style shrinking width). The half-width
 `s / √n` is antitone in `n` (mirror `zPowerApprox_mono_n` /
 Blueprint `blockMeanVariance_mono_n`): more wall blocks give a tighter
 uniform boundary. Full Howard stitched-LIL / hedged-capital `Ville`
@@ -189,7 +194,7 @@ theorem timeUniformCS_uniform_coverage (s : ℝ) (hs : 0 ≤ s)
     Real.sqrt_le_sqrt h_le_cast
   exact div_le_div_of_nonneg_left hs (Real.sqrt_pos.mpr h_n1_pos) h_sqrt_mono
 
-/-- SPEC §18.3: `fixedN` vs CS choice is predeclared frozen blind before
+/-- `fixedN` vs CS choice is predeclared frozen blind before
 unblinding (`fixedN` `ceil` vs `timeUniformCS` `hedged`
 `sequential_design_guard` vs adaptive peeking which invalidates confirmation;
 `game_cluster` only for calibration metrics, never decisions; `case.py`
@@ -204,8 +209,8 @@ theorem fixedN_vs_CS_declared_before_unblinding (s1 s2 : ℝ) (n : ℕ)
   `10 peeks turns 1% into 5%`, `stop-at-5%-or-150obs gives 26.1% false
   positives`): two data-dependent looks cover at most the sum — union
   rejection region `|s∪t| ≤ |s|+|t|`, so two `α`-looks have worst-case `2α`.
-  Finite core behind SPEC §18.3 predeclared frozen-blind `fixedN` vs adaptive
-  peeking (which invalidates confirmation). -/
+  Finite core behind predeclared frozen-blind `fixedN` vs adaptive peeking
+  (which invalidates confirmation and fails closed). -/
 theorem peeking_union_bound (n : ℕ) (s t : Finset (Fin n)) :
     (s ∪ t).card ≤ s.card + t.card :=
   Finset.card_union_le s t

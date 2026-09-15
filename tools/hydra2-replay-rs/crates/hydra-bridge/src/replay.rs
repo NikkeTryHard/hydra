@@ -1,8 +1,9 @@
 //! Per-game plane replay over [`stage_one`] (game-pull training path).
 //!
 //! [`replay_game_planes`] frames, gates, and walks ONE game from raw lines
-//! and serves its staged planes as ``{name: bytes}`` — the same §7 planes
-//! (same order, same LE bytes) the file fill commits, minus the file walk.
+//! and serves its staged planes as ``{name: bytes}`` — the same canonical
+//! 26 planes (same order, same LE bytes) the file fill commits, minus the
+//! file walk.
 //! Walled regime follows wall CONTENT (fill parity: a wall-bearing game
 //! walks unfolded with ``wall_digest: None``). History planes are dense
 //! ``[rows, t_len]`` with ``t_len`` from [`pick_t_len`], exactly like a
@@ -36,8 +37,9 @@ fn reject_name(reason: u8) -> &'static str {
 ///
 /// `events` is the final game bytes (wall already bound by the caller).
 /// Returns ``(planes, rows, t_len, quarantined, reason, event_idx)`` where
-/// `planes` maps §7 names to raw LE bytes (fixed planes ``[rows * stride]``,
-/// history planes dense ``[rows * t_len]``) and `reason`/`event_idx`
+/// `planes` maps plane names (`hydra_feed::ledger::PLANE_NAMES` order) to
+/// raw LE bytes (fixed planes ``[rows * stride]``, history planes dense
+/// ``[rows * t_len]``) and `reason`/`event_idx`
 /// describe the quarantine (empty/zero when clean).
 fn run_planes(
     py: Python<'_>,

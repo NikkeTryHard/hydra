@@ -15,7 +15,7 @@ set_option linter.style.longLine false
 
 /-! # Hydra2 CQL offline RL — masked log-sum-exp conservative penalty
 
-Mirrors `ideas/cql-offline-rl.md` (Mortal `train.py` + Kumar et al. 2020):
+CQL offline penalty (Mortal `train.py` + Kumar et al. 2020, https://arxiv.org/abs/1911.01217):
 `loss = dqn_loss + min_q_weight·cql_loss + next_rank_weight·next_rank_loss`
 with `cql_loss = logsumexp(Q(s,·)_legal) - mean(Q(s,a_data))`, applied
 OFFLINE only (`min_q_weight > 0`), dropped for online finetune. Discrete

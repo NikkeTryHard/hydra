@@ -12,8 +12,8 @@ set_option linter.style.longLine false
 namespace Formal.Mahjong
 
 -- ---------------------------------------------------------------------------
--- Wall / Dead Wall — SPEC §4.2, §9
--- 136 tiles = 52 dealt (4×13) + 70 live + 14 dead (2×7 stacks)
+-- Wall / Dead Wall — 136 tiles = 52 dealt (4×13) + 70 live + 14 dead (2×7 stacks);
+-- wrong partition duplicates or loses tiles and fails closed
 -- ---------------------------------------------------------------------------
 
 /-- Canonical 136-wall as an ordered list permuting `Finset.univ : Finset TileId`. -/
@@ -34,7 +34,7 @@ def liveWall (w : WallSchedule) : List TileId := w.wall.take 70
 /-- Dead wall = next 14 (rinshan + dora indicators, 2×7 stacks). -/
 def deadWall (w : WallSchedule) : List TileId := (w.wall.drop 70).take 14
 
-/-- Dealt hands = remaining 52 split 4×13 (called in SPEC §4.2). -/
+/-- Dealt hands = remaining 52 dealt as 4×13 seat slices. -/
 def dealtTiles (w : WallSchedule) : List TileId := w.wall.drop 84
 
 /-- Seat-indexed 13-tile slice of the dealt 52 (`seat * 13`, length 13). -/
@@ -134,7 +134,7 @@ theorem fullWorld_conservation_card (w : WallSchedule) :
   rw [heq, w.length_eq]
 
 -- ---------------------------------------------------------------------------
--- SPEC §9 wall_schedule_digest — sha256 over canonical bytes
+-- wall_schedule_digest — sha256 over canonical bytes (mismatch fails closed)
 -- `file://src/hydra2/engines/protocol.py#wall_schedule_digest`
 -- `file://src/hydra2/artifacts/canonical.py#canonical_bytes`
 -- `file://src/hydra2/artifacts/digest.py#of_canonical`
@@ -171,7 +171,8 @@ def wallHashNat (scheduleId : String) (tiles : List TileId) : Nat :=
   let h0 := scheduleId.foldl (fun acc c => acc * 131 + c.toNat) 146959
   tiles.foldl (fun acc t => acc * 16777619 + t.val + 7) h0
 
-/-- SPEC §9 wall_schedule_digest: sha256 hex of canonical wall schedule document.
+/-- wall_schedule_digest: sha256 hex of canonical wall schedule document;
+mismatch breaks provenance and fails closed.
     Mirrors `hydra2.engines.protocol.wall_schedule_digest` which is
     `sha256(canonical_bytes({"physical_tiles": [...], "schedule_id": "..."}))`
     with RFC8785 key sorting (physical_tiles < schedule_id). Here we model

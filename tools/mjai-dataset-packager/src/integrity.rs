@@ -1,15 +1,16 @@
-//! WP-00B Packager Integrity Authority (transport layer).
+//! Packager integrity authority (transport layer).
 //!
 //! Produces and verifies the authoritative [`PackagedObjectRow`] for every
 //! packaged object. The row is transport-only: it carries NO authorization
-//! claim (attestation/purpose/disclosure arrive with WP-04B's `RawObjectRow`).
+//! claim (attestation/purpose/disclosure arrive separately with the raw-object row).
 //!
 //! Authority rules implemented here:
 //! - Magic bytes alone never authorize reuse; every candidate output is fully
 //!   zstd-decoded before it may be skipped or recorded.
 //! - `packaged_object_id` is the SHA-256 over the row's canonical JSON bytes
 //!   excluding the field itself. Canonical bytes are compact JSON with fields
-//!   in the exact order declared by IMPLEMENTATION_SPEC section 12.1.
+//!   in the exact struct-declaration order below (that order defines the
+//!   canonical serialization; any deviation fails closed).
 //! - `canonical_jsonl` / `record_count` are computed from the decoded payload
 //!   without ever rewriting it. A line is a record when it parses as JSON;
 //!   the payload is canonical JSONL when additionally every line equals the
@@ -81,7 +82,7 @@ pub enum SourceKind {
     Precompressed,
 }
 
-/// Transport-only packaged-object row (IMPLEMENTATION_SPEC section 12.1).
+/// Transport-only packaged-object row.
 /// Field order below is normative: it defines the canonical serialization.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

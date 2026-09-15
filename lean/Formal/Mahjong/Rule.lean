@@ -21,11 +21,13 @@ set_option linter.unusedVariables false
 namespace Formal.Mahjong.RuleModule
 
 /-!
-# Rule — Tenhou 4p hanchan manifest (SPEC §5.1)
+# Rule — Tenhou 4p hanchan manifest
+Tenhou 4p hanchan with 25000 start, 30000 return, uma 15-5, half-return oka pool 20000,
+red ids (16,52,88); wrong manifest mis-settles and fails closed
 
 Faithful Lean port of:
 
-* `file://docs/IMPLEMENTATION_SPEC.md#5.1` — `RulesManifest` dataclass, every field
+* `src/hydra2/contracts/rules.py#RulesManifest` — rules manifest dataclass, every field
   required, enum-constrained, Tenhou `tenhou_4p_hanchan_v1` values.
 * `file://src/hydra2/contracts/rules.py` — `RULES_ID`, `STARTING_POINTS=25000`,
   `RETURN_POINTS=30000`, `RED_TILE_IDS=(16,52,88)`, `STANDARD_CLOCK_SECONDS=(5,10)`,
@@ -38,7 +40,7 @@ Faithful Lean port of:
 
 Tenhou hanchan is the *sole* ranked 4-player rule in hydra2:
 
-* `starting_points = 25000`, `return_points = 30000` (SPEC literal).
+* `starting_points = 25000`, `return_points = 30000` (frozen Tenhou literals).
 * `uma_by_rank = (15,5,-5,-15)*1000` — frozen Tenhou 2017+ uma 15-5 placement conversion (both uma vectors sum to zero; `Scoring.umaByRank` keeps canonical 20-10 only for parity lemmas).
 * `oka_policy = "half_return"` → pool `(30000-25000)*4 = 20000` to top.
 * `red_tile_ids = (16,52,88)` — exactly types 4,13,22 aka 5mr/5pr/5sr.
@@ -48,13 +50,13 @@ Namespace `Formal.Mahjong.RuleModule` avoids collision with `Hand`/`DeclaredMeld
 `EventModule` (`Meld → DeclaredMeld`, `Hand → PhysicalHand`) and uses distinct
 `Tenhou*` prefixes (cf. `ActionKind`, `RuleManifest`, `GameLifecycle` contract).
 
-Blocked URLs: none — all Tenhou values come from the local snapshot
-`file://src/hydra2/contracts/rules.py` and `docs/IMPLEMENTATION_SPEC.md#5.1`;
-no external `tenhou.net/man` fetch was attempted in this port (see report footer).
+Tenhou values come from the local snapshot
+`file://src/hydra2/contracts/rules.py` with `tenhou.net/man` as authority
+(https://tenhou.net/man/); mismatched values mis-settle and fail closed.
 -/
 
 -- ---------------------------------------------------------------------------
--- 1. RulesId — SPEC §5.1 alias (file://src/hydra2/contracts/rules.py#RULES_ID)
+-- 1. RulesId — stable alias (`src/hydra2/contracts/rules.py#RULES_ID`)
 -- ---------------------------------------------------------------------------
 
 /-- Stable rules identifier — identical to `rules.py:RULES_ID`. -/
@@ -67,7 +69,7 @@ theorem tenhouRulesId_eq : tenhouRulesIdValue = "tenhou_4p_hanchan_v1" := rfl
 theorem rulesId_is_string : tenhouRulesIdValue = "tenhou_4p_hanchan_v1" := rfl
 
 -- ---------------------------------------------------------------------------
--- 2. Policy enums — mirrors rules.py enum tuples (WP-02B Tenhou evidence)
+-- 2. Policy enums — mirrors rules.py enum tuples
 --    Each single-member or dual-member enum records the unique Tenhou choice.
 -- ---------------------------------------------------------------------------
 
@@ -91,7 +93,8 @@ def TenhouYakuPolicyKind.toString : TenhouYakuPolicyKind → String
   | .paoDaisangenDaisuushiTsumoFullRonHalf => "daisangen_daisuishi_tsumo_full_ron_half"
   | .multipleRonAllWinnersPaid => "all_winners_paid_sticks_to_dealer_left"
 
-/-- Yakuman compound policy — SPEC `yakuman_policy`. -/
+/-- Yakuman compound policy — `yakuman_policy = compound_multiple_upgraded_forms_single`;
+wrong policy mis-grades multi-yakuman and fails closed. -/
 inductive TenhouYakumanPolicyKind where
   | compoundMultipleUpgradedSingle
   deriving DecidableEq, Repr, BEq
@@ -103,7 +106,8 @@ theorem yakumanPolicy_toString_eq :
     TenhouYakumanPolicyKind.toString .compoundMultipleUpgradedSingle =
       "compound_multiple_upgraded_forms_single" := rfl
 
-/-- Scoring / kazoe policy — SPEC `kazoe_policy`. -/
+/-- Scoring / kazoe policy — `kazoe_policy = counted_yakuman_at_13_han`;
+wrong policy mis-grades 13-han hands and fails closed. -/
 inductive TenhouScoringPolicyKind where
   | countedYakumanAt13Han
   | noKazoe
@@ -140,7 +144,7 @@ theorem tenhouPolicyBundle_scoring :
     tenhouDefaultPolicyBundle.scoringPolicy = "counted_yakuman_at_13_han" := rfl
 
 -- ---------------------------------------------------------------------------
--- 3. Uma / Oka — post-game placement bonuses (SPEC §5.1, Scoring.lean §9)
+-- 3. Uma / Oka — post-game placement bonuses (Tenhou placement, `Formal/Mahjong/Scoring.lean`)
 --    Tenhou 4p hanchan: 25000 start, 30000 return, uma 15/5/-5/-15 (*1000),
 --    oka half_return pool 20000. Scoring.lean notes 20-10 variant; both sum zero.
 -- ---------------------------------------------------------------------------
@@ -192,7 +196,7 @@ theorem scoringUma_sum_zero :
     scoringUmaByRankRef ⟨2, by omega⟩ + scoringUmaByRankRef ⟨3, by omega⟩ = 0 := by
   native_decide
 
-/-- Starting / return points — SPEC literals
+/-- Starting / return points — frozen Tenhou literals (25000 / 30000)
   (file://src/hydra2/contracts/rules.py#STARTING_POINTS). -/
 def tenhouStartingPoints : Nat := 25000
 def tenhouReturnPoints : Nat := 30000
@@ -219,7 +223,8 @@ theorem oka_pool_via_scoring :
     (Formal.Mahjong.okaPool Formal.Mahjong.OkaPolicy.half_return) = 20000 := by
   rfl
 
-/-- Combined uma+oka container — mirrors SPEC `uma_by_rank` + `oka_policy`. -/
+/-- Combined uma+oka container — `uma_by_rank = (15,5,-5,-15)*1000` + `oka_policy = half_return`;
+non-zero-sum uma mis-settles and fails closed. -/
 structure TenhouUmaOka where
   startingPoints : Nat
   returnPoints : Nat
@@ -243,7 +248,7 @@ theorem tenhouUmaOka_uma_sum_zero :
 
 -- ---------------------------------------------------------------------------
 -- 4. Aka / kuisagari — red tiles and open-call han reduction
---    SPEC §4.1/§5.1: red_tile_ids = (16,52,88) for types 4,13,22.
+--    Red tiles: `red_tile_ids = (16,52,88)` for types 4,13,22; wrong ids mis-bonuses and fail closed.
 -- ---------------------------------------------------------------------------
 
 /-- Aka flag — Tenhou 4p hanchan uses three aka tiles
@@ -275,7 +280,7 @@ theorem red_tileTypes_4_13_22 :
   Formal.Mahjong.red_ids_tileType_values
 
 -- ---------------------------------------------------------------------------
--- 5. TenhouRules — the frozen manifest (SPEC §5.1)
+-- 5. TenhouRules — the frozen manifest (Tenhou 4p hanchan)
 --    Field names as required: yakuPolicies, yakumanPolicies, scoringPolicy,
 --    umaOka, akaFlag, kuisagari. Plus rulesId for identity.
 -- ---------------------------------------------------------------------------

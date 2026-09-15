@@ -13,16 +13,16 @@ set_option linter.unusedSectionVars false
 set_option linter.style.longLine false
 
 /-!
-# Hydra2 §11.4 Fixed MLMC — finite `Fintype` case proven:
+# Hydra2 Fixed MLMC — finite `Fintype` case proven:
   `mlmc_telescope` (`induction` `Icc` `sum_insert`) +
-  `mlmc_missing_correction_bias` (`sum_erase` omit-k failure).
-  HARD skip (prose/spec refs only, no Lean defs here): `3-level` `signed`
-  `deterministic` `tiny test`, `SPEC MLMC-TELESCOPE-001`, `pilot-frozen`
-  `ladder`+`counts`, `independent groups` `ProductMeasure`,
-  `paired levels`, `residual bias zero only when L exact`,
-  `reject outcome-dependent allocation`,
-  `Lagrange` `Nℓ*∝√(Vℓ/Cℓ)` `PyApprox`, `Giles 2008/2015` `αβγ` `O(ε⁻²)`
-  + general `MeasureTheory` `HasFiniteIntegral` `tower law`.
+  `mlmc_missing_correction_bias` (`sum_erase` omit-k failure; omitting a level
+  without its correction biases the telescope and fails closed).
+  Out of scope here (no Lean defs): multi-level signed deterministic tiny test,
+  pilot-frozen ladder and counts, independent groups `ProductMeasure`,
+  paired levels, residual bias zero only when L exact,
+  rejected outcome-dependent allocation,
+  `Lagrange` optimal counts, Giles 2008/2015 rates
+  (https://doi.org/10.1287/opre.1080.0496) + general `MeasureTheory` tower law.
 -/
 namespace Hydra2.Blueprint.Modules.MLMC
 

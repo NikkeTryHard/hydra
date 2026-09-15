@@ -26,7 +26,7 @@ Every ID, han value, open/closed reduction, yakuman 13×, and dora/aka/ura
 bonus handling matches `YAKU_TABLE` and `calculate_yaku` verbatim, including
 upstream #238 (`b697293`) special-hand composition — kokushi stacks with
 heavenly/all-honors yakuman while chiitoitsu is exclusive with yakuman
-(see §14 `scoredYakuList`; engine vectors in the §14 doc comment).
+(see `scoredYakuList` below; engine vectors in the scored-list doc below).
 
 * TileId 0..135 as `TileId := Fin 136`, `TileType := Fin 34` (`id/4`), copy
   `Fin 4` — identical to `types.rs::TILE_MAX = 34` and `tiles.py::physical_of`
@@ -36,7 +36,7 @@ heavenly/all-honors yakuman while chiitoitsu is exclusive with yakuman
 * `doraSucc` cyclic `nextDora` matches `types.rs::standard_next_dora_tile`
   and `Dora.lean::doraSucc`.
 
-References: `SPEC §4–9`, `tenhou.net/1/script/tenhou.js` (tenhou_id column in
+References: han 0..13 with fu 20..110, `tenhou.net/man`, `tenhou.net/1/script/tenhou.js` (tenhou_id column in
 `yaku.rs::YAKU_TABLE`), `2108.06832` (shanten).
 -/
 
@@ -694,7 +694,7 @@ def totalHan (h : Hand) (ms : MeldSet) (ctx : YakuContext) (doraCount : Nat) : N
 theorem totalHan_eq_han_plus_dora (h : Hand) (ms : MeldSet) (ctx : YakuContext) (d : Nat) :
     totalHan h ms ctx d = han h ms ctx + d := by unfold totalHan doraHan; rfl
 
--- Dora must not be counted as yaku (SPEC, Dora.lean theorem)
+-- Dora must not be counted as yaku (`Formal/Mahjong/Dora.lean` bonus-only rule)
 -- Dora.lean already provides `doraCountsAsYaku`, `requiresYaku`, `dora_not_counted_as_yaku`
 -- We add Yaku-specific alias theorems referencing those.
 theorem yaku_dora_not_yaku : doraCountsAsYaku = false := rfl
@@ -740,7 +740,7 @@ theorem winning_han_ge_one_or_yakuman (h : Hand) (ms : MeldSet) (ctx : YakuConte
     by_cases hclosed : isClosedMelds ms = true
     · simp [hclosed]; exact han_closed_ge1
     · simp [hclosed]; exact han_open_ge1
--- Kazoe yakuman: han ≥13 → yakuman-equivalent (SPEC, yaku.rs 13*count)
+-- Kazoe yakuman: han ≥13 yields yakuman-equivalent (`riichienv-core/src/yaku.rs` 13-count rule)
 def isKazoeYakuman (h : Hand) (ms : MeldSet) (ctx : YakuContext := defaultYakuContext) : Bool :=
   decide (13 ≤ han h ms ctx)
 
@@ -788,7 +788,7 @@ theorem validHanFu_imp_han_le_13 (hanVal : Nat) (fu : Fu) (h : validHanFu hanVal
     hanVal ≤ 13 := (validHanFu_bounds hanVal fu h).2.1
 
 -- ---------------------------------------------------------------------------
--- 11. Dora not yaku + furiten (SPEC, yaku_checker.rs)
+-- 11. Dora not yaku + furiten (`riichienv-core/src/yaku_checker.rs`; dora as yaku mis-scores and fails closed)
 -- ---------------------------------------------------------------------------
 
 

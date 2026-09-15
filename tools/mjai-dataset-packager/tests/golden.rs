@@ -1,4 +1,4 @@
-//! WP-00A golden round-trip coverage: raw JSON compression, `.mjson` naming,
+//! Golden round-trip coverage: raw JSON compression, `.mjson` naming,
 //! precompressed byte-copy, determinism, and silent ignores.
 
 mod common;

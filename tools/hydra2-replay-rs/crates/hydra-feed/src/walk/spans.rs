@@ -341,7 +341,7 @@ pub(crate) fn cached_window(
 }
 
 // ---------------------------------------------------------------------------
-// Row minting (DIRECT to minimal hot planes, §7 order).
+// Row minting (DIRECT to minimal hot planes, canonical plane order).
 // ---------------------------------------------------------------------------
 
 #[inline]

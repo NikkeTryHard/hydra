@@ -15,7 +15,7 @@ set_option linter.style.longLine false
 
 /-! # Hydra2 curriculum fine-tuning with encoder-reuse (kanachan)
 
-Mirrors `ideas/curriculum-finetuning.md`: staged ladder imitation → round-delta
+Staged ladder imitation to round-delta
 → grade → offline RL, one encoder warm-started per stage, decoder swapped.
 Warm-start, NOT freeze (kanachan transfers initialization; freeze is an
 ablation). No published per-stage deltas — first experiment must ablate.

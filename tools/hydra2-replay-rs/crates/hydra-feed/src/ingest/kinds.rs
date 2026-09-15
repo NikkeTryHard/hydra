@@ -35,9 +35,9 @@ pub const KIND_TRANSPARENT_OTHER: u8 = 16;
 /// Event kind: unknown / unusable type (gate rejects → InvalidData).
 pub const KIND_OTHER: u8 = 17;
 
-/// Seat sentinel: field absent or out of range (`0xFF none`, plan §6.1).
+/// Seat sentinel: `0xFF` = field absent or out of range.
 pub const NO_SEAT: u8 = 0xFF;
-/// Tile sentinel: no tile (`0xFF none`, plan §6.1).
+/// Tile sentinel: `0xFF` = no tile.
 pub const NO_PAI: u8 = 0xFF;
 
 /// Framing vocabulary: game-boundary aliases (mirrors `decode.py`).
@@ -121,7 +121,7 @@ pub(crate) fn boundary_class(ty: &[u8]) -> u8 {
     }
 }
 
-/// One stacked MJAI event over arena spans (plan §6.1, verbatim).
+/// One stacked MJAI event over arena spans (kind + seats + tile/consumed/tsumogiri + raw spans).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StackedEvent<'a> {
     /// Kind code (`KIND_*`).
@@ -144,7 +144,7 @@ pub struct StackedEvent<'a> {
     pub wall_span: Option<&'a [u8]>,
 }
 
-/// One framed game borrowing the ingest arena (plan §6.1, verbatim).
+/// One framed game borrowing the ingest arena (stable index + stacked events + optional wall).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FramedGame<'a> {
     /// Stable game index (sink join key).

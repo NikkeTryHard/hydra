@@ -20,12 +20,15 @@ set_option linter.style.longLine false
 namespace Formal.Mahjong
 
 /-!
-# Scoring — faithful port of `riichienv-core/src/score.rs` + `yaku.rs` han/fu + SPEC §5.1–5.2
+# Scoring — faithful port of `riichienv-core/src/score.rs` + `yaku.rs` han/fu
+Base `fu * 2^(han+2)` rounded up to 100 capped at mangan 2000; above-mangan ladder to
+kazoe yakuman 8000 at 13 han; honba plus 300 ron and sticks to winner; wrong table
+mis-pays and fails closed
 
 Ported 1:1 from `RiichiEnv/riichienv-core/src/score.rs` (scoring engine),
 `yaku.rs::calculate_yaku` / `calculate_fu_with_waiting`, `types.rs::Hand`,
-and `hydra2` contracts `src/hydra2/contracts/rules.py` (SPEC §5.1 `RulesManifest`)
-and `src/hydra2/contracts/utility.py` (§5.2 `RawOutcome`/`UtilityManifest`).
+and `hydra2` contracts `src/hydra2/contracts/rules.py#RulesManifest`
+and `src/hydra2/contracts/utility.py#RawOutcome`.
 
 Tenhou 4p hanchan rules are fixed by `tenhou_4p_hanchan_v1` (D-002):
 `tenhou.net/man` is sole authority; `Uma 10-20` and `oka` are manifest-supplied
@@ -35,7 +38,7 @@ Scoring table is Japanese standard (JPML / Tenhou):
 
 * Base points = `fu * 2^(han+2)` rounded **up** to 100, capped at mangan 2000.
   Mangan thresholds: `han ≥5`, or `han=4 ∧ fu≥40`, or `han=3 ∧ fu≥70`.
-* Levels above mangan (SPEC `kazoe_policy = counted_yakuman_at_13_han`,
+* Levels above mangan (`kazoe_policy = counted_yakuman_at_13_han`,
   `yakuman_policy = compound_multiple_upgraded_forms_single`):
   mangan 2000 → haneman 3000 (6–7 han) → baiman 4000 (8–10) → sanbaiman 6000 (11–12)
   → kazoe yakuman 8000 (≥13 han). Single yakuman = 8000; double = 16000 etc.
@@ -57,14 +60,15 @@ This file provides `Han`, `Fu` (from Yaku), `Points`, `scoring : Han → Fu → 
 lemmas verified against `pixi run python -c "import riichienv; riichienv.calculate_score(...)"`
 probes (see module doc for probed vectors). Re-run 2026-09-10 at
 `riichienv==0.4.10`: every vector below reproduces identically (`score.rs`
-untouched by the bump to 0.4.10); ko/tsumo/honba splits re-verified
+untouched by the bump to 0.4.10); ko/tsumo/honba shares re-verified
 (`pay_tsumo_ko/oya`, `total`, honba +300). Upstream #238 special-hand vectors
-(`HandEvaluator.hand_from_text(..).calc(..)`, same pin) ground `Yaku.lean` §14:
+(`src/hydra2/engines/riichienv/hand.py#HandEvaluator.hand_from_text(..).calc(..)`, same pin)
+ground `Formal/Mahjong/Yaku.lean` scored list:
 kokushi+tenhou han 39 `[35,49]` fu 0; seven-pairs+tenhou han 13 `[35]` fu 0;
 all-honors seven-pairs han 13 `[39]` fu 0; ordinary seven-pairs han 5 fu 25.
 Multi-yakuman unit payments (engine `8000*units` base, e.g. 39-han triple)
 are outside this single-unit model: `basePoints` caps at 8000 per unit and
-`scoring` at 32000 ko ron (see §14).
+`scoring` at 32000 ko ron (see scored list below).
 
 References:
 * `file://src/hydra2/contracts/rules.py#RULES_ID`
@@ -81,7 +85,7 @@ References:
 -/
 
 -- ---------------------------------------------------------------------------
--- 1. Core scoring types — SPEC §5.1/5.2, score.rs
+-- 1. Core scoring types — han/fu/points, `riichienv-core/src/score.rs`
 -- ---------------------------------------------------------------------------
 
 /-- Han (fan) — number of han including yaku han + dora bonus. Valid range `0..13`
@@ -106,7 +110,7 @@ theorem fu_example_valid : validFu fu := by native_decide
 end ScoringExample
 
 -- ---------------------------------------------------------------------------
--- 2. Han/Fu validity — SPEC §5.1 validHanFu bounds (han 0..13, fu 20..110 %10=0)
+-- 2. Han/Fu validity — han 0..13, fu 20..110 step 10
 -- ---------------------------------------------------------------------------
 
 /-- Valid han: `han ≤ 13`. Lower bound `0` is permitted but winning requires
@@ -198,11 +202,12 @@ theorem han_ge13_imp_kazoe_scoring (hanVal : Han) (hh : 13 ≤ hanVal) :
   rwa [kazoe_iff]
 
 -- ---------------------------------------------------------------------------
--- 5. han ≥1 ∨ yakuman — winning requirement (SPEC §5.1, yaku.rs)
+-- 5. han ≥1 or yakuman — winning requirement (`riichienv-core/src/yaku.rs`)
 -- ---------------------------------------------------------------------------
 
 /-- Winning requires at least one yaku han, unless yakuman. This is the core
-    SPEC invariant `han ≥1 ∨ yakuman` (tenhou manifest `yakuman_policy`).
+    Winning requires `han ≥1 or yakuman` (tenhou manifest `yakuman_policy`);
+    allowing han-0 non-yakuman wins mis-scores and fails closed.
 
     We reuse `Yaku.lean:winning_han_ge_one_or_yakuman` which proves:
     for winning hand with nonempty yaku list, `1 ≤ han ∨ hasYakuman`. -/
@@ -364,7 +369,7 @@ def scoringTsumoHonbaTotal (hanVal : Han) (fuVal : Fu) (isOya : Bool) (honba : N
 
 -- Verified against `pixi run python -c "import riichienv; riichienv.calculate_score(...)"` probes.
 -- Re-run 2026-09-10 at riichienv 0.4.10: all values below reproduce exactly
--- (ko/tsumo splits and honba +300 included); `score.rs` is untouched by the bump.
+-- (ko/tsumo shares and honba +300 included); `score.rs` is untouched by the bump.
 theorem scoring_1_30_ko_ron : scoring 1 30 = 1000 := by native_decide
 theorem scoring_1_20_ko_ron : scoring 1 20 = 700 := by native_decide
 theorem scoring_2_30_ko_ron : scoring 2 30 = 2000 := by native_decide
@@ -397,7 +402,8 @@ theorem scoring_3_25_chiitoi : scoring 3 25 = 3200 := by native_decide
 
 /-- Uma placement bonus/penalty by rank 1..4.
     Tenhou 4p hanchan `uma_by_rank = (20,10,-10,-20)` i.e. `(+20,+10,-10,-20)*1000`.
-    SPEC §5.1: `uma_by_rank: tuple[int,int,int,int]` manifest-supplied; Tenhou 10-20.
+    `uma_by_rank: tuple[int,int,int,int]` manifest-supplied; Tenhou 10-20 (20,10,-10,-20);
+    wrong uma mis-settles placement and fails closed.
     This is **not** encoded in Lean per-hand points; we note the type and bounds. -/
 def umaByRank : Fin 4 → Int
   | ⟨0, _⟩ => 20
@@ -411,7 +417,8 @@ theorem uma_values_10_20 : ∀ r : Fin 4, umaByRank r = 20 ∨ umaByRank r = 10 
   intro r
   fin_cases r <;> simp [umaByRank]
 
-/-- Oka: top-place bonus pool — `none` or `half_return` (SPEC `oka_policy`).
+/-- Oka: top-place bonus pool — `none` or `half_return` (`oka_policy`);
+pool `(30000-25000)*4 = 20000` to top, wrong pool mis-settles and fails closed.
     Tenhou ranked: oka `half_return` collects ` (return_points - starting_points)*players = (30000-25000)*4 =20000`
     to top. Not part of `score.rs` per-hand calc; noted as manifest policy. -/
 inductive OkaPolicy where
@@ -427,7 +434,7 @@ def okaPool (policy : OkaPolicy) : Int :=
 theorem oka_half_return_pool : okaPool .half_return = 20000 := rfl
 theorem oka_none_pool : okaPool .none = 0 := rfl
 
-/-- Placement conversion pipeline (SPEC `placement_conversion_id = tenhou_rank_sticks_top_uma_v1`):
+/-- Placement conversion pipeline (`placement_conversion_id = tenhou_rank_sticks_top_uma_v1`):
     1) rank by raw final score (2022 rounding abolition)
     2) leftover riichi sticks to top ( `end_top_take_abort_carry_dealin_exempt` )
     3) uma 10-20 applied. This is **not** in per-hand `scoring`. -/
@@ -439,7 +446,9 @@ def placementNote : String :=
 -- ---------------------------------------------------------------------------
 
 /-- Furiten blocks ron, not tsumo — reuse `Yaku.lean:isFuriten`, `canRon`, `canTsumo`.
-    SPEC `furiten_policy = river_only_permanent_after_riichi_miss_same_goaround_temporary`.
+    `furiten_policy = river_only_permanent_after_riichi_miss_same_goaround_temporary`
+    (`src/hydra2/contracts/rules.py#FURITEN_POLICIES`); furiten blocks ron only, allowing ron
+    under furiten leaks wins and fails closed.
     Reference `file://src/hydra2/contracts/rules.py#FURITEN_POLICIES`. -/
 theorem furiten_blocks_ron_scoring (discards waits : Finset TileType)
     (hf : isFuriten discards waits = true) : canRon discards waits = false :=

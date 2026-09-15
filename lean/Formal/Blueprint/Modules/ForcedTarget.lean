@@ -14,7 +14,7 @@ set_option linter.style.longLine false
 
 /-! # Hydra2 forced playouts + policy-target pruning (KataGo)
 
-Mirrors `ideas/forced-target-pruning.md` (Wu 1902.10565 §3.2): forced-visit
+Forced-target pruning (Wu 1902.10565 Sec 3.2, https://arxiv.org/abs/1902.10565): forced-visit
 count `n_forced(c) = √(k·P(c)·ΣN)` with `k = 2` decouples exploration from the
 policy target — deep-narrow lines get evaluated for TARGET QUALITY while
 pruning keeps that mass out of the teacher (numerator AND denominator).
@@ -70,9 +70,10 @@ section PUCTPrune
 variable {A : Type} [DecidableEq A]
 
 /-- KataGo PUCT value with exploration floor
-(`Wu 1902.10565 §2`: `c_PUCT = 1.1`, `FPU V(c) = V(n) - c_FPU·√P_explored`
-with `c_FPU = 0.2`). `N` is the visit count; forced visits are enforced by
-treating `PUCT(c) = ∞` while `N(c) < n_forced(c)` (harness scheduler). -/
+(`Wu 1902.10565 Sec 2`, https://arxiv.org/abs/1902.10565: `c_PUCT = 1.1`, `FPU V(c) = V(n) - c_FPU·√P_explored`
+with `c_FPU = 0.2`). `N` is the visit count; forced visits are upheld by
+treating `PUCT(c) = ∞` while `N(c) < n_forced(c)` (harness scheduler;
+skipping the floor starves deep-narrow lines and fails closed). -/
 noncomputable def puct (V P sumN cPUCT : ℝ) (N : ℕ) : ℝ :=
   V + cPUCT * P * Real.sqrt sumN / (1 + (N : ℝ))
 
@@ -112,7 +113,7 @@ theorem nForced_zero_k (P sumN : ℝ) : nForced 0 P sumN = 0 := by
   have h0 : (0 : ℝ) * P * sumN = 0 := by ring
   rw [h0, Real.sqrt_zero]
 
-/-- KataGo prune rule (`Wu §3.2` + katac4 re-derivation): the best child keeps
+/-- KataGo prune rule (Wu Sec 3.2, https://arxiv.org/abs/1902.10565): the best child keeps
 all visits; from each other child subtract up to `n_forced` (`sub c ≤ N c`,
 `(N c - sub c) ≤ nF c`) so long as its PUCT stays below the best at FINAL
 utilities; outright drop singletons (`N' c ≠ 1`). -/

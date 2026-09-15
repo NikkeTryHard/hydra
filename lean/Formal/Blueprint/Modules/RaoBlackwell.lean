@@ -13,8 +13,8 @@ set_option linter.unusedSectionVars false
 set_option linter.style.longLine false
 
 /-!
-# Hydra2 §11.1 Transition Rao-Blackwellization
-Blueprint §11.1, sources in header.
+# Hydra2 Transition Rao-Blackwellization
+Finite joint-law conditioning; conditioning on the wrong variable loses information and fails closed.
 -/
 
 namespace Hydra2.Blueprint.Modules.RaoBlackwell

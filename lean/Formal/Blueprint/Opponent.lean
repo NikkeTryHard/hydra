@@ -13,10 +13,11 @@ set_option linter.unusedSectionVars false
 set_option linter.style.longLine false
 
 /-!
-# Hydra2 §15 Candidate 8 — Joint Type/World Correlation
+# Hydra2 Candidate 8 — Joint Type/World Correlation
 
-Blueprint §15: `p_next(θ,x') ∝ ∫ p_h(θ,x) K_h(dx',e|x,q_j(·|I_j(x),θ))`
-and `Q_set` uncertainty set over coherent information-set policies.
+Joint update `p_next` proportional to integrated prior-times-kernel over coherent
+information-set policies with `Q_set` uncertainty set; dropping the joint and
+updating only the type marginal loses correlation and double-conditions, failing closed.
 
 Key non-factorization: updating only `p(θ)` against a type-independent `b(x)` loses
 the induced `θ–x` correlation and can double-condition on `e`. The joint must be
@@ -83,7 +84,7 @@ theorem condWorldGivenTheta_sum_one
   rw [← Finset.sum_div, h]
   exact div_self hne
 
-/-- Type-posterior Bayes update (BPR Eq.1-2, Rosman et al. 2016 §2.9,
+/-- Type-posterior Bayes update (BPR Eq.1-2, Rosman et al. 2016 Sec 2.9,
   arXiv:1505.00284:
   `β^t(τ) = P(σ^t|τ,π^t)β^{t-1}(τ) / Σ_{τ'} P(σ^t|τ',π^t)β^{t-1}(τ')`,
   i.e. `η·F(τ)·β(τ)` with observation model `F` per Def.7). Dual of
@@ -431,7 +432,8 @@ theorem joint_determines_marginals_but_not_converse :
     rw [e1, e2] at hc
     norm_num at hc
 
-/-- Blueprint §15 `Q_set`: `Q = {q_j: divergence(q||q_nom)≤ρ, q=(1-ε)q_nom+ε r, r∈ support}`.
+/-- Uncertainty set `Q_set`: `Q = {q_j: divergence(q||q_nom)≤ρ, q=(1-ε)q_nom+ε r, r∈ support}`.
+Empty set admits no robust policy and fails closed.
 Finite version: policies are laws over a finite `A`, divergence is finite KL.
 Nonempty via `r = q_nom`: then `q = q_nom` (`(1-ε)+ε = 1`) and
 `D(q_nom‖q_nom) = 0 ≤ ρ` (each summand `q·log(q/q)` is `0`: `q=0` gives `0`, else

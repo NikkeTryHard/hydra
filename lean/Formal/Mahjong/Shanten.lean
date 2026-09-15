@@ -46,7 +46,8 @@ Lean interface also provided:
   `shantenKokushi` (`13 -distinct -hasPair`), `shanten = min (min standard chiitoi) kokushi`
 * `ukeire`, red-aware, parity fixtures, etc.
 
-References: `shanten.rs`, `types.rs`, `tests/test_shanten.py`, `SPEC §4`,
+References: `riichienv-core/src/shanten.rs`, `riichienv-core/src/types.rs`,
+`src/hydra2/engines/riichienv/convert.py`, shanten -1 to 8 with DFS `8-2*m-t-p`;
 `2108.06832`, `tenhou.net/man`.
 -/
 

@@ -46,7 +46,7 @@ pub struct CollatedBatch {
 /// G2 mismatch: hot plane index + row + what diverged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct G2Mismatch {
-    /// Hot §7 plane index (`usize::MAX` = row-count/shape mismatch).
+    /// Hot plane index in canonical order (`usize::MAX` = row-count/shape mismatch).
     pub hot_plane: usize,
     pub row: u32,
     pub what: &'static str,

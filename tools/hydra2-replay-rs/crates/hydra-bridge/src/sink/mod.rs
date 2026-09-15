@@ -7,7 +7,7 @@
 //! on this module. Same-crate `stream.rs` calls only [`quarantine_reason_name`]
 //! while capturing quarantines, never the file/score legs.
 //!
-//! Shape (plan §6.6 + post-claim rule):
+//! Shape (reason taxonomy + post-claim quarantine rule):
 //! - reason renderer: [`quarantine_reason_name`] (`reason < 10` → gate names,
 //!   else walk names; unknown bytes stay `"other"` and MUST grow the
 //!   vocabulary, never pass silently — the histogram test asserts `"other"`

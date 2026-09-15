@@ -62,7 +62,7 @@ struct Args {
     /// Maximum uncompressed archive payload bytes queued or being compressed.
     #[arg(long, default_value_t = DEFAULT_MEMORY_LIMIT)]
     memory_limit_bytes: u64,
-    /// Transport manifest for authoritative PackagedObjectRows (WP-00B).
+    /// Transport manifest for authoritative PackagedObjectRows.
     /// Hidden operational flag: accepted by both subcommands, consumed by
     /// `convert`. Kept out of --help so the recorded help bytes and the
     /// no-flag behavior remain identical.
@@ -714,7 +714,7 @@ fn convert_archive(
     })
 }
 
-/// Context threaded through the WP-00B integrity authority.
+/// Context threaded through the packager integrity authority.
 struct IntegrityCtx {
     output_root: PathBuf,
     manifest_path: Option<PathBuf>,

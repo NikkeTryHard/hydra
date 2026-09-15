@@ -51,6 +51,13 @@ Layered DAG, dependencies flow one way: `contracts` (stdlib-only Tenhou vocab) <
 
 1. Versioned canonical artifacts from completed packages. 2. `docs/BUILD_EXECUTION_PLAN.md` (order, gates, evidence). 3. `docs/IMPLEMENTATION_SPEC.md` (schemas, APIs, algorithms). 4. `docs/PROJECT_PLAN.md` (direction). 5. `docs/ALGORITHM_EXPERIMENT_BLUEPRINT.md` (candidate intent). 6. External refs (rationale only; NEVER override contracts). On conflict: stop the package, record the exact conflict, NEVER silent-pick. Missing spec blocks implementation; it NEVER authorizes guessing.
 
+## Comment self-containment (Lean + Rust)
+
+- **Comments MUST be self-contained.** State invariant + failure mode inline.
+- **ALLOWED refs:** source-file paths + online URLs ONLY.
+- **NEVER docs pointers.** No SPEC/BUILD/Wave/WP/ideas/docs/*.md/§-to-docs.
+- **No-benefit provenance? Delete it.** Numbers/thresholds MUST stay inline.
+
 ## Testing rules
 
 - Default: add the test to the existing file for the module you changed. New files only for new modules. Every test MUST defend observable behavior or an invariant and MUST fail without the change.

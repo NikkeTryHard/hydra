@@ -22,7 +22,9 @@ set_option linter.unusedVariables false
 namespace Formal.Mahjong.GameModule
 
 /-!
-# Game — tenhou hanchan lifecycle `GamePhase` × `GameLifecycle` (SPEC §2, §4, §9)
+# Game — tenhou hanchan lifecycle `GamePhase` × `GameLifecycle`
+Eight-round East-to-South hanchan with 52 dealt plus 70 live plus 14 dead;
+breaking the lifecycle skips turns and fails closed
 
 Faithful 1:1 port of the `StateInner` state machine and tenhou hanchan
 lifecycle from:
@@ -50,7 +52,7 @@ lifecycle from:
 * `file://formal/Formal/Mahjong/Wall.lean#WallSchedule` — `wall : List TileId`
   `length 136`, `liveWall 70`, `deadWall 14`, `dealtTiles 52 =4×13`.
 
-Tenhou hanchan lifecycle (SPEC §9 / `tenhou.net/man`):
+Tenhou hanchan lifecycle (`tenhou.net/man`, `src/hydra2/contracts/rules.py`):
 
 ```
 PreRound ──dealRound(52)──► LiveTurn
@@ -178,7 +180,7 @@ and `pendingEvents : List EventEnvelopeLite` (from `Event.lean`).
 Distinct name `GameLifecycle` avoids collision with `Formal.Mahjong.GameState`
 and `Formal.Mahjong.EventModule.EventEnvelopeLite` per contract.
 `pendingEvents` queues the public/server_private envelopes that `engine.py`
-would flush via `collect_observations` (SPEC §7 `Event → Packet → Observation`).
+would flush via `collect_observations` (`Event` to `Packet` to `Observation` boundary).
 
 Citations:
 * `file://formal/Formal/Mahjong/State.lean#GameState`
@@ -279,7 +281,7 @@ Mirrors `state/mod.rs#discard_tile` + `engine.py: step(discard)`:
 
 * Requires `phase = LiveTurn` and `tile ∈ hands seat`.
 * Removes from `hands`, appends to `discards seat`, transitions to
-  `CallWindow` (SPEC §7 `call_window` public envelope opened for `Chi/Pon/Kan/Ron`).
+  `CallWindow` (`call_window` public envelope opened for `Chi/Pon/Kan/Ron`; private open leaks offers and fails closed).
   If no caller, caller is expected to `callStep` with pass back to `LiveTurn`.
 
 Uses `State.lean: discardTile`. -/

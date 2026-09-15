@@ -15,9 +15,9 @@ set_option linter.unusedSectionVars false
 set_option linter.style.longLine false
 set_option linter.style.whitespace false
 
-/-! # Hydra2 §20 PPO/ACH — Masked Objectives & Illegal Logit Zero-Grad
-Mirrors `IMPLEMENTATION_SPEC.md §20 Masked PPO comparador` and
-`ALGORITHM_EXPERIMENT_BLUEPRINT.md` Candidate training objectives.
+/-! # Hydra2 PPO/ACH — Masked Objectives and Illegal Logit Zero-Grad
+Masked PPO comparator and candidate training objectives. Illegal probabilities
+and illegal-logit gradients are exactly zero; any leak fails closed.
 -/
 
 namespace Hydra2.Blueprint.PPO
@@ -333,7 +333,7 @@ end CombinedLoss
 
 section OracleGuiding
 
-/-- Suphx Eq.5 oracle guiding (Suphx 2019, arXiv:2003.13590 §3.3):
+/-- Suphx Eq.5 oracle guiding (Suphx 2019, arXiv:2003.13590 Sec 3.3, https://arxiv.org/abs/2003.13590):
   privileged features (opp privates + wall) enter with Bernoulli keep-prob
   `γ_t : P(δ_t=1)=γ_t`, decayed `1 → 0`; at `γ=0` the oracle has transited
   to a normal agent (then continue with `LR×0.1` + importance-weight

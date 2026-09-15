@@ -633,7 +633,7 @@ fn do_reach(walker: &mut Walker, reach_idx: usize, decl_idx: usize) -> Result<()
     check_drawer(walker, actor, "reach")?;
     // Declaration discard: the yielded reach step resolves drawn-preferred
     // from collapsed ids, so the tile is always the string-canonical id
-    // (ownership still enforced against the tracked hand, fail closed).
+    // (ownership still checked against the tracked hand; unowned fails closed).
     let drawn = walker.track("reach")?.drawn[actor as usize];
     let declaration_tile =
         physical_of(&pai).map_err(|e| walker.fail("tile-conservation", "reach", &e.to_string()))?;

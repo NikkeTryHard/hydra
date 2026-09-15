@@ -13,9 +13,9 @@ set_option linter.unusedSectionVars false
 set_option linter.style.longLine false
 
 /-!
-# Hydra2 §11.8 Controlled SMC (Feynman-Kac)
+# Hydra2 Controlled SMC (Feynman-Kac)
 
-Blueprint §11.8: `γ_T(f)=E_q[f(X_{0:T})∏_t G_t]` with exact ratios and
+Feynman-Kac `γ_T(f)=E_q[f(X_{0:T})∏_t G_t]` with exact ratios and
 conditionally unbiased resampling. Unnormalized estimator `γ̂_T(f)` is unbiased;
 normalized `η̂_T(f)=γ̂_T(f)/γ̂_T(1)` (dividing by random `γ̂_T(1)`) is biased `O(1/N)`.
 
@@ -107,10 +107,10 @@ theorem resampling_unbiased_condition {n : ℕ} (w : Fin n → ℝ) (N : ℝ)
   rw [← Finset.mul_sum, h_sum, mul_one]
 
 /-- Per-particle multinomial mean (sharpens `resampling_unbiased_condition`):
-verbatim `E_r[cnt^i] = Np·normwt^i for all i` (jahoo §1.1,
+verbatim `E_r[cnt^i] = Np·normwt^i for all i` (jahoo Sec 1.1, https://jahoo.github.io/posts/smc-resampling/,
 https://jahoo.github.io/posts/smc-resampling/) from `cnt^i ~ Binomial(Np,
-normwt^i)` (jahoo §2.2.1) and Douc et al. 2005 unbiasedness `E[N^i|G^n] =
-n·w^i` Eq.3 §1 (https://ar5iv.org/html/cs/0507025, mirror of
+normwt^i)` (jahoo Sec 2.2.1, https://jahoo.github.io/posts/smc-resampling/) and Douc et al. 2005 unbiasedness `E[N^i|G^n] =
+n·w^i` Eq.3 Sec 1 (https://ar5iv.org/html/cs/0507025, mirror of
 https://arxiv.org/abs/cs/0507025). The Binomial-mean grounding stays an
 explicit premise — its `PMF` tower is the HARD-skipped Del Moral lemma-3
 class. `+placement`: `src/hydra2/search/modules/__init__.py:623`
@@ -128,9 +128,9 @@ The stochastic content (counts are random, only their conditional expectation is
 is the HARD-skipped `PMF`/`Binomial` extension. -/
 theorem resampling_counts_sum_deterministic {n : ℕ} (counts : Fin n → ℝ) (N : ℝ)
     (h : ∑ i, counts i = N) : ∑ i, counts i = N := h
-/-- Time-reversal weight identity (Dai arXiv:2007.11936 §2.1 Eq.2.1
-  `w_t = γ_t·L_{t-1}/(γ_{t-1}·M_t)` + §2.3 time-reversal `L = π_t·M/π_t`;
-  cites Del Moral et al. 2006 §3.3). With the reversal choice the forward
+/-- Time-reversal weight identity (Dai arXiv:2007.11936 Sec 2.1 Eq.2.1, https://arxiv.org/abs/2007.11936
+  `w_t = γ_t·L_{t-1}/(γ_{t-1}·M_t)` + Sec 2.3 time-reversal `L = π_t·M/π_t` (https://arxiv.org/abs/2007.11936);
+  cites Del Moral et al. 2006 Sec 3.3. With the reversal choice the forward
   kernel cancels: `w = γ_t·π_{t-1}/(γ_{t-1}·π_t)`. Finite field core: `M`
   moves (mutation kernels) need no longer be tracked per-particle once `L`
   is the reversal. Variance-minimality of `L^opt = π_{t-1}M/q_t`
@@ -180,7 +180,8 @@ theorem resampling_variance_stratified_le_multinomial_example :
   · intro i; fin_cases i <;> simp
   · simp only
     norm_num
-/-- Finite analogue of "independent populations (not descendants) are the uncertainty unit" (§11.8).
+/-- Finite analogue of "independent populations (not descendants) are the uncertainty unit":
+averaging over descendants underestimates variance and fails closed.
 Averaging over `P` independent replicate populations scales variance as `var / P`
 (same `blockMeanVariance` pattern as the Evaluation module); descendants within one
 population share ancestors so they do not give this `1/P` reduction.
@@ -311,7 +312,7 @@ theorem essInfTrigger_mono_budget (weights : Finset ℝ) (hne : weights.Nonempty
 verbatim `ESS = 1/Σᵢ(w⁽ⁱ⁾)²` (pytcl `02_particle_filters` notebook,
 https://pytcl.readthedocs.io/en/latest/notebooks/02_particle_filters.html),
 `ESSt = 1/Σ(w_t⁽ⁱ⁾)²` (metricgate,
-https://metricgate.com/docs/particle-filter-resample/), `ESS = 1/Σ(normwt)²`
+https://metricgate.com/ (particle-filter resample note), `ESS = 1/Σ(normwt)²`
 (jahoo, https://jahoo.github.io/posts/smc-resampling/), `(Σw)²/Σw²`
 (WeightIt, https://ngreifer.github.io/WeightIt/reference/ESS.html).
 Indexed over `Fin n` (NOT `Finset ℝ` like `essInf`): squares do not survive
@@ -399,8 +400,8 @@ Binomial standard `Var(X) = np(1−p)`
 (https://en.wikipedia.org/wiki/Binomial_distribution, infobox+Properties)
 substituted at `p := w^i` — jahoo states only the qualitative extra
 variance, so the per-particle equation is BRIDGED not verbatim (said
-plainly); the `PMF` derivation HARD-skips. Douc Eq.6 §3.1 / Eq.9 §3.4 give
-the multinomial conditional-variance baseline. `-cost`: low ESS means high
+plainly); the `PMF` derivation HARD-skips. Douc Eq.6 Sec 3.1 / Eq.9 Sec 3.4 (https://arxiv.org/abs/cs/0507025) give
+the multinomial conditional-variance baseline. Low ESS means high
 resample noise through this identity — the quantitative reason the
 `essKishTrigger` gate fires earlier exactly when resampling injects the
 most variance. Pure `ring`+`sum` algebra past the premise. -/

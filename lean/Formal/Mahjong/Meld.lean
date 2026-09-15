@@ -19,7 +19,10 @@ set_option linter.unusedVariables false
 namespace Formal.Mahjong
 
 /-!
-# DeclaredMeld — chi/pon/kan invariants (SPEC §6.2)
+# DeclaredMeld — chi/pon/kan invariants
+Chi needs 2 distinct physical plus consecutive logical plus same suit with honors
+forbidden and source previous seat; pon needs 2 same logical; kan needs 4 same
+logical; violation fails closed
 
 Faithful Lean port of:
 
@@ -28,7 +31,7 @@ Faithful Lean port of:
 * `hydra2/src/hydra2/engines/riichienv/actions.py`
 * `hydra2/src/hydra2/contracts/action.py` — `_consumed_pair_forms_run`, `_all_same_type`
 * `hydra2/src/hydra2/contracts/observation.py` — `VisibleMeld`
-* `docs/IMPLEMENTATION_SPEC.md §6.2`
+* meld validity over `src/hydra2/contracts/action.py` pair and run checks
 
 Invariants:
 
@@ -102,7 +105,7 @@ theorem meld_finset_card_le_univ (m : DeclaredMeld) : m.tiles.card ≤ 136 := by
     _ = 136 := by simp [Fintype.card_fin]
 
 -- ---------------------------------------------------------------------------
--- 2. Per-kind predicates (SPEC §6.2)
+-- 2. Per-kind predicates (chi/pon/kan validity)
 -- ---------------------------------------------------------------------------
 
 def IsValidChi (m : DeclaredMeld) : Prop :=

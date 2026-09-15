@@ -1,11 +1,13 @@
-//! S5 thin bridge: `FeedStream` + `PyHydraStream` over `feed::fill` (plan §6.5).
+//! Thin bridge: `FeedStream` + `PyHydraStream` over `feed::fill` (serial
+//! staging in file order; stats and quarantines stay readable post-close).
 //!
 //! DAG: this crate depends on the feed crate + pyo3 ONLY (no cold-crate edge;
 //! CI triple-grep enforces). FORBIDS: parse/encode/hash/pool logic —
 //! arg-check + detach + struct return only. The SOLE hot pool lives in
 //! `feed::fill`; the bridge creates none and stages serially in file order.
 //!
-//! Staging contract (breaks the `t_len`/`rows` circle; plan §6.4 order):
+//! Staging contract (breaks the `t_len`/`rows` circle: the stager picks T
+//! BEFORE committing rows):
 //! each `next_into` call stages whole games (`stage_one`: frame → gate →
 //! walk on a thread-local, rollback-free) into the `Scratch` until
 //! `batch_rows` staged rows or input exhaustion, then commits via
@@ -31,13 +33,14 @@ use hydra_feed::ledger;
 use pyo3::exceptions::{PyBufferError, PyOSError, PyValueError};
 use pyo3::prelude::*;
 
-// N_PLANES is 26 (§7 order #0-25); the FFI surface spells it literally so a
-// future plane-count change fails loudly here instead of silently widening.
+// N_PLANES is 26 (canonical plane order #0-25); the FFI surface spells it
+// literally so a future plane-count change fails loudly here instead of
+// silently widening.
 const _: () = assert!(N_PLANES == 26);
 
 // ---------------------------------------------------------------------------
 // Closed failure vocabulary (kept 1:1 with the root handoff it replaces,
-// plus the §6.5 plane-carrying buffer error).
+// plus the plane-carrying buffer error).
 // ---------------------------------------------------------------------------
 
 /// Closed stream failure vocabulary (every variant maps to a Python error).
@@ -611,7 +614,7 @@ impl From<&FeedQuar> for PyQuar {
 }
 
 /// Post-close stash: `close` takes the stream, but stats/quarantines stay
-/// readable (plan §6.5: readable post-close).
+/// readable.
 #[derive(Debug, Clone, Default)]
 struct TailStats {
     games_ok: u64,
@@ -670,7 +673,7 @@ impl PyHydraStream {
 
     /// Commit staged rows into the caller planes.
     ///
-    /// `ptrs` are 26 pinned-slot base addresses (§7 order), `byte_caps`
+    /// `ptrs` are 26 pinned-slot base addresses (canonical plane order #0-25),
     /// their byte sizes (`tensor.nbytes`). Rows land in the caller PREFIX
     /// exactly; `t_len` selects the committed history width. The GIL is
     /// released for the entire fill. A null pointer fails closed; a

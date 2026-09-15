@@ -1,7 +1,7 @@
 //! S3 walk state — u8 ledger DIRECT to planes (`feed::ledger`).
 //!
-//! u8 ledger DIRECT to minimal hot planes (§6.3 shapes, verbatim names;
-//! aka shares its type, offers/shapes/furiten are type-level reads).
+//! u8 ledger DIRECT to minimal hot planes (copy-slot presence per seat;
+//! aka shares its type; offers/shapes/furiten are type-level reads).
 //!
 //! Kills (vs `hydra-shard/src/decisions.rs`, read-only reference):
 //! - `reported_hand` string roundtrip (:617-646, 2× `HashMap<String,..>` +
@@ -184,11 +184,9 @@ impl Meld {
 /// boundaries overwrite (never realloc).
 #[derive(Clone, Debug)]
 pub struct Ledger {
-/// `hands` note: plan §6.3 sketches `hands[[u8;4];34]` — the per-seat
-/// slice. The ledger holds one slice per seat (`hands[seat][type][copy]`,
+/// `hands` note: one presence slice per seat (`hands[seat][type][copy]`,
 /// stored take id + 1 with 0 == empty); a seat-less ledger could not walk
-/// four holdings, while `melds`/`rivers` are already per-seat in the plan.
-/// Stored takes are the TRUE allocated copies (never pool-first twins), so
+/// four holdings, while `melds`/`rivers` are already per-seat.
 /// offers/chosen report the same ids the oracle encodes. Global take
 /// allocation (conservation) lives in `used_n`/`used_aka`, monotonic and
     /// Concealed takes per seat: `hands[seat][type][copy]`, stored take id + 1 (0 == empty).
@@ -378,11 +376,12 @@ impl<'a> GameCtx<'a> {
     }
 }
 
-/// Hot plane count (§7 order #0-25). MUST equal `feed::fill::N_PLANES`
-/// (P3-A owns that const; this alias keeps the borrow type literal-free).
+/// Hot plane count (canonical order #0-25). MUST equal `feed::fill::N_PLANES`
+/// (this alias keeps the borrow type literal-free; the const assert pins the
+/// equality at compile time).
 pub const N_WALK_PLANES: usize = 26;
 
-/// Hot plane names in §7 index order. MUST match the Python
+/// Hot plane names in canonical index order #0-25. MUST match the Python
 /// ``_HOT_PLANES`` order (``training/rust_stream.py``) and the staged
 /// ``[Vec<u8>; N_PLANES]`` order: the per-game bridge serves these names so
 /// Python assembles without positional coupling. Index 12 serves packed
@@ -416,7 +415,7 @@ pub const PLANE_NAMES: [&str; N_WALK_PLANES] = [
     "actor_can_tsumo",
 ];
 
-/// Row sink: row counter + borrowed Scratch plane views (§7 order).
+/// Row sink: row counter + borrowed Scratch plane views (canonical plane order).
 ///
 /// Each plane buffer holds raw LE bytes appended row-major; T-variable
 /// planes (#4 kinds `i64`, #5 mask `u8`) append `hist_lens.last()` entries
@@ -426,7 +425,7 @@ pub const PLANE_NAMES: [&str; N_WALK_PLANES] = [
 pub struct RowSink<'b> {
     /// Committed row count (join key with `(game_idx, seq)`).
     pub rows: u32,
-    /// Scratch plane buffers in §7 order (raw LE bytes, row-major).
+    /// Scratch plane buffers in canonical plane order (raw LE bytes, row-major).
     pub planes: &'b mut [Vec<u8>; N_WALK_PLANES],
     /// Per-row history lengths (one entry per committed row).
     pub hist_lens: &'b mut Vec<u32>,

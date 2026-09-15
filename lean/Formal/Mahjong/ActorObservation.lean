@@ -22,7 +22,8 @@ namespace Formal.Mahjong
 # ActorObservation — faithful port of `riichienv-core/src/observation/helpers.rs`
   and `hydra2/src/hydra2/contracts/observation.py`
 
-Ports `ActorObservation` (SPEC §8) — one actor's legal view at a decision point.
+One actor legal view at a decision point: public vs concealed plus drawn, sorted TileId,
+dora sentinel, legal mask; private tiles never leak to public, violation fails closed.
 Visibility boundary (file://src/hydra2/contracts/observation.py#ActorObservation):
 public vs concealed+drawn, sorted TileId, dora sentinel, legal_mask, 0..4 counts.
 
@@ -75,10 +76,11 @@ structure VisibleMeldView where
   deriving DecidableEq
 
 -- ---------------------------------------------------------------------------
--- 2. ActorObservation — SPEC §8 fields, hydra2 + RiichiEnv helpers port
+-- 2. ActorObservation — visibility-boundary fields, hydra2 + RiichiEnv helpers port
 -- ---------------------------------------------------------------------------
 
-/-- One actor's complete legal view at one decision point (SPEC §8).
+/-- One actor's complete legal view at one decision point: public vs concealed plus drawn,
+sorted TileId, dora sentinel, legal mask; private never leaks to public, violation fails closed.
 
 Mirrors `ActorObservation` dataclass (file://src/hydra2/contracts/observation.py#277)
 with Lean-faithful types:
@@ -86,7 +88,7 @@ with Lean-faithful types:
 - `concealed_hand : Finset TileId` — sorted canonical hand, duplicates allowed only
   via distinct TileId copies (physical 0..135, type*4+copy). Lean Finset is sorted
   by `Finset.sort` canonicalization, matching `concealed_hand == sorted(hand)` check.
-- `own_drawn : Option TileId` — private draw, not in concealed_hand (SPEC §8)
+- `own_drawn : Option TileId` — private draw, not in concealed_hand
 - `visible_discards : Fin 4 → List TileId` — four rivers, public to all
 - `visible_melds : Fin 4 → List VisibleMeldView` — public melds per seat
 - `doraArray : DoraArray` — 5 slots `DoraSlot → Option TileId`, `none` = sentinel
@@ -262,7 +264,7 @@ theorem public_private_disjoint_of_valid (obs : ActorObservation) (h : obs.IsVal
 namespace ActorObservation
 
 /-- Main invariant: public tiles disjoint from private hand+drawn.
-    This is the Lean statement of SPEC §8 visibility boundary:
+    This is the Lean statement of the visibility boundary:
     "wall/dead wall, opponent concealed tiles, unrevealed dora ... have no
      field to occupy" — private tiles never leak into public piles.
     Faithful to `VisibilityValidator` (file://src/hydra2/contracts/observation.py#895-927)

@@ -16,20 +16,20 @@ set_option linter.style.longLine false
 
 /-! # Hydra2 Gumbel search identities (Gumbel-Top-k + sequential halving)
 
-Mirrors `src/hydra2/search/gumbel.py` (1819-line live planner, zero prior
-Lean, zero `ideas/gumbel*`): deterministic inverse-CDF sampler
-(`deterministic_gumbel` L133-172), root gumbels L175-190, score rule
-`score = g + q` L1012-1013/L1051, halving keep `ceil(n/2)` L1024-1029,
-final argmax L1044-1065.
+Live planner `src/hydra2/search/gumbel.py` (1819 lines): deterministic inverse-CDF sampler
+(`src/hydra2/search/gumbel.py#deterministic_gumbel` inverse-CDF sampler, root gumbels,
+score rule `score = g + q`, halving keep `ceil(n/2)`, final argmax;
+wrong keep fraction breaks the halving schedule and fails closed.
 
 Paper chain (GumbelMiner):
 - C1 Gumbel-Max: `argmax_i{phi_i + G_i} ~ Categorical(softmax phi)`
-  (Kool et al. ICML19 §2.3; derivation Princeton LIPS 2013).
+  (Kool et al. ICML19 Sec 2.3, https://arxiv.org/abs/1903.06059; derivation Princeton LIPS 2013,
+https://lips.cs.princeton.edu/the-gumbel-max-trick-for-discrete-distributions/).
   URLs: https://ar5iv.labs.arxiv.org/html/1903.06059
         https://lips.cs.princeton.edu/the-gumbel-max-trick-for-discrete-distributions/
 - C2 CDF `F(z;mu) = exp(-exp(-(z-mu)))` + sampler `G = phi - log(-log U)`
-  (Kool §2.2, App B.1 Eq20-21).
-- C3 Gumbel-Top-k Thm 1 §2.4: ordered top-k = ordered WOR sample
+  (Kool Sec 2.2, App B.1 Eq20-21, https://arxiv.org/abs/1903.06059).
+- C3 Gumbel-Top-k Thm 1 Sec 2.4 (https://arxiv.org/abs/1903.06059): ordered top-k = ordered WOR sample
   (Eq4, proof App A). https://arxiv.org/abs/1903.06059
 - C4 Sequential halving: keep `ceil(|S|/2)` per round over `ceil(log2 n)`
   rounds (Karnin et al. 2013, Alg 1 via https://arxiv.org/html/2406.00424v1).

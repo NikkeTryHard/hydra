@@ -1,6 +1,6 @@
 //! S1 ingest — one-pass span framing (`feed::ingest`).
 //!
-//! §6.1 shapes + kind-LUT constants: the cross-crate contract `feed::gate`
+//! Span-framing shapes + kind-LUT constants: the cross-crate contract `feed::gate`
 //! compiles and tests against verbatim (see contract block below).
 //!
 //! Cross-crate contract:

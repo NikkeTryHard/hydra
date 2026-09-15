@@ -1,9 +1,10 @@
 import Mathlib.Data.String.Basic
 /-! # Hydra2 Training provenance — `shared_run_fields_hash` (RFC8785 canonical JSON sha256)
 
-Mirrors `IMPLEMENTATION_SPEC.md §2.2` `canonical_bytes` (RFC8785 JCS deterministic sorting,
+Canonical bytes `canonical_bytes` (RFC8785 JCS https://www.rfc-editor.org/rfc/rfc8785 deterministic sorting,
 `ES6 Number::toString`-style shortest number, `UTF-8`, no whitespace) + `digest.py` `sha256_digest`
-and `§20` `MatchedObjectiveGroup` `shared_run_fields_hash` over shared `RunSpec` fields +
+and `MatchedObjectiveGroup` `shared_run_fields_hash` over shared `RunSpec` fields +
+`sha256_digest` in-memory + `sha256_file` chunked streaming MUST agree, else fail closed, plus
 shared objective params `w_value, w_bc, α`. In Lean we model the hash interface as an
 opaque `String → String` (real implementation is `Python` `src/hydra2/artifacts/canonical.py` +
 `digest.py`); `MatchedGroup` byte-identical provenance is then hash equality over canonical bytes.
@@ -32,12 +33,12 @@ def canonicalBytes (s : String) : String := s
   regex `^sha256:[0-9a-f]{64}$`);
   `of_canonical = sha256(canonical_bytes(value))`; dual paths
   `sha256_digest` (in-memory) + `sha256_file` (chunked streaming) must
-  agree (BUILD WP-02A). -/
+  agree, else fail closed. -/
 -- Interface placeholder; real digest via `digest.py` `sha256_digest` /
 -- `sha256_file` / `of_canonical` / `validate_digest`.
 def sha256Digest (s : String) : String := s
 
-/-- `shared_run_fields_hash` = `sha256(canonical_bytes(sharedFields))` (`SPEC §20` `1441-1453`). -/
+/-- `shared_run_fields_hash` = `sha256(canonical_bytes(sharedFields))`; mismatch fails closed. -/
 noncomputable def sharedRunFieldsHash (canonicalSharedFields : String) : String :=
   sha256Digest (canonicalBytes canonicalSharedFields)
 

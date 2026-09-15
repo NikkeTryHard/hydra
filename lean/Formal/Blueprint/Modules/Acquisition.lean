@@ -15,10 +15,10 @@ set_option linter.style.longLine false
 /-!
 # Hydra2 Acquisition Scores (EI duality, one-step VoI, BE trade-off)
 
-BPR Rosman et al. 2016 (ar5iv 1505.00284) §3 (acquisition), §3.1.1 (EI),
-§3.1.3 (KG/VoI). Bayes-Lab 2022: finite type library + packet signals
-imply finite sums throughout. Gaussian CDF (Φ) EI closed form and MC KG
-integration stay harness-side; here only finite-sum scores + order algebra.
+BPR Rosman et al. 2016 (https://arxiv.org/abs/1505.00284) acquisition, EI, and KG/VoI.
+Finite type library + packet signals imply finite sums throughout. Gaussian CDF
+EI closed form and MC KG integration stay harness-side; here only finite-sum scores
++ order algebra. Using infinite type libraries here would diverge and fails closed.
 -/
 
 namespace Hydra2.Blueprint.Acquisition
@@ -83,7 +83,7 @@ end AcqScores
 section HorizonKG
 variable {Pi : Type} [Fintype Pi]
 
-/-- KG horizon rule (BPR §3.1.3 eq6-7): `Ũ(π) + (K−t)·ν` — at horizon end
+/-- KG horizon rule (BPR Eq.6-7, https://arxiv.org/abs/1505.00284): `Ũ(π) + (K−t)·ν` — at horizon end
 (`K = t`) the probe premium vanishes and the score is pure exploitation.
 Finite identity only; VoI estimation stays harness-side. -/
 noncomputable def kgHorizonScore (util voi : Pi → ℝ) (K t : ℕ) (p : Pi) : ℝ :=

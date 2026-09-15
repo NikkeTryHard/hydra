@@ -17,11 +17,11 @@ set_option linter.unusedSectionVars false
 set_option linter.style.longLine false
 
 /-!
-# Hydra2 SPEC §20 — Masked PPO and Direct-Sampled ACH Objectives
+# Hydra2 Masked PPO and Direct-Sampled ACH Objectives
 
-IMPLEMENTATION_SPEC.md §20.1–20.2
+Masked objectives over legal actions only; illegal mass must be exactly zero.
 
-PPO (§20.1):
+PPO:
 - `π = legal_softmax(z)` over legal actions only
 - `ratio = exp(log π[a] - log π_old)` , `A_std = (A-μ)/√(Var+ε_std)`
 - `surrogate = min(ratio·A_std, clamp(ratio,1-ε,1+ε)·A_std)`
@@ -30,15 +30,16 @@ PPO (§20.1):
 - `L_PPO = -mean(surrogate)+w_value·L_value+w_bc·L_bc - α·mean(entropy)`
 - Constraints: `0<clip<1`, `ε_std>0`, `w_*≥0`, `α≥0`, `0<π_old≤1`
 
-ACH (§20.2, optional, in MatchedObjectiveGroup with PPO):
+ACH (optional, in MatchedObjectiveGroup with PPO):
 - `c = mean(z_legal)`, `y = clamp(z-c, -l_th, l_th)` legal else `-∞`, `π=softmax(y)`
 - `ρ = π[a]/max(π_old,π_min)`, `Ā = A/√(mean(A²)+ε_A)`
 - `gate = (Ā≥0 ∧ ρ<1+ε ∧ y[a]<l_th) ∨ (Ā<0 ∧ ρ>1-ε ∧ y[a]>-l_th)`
 - `L_ACH = -mean(gate·η·y[a]·Ā/max(π_old,π_min)) + w_value·L_value+w_bc·L_bc -α·entropy`
 - Constraints: `η≥0, ε>0, l_th>0, 0<π_min≤1, ε_A>0`
 
-Invariant (§20.1/20.2): illegal probabilities and illegal-logit gradients exactly zero
-(masked softmax / clamped `-∞` gives `exp(-∞)=0`). Required fixtures check blocked gradients.
+Invariant: illegal probabilities and illegal-logit gradients exactly zero
+(masked softmax / clamped `-∞` gives `exp(-∞)=0`; any illegal mass fails closed).
+Required fixtures check blocked gradients.
 
 For editors: this file formalizes the *masked softmax* and *legality* structure plus
 parameter constraints. The full loss gradient direction is admitted where continuous
@@ -46,8 +47,7 @@ parameter constraints. The full loss gradient direction is admitted where contin
 The matched-group requirement (same rollout, batches, optimizer, seeds, runtime) is
 documented as a provenance constraint (see `Formal.Implementation.Training`).
 
-  External: PPO from Schulman et al. 2017, TorchSDPA, AdamW, etc. (see
-  Schulman et al. 2017; IMPLEMENTATION_SPEC.md §20).
+  External: PPO from Schulman et al. 2017 (https://arxiv.org/abs/1707.06347), TorchSDPA, AdamW.
 -/
 
 namespace Hydra2.Implementation.PPO
@@ -62,8 +62,8 @@ variable {Action : Type} [Fintype Action] [DecidableEq Action]
 def LegalMask (Action : Type) [Fintype Action] := Action → Bool
 
 /-- `legal_softmax(z)_a = exp(z_a)/∑_{legal j} exp(z_j)` if `legal a`, else `0`.
-When `legal` is empty, the result is undefined — the blueprint makes all-false mask
-a hard error (§11 loader, §11.1 model contract), so we assume `∃ legal`. -/
+When `legal` is empty, the result is undefined — all-false mask
+is a hard error (loader and model contract reject it and fail closed), so we assume `∃ legal`. -/
 noncomputable def legalSoftmax (z : Action → ℝ) (legal : LegalMask Action) (a : Action) : ℝ :=
   if legal a then Real.exp (z a) / (∑ j : Action, if legal j then Real.exp (z j) else 0)
   else 0
@@ -255,7 +255,8 @@ noncomputable def lValue (v G : ℝ) : ℝ := (v - G) ^ 2
 
 theorem ppo_finite_loss (v G : ℝ) : (lValue v G = (v - G) ^ 2) ∧ 0 ≤ lValue v G := ⟨rfl, by unfold lValue; positivity⟩
 theorem ppo_value_unclipped (v G : ℝ) : lValue v G = (v - G) ^ 2 := rfl
-/-- SPEC §20.1 PPO-Clipped only: single-sample `L_PPO = -surr + w_v·lval + w_bc·lbc - α·ent`.
+/-- PPO-Clipped only: single-sample `L_PPO = -surr + w_v·lval + w_bc·lbc - alpha·ent`;
+allowing the KL-penalty variant here changes the loss and fails closed.
 The signature takes no `kl_threshold` / KL-penalty coefficient: the PPO-Penalty variant
 (`L - β·KL`, adaptive `β`, KL early-stop) is explicitly excluded. -/
 noncomputable def ppoLoss (surr lval lbc ent w_value w_bc alpha : ℝ) : ℝ :=
@@ -336,13 +337,13 @@ theorem matchedGroup_identical_optimizer (a b : String)
     Training.sharedRunFieldsHash a = Training.sharedRunFieldsHash b :=
   Training.shared_params_byte_identical_implies_hash_eq a b h
 /-- Shared objective params `w_value, w_bc, α` byte-identical across PPO/ACH specs:
-equal canonical bytes give equal hashes (`SPEC §20` byte-identical MUST). -/
+equal canonical bytes give equal hashes (byte-identical MUST; mismatch fails closed). -/
 theorem matchedGroup_shared_params_identical (a b : String)
     (h : Training.canonicalBytes a = Training.canonicalBytes b) :
     Training.sharedRunFieldsHash a = Training.sharedRunFieldsHash b :=
   Training.shared_params_byte_identical_implies_hash_eq a b h
 /-- Both specs matching the shared hash agree with each other
-(`SPEC §20`: `shared_run_fields_hash` MUST match both specs). -/
+(`shared_run_fields_hash` MUST match both objectives; mismatch fails closed). -/
 theorem matchedGroup_specs_agree (ppo ach shared : String)
     (hppo : Training.sharedRunFieldsHash ppo = Training.sharedRunFieldsHash shared)
     (hach : Training.sharedRunFieldsHash ach = Training.sharedRunFieldsHash shared) :

@@ -1,4 +1,4 @@
-//! Shared helpers for the WP-00A golden compatibility suite.
+//! Shared helpers for the golden compatibility suite.
 //!
 //! Every test drives the real CLI binary (`env!("CARGO_BIN_EXE_*")`) inside a
 //! throwaway directory, mirroring how the packager is used in production.

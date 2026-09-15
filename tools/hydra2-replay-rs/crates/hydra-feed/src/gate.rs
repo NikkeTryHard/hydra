@@ -100,7 +100,7 @@ pub const fn reason_name(reason: u8) -> &'static str {
     }
 }
 
-/// Zero-alloc quarantine record for the hot skip path (plan §6.2, verbatim).
+/// Zero-alloc quarantine record for the hot skip path (game_idx + event_idx + `REASON_*` bucket).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct QuarantineStub {
     /// Stable game index (sink join key).
@@ -111,7 +111,7 @@ pub struct QuarantineStub {
     pub reason: u8,
 }
 
-/// Framing/vocab failure for the `Err` channel (plan §6.2 `GateReject`).
+/// Framing/vocab failure for the `Err` channel (`GateReject`: same game_idx/event_idx/reason triple).
 ///
 /// Same triple as [`QuarantineStub`]; converts to `std::io::ErrorKind::InvalidData`
 /// (cold only) and back to a stub for unified sink accounting.
@@ -234,7 +234,7 @@ impl From<GateReject> for std::io::Error {
     }
 }
 
-/// Per-game sample verdict (plan §6.2, verbatim).
+/// Per-game sample verdict (walk the game, or skip-and-count with a quarantine stub).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum SampleDecision {
     /// Walk the game into rows.
@@ -275,14 +275,14 @@ use crate::ingest::{
     KIND_KAKAN as KIND_KAKAN_M, KIND_PON as KIND_PON_M,
 };
 
-/// Strict + sample fused verdict over one framed game (plan §6.2).
+/// Strict + sample fused verdict over one framed game.
 ///
 /// Single walk: boundary → per-event unknown-kind / bare-dora / double-ron /
 /// hora-quad checks → canonical start/end counts. First offender wins.
 ///
-/// `game_idx` has no other source on the stacked slice (plan §6.1 carries it
-/// on `FramedGame`, not per event), so it is an explicit parameter: every
-/// reject/skip triple needs it for G5 sink accounting.
+/// `game_idx` has no other source on the stacked slice (`FramedGame` carries it,
+/// not per event), so it is an explicit parameter: every reject/skip triple
+/// needs it for sink accounting.
 ///
 /// Self-draw heuristic: a hora with `target == actor` is treated as tsumo
 /// (mirrors the oracle fallback for Tenhou-real wins, which carry no flag and

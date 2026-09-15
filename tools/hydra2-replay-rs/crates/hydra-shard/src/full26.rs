@@ -1,6 +1,6 @@
 //! Full-26 cold build (P4-B, cold only — NEVER hot).
 //!
-//! The hot path keeps 13 planes (plan §7: counts as `uint8`, legal as
+//! The hot path keeps 13 planes (counts as `uint8`, legal as
 //! packed `legal_ids[32] + legal_len`); the full 26-field baseline
 //! (`src/hydra2/models/schema.py::_BASELINE_FIELDS`, alphabetical) is rebuilt
 //! HERE, cold-only, from one hot row plus a [`ColdSidecar`]:
@@ -245,7 +245,7 @@ impl fmt::Display for Full26Error {
 impl std::error::Error for Full26Error {}
 
 // ---------------------------------------------------------------------------
-// Hot row view (borrowed §7 planes, one row)
+// Hot row view (borrowed canonical planes, one row)
 // ---------------------------------------------------------------------------
 
 /// One decoded hot row: borrowed byte slices plus decoded scalars.

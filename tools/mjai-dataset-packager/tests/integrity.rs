@@ -1,4 +1,4 @@
-//! WP-00B negative fixtures and authority contracts: corrupt valid-magic
+//! Negative fixtures and authority contracts: corrupt valid-magic
 //! objects never skip, resume yields identical authoritative hashes, repeats
 //! are idempotent, and the transport manifest can never reference unverified
 //! bytes.
@@ -358,8 +358,8 @@ fn repeated_manifest_run_is_idempotent() {
     );
 }
 
-/// Every transport row carries the full SPEC 12.1 payload with correct
-/// provenance for all three source kinds.
+/// Every transport row carries the full canonical payload (all declared fields
+/// in order) with correct provenance for all three source kinds.
 #[test]
 fn transport_rows_carry_full_spec_payload() {
     let work = tempdir().expect("workdir");

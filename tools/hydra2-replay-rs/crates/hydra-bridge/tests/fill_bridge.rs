@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use hydra2_replay_rs::stream::{FeedOpen, FeedStream, StreamError};
 
 /// Max row stride per plane (fixed planes + T256 history pair), mirroring
-/// the §7 plane table: `[34,34,20,16,2048,256,8,8,8,8,8,32,136,8,8,4,4,4,4,4,4,4,4,32,1,1]`.
+/// the canonical 26-plane stride table: `[34,34,20,16,2048,256,8,8,8,8,8,32,136,8,8,4,4,4,4,4,4,4,4,32,1,1]`.
 const MAX_STRIDE: [usize; 26] = [
     34, 34, 20, 16, 2048, 256, 8, 8, 8, 8, 8, 32, 136, 8, 8, 4, 4, 4, 4, 4, 4, 4, 4,
     32, 1, 1,

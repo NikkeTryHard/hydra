@@ -1,7 +1,7 @@
 //! S4 fill — Scratch-once staging into caller pinned memory (`feed::fill`).
 //!
-//! Stage-then-commit staging (§6.4 semantics, verbatim names): pick T
-//! BEFORE committing rows; whole-game prefix commits only, remainder stays.
+//! Stage-then-commit staging: pick T BEFORE committing rows; whole-game
+//! prefix commits only, remainder stays.
 //!
 //! Staging order (breaks the `t_len`/`rows` circle — the stager picks T BEFORE
 //! committing rows):
@@ -20,7 +20,7 @@
 //! even the first staged game fails [`FillError::BufferTooSmall`] and drains
 //! NOTHING (counters unmoved, [`Scratch`] byte-identical).
 //!
-//! Caller contract (bridge owns the call site, plan §6.5):
+//! Caller contract (bridge owns the call site):
 //! - `ptrs` are pinned-memory base addresses, `byte_caps` are tensor byte
 //!   sizes (`tensor.nbytes`, BYTES in). Each plane buffer is treated as FLAT
 //!   row-major with stride [`row_bytes`]`(i, t_len)` — history planes MUST be
@@ -53,10 +53,10 @@ use crate::ledger::{
 use crate::walk::walk_game;
 
 // ---------------------------------------------------------------------------
-// Plane geometry (§7 order; Rust owns this table, Python NEVER duplicates it)
+// Plane geometry (canonical 26-plane order; Rust owns this table, Python NEVER duplicates it)
 // ---------------------------------------------------------------------------
 
-/// Hot plane count (§7 order #0-25: 0-12 hot replay + 13-25 row scalars).
+/// Hot plane count (canonical order #0-25: 0-12 hot replay + 13-25 row scalars).
 /// MUST equal `ledger::N_WALK_PLANES` (that alias keeps the borrow type
 /// literal-free; the const assert below pins the equality at compile time).
 pub const N_PLANES: usize = 26;
@@ -64,7 +64,7 @@ pub const N_PLANES: usize = 26;
 /// Compile-time pin: `N_PLANES` and `N_WALK_PLANES` are the same width, so
 /// staged `[Vec<u8>; N_PLANES]` views feed [`RowSink`] directly.
 const _: [u8; N_PLANES] = [0; N_WALK_PLANES];
-/// Per-plane FIXED row stride in bytes (§7: dtypes match `schema.py`).
+/// Per-plane FIXED row stride in bytes (dtypes match `schema.py`).
 /// Slots #4/#5 are T-variable and read `0` here — use [`row_bytes`].
 /// #12 packed = 128B `legal_ids[32] int32 LE` + 8B `legal_len int64 LE`.
 /// #13/#14 `i64`; #15-21 `i32`; #22 `bool[4]`; #23 `i64[4]`; #24/#25 `bool`.
@@ -72,7 +72,7 @@ pub const ROW_BYTES_FIXED: [usize; N_PLANES] = [
     34, 34, 20, 16, 0, 0, 8, 8, 8, 8, 8, 32, 136, 8, 8, 4, 4, 4, 4, 4, 4, 4, 4, 32, 1, 1,
 ];
 
-/// Frozen history-length buckets (§7: history planes are `[T]` memcpy).
+/// Frozen history-length buckets (history planes are `[T]` memcpy).
 pub const T_BUCKETS: [usize; 4] = [32, 64, 128, 256];
 
 /// Row stride in bytes for `plane` at history length `t_len`:
@@ -117,14 +117,14 @@ pub enum FillError {
     /// [`Scratch::fill_pinned`]; raw [`checked_slice`] reports
     /// [`UNKNOWN_PLANE`].
     NullPointer {
-        /// Failing plane index (§7 order).
+        /// Failing plane index (canonical plane order #0-25).
         plane: u8,
     },
     /// Buffer cannot stage the commit. `needed_bytes` is the STAGED byte
     /// length of `plane`, `capacity_bytes` is `byte_caps[plane]` — both in
     /// bytes, matching the caller's `tensor.nbytes` units.
     BufferTooSmall {
-        /// First-short plane index (§7 order; lowest index on ties).
+        /// First-short plane index (canonical plane order #0-25; lowest index on ties).
         plane: u8,
         /// Staged bytes in `plane` (exact shortfall context).
         needed_bytes: usize,
@@ -198,7 +198,7 @@ pub struct StagedGame {
     /// File-stable identity, propagated from the framed game (lineage key
     /// with `game_idx`).
     pub object_id: u32,
-    /// Staged plane bytes in §7 order (row-major, valid prefixes only).
+    /// Staged plane bytes in canonical plane order (row-major, valid prefixes only).
     pub planes: [Vec<u8>; N_PLANES],
     /// Per-row history lengths (breaks the `t_len`/`rows` circle).
     pub hist_lens: Vec<u32>,
@@ -343,7 +343,7 @@ fn gate_and_walk(
 /// [`reset`]: Scratch::reset
 #[derive(Debug, Default)]
 pub struct Scratch {
-    /// Staged plane bytes in §7 order (row-major, valid prefixes only).
+    /// Staged plane bytes in canonical plane order (row-major, valid prefixes only).
     planes: [Vec<u8>; N_PLANES],
     /// Per-row history lengths, one entry per staged row.
     hist_lens: Vec<u32>,
@@ -404,7 +404,7 @@ impl Scratch {
         &self.hist_lens
     }
 
-    /// Staged plane views in §7 order (valid prefixes only).
+    /// Staged plane views in canonical plane order (valid prefixes only).
     #[inline]
     pub fn planes(&self) -> &[Vec<u8>; N_PLANES] {
         &self.planes

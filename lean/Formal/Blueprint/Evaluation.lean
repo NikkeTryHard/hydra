@@ -14,9 +14,10 @@ set_option linter.style.longLine false
 set_option linter.style.whitespace false
 
 /-! # Hydra2 P11 Evaluation Block Independence & Fixed-N Power Formula
-Mirrors `ALGORITHM_EXPERIMENT_BLUEPRINT.md` § evaluation: block-independent
-scramble/wall-block averaging and the fixed-N power calculation for
-promotion gates.
+Block-independent scramble and wall-block averaging with the fixed-N power
+calculation for promotion gates. Wall blocks are the independent unit; games
+within a wall share randomness, so averaging over games underestimates variance
+and fails closed by requiring block averaging.
 -/
 
 namespace Hydra2.Blueprint.Evaluation
@@ -120,7 +121,7 @@ theorem wall_block_variance_additive_three (a b c : ℝ)
 
 /-- `n`-block variance additivity by `Finset` induction: under pairwise zero
     covariance, the square of the block-total equals the sum of block squares.
-    The insert step splits the total with `Finset.sum_insert`, kills the cross
+    The insert step partitions the total with `Finset.sum_insert`, kills the cross
     term `a b * ∑` via `Finset.mul_sum` + `Finset.sum_eq_zero` (each summand
     vanishes by the pairwise hypothesis), then applies
     `independent_blocks_variance_add` and the induction hypothesis.
@@ -278,7 +279,8 @@ section PromotionGate
 
 /-- Promotion requires block-independent evidence and fixed-N power at the
     pre-registered bound. This bundles the two previous sections. `gatePower` is
-    monotone in `n_blocks` and `delta`, antitone in `z_alpha` (`zPowerApprox_mono_n` etc.); `fixedN_power_qualitative` is the qualitative power statement `power>0` when `delta>0`, `fixedN_no_peeking` is frozen `N` before unblinding `SPEC §18.3` vs `timeUniformCS` `Howard` `hedged` `HARD skip`. -/
+    monotone in `n_blocks` and `delta`, antitone in `z_alpha` (`zPowerApprox_mono_n` etc.); `fixedN_power_qualitative` is the qualitative power statement `power>0` when `delta>0`, `fixedN_no_peeking` is frozen `N` before unblinding vs adaptive peeking which
+    invalidates confirmation and fails closed. -/
 structure PromotionGate where
   n_blocks : ℕ
   n_pos : 0 < n_blocks
