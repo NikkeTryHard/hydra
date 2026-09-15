@@ -555,14 +555,8 @@ def test_pbrf_warm_start_comparison() -> None:
 
 def test_never_claim_equilibrium() -> None:
     assert is_equilibrium_claimed() is False
-    # docstring and module-level assertion must not mention guarantee
-    import hydra2.search.local_resolving as mod
-
-    text = (mod.__doc__ or "") + "\n" + (mod.LocalResolvingPlanner.__doc__ or "")
-    # Ensure we explicitly state never equilibrium certificate
-    assert "never equilibrium" in text.lower() or "never" in text.lower()
-    assert "not an equilibrium" in text.lower() or "empirical optimizer" in text.lower()
-    # No function should return equilibrium guarantee
+    # Behavioral: the planner result and telemetry never carry equilibrium
+    # vocabulary — no certificate fields, only empirical optimizer outputs.
     w, obs = _world_and_obs()
     belief, epoch = _belief_epoch(obs)
     legal = _legal_actions(obs)
@@ -570,9 +564,10 @@ def test_never_claim_equilibrium() -> None:
     res = planner.search(
         epoch=epoch, root_observation=obs, legal_actions=legal, case_id="no_eq_case"
     )
-    # telemetry must not contain equilibrium fields
     assert "equilibrium" not in str(res["telemetry"]).lower()
     assert "exploitability" not in str(res["telemetry"]).lower()
+    assert "equilibrium" not in str(sorted(res.keys())).lower()
+    assert "exploitability" not in str(sorted(res.keys())).lower()
 
 
 def test_determinism() -> None:

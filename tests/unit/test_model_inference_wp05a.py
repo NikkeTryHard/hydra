@@ -9,7 +9,6 @@ cache/full-history agreement, and exclusion of optional shape features.
 
 from __future__ import annotations
 
-import inspect
 import json
 from pathlib import Path
 from typing import Any
@@ -158,19 +157,16 @@ def test_actor_visible_tensor_encoder_no_privileged_fields() -> None:
     # Every feature name must be in the frozen baseline field table.
     expected_names = {f.name for f in _BASELINE_FIELDS}
     assert set(batch.features.keys()) == expected_names
+    # Encoder isolation: the live import-graph proof passes (behavioral —
+    # observes the loaded module graph, not source text). The batch asserts
+    # below pin the observable side (actor-typed, schema-valid construction).
+    from hydra2.belief.oracle_loader import (
+        assert_privileged_loader_isolated_from_encoder as _assert_encoder_isolated,
+    )
 
-    # Encoder source must not reference privileged concepts as code imports.
-    enc_src = Path("src/hydra2/models/encoder.py").read_text(encoding="utf-8")
-    # The module docstring may mention 'privileged'/'hidden' to describe the
-    # boundary, but code must not import privileged rows/worlds.
-    assert "from hydra2.data" not in enc_src
-    assert "PrivilegedRow" not in enc_src
-    assert "FullWorld" not in enc_src
-
-    # Encoder signature must consume only ActorObservation.
-    sig = inspect.signature(encode_observations)
-    ann = str(sig.parameters["observations"].annotation)
-    assert "ActorObservation" in ann
+    assert _assert_encoder_isolated() is None
+    assert batch.legal_mask.dtype == torch.bool
+    assert bool(batch.legal_mask.any(dim=1).all().item())
 
     # Rejects non-ActorObservation and missing observation_hash.
     with pytest.raises(ContractError):
@@ -291,30 +287,49 @@ def test_model_contract_inference_contract_deterministic_shapes_masks() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_sdpa_dense_attention_eval_dropout_zero() -> None:
-    src = Path("src/hydra2/models/model.py").read_text(encoding="utf-8")
-    assert "scaled_dot_product_attention" in src
-    # The file documents SDPA mask semantics and eval dropout 0.
-    assert "dropout_p = self.dropout if self.training else 0.0" in src or "dropout_p" in src
-    # Ensure the transformer layer uses is_causal=False (dense) and not causal only.
-    assert "is_causal=False" in src
-
+def test_sdpa_dense_attention_eval_dropout_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Dense (non-causal) attention with eval dropout exactly 0, pinned
+    # behaviorally: spy the SDPA entry point during evaluate and capture
+    # the dispatched kwargs (is_causal / dropout_p per layer call).
     torch.manual_seed(123)
     model = Hydra2BaselineModel(dropout=0.1)
     model.train()
     assert model.dropout_p == pytest.approx(0.1)
     batch = encode_observations([_make_observation(history=_history_of_length(4))])
-    # In train mode dropout_p would be 0.1, but in eval it is exactly 0.
     model.eval()
+    calls: list[dict[str, object]] = []
+    orig_sdpa = torch.nn.functional.scaled_dot_product_attention
+
+    def _spy(query: object, key: object, value: object, *args: object, **kwargs: object) -> object:
+        if "is_causal" in kwargs:
+            is_causal: object = kwargs["is_causal"]
+        elif len(args) >= 3:
+            is_causal = args[2]
+        else:
+            is_causal = False
+        if "dropout_p" in kwargs:
+            dropout_p: object = kwargs["dropout_p"]
+        elif len(args) >= 2:
+            dropout_p = args[1]
+        else:
+            dropout_p = 0.0
+        calls.append({"is_causal": is_causal, "dropout_p": dropout_p})
+        return orig_sdpa(query, key, value, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(torch.nn.functional, "scaled_dot_product_attention", _spy)
     with torch.no_grad():
         o_eval_1 = model.evaluate(batch)
         o_eval_2 = model.evaluate(batch)
+    # Eval is exactly deterministic (dropout 0): repeated eval forwards agree
+    # bitwise, and train-mode stochasticity cannot leak into the eval path.
     assert torch.equal(o_eval_1.policy_logits, o_eval_2.policy_logits)
-    # Verify the code path claims eval dropout 0.
+    assert torch.equal(o_eval_1.value_vector, o_eval_2.value_vector)
+    # Every layer dispatched dense attention with dropout gated off in eval.
+    assert len(calls) == 2 * len(model.layers) and len(calls) > 0
+    assert all(call["is_causal"] is False for call in calls)
+    assert all(call["dropout_p"] == 0.0 for call in calls)
     for layer in model.layers:
-        assert layer.dropout == 0.1  # configured
-    # Forward uses variable dropout_p; eval path forces 0.
-    assert "self.training else 0.0" in src
+        assert layer.dropout == 0.1  # configured train rate, gated off in eval
 
 
 # ---------------------------------------------------------------------------
@@ -511,12 +526,16 @@ def test_diagnostics_without_hidden_fields() -> None:
     # Concealed tiles counts derived from actor-visible hand.
     assert out.diagnostics["concealed_tiles"].item() == len(obs.concealed_hand)
     assert out.diagnostics["legal_count"].item() == sum(obs.legal_mask)
-
-    # Source never mentions privileged concepts.
-    # (Docstring may note 'no hidden info' to describe the boundary.)
-    _ = Path("src/hydra2/models/model.py").read_text(encoding="utf-8")
-    # No privileged data should appear in diagnostics code path beyond comments.
-    assert "FullWorld" not in _.split("diagnostics")[1] if "diagnostics" in _ else True
+    # Diagnostics derive only from the actor-visible batch: history_length,
+    # concealed count, and legal count all recompute from batch tensors.
+    assert torch.equal(
+        out.diagnostics["history_length"], batch.history_mask.sum(dim=1).to(torch.int32)
+    )
+    assert torch.equal(
+        out.diagnostics["concealed_tiles"],
+        batch.features["concealed_hand_counts"].sum(dim=1),
+    )
+    assert torch.equal(out.diagnostics["legal_count"], batch.legal_mask.sum(dim=1).to(torch.int32))
 
 
 # ---------------------------------------------------------------------------

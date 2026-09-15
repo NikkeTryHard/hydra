@@ -147,6 +147,26 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def test_second_train_truncates_telemetry_file(tmp_path: Path) -> None:
+    """A fresh train() owns its telemetry file: stale rows never linger.
+
+    Guards loop_train's truncate-on-train (write_text("")): a second train()
+    must replace — never append to — the JSONL file, or resume/upload
+    tooling would double-count microbatches. A regression that appends
+    leaves 10 rows here instead of 5.
+    """
+    telemetry_path = tmp_path / "telemetry.jsonl"
+    loop = _build_loop(tmp_path, telemetry_path=telemetry_path)
+    loop.train()
+    assert len(_read_jsonl(telemetry_path)) == 5
+    loop.train()
+    rows = _read_jsonl(telemetry_path)
+    assert len(rows) == 5
+    assert [row["kind"] for row in rows].count("microbatch") == 4
+    assert [row["kind"] for row in rows].count("summary") == 1
+    assert len(loop.telemetry_records) == 4
+
+
 def test_telemetry_jsonl_smoke_run(tmp_path: Path) -> None:
     telemetry_path = tmp_path / "telemetry.jsonl"
     loop = _build_loop(tmp_path, telemetry_path=telemetry_path)

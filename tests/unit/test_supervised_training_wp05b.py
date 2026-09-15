@@ -521,20 +521,28 @@ def test_encode_pin_flag_byte_identical_skips_page_lock(
     """pin_memory=False skips all page-locking with byte-identical tensors.
 
     The pinned-ring feed stages H2D from its own pinned slots, so
-    encode-side pin_memory() calls are pure overhead there. Forcing
-    CUDA-visible proves the gate both ways: pin True attempts the lock
-    (falling back with warnings, no device here), pin False never attempts.
+    encode-side pin_memory() calls are pure overhead there. Both arms are
+    hermetic (no CUDA needed): the True arm forces the fallback path by
+    making pin_memory() raise, proving the warning fires; the False arm
+    makes pin_memory() boom-if-called, proving the gate never attempts it.
     """
     hand = (0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48)
     obs = _make_real_observation(decision_id="pin-dec", concealed_hand=hand)
     rows = [_real_row_dict("pin-dec", obs), _real_row_dict("pin-dec", obs)]
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+
+    def _boom(self: torch.Tensor) -> torch.Tensor:
+        raise RuntimeError("boom: page lock must not be attempted")
+
+    # True arm: forced fallback — warning fires, tensors stay pageable.
+    monkeypatch.setattr(torch.Tensor, "pin_memory", _boom)
     with caplog.at_level(logging.WARNING):
         pinned = encode_observation_rows(
             rows, num_actions=BASELINE_ACTION_COUNT, feature_dim=FEATURE_DIM, pin_memory=True
         )
     assert any("pin_memory failed" in r.message for r in caplog.records)
     caplog.clear()
+    # False arm: gate never calls pin_memory — boom would fail the test.
     with caplog.at_level(logging.WARNING):
         plain = encode_observation_rows(
             rows, num_actions=BASELINE_ACTION_COUNT, feature_dim=FEATURE_DIM, pin_memory=False

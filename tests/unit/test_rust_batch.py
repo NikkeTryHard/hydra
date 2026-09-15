@@ -31,9 +31,9 @@ pytestmark = pytest.mark.serial
 
 
 @pytest.fixture(scope="session")
-def rust_extension() -> object:
+def rust_extension(tmp_path_factory: pytest.TempPathFactory) -> object:
     """Build the cdylib once and expose ``import hydra2_replay_rs``."""
-    env = dict(os.environ)
+    env = dict(os.environ, PYO3_PYTHON=sys.executable)
     proc = subprocess.run(
         ["cargo", "build", "--offline", "-p", "hydra2-replay-rs"],
         cwd=CRATE,
@@ -43,7 +43,7 @@ def rust_extension() -> object:
     assert proc.returncode == 0, f"cargo build failed:\n{proc.stderr[-4000:]}"
     built = CRATE / "target" / "debug" / "libhydra2_replay_rs.so"
     assert built.is_file(), f"expected cdylib at {built}"
-    ext_dir = Path(tempfile.mkdtemp(prefix="hydra2_replay_rs"))
+    ext_dir = tmp_path_factory.mktemp("hydra2_replay_rs")
     suffix = importlib.machinery.EXTENSION_SUFFIXES[0]
     shutil.copy(built, ext_dir / f"hydra2_replay_rs{suffix}")
     sys.path.insert(0, str(ext_dir))

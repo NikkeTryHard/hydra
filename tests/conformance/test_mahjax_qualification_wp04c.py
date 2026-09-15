@@ -86,6 +86,29 @@ def test_scenario_registry_has_four_cases() -> None:
                 )
 
 
+def test_wall_translation_rejects_wrong_shape() -> None:
+    """Deck translation is shape-exact: non-136 walls fail closed, never padded.
+
+    Guards wall_to_mahjax_deck's ``len(wall) != 136`` gate: a short wall
+    (the (4,)-shim class of bug) must raise instead of translating a
+    truncated deck that would silently misalign draw order. A regression
+    that pads/truncates to 136 returns a deck here instead of raising.
+    """
+    from hydra2.conformance.walls import build_wall
+
+    scenario = SCENARIO_REGISTRY[0]
+    wall = build_wall(
+        hands=scenario.hands, live_draws=scenario.live_draws, dead_wall=scenario.dead_wall
+    )
+    assert len(wall) == 136
+    with pytest.raises(ValueError, match="136"):
+        wall_to_mahjax_deck(wall[:135])
+    with pytest.raises(ValueError, match="136"):
+        wall_to_mahjax_deck((*wall, wall[0]))
+    deck = wall_to_mahjax_deck(wall)
+    assert len(deck) == 136
+
+
 def test_wall_translation_and_surgery_deterministic() -> None:
     scenario = SCENARIO_REGISTRY[0]
     from hydra2.conformance.walls import build_wall

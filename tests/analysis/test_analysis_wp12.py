@@ -385,8 +385,25 @@ def test_deterministic_replay_across_modes() -> None:
             case_id=f"{cid}_det",
         )
         assert comp["deterministic_replay_ok"] is True
-        assert comp["gameplay_replay_hash"] == h1 or comp["gameplay_replay_hash"] is not None
-        assert comp["analysis_replay_hash"] == a1 or comp["analysis_replay_hash"] is not None
+        # Helper hashes must equal independent recomputation with the helper's
+        # own inputs (same candidate, observation, legal set, case_id, mode):
+        # proves compare charges the mode label and mutates nothing.
+        exp_gp = deterministic_replay_hash(
+            candidate_id=gp.candidate_id,
+            observation_hash=obs_hash,
+            legal_actions=legal,
+            mode="gameplay_5s",
+            case_id=f"{cid}_det",
+        )
+        exp_an = deterministic_replay_hash(
+            candidate_id=an.candidate_id,
+            observation_hash=obs_hash,
+            legal_actions=legal,
+            mode="analysis",
+            case_id=f"{cid}_det",
+        )
+        assert comp["gameplay_replay_hash"] == exp_gp
+        assert comp["analysis_replay_hash"] == exp_an
 
 
 def test_deterministic_replay_no_hidden_randomness() -> None:

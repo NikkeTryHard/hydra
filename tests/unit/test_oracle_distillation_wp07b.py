@@ -19,7 +19,10 @@ import hashlib
 import math
 import os
 from dataclasses import dataclass
-from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 import pytest
 import torch
@@ -102,14 +105,8 @@ def test_separate_privileged_loader_namespace_process_boundary(tmp_path: Path) -
     assert "belief_target" in payload[0]
     assert "teacher_belief_logits" in payload[0]
 
-    # Encoder isolation: ensure encoder source does not import oracle_loader
-    enc_path = Path("src/hydra2/models/encoder.py")
-    if enc_path.is_file():
-        src = enc_path.read_text(encoding="utf-8")
-        assert "oracle_loader" not in src
-        assert "PrivilegedOracleLoader" not in src
-
-    # Also call the helper that checks encoder isolation
+    # Encoder isolation: the live helper proves the inference encoder never
+    # imports the privileged path (behavioral import-graph check, not a grep).
     assert assert_privileged_loader_isolated_from_encoder() is None
 
     # Held_out subprocess must also reject held_out split
@@ -447,18 +444,15 @@ def test_compare_duplicate_blocks_without_changing_frozen_supervised_gate() -> N
         baseline_checkpoint_hash_after=baseline_hash,
     )
     assert result.digest == result2.digest
-
-    # Different wall sets -> different digest
-    blocks_student_shuffled = list(reversed(blocks_student))
-    # Wall ids same set but order same length still same digest? Our digest uses order; so reversed order changes digest
-    compare_duplicate_blocks(
-        blocks_student_shuffled,
+    blocks_student_reversed = list(reversed(blocks_student))
+    result_reversed = compare_duplicate_blocks(
+        blocks_student_reversed,
         blocks_teacher,
         blocks_baseline,
         baseline_checkpoint_hash_before=baseline_hash,
         baseline_checkpoint_hash_after=baseline_hash,
     )
-    assert True  # order matters; at least not equal if contrasts permuted
+    assert result_reversed.digest != result.digest
 
     # Frozen gate mutation must fail
     with pytest.raises(ContractError, match="frozen supervised gate mutated"):

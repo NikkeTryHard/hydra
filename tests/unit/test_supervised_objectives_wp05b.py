@@ -11,6 +11,7 @@ fp32 auxiliary outputs).
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 import pytest
@@ -20,6 +21,7 @@ import torch.nn as nn
 from hydra2.contracts.common import ContractError, IllegalActionError
 from hydra2.training.loop import TrainingLoopConfig
 from hydra2.training.objectives import (
+    compute_hot_scalars,
     compute_supervised_loss,
     masked_cross_entropy,
     supervised_loss_kernel,
@@ -106,7 +108,35 @@ class StubModelPerSeat(nn.Module):
 # ---------------------------------------------------------------------------
 
 
-def test_masked_bc_objective_ignores_illegal_logits() -> None:
+def test_masked_ce_cpu_dispatch_matches_reference() -> None:
+    """CPU dispatch takes the eager masked-math path (no fused kernel), exactly.
+
+    Guards the fused-CE gate (objectives_loss masked_cross_entropy): on CPU
+    (``logits.is_cuda`` False) the Triton custom op never fires and the
+    masked-softmax formula matches a hand-rolled legal-only reference.
+    A dispatch regression routing CPU rows through the fused op would fail
+    here (wrong values or RuntimeError from the missing kernel).
+    """
+    torch.manual_seed(7)
+    logits = torch.randn(4, 8)
+    legal_mask = torch.zeros(4, 8, dtype=torch.bool)
+    legal_mask[:, :5] = True
+    targets = torch.tensor([0, 2, 4, 1], dtype=torch.long)
+    assert not logits.is_cuda
+    got = masked_cross_entropy(logits, targets, legal_mask, label_smoothing=0.1)
+    # Independent legal-only reference: no fused kernel, no repo helper.
+    masked_logits = logits.masked_fill(~legal_mask, float("-inf"))
+    log_prob = torch.nn.functional.log_softmax(masked_logits.float(), dim=-1)
+    legal_counts = legal_mask.sum(dim=1).float()
+    smooth = 0.1 / legal_counts
+    batch_idx = torch.arange(4)
+    legal_logp_sum = log_prob.masked_fill(~legal_mask, 0.0).sum(dim=1)
+    ref = -((0.9) * log_prob[batch_idx, targets] + smooth * legal_logp_sum).mean()
+    assert torch.equal(got, ref)
+    hot = compute_hot_scalars(logits, targets, legal_mask)
+    assert set(hot.keys()) == {"masked_nll", "top1"}
+    assert math.isfinite(hot["masked_nll"]) and 0.0 <= hot["top1"] <= 1.0
+
     torch.manual_seed(0)
     logits = torch.randn(2, 8)
     # Make illegal actions huge so they'd dominate unmasked softmax

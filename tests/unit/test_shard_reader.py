@@ -225,6 +225,47 @@ def test_cursor_resume_exact(tmp_path: Path) -> None:
         assert reader.get_state()["epoch"] == 1
 
 
+def test_cursor_seed_mismatch_rejected(tmp_path: Path) -> None:
+    """A cursor from another seed never seeks silently (fail-closed re-permute).
+
+    Guards ShardReader.set_state's seed guard: swapping the recorded seed
+    must raise instead of reading the wrong permutation as if it were the
+    requested epoch. A regression that ignores the seed returns rows here.
+    """
+    write_shard(tmp_path / "shard", backend="ipc")
+    with ShardReader(tmp_path / "shard", batch_size=BATCH, seed=SEED) as head:
+        _ = _collect(head, 2)
+        cursor = head.get_state()
+    assert cursor["seed"] == SEED
+    tampered = dict(cursor)
+    tampered["seed"] = SEED + 1
+    with (
+        ShardReader(tmp_path / "shard", batch_size=BATCH, seed=SEED) as tail,
+        pytest.raises(ContractError),
+    ):
+        tail.set_state(tampered)
+
+
+def test_cursor_out_of_range_rejected(tmp_path: Path) -> None:
+    """A cursor past the row count never seeks (fail-closed bounds check).
+
+    Guards set_state's ``0 <= sample_in_epoch <= rows`` gate: a torn cursor
+    (sample past the end) must raise instead of starting the producer past
+    the shard edge. A regression that clamps silently accepts here.
+    """
+    write_shard(tmp_path / "shard", backend="ipc")
+    with ShardReader(tmp_path / "shard", batch_size=BATCH, seed=SEED) as head:
+        _ = _collect(head, 2)
+        cursor = head.get_state()
+    tampered = dict(cursor)
+    tampered["sample_in_epoch"] = N_ROWS + 1
+    with (
+        ShardReader(tmp_path / "shard", batch_size=BATCH, seed=SEED) as tail,
+        pytest.raises(ContractError),
+    ):
+        tail.set_state(tampered)
+
+
 def test_perm_manifest_reads_recorded_perm_and_reseeds(tmp_path: Path) -> None:
     fixed = write_shard(tmp_path / "shard", backend="ipc", order="perm", seed=SEED)
     with ShardReader(tmp_path / "shard", batch_size=BATCH, bucket_batches=False) as reader:

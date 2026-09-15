@@ -141,28 +141,33 @@ def test_despot_feasible_lower_not_bound() -> None:
         v = planner._lower_value_for_action(
             action=act, scenarios=scenarios, legal_actions=legal, candidate_id=cand.candidate_id
         )
-        assert math.isfinite(v) and 0.0 <= v <= 1.0
-        # Lower value is feasible; we explicitly do NOT claim it is an upper bound
-        # The planner's priority proxy is labeled proxy, not bound
+        # Lower value is feasible; the planner never exposes it as a bound:
+        # the proxy stays heuristic (visitation bonus only) and the search
+        # result carries no bound/upper fields (behavioral, not prose).
         proxy = planner._priority_proxy_for(act, v, visits=0)
         assert proxy >= v  # proxy is heuristic above lower, but not certified bound
-        # Ensure no attribute named upper_bound exists
         assert not hasattr(proxy, "upper_bound")
-        doc = (type(planner)._priority_proxy_for.__doc__ or "").lower()
-        assert "not an upper bound" in doc
+        proxy_visited = planner._priority_proxy_for(act, v, visits=4)
+        assert proxy_visited >= v
+        assert proxy_visited < v + 0.2  # bounded visitation bonus, never a certificate
 
 
 def test_despot_priority_proxy_not_upper_bound() -> None:
-    # Verify documentation and field naming never claims bound
-    assert (
-        "upper bound" not in NaturalDespotPlanner._priority_proxy_for.__doc__.lower()
-        or "not" in NaturalDespotPlanner._priority_proxy_for.__doc__.lower()
-    )
-    # The method name is proxy, not bound
-    assert NaturalDespotPlanner._priority_proxy_for.__name__ == "_priority_proxy_for"
-    # Source inspection: never label as bound
-    src = NaturalDespotPlanner._priority_proxy_for.__doc__ or ""
-    assert "NOT an upper bound" in src or "not an upper bound" in src.lower()
+    # The proxy API never presents a bound: method name carries no bound
+    # vocabulary, its signature takes (action, lower_value, visits) with no
+    # certificate output, and the node dataclass exposes priority_proxy —
+    # never an upper_bound field (behavioral surface, not prose).
+    name = NaturalDespotPlanner._priority_proxy_for.__name__
+    assert name == "_priority_proxy_for"
+    assert "bound" not in name
+    import inspect as _inspect
+
+    params = list(_inspect.signature(NaturalDespotPlanner._priority_proxy_for).parameters)
+    assert params == ["self", "action", "lower_value", "visits"]
+    from hydra2.search.despot_core import _DespotNode
+
+    assert "priority_proxy" in _DespotNode.__dataclass_fields__
+    assert "upper_bound" not in _DespotNode.__dataclass_fields__
 
 
 # ---------------------------------------------------------------------------

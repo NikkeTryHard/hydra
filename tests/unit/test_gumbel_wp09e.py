@@ -472,6 +472,24 @@ def test_gumbel_search_candidate_checklist() -> None:
     assert cached_full_history_agreement(obs)
 
 
+def test_gumbel_candidate_spec_hash_stable() -> None:
+    """Gumbel spec hash is deterministic and parameter-sensitive.
+
+    Mirrors the despot/PBRF/local-resolving stability pins: the same factory
+    inputs hash identically (content-addressed identity), and a parameter
+    change (halving rounds) changes the hash. A regression that leaves
+    factory parameters out of the hashed projection returns equal hashes
+    here for different specs.
+    """
+    spec = make_gumbel_candidate_spec(halving_rounds=2, visits_per_round=(4, 2), max_depth=4)
+    h1 = candidate_spec_hash(spec)
+    h2 = candidate_spec_hash(spec)
+    assert h1 == h2
+    assert h1.startswith("sha256:")
+    other = make_gumbel_candidate_spec(halving_rounds=3, visits_per_round=(4, 2, 2), max_depth=4)
+    assert candidate_spec_hash(other) != h1
+
+
 def test_synth_world_hoist_golden() -> None:
     # ProfWin Opt-1: synthetic cur_world is loop-invariant in visits, built
     # once per (aid, round) instead of per rollout (~14% wall saved on the

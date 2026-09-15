@@ -616,7 +616,6 @@ def test_checkpoint_manifest_verified_before_mutation(
         replay2.load_checkpoint(ckpt)  # type: ignore[arg-type]
     # Model2 unchanged after failed verification (no mutation)
     assert hash_state_tree(model2.state_dict()) == before2
-    assert True  # at least not corrupted
 
 
 def test_forbidden_keys_constant() -> None:
