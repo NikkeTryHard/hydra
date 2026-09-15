@@ -240,7 +240,7 @@
    ],
    "kind": "frozen-hashes",
    "relpath": "tools/hydra2-replay-rs/tests/fixtures/frozen-row-hashes.json",
-   "sha256": "sha256:b1453fd84630aa989dd8828646b507c9dd72e3d9f8472e5b8d65a4e3f549eb42"
+   "sha256": "sha256:b1748d4172674d8362ddd65f66434556484e7c4d060210060800959d93802868"
   },
   {
    "fixtures": [
@@ -1804,7 +1804,7 @@
    ],
    "kind": "cutover-source",
    "relpath": "src/hydra2/training/rust_stream.py",
-   "sha256": "sha256:8f633f31099d18916c70c16e1bb62b781c1dc0f21c3987049ada2fc64e38001f"
+   "sha256": "sha256:7885399961449f7659382ba9a21cf083e8dc2aa3a9e5964b00d32a6886dd6fb3"
   },
   {
    "fixtures": [
@@ -1937,6 +1937,6 @@
    "module": "tests.parity.test_parity_gates_g1_g7_wp0b"
   }
  ],
- "manifest_digest": "sha256:5cb019b183ba4d32597d445227922c83ed93fc7177f44ffaddffb6bf91cb36c0",
+ "manifest_digest": "sha256:e5dc303be49229aac879e89de50d08b96e118f3b28c6f405ec57223051fe8347",
  "manifest_version": "2"
 }
