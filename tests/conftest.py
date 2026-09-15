@@ -204,6 +204,31 @@ CHECKLIST_FIELDS_BY_MODULE = {
         "fail_closed_consumption",
         "token_gate_proven_with_test_only_fabrication",
     ),
+    # WP-04A reference corpus — one entry per module (each case ID is owned
+    # by exactly one module below; runner infra stays in the kept file).
+    # Claim windows: kuikae, furiten, multi-ron packet priority.
+    "test_reference_corpus_claims_wp04a.py": (
+        "WP04A-03",
+        "WP04A-04a",
+        "WP04A-04b",
+        "WP04A-05",
+        "WP04A-06",
+    ),
+    # Scoring and terminal settlements: red-tile scoring, pao/kazoe, aborts.
+    "test_reference_corpus_scoring_wp04a.py": (
+        "WP04A-07",
+        "WP04A-08",
+        "WP04A-09",
+        "WP04A-10",
+    ),
+    # Abortive draws and match end: sanchahou, ranks/uma, all-last branches.
+    "test_reference_corpus_terminals_wp04a.py": (
+        "WP04A-12",
+        "WP04A-13",
+        "WP04A-14a",
+        "WP04A-14b",
+        "WP04A-14c",
+    ),
     # WP-04B Authoritative Data Lineage — BUILD 428-443 plus hard failures
     "test_data_lineage_wp04b.py": (
         "raw_object_join_immutable",
