@@ -55,8 +55,8 @@ def _h(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _digest(s: str) -> str:
-    return "sha256:" + _h(s.encode())
+def _digest(s: str) -> DigestText:
+    return make_digest_text("sha256:" + _h(s.encode()))
 
 
 def _seed_bytes(*parts: str) -> bytes:
