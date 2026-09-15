@@ -563,7 +563,33 @@ def test_wp04a_intersection_report_and_disposition() -> None:
     """Publishes the supported-rule report atomically and checks disposition:
     passed only when zero unresolved mismatches remain AFTER
     documented-unsupported resolution."""
-    assert _RESULTS or _WAVE_C_RESULTS, "no cases registered - run the corpus tests first"
+    # Self-contained by design: invoke every sibling case test in-process
+    # (each records into _RESULTS/_WAVE_C_RESULTS on THIS worker), then
+    # aggregate. Under xdist loadscope each file pins its own worker so
+    # cross-file globals never merge (proven: -n 4 fails with coverage gap).
+    # Local imports keep collection order stable (claims/scoring/terminals
+    # register before the merge below reads them).
+    from tests.conformance import test_reference_corpus_claims_wp04a as _claims
+    from tests.conformance import test_reference_corpus_scoring_wp04a as _scoring
+    from tests.conformance import test_reference_corpus_terminals_wp04a as _terminals
+
+    test_wp04a_01_fifth_dora_and_kan_ura_timing()
+    test_wp04a_02_chankan_and_rinshan_payout()
+    test_wp04a_11_suufon_renda_documented_unsupported()
+    _claims.test_wp04a_03_kuikae_post_pon_same_meld_swap_barred()
+    _claims.test_wp04a_04a_temp_furiten_clears_then_ron_lands()
+    _claims.test_wp04a_04b_permanent_furiten_after_riichi_miss()
+    _claims.test_wp04a_05_double_ron_priority_packets_upstream_first()
+    _claims.test_wp04a_06_multi_ron_sticks_upstream_with_dealer_co_winner()
+    _scoring.test_wp04a_07_red_five_scoring()
+    _scoring.test_wp04a_08_pao_liability_split_and_kazoe()
+    _scoring.test_wp04a_09_kyuushu_kyuuhai_abort()
+    _scoring.test_wp04a_10_exhaustive_draw_noten_split()
+    _terminals.test_wp04a_12_sanchahou_triple_ron_abort()
+    _terminals.test_wp04a_13_rank_tie_break_and_uma_utility()
+    _terminals.test_wp04a_14a_all_last_dealer_tenpai_stop_yame()
+    _terminals.test_wp04a_14b_west_entry_sudden_death_expected_mismatch()
+    _terminals.test_wp04a_14c_tobi_score_injection_unavailable_blocked()
     merged = dict(_RESULTS)
     for cid, res in _WAVE_C_RESULTS.items():
         merged.setdefault(cid, res)
