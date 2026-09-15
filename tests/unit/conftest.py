@@ -8,9 +8,15 @@ place only (tests/conftest.py).
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
+
+from hydra2.data.parquet import write_actor_shards
+from tests.unit._supervised_loop_helpers import NUM_ACTIONS_SMALL, _make_actor_rows
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -52,3 +58,35 @@ def _s8_rust_extension(tmp_path_factory: pytest.TempPathFactory) -> Any:
         yield importlib.import_module("hydra2_replay_rs")
     finally:
         sys.path.remove(str(ext_dir))
+
+
+@pytest.fixture(scope="session")
+def actor_parquet_factory(tmp_path_factory):
+    """Build each (num_rows, num_actions) synthetic variant ONCE per session.
+
+    Shared dirs are READ-ONLY inputs: datasets verify + tensorize from them
+    while SupervisedLoop / model / optimizer / checkpoint_dir stay per-test
+    via tmp_path. Corrupt-input tests (privileged / dora-shim) keep building
+    their own parquet — they assert the writer/loader rejects.
+    """
+    cache: dict[tuple[int, int], Path] = {}
+
+    def get(num_rows: int = 20, num_actions: int = NUM_ACTIONS_SMALL) -> Path:
+        key = (num_rows, num_actions)
+        hit = cache.get(key)
+        if hit is None:
+            dest = (
+                tmp_path_factory.mktemp("actor_parquet") / f"rows-{num_rows}-actions-{num_actions}"
+            )
+            rows = _make_actor_rows(num_rows=num_rows, num_actions=num_actions)
+            write_actor_shards(
+                destination=dest,
+                rows=rows,
+                dataset_hash="sha256:" + "e" * 64,
+                split_manifest_hash="sha256:" + "f" * 64,
+            )
+            cache[key] = dest
+            return dest
+        return hit
+
+    return get

@@ -224,17 +224,24 @@ CHECKLIST_FIELDS_BY_MODULE = {
         "fresh_process_batch_load",
         "hard_failures_silent_skip_partial_split_corrupt",
     ),
-    # WP-05B Supervised Loop — BUILD §8: masked BC, auxiliary, optimizer/sched/accum/ckpt,
-    # plain+Fabric identical, resume, local artifacts, reporting, deterministic synthetic parquet, no privileged.
-    "test_supervised_loop_wp05b.py": (
+    # WP-05B Supervised Loop — BUILD §8, one entry per module (fields partition
+    # the gate claims; each field is owned by exactly one module below).
+    # Objectives: masked BC, auxiliary weights, kernel/validator parity.
+    "test_supervised_objectives_wp05b.py": (
         "masked_behavior_cloning_objective",
         "value_event_auxiliary_with_explicit_weights",
-        "project_owned_optimizer_scheduler_accumulation_checkpoint",
-        "plain_and_fabric_identical_loop_state",
+    ),
+    # Training: deterministic parquet training, resume, optimizer/scheduler/accumulation.
+    "test_supervised_training_wp05b.py": (
+        "deterministic_training_over_authoritative_synthetic_parquet",
         "resume_restores_model_optimizer_scheduler_step_rng_sampler_manifest",
+        "project_owned_optimizer_scheduler_accumulation_checkpoint",
+    ),
+    # Loop/reporting: runtime parity, local authority, reports, no privileged fields.
+    "test_supervised_loop_wp05b.py": (
+        "plain_and_fabric_identical_loop_state",
         "local_artifacts_authoritative_wandb_mirror_does_not_overwrite",
         "reports_masked_nll_topk_calibration_support_confusion_strata_legal_uniform",
-        "deterministic_training_over_authoritative_synthetic_parquet",
         "no_privileged_fields",
     ),
     # WP-05C Baseline Qualification — BUILD §8 Wave 5: tiny overfit, deterministic resume,
