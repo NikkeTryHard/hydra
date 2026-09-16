@@ -97,7 +97,7 @@ class DigestJudge:
 
     def verify(self, *, recorded: str, doc: bytes | bytearray | memoryview) -> DigestText:
         """Recompute via Rust and raise ``DigestMismatchError`` on mismatch."""
-        recomputed = of_canonical(doc)
+        recomputed: DigestText = of_canonical(doc)
         require_digest_match(recorded=recorded, recomputed=recomputed, subject=self.subject)
         return recomputed
 
@@ -109,11 +109,12 @@ class DigestJudge:
             raise ValueError(
                 f"judge batch length mismatch: {len(recorded)} recorded vs {len(docs)} docs"
             )
-        payload = [bytes(d) for d in docs]
+        payload: list[bytearray | bytes | memoryview] = [bytes(d) for d in docs]
         for doc in docs:
             if not isinstance(doc, _CANON_DOC_TYPES):
                 raise TypeError(f"judge doc must be bytes-like, got {type(doc).__name__}")
-        recomputed = [DigestText(str(t)) for t in _canon_rng().batch_of_canonical(payload)]
+        native_out = _canon_rng().batch_of_canonical(payload)
+        recomputed: list[DigestText] = [DigestText(str(t)) for t in native_out]
         for want, got in zip(recorded, recomputed, strict=True):
             require_digest_match(recorded=want, recomputed=got, subject=self.subject)
         return recomputed
@@ -163,6 +164,7 @@ def judge_stats() -> tuple[int, int]:
     digests, batches = _canon_rng().judge_stats()
     return (int(digests), int(batches))
 
+
 class TestDigestJudge:
     """Judge-contract unit asserts (in-module; no perf; pytest style)."""
 
@@ -211,7 +213,7 @@ class TestDigestJudge:
 
         monkeypatch.setattr(bridge, "_NATIVE_OVERRIDE", FakeNative())
         judge = bridge.DigestJudge(subject="t")
-        docs = [b'{"a":1}', b'{"b":2}']
+        docs: list[bytearray | bytes | memoryview] = [b'{"a":1}', b'{"b":2}']
         out = judge.verify_batch(recorded=["sha256:" + "a" * 64] * 2, docs=docs)
         assert len(calls) == 1, "batch path must call batch_of_canonical once"
         assert calls[0] == docs, "batch path must pass the full payload at once"

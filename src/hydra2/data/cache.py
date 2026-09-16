@@ -104,7 +104,9 @@ class _MmapBackedDict(dict):  # type: ignore[type-arg]
     _keepalive: tuple[object, ...] = ()
 
 
-def _write_safetensors(path: Path, manifest: dict[str, object], tensors: dict[str, torch.Tensor]) -> None:
+def _write_safetensors(
+    path: Path, manifest: dict[str, object], tensors: dict[str, torch.Tensor]
+) -> None:
     """Write one safetensors-layout file atomically (tmp + rename).
 
     Header `__metadata__` carries only flat strings (spec-compatible): the
@@ -177,14 +179,17 @@ def _read_safetensors_header(path: Path) -> tuple[dict[str, object], int]:
     return header, 8 + header_len
 
 
-def _check_manifest_meta(meta: object, *, key: CacheKey, digest: str, path: Path) -> dict[str, object]:
+def _check_manifest_meta(
+    meta: object, *, key: CacheKey, digest: str, path: Path
+) -> dict[str, object]:
     """Validate header `__metadata__` pins against the requested key."""
     if not isinstance(meta, dict):
         raise ContractError(f"cache manifest metadata must be an object: {path}")
     if meta.get("digest") != digest:
         raise ContractError(f"cache digest mismatch or missing metadata: {path}")
     if meta.get("dtype") != key.dtype or meta.get("layout") != key.layout:
-        raise ContractError(f"cache incompatible with requested key (would reshape): {path}")
+        msg = "cache incompatible with requested key (would reshape)"
+        raise ContractError(f"{msg}: {path}")
     try:
         manifest = json.loads(str(meta.get("manifest", "")))
     except ValueError as exc:
@@ -205,13 +210,12 @@ def _load_safetensors(*, path: Path, key: CacheKey, digest: str) -> dict[str, ob
     """
     header, data_off = _read_safetensors_header(path)
     manifest = _check_manifest_meta(header.get("__metadata__"), key=key, digest=digest, path=path)
-    fh = open(path, "rb")
-    try:
-        file_len = fh.seek(0, 2)
-        mm = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_COPY)
-    except (OSError, ValueError) as exc:
-        fh.close()
-        raise ContractError(f"cache mmap failed: {path} ({type(exc).__name__})") from exc
+    with open(path, "rb") as fh:
+        try:
+            file_len = fh.seek(0, 2)
+            mm = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_COPY)
+        except (OSError, ValueError) as exc:
+            raise ContractError(f"cache mmap failed: {path} ({type(exc).__name__})") from exc
     out: dict[str, object] = _MmapBackedDict()
     try:
         for name, spec in header.items():
@@ -219,7 +223,9 @@ def _load_safetensors(*, path: Path, key: CacheKey, digest: str) -> dict[str, ob
                 continue
             if not isinstance(spec, dict):
                 raise ContractError(f"cache tensor spec must be an object: {name}")
-            dtype_name, shape, offsets = spec.get("dtype"), spec.get("shape"), spec.get("data_offsets")
+            dtype_name = spec.get("dtype")
+            shape = spec.get("shape")
+            offsets = spec.get("data_offsets")
             if not isinstance(dtype_name, str) or dtype_name not in _SAFETENSORS_TO_TORCH:
                 raise ContractError(f"cache tensor {name!r} has unknown dtype {dtype_name!r}")
             torch_dtype = _SAFETENSORS_TO_TORCH[dtype_name]
@@ -278,9 +284,7 @@ def build_cache(
         # Header-only compat read: parse the header, revalidate pins, never
         # touch tensor bytes; incompatibility raises, never reshapes.
         header, _ = _read_safetensors_header(dest)
-        _check_manifest_meta(
-            header.get("__metadata__"), key=key, digest=digest, path=dest
-        )
+        _check_manifest_meta(header.get("__metadata__"), key=key, digest=digest, path=dest)
         return dest
     dest.parent.mkdir(parents=True, exist_ok=True)
     manifest: dict[str, object] = {
@@ -362,7 +366,7 @@ def load_cache(
         if meta.get("dtype") != key.dtype or meta.get("layout") != key.layout:
             raise ContractError("cache incompatible with requested key (would reshape)")
         names = list(_manifest_tensor_names(manifest))
-        return {"__metadata__": manifest, **{name: None for name in names}}
+        return {"__metadata__": manifest, **dict.fromkeys(names)}
     raise FileNotFoundError(f"cache miss for {digest} at {path}")
 
 

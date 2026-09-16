@@ -467,10 +467,6 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
     require_device_available(config.runtime.device)
     if config.runtime.adapter_id == "plain_pytorch":
         adapter: Any = PlainPytorchAdapter()
-    elif config.runtime.adapter_id == "fabric_2.6.5":
-        from hydra2.runtime.fabric import FabricRuntimeAdapter
-
-        adapter = FabricRuntimeAdapter()
     else:
         raise ContractError(f"unknown runtime adapter_id {config.runtime.adapter_id!r}")
     # Compiled non-fp32 needs the functorch backward shim (see

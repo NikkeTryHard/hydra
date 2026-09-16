@@ -443,8 +443,11 @@ def validate_encoder_batch(
     if ring is not None:
         try:
             ring.validate_encoder_batch(
-                int(batch_size), int(max_history_len), int(dora_width),
-                int(num_actions), int(bucket_t),
+                int(batch_size),
+                int(max_history_len),
+                int(dora_width),
+                int(num_actions),
+                int(bucket_t),
             )
             return
         except ContractError:
@@ -467,13 +470,9 @@ def validate_encoder_batch(
         )
     expect = _bucket_length(max_history_len)
     if bucket_t != expect:
-        raise ContractError(
-            f"ring bucket_t {bucket_t} != ceil({max_history_len}) = {expect}"
-        )
+        raise ContractError(f"ring bucket_t {bucket_t} != ceil({max_history_len}) = {expect}")
     if dora_width != 5:
-        raise ContractError(
-            f"ring dora width {dora_width} != 5 sentinel (padding -1, no 4-shim)"
-        )
+        raise ContractError(f"ring dora width {dora_width} != 5 sentinel (padding -1, no 4-shim)")
     if num_actions != BASELINE_ACTION_COUNT:
         raise ContractError(
             f"ring num_actions {num_actions} != baseline {BASELINE_ACTION_COUNT} "
@@ -512,8 +511,7 @@ def _stage_pinned_batch(
                 if not isinstance(tensor, torch.Tensor) or not tensor.is_contiguous():
                     raise ValueError("stage needs contiguous CPU tensors")
             slots = [
-                torch.empty(tensor.shape, dtype=tensor.dtype, pin_memory=True)
-                for tensor in srcs
+                torch.empty(tensor.shape, dtype=tensor.dtype, pin_memory=True) for tensor in srcs
             ]
             ring.ring_fill_batch(
                 [int(slot.data_ptr()) for slot in slots],
@@ -526,7 +524,7 @@ def _stage_pinned_batch(
                 int(BASELINE_ACTION_COUNT),
                 int(bucket_t),
             )
-            return dict(zip(names, slots))
+            return dict(zip(names, slots, strict=True))
         except Exception:
             pass
     return {
@@ -618,7 +616,7 @@ def validate_batch_against_schema(batch: ActorTensorBatch) -> None:
     # scalars on the frozen schema — min, max, legal — one tolist total).
     if len(sync_checks) != 0:
         failed = torch.stack([flag for _, flag in sync_checks]).tolist()
-        for (message, _), is_failed in zip(sync_checks, failed):
+        for (message, _), is_failed in zip(sync_checks, failed, strict=True):
             if bool(is_failed):
                 raise ContractError(message)
     # History mask shape must match history_event_kind.

@@ -28,14 +28,14 @@ COMPILE_MODES: tuple[CompileMode, ...] = (
     "max-autotune-no-cudagraphs",
     "max-autotune",
 )
-SUPPORTED_ADAPTER_IDS: tuple[str, ...] = ("plain_pytorch", "fabric_2.6.5")
+SUPPORTED_ADAPTER_IDS: tuple[str, ...] = ("plain_pytorch",)
 
 _CUDA_DEVICE_RE = re.compile(r"^cuda(:([0-9]+))?$")
 
 
 @dataclass(frozen=True, slots=True)
 class RuntimeSpec:
-    adapter_id: Literal["plain_pytorch", "fabric_2.6.5"]
+    adapter_id: Literal["plain_pytorch"]
     device: str
     precision: PrecisionId
     compile_mode: CompileMode

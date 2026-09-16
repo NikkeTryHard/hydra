@@ -41,6 +41,13 @@ from __future__ import annotations
 
 from hydra2.runtime.plain import PlainPytorchAdapter as PlainPytorchAdapter
 
+#: M3 transitional alias: the Fabric adapter is REMOVED as an implementation,
+#: but the NAME survives as a deprecated alias for plain so existing imports
+#: (tests, third-party call sites) keep working. Emits no warning by design
+#: (observer-quiet kill); deletion of the alias is a separate breaking phase.
+FabricRuntimeAdapter = PlainPytorchAdapter
+
 __all__ = [
+    "FabricRuntimeAdapter",
     "PlainPytorchAdapter",
 ]

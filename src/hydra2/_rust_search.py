@@ -26,7 +26,10 @@ from __future__ import annotations
 
 import importlib
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 from hydra2.artifacts.digest import require_digest_match
 from hydra2.contracts.common import ContractError, DigestText, make_digest_text
@@ -73,9 +76,7 @@ def _search() -> Any:
     try:
         return ext.search
     except AttributeError as exc:
-        raise RuntimeError(
-            "hydra2_replay_rs.search submodule missing; rebuild the bridge"
-        ) from exc
+        raise RuntimeError("hydra2_replay_rs.search submodule missing; rebuild the bridge") from exc
 
 
 def _require_u32(value: object, *, name: str) -> int:
@@ -146,9 +147,7 @@ def act(
     ``legal_ids``, and a completed act ran at least one sim.
     """
     if not isinstance(spec_params, _ACT_DOC_TYPES):
-        raise TypeError(
-            f"search spec_params must be bytes-like, got {type(spec_params).__name__}"
-        )
+        raise TypeError(f"search spec_params must be bytes-like, got {type(spec_params).__name__}")
     if not isinstance(root_obs_doc, _ACT_DOC_TYPES):
         raise TypeError(
             f"search root_obs_doc must be bytes-like, got {type(root_obs_doc).__name__}"
@@ -177,15 +176,11 @@ def act(
     nodes = int(nodes_visited)
     digest = make_digest_text(str(decision_digest))
     if sims < 0 or sims > int(max_sims):
-        raise ContractError(
-            f"search budget overrun: sims_run {sims} outside [0,{max_sims}]"
-        )
+        raise ContractError(f"search budget overrun: sims_run {sims} outside [0,{max_sims}]")
     if nodes < 0:
         raise ContractError(f"search nodes_visited {nodes} must be >= 0")
     if action not in set(legal):
-        raise ContractError(
-            f"search outcome action {action} outside legal_ids {sorted(legal)!r}"
-        )
+        raise ContractError(f"search outcome action {action} outside legal_ids {sorted(legal)!r}")
     if done and sims < 1:
         raise ContractError("search completed act must have sims_run >= 1")
     return ActOut(
@@ -243,9 +238,7 @@ class TestSearchJudge:
         import hydra2._rust_search as search
 
         class FakeNative:
-            def act_batch(
-                self, spec, root, legal, worlds, max_sims, max_depth, deadline_ms
-            ):
+            def act_batch(self, spec, root, legal, worlds, max_sims, max_depth, deadline_ms):
                 return (7, False, 0, 0, "sha256:" + "c" * 64)
 
         monkeypatch.setattr(search, "_NATIVE_OVERRIDE", FakeNative())
@@ -261,9 +254,7 @@ class TestSearchJudge:
         assert out.completed is False
         assert (out.sims_run, out.nodes_visited) == (0, 0)
         assert out.action == 7
-        search.ActJudge(subject="t").verify(
-            recorded="sha256:" + "c" * 64, out=out
-        )
+        search.ActJudge(subject="t").verify(recorded="sha256:" + "c" * 64, out=out)
 
     def test_single_consume_single_native_call(self, monkeypatch):
         import hydra2._rust_search as search
@@ -271,12 +262,17 @@ class TestSearchJudge:
         calls: list = []
 
         class FakeNative:
-            def act_batch(
-                self, spec, root, legal, worlds, max_sims, max_depth, deadline_ms
-            ):
+            def act_batch(self, spec, root, legal, worlds, max_sims, max_depth, deadline_ms):
                 calls.append(
-                    (bytes(spec), bytes(root), list(legal), list(worlds),
-                     max_sims, max_depth, deadline_ms)
+                    (
+                        bytes(spec),
+                        bytes(root),
+                        list(legal),
+                        list(worlds),
+                        max_sims,
+                        max_depth,
+                        deadline_ms,
+                    )
                 )
                 return (3, True, 48, 96, "sha256:" + "d" * 64)
 
@@ -292,9 +288,7 @@ class TestSearchJudge:
         )
         assert len(calls) == 1, "one act must cross the boundary exactly once"
         spec, root, legal, worlds, max_sims, max_depth, deadline_ms = calls[0]
-        assert (spec, root, legal, worlds) == (
-            b'{"algo":"gumbel"}', b'{"seat":1}', [1, 3], [5]
-        )
+        assert (spec, root, legal, worlds) == (b'{"algo":"gumbel"}', b'{"seat":1}', [1, 3], [5])
         assert (max_sims, max_depth, deadline_ms) == (48, 6, 5000)
         assert out.completed is True
         assert out.sims_run == 48
@@ -304,9 +298,7 @@ class TestSearchJudge:
         from hydra2.contracts.common import ContractError
 
         class OverrunNative:
-            def act_batch(
-                self, spec, root, legal, worlds, max_sims, max_depth, deadline_ms
-            ):
+            def act_batch(self, spec, root, legal, worlds, max_sims, max_depth, deadline_ms):
                 return (1, True, 49, 10, "sha256:" + "e" * 64)
 
         monkeypatch.setattr(search, "_NATIVE_OVERRIDE", OverrunNative())
@@ -326,9 +318,7 @@ class TestSearchJudge:
             raise AssertionError("sims_run > max_sims must raise ContractError")
 
         class IllegalNative:
-            def act_batch(
-                self, spec, root, legal, worlds, max_sims, max_depth, deadline_ms
-            ):
+            def act_batch(self, spec, root, legal, worlds, max_sims, max_depth, deadline_ms):
                 return (99, True, 10, 10, "sha256:" + "e" * 64)
 
         monkeypatch.setattr(search, "_NATIVE_OVERRIDE", IllegalNative())

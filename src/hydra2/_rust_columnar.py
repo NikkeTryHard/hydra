@@ -33,7 +33,10 @@ import hashlib
 import importlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 import pyarrow as pa
 import pyarrow.ipc as pa_ipc
@@ -119,12 +122,9 @@ def next_into_capsule(
             raise TypeError(f"columnar cap must be an int, got {type(cap).__name__}")
     if len(ptrs) != len(byte_caps):
         raise ValueError(
-            f"columnar descriptor length mismatch: {len(ptrs)} ptrs "
-            f"vs {len(byte_caps)} caps"
+            f"columnar descriptor length mismatch: {len(ptrs)} ptrs vs {len(byte_caps)} caps"
         )
-    return _columnar().next_into_capsule(
-        list(ptrs), list(byte_caps), requested_schema
-    )
+    return _columnar().next_into_capsule(list(ptrs), list(byte_caps), requested_schema)
 
 
 def table_from_capsule(capsule: Any) -> pa.Table:
@@ -177,8 +177,7 @@ def table_dataset_hash(table: pa.Table, *, id_column: str = _ID_COLUMN) -> str:
     for value in column:
         if not isinstance(value, str):
             raise ContractError(
-                f"columnar id column {id_column!r} must hold str, "
-                f"got {type(value).__name__}"
+                f"columnar id column {id_column!r} must hold str, got {type(value).__name__}"
             )
         ids.append(value)
     return dataset_hash_of_ids(ids)
@@ -193,15 +192,11 @@ class ColumnarJudge:
 
     def verify_table(self, *, recorded: str, table: pa.Table) -> DigestText:
         """Recompute ``dataset_hash`` over the table ids and compare."""
-        recomputed = table_dataset_hash(table, id_column=self.id_column)
-        require_digest_match(
-            recorded=recorded, recomputed=recomputed, subject=self.subject
-        )
-        return DigestText(recomputed)
+        recomputed: DigestText = DigestText(table_dataset_hash(table, id_column=self.id_column))
+        require_digest_match(recorded=recorded, recomputed=recomputed, subject=self.subject)
+        return recomputed
 
-    def verify_ipc_roundtrip(
-        self, *, recorded: str, table: pa.Table, path: Path | str
-    ) -> pa.Table:
+    def verify_ipc_roundtrip(self, *, recorded: str, table: pa.Table, path: Path | str) -> pa.Table:
         """Persist via IPC-file, read back, and compare both hashes.
 
         Proves the cross-proc edge preserves identity: the in-memory table
@@ -260,9 +255,7 @@ class TestColumnarJudge:
 
         schema = pa.schema([pa.field("decision_id", pa.string())])
         batch = pa.record_batch({"decision_id": ["g0r0:0:0"]}, schema=schema)
-        capsule = pa.RecordBatchReader.from_batches(
-            schema, [batch]
-        ).__arrow_c_stream__()
+        capsule = pa.RecordBatchReader.from_batches(schema, [batch]).__arrow_c_stream__()
         columnar.table_from_capsule(capsule)
         try:
             columnar.table_from_capsule(capsule)

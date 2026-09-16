@@ -1,31 +1,36 @@
 """WP-05B/WP-11 ClearML observer mirror over local authoritative artifacts.
 
 Local checkpoints/manifests stay authoritative (D-007): this module only
-copies allowlisted scalars, digests, and JSON snapshots for
+copies allowlisted scalars, digests, and JSON snapshots into ClearML for
 visualization. It NEVER feeds values back into training, RNG, or sampler
 state, and every method degrades to a warn-only no-op instead of raising.
 
-Transport end-state (M2 declare-or-defer): the ClearML SDK transport is
-DEAD — ``start_run`` / ``log_update`` / ``log_checkpoint`` /
-``log_eval_report`` / ``log_promotion`` / ``log_duplicate_audit`` perform
-NO SDK calls. The REST sender (Rust ``reqwest``, blocking client,
-observer-only) is DECLARED but DEFERRED: no ``reqwest`` dependency is
-added by this slice (minimal-goal stop conditions halt on dep adds), so
-transport stays stubbed behind a TODO-gate — filtered payloads are built
-exactly as before, then sunk to the warn-only file fallback
-(``<offline_dir>/mirror.jsonl`` + ``manifests/<stem>.json`` beside the
-checkpoint path convention). What MUST stay byte-identical and visible:
+Sole ``import clearml`` owner: ``clearml`` is imported lazily inside
+:meth:`ClearmlMirror.start_run` and :func:`is_enabled` only. The rest of
+the codebase (including :mod:`hydra2.training.loop` and
+:mod:`hydra2.training.replay`) references this module via
+``TYPE_CHECKING`` imports plus a lazy :func:`make_mirror` call, so
+importing :mod:`hydra2.tracking` never requires the ClearML SDK.
 
-- ``METRIC_ALLOWLIST`` + ``METRIC_ALLOWLIST_PREFIXES`` + ``_filter_metrics``
-  (placement/value/event/belief heads) — frozen on both sides; the
-  byte-identical filter gate is the resume/ckpt/ring verify step.
-- ``NullMirror`` no-op + warn-only ``_degraded`` + file fallback.
+Enablement (disabled by default):
 
-Enablement (disabled by default): ``HYDRA2_CLEARML_ENABLED=1`` opts in;
-``HYDRA2_CLEARML_DISABLED=1`` is the kill-switch and wins over
-everything, including an explicit ``enabled=True``. ``is_enabled`` keeps
-its historical shape (opt-in flag check, never raises) but no longer
-gates on an importable SDK — there is no SDK path left to gate on.
+- ``HYDRA2_CLEARML_ENABLED=1`` opts in; without it the factory returns
+  :class:`NullMirror`.
+- ``HYDRA2_CLEARML_DISABLED=1`` is the kill-switch and wins over
+  everything, including an explicit ``enabled=True``.
+- :func:`is_enabled` additionally requires a clean ``import clearml``.
+
+Offline mode: when ``CLEARML_OFFLINE_MODE=1`` is set, :meth:`start_run`
+calls ``Task.set_offline(True)`` before ``Task.init`` (required ordering)
+and points the SDK cache at :func:`default_offline_dir` — ``<artifact_root>/
+clearml_offline`` unless ``HYDRA2_CLEARML_OFFLINE_DIR`` overrides it — so
+sessions buffer to a hermetic zip replayable later via
+``Task.import_offline_session``. Model weights are excluded from the
+offline contract: checkpoints stay in local artifacts, never in the model
+registry. Autolog is forbidden: ``Task.init`` always passes
+``auto_connect_frameworks=False, auto_connect_arg_parser=False``; only the
+explicit ``report_scalar`` / ``upload_artifact`` / ``connect`` calls below
+emit data.
 
 Call sites: ``SupervisedLoop`` / ``ActorLearnerReplay`` construct via
 ``make_mirror(manifest_hashes=..., loop_config={...})`` + ``start_run()``
@@ -33,17 +38,11 @@ and log ``log_update`` + ``log_checkpoint`` after each published
 checkpoint. ``log_eval_report`` / ``log_promotion`` /
 ``log_duplicate_audit`` are reserved builders (covered by mirror unit
 tests; no production callers yet).
-
-m4 key-stability note: this kill is transport-only — allowlist keys,
-payload shapes, and file-fallback layout are frozen; tests stay hermetic
-(no localhost binds, no live server; hermetic dirs + ``mirror.jsonl``
-only).
 """
 
 from __future__ import annotations
 
 import contextlib
-import json
 import math
 import os
 import warnings
@@ -58,7 +57,6 @@ __all__ = [
     "TASK_DEFAULT",
     "ClearmlMirror",
     "NullMirror",
-    "_append_jsonl",
     "default_offline_dir",
     "is_enabled",
     "make_mirror",
@@ -117,7 +115,7 @@ _TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 
 class _TaskLogger(Protocol):
-    """Structural type for the (removed) SDK task logger (kept for shape)."""
+    """Structural type for the ClearML task logger (SDK is untyped/optional)."""
 
     def report_scalar(self, *args: object, **kwargs: object) -> None: ...
     def report_text(self, *args: object, **kwargs: object) -> None: ...
@@ -147,19 +145,20 @@ def default_offline_dir(*, artifact_root: Path | str | None = None) -> Path:
 
 
 def is_enabled(*, explicit: bool | None = None) -> bool:
-    """Disabled by default; opt-in flag only (no SDK gate remains).
+    """Disabled by default; opt-in plus a clean ``import clearml``.
 
     ``explicit=False`` (or ``HYDRA2_CLEARML_DISABLED`` truthy) forces off and
     wins over everything. Otherwise requires ``explicit=True`` (or
-    ``HYDRA2_CLEARML_ENABLED`` truthy). The historical ``import clearml``
-    probe is gone with the SDK transport (M2): nothing here imports the
-    SDK anymore. Never raises.
+    ``HYDRA2_CLEARML_ENABLED`` truthy) AND an importable ``clearml``
+    package. Never raises.
     """
     try:
         if explicit is False or _env_truthy("HYDRA2_CLEARML_DISABLED"):
             return False
         if explicit is not True and not _env_truthy("HYDRA2_CLEARML_ENABLED"):
             return False
+        from clearml import Task  # noqa: F401
+
         return True
     except Exception:
         return False
@@ -220,29 +219,8 @@ def _ensure_store_dir(path: Path | str) -> None:
         Path(path).mkdir(parents=True, exist_ok=True)
 
 
-def _append_jsonl(path: Path, payload: Mapping[str, Any]) -> None:
-    """Best-effort JSONL append for the REST-deferred file fallback."""
-    try:
-        _ensure_store_dir(path.parent)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(dict(payload), sort_keys=True) + "\n")
-    except Exception:
-        pass
-
-
 class ClearmlMirror:
-    """Observer-only ClearML sink; every backend call is warn-only on failure.
-
-    Transport is REST-note only (M2 declare-or-defer): payloads are filtered
-    exactly as the SDK path filtered them, then sunk to the file fallback.
-    The ``reqwest`` REST sender is declared here and deferred —
-
-    TODO(reqwest): replace the ``_append_jsonl`` file fallback in
-    :meth:`log_update` / :meth:`log_checkpoint` with
-    ``POST {base}/runs/{run}/scalars`` (+ checkpoints endpoint), blocking
-    client, rustls, timeout 5s, retries 0 (observer must not stall train),
-    keeping this same warn-only + file-fallback shape on every error.
-    """
+    """Observer-only ClearML sink; every backend call is warn-only on failure."""
 
     def __init__(
         self,
@@ -305,63 +283,55 @@ class ClearmlMirror:
         )
 
     def start_run(self) -> str | None:
-        """Create (once) the observer run record; idempotent, never raises.
-
-        REST-note: allocates a local run id (no server round-trip while the
-        ``reqwest`` sender is deferred) and records the run header
-        (project/task/tags/params) to the file fallback.
-        """
+        """Create (once) the ClearML task; idempotent, never raises."""
         if not self._enabled:
             return None
         if self._task_id is not None:
             return self._task_id
         try:
+            from clearml import Task
+
             _ensure_store_dir(self._offline_dir)
+            if _env_truthy("CLEARML_OFFLINE_MODE") and hasattr(Task, "set_offline"):
+                Task.set_offline(True)
+                if "CLEARML_CACHE_DIR" not in os.environ:
+                    os.environ["CLEARML_CACHE_DIR"] = str(self._offline_dir)
             tags = [
                 f"{key}={value}"
                 for key, value in _manifest_tags(
                     self._manifest_hashes, self._environment_digest
                 ).items()
             ]
-            params = _flatten_params(self._loop_config)
-            self._task = {
-                "project": self._project,
-                "task_name": self._task_name,
-                "tags": tags,
-                "params": params,
-            }
-            self._task_id = f"offline-{abs(hash((self._project, self._task_name))) % 10**12:012d}"
-            _append_jsonl(
-                Path(self._offline_dir) / "mirror.jsonl",
-                {"op": "start_run", "run_id": self._task_id, "task": self._task},
+            task: Any = Task.init(
+                project_name=self._project,
+                task_name=self._task_name,
+                tags=tags,
+                reuse_last_task_id=False,
+                auto_connect_arg_parser=False,
+                auto_connect_frameworks=False,
             )
+            params = _flatten_params(self._loop_config)
+            if len(params) > 0:
+                task.connect(params)
+            raw_id: object = task.id
+            self._task = task
+            self._task_id = str(raw_id) if raw_id is not None else None
             return self._task_id
         except Exception as exc:
             self._degraded("start_run", exc)
             return None
 
     def log_update(self, entry: Mapping[str, Any], *, step: int) -> None:
-        """Sink one allowlisted scalar series per key at ``iteration=step``.
-
-        REST-note: the allowlisted ``metrics`` payload is built exactly as
-        the SDK path built it, then appended to the file fallback while the
-        ``reqwest`` sender is deferred (see class TODO).
-        """
+        """Report one allowlisted scalar series per key at ``iteration=step``."""
         if not self._enabled or self._task is None:
             return
         try:
             metrics = _filter_metrics(entry)
             if len(metrics) == 0:
                 return
-            _append_jsonl(
-                Path(self._offline_dir) / "mirror.jsonl",
-                {
-                    "op": "log_update",
-                    "run_id": self._task_id,
-                    "step": step,
-                    "metrics": metrics,
-                },
-            )
+            logger: _TaskLogger = self._task.get_logger()
+            for key, value in metrics.items():
+                logger.report_scalar(title=key, series=key, value=value, iteration=step)
         except Exception as exc:
             self._degraded("log_update", exc)
 
@@ -371,67 +341,44 @@ class ClearmlMirror:
         checkpoint_path: Path | str,
         manifest_json: Mapping[str, Any] | None = None,
     ) -> None:
-        """Record the checkpoint file plus its manifest snapshot (file fallback).
-
-        REST-note: while the ``reqwest`` sender is deferred this copies the
-        manifest JSON beside the offline dir (never the tensor bytes) instead
-        of ``upload_artifact``.
-        """
+        """Upload the checkpoint file plus its manifest snapshot as artifacts."""
         if not self._enabled or self._task is None:
             return
         try:
             path = Path(checkpoint_path)
-            _append_jsonl(
-                Path(self._offline_dir) / "mirror.jsonl",
-                {
-                    "op": "log_checkpoint",
-                    "run_id": self._task_id,
-                    "checkpoint": path.name,
-                },
-            )
+            self._task.upload_artifact(f"checkpoints/{path.name}", path.as_posix())
             if manifest_json is not None and isinstance(manifest_json, Mapping):
-                dest = Path(self._offline_dir) / "manifests" / f"{path.stem}.json"
-                try:
-                    _ensure_store_dir(dest.parent)
-                    dest.write_text(
-                        json.dumps(dict(manifest_json), indent=2, sort_keys=True),
-                        encoding="utf-8",
-                    )
-                except Exception as exc:
-                    self._degraded("log_checkpoint", exc)
+                self._task.upload_artifact(f"manifests/{path.stem}.json", dict(manifest_json))
         except Exception as exc:
             self._degraded("log_checkpoint", exc)
 
     def log_eval_report(
         self, name: str, report: Mapping[str, Any], *, digest: str | None = None
     ) -> None:
-        """Record the eval JSON, mirror allowlisted scalars, tag the digest."""
+        """Upload the eval JSON, mirror allowlisted scalars, tag the digest."""
         if not self._enabled or self._task is None:
             return
         try:
             label = name
             payload = dict(report) if isinstance(report, Mapping) else {}
-            _append_jsonl(
-                Path(self._offline_dir) / "mirror.jsonl",
-                {
-                    "op": "log_eval_report",
-                    "run_id": self._task_id,
-                    "label": label,
-                    "digest": digest if digest not in (None, "") else None,
-                    "metrics": _filter_metrics(payload),
-                    "report": payload,
-                },
-            )
+            self._task.upload_artifact(f"eval/{label}.json", payload)
+            logger: _TaskLogger = self._task.get_logger()
+            for key, value in _filter_metrics(payload).items():
+                logger.report_scalar(title=f"eval/{label}", series=key, value=value, iteration=0)
+            if digest is not None and digest != "":
+                self._task.add_tags([f"eval.{label}.digest={digest}"])
+                logger.report_text(f"eval {label} digest {digest}")
         except Exception as exc:
             self._degraded("log_eval_report", exc)
 
     def log_promotion(self, record_json: Mapping[str, Any], *, digest: str | None = None) -> None:
-        """Record the promotion record plus the CI triple as scalars."""
+        """Upload the promotion record plus the CI triple as scalars."""
         if not self._enabled or self._task is None:
             return
         try:
             record = dict(record_json) if isinstance(record_json, Mapping) else {}
-            scalars: dict[str, float] = {}
+            self._task.upload_artifact("promotion/record.json", record)
+            logger: _TaskLogger = self._task.get_logger()
             for key in _PROMOTION_METRIC_KEYS:
                 value = record.get(key)
                 if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -439,17 +386,10 @@ class ClearmlMirror:
                 number = float(value)
                 if not math.isfinite(number):
                     continue
-                scalars[key] = number
-            _append_jsonl(
-                Path(self._offline_dir) / "mirror.jsonl",
-                {
-                    "op": "log_promotion",
-                    "run_id": self._task_id,
-                    "digest": digest if digest not in (None, "") else None,
-                    "metrics": scalars,
-                    "record": record,
-                },
-            )
+                logger.report_scalar(title="promotion", series=key, value=number, iteration=0)
+            if digest is not None and digest != "":
+                self._task.add_tags([f"promotion.digest={digest}"])
+                logger.report_text(f"promotion digest {digest}")
         except Exception as exc:
             self._degraded("log_promotion", exc)
 
@@ -460,7 +400,7 @@ class ClearmlMirror:
         telemetry_digest: str | None = None,
         sidecar: Mapping[str, Any] | None = None,
     ) -> None:
-        """Tag duplicate-wall digests and record the confirmation sidecar.
+        """Tag duplicate-wall digests and upload the confirmation sidecar.
 
         Duplicate wall: the dedup gate proving no training game repeats
         (manifest + telemetry digests); the sidecar is its evidence JSON.
@@ -473,31 +413,24 @@ class ClearmlMirror:
                 tags.append(f"duplicate.manifest_digest={manifest_digest}")
             if telemetry_digest is not None and telemetry_digest != "":
                 tags.append(f"duplicate.telemetry_digest={telemetry_digest}")
-            _append_jsonl(
-                Path(self._offline_dir) / "mirror.jsonl",
-                {
-                    "op": "log_duplicate_audit",
-                    "run_id": self._task_id,
-                    "tags": tags,
-                    "sidecar": dict(sidecar)
-                    if sidecar is not None and isinstance(sidecar, Mapping)
-                    else None,
-                },
+            if len(tags) > 0:
+                self._task.add_tags(tags)
+            if sidecar is not None and isinstance(sidecar, Mapping):
+                self._task.upload_artifact("duplicate/confirmation_sidecar.json", dict(sidecar))
+            self._task.get_logger().report_text(
+                f"duplicate audit manifest={manifest_digest} telemetry={telemetry_digest}"
             )
         except Exception as exc:
             self._degraded("log_duplicate_audit", exc)
 
     def close(self) -> None:
-        """Close the run; idempotent, warn-only, never raises."""
+        """Close the task; idempotent, warn-only, never raises."""
         task, self._task = self._task, None
         self._task_id = None
         if task is None:
             return
         try:
-            _append_jsonl(
-                Path(self._offline_dir) / "mirror.jsonl",
-                {"op": "close"},
-            )
+            task.close()
         except Exception as exc:
             warnings.warn(
                 f"clearml mirror degraded (close): {exc.__class__.__name__}: {exc}", stacklevel=2
@@ -505,7 +438,7 @@ class ClearmlMirror:
 
 
 class NullMirror(ClearmlMirror):
-    """Disabled mirror: every method is a cheap no-op that never touches transport."""
+    """Disabled mirror: every method is a cheap no-op that never imports clearml."""
 
     def __init__(self) -> None:
         super().__init__(enabled=False)
@@ -514,7 +447,7 @@ class NullMirror(ClearmlMirror):
 def make_mirror(**kwargs: Any) -> ClearmlMirror:
     """Build an enabled mirror when opted in, else a :class:`NullMirror`.
 
-    Never raises: any misconfiguration (bad kwargs, offline
+    Never raises: any misconfiguration (bad kwargs, missing SDK, offline
     failure) falls back to a disabled mirror.
     """
     try:
