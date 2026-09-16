@@ -56,6 +56,13 @@
 //! (`Vec<StackedEvent>` event storage is the only heap use, sized by the
 //! line count). `serde_json::Value` per-line temporaries exist on the
 //! BASELINE path only (dropped before return; never retained).
+//!
+//! Upstream packet seam (`feed::framer`): compressed objects are first
+//! framed into owned `crate::framer::Frame` bytes with stable decompressed
+//! offsets; span framing here runs on those bytes (`frame_spans` per game,
+//! `frame_file` per whole file). Split/wall math is NEVER duplicated here:
+//! `framer::{wall_hash, assign_one}` alias the single `feed::partition`
+//! definitions (wave3 §1.10 ONE-fn rule).
 
 pub mod frame;
 pub mod kinds;

@@ -13,16 +13,27 @@
 //! CALL canon (never a second printer). Attestation seals (M17) canonicalize
 //! through `canon` exactly like every other seal path.
 //!
-//! Modules: `gate` (frame/gate verdicts), `ingest` + `tiles` (span framing +
-//! kind/tile LUTs), `ledger` + `walk` (u8 ledger DIRECT to minimal hot planes;
-//! engine.rs rules ported to u8, never imported), `fill` (stage-then-commit).
+//! Modules: `decode` (typed decode over framed bytes) + `framer` (packet
+//! framing + verified zstd decode), `gate` (frame/gate verdicts), `ingest`
+//! + `tiles` (span framing + kind/tile LUTs), `ledger` + `walk` (u8 ledger
+//! DIRECT to minimal hot planes; engine.rs rules ported to u8, never
+//! imported), `fill` (stage-then-commit), `manifest` + `partition` + `rows`
+//! (split/manifest math calling `canon`/`digest`, never a second printer),
+//! `quarantine` + `validate` (taxonomy-closed verdicts over decoded games).
 pub mod canon;
+pub mod decode;
 pub mod digest;
 pub mod fill;
 pub mod fixed;
+pub mod framer;
 pub mod gate;
 pub mod ingest;
 pub mod ledger;
+pub mod manifest;
+pub mod partition;
+pub mod quarantine;
 pub mod rng;
+pub mod rows;
 pub mod tiles;
+pub mod validate;
 pub mod walk;
