@@ -6,6 +6,16 @@ consumption route fails closed with :class:`QualificationRequiredError`
 until :meth:`MahJaxQuarantineShell.qualify` accepts a token bound to the
 complete live environment tuple. Only the import/compile probes are legal
 before qualification.
+
+Engine differential (header note only, NO logic change): riichienv stays an
+in-proc batch binding (Rust-core steps behind ONE `detach`, frozen configs;
+NO subprocess — per-step sim latency dominates shared-memory copies), while
+mahjax stays subprocess + digest-only (this shell + `capture`/`quarantine`
+are forced-Python; ALL mahjax consumption crosses via subprocess JSON +
+SHA-256 digests, NEVER an in-proc JAX import in training workers — XLA init
+cost + GPU OOM + concurrent-import aborts). Differential traffic is compared
+as digests against reference digests with the token fragment bound to the
+live capture (E-gate / T-diff at verify).
 """
 
 from __future__ import annotations

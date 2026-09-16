@@ -5,6 +5,22 @@ pulls, the bounded parallel-expansion pool, microbatch fills); the
 buffered-window half (grouped takes, sampler state, snapshots, verbatim
 restore) rides :class:`_StreamDatasetBufferMixin`. Single-pass with the
 epoch pinned at 0: exhaustion while rows are still demanded fails closed.
+
+M6 reword (no DataLoader kill): verified no ``DataLoader`` on the train
+path — the fill work here is the bounded spawn pool (:meth:`_fill_parallel`)
+plus the serial pull/batch-expansion tails (:meth:`_pull_game` /
+:meth:`_pull_game_batch`), and the H2D staging is the caller-owned
+``PinnedRing``/``_GatedOverlapFeed``. The end-state feed replaces THIS pool
+(bridge rayon ``FeedPool`` via :func:`_bridge_feed`, one ``detach`` around
+the whole fan-out) — never a ``DataLoader``.
+
+Feed-fill seam: :meth:`_StreamDatasetCore._fill` tries
+:func:`_try_bridge_fill` first (M5-locked ``hydra_bridge._native`` /
+legacy ``hydra2_replay_rs`` module import); while the bridge feed surface
+is deferred it returns ``False`` and the verbatim Python pool path below
+runs (counted in ``feed_fallbacks``). Orchestration — order, counters,
+privileged joins, quarantine classes, buffer index — is untouched either
+way.
 """
 
 from __future__ import annotations
@@ -42,6 +58,51 @@ if TYPE_CHECKING:
 __all__ = [
     "_StreamDatasetCore",
 ]
+
+_BRIDGE_FEED: Any = None
+_BRIDGE_FEED_PROBED = False
+
+
+def _bridge_feed() -> Any | None:
+    """M5-locked bridge feed surface or ``None`` (never raises).
+
+    Tries ``hydra_bridge._native`` first, then the legacy
+    ``hydra2_replay_rs`` deleting shim. Any failure (not built, no feed
+    surface yet) returns ``None`` and the caller keeps the verbatim Python
+    pool path.
+    """
+    global _BRIDGE_FEED, _BRIDGE_FEED_PROBED
+    if _BRIDGE_FEED_PROBED:
+        return _BRIDGE_FEED
+    _BRIDGE_FEED_PROBED = True
+    for mod_name in ("hydra_bridge._native", "hydra2_replay_rs"):
+        try:
+            import importlib as _importlib
+
+            top = _importlib.import_module(mod_name)
+            feed = getattr(top, "feed", None)
+            if feed is not None:
+                _BRIDGE_FEED = feed
+                return _BRIDGE_FEED
+        except Exception:
+            continue
+    _BRIDGE_FEED = None
+    return None
+
+
+def _try_bridge_fill(dataset: Any, need: int) -> bool:
+    """Attempt one bridge feed fill; ``False`` means run the Python pool path.
+
+    Deferred TODO-gate: no bridge feed surface exists this slice, so this
+    always returns ``False`` after the M5-locked import probe (counted by
+    the caller in ``feed_fallbacks``). Shape of the future call is fixed
+    here so the cutover is a body-only change: ``feed.fill_next(dataset,
+    need)`` returns ``True`` when it buffered rows, ``False`` at stream end
+    (caller raises the verbatim exhaustion errors below).
+    """
+    _ = dataset
+    _ = need
+    return False
 
 
 class _StreamDatasetCore:
@@ -116,6 +177,8 @@ class _StreamDatasetCore:
         self.pin_memory = pin_memory
         self._homogeneous_buckets = homogeneous_buckets
         self._buffered_entries: list[dict[str, Any]] = []
+        # Bridge feed-fill fallback count (seam counter, telemetry only).
+        self.feed_fallbacks = 0
 
     @property
     def epoch(self) -> int:
@@ -542,6 +605,9 @@ class _StreamDatasetCore:
 
     def _fill(self, need: int) -> None:
         """Buffer at least ``need`` consumable rows (single-pass: exhaustion is terminal)."""
+        if _try_bridge_fill(self, need):
+            return
+        self.feed_fallbacks += 1
         if self._expand_workers > 0:
             self._fill_parallel(need)
             return

@@ -1,41 +1,34 @@
 """WP-14 MLflow observer mirror over local authoritative artifacts.
 
 Local checkpoints/manifests stay authoritative (D-007): this module only
-copies allowlisted scalars, digests, and JSON snapshots into a per-artifact-
-root SQLite MLflow store for visualization. It NEVER feeds values back into
-training, RNG, or sampler state, and every method degrades to a warn-only
-no-op instead of raising.
+copies allowlisted scalars, digests, and JSON snapshots for
+visualization. It NEVER feeds values back into training, RNG, or sampler
+state, and every method degrades to a warn-only no-op instead of raising.
 
-Sole ``import mlflow`` owner: ``mlflow`` is imported lazily inside
-:meth:`MlflowMirror.start_run` and :func:`is_enabled` only. The rest of
-the codebase (including :mod:`hydra2.training.stream_train`) references
-this module via a lazy :func:`make_mirror` call, so importing
-:mod:`hydra2.tracking` never requires the MLflow SDK.
+Transport end-state (M2 declare-or-defer): the MLflow SDK transport is
+DEAD — ``start_run`` / ``log_update`` / ``log_checkpoint`` /
+``log_eval_report`` / ``log_promotion`` / ``log_duplicate_audit`` perform
+NO SDK calls. The REST sender (Rust ``reqwest``, blocking client,
+observer-only) is DECLARED but DEFERRED: no ``reqwest`` dependency is
+added by this slice (minimal-goal stop conditions halt on dep adds), so
+transport stays stubbed behind a TODO-gate — filtered payloads are built
+exactly as before (shared ``_filter_metrics`` / ``_flatten_params`` /
+``_manifest_tags`` with the ClearML mirror, same allowlist set), then
+sunk to the warn-only file fallback (``mirror/mlflow/mirror.jsonl`` +
+``manifests/<stem>.json``). What MUST stay byte-identical and visible:
 
-Enablement (enabled by default once the SDK is importable):
+- ``METRIC_ALLOWLIST`` lives in :mod:`hydra2.tracking.clearml_mirror` and
+  is shared here via ``_filter_metrics`` (placement/value/event/belief
+  heads + ``event_/belief_/per_type/calibrated_/temperature`` prefixes) —
+  frozen on both sides; the byte-identical filter gate is the
+  resume/ckpt/ring verify step.
+- ``NullMlflowMirror`` no-op + warn-only ``_degraded`` + file fallback.
 
-- ``HYDRA2_MLFLOW_DISABLED=1`` is the kill-switch and wins over
-  everything, including an explicit ``enabled=True``. The test suite sets
-  it (the suite forces HYDRA2_MLFLOW_DISABLED=1) so unit tests never touch the store.
-- Otherwise the mirror is on when ``mlflow`` imports cleanly; explicit
-  ``enabled=False`` (YAML ``telemetry.mlflow_enabled: false``) also
-  forces off.
-
-Store: SQLite at ``<artifact_root>/mirror/mlflow/mlruns.db`` (one file per
-artifact root, offline, no server). The MLflow file-store backend is in
-maintenance mode upstream and refuses new runs, so SQLite is the quiet-tier
-store; artifacts land under ``<artifact_root>/mirror/mlflow/mlartifacts``.
-Dependency stack (all latest-stable floats): ``mlflow-skinny`` (ships
-``MlflowClient`` + the system-metrics monitor; full ``mlflow`` was rejected
-— its pypi solve conflicts with the conda pyarrow pin) plus ``sqlalchemy`` /
-``alembic``, which the skinny wheel omits but the SQLite store needs.
-Fluent API note: the mirror uses the fluent ``mlflow.start_run`` /
-``log_metric`` surface (not ``MlflowClient``) because the system-metrics
-monitor only attaches to a fluent active run (``log_system_metrics=True``).
-Training runs one run per process, so the process-global fluent state is
-safe here; :meth:`close` restores the previous tracking URI best-effort.
-System metrics (10s cadence, machine-level CPU/GPU/memory) ride the
-monitor; allowlisted training scalars go through :meth:`log_update`.
+Enablement (enabled by default): ``HYDRA2_MLFLOW_DISABLED=1`` is the
+kill-switch and wins over everything, including an explicit
+``enabled=True``. ``is_enabled`` keeps its historical shape (kill-switch
++ explicit flag, never raises) but no longer gates on an importable SDK
+— there is no SDK path left to gate on.
 
 Call sites: ``run_stream_training`` constructs via
 ``make_mirror(manifest_hashes=..., loop_config={...})`` + ``start_run()``
@@ -43,9 +36,15 @@ and logs ``log_update`` + ``log_checkpoint`` after each published
 checkpoint. ``log_eval_report`` / ``log_promotion`` /
 ``log_duplicate_audit`` are reserved builders (covered by mirror unit
 tests; no production callers yet).
+
+m4 key-stability note: this kill is transport-only — allowlist keys,
+payload shapes, and file-fallback layout are frozen; tests stay hermetic
+(no localhost binds, no live server; hermetic dirs + ``mirror.jsonl``
+only).
 """
 
 import contextlib
+import json
 import os
 import time
 import warnings
@@ -54,6 +53,7 @@ from pathlib import Path
 from typing import Any
 
 from hydra2.tracking.clearml_mirror import (
+    _append_jsonl,
     _ensure_store_dir,
     _env_truthy,
     _filter_metrics,
@@ -106,24 +106,34 @@ def default_tracking_dir(
 
 
 def is_enabled(*, explicit: bool | None = None) -> bool:
-    """Enabled by default; kill-switch plus a clean ``import mlflow``.
+    """Enabled by default; kill-switch plus explicit flag (no SDK gate remains).
 
     ``explicit=False`` (or ``HYDRA2_MLFLOW_DISABLED`` truthy) forces off and
-    wins over everything. Otherwise requires an importable ``mlflow``
-    package with a working ``mlflow.tracking`` client import. Never raises.
+    wins over everything. The historical ``import mlflow`` probe is gone
+    with the SDK transport (M2): nothing here imports the SDK anymore.
+    Never raises.
     """
     try:
         if explicit is False or _env_truthy("HYDRA2_MLFLOW_DISABLED"):
             return False
-        from mlflow.tracking import MlflowClient  # noqa: F401
-
         return True
     except Exception:
         return False
 
 
 class MlflowMirror:
-    """Observer-only MLflow sink; every backend call is warn-only on failure."""
+    """Observer-only MLflow sink; every backend call is warn-only on failure.
+
+    Transport is REST-note only (M2 declare-or-defer): payloads are filtered
+    exactly as the SDK path filtered them, then sunk to the file fallback.
+    The ``reqwest`` REST sender is declared here and deferred —
+
+    TODO(reqwest): replace the ``_append_jsonl`` file fallback in
+    :meth:`log_update` / :meth:`log_checkpoint` with
+    ``POST {base}/runs/{run}/scalars`` (+ checkpoints endpoint), blocking
+    client, rustls, timeout 5s, retries 0 (observer must not stall train),
+    keeping this same warn-only + file-fallback shape on every error.
+    """
 
     def __init__(
         self,
@@ -195,80 +205,63 @@ class MlflowMirror:
         )
 
     def _store_uri(self) -> str:
-        """SQLite tracking URI inside the mirror dir (offline, no server)."""
-        return f"sqlite:///{self._tracking_dir}/mlruns.db"
+        """Hermetic file-store path inside the mirror dir (offline, no server)."""
+        return f"{self._tracking_dir}/mlruns.db"
+
+    def _fallback_path(self) -> Path:
+        return Path(self._tracking_dir) / "mirror.jsonl"
 
     def start_run(self, *, run_id: str | None = None) -> str | None:
-        """Create (once) or resume the MLflow run; idempotent, never raises."""
+        """Create (once) or resume the observer run; idempotent, never raises.
+
+        REST-note: allocates a local run id (no server round-trip while the
+        ``reqwest`` sender is deferred) and records the run header
+        (experiment/run/tags/params) to the file fallback.
+        """
         if not self._enabled:
             return None
         if self._run_id is not None:
             return self._run_id
         try:
-            import mlflow
-
             _ensure_store_dir(self._tracking_dir)
-            _ensure_store_dir(self._tracking_dir / "mlartifacts")
-            try:
-                self._previous_tracking_uri = mlflow.get_tracking_uri()
-            except Exception:
-                self._previous_tracking_uri = None
-            uri = self._store_uri()
-            registry = f"file://{self._tracking_dir}/mlregistry"
-            client = mlflow.tracking.MlflowClient(tracking_uri=uri, registry_uri=registry)
-            experiment = client.get_experiment_by_name(self._experiment)
-            if experiment is None:
-                client.create_experiment(
-                    self._experiment,
-                    artifact_location=f"file://{self._tracking_dir}/mlartifacts",
-                )
-            self._client = client
-            mlflow.set_tracking_uri(uri)
-            # Registry is unused (models never registered) but the client
-            # validates its URI on tracking calls; hermetic file fallback.
-            mlflow.set_registry_uri(f"file://{self._tracking_dir}/mlregistry")
-            mlflow.set_experiment(self._experiment)
             tags = dict(_manifest_tags(self._manifest_hashes, self._environment_digest))
             resume = run_id if run_id is not None and run_id != "" else None
-            if self._system_metrics_interval is not None:
-                mlflow.system_metrics.set_system_metrics_sampling_interval(
-                    self._system_metrics_interval
-                )
-            run = mlflow.start_run(
-                run_id=resume,
-                run_name=self._run_name,
-                tags=tags,
-                log_system_metrics=self._system_metrics_interval is not None,
-            )
             params = _flatten_params(self._loop_config)
-            if len(params) > 0:
-                mlflow.log_params(params)
-            raw_id: object = run.info.run_id
-            self._run_id = str(raw_id) if raw_id is not None else None
+            self._run_id = resume or f"offline-{abs(hash((self._experiment, self._run_name))) % 10**12:012d}"
+            _append_jsonl(
+                self._fallback_path(),
+                {
+                    "op": "start_run",
+                    "run_id": self._run_id,
+                    "experiment": self._experiment,
+                    "run_name": self._run_name,
+                    "tags": tags,
+                    "params": params,
+                },
+            )
             return self._run_id
         except Exception as exc:
             self._degraded("start_run", exc)
             return None
 
     def log_update(self, entry: Mapping[str, Any], *, step: int) -> None:
-        """Log one allowlisted scalar series per key at ``step``."""
+        """Log one allowlisted scalar series per key at ``step`` (file fallback)."""
         if not self._enabled or self._run_id is None:
             return
         try:
-            import mlflow
-
             metrics = _filter_metrics(entry)
             if len(metrics) == 0:
                 return
-            client = self._client
-            if client is None:
-                client = mlflow.tracking.MlflowClient(tracking_uri=self._store_uri())
-                self._client = client
-            stamp_ms = int(time.time() * 1000)
-            batch = [
-                mlflow.entities.Metric(key, value, stamp_ms, step) for key, value in metrics.items()
-            ]
-            client.log_batch(self._run_id, metrics=batch)
+            _ = time.time()
+            _append_jsonl(
+                self._fallback_path(),
+                {
+                    "op": "log_update",
+                    "run_id": self._run_id,
+                    "step": step,
+                    "metrics": metrics,
+                },
+            )
         except Exception as exc:
             self._degraded("log_update", exc)
 
@@ -278,47 +271,62 @@ class MlflowMirror:
         checkpoint_path: Path | str,
         manifest_json: Mapping[str, Any] | None = None,
     ) -> None:
-        """Attach the checkpoint file plus its manifest snapshot as artifacts."""
+        """Record the checkpoint file plus its manifest snapshot (file fallback)."""
         if not self._enabled or self._run_id is None:
             return
         try:
-            import mlflow
-
             path = Path(checkpoint_path)
-            mlflow.log_artifact(path.as_posix(), artifact_path="checkpoints")
+            _append_jsonl(
+                self._fallback_path(),
+                {
+                    "op": "log_checkpoint",
+                    "run_id": self._run_id,
+                    "checkpoint": path.name,
+                },
+            )
             if manifest_json is not None and isinstance(manifest_json, Mapping):
-                mlflow.log_dict(dict(manifest_json), f"manifests/{path.stem}.json")
+                dest = Path(self._tracking_dir) / "manifests" / f"{path.stem}.json"
+                try:
+                    _ensure_store_dir(dest.parent)
+                    dest.write_text(
+                        json.dumps(dict(manifest_json), indent=2, sort_keys=True),
+                        encoding="utf-8",
+                    )
+                except Exception as exc:
+                    self._degraded("log_checkpoint", exc)
         except Exception as exc:
             self._degraded("log_checkpoint", exc)
 
     def log_eval_report(
         self, name: str, report: Mapping[str, Any], *, digest: str | None = None
     ) -> None:
-        """Attach the eval JSON, mirror allowlisted scalars, tag the digest."""
+        """Record the eval JSON, mirror allowlisted scalars, tag the digest."""
         if not self._enabled or self._run_id is None:
             return
         try:
-            import mlflow
-
             label = name
             payload = dict(report) if isinstance(report, Mapping) else {}
-            mlflow.log_dict(payload, f"eval/{label}.json")
-            for key, value in _filter_metrics(payload).items():
-                mlflow.log_metric(f"eval_{label}_{key}", value, step=0)
-            if digest is not None and digest != "":
-                mlflow.set_tag(f"eval.{label}.digest", digest)
+            _append_jsonl(
+                self._fallback_path(),
+                {
+                    "op": "log_eval_report",
+                    "run_id": self._run_id,
+                    "label": label,
+                    "digest": digest if digest not in (None, "") else None,
+                    "metrics": _filter_metrics(payload),
+                    "report": payload,
+                },
+            )
         except Exception as exc:
             self._degraded("log_eval_report", exc)
 
     def log_promotion(self, record_json: Mapping[str, Any], *, digest: str | None = None) -> None:
-        """Attach the promotion record plus the CI triple as metrics."""
+        """Record the promotion record plus the CI triple as metrics."""
         if not self._enabled or self._run_id is None:
             return
         try:
-            import mlflow
-
             record = dict(record_json) if isinstance(record_json, Mapping) else {}
-            mlflow.log_dict(record, "promotion/record.json")
+            scalars: dict[str, float] = {}
             for key in _PROMOTION_METRIC_KEYS:
                 value = record.get(key)
                 if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -328,9 +336,17 @@ class MlflowMirror:
                 number = float(value)
                 if not math.isfinite(number):
                     continue
-                mlflow.log_metric(f"promotion_{key}", number, step=0)
-            if digest is not None and digest != "":
-                mlflow.set_tag("promotion.digest", digest)
+                scalars[key] = number
+            _append_jsonl(
+                self._fallback_path(),
+                {
+                    "op": "log_promotion",
+                    "run_id": self._run_id,
+                    "digest": digest if digest not in (None, "") else None,
+                    "metrics": scalars,
+                    "record": record,
+                },
+            )
         except Exception as exc:
             self._degraded("log_promotion", exc)
 
@@ -341,7 +357,7 @@ class MlflowMirror:
         telemetry_digest: str | None = None,
         sidecar: Mapping[str, Any] | None = None,
     ) -> None:
-        """Tag duplicate-wall digests and attach the confirmation sidecar.
+        """Tag duplicate-wall digests and record the confirmation sidecar.
 
         Duplicate wall: the dedup gate proving no training game repeats
         (manifest + telemetry digests); the sidecar is its evidence JSON.
@@ -349,14 +365,22 @@ class MlflowMirror:
         if not self._enabled or self._run_id is None:
             return
         try:
-            import mlflow
-
-            if manifest_digest is not None and manifest_digest != "":
-                mlflow.set_tag("duplicate.manifest_digest", manifest_digest)
-            if telemetry_digest is not None and telemetry_digest != "":
-                mlflow.set_tag("duplicate.telemetry_digest", telemetry_digest)
-            if sidecar is not None and isinstance(sidecar, Mapping):
-                mlflow.log_dict(dict(sidecar), "duplicate/confirmation_sidecar.json")
+            _append_jsonl(
+                self._fallback_path(),
+                {
+                    "op": "log_duplicate_audit",
+                    "run_id": self._run_id,
+                    "manifest_digest": manifest_digest
+                    if manifest_digest not in (None, "")
+                    else None,
+                    "telemetry_digest": telemetry_digest
+                    if telemetry_digest not in (None, "")
+                    else None,
+                    "sidecar": dict(sidecar)
+                    if sidecar is not None and isinstance(sidecar, Mapping)
+                    else None,
+                },
+            )
         except Exception as exc:
             self._degraded("log_duplicate_audit", exc)
 
@@ -366,14 +390,10 @@ class MlflowMirror:
         if run_id is None:
             return
         try:
-            import mlflow
-
             with contextlib.suppress(Exception):
-                mlflow.end_run(status="FINISHED")
+                _append_jsonl(self._fallback_path(), {"op": "close", "run_id": run_id})
             previous, self._previous_tracking_uri = self._previous_tracking_uri, None
-            if previous is not None:
-                with contextlib.suppress(Exception):
-                    mlflow.set_tracking_uri(previous)
+            _ = previous
         except Exception as exc:
             warnings.warn(
                 f"mlflow mirror degraded (close): {exc.__class__.__name__}: {exc}",
@@ -382,7 +402,7 @@ class MlflowMirror:
 
 
 class NullMlflowMirror(MlflowMirror):
-    """Disabled mirror: every method is a cheap no-op that never imports mlflow."""
+    """Disabled mirror: every method is a cheap no-op that never touches transport."""
 
     def __init__(self) -> None:
         super().__init__(enabled=False)
@@ -391,7 +411,7 @@ class NullMlflowMirror(MlflowMirror):
 def make_mirror(**kwargs: Any) -> MlflowMirror:
     """Build an enabled mirror by default, else a :class:`NullMlflowMirror`.
 
-    Never raises: any misconfiguration (bad kwargs, missing SDK, store
+    Never raises: any misconfiguration (bad kwargs, store
     failure) falls back to a disabled mirror.
     """
     try:

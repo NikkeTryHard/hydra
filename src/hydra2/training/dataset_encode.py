@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 from hydra2.contracts.common import ContractError
-from hydra2.models.encoder import encode_observations
+from hydra2.models.encoder import _stage_pinned_batch, encode_observations
 from hydra2.models.schema import BASELINE_ACTION_COUNT
 from hydra2.training.dataset_parse import _resolve_live_or_parse
 
@@ -280,9 +280,25 @@ def encode_observation_rows(
     chosen_action_id = torch.tensor(chosen_ids, dtype=torch.long)
     if pin_memory and torch.cuda.is_available():
         try:
-            features = features.pin_memory()
-            legal_mask = legal_mask.pin_memory()
-            chosen_action_id = chosen_action_id.pin_memory()
+            # Bridge-ring bulk stage (buffer+ring over per-tensor pin
+            # copies; the torch from_numpy views above stay untouched):
+            # geometry is the encoding batch's own — batch rows, pure-Python
+            # history lens (no extra sync), encoder bucket width.
+            staged = _stage_pinned_batch(
+                {
+                    "chosen_action_id": chosen_action_id,
+                    "features": features,
+                    "legal_mask": legal_mask,
+                },
+                batch_size=len(row_list),
+                max_history_len=max(len(o.visible_history) for o in observations),
+                bucket_t=int(encoded.history_mask.shape[1]),
+            )
+            features = staged["features"]
+            legal_mask = staged["legal_mask"]
+            chosen_action_id = staged["chosen_action_id"]
+        except ContractError:
+            raise
         except Exception as exc:
             logger.warning("dataset pin_memory failed, using pageable fallback: %s", exc)
     result = {

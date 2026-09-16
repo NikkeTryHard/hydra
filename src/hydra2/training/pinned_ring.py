@@ -24,6 +24,16 @@ tests and CPU-only debug, which keeps identical call order with dummy events.
 Evidence: https://pytorch.org/docs/stable/data.html (memory pinning),
 https://docs.pytorch.org/docs/stable/notes/cuda.html (streams/events),
 https://docs.pytorch.org/docs/stable/generated/torch.cuda.Event.html
+
+Bridge delegation (Phase 5): the bridge ``ring`` owns slots *logically*
+(cursor/slot_used/depth + 512-window timings via ``PyRing``); torch keeps
+owning them *physically* (pinned tensors, streams, events — no Rust GPU
+math, copies ordered vs the consumer stream only). :func:`bucket_for_length`
+is the single Rust fn both sides call (Python pure re-export with local
+ceil fallback). Module import is M5-locked (``hydra_bridge._native.ring``
+first, legacy ``hydra2_replay_rs.ring`` deleting shim second); any bridge
+failure falls back to the verbatim Python path below, counted in
+``stats()["bridge_fallbacks"]``.
 """
 
 from __future__ import annotations
@@ -46,6 +56,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "PinnedRing",
+    "bucket_for_length",
     "resolve_layout",
     "ring_nbytes",
     "slot_dtypes",
@@ -60,6 +71,65 @@ _MIN_DEPTH = 2
 # Bounded timing windows for p50/p99 in stats(); 512 microbatches is enough
 # for stable percentiles without growing memory with run length.
 _TIMING_WINDOW = 512
+
+#: Canonical history buckets (mirrors ``schema.HISTORY_BUCKET_LENGTHS`` +
+#: bridge ``ring.HISTORY_BUCKETS``; the Rust fn is the single source, this is
+#: the verbatim-Python fallback).
+_HISTORY_BUCKETS: tuple[int, ...] = (32, 64, 128, 256)
+
+_BRIDGE_RING: Any = None
+_BRIDGE_RING_PROBED = False
+
+
+def _bridge_ring() -> Any | None:
+    """M5-locked bridge ``ring`` submodule or ``None`` (never raises).
+
+    Tries ``hydra_bridge._native.ring`` first, then the legacy
+    ``hydra2_replay_rs.ring`` deleting shim. Any failure (not built,
+    wrong shape) returns ``None`` and the caller keeps the verbatim Python
+    path.
+    """
+    global _BRIDGE_RING, _BRIDGE_RING_PROBED
+    if _BRIDGE_RING_PROBED:
+        return _BRIDGE_RING
+    _BRIDGE_RING_PROBED = True
+    for mod_name in ("hydra_bridge._native", "hydra2_replay_rs"):
+        try:
+            import importlib as _importlib
+
+            top = _importlib.import_module(mod_name)
+            sub = getattr(top, "ring", None)
+            if sub is not None:
+                _BRIDGE_RING = sub
+                return _BRIDGE_RING
+        except Exception:
+            continue
+    _BRIDGE_RING = None
+    return None
+
+
+def bucket_for_length(actual: int) -> int:
+    """Single bucket ceil both sides call (scan-side + ring-side).
+
+    Tries the bridge Rust fn first; falls back to the verbatim Python ceil
+    over ``(32, 64, 128, 256)`` (over-cap returns 256 — callers fail closed
+    before calling, rows are never truncated). Never raises on valid ints.
+    """
+    if isinstance(actual, bool) or not isinstance(actual, int):
+        raise ContractError(f"bucket length must be an int, got {actual!r}")
+    if actual < 1:
+        raise ContractError(f"bucket length must be >= 1, got {actual!r}")
+    bridge = _bridge_ring()
+    if bridge is not None:
+        try:
+            return int(bridge.bucket_for_length(actual))
+        except Exception:
+            pass
+    for bucket in _HISTORY_BUCKETS:
+        if actual <= bucket:
+            return bucket
+    return _HISTORY_BUCKETS[-1]
+
 
 _TORCH_DTYPES: dict[str, torch.dtype] = {
     "bool": torch.bool,
@@ -381,6 +451,18 @@ class PinnedRing:
         self._sync_ms_last: float | None = None
         self._sync_ms = deque[float](maxlen=_TIMING_WINDOW)
         self._open = True
+        # Bridge-owned logical slots (cursor/slot_used/timings mirror).
+        # Physical slots/streams/events stay torch-side above; any bridge
+        # failure keeps the verbatim Python path (counted, never raised).
+        self._bridge: Any | None = None
+        self._bridge_fallbacks = 0
+        try:
+            bridge_mod = _bridge_ring()
+            if bridge_mod is not None:
+                self._bridge = bridge_mod.PyRing(depth)
+        except Exception:
+            self._bridge = None
+            self._bridge_fallbacks += 1
 
     @classmethod
     def open(
@@ -487,13 +569,26 @@ class PinnedRing:
         self._cursor = (index + 1) % self._depth
         self._acquires += 1
         self._transfers += 1
+        if self._bridge is not None:
+            # Ring owns the logical slot: advance its cursor and mirror the
+            # measured timings. Any bridge failure falls back to the Python
+            # counters above (counted, never raised, bytes already moved).
+            try:
+                advanced = self._bridge.advance()
+                assert advanced == index, f"bridge cursor drift: {advanced} != {index}"
+                if self._h2d_ms_last is not None:
+                    self._bridge.record_h2d(float(self._h2d_ms_last))
+                if self._sync_ms_last is not None:
+                    self._bridge.record_sync(float(self._sync_ms_last))
+            except Exception:
+                self._bridge_fallbacks += 1
         return out
 
     def stats(self) -> dict[str, Any]:
         """Ring counters plus last/p50/p99 transfer and recycle-wait timings (all ``.get``-able)."""
         h2d = list(self._h2d_ms)
         sync = list(self._sync_ms)
-        return {
+        payload: dict[str, Any] = {
             "open": self._open,
             "device": str(self._device),
             "cuda_available": self._cuda,
@@ -509,7 +604,22 @@ class PinnedRing:
             "sync_wait_ms_p50": _percentile(sync, 0.50),
             "sync_wait_ms_p99": _percentile(sync, 0.99),
             "fields": list(self._field_names),
+            "ring_owner": "bridge" if self._bridge is not None else "python",
+            "bridge_fallbacks": self._bridge_fallbacks,
         }
+        if self._bridge is not None:
+            # Best-effort bridge mirror (cursor/slot_used/p50/p99); any
+            # failure keeps the Python counters above (counted, never raised).
+            try:
+                payload["bridge_cursor"] = int(self._bridge.cursor())
+                payload["bridge_h2d_p50"] = self._bridge.h2d_p50()
+                payload["bridge_h2d_p99"] = self._bridge.h2d_p99()
+                payload["bridge_sync_p50"] = self._bridge.sync_p50()
+                payload["bridge_sync_p99"] = self._bridge.sync_p99()
+            except Exception:
+                self._bridge_fallbacks += 1
+                payload["bridge_fallbacks"] = self._bridge_fallbacks
+        return payload
 
     def close(self) -> None:
         """Release slots/events/stream refs; idempotent, single lifecycle (never reopens)."""
@@ -521,6 +631,7 @@ class PinnedRing:
         self._start = []
         self._end = []
         self._stream = None
+        self._bridge = None
 
     def __enter__(self) -> Self:
         return self

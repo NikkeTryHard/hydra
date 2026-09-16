@@ -23,6 +23,11 @@ Contracts:
   - This script NEVER calls bench/perf_wrap.sh (manual perf wrapper only).
   - Percentiles reuse the pinned_ring._percentile semantics (sorted,
     idx=min(int(q*n), n-1)); median via stdlib statistics.median.
+  - B3 (synth-gen downgraded gate F5): any Rust synth helper for the F2/F8
+    RNG loops is gated sha256-of-raw-bytes + quarantine-0, NEVER MT19937
+    (`random.Random`) draw equality vs Rust by construction; F10/F11 template
+    stamping stays Python (template shas + `expand_game` probe are
+    Python-side contracts).
 """
 
 from __future__ import annotations

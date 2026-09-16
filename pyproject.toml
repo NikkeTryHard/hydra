@@ -68,6 +68,12 @@ test-contracts = { cmd = "pytest tests/contracts -m 'not gpu and not serial' -n 
 test-search = { cmd = "pytest tests/search -m 'not gpu and not serial' -n 16 --dist loadscope --durations=15 --durations-min=1.0", env = { CUDA_VISIBLE_DEVICES = "", JAX_PLATFORMS = "cpu", XLA_PYTHON_CLIENT_PREALLOCATE = "false" } }
 test-training = { cmd = "pytest tests/unit -k 'train or loop or replay or stream or baseline or supervised' -m 'not gpu and not serial' -n 16 --dist loadscope --durations=15 --durations-min=1.0", env = { CUDA_VISIBLE_DEVICES = "", JAX_PLATFORMS = "cpu", XLA_PYTHON_CLIENT_PREALLOCATE = "false" } }
 test-analysis = { cmd = "pytest tests --package WP-12" }
+# jax-import lint scope (m8): eager `import jax` is barred in src/hydra2/training +
+# tests/unit (XLA init cost + GPU OOM + concurrent-import aborts in xdist lanes);
+# tests/engines is EXEMPT (mahjax needs in-proc JAX there); lazy/function-level
+# imports are covered too (the CI grep must match indented imports, no ^ anchor);
+# training workers force CPU determinism via differential_modes (never in-proc JAX
+# in the hot lane). Scope note only — enforced as a CI grep, not a pixi task change.
 lint = { cmd = "ruff check src tests" }
 format-check = { cmd = "ruff format --check src tests" }
 typecheck = { cmd = "pyrefly check src" }
@@ -75,7 +81,24 @@ loc-gate = { cmd = "python scripts/check_loc.py" }
 config-check = { cmd = "python -m hydra2.config_check" }
 env-manifest = { cmd = "python -m hydra2.runtime.environment" }
 runtime-probe = { cmd = "python -m hydra2.probe" }
-build-ext = { cmd = "export EXTDST=\"$(python -c 'import sysconfig; print(sysconfig.get_path(\"purelib\"))')/hydra2_replay_rs$(python -c 'import sysconfig; print(sysconfig.get_config_var(\"EXT_SUFFIX\"))')\"; export PYO3_PYTHON=\"$PIXI_PROJECT_ROOT/.pixi/envs/default/bin/python\"; cargo build --release -p hydra2-replay-rs --manifest-path \"$PIXI_PROJECT_ROOT/tools/hydra2-replay-rs/Cargo.toml\" && cp \"$PIXI_PROJECT_ROOT/tools/hydra2-replay-rs/target/release/libhydra2_replay_rs.so\" \"$EXTDST\" && python -c 'import json, os; from pathlib import Path; root = Path(os.environ[\"PIXI_PROJECT_ROOT\"]) / \"tools\" / \"hydra2-replay-rs\" / \"crates\"; mt = max(p.stat().st_mtime for p in root.rglob(\"*\") if p.is_file() and \"target\" not in p.parts); Path(os.environ[\"EXTDST\"]).with_name(\"hydra2_replay_rs.build.json\").write_text(json.dumps({\"source_root\": str(root), \"source_mtime\": mt}))'" }
+# build-ext staleness gate (Phase 6): pixi inputs/outputs fingerprinting is the
+# SOLE staleness authority. DELETED here: the hand-rolled mtime gate
+# (max-st_mtime over crates + hydra2_replay_rs.build.json stamp) and the raw
+# `cargo build --release -p ... && cp .../*.so $EXTDST` install path — barred per
+# wave2-packaging §8.1 (unversioned name, no ABI/platform tags, no dist-info,
+# invisible to lockfile, forks env from pixi). inputs MUST span Cargo.lock +
+# pyproject.toml + crate manifests + rust/python sources: dep bumps and
+# packaging-config edits invalidate, pure-Rust mtime gates miss both; pixi env
+# changes invalidate automatically; cargo fingerprinting handles intra-Rust
+# incrementality underneath (two layers, no overlap, no custom gate script).
+# INTERIM cmd: `maturin develop` against the bridge PACKAGE manifest (not the
+# virtual workspace root — maturin needs a package manifest), pure-Rust fallback
+# until the mixed-layout migration lands (see crates/hydra-bridge/Cargo.toml
+# note); outputs retarget to the installed _native module + _native.pyi then.
+# Until that migration the _native outputs never materialize, so the task
+# rebuilds (always-fresh beats a stale .so measured as fresh); the no-touch
+# skip subcase (T-stale) goes green with the migration.
+build-ext = { cmd = "maturin develop --manifest-path \"$PIXI_PROJECT_ROOT/tools/hydra2-replay-rs/crates/hydra-bridge/Cargo.toml\"", inputs = ["tools/hydra2-replay-rs/Cargo.toml", "tools/hydra2-replay-rs/Cargo.lock", "tools/hydra2-replay-rs/crates/**/*.rs", "tools/hydra2-replay-rs/crates/**/Cargo.toml", "tools/hydra2-replay-rs/python/**/*.py", "pyproject.toml", "pixi.lock"], outputs = ["$PIXI_PROJECT_ROOT/.pixi/envs/default/lib/python3.12/site-packages/hydra_bridge/_native*.so"] }
 # Conformance area runs single-process with no -m filter: it mixes CPU,
 # serial, and GPU-soak gates that only run outside xdist workers.
 test-conformance = { cmd = "pytest tests/conformance tests/engines tests/parity -n 0 --durations=15 --durations-min=1.0" }

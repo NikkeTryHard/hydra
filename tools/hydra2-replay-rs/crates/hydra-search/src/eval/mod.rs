@@ -36,7 +36,7 @@ pub mod wall;
 use crate::SearchError;
 
 /// `sha256:<64 lowercase hex>` shape check shared by seal tests.
-pub fn is_digest_text(text: &str) -> bool {
+pub(crate) fn is_digest_text(text: &str) -> bool {
     if text.len() != 7 + 64 || !text.starts_with("sha256:") {
         return false;
     }
@@ -46,7 +46,7 @@ pub fn is_digest_text(text: &str) -> bool {
 }
 
 /// Lowercase hex of raw bytes (no `sha256:` prefix).
-pub fn hex_of(bytes: &[u8]) -> String {
+pub(crate) fn hex_of(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
     for b in bytes {
         out.push(char::from_digit(u32::from(*b >> 4), 16).unwrap_or('0'));
@@ -56,7 +56,7 @@ pub fn hex_of(bytes: &[u8]) -> String {
 }
 
 /// SHA-256 over raw bytes (`sha2 0.11`, the feed-identity hasher).
-pub fn sha256_bytes(data: &[u8]) -> [u8; 32] {
+pub(crate) fn sha256_bytes(data: &[u8]) -> [u8; 32] {
     use sha2::Digest as _;
     let sum = sha2::Sha256::digest(data);
     let mut out = [0u8; 32];
@@ -65,13 +65,13 @@ pub fn sha256_bytes(data: &[u8]) -> [u8; 32] {
 }
 
 /// Canon+hash fused over a JSON value (mirrors Python `of_canonical`).
-pub fn canon_digest(value: &serde_json::Value, record: &str) -> Result<String, SearchError> {
+pub(crate) fn canon_digest(value: &serde_json::Value, record: &str) -> Result<String, SearchError> {
     hydra_feed::digest::of_canonical(value)
         .map_err(|e| SearchError::Canon { detail: format!("{record}: {e}") })
 }
 
 /// Canon bytes for a JSON value through the single `feed::canon` site.
-pub fn canon_bytes_of(
+pub(crate) fn canon_bytes_of(
     value: &serde_json::Value,
     record: &str,
 ) -> Result<Vec<u8>, SearchError> {
@@ -79,11 +79,13 @@ pub fn canon_bytes_of(
         .map_err(|e| SearchError::Canon { detail: format!("{record}: {e}") })
 }
 
-/// Neumaier compensated sum — matches `math.fsum` bit-exact on the
+/// Neumaier compensated sum — matches `math.fsum` on the recorded
 /// adversarial golden set (`wall.rs`/`blocks.rs` parity tests pin five
-/// cancellation vectors). `math.fsum` is correctly rounded; the naive
-/// left fold is NOT, so the naive fold is barred here.
-pub fn neumaier_sum(values: &[f64]) -> f64 {
+/// cancellation vectors). The naive left fold is barred here; a full
+/// Shewchuk port stays out until a pixi differential vs `math.fsum`
+/// over randomized vectors proves bit-exactness (unverified rewrites
+/// risk 1-ulp forks).
+pub(crate) fn neumaier_sum(values: &[f64]) -> f64 {
     let mut sum = 0.0;
     let mut corr = 0.0;
     for v in values {

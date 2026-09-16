@@ -17,6 +17,8 @@
 pub mod canon_rng;
 pub mod columnar;
 pub mod replay;
+pub mod resume;
+pub mod ring;
 pub mod search;
 pub mod sink;
 pub mod stream;
@@ -31,6 +33,8 @@ pub fn hydra2_replay_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<stream::PyQuar>()?;
     replay::register(m)?;
     canon_rng::register(m)?;
+    resume::register(m)?;
+    ring::register(m)?;
     columnar::register(m)?;
     search::register(m)?;
     Ok(())

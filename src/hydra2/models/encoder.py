@@ -8,8 +8,11 @@ Padding values never carry semantics without their mask.
 
 from __future__ import annotations
 
+import importlib
 import logging
+import sys
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import torch
@@ -36,6 +39,60 @@ _FURITEN_TO_ID: dict[str, int] = {s: i for i, s in enumerate(_FURIKEN_STATES)}
 _RIICHI_TO_ID: dict[str, int] = {s: i for i, s in enumerate(_RIICHI_STATES)}
 
 _WIND_TO_ID: dict[int, int] = {27: 0, 28: 1, 29: 2, 30: 3}
+
+# ---------------------------------------------------------------------------
+# Bridge-ring glue (Phase 5 ModelLoss-owned; Python stays oracle).
+# ---------------------------------------------------------------------------
+#
+# The bridge (`hydra2_replay_rs.ring`, Rust) owns: `ring_fill_batch` (bulk
+# plane copy under detach — buffer+ring over per-row fill+pin, kills the 29
+# pin copies), `validate_encoder_batch` (frozen-geometry judge: dora (5,)
+# sentinel + [N,T_bucket] + history_len ceil + legal/mask widths,
+# never-truncate), `bucket_for_length` (SINGLE ceil fn), and the ring
+# accounting (`PyRing`: cursor/slot_used + 512-window h2d/sync p50/p99).
+# Every helper below is Rust-first with an identical-messages oracle
+# fallback, so CPU/test lanes without a built extension behave byte-
+# identically. Fused-CE stays forced-Python (M7: per-bucket bakeoff wall +
+# 1e-4 + NaN parity gate; D5 triton_op recipe gated) — gate notes live in
+# ring.rs, which also carries the M5/M8/m3/m6 ledger.
+_RING_MOD: Any = None
+_RING_PROBED: bool = False
+
+#: Injectable native backend (tests monkeypatch this; production leaves None
+#: so `_ring_native()` imports the compiled extension). Mirrors the
+#: `_NATIVE_OVERRIDE` hook in `_rust_bridge.py` / `_rust_columnar.py` /
+#: `_rust_search.py`.
+_RING_NATIVE_OVERRIDE: Any = None
+
+
+def _ring_native() -> Any | None:
+    """Import the built `ring` submodule once; None → oracle fallback."""
+    global _RING_MOD, _RING_PROBED
+    if _RING_NATIVE_OVERRIDE is not None:
+        return _RING_NATIVE_OVERRIDE
+    if _RING_MOD is not None:
+        return _RING_MOD
+    # Cheap late-arrival path: someone else (conftest, bench harness) may
+    # import the built bridge after our first probe — a sys.modules hit
+    # costs one dict lookup, no path rescan.
+    late = sys.modules.get("hydra2_replay_rs")
+    if late is not None:
+        mod = getattr(late, "ring", None)
+        if mod is not None:
+            _RING_MOD = mod
+            return _RING_MOD
+    if not _RING_PROBED:
+        _RING_PROBED = True
+        try:
+            # Established judge pattern (cf. `_rust_bridge._native` +
+            # `_canon_rng`): import the top-level extension, then take the
+            # submodule as an attribute (`add_submodule` publishes it).
+            _RING_MOD = importlib.import_module("hydra2_replay_rs").ring
+        except Exception:
+            # Probe must never break the oracle: unbuilt/broken bridge just
+            # means the pure-Python twins below decide (byte-identical).
+            _RING_MOD = None
+    return _RING_MOD
 
 
 def _bucket_length(actual: int, buckets: tuple[int, ...] = HISTORY_BUCKET_LENGTHS) -> int:
@@ -121,11 +178,29 @@ def encode_observations(
             "rows are never truncated"
         )
     bucket_len = _bucket_length(max_len, buckets)
+    # Bridge-ring geometry judge (frozen buckets/dora/legal widths + ceil
+    # agreement + never-truncate, oracle-identical messages; no-op on
+    # success). Custom-bucket test probes skip the frozen judge and stay pure
+    # oracle. Without a built bridge the guards above/below decide alone.
+    if tuple(buckets) == tuple(HISTORY_BUCKET_LENGTHS):
+        validate_encoder_batch(
+            batch_size=batch_size,
+            max_history_len=max_len,
+            bucket_t=bucket_len,
+        )
     # Vectorized alloc: single numpy buffer per field outside the loop, scalar
     # slice fill inside (no per-row torch alloc), then one torch.from_numpy
     # per field (zero-copy view). Padding is 0/False, filled once up front so
     # unwritten tails stay valid without per-row init.
     # Evidence: https://docs.pytorch.org/docs/2.13/generated/torch.from_numpy.html
+    # Byte-identical padding proof note (bridge-ring contract): every plane's
+    # padding is a full-buffer pre-fill — 0 (int kinds), False (bool masks),
+    # -1 (dora (B,5) + own_drawn int32 sentinel, 0xFF per byte) — and the
+    # fill loop only overwrites valid-prefix slices. The ring bulk copy
+    # (`_stage_pinned_batch` → `ring_fill_batch`) moves these bytes verbatim
+    # (shape-agnostic `copy_nonoverlapping`, never re-inits), so staged slots
+    # are bit-for-bit the oracle views: 0x00 tails on 0/False planes, 0xFF
+    # tails on -1 planes. Pinned by `ring_tests::padding_identity_zero_and_neg1_tails`.
     history_event_kind_np = np.empty((batch_size, bucket_len), dtype=np.int64)
     history_event_kind_np.fill(0)
     history_mask_np = np.empty((batch_size, bucket_len), dtype=np.bool_)
@@ -293,13 +368,24 @@ def encode_observations(
     # Evidence: https://docs.pytorch.org/docs/2.13/generated/torch.Tensor.pin_memory.html
     if pin_memory and torch.cuda.is_available():
         try:
-            features = {
-                name: tensor.pin_memory()  # type: ignore[attr-defined]  # reason: CPU Tensor.pin_memory; stubs miss
-                for name, tensor in features.items()
-            }
+            features = (
+                _stage_pinned_batch(
+                    features,
+                    batch_size=batch_size,
+                    max_history_len=max_len,
+                    bucket_t=bucket_len,
+                )
+                if tuple(buckets) == tuple(HISTORY_BUCKET_LENGTHS)
+                else {
+                    name: tensor.pin_memory()  # type: ignore[attr-defined]  # reason: custom-bucket test probe skips the frozen Ring judge; pageable fallback still owns unpinnable
+                    for name, tensor in features.items()
+                }
+            )
             history_mask = features["history_mask"]
             legal_mask = features["legal_mask"]
             actor_seats = features["actor_seats"]
+        except ContractError:
+            raise
         except Exception as exc:  # why-broad: any pin failure falls back to pageable
             logger.warning("encoder pin_memory failed, using pageable fallback: %s", exc)
 
@@ -322,8 +408,131 @@ def encode_observations(
 
 
 def bucket_for_length(actual: int) -> int:
-    """Public helper: bucket length for a given history length."""
+    """Public helper: bucket length for a given history length.
+
+    SINGLE ceil fn both sides call (scan-side + ring-side): Rust-first via
+    ``hydra2_replay_rs.ring.bucket_for_length``, oracle ``_bucket_length``
+    fallback (byte-identical). Over-cap returns the max bucket here; callers
+    fail closed before calling (never truncate).
+    """
+    ring = _ring_native()
+    if ring is not None:
+        try:
+            return int(ring.bucket_for_length(int(actual)))
+        except Exception:
+            pass
     return _bucket_length(actual)
+
+
+def validate_encoder_batch(
+    *,
+    batch_size: int,
+    max_history_len: int,
+    bucket_t: int,
+    dora_width: int = 5,
+    num_actions: int = BASELINE_ACTION_COUNT,
+) -> None:
+    """Frozen-geometry judge pre-export (Rust-first, oracle-identical messages).
+
+    Pins the T-geom gate: non-empty batch + ``bucket_t`` member + ceil
+    agreement + dora ``(5,)`` sentinel + ``A == 6792`` + never-truncate.
+    No-op on success; raises :class:`ContractError` with identical text on
+    both paths (Rust ``ValueError`` text is mapped 1:1).
+    """
+    ring = _ring_native()
+    if ring is not None:
+        try:
+            ring.validate_encoder_batch(
+                int(batch_size), int(max_history_len), int(dora_width),
+                int(num_actions), int(bucket_t),
+            )
+            return
+        except ContractError:
+            raise
+        except Exception as exc:
+            if isinstance(exc, ValueError):
+                raise ContractError(str(exc)) from exc
+            # Bridge present but unusable (missing attr, overflow, ...):
+            # fall through to the oracle below (byte-identical verdict).
+    if batch_size == 0:
+        raise ContractError("encode_observations requires at least one observation")
+    if bucket_t not in HISTORY_BUCKET_LENGTHS:
+        raise ContractError(
+            f"ring bucket_t {bucket_t} not in buckets {list(HISTORY_BUCKET_LENGTHS)}"
+        )
+    if max_history_len > HISTORY_BUCKET_LENGTHS[-1]:
+        raise ContractError(
+            f"visible history {max_history_len} exceeds model bucket cap "
+            f"{HISTORY_BUCKET_LENGTHS[-1]}; rows are never truncated"
+        )
+    expect = _bucket_length(max_history_len)
+    if bucket_t != expect:
+        raise ContractError(
+            f"ring bucket_t {bucket_t} != ceil({max_history_len}) = {expect}"
+        )
+    if dora_width != 5:
+        raise ContractError(
+            f"ring dora width {dora_width} != 5 sentinel (padding -1, no 4-shim)"
+        )
+    if num_actions != BASELINE_ACTION_COUNT:
+        raise ContractError(
+            f"ring num_actions {num_actions} != baseline {BASELINE_ACTION_COUNT} "
+            "(narrow slicing is Python allow_narrow test-only)"
+        )
+
+
+def _stage_pinned_batch(
+    mapping: dict[str, torch.Tensor],
+    *,
+    batch_size: int,
+    max_history_len: int,
+    bucket_t: int,
+) -> dict[str, torch.Tensor]:
+    """Bulk pinned stage: buffer+ring over per-row fill+pin (Rust-first).
+
+    Geometry is judged first (fail closed, nothing copied), then ALL planes
+    cross in ONE detached ``ring_fill_batch`` bulk copy into pre-pinned
+    slots — one release instead of the 29 per-tensor ``pin_memory()`` copies.
+    Any bridge absence/failure falls back to the identical oracle
+    ``pin_memory()`` dict-comp (byte-identical; the caller's pageable
+    fallback still owns unpinnable). Tensors cross as shape-agnostic bytes;
+    padding pre-fill (0/False/-1) rides along untouched (see proof note at
+    the numpy alloc site). Requires contiguous CPU tensors (the encoder's
+    ``from_numpy`` views are); anything else takes the oracle path.
+    """
+    validate_encoder_batch(
+        batch_size=batch_size, max_history_len=max_history_len, bucket_t=bucket_t
+    )
+    ring = _ring_native()
+    if ring is not None:
+        try:
+            names = list(mapping.keys())
+            srcs = [mapping[name] for name in names]
+            for tensor in srcs:
+                if not isinstance(tensor, torch.Tensor) or not tensor.is_contiguous():
+                    raise ValueError("stage needs contiguous CPU tensors")
+            slots = [
+                torch.empty(tensor.shape, dtype=tensor.dtype, pin_memory=True)
+                for tensor in srcs
+            ]
+            ring.ring_fill_batch(
+                [int(slot.data_ptr()) for slot in slots],
+                [int(slot.nbytes) for slot in slots],
+                [int(tensor.data_ptr()) for tensor in srcs],
+                [int(tensor.nbytes) for tensor in srcs],
+                int(batch_size),
+                int(max_history_len),
+                5,
+                int(BASELINE_ACTION_COUNT),
+                int(bucket_t),
+            )
+            return dict(zip(names, slots))
+        except Exception:
+            pass
+    return {
+        name: tensor.pin_memory()  # type: ignore[attr-defined]  # reason: CPU Tensor.pin_memory; stubs miss
+        for name, tensor in mapping.items()
+    }
 
 
 def validate_batch_against_schema(batch: ActorTensorBatch) -> None:
@@ -333,6 +542,14 @@ def validate_batch_against_schema(batch: ActorTensorBatch) -> None:
     unmasked positions must satisfy valid_min/max.
     """
     field_map = {f.name: f for f in _BASELINE_FIELDS}
+    # 3-sync kill: the frozen schema holds exactly one masked field
+    # (history_event_kind min+max) plus the legal-row gate = 3 fail-scalars,
+    # collected below and crossed in ONE stacked tolist (cap: this path
+    # performs exactly 1 host sync; never one .item() per check). Order is
+    # preserved (loop order, then legal), so single-fault messages are
+    # identical; multi-fault precedence is dtype/shape-first (deterministic).
+    # Same single-sync shape as loop_batch._window_means.
+    sync_checks: list[tuple[str, torch.Tensor]] = []
     for name, tensor in batch.features.items():
         spec = field_map.get(name)
         if spec is None:
@@ -376,17 +593,34 @@ def validate_batch_against_schema(batch: ActorTensorBatch) -> None:
                 if valid_mask.shape == tensor.shape:
                     values = tensor[valid_mask]
                     if values.numel() > 0:
-                        if spec.valid_min is not None and bool(
-                            (values < spec.valid_min).any().item()  # pyrefly: ignore[pytorch-efficiency-lint-item-call]  # reason: eager host sync for range check; single scalar must cross host. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
-                        ):
-                            raise ContractError(f"field {name} below valid_min")
-                        if spec.valid_max is not None and bool(
-                            (values > spec.valid_max).any().item()  # pyrefly: ignore[pytorch-efficiency-lint-item-call]  # reason: eager host sync for range check; single scalar must cross host. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
-                        ):
-                            raise ContractError(f"field {name} above valid_max")
-    # Legal mask at least one true per row.
-    if not bool(batch.legal_mask.any(dim=1).all().item()):  # pyrefly: ignore[pytorch-efficiency-lint-item-call]  # reason: intentional host sync for contract; single scalar must cross host. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
-        raise ContractError("legal_mask must have at least one True per batch row")
+                        if spec.valid_min is not None:
+                            sync_checks.append(
+                                (
+                                    f"field {name} below valid_min",
+                                    (values < spec.valid_min).any().reshape(()),
+                                )
+                            )
+                        if spec.valid_max is not None:
+                            sync_checks.append(
+                                (
+                                    f"field {name} above valid_max",
+                                    (values > spec.valid_max).any().reshape(()),
+                                )
+                            )
+    # Legal mask at least one true per row (fail-scalar, same single sync).
+    sync_checks.append(
+        (
+            "legal_mask must have at least one True per batch row",
+            (~batch.legal_mask.any(dim=1).all()).reshape(()),
+        )
+    )
+    # Single host sync for every range/legal check on this path (cap: 3
+    # scalars on the frozen schema — min, max, legal — one tolist total).
+    if len(sync_checks) != 0:
+        failed = torch.stack([flag for _, flag in sync_checks]).tolist()
+        for (message, _), is_failed in zip(sync_checks, failed):
+            if bool(is_failed):
+                raise ContractError(message)
     # History mask shape must match history_event_kind.
     if batch.history_mask.shape != batch.features["history_event_kind"].shape:
         raise ContractError("history_mask shape must match history_event_kind")

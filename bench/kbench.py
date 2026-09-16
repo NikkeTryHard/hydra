@@ -16,6 +16,18 @@ FIDELITY: kbench per-bucket kernel_ms must agree with nsys-measured
 production per-update kernel sums at the same bucket T within 15%. If it
 does not, this instrument is broken — fix it, do not tune against it.
 kbench.py itself is frozen after baseline: any edit = new segment.
+# m5 (digest-frozen segment): the JSON report MUST carry the kbench source
+# sha256 plus a `--segment` tag, and the frozen-segment gate asserts on that
+# digest — NEVER on `git diff` in CI (diff is unpinned working-tree state, not
+# an identity). A new segment re-baselines `kernel_loss_reference.json` with a
+# manifest digest bump; any other edit invalidates the baseline (trap T3).
+# B3 (synth-gen downgraded gates): the Rust synth-gen port (K1) is gated
+# STATISTICAL + byte (fidelity 15% + quarantine-0 + canonical-bytes sha256
+# equality; timing credit only after bitwise-canonical proof) — bitwise
+# equality is required ONLY for canonical bytes, NEVER for RNG draws
+# (`torch.Generator(manual_seed 20260912)` + argsort-rank + ordered `randint`
+# vs `ChaCha8Rng` + Fisher-Yates differ by construction; exact replication
+# rejected on cost). The `_SYNTH_SEED` Python builder below stays the oracle.
 
 Fairness: fixed generator seed -> identical batches every run on any box;
 kernel time is input-value-independent for these dense ops. Loss values are

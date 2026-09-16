@@ -179,7 +179,16 @@ class _StreamDatasetBufferMixin(_StreamDatasetCore):
         return _sidecar_window_hash(self._buffered_entries, self._rows)
 
     def buffer_snapshot(self) -> dict[str, Any]:
-        """Fast-resume snapshot: whole-game entries + counters + row hash."""
+        """Fast-resume snapshot: whole-game entries + counters + row hash.
+
+        Bridge-compat shape (checked by ``hydra_bridge`` ``resume``):
+        ``entries`` carry exactly ``{key, path, offset, split, rows}``
+        (``check_buffer_entries``); the RNG triple ``{key, block, pos}``
+        (``feed::rng::StreamSnapshot``) rides the shuffle snapshot
+        (``buffer_rng_state``), not these entries. Snapshot envelope
+        versioning is bridge-owned (writes v2, dual-reads v1 drain-only
+        for one release).
+        """
         total = sum(int(entry["rows"]) for entry in self._buffered_entries)
         if total != len(self._rows):
             raise ContractError(

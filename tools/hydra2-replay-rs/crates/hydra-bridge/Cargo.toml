@@ -1,3 +1,24 @@
+# --- maturin PEP 517 migration (NOTE ONLY — not executed; no build migration yet) ---
+# Mixed Rust/Python layout (https://www.maturin.rs/project_layout): add a `python/`
+# dir holding package `hydra_bridge/` (`python-source = "python"`), set
+# `module-name = "hydra_bridge._native"` so this Rust cdylib installs as a
+# submodule (`#[pymodule] mod hydra_bridge__native`), and keep legacy
+# `import hydra2_replay_rs` as a deleting re-export shim (one cdylib = one
+# #[pymodule] entry; Data B5 / Train M5 lock the single `hydra_bridge._native`).
+# `[build-system] requires = ["maturin>=1.15"]`, `build-backend = "maturin"`,
+# `[tool.maturin] bindings = "pyo3"` (pyo3 stays a DIRECT dep: 1.15 hardens
+# bindings detection via `cargo tree` in workspaces). AT MIGRATION (not now):
+# REMOVE deprecated `extension-module` feature (maturin>=1.9.4) and
+# `auto-initialize` (embedding-only; extensions MUST NOT enable it); ship
+# version-specific wheels first (cp312 only, requires-python >=3.12,<3.13),
+# abi3-py312 only with a 2nd interpreter, abi3t as a SEPARATE explicit build;
+# auditwheel manylinux_2_xx for anything leaving the machine (`linux` tag local
+# only, NEVER publish); PGO via `maturin --pgo` + `[tool.maturin] pgo-command`
+# (replaces the `.cargo` profile-use file-key path cargo does not forward);
+# stubs `python/hydra_bridge/py.typed` + `_native.pyi` (typecheck-covered, drift
+# fails CI); SBOM CycloneDX `[tool.maturin] sbom = {rust, auditwheel}` into
+# `.dist-info/sboms/` (PEP 770). Ground truth: wave2-packaging §§1-11.
+
 [package]
 name = "hydra2-replay-rs"
 version = "0.1.0"
