@@ -9,7 +9,6 @@ shared across the two splits fails closed before training state exists.
 
 from __future__ import annotations
 
-import hashlib
 import os
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
@@ -17,6 +16,7 @@ from multiprocessing import get_context as _mp_get_context
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from hydra2.artifacts.digest import sha256_digest as sha256_digest
 from hydra2.contracts.common import ContractError as ContractError
 from hydra2.contracts.common import CorruptArtifactError as CorruptArtifactError
 from hydra2.data.decode import decode_game_object as decode_game_object
@@ -282,18 +282,22 @@ def _shared_scan_cache_path(
     base_raw = os.environ.get("HYDRA2_SCAN_CACHE_DIR") or os.path.join(
         os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "hydra2", "scan"
     )
-    files = hashlib.sha256()
+    stamps: list[bytes] = []
     for entry in manifest.files:
         try:
             fingerprint_stat = entry.path.stat()
             stamp = f"{fingerprint_stat.st_size}:{fingerprint_stat.st_mtime_ns}"
         except OSError:
             stamp = "missing"
-        files.update(f"{entry.path.as_posix()}:{stamp}\n".encode())
+        stamps.append(f"{entry.path.as_posix()}:{stamp}\n".encode())
+    # Same bytes the retired incremental ``hashlib.sha256`` covered; the
+    # digest is minted by the hard-Rust digest owner (fail closed with a
+    # ``build-ext`` hint when the extension is not built).
+    files_hex = str(sha256_digest(b"".join(stamps))).removeprefix("sha256:")
     fingerprint = repr(
         (SCAN_CACHE_VERSION, stream_digest, seed, sorted(ratios.items()), train_split, val_split)
     )
-    key = hashlib.sha256((fingerprint + files.hexdigest()).encode()).hexdigest()[:32]
+    key = str(sha256_digest((fingerprint + files_hex).encode())).removeprefix("sha256:")[:32]
     return Path(base_raw) / f"scan-{key}.json"
 
 

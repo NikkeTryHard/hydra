@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from hydra2.artifacts.atomic import atomic_replace_bytes
 from hydra2.artifacts.canonical import canonical_bytes
+from hydra2.artifacts.digest import of_canonical
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -103,7 +103,7 @@ def write_quarantine_manifest(destination: Path, records: list[QuarantinedRecord
             for r in sorted(records, key=lambda x: x.object_id)
         ],
     }
-    digest = "sha256:" + hashlib.sha256(canonical_bytes(payload)).hexdigest()
+    digest = str(of_canonical(payload))
     payload_with_digest = {**payload, "digest": digest}
     atomic_replace_bytes(destination, canonical_bytes(payload_with_digest))
     return digest

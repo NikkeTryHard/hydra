@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
@@ -11,8 +10,10 @@ import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
+from hydra2 import _rust_columnar
 from hydra2.artifacts.atomic import atomic_replace_bytes
 from hydra2.artifacts.canonical import canonical_bytes
+from hydra2.artifacts.digest import sha256_file
 from hydra2.contracts.common import ContractError
 from hydra2.contracts.observation import DORA_SHAPE
 
@@ -241,16 +242,13 @@ def write_actor_shards(
             compression="zstd",
             compression_level=3,
             use_dictionary=True,
-            write_batch_size=8192,
+            write_batch_size=_rust_columnar.batch_size(),
             store_schema=True,
         )
-        # Stream hash via 1 MiB chunks (avoid read_bytes peak).
-        # Evidence https://docs.python.org/3/library/hashlib.html chunked update.
-        hasher = hashlib.sha256()
-        with out_path.open("rb") as f:
-            for chunk in iter(lambda: f.read(1 << 20), b""):
-                hasher.update(chunk)
-        shard_hashes[split] = "sha256:" + hasher.hexdigest()
+        # Shard digest via the hard-Rust digest owner (bridge canon_rng
+        # sha256_file, native 1 MiB chunks — same digest, byte-identical).
+        # ImportError fails closed with a build-ext hint — no oracle fallback.
+        shard_hashes[split] = str(sha256_file(out_path))
         # Read column names via ParquetFile metadata, not a full read_table.
         # Evidence https://arrow.apache.org/docs/python/generated/pyarrow.parquet.ParquetFile.html
         try:
@@ -315,14 +313,9 @@ def write_privileged_shards(
         compression="zstd",
         compression_level=3,
         use_dictionary=True,
-        write_batch_size=8192,
+        write_batch_size=_rust_columnar.batch_size(),
     )
-    # Stream hash via 1 MiB chunks (evidence hashlib docs)
-    hasher = hashlib.sha256()
-    with out_path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            hasher.update(chunk)
-    shard_hash = "sha256:" + hasher.hexdigest()
+    shard_hash = str(sha256_file(out_path))
     manifest = {
         "dataset_hash": dataset_hash,
         "privileged_shards": {"all": shard_hash},

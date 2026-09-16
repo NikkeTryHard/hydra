@@ -14,7 +14,7 @@ import random  # noqa: TC003  # reason: TC003 random.Random builds RNGs at runti
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import zstandard as zstd
 
@@ -46,13 +46,56 @@ _END_TYPES = frozenset({"end_game", "endGame", "game_end", "end"})
 _CHUNK_SIZE = 65536
 _DIGIT_RUN = re.compile(r"[0-9]+")
 
-#: Framing authority: the byte-exact Python oracle below is the live path
-#: (packet 283/283 games + raw sha every game). The deferred top-level
-#: ``frame_games`` hasattr gate was deleted (Wave 0 — dead two ways: the
-#: bridge registers framing only on the ``packet`` submodule, and its
-#: signature takes ``(compressed, file_idx, base)``, not a path). A future
-#: packet cutover must add a new correctly-shaped ``packet``-submodule call
-#: here, not restore the probe.
+#: Framing authority: the live path frames via the ``packet`` bridge
+#: (``packet.frame_games``/``packet.fetch_game_at`` over ``(compressed,
+#: file_idx, base)`` with ``base=0``; per-file raw offsets, resume filtering
+#: stays Python). Byte-exact with the :class:`ZstdLineStream` oracle below
+#: (packet 283/283 games + raw sha every game); the oracle is the test
+#: comparator, never a runtime fallback.
+
+
+def _require_packet() -> Any:
+    """Import the built ``packet`` bridge surface (fail closed)."""
+    try:
+        import hydra2_replay_rs as _ext  # pyrefly: ignore[missing-import]
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2_replay_rs extension with packet not importable; "
+            "build the bridge with `pixi run build-ext` before framing games"
+        ) from exc
+    try:
+        return _ext.packet
+    except AttributeError as exc:
+        raise ImportError(
+            "hydra2_replay_rs.packet submodule missing (stale .so); "
+            "rebuild the bridge with `pixi run build-ext`"
+        ) from exc
+
+
+#: Largest decompressed-byte offset the bridge ``u64`` takes; larger seeks
+#: cannot be on a game boundary (fail closed before the ABI cast overflows).
+_U64_MAX = 2**64 - 1
+
+
+def _frame_file(path: Path, file_idx: int) -> list[tuple[int, int, bytes]]:
+    """Frame one corpus file via the bridge (fail closed, no oracle fallback).
+
+    Reads ``path`` verbatim and returns ``(offset, end, game_bytes)`` in file
+    order with per-file raw decompressed-byte offsets (``base=0``; resume
+    filtering stays with the caller). ``ValueError`` is always a
+    ``FramerError::Decode`` here (no offset is passed), so it maps to
+    :class:`CorruptArtifactError` exactly like the oracle's zstd failure.
+    """
+    try:
+        compressed = path.read_bytes()
+    except OSError as exc:
+        raise CorruptArtifactError(f"cannot open stream file {path}: {exc}") from exc
+    packet = _require_packet()
+    try:
+        triples = packet.frame_games(compressed, file_idx, 0)
+    except ValueError as exc:
+        raise CorruptArtifactError(f"zstd decode failed for {path}: {exc}") from exc
+    return [(int(offset), int(end), bytes(payload)) for offset, end, payload in triples]
 
 
 def fetch_game_at(
@@ -65,8 +108,9 @@ def fetch_game_at(
 ) -> StreamGame:
     """Fetch one game by decompressed-byte ``game_offset`` (fail-closed).
 
-    Framing is the byte-exact Python oracle (:class:`ZstdLineStream`;
-    packet 283/283 games + raw sha every game). Verifies ``expected_sha``
+    Framing rides the ``packet`` bridge (``packet.fetch_game_at`` over the
+    verbatim file bytes with ``base=0``; byte-exact with the
+    :class:`ZstdLineStream` oracle). Verifies ``expected_sha``
     (raw_bytes_sha256) when given; split assignment uses ``seed``/``ratios``
     identically to the live stream.
     """
@@ -76,16 +120,23 @@ def fetch_game_at(
     fpath = Path(path)
     if type(game_offset) is not int or game_offset < 0:
         raise ContractError(f"game offset must be a non-negative int, got {game_offset!r}")
-    found: bytes | None = None
-    frame_source = ZstdLineStream(fpath).iter_games()
-    for offset, game_bytes in frame_source:
-        if offset == game_offset:
-            found = game_bytes
-            break
-        if offset > game_offset:
-            break
-    if found is None:
+    if game_offset > _U64_MAX:
         raise ContractError(f"game offset {game_offset} not on a game boundary: {fpath}")
+    try:
+        compressed = fpath.read_bytes()
+    except OSError as exc:
+        raise CorruptArtifactError(f"cannot open stream file {fpath}: {exc}") from exc
+    packet = _require_packet()
+    try:
+        _, _, found = packet.fetch_game_at(compressed, 0, 0, game_offset)
+    except ValueError as exc:
+        # FramerError::Decode (corrupt payload) vs FramerError::Offset (miss):
+        # the Display prefixes are the discriminator (no offset passed here
+        # can be below base, so every Offset is a boundary miss).
+        if str(exc).startswith("framer decode:"):
+            raise CorruptArtifactError(f"zstd decode failed for {fpath}: {exc}") from exc
+        raise ContractError(f"game offset {game_offset} not on a game boundary: {fpath}") from exc
+    found = bytes(found)
     try:
         game = _decode(
             object_id=stem_of(fpath),
@@ -265,6 +316,10 @@ class StreamStats:
 
 class ZstdLineStream:
     """Incremental zstd frame splitter with decompressed-byte offsets.
+
+    Byte-exact oracle comparator for the ``packet`` bridge framing (tests pin
+    both against each other); live paths frame via :func:`_frame_file` /
+    :func:`fetch_game_at`, never through this class at runtime.
 
     Yields ``(offset, game_bytes)`` framed on start/end event boundaries
     while reusing :mod:`decode.py` line rules implicitly: blank lines,

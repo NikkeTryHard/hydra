@@ -41,6 +41,23 @@ once; per-decision work reuses the adapter's cached legal view (one
 callers slice with :func:`iter_microbatches` without re-decode. Throughput
 (``decisions/sec``) is reported by tests as informational output, never as
 an assert.
+
+Bridge-routing boundary (Wave 1 R3, named keep-reason): this per-decision
+walk stays Python — no bridge pyfn produces :class:`DecisionRow` content.
+The Rust walk (``hydra2_replay_rs.expand_games`` /
+``replay_game_planes[_wall]``) serves decision identity plus tensor planes
+only (``chosen_action_id`` columns and feature blobs); it never materializes
+the per-row ``actor_observation`` JSON, the live :class:`ActorObservation`
+handoff (:func:`stash_live_observation`), or the ``derivation_hash`` /
+``adapter_hash`` / ``observation_hash`` seals :func:`expand_game` commits.
+Routing the oracle through planes would drop those fields and break
+byte-exactness, so the training feed's Rust path
+(:mod:`hydra2.training.stream_expand`) consumes planes while this module
+remains the parity anchor. The per-event scans
+(:func:`_count_row_decisions`, :func:`_skip_index`, :func:`_final_scores`,
+the walk itself) likewise stay Python: no pyfn covers them. Field gap for a
+future pyfn: full DecisionRow materialization (observation JSON plus
+derivation/adapter seals) from staged planes.
 """
 
 from __future__ import annotations

@@ -20,13 +20,13 @@ splits stay the torch oracle by Wave5 B2 (never Philox).
 
 from __future__ import annotations
 
-import hashlib
 import logging
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 import torch
 
+from hydra2.artifacts.digest import sha256_digest
 from hydra2.contracts.common import ContractError
 from hydra2.models.encoder import _stage_pinned_batch, encode_observations
 from hydra2.models.schema import BASELINE_ACTION_COUNT
@@ -48,7 +48,10 @@ logger = logging.getLogger(__name__)
 
 
 def _lexicographic_hash(s: str) -> int:
-    return int(hashlib.sha256(s.encode()).hexdigest()[:8], 16)
+    # Bridge digest owner (canon_rng.sha256_hex via the thin artifacts.digest
+    # delegate — same SHA-256, byte-identical int). ImportError fails closed
+    # with a build-ext hint — no oracle fallback.
+    return int(str(sha256_digest(s.encode()))[7:15], 16)
 
 
 def _require_action_width(num_actions: int, *, allow_narrow: bool, where: str) -> None:
@@ -91,7 +94,7 @@ def tensorize_actor_row(
     decision_id: str = str(row["decision_id"])
     chosen_raw: int = int(row["chosen_action_id"])
     # Deterministic features from decision_id hash
-    h = hashlib.sha256(f"{decision_id}:{seed}".encode()).digest()
+    h = bytes.fromhex(str(sha256_digest(f"{decision_id}:{seed}".encode()))[7:])
     # Expand to feature_dim floats via hash bytes
     vals: list[float] = []
     for i in range(feature_dim):

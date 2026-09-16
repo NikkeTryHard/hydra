@@ -24,8 +24,8 @@ from hydra2.data.stream_read import (
     StreamCursor,
     StreamGame,
     StreamStats,
-    ZstdLineStream,
     _check_int,
+    _frame_file,
     _Run,
     _shuffle_key,
     _ShuffleState,
@@ -191,12 +191,12 @@ class GameStream:
         """Yield ``(file_index, end_offset, game_bytes)`` from the run position.
 
         Read-only over ``run``: position advances in :meth:`_finish_decode`
-        (in-order processing), never on submit-ahead framing. Framing itself
-        takes the deferred Rust-first gate (see
-        :meth:`ZstdLineStream.iter_games`: ``frame_games`` hasattr check,
-        no live bridge surface today — stays on the Python oracle;
-        mismatch = raise is the deferred contract; byte-exact ingest
-        evidence: packet 283/283 games + raw sha every game).
+        (in-order processing), never on submit-ahead framing. Framing rides
+        the ``packet`` bridge (:func:`_frame_file` over
+        ``packet.frame_games`` with ``base=0``; per-file raw offsets, resume
+        filtering against the run ``base`` here) — byte-exact with the
+        :class:`ZstdLineStream` oracle, which stays the test comparator and
+        never a runtime fallback.
         """
         files = self._manifest.files
         start_file = run.file_index
@@ -204,10 +204,10 @@ class GameStream:
         for file_index in range(start_file, len(files)):
             entry = files[file_index]
             base = start_base if file_index == start_file else 0
-            for offset, game_bytes in ZstdLineStream(entry.path).iter_games():
+            for offset, end, game_bytes in _frame_file(entry.path, file_index):
                 if offset < base:
                     continue
-                yield file_index, offset + len(game_bytes), game_bytes
+                yield file_index, end, game_bytes
 
     def _finish_decode(
         self,

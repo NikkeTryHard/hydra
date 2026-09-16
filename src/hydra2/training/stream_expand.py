@@ -49,11 +49,14 @@ __all__ = [
     "_needs_privileged_labels",
     "_pool_worker_init",
     "_quarantine_class",
+    "_require_bridge",
     "_require_replay_backend",
+    "_row_dicts_from_walk",
     "_row_to_dict",
     "_sidecar_window_hash",
     "_slim_row_dicts",
     "_split_ratios",
+    "_wall_override",
 ]
 
 
@@ -109,6 +112,55 @@ def _require_replay_backend(backend: str) -> str:
     return backend
 
 
+def _require_bridge() -> Any:
+    """Import the top-level walk surface (fail closed, no fallback)."""
+    try:
+        import hydra2_replay_rs as _ext  # pyrefly: ignore[missing-import]
+    except ImportError as exc:
+        raise ContractError(
+            "hydra2_replay_rs extension not importable; "
+            "build the bridge with `pixi run build-ext` before expanding games"
+        ) from exc
+    for surface in ("expand_games", "replay_game_planes", "replay_game_planes_wall"):
+        if not hasattr(_ext, surface):
+            raise ContractError(
+                f"hydra2_replay_rs.{surface} missing (stale .so); "
+                "rebuild the bridge with `pixi run build-ext`"
+            )
+    return _ext
+
+
+def _wall_override(tiles: Any) -> list[int] | None:
+    """Normalize ``wall_tiles`` to a 136-int Rust override (``None`` wall-less).
+
+    Shared by the single-game and chunk walks so the fail-closed 136-tile
+    gate reads identically on both pull paths. The record wall overrides
+    whatever the log embedded (mirroring ``decode_game_object``); the gate
+    itself is a Python-side contract, not a walk computation, so no pyfn
+    covers it.
+    """
+    if tiles is None:
+        return None
+    wall = [int(t) for t in tiles]
+    if len(wall) != 136:
+        raise ContractError(f"wall_tiles must carry 136 tiles, got {len(wall)}")
+    return wall
+
+
+def _row_dicts_from_walk(game_id: str, walked: tuple[Any, ...]) -> list[dict[str, Any]]:
+    """Raise the shared quarantine error or project one staged walk to rows.
+
+    Shared by the single-game and chunk walks so quarantine text and the
+    planes→rows projection stay identical across pull paths.
+    """
+    planes, rows, t_len, quarantined, reason, event_idx = walked
+    if quarantined:
+        raise ContractError(
+            f"rust walk quarantined game {game_id!r}: {reason} at event {event_idx}"
+        )
+    return _slim_row_dicts(game_id, planes, rows, t_len)
+
+
 def _expand_game_rows(
     game: GameRecord, split: str, backend: str = "python"
 ) -> tuple[list[DecisionRow], bool]:
@@ -119,6 +171,14 @@ def _expand_game_rows(
     ``sim_path`` true for wall-less games, so the
     ``replayed``/``sim_replayed``/``expand_quarantined`` counters and the
     :func:`_quarantine_class` normalization apply verbatim.
+
+    Kept-shim reason (Wave 1 R3): the Rust walk covers decision identity
+    (``decision_id``/``chosen_action_id``/quarantine verdicts, parity-proven)
+    but never materializes full :class:`DecisionRow` content — the live
+    :class:`ActorObservation` handoff, the observation JSON, and the
+    derivation/adapter hashes the encoder and parity suites consume. Until a
+    bridge pyfn serves those fields, this oracle path stays as the parity
+    anchor (see ``test_python_backend_matches_direct_calls``).
     """
     # intentionally discarded: validation only, backend arg already bound
     _ = _require_replay_backend(backend)
@@ -151,22 +211,19 @@ def _expand_game_planes(
     re-serializing every parsed event in Python (which costs more than the
     walk itself). Walled games bind ``game.wall_tiles`` (136 ints, fail
     closed otherwise); wall-less games walk the embedded content verbatim.
-    Empty ``raw`` (hand-built games in tests) falls back to the
-    ``_expand_game_planes`` re-serialization, which parses to identical events.
+    Empty ``raw`` (hand-built games in tests) falls back to Python
+    re-serialization: no pyfn takes parsed events, so the rebuild stays
+    Python (it parses to identical events). The walk itself goes through the
+    top-level bridge fns (``replay_game_planes[_wall]``) with no wrapper
+    layer in between.
     """
-    from hydra2.training.rust_batch import replay_game_planes_raw
-
     sim_path = game.wall_tiles is None
     # intentionally discarded: split rides the buffer entry parent-side
     _ = split
-    wall: list[int] | None = None
-    if game.wall_tiles is not None:
-        # Walled regime follows wall content (the framer binds the record
-        # wall, mirroring decode_game_object): the record wall overrides
-        # whatever the log embedded.
-        wall = [int(t) for t in game.wall_tiles]
-        if len(wall) != 136:
-            raise ContractError(f"wall_tiles must carry 136 tiles, got {len(wall)}")
+    # Walled regime follows wall content (the framer binds the record wall,
+    # mirroring decode_game_object): the record wall overrides whatever the
+    # log embedded.
+    wall = _wall_override(game.wall_tiles)
     if raw:
         text = raw
     elif sim_path:
@@ -177,13 +234,16 @@ def _expand_game_planes(
         head["wall"] = wall
         body = "\n".join(json.dumps(e) for e in game.events[1:])
         text = (json.dumps(head) + "\n" + body + "\n").encode("utf-8")
-    planes, rows, _t_len, quarantined, reason, event_idx = replay_game_planes_raw(text, 0, wall)
-    if quarantined:
-        raise ContractError(
-            f"rust walk quarantined game {game.game_id!r}: {reason} at event {event_idx}"
-        )
+    bridge = _require_bridge()
+    try:
+        if wall is None:
+            walked = bridge.replay_game_planes(text, 0)
+        else:
+            walked = bridge.replay_game_planes_wall(text, 0, wall)
+    except Exception as exc:
+        raise ContractError(f"rust game walk failed: {exc}") from exc
 
-    return (_slim_row_dicts(str(game.game_id), planes, int(rows), int(_t_len)), sim_path)
+    return (_row_dicts_from_walk(str(game.game_id), walked), sim_path)
 
 
 def _slim_row_dicts(
@@ -379,44 +439,38 @@ def _expand_streamed_chunk(
         return []
     backend = payloads[0][2]
     if backend == "rust":
-        from hydra2.training.rust_batch import expand_game_batch
+        bridge = _require_bridge()
 
         # Wall pre-check mirrors _pull_game_batch (fail-closed 136 tiles).
         walls: list[list[int] | None] = []
         pre_err: dict[int, str] = {}
         for pos, (game, _split, _b, _n, _raw) in enumerate(payloads):
-            tiles = game.wall_tiles
-            if tiles is None:
+            try:
+                walls.append(_wall_override(game.wall_tiles))
+            except ContractError as exc:
+                pre_err[pos] = str(exc)
                 walls.append(None)
-            else:
-                wall = [int(t) for t in tiles]
-                if len(wall) != 136:
-                    pre_err[pos] = f"wall_tiles must carry 136 tiles, got {len(wall)}"
-                    walls.append(None)
-                else:
-                    walls.append(wall)
         idxs = [
             pos
             for pos, (_game, _s, _b, _n, raw) in enumerate(payloads)
             if raw and pos not in pre_err
         ]
-        results = expand_game_batch([(payloads[i][4], 0, walls[i]) for i in idxs]) if idxs else []
-        if len(results) != len(idxs):
-            raise ContractError(f"bridge batch drift: {len(results)} results for {len(idxs)} games")
-        by_pos = dict(zip(idxs, results, strict=True))
+        try:
+            outs = (
+                bridge.expand_games([(payloads[i][4], 0, walls[i]) for i in idxs]) if idxs else []
+            )
+        except Exception as exc:
+            raise ContractError(f"rust game walk failed: {exc}") from exc
+        if len(outs) != len(idxs):
+            raise ContractError(f"bridge batch drift: {len(outs)} results for {len(idxs)} games")
+        by_pos = dict(zip(idxs, outs, strict=True))
         out: list[tuple[str, Any, Any, Any]] = []
         for pos, (game, split, _b, need_priv, _raw) in enumerate(payloads):
             try:
                 if pos in pre_err:
                     raise ContractError(pre_err[pos])
                 if pos in by_pos:
-                    planes, rows, t_len, quarantined, reason, event_idx = by_pos[pos]
-                    if quarantined:
-                        raise ContractError(
-                            f"rust walk quarantined game {game.game_id!r}: "
-                            f"{reason} at event {event_idx}"
-                        )
-                    row_dicts = _slim_row_dicts(str(game.game_id), planes, rows, t_len)
+                    row_dicts = _row_dicts_from_walk(str(game.game_id), by_pos[pos])
                     sim_path = game.wall_tiles is None
                 else:
                     # Hand-built games (tests) carry no framed bytes:
