@@ -7,8 +7,12 @@
 //! Owns the full `py_stream` handoff (plane-filling stream surface;
 //! stats and quarantines stay readable post-close).
 //! The extension module keeps its legacy name (`import hydra2_replay_rs`)
-//! with the plane-filling `PyHydraStream` surface.
+//! with the plane-filling `PyHydraStream` surface plus a `canon_rng`
+//! submodule (single cdylib, one `#[pymodule]`; Phase-6 maturin
+//! `module-name` cutover re-exposes this same tree as
+//! `hydra_bridge._native` without renaming this crate).
 
+pub mod canon_rng;
 pub mod replay;
 pub mod sink;
 pub mod stream;
@@ -22,5 +26,6 @@ pub fn hydra2_replay_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<stream::PyStats>()?;
     m.add_class::<stream::PyQuar>()?;
     replay::register(m)?;
+    canon_rng::register(m)?;
     Ok(())
 }
