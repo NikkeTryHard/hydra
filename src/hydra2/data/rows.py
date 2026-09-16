@@ -41,20 +41,18 @@ def _require_digest(text: str, *, name: str) -> DigestText:
 
 
 def _canonical_row_bytes(fields: list[tuple[str, object]], *, include_id: bool) -> bytes:
-    # Mirrors integrity.rs canonical_bytes: field order is normative, compact
-    # separators, json-encoded keys/values. Top-level object ordered as passed.
-    parts: list[bytes] = [b"{"]
-    first = True
-    for key, value in fields:
-        # skip packaged_object_id when include_id is False is handled by caller
-        if not first:
-            parts.append(b",")
-        first = False
-        parts.append(json.dumps(key, separators=(",", ":"), ensure_ascii=False).encode())
-        parts.append(b":")
-        parts.append(json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode())
-    parts.append(b"}")
-    return b"".join(parts)
+    """JCS seal bytes via the flipped artifacts authority (single printer).
+
+    Thin delegate with no logic (``contracts/canonical.py`` pattern): the
+    retired caller-ordered ``json.dumps`` join is gone; ``dict(fields)``
+    hashes through ``hydra2.artifacts.canonical.canonical_bytes`` (RFC 8785,
+    Rust-judged). ``include_id`` stays for call-site compat; the caller
+    controls id inclusion by omitting the field (seal bytes exclude it).
+    Old caller-ordered manifests fail ``verify_seal`` closed (no compat shim).
+    """
+    from hydra2.artifacts.canonical import canonical_bytes as _authority
+
+    return _authority(dict(fields))
 
 
 @dataclass(frozen=True, slots=True)

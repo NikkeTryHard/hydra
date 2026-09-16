@@ -8,9 +8,11 @@
 //! - Magic bytes alone never authorize reuse; every candidate output is fully
 //!   zstd-decoded before it may be skipped or recorded.
 //! - `packaged_object_id` is the SHA-256 over the row's canonical JSON bytes
-//!   excluding the field itself. Canonical bytes are compact JSON with fields
-//!   in the exact struct-declaration order below (that order defines the
-//!   canonical serialization; any deviation fails closed).
+//!   excluding the field itself. Canonical bytes are RFC 8785 (JCS) via
+//!   `serde_jcs` 0.2.0 exact (all object keys sorted; digests in bare-hex
+//!   stripped form) — the same normative sentence as `feed::canon` in
+//!   hydra-feed, the byte owner this printer mirrors. Any deviation fails
+//!   closed; caller-ordered seals minted before the migration no longer verify.
 //! - `canonical_jsonl` / `record_count` are computed from the decoded payload
 //!   without ever rewriting it. A line is a record when it parses as JSON;
 //!   the payload is canonical JSONL when additionally every line equals the
@@ -83,7 +85,8 @@ pub enum SourceKind {
 }
 
 /// Transport-only packaged-object row.
-/// Field order below is normative: it defines the canonical serialization.
+/// Field order below is display order only: seal bytes are RFC 8785 (JCS),
+/// which sorts all object keys (see `feed::canon`, mirrored here).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PackagedObjectRow {
@@ -105,81 +108,122 @@ pub struct PackagedObjectRow {
     pub created_at_utc: String,
 }
 
+/// Seal document: id-excluded, digest-stripped form hashed by `verify_seal`.
+///
+/// Shape mirrors `PackagedObjectRow` minus `packaged_object_id`, digests in
+/// bare hex (the `strip` step). Serialized ONLY through `serde_jcs`
+/// (JCS-new form, same normative sentence as `feed::canon`).
+#[derive(Serialize)]
+struct PackagedSealDoc<'a> {
+    source_kind: &'a str,
+    source_container_sha256: Option<&'a str>,
+    source_member_path: Option<&'a str>,
+    source_bytes_sha256: &'a str,
+    source_bytes_length: u64,
+    compressed_path: &'a str,
+    compressed_bytes_sha256: &'a str,
+    compressed_bytes_length: u64,
+    decoded_bytes_sha256: &'a str,
+    decoded_bytes_length: u64,
+    record_count: u64,
+    canonical_jsonl: bool,
+    packager_identity: &'a str,
+    packager_config_hash: &'a str,
+    created_at_utc: &'a str,
+}
+
+/// Full document: id-included, digest-stripped form published per manifest
+/// line. Explicit 16-field struct (no flatten) so the JCS key-sort guarantee
+/// holds over one visible map, exactly like the seal doc above.
+#[derive(Serialize)]
+struct PackagedFullDoc<'a> {
+    packaged_object_id: &'a str,
+    source_kind: &'a str,
+    source_container_sha256: Option<&'a str>,
+    source_member_path: Option<&'a str>,
+    source_bytes_sha256: &'a str,
+    source_bytes_length: u64,
+    compressed_path: &'a str,
+    compressed_bytes_sha256: &'a str,
+    compressed_bytes_length: u64,
+    decoded_bytes_sha256: &'a str,
+    decoded_bytes_length: u64,
+    record_count: u64,
+    canonical_jsonl: bool,
+    packager_identity: &'a str,
+    packager_config_hash: &'a str,
+    created_at_utc: &'a str,
+}
+
 impl PackagedObjectRow {
-    /// Canonical JSON bytes of this row. With `include_id = false` the
-    /// `packaged_object_id` field is omitted; those bytes are exactly what
-    /// the id hashes.
+    /// Canonical JSON bytes of this row (RFC 8785 JCS via `serde_jcs`
+    /// 0.2.0 exact — the single seal printer). With `include_id = false`
+    /// the `packaged_object_id` field is omitted; those bytes are exactly
+    /// what the id hashes. Digests hash in bare-hex (stripped) form.
     pub fn canonical_bytes(&self, include_id: bool) -> Vec<u8> {
-        let text = |value: &String| serde_json::Value::from(value.as_str());
-        let optional_text = |value: &Option<String>| match value {
-            Some(text) => serde_json::Value::from(text.as_str()),
-            None => serde_json::Value::Null,
-        };
-        let kind = |value: &SourceKind| serde_json::to_value(value).expect("enum serializes");
-        let mut out = Vec::with_capacity(768);
-        out.push(b'{');
-        let mut first = true;
-        let mut field = |out: &mut Vec<u8>, key: &str, value: &serde_json::Value| {
-            if !first {
-                out.push(b',');
-            }
-            first = false;
-            out.extend_from_slice(&serde_json::to_vec(key).expect("static key"));
-            out.push(b':');
-            out.extend_from_slice(&serde_json::to_vec(value).expect("row value"));
+        fn strip(text: &str) -> &str {
+            text.strip_prefix("sha256:").unwrap_or(text)
+        }
+        fn reject_unsafe_integer(value: u64, name: &str) {
+            // Mirrors `feed::canon::MAX_SAFE_INTEGER` (2**53 - 1, RFC 8785
+            // App. D): seal rows carry byte lengths/counts, always small;
+            // anything beyond the double-safe window fails closed rather
+            // than sealing a value the verifiers refuse.
+            const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+            assert!(
+                value <= MAX_SAFE_INTEGER,
+                "seal field {name} exceeds the IEEE 754 double-safe range"
+            );
+        }
+        reject_unsafe_integer(self.source_bytes_length, "source_bytes_length");
+        reject_unsafe_integer(self.compressed_bytes_length, "compressed_bytes_length");
+        reject_unsafe_integer(self.decoded_bytes_length, "decoded_bytes_length");
+        reject_unsafe_integer(self.record_count, "record_count");
+        let kind = match self.source_kind {
+            SourceKind::Raw => "raw",
+            SourceKind::ArchiveMember => "archive_member",
+            SourceKind::Precompressed => "precompressed",
         };
         if include_id {
-            field(&mut out, "packaged_object_id", &text(&self.packaged_object_id));
+            let full = PackagedFullDoc {
+                packaged_object_id: strip(&self.packaged_object_id),
+                source_kind: kind,
+                source_container_sha256: self.source_container_sha256.as_deref().map(strip),
+                source_member_path: self.source_member_path.as_deref(),
+                source_bytes_sha256: strip(&self.source_bytes_sha256),
+                source_bytes_length: self.source_bytes_length,
+                compressed_path: &self.compressed_path,
+                compressed_bytes_sha256: strip(&self.compressed_bytes_sha256),
+                compressed_bytes_length: self.compressed_bytes_length,
+                decoded_bytes_sha256: strip(&self.decoded_bytes_sha256),
+                decoded_bytes_length: self.decoded_bytes_length,
+                record_count: self.record_count,
+                canonical_jsonl: self.canonical_jsonl,
+                packager_identity: strip(&self.packager_identity),
+                packager_config_hash: strip(&self.packager_config_hash),
+                created_at_utc: &self.created_at_utc,
+            };
+            serde_jcs::to_vec(&full).expect("seal doc serializes as JCS")
+        } else {
+            let seal = PackagedSealDoc {
+                source_kind: kind,
+                source_container_sha256: self.source_container_sha256.as_deref().map(strip),
+                source_member_path: self.source_member_path.as_deref(),
+                source_bytes_sha256: strip(&self.source_bytes_sha256),
+                source_bytes_length: self.source_bytes_length,
+                compressed_path: &self.compressed_path,
+                compressed_bytes_sha256: strip(&self.compressed_bytes_sha256),
+                compressed_bytes_length: self.compressed_bytes_length,
+                decoded_bytes_sha256: strip(&self.decoded_bytes_sha256),
+                decoded_bytes_length: self.decoded_bytes_length,
+                record_count: self.record_count,
+                canonical_jsonl: self.canonical_jsonl,
+                packager_identity: strip(&self.packager_identity),
+                packager_config_hash: strip(&self.packager_config_hash),
+                created_at_utc: &self.created_at_utc,
+            };
+            serde_jcs::to_vec(&seal).expect("seal doc serializes as JCS")
         }
-        field(&mut out, "source_kind", &kind(&self.source_kind));
-        field(
-            &mut out,
-            "source_container_sha256",
-            &optional_text(&self.source_container_sha256),
-        );
-        field(
-            &mut out,
-            "source_member_path",
-            &optional_text(&self.source_member_path),
-        );
-        field(&mut out, "source_bytes_sha256", &text(&self.source_bytes_sha256));
-        field(
-            &mut out,
-            "source_bytes_length",
-            &serde_json::Value::from(self.source_bytes_length),
-        );
-        field(&mut out, "compressed_path", &text(&self.compressed_path));
-        field(
-            &mut out,
-            "compressed_bytes_sha256",
-            &text(&self.compressed_bytes_sha256),
-        );
-        field(
-            &mut out,
-            "compressed_bytes_length",
-            &serde_json::Value::from(self.compressed_bytes_length),
-        );
-        field(&mut out, "decoded_bytes_sha256", &text(&self.decoded_bytes_sha256));
-        field(
-            &mut out,
-            "decoded_bytes_length",
-            &serde_json::Value::from(self.decoded_bytes_length),
-        );
-        field(
-            &mut out,
-            "record_count",
-            &serde_json::Value::from(self.record_count),
-        );
-        field(
-            &mut out,
-            "canonical_jsonl",
-            &serde_json::Value::from(self.canonical_jsonl),
-        );
-        field(&mut out, "packager_identity", &text(&self.packager_identity));
-        field(&mut out, "packager_config_hash", &text(&self.packager_config_hash));
-        field(&mut out, "created_at_utc", &text(&self.created_at_utc));
-        out.push(b'}');
-        out
     }
 
     /// Computes and stores `packaged_object_id`.
@@ -774,11 +818,20 @@ mod tests {
         let parsed: PackagedObjectRow =
             serde_json::from_slice(&reserialized).expect("canonical bytes re-parse");
         assert_eq!(parsed, sealed);
-        let first_field = &reserialized[2..reserialized.len().min(30)];
+        // JCS-new direction pin (mirrors `jcs_is_new_not_caller_order_b3`
+        // in hydra-feed): sorted keys open with the UTF-16-smallest key
+        // ("canonical_jsonl"), never the caller-ordered head. Old
+        // caller-ordered seals fail `verify_seal` closed.
         assert!(
-            String::from_utf8_lossy(first_field).starts_with("packaged_object_id"),
-            "id comes first per spec order: {}",
-            String::from_utf8_lossy(&reserialized[..48])
+            reserialized.starts_with(b"{\"canonical_jsonl\":"),
+            "JCS-new bytes must sort keys, got head {:?}",
+            &reserialized[..reserialized.len().min(32)]
+        );
+        let seal_bytes = sealed.canonical_bytes(false);
+        assert!(
+            seal_bytes.starts_with(b"{\"canonical_jsonl\":"),
+            "seal bytes must sort keys, got head {:?}",
+            &seal_bytes[..seal_bytes.len().min(32)]
         );
     }
 
