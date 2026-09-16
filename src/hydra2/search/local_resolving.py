@@ -102,12 +102,12 @@ __all__ = [
 # Names importable from this path before the split that live in the
 # submodules now (kept so the search package, lazy candidate factories,
 # and type-checking imports resolve without touching the new paths).
+from hydra2.search.local_shared import _BELIEF_IMPORT_ERROR as _BELIEF_IMPORT_ERROR
 from hydra2.search.local_shared import _COMMON_AVAILABLE as _COMMON_AVAILABLE
-from hydra2.search.local_shared import _HAS_BELIEF as _HAS_BELIEF
-from hydra2.search.local_shared import _HAS_CONTRACTS as _HAS_CONTRACTS
-from hydra2.search.local_shared import _HAS_OBS as _HAS_OBS
-from hydra2.search.local_shared import _HAS_RANDOM as _HAS_RANDOM
+from hydra2.search.local_shared import _CONTRACTS_IMPORT_ERROR as _CONTRACTS_IMPORT_ERROR
 from hydra2.search.local_shared import _MASTER_SEED as _MASTER_SEED
+from hydra2.search.local_shared import _OBS_IMPORT_ERROR as _OBS_IMPORT_ERROR
+from hydra2.search.local_shared import _RANDOM_IMPORT_ERROR as _RANDOM_IMPORT_ERROR
 from hydra2.search.local_shared import DEPLOYABLE_DEADLINE_MS as DEPLOYABLE_DEADLINE_MS
 from hydra2.search.local_shared import FORBIDDEN_IN_STRATEGY_KEY as FORBIDDEN_IN_STRATEGY_KEY
 from hydra2.search.local_shared import Any as Any

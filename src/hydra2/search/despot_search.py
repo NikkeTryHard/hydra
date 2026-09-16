@@ -30,10 +30,22 @@ logger = logging.getLogger(__name__)
 try:
     from hydra2.belief.kernel import NaturalPacketKernel
 
-    _HAS_BELIEF = True
-except ImportError:  # pragma: no cover
-    _HAS_BELIEF = False
-    NaturalPacketKernel = Any
+    _KERNEL_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    NaturalPacketKernel = Any  # placeholder; _require_kernel() raises on use
+    _KERNEL_IMPORT_ERROR = exc
+
+
+def _require_kernel() -> Any:
+    """Fail-closed kernel access (lazy ImportError with build-ext hint)."""
+    if _KERNEL_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.belief.kernel not importable "
+            f"({_KERNEL_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before DESPOT search"
+        ) from _KERNEL_IMPORT_ERROR
+    return NaturalPacketKernel
+
 
 __all__ = [
     "NaturalDespotPlannerSearchMixin",
@@ -74,9 +86,11 @@ class NaturalDespotPlannerSearchMixin:
     ) -> None:
         self._candidate_spec = candidate_spec
         self._belief = belief
-        self._kernel = (
-            kernel if kernel is not None else (NaturalPacketKernel() if _HAS_BELIEF else None)  # type: ignore[bad-instantiation]
-        )
+        if kernel is not None:
+            self._kernel = kernel
+        else:
+            _require_kernel()
+            self._kernel = NaturalPacketKernel()  # type: ignore[bad-instantiation]
         self._blueprint = blueprint_policy  # callable(observation, legal) -> action
         self._master_seed = master_seed
         self._belief_epoch: Any | None = None
@@ -130,7 +144,8 @@ class NaturalDespotPlannerSearchMixin:
         # world_refs via belief (bridge natural_indices returns indices only; corpus lives in belief).
         if not isinstance(k, int) or isinstance(k, bool) or k <= 0:
             raise ContractError("k must be positive int")
-        if not _HAS_BELIEF or self._belief is None or belief_epoch is None:
+        _require_kernel()
+        if self._belief is None or belief_epoch is None:
             raise ContractError("despot: belief and epoch required; synthetic worlds removed")
         weight = 1.0 / k
         logp = -math.log(k)

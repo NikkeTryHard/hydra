@@ -16,6 +16,7 @@
 
 pub mod canon_rng;
 pub mod columnar;
+pub mod contracts;
 pub mod eval;
 pub mod mirror;
 pub mod packet;
@@ -41,6 +42,7 @@ pub fn hydra2_replay_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     resume::register(m)?;
     ring::register(m)?;
     columnar::register(m)?;
+    contracts::register(m)?;
     search::register(m)?;
     packet::register(m)?;
     mirror::register(m)?;

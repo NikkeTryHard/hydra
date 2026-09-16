@@ -76,11 +76,11 @@ __all__ = [
 # Names importable from this path before the split that live in the
 # submodules now (kept so the search package, lazy candidate factories,
 # and type-checking imports resolve without touching the new paths).
-from hydra2.search.pbrf_partition import _HAS_BELIEF as _HAS_BELIEF
-from hydra2.search.pbrf_partition import _HAS_KERNEL as _HAS_KERNEL
-from hydra2.search.pbrf_partition import _HAS_PACKET as _HAS_PACKET
-from hydra2.search.pbrf_partition import _HAS_RANDOM as _HAS_RANDOM
-from hydra2.search.pbrf_partition import _HAS_TELEMETRY as _HAS_TELEMETRY
+from hydra2.search.pbrf_partition import _BELIEF_IMPORT_ERROR as _BELIEF_IMPORT_ERROR
+from hydra2.search.pbrf_partition import _KERNEL_IMPORT_ERROR as _KERNEL_IMPORT_ERROR
+from hydra2.search.pbrf_partition import _PACKET_IMPORT_ERROR as _PACKET_IMPORT_ERROR
+from hydra2.search.pbrf_partition import _RANDOM_IMPORT_ERROR as _RANDOM_IMPORT_ERROR
+from hydra2.search.pbrf_partition import _TELEMETRY_IMPORT_ERROR as _TELEMETRY_IMPORT_ERROR
 from hydra2.search.pbrf_partition import ActorVisiblePacket as ActorVisiblePacket
 from hydra2.search.pbrf_partition import Any as Any
 from hydra2.search.pbrf_partition import BeliefEpoch as BeliefEpoch

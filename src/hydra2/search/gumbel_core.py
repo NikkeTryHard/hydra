@@ -42,31 +42,73 @@ from hydra2.search.common import (
 try:
     from hydra2.contracts.randomness import RandomStream
 
-    _HAS_RANDOM = True
-except ImportError:  # pragma: no cover
-    _HAS_RANDOM = False
-    RandomStream = Any
+    _RANDOM_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    RandomStream = Any  # placeholder; _require_random_stream() raises on use
+    _RANDOM_IMPORT_ERROR = exc
+
+
+def _require_random_stream() -> Any:
+    """Fail-closed RNG access (lazy ImportError with build-ext hint)."""
+    if _RANDOM_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.contracts.randomness not importable "
+            f"({_RANDOM_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before Gumbel search"
+        ) from _RANDOM_IMPORT_ERROR
+    return RandomStream
+
 
 try:
     from hydra2.belief.natural import BeliefEpoch, NaturalBelief
     from hydra2.belief.world import FullWorld, make_full_world, world_actor_observation
 
-    _HAS_BELIEF = True
-except ImportError:  # pragma: no cover
-    _HAS_BELIEF = False
-    NaturalBelief = Any
+    _BELIEF_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    NaturalBelief = Any  # placeholder; _require_belief() raises on use
     BeliefEpoch = Any
     FullWorld = Any
+    make_full_world = Any
+    world_actor_observation = Any
+    _BELIEF_IMPORT_ERROR = exc
+
+
+def _require_belief() -> None:
+    """Fail-closed belief access (lazy ImportError with build-ext hint)."""
+    if _BELIEF_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.belief natural/world not importable "
+            f"({_BELIEF_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before Gumbel search"
+        ) from _BELIEF_IMPORT_ERROR
+
 
 try:
     from hydra2.contracts.observation import ActorObservation, observation_identity_document
     from hydra2.contracts.utility import UtilityVector
     from hydra2.eval.telemetry import ResourceTelemetry, make_resource_telemetry
 
-    _HAS_TELEMETRY = True
-except ImportError:  # pragma: no cover
-    _HAS_TELEMETRY = False
-    ResourceTelemetry = Any
+    _TELEMETRY_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    ActorObservation = Any  # placeholder; _require_telemetry() raises on use
+    observation_identity_document = Any
+    UtilityVector = Any
+    ResourceTelemetry = Any  # placeholder; _require_telemetry() raises on use
+    make_resource_telemetry = Any
+    _TELEMETRY_IMPORT_ERROR = exc
+
+
+def _require_telemetry() -> Any:
+    """Fail-closed telemetry access (lazy ImportError with build-ext hint)."""
+    if _TELEMETRY_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.eval.telemetry/contracts not importable "
+            f"({_TELEMETRY_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before Gumbel search"
+        ) from _TELEMETRY_IMPORT_ERROR
+    return make_resource_telemetry
+
+
 logger = logging.getLogger(__name__)
 __all__ = [
     "FORBIDDEN_IN_TREE_KEY",
@@ -250,13 +292,17 @@ def info_key_for_observation(observation: Any) -> str:
     """
     if observation is None:
         raise ContractError("observation must be ActorObservation")
+    _require_telemetry()
     try:
         from hydra2.contracts.observation import ActorObservation as _Obs
+        from hydra2.contracts.observation import observation_identity_document as _oid
 
         if isinstance(observation, _Obs):
-            doc = observation_identity_document(observation)
+            doc = _oid(observation)
         else:
             raise ContractError("observation must be ActorObservation")
+    except ImportError:
+        raise
     except Exception as exc:  # pragma: no cover
         if isinstance(exc, ContractError):
             raise
@@ -322,6 +368,14 @@ def _legal_ids_for_observation(obs: Any) -> tuple[int, ...]:
 
 def exact_transition(world: Any, actor: int, action_id: int, max_depth: int = 6) -> Any:
     """Exact deterministic transition — consumes one live tile, rotates turn."""
+    _require_belief()
+    try:
+        from hydra2.belief.world import make_full_world as _mfw
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2.belief.world not importable "
+            f"({exc}); build the bridge with `pixi run build-ext` before Gumbel search"
+        ) from exc
     try:
         live = tuple(getattr(world, "live_wall", ()))
         dead = tuple(getattr(world, "dead_wall", ()))
@@ -339,7 +393,8 @@ def exact_transition(world: Any, actor: int, action_id: int, max_depth: int = 6)
         rules_hash = getattr(world, "rules_hash", "sha256:" + "a" * 64)
         obs_hash = getattr(world, "observation_hash", "sha256:" + "b" * 64)
         snapshot = f"gumbel:{getattr(world, 'world_id', 'w')}:{action_id}:{latent['step']}"
-        return make_full_world(
+        _require_belief()
+        return _mfw(
             concealed_hands=hands,
             live_wall=new_live,
             dead_wall=dead,
@@ -348,6 +403,8 @@ def exact_transition(world: Any, actor: int, action_id: int, max_depth: int = 6)
             observation_hash=obs_hash,
             simulator_snapshot=snapshot,
         )
+    except ImportError:
+        raise
     except Exception as exc:
         raise ContractError(f"transition failed: {exc}") from exc
 

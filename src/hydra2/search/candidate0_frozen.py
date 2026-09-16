@@ -131,11 +131,49 @@ def frozen_choice(
 # ---------------------------------------------------------------------------
 
 
+def _bridge_sha256_file(path: Path) -> str:
+    """Chunked file digest via the bridge (bit-identical to the retired hashlib loop)."""
+    try:
+        from hydra2_replay_rs import canon_rng as bridge  # pyrefly: ignore[missing-import]
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2 digest authority requires the hydra2_replay_rs bridge; "
+            "run `pixi run build-ext` to build the extension before use"
+        ) from exc
+    try:
+        text = bridge.sha256_file(str(path))  # type: ignore[attr-defined]
+    except AttributeError as exc:
+        raise ImportError(
+            "hydra2_replay_rs.canon_rng.sha256_file missing (stale .so); "
+            "rebuild the bridge (`pixi run build-ext`)"
+        ) from exc
+    return str(text)
+
+
+def _bridge_sha256_hex(data: bytes) -> str:
+    """In-memory digest via the bridge (bit-identical to hashlib.sha256 hexdigest)."""
+    try:
+        from hydra2_replay_rs import canon_rng as bridge  # pyrefly: ignore[missing-import]
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2 digest authority requires the hydra2_replay_rs bridge; "
+            "run `pixi run build-ext` to build the extension before use"
+        ) from exc
+    try:
+        text = bridge.sha256_hex(bytes(data))  # type: ignore[attr-defined]
+    except AttributeError as exc:
+        raise ImportError(
+            "hydra2_replay_rs.canon_rng.sha256_hex missing (stale .so); "
+            "rebuild the bridge (`pixi run build-ext`)"
+        ) from exc
+    return str(text)
+
+
 def _file_sha256(path: Path) -> DigestText:
     from hydra2.search.common import _require_real_file
 
     real = _require_real_file(Path(path), REPO_ROOT)
-    return DigestText("sha256:" + hashlib.sha256(real.read_bytes()).hexdigest())
+    return DigestText(_bridge_sha256_file(real))
 
 
 def _load_default_hashes() -> dict[str, str]:
@@ -211,13 +249,13 @@ def _model_hash_from_identity(model: Any | None) -> DigestText:
         ident: Any = getattr(model, "model_identity", None)
         if ident is not None:
             return make_digest_text(str(ident))
-        # Fallback: hash of model state dict keys
+        # Fallback: hash of model state dict keys (bridge digest, bit-identical)
         try:
             state: Any = model.state_dict()  # type: ignore[union-attr]
             keys_raw: Any = state.keys()
             keys_sorted: list[str] = sorted(keys_raw)
             payload: dict[str, list[str]] = {"keys": keys_sorted}
-            return DigestText("sha256:" + hashlib.sha256(canonical_bytes(payload)).hexdigest())
+            return DigestText(_bridge_sha256_hex(canonical_bytes(payload)))
         except (AttributeError, TypeError, ValueError, OSError) as exc:
             logger.debug("candidate0: model state_dict fallback", exc_info=exc)
             pass
@@ -328,23 +366,18 @@ def make_candidate0_spec(
             packet_boundary_hash = defaults["packet_boundary_hash"]
         model_hash = str(_model_hash_from_identity(model))
     # RNG / stream schema placeholders — canonical JSON hashes of fixed descriptors
+    # (bridge digests, bit-identical to the retired hashlib lines).
     if rng_protocol_hash is None:
-        rng_protocol_hash = (
-            "sha256:"
-            + hashlib.sha256(
-                canonical_bytes({"protocol": "counter_based_v1", "version": "1.0.0"})
-            ).hexdigest()
+        rng_protocol_hash = _bridge_sha256_hex(
+            canonical_bytes({"protocol": "counter_based_v1", "version": "1.0.0"})
         )
     if random_stream_schema_hash is None:
-        random_stream_schema_hash = (
-            "sha256:"
-            + hashlib.sha256(
-                canonical_bytes({"schema": "random_stream_v1", "purposes": ["candidate0_tie"]})
-            ).hexdigest()
+        random_stream_schema_hash = _bridge_sha256_hex(
+            canonical_bytes({"schema": "random_stream_v1", "purposes": ["candidate0_tie"]})
         )
     if case_manifest_hash is None:
         # Empty manifest hash (frozen before cases would be set externally)
-        case_manifest_hash = "sha256:" + hashlib.sha256(canonical_bytes([])).hexdigest()
+        case_manifest_hash = _bridge_sha256_hex(canonical_bytes([]))
     # Unconditional narrowing: rules/action/model hashes are only defaulted inside
     # the utility/packet branches above, so callers passing those manifests but
     # omitting these hashes would otherwise flow str|None into CandidateSpec.

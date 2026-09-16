@@ -108,6 +108,27 @@ impl std::io::Write for HashWriter {
     }
 }
 
+/// SPEC 13 legacy CTR domain tag: 13 chars + NUL (`randomness.py:405` `_DOMAIN`).
+pub const CTR_DOMAIN_TAG: &[u8; 14] = b"hydra2_ctr_v1\x00";
+
+/// Legacy sha256-CTR block (mirrors `RandomStream._block_at`,
+/// `randomness.py:462-468`): `sha256(DOMAIN || len(seed)BE32 || seed ||
+/// indexBE64)`. A pure function of `(seed, index)` — counter-based, no
+/// sequential state, no call-order sensitivity. The seed-length lane is `u32`
+/// big-endian exactly like the oracle (`to_bytes(4, "big")` raises at 2^32
+/// there; seeds that large cannot cross this boundary).
+pub fn ctr_block(seed: &[u8], index: u64) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(CTR_DOMAIN_TAG);
+    h.update((seed.len() as u32).to_be_bytes());
+    h.update(seed);
+    h.update(index.to_be_bytes());
+    let sum = h.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&sum);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,5 +193,35 @@ mod tests {
         use std::io::Write as _;
         w.write_all(&bytes).unwrap();
         assert_eq!(w.finish(), fused);
+    }
+
+    /// SPEC 13 CTR goldens: `sha256(DOMAIN || lenBE32 || seed || indexBE64)`
+    /// pinned against the `hashlib` oracle (`RandomStream._block_at`).
+    #[test]
+    fn ctr_block_matches_oracle_goldens() {
+        fn hex(block: [u8; 32]) -> String {
+            block.iter().map(|b| format!("{b:02x}")).collect()
+        }
+        let seed: Vec<u8> = (0..32u8).collect();
+        assert_eq!(
+            hex(ctr_block(&seed, 0)),
+            "fb626a8299eed4bf5c581e60f09cc1b57a8bf14af4faa174203e63019117a0fe"
+        );
+        assert_eq!(
+            hex(ctr_block(&seed, 1)),
+            "aedeec175d01432bd93436d063faa2abad020eb774af584a08056d4671f03e78"
+        );
+        assert_eq!(
+            hex(ctr_block(&[7u8; 32], 5)),
+            "036d3453cd61579a76b60b319d4671e480fd776bb4120f902a02e46e280fe962"
+        );
+    }
+
+    #[test]
+    fn ctr_block_is_index_and_seed_sensitive() {
+        let seed: Vec<u8> = (0..32u8).collect();
+        assert_ne!(ctr_block(&seed, 0), ctr_block(&seed, 1));
+        assert_ne!(ctr_block(&seed, 0), ctr_block(&[8u8; 32], 0));
+        assert_eq!(ctr_block(&seed, 0), ctr_block(&seed, 0));
     }
 }

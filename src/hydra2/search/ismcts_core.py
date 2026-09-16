@@ -45,23 +45,48 @@ except ImportError as exc:
 try:
     from hydra2.contracts.randomness import RandomStream, make_random_stream_key, semantic_seed
 
-    _HAS_RANDOM = True
-except ImportError:  # pragma: no cover
-    _HAS_RANDOM = False
-    RandomStream = Any
+    _RANDOM_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    RandomStream = Any  # placeholder; _require_random_stream() raises on use
+    make_random_stream_key = Any
+    semantic_seed = Any
+    _RANDOM_IMPORT_ERROR = exc
+
+
+def _require_random_stream() -> Any:
+    """Fail-closed RNG access (lazy ImportError with build-ext hint)."""
+    if _RANDOM_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.contracts.randomness not importable "
+            f"({_RANDOM_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before ISMCTS search"
+        ) from _RANDOM_IMPORT_ERROR
+    return RandomStream
+
 
 try:
     from hydra2.belief.natural import BeliefEpoch, NaturalBelief
     from hydra2.belief.world import FullWorld, make_full_world, world_actor_observation
 
-    _HAS_BELIEF = True
-except ImportError:  # pragma: no cover
-    _HAS_BELIEF = False
-    NaturalBelief = Any
+    _BELIEF_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    NaturalBelief = Any  # placeholder; _require_belief() raises on use
     BeliefEpoch = Any
     FullWorld = Any
     make_full_world = Any
     world_actor_observation = Any
+    _BELIEF_IMPORT_ERROR = exc
+
+
+def _require_belief() -> None:
+    """Fail-closed belief access (lazy ImportError with build-ext hint)."""
+    if _BELIEF_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.belief natural/world not importable "
+            f"({_BELIEF_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before ISMCTS search"
+        ) from _BELIEF_IMPORT_ERROR
+
 
 try:
     from hydra2.contracts.action import CanonicalAction
@@ -69,10 +94,27 @@ try:
     from hydra2.contracts.utility import UtilityVector
     from hydra2.eval.telemetry import ResourceTelemetry, make_resource_telemetry
 
-    _HAS_TELEMETRY = True
-except ImportError:  # pragma: no cover
-    _HAS_TELEMETRY = False
+    _TELEMETRY_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    CanonicalAction = Any  # placeholder; _require_telemetry() raises on use
+    ActorObservation = Any
+    observation_identity_document = Any
+    UtilityVector = Any
     ResourceTelemetry = Any
+    make_resource_telemetry = Any
+    _TELEMETRY_IMPORT_ERROR = exc
+
+
+def _require_telemetry() -> Any:
+    """Fail-closed telemetry access (lazy ImportError with build-ext hint)."""
+    if _TELEMETRY_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.eval.telemetry/contracts not importable "
+            f"({_TELEMETRY_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before ISMCTS search"
+        ) from _TELEMETRY_IMPORT_ERROR
+    return make_resource_telemetry
+
 
 __all__ = [
     "FORBIDDEN_IN_TREE_KEY",
@@ -160,13 +202,19 @@ def info_key_for_observation(observation: Any) -> str:
     """
     if observation is None:
         raise ContractError("observation must be ActorObservation")
+    _require_telemetry()
     try:
         from hydra2.contracts.observation import ActorObservation as _Obs
+        from hydra2.contracts.observation import observation_identity_document as _oid
 
         if isinstance(observation, _Obs):
-            doc = observation_identity_document(observation)
+            doc = _oid(observation)
         else:
-            raise ContractError("observation must be ActorObservation")
+            raise ContractError(
+                f"continuation policy input must be ActorObservation, got {type(observation).__name__}"
+            )
+    except ImportError:
+        raise
     except Exception as exc:  # pragma: no cover
         if isinstance(exc, ContractError):
             raise
@@ -413,18 +461,20 @@ class UniformContinuationPolicy:
         return tuple(w for _ in legal)
 
     def distribution(self, observation: Any, legal: tuple[int, ...]) -> tuple[float, ...]:
-        # Validate no privileged field in observation (lightweight)
+        # Validate no privileged field in observation (lightweight) — fail closed.
         if observation is not None:
             # ensure observation is ActorObservation, not FullWorld
             try:
                 from hydra2.contracts.observation import ActorObservation as _Obs
-
-                if not isinstance(observation, _Obs):
-                    raise ContractError(
-                        f"continuation policy input must be ActorObservation, got {type(observation).__name__}"
-                    )
-            except ImportError:
-                pass
+            except ImportError as exc:
+                raise ImportError(
+                    "hydra2.contracts.observation not importable "
+                    f"({exc}); build the bridge with `pixi run build-ext` before ISMCTS search"
+                ) from exc
+            if not isinstance(observation, _Obs):
+                raise ContractError(
+                    f"continuation policy input must be ActorObservation, got {type(observation).__name__}"
+                )
             # forbid world_id field leak
             if hasattr(observation, "world_id"):
                 raise VisibilityViolationError(
@@ -440,21 +490,12 @@ class UniformContinuationPolicy:
         if not isinstance(legal, tuple) or len(legal) == 0:
             raise ContractError("legal must be non-empty tuple")
         dist = self.distribution(observation, legal)
-        # sample categorical via rng
-        if _HAS_RANDOM and hasattr(rng, "random_float"):
-            _rng_raw: Any = rng.random_float()  # pyrefly: ignore[explicit-any]
-            r: float = float(_rng_raw)  # pyrefly: ignore[explicit-any]
-        else:
-            # fallback deterministic using hash of observation+legal if rng missing
-            r = (
-                int(
-                    hashlib.sha256(
-                        str(getattr(observation, "observation_hash", "")).encode()
-                    ).hexdigest()[:8],
-                    16,
-                )
-                % 1000
-            ) / 1000.0
+        # sample categorical via rng — fail closed, no hash%1000 fallback.
+        _require_random_stream()
+        if not hasattr(rng, "random_float"):
+            raise ContractError("ismcts: rng must expose random_float; hash%1000 fallback removed")
+        _rng_raw: Any = rng.random_float()  # pyrefly: ignore[explicit-any]
+        r: float = float(_rng_raw)  # pyrefly: ignore[explicit-any]
         cum = 0.0
         for idx, p in enumerate(dist):
             cum += p

@@ -43,31 +43,67 @@ except ImportError as exc:
 try:
     from hydra2.contracts.randomness import RandomStream
 
-    _HAS_RANDOM = True
-except ImportError:  # pragma: no cover
-    _HAS_RANDOM = False
-    RandomStream = Any
+    _RANDOM_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    RandomStream = Any  # placeholder; _require_random_stream() raises on use
+    _RANDOM_IMPORT_ERROR = exc
+
+
+def _require_random_stream() -> Any:
+    """Fail-closed RNG access (lazy ImportError with build-ext hint)."""
+    if _RANDOM_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.contracts.randomness not importable "
+            f"({_RANDOM_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before joint search"
+        ) from _RANDOM_IMPORT_ERROR
+    return RandomStream
+
 
 try:
     from hydra2.belief.natural import BeliefEpoch, NaturalBelief
     from hydra2.belief.world import FullWorld, make_full_world, world_actor_observation
 
-    _HAS_BELIEF = True
-except ImportError:  # pragma: no cover
-    _HAS_BELIEF = False
-    NaturalBelief = Any
+    _BELIEF_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    NaturalBelief = Any  # placeholder; _require_belief() raises on use
     BeliefEpoch = Any
     FullWorld = Any
     make_full_world = Any
     world_actor_observation = Any
+    _BELIEF_IMPORT_ERROR = exc
+
+
+def _require_belief() -> None:
+    """Fail-closed belief access (lazy ImportError with build-ext hint)."""
+    if _BELIEF_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.belief natural/world not importable "
+            f"({_BELIEF_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before joint search"
+        ) from _BELIEF_IMPORT_ERROR
+
 
 try:
     from hydra2.contracts.observation import ActorObservation, observation_identity_document
 
-    _HAS_OBS = True
-except ImportError:  # pragma: no cover
-    _HAS_OBS = False
-    ActorObservation = Any
+    _OBS_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    ActorObservation = Any  # placeholder; _require_obs() raises on use
+    observation_identity_document = Any
+    _OBS_IMPORT_ERROR = exc
+
+
+def _require_obs() -> Any:
+    """Fail-closed observation access (lazy ImportError with build-ext hint)."""
+    if _OBS_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.contracts.observation not importable "
+            f"({_OBS_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before joint search"
+        ) from _OBS_IMPORT_ERROR
+    return ActorObservation
+
 
 __all__ = [
     "FORBIDDEN_IN_TREE_KEY",
@@ -148,13 +184,17 @@ def info_key_for_observation(observation: Any) -> str:
     """Canonical information-set key for actor observation — excludes legal_mask & forbidden."""
     if observation is None:
         raise ContractError("observation must be ActorObservation")
+    _require_obs()
     try:
         from hydra2.contracts.observation import ActorObservation as _Obs
+        from hydra2.contracts.observation import observation_identity_document as _oid
 
         if isinstance(observation, _Obs):
-            doc = observation_identity_document(observation)
+            doc = _oid(observation)
         else:
             raise ContractError("observation must be ActorObservation")
+    except ImportError:
+        raise
     except Exception as exc:
         if isinstance(exc, ContractError):
             raise

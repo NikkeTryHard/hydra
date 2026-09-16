@@ -23,7 +23,7 @@ from hydra2.search.local_abstraction import (
     info_key_for_actor_observation as info_key_for_actor_observation,
 )
 from hydra2.search.local_abstraction import preserves_vector_returns as preserves_vector_returns
-from hydra2.search.local_shared import _HAS_BELIEF as _HAS_BELIEF
+from hydra2.search.local_shared import _require_belief as _require_belief
 from hydra2.search.local_spec import LocalResolvingConfig as LocalResolvingConfig
 from hydra2.search.local_spec import (
     _build_abstraction_from_config as _build_abstraction_from_config,
@@ -166,102 +166,47 @@ class LocalResolvingPlannerSearchMixin:
         # For fictitious_play need visit counts
         visit_counts: dict[tuple[int, str], int] = dict(table.visit_counts)
 
-        # Need worlds for leaf evaluation: sample from belief if available else synthetic
-        # Wave 2 bridge audit: kept Python — iteration worlds resolve behind particle
-        # refs via the belief registry (bridge natural_indices returns indices only).
+        # Need worlds for leaf evaluation — real belief required (fail closed, no synthetic).
+        _require_belief()
+        if self.belief is None or epoch is None:
+            raise ContractError("local: belief and epoch required; synthetic worlds removed")
+        try:
+            # natural sample count = iterations (one world per iteration)
+            particles = self.belief.sample_natural(epoch, count=self.config.iterations, rng=rng)  # type: ignore[call-arg]
+        except ImportError:
+            raise
+        except Exception as exc:
+            raise ContractError(f"local: belief sampling failed: {exc}") from exc
         worlds: list[Any] = []
-        if self.belief is not None and epoch is not None and _HAS_BELIEF:
-            try:
-                # natural sample count = iterations (one world per iteration)
-                particles = self.belief.sample_natural(epoch, count=self.config.iterations, rng=rng)  # type: ignore[call-arg]
-                # worlds behind particle refs — try to resolve via belief registry if exposed
-                # Fallback: generate synthetic worlds from particles
-                for p in particles:
-                    p_any: Any = p
-                    try:
-                        # Try to get world from belief internal store
-                        w1_raw: Any | None = getattr(self.belief, "_worlds", None)
-                        w2_raw: Any | None = getattr(self.belief, "worlds", None)
-                        if w1_raw is not None:
-                            store: Any = w1_raw
-                        elif w2_raw is not None:
-                            store = w2_raw
-                        else:
-                            store = {}
-                        w: Any | None = None
-                        if isinstance(store, dict):
-                            store_dict: dict[Any, Any] = store  # type: ignore[assignment]
-                            store_key: str = str(getattr(p_any, "world_ref", ""))
-                            w = store_dict.get(store_key)
-                        if w is not None:
-                            worlds.append(w)
-                        else:
-                            # synthetic tiny world consistent with epoch
-                            from hydra2.belief.world import make_full_world
-
-                            obs_h: str = str(
-                                getattr(epoch, "observation_hash", "sha256:" + "b" * 64)
-                            )
-                            rules_h: str = str(getattr(epoch, "rules_hash", "sha256:" + "a" * 64))
-                            # deterministic synthetic hand
-                            h_bytes: bytes = hashlib.sha256((obs_h + str(p_any)).encode()).digest()
-                            hand_vals: list[int] = [b % 12 for b in h_bytes[:8]]
-                            # ensure sorted hands of size 2 per seat
-                            hands: Any = tuple(
-                                tuple(sorted(hand_vals[i * 2 : i * 2 + 2])) for i in range(4)
-                            )
-                            w2 = make_full_world(
-                                concealed_hands=hands,  # type: ignore[arg-type]
-                                live_wall=(8, 9, 10, 11),
-                                dead_wall=(),
-                                latent_state={
-                                    "iter_world": hashlib.sha256(str(p_any).encode()).hexdigest()[
-                                        :8
-                                    ]
-                                },
-                                rules_hash=rules_h,
-                                observation_hash=obs_h,
-                                simulator_snapshot=f"synth:{obs_h[:8]}:{len(worlds)}",
-                            )
-                            worlds.append(w2)
-                    except Exception:
-                        # last resort synthetic
-                        from hydra2.belief.world import make_full_world
-
-                        w3 = make_full_world(
-                            concealed_hands=((0, 1), (2, 3), (4, 5), (6, 7)),
-                            live_wall=(8, 9, 10, 11),
-                            dead_wall=(),
-                            latent_state={"fallback": len(worlds)},
-                            rules_hash="sha256:" + "a" * 64,
-                            observation_hash="sha256:" + "b" * 64,
-                        )
-                        worlds.append(w3)
-                self._particles = len(worlds)
-                self._model_calls += len(worlds)
-            except Exception:
-                worlds = []
-        if len(worlds) == 0:
-            # fallback synthetic worlds — deterministic 4 worlds
-            from hydra2.belief.world import make_full_world
-
-            base = [
-                ((0, 1), (2, 3), (4, 5), (6, 7)),
-                ((0, 1), (2, 4), (3, 5), (6, 7)),
-                ((0, 1), (2, 5), (3, 4), (6, 7)),
-                ((0, 1), (2, 6), (3, 4), (5, 7)),
-            ]
-            for idx, hands in enumerate(base):
-                w = make_full_world(
-                    concealed_hands=hands,
-                    live_wall=(8, 9, 10, 11),
-                    dead_wall=(),
-                    latent_state={"synth_idx": idx},
-                    rules_hash="sha256:" + "a" * 64,
-                    observation_hash="sha256:" + "b" * 64,
+        # worlds behind particle refs — resolve via belief registry (no synthetic fallback).
+        for p in particles:
+            p_any: Any = p
+            w1_raw: Any | None = getattr(self.belief, "_worlds", None)
+            w2_raw: Any | None = getattr(self.belief, "worlds", None)
+            if w1_raw is not None:
+                store: Any = w1_raw
+            elif w2_raw is not None:
+                store = w2_raw
+            else:
+                raise ContractError(
+                    "local: belief worlds registry missing; synthetic worlds removed"
                 )
-                worlds.append(w)
-            self._particles = len(worlds)
+            w: Any | None = None
+            if isinstance(store, dict):
+                store_dict: dict[Any, Any] = store  # type: ignore[assignment]
+                store_key: str = str(getattr(p_any, "world_ref", ""))
+                w = store_dict.get(store_key)
+            if w is None:
+                raise ContractError(
+                    "local: belief world missing for particle; synthetic worlds removed"
+                )
+            worlds.append(w)
+        if len(worlds) == 0:
+            raise ContractError(
+                "local: belief sampling returned no worlds; synthetic worlds removed"
+            )
+        self._particles = len(worlds)
+        self._model_calls += len(worlds)
         # Map abstract ids to indices for distribution ordering
         ab_order = tuple(sorted(ab.abstract_ids))
         # Initialize regrets/q for each key

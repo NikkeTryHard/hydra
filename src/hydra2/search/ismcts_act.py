@@ -17,9 +17,9 @@ from typing import TYPE_CHECKING, Any
 
 from hydra2.contracts.common import ContractError
 from hydra2.search.common import Planner as Planner
-from hydra2.search.ismcts_core import _HAS_RANDOM as _HAS_RANDOM
 from hydra2.search.ismcts_core import SearchRequest as SearchRequest
 from hydra2.search.ismcts_core import SearchResult as SearchResult
+from hydra2.search.ismcts_core import _require_random_stream as _require_random_stream
 from hydra2.search.ismcts_search import (
     NaturalISMCTSPlannerSearchMixin as NaturalISMCTSPlannerSearchMixin,
 )
@@ -154,16 +154,22 @@ class NaturalISMCTSPlannerActMixin(NaturalISMCTSPlannerSearchMixin):
         else:
             case_id = "case_default"
         candidate_id = getattr(request.candidate_spec, "candidate_id", self._config.candidate_id)
-        # Deterministic counter-based stream required; no secrets fallback.
-        if not _HAS_RANDOM:
-            raise ContractError("ismcts: hydra2.contracts.randomness required; no secrets fallback")
+        # Deterministic counter-based stream required; no secrets fallback (fail closed).
+        _require_random_stream()
         try:
             from hydra2.contracts.randomness import RandomStream
-
+        except ImportError as exc:
+            raise ImportError(
+                "hydra2.contracts.randomness not importable "
+                f"({exc}); build the bridge with `pixi run build-ext` before ISMCTS search"
+            ) from exc
+        try:
             # Derive stream from (candidate_id, case_id, belief_epoch)
             epoch_id = str(getattr(belief_epoch, "epoch", "0"))
             seed = hashlib.sha256(f"{candidate_id}:{case_id}:{epoch_id}".encode()).digest()
             rng = RandomStream(seed)
+        except ImportError:
+            raise
         except Exception as exc:
             raise ContractError(f"ismcts: deterministic RNG required: {exc}") from exc
 
@@ -194,15 +200,18 @@ class NaturalISMCTSPlannerActMixin(NaturalISMCTSPlannerSearchMixin):
             rng=rng,
         )
 
-        # Typed telemetry required; no dict/NEVER-bind fallback.
+        # Typed telemetry required; no dict/NEVER-bind fallback (fail closed).
         try:
             from hydra2.contracts.utility import UtilityVector as _UV
             from hydra2.eval.telemetry import make_resource_telemetry as _mrt
             from hydra2.search.common import candidate_spec_hash as _csh
-        except Exception as exc:
-            raise ContractError(f"ismcts: typed telemetry contract required: {exc}") from exc
+        except ImportError as exc:
+            raise ImportError(
+                "hydra2.contracts.utility/telemetry not importable "
+                f"({exc}); build the bridge with `pixi run build-ext` before ISMCTS search"
+            ) from exc
 
-        # Build UtilityVectors (vector preserved, identity from manifest)
+        # Build UtilityVectors (vector preserved, identity from manifest) — fail closed, no raw fallback.
         u_vectors: list[Any] = []
         for vec in res["value_vectors"]:
             try:
@@ -220,9 +229,10 @@ class NaturalISMCTSPlannerActMixin(NaturalISMCTSPlannerSearchMixin):
                         ),
                     )
                 )
-            except Exception:
-                # fallback if UtilityVector signature differs
-                u_vectors.append(vec)
+            except ImportError:
+                raise
+            except (AttributeError, ValueError, TypeError, OSError) as exc:
+                raise ContractError(f"ismcts: UtilityVector build failed: {exc}") from exc
         try:
             spec_hash = _csh(request.candidate_spec)  # type: ignore[call-arg]
         except Exception as exc:

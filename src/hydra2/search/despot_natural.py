@@ -40,11 +40,11 @@ from hydra2.search.common import Planner as Planner
 from hydra2.search.common import SearchRequest as SearchRequest
 from hydra2.search.common import SearchResult as SearchResult
 from hydra2.search.despot_act import NaturalDespotPlannerActMixin as NaturalDespotPlannerActMixin
+from hydra2.search.despot_core import _BELIEF_IMPORT_ERROR as _BELIEF_IMPORT_ERROR
 from hydra2.search.despot_core import _COMMON_AVAILABLE as _COMMON_AVAILABLE
-from hydra2.search.despot_core import _HAS_BELIEF as _HAS_BELIEF
-from hydra2.search.despot_core import _HAS_RANDOM as _HAS_RANDOM
-from hydra2.search.despot_core import _HAS_TELEMETRY as _HAS_TELEMETRY
-from hydra2.search.despot_core import _HAS_UTILITY as _HAS_UTILITY
+from hydra2.search.despot_core import _RANDOM_IMPORT_ERROR as _RANDOM_IMPORT_ERROR
+from hydra2.search.despot_core import _TELEMETRY_IMPORT_ERROR as _TELEMETRY_IMPORT_ERROR
+from hydra2.search.despot_core import _UTILITY_IMPORT_ERROR as _UTILITY_IMPORT_ERROR
 from hydra2.search.despot_core import Any as Any
 from hydra2.search.despot_core import BeliefEpoch as BeliefEpoch
 from hydra2.search.despot_core import CandidateSpec as CandidateSpec

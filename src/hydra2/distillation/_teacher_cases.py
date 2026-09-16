@@ -20,8 +20,25 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 from hydra2.contracts.common import ContractError
-from hydra2.distillation._teacher_gate import _action_table as _action_table
 from hydra2.distillation._teacher_gate import _require_sha256 as _require_sha256
+
+
+def _require_census_bridge() -> object:
+    """Resolve the census bridge, fail closed when not built (no JSON fallback)."""
+    try:
+        from hydra2_replay_rs import contracts as bridge  # pyrefly: ignore[missing-import]
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2 census authority requires the hydra2_replay_rs bridge; "
+            "run `pixi run build-ext` to build the extension before use"
+        ) from exc
+    if not hasattr(bridge, "action_census") or not hasattr(bridge, "action_census_count"):
+        raise ImportError(
+            "hydra2_replay_rs.contracts census surface missing (stale .so); "
+            "rebuild the bridge (`pixi run build-ext`)"
+        )
+    return bridge
+
 
 if TYPE_CHECKING:
     from hydra2.contracts.observation import ActorObservation
@@ -119,18 +136,20 @@ def _case_hand_tiles(*, case_id: str, teacher_id: str, seed_material: bytes) -> 
 def _discard_mask_for_hand(hand: tuple[int, ...]) -> tuple[bool, ...]:
     """Exact legal mask for a discard-phase case: discards of held tiles only.
 
-    Derived from the canonical action table (kind == "discard", matching tile),
-    never a hash coin-flip. Length equals the full table; every other action is
-    illegal in this fixture phase.
+    Derived from the canonical action census via the bridge (kind == "discard",
+    matching tile), never a hash coin-flip. Length equals the full census;
+    every other action is illegal in this fixture phase. Bit-identical to the
+    retired JSON-table path (verified: bridge order == payload.actions order).
     """
-    entries = _action_table()
+    bridge = _require_census_bridge()
+    records = bridge.action_census()  # type: ignore[attr-defined]
     index_by_tile: dict[int, int] = {}
-    for idx, entry in enumerate(entries):
-        if entry.get("kind") == "discard" and isinstance(entry.get("tile"), int):
-            tile: int = entry["tile"]
-            if tile not in index_by_tile:
-                index_by_tile[tile] = idx
-    mask = [False] * len(entries)
+    for idx, entry in enumerate(records):
+        if entry.kind == "discard" and entry.tile is not None:
+            tile_id: int = int(entry.tile)
+            if tile_id not in index_by_tile:
+                index_by_tile[tile_id] = idx
+    mask = [False] * len(records)
     for tile in hand:
         idx = index_by_tile.get(tile)
         if idx is None:
@@ -262,7 +281,8 @@ def _teacher_policy_and_value(
     """
     from hydra2.models.encoder import encode_observations
 
-    if len(observation.legal_mask) != len(_action_table()):
+    census_len = int(_require_census_bridge().action_census_count())  # type: ignore[attr-defined]
+    if len(observation.legal_mask) != census_len:
         raise ContractError(
             "WP-10 blocked: observation legal mask does not match canonical action table"
         )

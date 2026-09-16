@@ -25,9 +25,9 @@ from hydra2.search.local_search import (
     LocalResolvingPlannerSearchMixin as LocalResolvingPlannerSearchMixin,
 )
 from hydra2.search.local_shared import _COMMON_AVAILABLE as _COMMON_AVAILABLE
-from hydra2.search.local_shared import _HAS_CONTRACTS as _HAS_CONTRACTS
-from hydra2.search.local_shared import _HAS_RANDOM as _HAS_RANDOM
 from hydra2.search.local_shared import _MASTER_SEED as _MASTER_SEED
+from hydra2.search.local_shared import _require_contracts as _require_contracts
+from hydra2.search.local_shared import _require_random_stream as _require_random_stream
 from hydra2.search.local_shared import logger as logger
 from hydra2.search.local_strategy import StrategyTable as StrategyTable
 from hydra2.search.local_strategy import make_uniform_strategy as make_uniform_strategy
@@ -195,40 +195,31 @@ class LocalResolvingPlannerActMixin(LocalResolvingPlannerSearchMixin):
         return table
 
     def _deterministic_rng(self, case_id: str, root_seat: int, attempt: int = 0) -> Any:
-        # Counter-based semantic seed: purposes actor_policy_sample + confirmation
-        # Use simple hash fallback when RandomStream unavailable
-        seed_material = f"{case_id}:{root_seat}:candidate5:{attempt}"
-        if _HAS_RANDOM:
-            try:
-                key = make_random_stream_key(
-                    purpose="actor_policy_sample",
-                    experiment_id="wp09d",
-                    split_id="candidate5",
-                    candidate_id="candidate5",
-                    case_id=case_id,
-                    root_seat=root_seat,
-                    attempt_id=attempt,
-                )
-                raw = semantic_seed(_MASTER_SEED, key=key)
-                return RandomStream(raw)  # type: ignore[no-untyped-call]
-            except Exception:
-                pass
-        # Fallback deterministic bytes stream
-        h = hashlib.sha256(seed_material.encode()).digest()
+        # Counter-based semantic seed: purposes actor_policy_sample + confirmation (fail closed, no LCG fallback).
+        _require_random_stream()
+        try:
+            import hashlib as _hl
 
-        class _SimpleRNG:
-            def __init__(self, seed: bytes) -> None:
-                self._s = int.from_bytes(seed[:8], "little")
-
-            def randint(self, a: int, b: int) -> int:
-                self._s = (self._s * 6364136223846793005 + 1) & ((1 << 64) - 1)
-                return a + (self._s % (b - a + 1)) if b >= a else a
-
-            def random(self) -> float:
-                self._s = (self._s * 6364136223846793005 + 1) & ((1 << 64) - 1)
-                return (self._s >> 11) * (1.0 / (1 << 53))
-
-        return _SimpleRNG(h)
+            # replicate_id carries case variation alongside game-scoped case_id.
+            replicate_id = (
+                int.from_bytes(_hl.sha256(str(case_id).encode()).digest()[:4], "big") % 1000003
+            )
+            key = make_random_stream_key(
+                purpose="actor_policy_sample",
+                experiment_id="wp09d",
+                split_id="candidate5",
+                candidate_id="candidate5",
+                case_id=str(case_id),
+                replicate_id=replicate_id,
+                attempt_id=int(attempt),
+                root_seat=int(root_seat),
+            )
+            raw = semantic_seed(_MASTER_SEED, key=key)
+            return RandomStream(raw)  # type: ignore[no-untyped-call]
+        except ImportError:
+            raise
+        except Exception as exc:
+            raise ContractError(f"local: deterministic RNG required: {exc}") from exc
 
     def act(self, request: SearchRequest) -> SearchResult:
         """Planner act — implements SPEC 15 Search API with exact validation.
@@ -335,16 +326,19 @@ class LocalResolvingPlannerActMixin(LocalResolvingPlannerSearchMixin):
             )
         elif len(raw_vectors) > len(candidate_actions):
             raw_vectors = raw_vectors[: len(candidate_actions)]
-        assert _HAS_CONTRACTS, "contracts required for UtilityVector digests"
+        _require_contracts()
         try:
             from hydra2.contracts.utility import UtilityVector
-
-            spec_for_util = request.candidate_spec
-            utility_id = str(
-                getattr(
-                    spec_for_util, "utility_id", "expected_final_placement_tenhou_4p_hanchan_v1"
-                )
-            )
+        except ImportError as exc:
+            raise ImportError(
+                "hydra2.contracts.utility not importable "
+                f"({exc}); build the bridge with `pixi run build-ext` before local resolving search"
+            ) from exc
+        spec_for_util = request.candidate_spec
+        utility_id = str(
+            getattr(spec_for_util, "utility_id", "expected_final_placement_tenhou_4p_hanchan_v1")
+        )
+        try:
             vectors = tuple(
                 UtilityVector(
                     values=cast("tuple[float, float, float, float]", tuple(float(x) for x in v)),
@@ -358,51 +352,52 @@ class LocalResolvingPlannerActMixin(LocalResolvingPlannerSearchMixin):
                 )
                 for v in raw_vectors
             )
-        except Exception:
-            vectors = tuple(raw_vectors)
+        except ImportError:
+            raise
+        except (AttributeError, ValueError, TypeError, OSError) as exc:
+            raise ContractError(f"local: UtilityVector build failed: {exc}") from exc
         completed = bool(res.get("completed", True)) and not is_expired
         try:
-            from hydra2.contracts.observation import make_actor_observation
-
-            # Try to construct proper SearchResult
-            # Need ResourceTelemetry dataclass — try import
-            try:
-                from hydra2.eval.blocks import ResourceTelemetry  # type: ignore
-            except Exception:
-                ResourceTelemetry = None  # noqa: N806
-            if ResourceTelemetry is not None and _COMMON_AVAILABLE:
-                tel_any: dict[str, Any] = telemetry  # type: ignore[assignment]
-                elapsed_any: Any = tel_any.get("elapsed_ms", 0.0)
-                model_any: Any = tel_any.get("model_calls", 0)
-                trans_any: Any = tel_any.get("exact_transitions", 0)
-                part_any: Any = tel_any.get("particles", 0)
-                tel_obj = ResourceTelemetry(
-                    mode="gameplay_5s",
-                    wall_id=None,
-                    case_id=None,
-                    candidate_spec_hash=spec_hash,
-                    # NEVER-bind: fallback digest, not a verified binding.
-                    hardware_hash="sha256:" + "0" * 64,
-                    # NEVER-bind: fallback digest, not a verified binding.
-                    environment_hash="sha256:" + "0" * 64,
-                    cold_start=False,
-                    synchronized_elapsed_ms=float(elapsed_any),
-                    model_calls=int(model_any),
-                    exact_transitions=int(trans_any),
-                    particles=int(part_any),
-                    fallback_used=is_expired,
-                    timeout=is_expired,
-                    illegal_action=False,
-                    cuda_peak_allocated_bytes=None,
-                    cuda_peak_reserved_bytes=None,
-                    host_peak_bytes=None,
-                    energy_joules=None,
-                    graph_breaks=None,
-                    recompiles=None,
-                    invalid_reason=None,
-                )
-            else:
-                tel_obj = telemetry
+            from hydra2.eval.telemetry import make_resource_telemetry as _mrt
+        except ImportError as exc:
+            raise ImportError(
+                "hydra2.eval.telemetry not importable "
+                f"({exc}); build the bridge with `pixi run build-ext` before local resolving search"
+            ) from exc
+        tel_any: dict[str, Any] = telemetry  # type: ignore[assignment]
+        elapsed_any: Any = tel_any.get("elapsed_ms", 0.0)
+        model_any: Any = tel_any.get("model_calls", 0)
+        trans_any: Any = tel_any.get("exact_transitions", 0)
+        part_any: Any = tel_any.get("particles", 0)
+        try:
+            tel_obj = _mrt(
+                mode="gameplay_5s",
+                wall_id=None,
+                case_id=None,
+                candidate_spec_hash=spec_hash,
+                hardware_hash="sha256:" + "0" * 64,
+                environment_hash="sha256:" + "0" * 64,
+                cold_start=False,
+                synchronized_elapsed_ms=float(elapsed_any),
+                model_calls=int(model_any),
+                exact_transitions=int(trans_any),
+                particles=int(part_any),
+                fallback_used=is_expired,
+                timeout=is_expired,
+                illegal_action=False,
+                cuda_peak_allocated_bytes=None,
+                cuda_peak_reserved_bytes=None,
+                host_peak_bytes=None,
+                energy_joules=None,
+                graph_breaks=None,
+                recompiles=None,
+                invalid_reason=None,
+            )
+        except ImportError:
+            raise
+        except (AttributeError, ValueError, TypeError, OSError) as exc:
+            raise ContractError(f"local: telemetry build failed: {exc}") from exc
+        try:
             result = CommonResult(  # type: ignore[call-arg]
                 selected_action=selected,
                 candidate_actions=candidate_actions,
@@ -412,18 +407,11 @@ class LocalResolvingPlannerActMixin(LocalResolvingPlannerSearchMixin):
                 evidence_refs=(),
                 completed=completed,
             )
-            return result
-        except Exception:
-            # Fallback minimal SearchResult
-            return SearchResult(
-                selected_action=selected,
-                candidate_actions=candidate_actions,
-                value_vectors=tuple(vectors),
-                candidate_spec_hash=spec_hash,
-                telemetry=telemetry,
-                evidence_refs=(),
-                completed=completed,
-            )
+        except ImportError:
+            raise
+        except (AttributeError, ValueError, TypeError, OSError) as exc:
+            raise ContractError(f"local: SearchResult build failed: {exc}") from exc
+        return result
 
 
 class LocalResolvingPlanner(  # type: ignore[misc]

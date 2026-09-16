@@ -65,11 +65,11 @@ __all__ = [
 # submodules now (kept so the search package, lazy candidate factories,
 # and type-checking imports resolve without touching the new paths).
 from hydra2.search.gumbel_config import _ActionStats as _ActionStats
+from hydra2.search.gumbel_core import _BELIEF_IMPORT_ERROR as _BELIEF_IMPORT_ERROR
 from hydra2.search.gumbel_core import _GUMBEL_SEED_DOMAIN as _GUMBEL_SEED_DOMAIN
-from hydra2.search.gumbel_core import _HAS_BELIEF as _HAS_BELIEF
-from hydra2.search.gumbel_core import _HAS_RANDOM as _HAS_RANDOM
-from hydra2.search.gumbel_core import _HAS_TELEMETRY as _HAS_TELEMETRY
 from hydra2.search.gumbel_core import _MASTER_SEED as _MASTER_SEED
+from hydra2.search.gumbel_core import _RANDOM_IMPORT_ERROR as _RANDOM_IMPORT_ERROR
+from hydra2.search.gumbel_core import _TELEMETRY_IMPORT_ERROR as _TELEMETRY_IMPORT_ERROR
 from hydra2.search.gumbel_core import DEPLOYABLE_DEADLINE_MS as DEPLOYABLE_DEADLINE_MS
 from hydra2.search.gumbel_core import REPO_ROOT as REPO_ROOT
 from hydra2.search.gumbel_core import U64_DENOM as U64_DENOM

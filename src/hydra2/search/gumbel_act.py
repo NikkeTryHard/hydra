@@ -18,7 +18,7 @@ from hydra2.contracts.common import ContractError as ContractError
 from hydra2.search.common import Planner as Planner
 from hydra2.search.common import SearchRequest as SearchRequest
 from hydra2.search.common import SearchResult as SearchResult
-from hydra2.search.gumbel_core import _HAS_RANDOM as _HAS_RANDOM
+from hydra2.search.gumbel_core import _require_random_stream as _require_random_stream
 from hydra2.search.gumbel_core import make_digest_text as make_digest_text
 from hydra2.search.gumbel_search import (
     GumbelSearchPlannerSearchMixin as GumbelSearchPlannerSearchMixin,
@@ -140,15 +140,21 @@ class GumbelSearchPlannerActMixin(GumbelSearchPlannerSearchMixin):
             _dec2: Any | None = getattr(request.observation, "decision_id", None)
             case_id = _dec2 if isinstance(_dec2, str) and _dec2 != "" else "case_default"
         candidate_id = getattr(request.candidate_spec, "candidate_id", self._config.candidate_id)
-        # Deterministic counter-based stream required; no secrets fallback.
-        if not _HAS_RANDOM:
-            raise ContractError("gumbel: hydra2.contracts.randomness required; no secrets fallback")
+        # Deterministic counter-based stream required; no secrets fallback (fail closed).
+        _require_random_stream()
         try:
             from hydra2.contracts.randomness import RandomStream
-
+        except ImportError as exc:
+            raise ImportError(
+                "hydra2.contracts.randomness not importable "
+                f"({exc}); build the bridge with `pixi run build-ext` before Gumbel search"
+            ) from exc
+        try:
             epoch_id = str(getattr(belief_epoch, "epoch", "0"))
             seed = hashlib.sha256(f"{candidate_id}:{case_id}:{epoch_id}".encode()).digest()
             rng = RandomStream(seed)
+        except ImportError:
+            raise
         except Exception as exc:
             raise ContractError(f"gumbel: deterministic RNG required: {exc}") from exc
 
@@ -180,13 +186,16 @@ class GumbelSearchPlannerActMixin(GumbelSearchPlannerSearchMixin):
             case_id=str(case_id),
         )
 
-        # Typed telemetry required; no dict/NEVER-bind fallback.
+        # Typed telemetry required; no dict/NEVER-bind fallback (fail closed).
         try:
             from hydra2.contracts.utility import UtilityVector as _UV
             from hydra2.eval.telemetry import make_resource_telemetry as _mrt
             from hydra2.search.common import candidate_spec_hash as _csh
-        except Exception as exc:
-            raise ContractError(f"gumbel: typed telemetry contract required: {exc}") from exc
+        except ImportError as exc:
+            raise ImportError(
+                "hydra2.contracts.utility/telemetry not importable "
+                f"({exc}); build the bridge with `pixi run build-ext` before Gumbel search"
+            ) from exc
 
         u_vectors: list[Any] = []
         for vec in res["value_vectors"]:
@@ -216,8 +225,10 @@ class GumbelSearchPlannerActMixin(GumbelSearchPlannerSearchMixin):
                         ),
                     )
                 )
-            except Exception:
-                u_vectors.append(vec)
+            except ImportError:
+                raise
+            except (AssertionError, AttributeError, ValueError, TypeError, OSError) as exc:
+                raise ContractError(f"gumbel: UtilityVector build failed: {exc}") from exc
         try:
             spec_hash = _csh(request.candidate_spec)  # type: ignore[call-arg]
         except Exception as exc:

@@ -24,12 +24,12 @@ from hydra2.contracts.common import (
     PacketPartitionError,
 )
 from hydra2.search.common import Planner as Planner
-from hydra2.search.despot_core import _HAS_BELIEF as _HAS_BELIEF
 from hydra2.search.despot_core import NaturalScenario as NaturalScenario
 from hydra2.search.despot_core import ResourceBudget as ResourceBudget
 from hydra2.search.despot_core import _default_budget as _default_budget
 from hydra2.search.despot_core import _DespotNode as _DespotNode
 from hydra2.search.despot_core import _hash_tie_break as _hash_tie_break
+from hydra2.search.despot_core import _require_belief as _require_belief
 from hydra2.search.despot_core import validate_packet_partition as validate_packet_partition
 from hydra2.search.despot_result import (
     NaturalDespotPlannerResultMixin as NaturalDespotPlannerResultMixin,
@@ -326,13 +326,9 @@ class NaturalDespotPlannerActMixin(NaturalDespotPlannerResultMixin):
             ):
                 completed = False
                 break
-            # Expand this action's packet children if kernel available and we have scenarios for it
-            if (
-                self._kernel is not None
-                and belief_epoch is not None
-                and _HAS_BELIEF
-                and self._belief is not None
-            ):
+            # Expand this action's packet children — kernel/belief required (fail closed, no synthetic).
+            _require_belief()
+            if self._kernel is not None and belief_epoch is not None and self._belief is not None:
                 # Need at least one particle to enumerate. Use first scenario's world to derive a dummy particle.
                 # In real deployment, we would enumerate per-parent particle; here we validate partition via kernel per action.
                 try:
@@ -361,10 +357,7 @@ class NaturalDespotPlannerActMixin(NaturalDespotPlannerResultMixin):
                 except (PacketPartitionError, ContractError):
                     raise
                 except (AttributeError, ValueError, TypeError, OSError, RuntimeError) as exc:
-                    logger.debug("despot: kernel synthetic count fallback", exc_info=exc)
-                    # kernel not fully wired for synthetic test; just count
-                    self._transitions += 1
-                    self._model_calls += 1
+                    raise ContractError(f"despot: kernel expansion failed: {exc}") from exc
                 # No kernel/belief: synthetic expand counts as one transition per action
                 self._transitions += 1
                 self._model_calls += 1

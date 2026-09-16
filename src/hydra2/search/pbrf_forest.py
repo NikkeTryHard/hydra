@@ -30,7 +30,6 @@ from hydra2.contracts.common import (
     make_digest_text,
     make_tile_id,
 )
-from hydra2.search.pbrf_partition import _HAS_KERNEL as _HAS_KERNEL
 from hydra2.search.pbrf_partition import ChildEntry as ChildEntry
 from hydra2.search.pbrf_partition import NaturalPacketKernel as NaturalPacketKernel
 from hydra2.search.pbrf_partition import PbrfConfig as PbrfConfig
@@ -40,6 +39,7 @@ from hydra2.search.pbrf_partition import _action_id as _action_id
 from hydra2.search.pbrf_partition import _ess_for_key as _ess_for_key
 from hydra2.search.pbrf_partition import _freeze_candidates as _freeze_candidates
 from hydra2.search.pbrf_partition import _normalized_weights as _normalized_weights
+from hydra2.search.pbrf_partition import _require_kernel as _require_kernel
 from hydra2.search.pbrf_partition import _require_partition as _require_partition
 from hydra2.search.pbrf_partition import _z_hat_for_key as _z_hat_for_key
 from hydra2.search.pbrf_partition import fixed_allocate as fixed_allocate
@@ -395,15 +395,15 @@ def build_pbrf(
     if not isinstance(n, int) or isinstance(n, bool) or n <= 0:
         raise ContractError("parent_count must be positive int")
 
-    # Resolve kernel / policy_set defaults
+    # Resolve kernel / policy_set defaults (fail closed, no silent None).
     if kernel is None:
-        if _HAS_KERNEL:
-            try:
-                kernel = NaturalPacketKernel(kernel_tolerance=cfg.kernel_tolerance)  # type: ignore[call-arg]
-            except Exception as exc:
-                raise ContractError(f"kernel required: {exc}") from exc
-        else:
-            raise ContractError("kernel is required for build_pbrf")
+        _require_kernel()
+        try:
+            kernel = NaturalPacketKernel(kernel_tolerance=cfg.kernel_tolerance)  # type: ignore[call-arg]
+        except ImportError:
+            raise
+        except Exception as exc:
+            raise ContractError(f"kernel required: {exc}") from exc
     if policy_set is None:
         try:
             policy_set = PolicySet()  # type: ignore[call-arg]

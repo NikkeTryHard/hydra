@@ -58,13 +58,13 @@ __all__ = [
 # Names importable from this path before the split that live in the
 # submodules now (kept so the search package, lazy candidate factories,
 # and type-checking imports resolve without touching the new paths).
+from hydra2.search.joint_types import _BELIEF_IMPORT_ERROR as _BELIEF_IMPORT_ERROR
 from hydra2.search.joint_types import _COMMON_AVAILABLE as _COMMON_AVAILABLE
-from hydra2.search.joint_types import _HAS_BELIEF as _HAS_BELIEF
-from hydra2.search.joint_types import _HAS_OBS as _HAS_OBS
-from hydra2.search.joint_types import _HAS_RANDOM as _HAS_RANDOM
 from hydra2.search.joint_types import _INFO_KEY_DOMAIN as _INFO_KEY_DOMAIN
 from hydra2.search.joint_types import _JOINT_GUMBEL_DOMAIN as _JOINT_GUMBEL_DOMAIN
 from hydra2.search.joint_types import _MASTER_SEED as _MASTER_SEED
+from hydra2.search.joint_types import _OBS_IMPORT_ERROR as _OBS_IMPORT_ERROR
+from hydra2.search.joint_types import _RANDOM_IMPORT_ERROR as _RANDOM_IMPORT_ERROR
 from hydra2.search.joint_types import DIVERGENCE_DIRECTIONS as DIVERGENCE_DIRECTIONS
 from hydra2.search.joint_types import RATIONALITY_RULES as RATIONALITY_RULES
 from hydra2.search.joint_types import SUPPORT_CLASSES as SUPPORT_CLASSES

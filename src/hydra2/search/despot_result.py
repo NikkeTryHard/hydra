@@ -12,17 +12,18 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
-from typing import Any, cast
+from typing import Any
 
 from hydra2.artifacts.canonical import canonical_bytes
+from hydra2.contracts.common import ContractError
 from hydra2.search.common import SearchResult as SearchResult
 from hydra2.search.despot_core import _COMMON_AVAILABLE as _COMMON_AVAILABLE
-from hydra2.search.despot_core import _HAS_TELEMETRY as _HAS_TELEMETRY
-from hydra2.search.despot_core import _HAS_UTILITY as _HAS_UTILITY
 from hydra2.search.despot_core import DespotConfig as DespotConfig
 from hydra2.search.despot_core import ResourceTelemetry as ResourceTelemetry
 from hydra2.search.despot_core import UtilityVector as UtilityVector
 from hydra2.search.despot_core import _DespotNode as _DespotNode
+from hydra2.search.despot_core import _require_telemetry as _require_telemetry
+from hydra2.search.despot_core import _require_utility as _require_utility
 from hydra2.search.despot_search import (
     NaturalDespotPlannerSearchMixin as NaturalDespotPlannerSearchMixin,
 )
@@ -67,58 +68,55 @@ class NaturalDespotPlannerResultMixin(NaturalDespotPlannerSearchMixin):
     ) -> Any:
         duration_ms = (time.monotonic_ns() - start_ns) / 1e6
         joules = self._model_calls * 0.5 + self._transitions * 0.2
-        if _HAS_TELEMETRY:
-            try:
-                from hydra2.eval.telemetry import make_resource_telemetry as _mrt
-
-                # Required digests — use provided spec_hash or dummy
-                cand_hash: str = (
-                    spec_hash
-                    if spec_hash is not None
-                    and isinstance(spec_hash, str)
-                    and spec_hash != ""
-                    and spec_hash.startswith("sha256:")
-                    else "sha256:" + "9" * 64
-                )
-                hw_hash = "sha256:" + "8" * 64
-                env_hash = "sha256:" + "7" * 64
-                mode = str(getattr(budget, "mode", "gameplay_5s"))
-                # wall_id/case_id are optional; keep None for synthetic
-                return _mrt(
-                    mode=mode,
-                    wall_id=None,
-                    case_id=case_id,
-                    candidate_spec_hash=cand_hash,
-                    hardware_hash=hw_hash,
-                    environment_hash=env_hash,
-                    cold_start=False,
-                    synchronized_elapsed_ms=duration_ms,
-                    model_calls=self._model_calls,
-                    exact_transitions=self._transitions,
-                    particles=self._config.num_scenarios,
-                    fallback_used=not completed,
-                    timeout=not completed,
-                    illegal_action=False,
-                    cuda_peak_allocated_bytes=None,
-                    cuda_peak_reserved_bytes=None,
-                    host_peak_bytes=None,
-                    energy_joules=joules,
-                    graph_breaks=None,
-                    recompiles=None,
-                    invalid_reason=None,
-                )
-            except (AttributeError, ImportError, ValueError, TypeError, OSError) as exc:
-                logger.debug("despot: telemetry fallback to dict", exc_info=exc)
-                # fall through to dict on any validation error
-                pass
-        return {
-            "model_calls": self._model_calls,
-            "duration_ms": duration_ms,
-            "joules": joules,
-            "completed": completed,
-            "resource_view": self._config.resource_view,
-            "particles": self._config.num_scenarios,
-        }
+        _require_telemetry()
+        try:
+            from hydra2.eval.telemetry import make_resource_telemetry as _mrt
+        except ImportError as exc:
+            raise ImportError(
+                "hydra2.eval.telemetry not importable "
+                f"({exc}); build the bridge with `pixi run build-ext` before DESPOT search"
+            ) from exc
+        # Required digests — use provided spec_hash or dummy
+        cand_hash: str = (
+            spec_hash
+            if spec_hash is not None
+            and isinstance(spec_hash, str)
+            and spec_hash != ""
+            and spec_hash.startswith("sha256:")
+            else "sha256:" + "9" * 64
+        )
+        hw_hash = "sha256:" + "8" * 64
+        env_hash = "sha256:" + "7" * 64
+        mode = str(getattr(budget, "mode", "gameplay_5s"))
+        # wall_id/case_id are optional; keep None for synthetic
+        try:
+            return _mrt(
+                mode=mode,
+                wall_id=None,
+                case_id=case_id,
+                candidate_spec_hash=cand_hash,
+                hardware_hash=hw_hash,
+                environment_hash=env_hash,
+                cold_start=False,
+                synchronized_elapsed_ms=duration_ms,
+                model_calls=self._model_calls,
+                exact_transitions=self._transitions,
+                particles=self._config.num_scenarios,
+                fallback_used=not completed,
+                timeout=not completed,
+                illegal_action=False,
+                cuda_peak_allocated_bytes=None,
+                cuda_peak_reserved_bytes=None,
+                host_peak_bytes=None,
+                energy_joules=joules,
+                graph_breaks=None,
+                recompiles=None,
+                invalid_reason=None,
+            )
+        except ImportError:
+            raise
+        except (AttributeError, ValueError, TypeError, OSError) as exc:
+            raise ContractError(f"despot: telemetry build failed: {exc}") from exc
 
     def _make_result(
         self,
@@ -131,130 +129,52 @@ class NaturalDespotPlannerResultMixin(NaturalDespotPlannerSearchMixin):
         completed: bool,
     ) -> Any:
         legal = tuple(getattr(request, "legal_actions", ()))
-        # Build UtilityVector per legal action (feasible lower estimate)
-        value_vectors: tuple[Any, ...]
-        if _HAS_UTILITY:
+        # Build UtilityVector per legal action (feasible lower estimate) — fail closed, no raw fallback.
+        _require_utility()
+        # Need rules_hash for UtilityVector; derive from observation or candidate spec
+        obs = getattr(request, "observation", None)
+        rules_hash = getattr(obs, "rules_hash", None) if obs is not None else None
+        if not isinstance(rules_hash, str):
+            cand = getattr(request, "candidate_spec", None)
+            rules_hash = (
+                getattr(cand, "rules_hash", "sha256:" + "a" * 64)
+                if cand is not None
+                else "sha256:" + "a" * 64
+            )
+        util_hash = getattr(
+            getattr(request, "candidate_spec", None),
+            "utility_manifest_hash",
+            "sha256:" + "b" * 64,
+        )
+        if not isinstance(util_hash, str):
+            util_hash = "sha256:" + "b" * 64
+        vecs: list[Any] = []
+        for act in legal:
+            v = lower_by_action.get(act, 0.0)
+            # Deterministic 4-seat placement vector: root gets v, others 0 (feasible, not zero-sum)
+            # Keep within manifest bounds: assume bounds [-10,10]
+            # Clamp v to [-5,5] for safety
+            v_clamped = max(-5.0, min(5.0, v))
             try:
-                # Need rules_hash for UtilityVector; derive from observation or candidate spec
-                obs = getattr(request, "observation", None)
-                rules_hash = getattr(obs, "rules_hash", None) if obs is not None else None
-                if not isinstance(rules_hash, str):
-                    cand = getattr(request, "candidate_spec", None)
-                    rules_hash = (
-                        getattr(cand, "rules_hash", "sha256:" + "a" * 64)
-                        if cand is not None
-                        else "sha256:" + "a" * 64
-                    )
-                util_hash = getattr(
-                    getattr(request, "candidate_spec", None),
-                    "utility_manifest_hash",
-                    "sha256:" + "b" * 64,
+                vec = UtilityVector(  # type: ignore[bad-instantiation]  # pyrefly: ignore[bad-instantiation]
+                    values=(v_clamped, 0.0, 0.0, 0.0),
+                    utility_id="expected_final_placement",
+                    utility_manifest_hash=util_hash,  # type: ignore[arg-type]
+                    rules_hash=rules_hash,  # type: ignore[arg-type]
                 )
-                if not isinstance(util_hash, str):
-                    util_hash = "sha256:" + "b" * 64
-                vecs: list[Any] = []
-                for act in legal:
-                    v = lower_by_action.get(act, 0.0)
-                    # Deterministic 4-seat placement vector: root gets v, others 0 (feasible, not zero-sum)
-                    # Keep within manifest bounds: assume bounds [-10,10]
-                    # Clamp v to [-5,5] for safety
-                    v_clamped = max(-5.0, min(5.0, v))
-                    vec = UtilityVector(  # type: ignore[bad-instantiation]  # pyrefly: ignore[bad-instantiation]
-                        values=(v_clamped, 0.0, 0.0, 0.0),
-                        utility_id="expected_final_placement",
-                        utility_manifest_hash=util_hash,  # type: ignore[arg-type]
-                        rules_hash=rules_hash,  # type: ignore[arg-type]
-                    )
-                    vecs.append(vec)
-                value_vectors = tuple(vecs)
+            except ImportError:
+                raise
             except (AttributeError, ValueError, TypeError, OSError) as exc:
-                logger.debug("despot: UtilityVector fallback to raw floats", exc_info=exc)
-                # fallback to raw floats if UtilityVector construction fails (e.g., bad hashes)
-                value_vectors = tuple(float(lower_by_action.get(a, 0.0)) for a in legal)  # type: ignore[assignment]
-        else:
-            value_vectors = tuple(float(lower_by_action.get(a, 0.0)) for a in legal)  # type: ignore[assignment]
-        if _COMMON_AVAILABLE and not isinstance(telemetry, ResourceTelemetry):  # type: ignore[arg-type]
-            try:
-                from hydra2.eval.telemetry import make_resource_telemetry as _mrt
-
-                # Rebuild telemetry as proper type if we had dict fallback
-                if isinstance(telemetry, dict):
-                    # Use already computed spec_hash and case_id from request
-                    cid_raw: Any = getattr(request, "case_id", None)
-                    cid_alt: Any = getattr(
-                        getattr(request, "observation", None), "decision_id", None
-                    )
-                    cid_val: Any = cid_raw if cid_raw is not None else cid_alt
-                    if isinstance(cid_val, str) and cid_val == "":
-                        cid_val = cid_alt
-                    cid: str | None = (
-                        cast("str | None", cid_val)
-                        if isinstance(cid_val, str) and cid_val != ""
-                        else None
-                    )
-                    # Recompute with proper hashes inside _make_telemetry
-                    # Use stored model_calls/transitions
-                    telemetry_dict: dict[str, Any] = cast("dict[str, Any]", telemetry)
-                    telemetry = _mrt(
-                        mode=str(
-                            getattr(
-                                getattr(
-                                    getattr(request, "candidate_spec", None),
-                                    "resource_budget",
-                                    None,
-                                ),
-                                "mode",
-                                "gameplay_5s",
-                            )
-                            if getattr(
-                                getattr(request, "candidate_spec", None), "resource_budget", None
-                            )
-                            is not None
-                            else "gameplay_5s"
-                        ),
-                        wall_id=None,
-                        case_id=cid,
-                        candidate_spec_hash=spec_hash,
-                        hardware_hash="sha256:" + "8" * 64,
-                        environment_hash="sha256:" + "7" * 64,
-                        cold_start=False,
-                        synchronized_elapsed_ms=float(telemetry_dict.get("duration_ms", 1.0)),
-                        model_calls=self._model_calls,
-                        exact_transitions=self._transitions,
-                        particles=self._config.num_scenarios,
-                        fallback_used=not completed,
-                        timeout=not completed,
-                        illegal_action=False,
-                        cuda_peak_allocated_bytes=None,
-                        cuda_peak_reserved_bytes=None,
-                        host_peak_bytes=None,
-                        energy_joules=float(telemetry_dict.get("joules", 0.0)),
-                        graph_breaks=None,
-                        recompiles=None,
-                        invalid_reason=None,
-                    )
-            except (AttributeError, ImportError, ValueError, TypeError, OSError) as exc:
-                logger.debug("despot: telemetry rebuild fallback", exc_info=exc)
-                pass
+                raise ContractError(f"despot: UtilityVector build failed: {exc}") from exc
+            vecs.append(vec)
+        value_vectors: tuple[Any, ...] = tuple(vecs)
+        if not isinstance(telemetry, ResourceTelemetry):  # type: ignore[arg-type]
+            raise ContractError(
+                "despot: telemetry must be ResourceTelemetry; dict fallback removed"
+            )
         evidence = (
             f"sha256:{hashlib.sha256(canonical_bytes({'lower_by_action': {str(getattr(k, 'action_id', k)): v for k, v in lower_by_action.items()}})).hexdigest()}",
         )
-        if _COMMON_AVAILABLE:
-            try:
-                return SearchResult(
-                    selected_action=selected,
-                    candidate_actions=legal,
-                    value_vectors=value_vectors,
-                    candidate_spec_hash=spec_hash,
-                    telemetry=telemetry,
-                    evidence_refs=evidence,
-                    completed=completed,
-                )
-            except (AttributeError, ValueError, TypeError, OSError) as exc:
-                logger.debug("despot: SearchResult strict fallback", exc_info=exc)
-                # If strict validation fails, try fallback with dict telemetry but still need proper vectors
-                # Fall back to object without validation via __new__
-                pass
         return SearchResult(
             selected_action=selected,
             candidate_actions=legal,

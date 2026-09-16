@@ -21,6 +21,8 @@
 //! (split/manifest math calling `canon`/`digest`, never a second printer),
 //! `quarantine` + `validate` (taxonomy-closed verdicts over decoded games).
 pub mod canon;
+pub mod census;
+pub mod chain;
 pub mod decode;
 pub mod digest;
 pub mod fill;

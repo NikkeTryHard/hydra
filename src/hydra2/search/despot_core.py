@@ -29,38 +29,85 @@ logger = logging.getLogger(__name__)
 try:
     from hydra2.contracts.randomness import RandomStream
 
-    _HAS_RANDOM = True
-except ImportError:  # pragma: no cover
-    _HAS_RANDOM = False
-    RandomStream = Any
+    _RANDOM_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    RandomStream = Any  # placeholder; _require_random_stream() raises on use
+    _RANDOM_IMPORT_ERROR = exc
+
+
+def _require_random_stream() -> Any:
+    """Fail-closed RNG access (lazy ImportError with build-ext hint)."""
+    if _RANDOM_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.contracts.randomness not importable "
+            f"({_RANDOM_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before DESPOT search"
+        ) from _RANDOM_IMPORT_ERROR
+    return RandomStream
+
 
 try:
     from hydra2.belief.kernel import NaturalPacketKernel
     from hydra2.belief.natural import BeliefEpoch, NaturalBelief
 
-    _HAS_BELIEF = True
-except ImportError:  # pragma: no cover
-    _HAS_BELIEF = False
-    NaturalBelief = Any
+    _BELIEF_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    NaturalBelief = Any  # placeholder; _require_belief() raises on use
     BeliefEpoch = Any
     NaturalPacketKernel = Any
+    _BELIEF_IMPORT_ERROR = exc
+
+
+def _require_belief() -> None:
+    """Fail-closed belief access (lazy ImportError with build-ext hint)."""
+    if _BELIEF_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.belief kernel/natural not importable "
+            f"({_BELIEF_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before DESPOT search"
+        ) from _BELIEF_IMPORT_ERROR
+
 
 try:
     from hydra2.eval.telemetry import ResourceTelemetry, make_resource_telemetry
 
-    _HAS_TELEMETRY = True
-except ImportError:  # pragma: no cover
-    _HAS_TELEMETRY = False
-    ResourceTelemetry = Any
+    _TELEMETRY_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    ResourceTelemetry = Any  # placeholder; _require_telemetry() raises on use
     make_resource_telemetry = Any
+    _TELEMETRY_IMPORT_ERROR = exc
+
+
+def _require_telemetry() -> Any:
+    """Fail-closed telemetry access (lazy ImportError with build-ext hint)."""
+    if _TELEMETRY_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.eval.telemetry not importable "
+            f"({_TELEMETRY_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before DESPOT search"
+        ) from _TELEMETRY_IMPORT_ERROR
+    return make_resource_telemetry
+
 
 try:
     from hydra2.contracts.utility import UtilityVector
 
-    _HAS_UTILITY = True
-except ImportError:  # pragma: no cover
-    _HAS_UTILITY = False
-    UtilityVector = Any
+    _UTILITY_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    UtilityVector = Any  # placeholder; _require_utility() raises on use
+    _UTILITY_IMPORT_ERROR = exc
+
+
+def _require_utility() -> Any:
+    """Fail-closed utility access (lazy ImportError with build-ext hint)."""
+    if _UTILITY_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.contracts.utility not importable "
+            f"({_UTILITY_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before DESPOT search"
+        ) from _UTILITY_IMPORT_ERROR
+    return UtilityVector
+
 
 __all__ = [
     "_MASTER_SEED",

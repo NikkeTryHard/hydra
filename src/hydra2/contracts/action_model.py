@@ -273,132 +273,49 @@ def template_sort_key(template: CanonicalActionTemplate) -> tuple:
     )
 
 
+def _require_census_bridge() -> object:
+    """Resolve the census bridge, fail closed when not built (no oracle fallback)."""
+    try:
+        from hydra2_replay_rs import contracts as bridge  # pyrefly: ignore[missing-import]
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2 census authority requires the hydra2_replay_rs bridge; "
+            "run `pixi run build-ext` to build the extension before use"
+        ) from exc
+    if not hasattr(bridge, "action_census"):
+        raise ImportError(
+            "hydra2_replay_rs.contracts submodule missing (stale .so); "
+            "rebuild the bridge (`pixi run build-ext`)"
+        )
+    return bridge
+
+
 def generate_action_templates() -> tuple[CanonicalActionTemplate, ...]:
     """Enumerate every and only structurally valid template once (SPEC 6.3).
 
     Census (analytic): pass 4, discard/tsumogiri/riichi_discard 136 each,
     chi 4032, pon 1224, daiminkan 408, ankan 34, kakan 136, ron 408,
     tsumo 136, both abort kinds 1 each => 6792 templates.
+
+    Cutover (shrink end-state): the enumeration loops live in the
+    ``hydra-feed`` census authority; this is a thin hard-Rust delegate that
+    converts the bridge ``action_census`` records to
+    :class:`CanonicalActionTemplate` (re-validated on construction).
+    ``ImportError`` raises with a ``build-ext`` hint — NO oracle fallback.
+    Generation order is the bridge order (bit-identical to the retired
+    ``template_sort_key`` sort; verified by the WP-02C goldens).
     """
-    templates: list[CanonicalActionTemplate] = []
-
-    def add(kind: str, **kwargs: object) -> None:
-        templates.append(CanonicalActionTemplate(kind=kind, **kwargs))  # type: ignore[arg-type]  # reason: kwargs statically object; per-kind shapes validated in CanonicalActionTemplate.__post_init__
-
-    for offset in (None, -1, 1, 2):
-        add(
-            "pass",
-            tile=None,
-            called_tile=None,
-            consumed_tiles=(),
-            source_offset=offset,
-            declares_riichi=False,
-            meld_ref_required=False,
+    bridge = _require_census_bridge()
+    records = bridge.action_census()  # type: ignore[attr-defined]
+    return tuple(
+        CanonicalActionTemplate(
+            kind=record.kind,
+            tile=record.tile,
+            called_tile=record.called_tile,
+            consumed_tiles=tuple(TileId(t) for t in record.consumed_tiles),
+            source_offset=record.source_offset,
+            declares_riichi=bool(record.declares_riichi),
+            meld_ref_required=bool(record.meld_ref_required),
         )
-    for kind in ("discard", "tsumogiri", "riichi_discard"):
-        for tile in range(136):
-            add(
-                kind,
-                tile=tile,
-                called_tile=None,
-                consumed_tiles=(),
-                source_offset=None,
-                declares_riichi=(kind == "riichi_discard"),
-                meld_ref_required=False,
-            )
-    for suit_base in (0, 9, 18):
-        for low in range(7):
-            run_types = (suit_base + low, suit_base + low + 1, suit_base + low + 2)
-            for position, called_type in enumerate(run_types):
-                others = run_types[:position] + run_types[position + 1 :]
-                for called_copy in range(4):
-                    called = 4 * called_type + called_copy
-                    for copy_a in range(4):
-                        for copy_b in range(4):
-                            pair = sorted((4 * others[0] + copy_a, 4 * others[1] + copy_b))
-                            add(
-                                "chi",
-                                tile=None,
-                                called_tile=called,
-                                consumed_tiles=tuple(pair),
-                                source_offset=-1,
-                                declares_riichi=False,
-                                meld_ref_required=False,
-                            )
-    for called in range(136):
-        ctype = _tile_type(called)
-        others = [4 * ctype + c for c in range(4) if 4 * ctype + c != called]
-        pon_pairs = [(others[i], others[j]) for i in range(3) for j in range(i + 1, 3)]
-        for offset in _SOURCE_OFFSETS_CLAIM:
-            for pair in pon_pairs:
-                add(
-                    "pon",
-                    tile=None,
-                    called_tile=called,
-                    consumed_tiles=tuple(sorted(pair)),
-                    source_offset=offset,
-                    declares_riichi=False,
-                    meld_ref_required=False,
-                )
-            add(
-                "daiminkan",
-                tile=None,
-                called_tile=called,
-                consumed_tiles=tuple(sorted(others)),
-                source_offset=offset,
-                declares_riichi=False,
-                meld_ref_required=False,
-            )
-    for tile_type in range(34):
-        add(
-            "ankan",
-            tile=None,
-            called_tile=None,
-            consumed_tiles=tuple(range(4 * tile_type, 4 * tile_type + 4)),
-            source_offset=None,
-            declares_riichi=False,
-            meld_ref_required=False,
-        )
-    for tile in range(136):
-        add(
-            "kakan",
-            tile=tile,
-            called_tile=None,
-            consumed_tiles=(),
-            source_offset=None,
-            declares_riichi=False,
-            meld_ref_required=True,
-        )
-    for tile in range(136):
-        for offset in _SOURCE_OFFSETS_CLAIM:
-            add(
-                "ron",
-                tile=tile,
-                called_tile=None,
-                consumed_tiles=(),
-                source_offset=offset,
-                declares_riichi=False,
-                meld_ref_required=False,
-            )
-    for tile in range(136):
-        add(
-            "tsumo",
-            tile=tile,
-            called_tile=None,
-            consumed_tiles=(),
-            source_offset=None,
-            declares_riichi=False,
-            meld_ref_required=False,
-        )
-    for kind in ("abort_nine_terminals", "accept_abortive_draw"):
-        add(
-            kind,
-            tile=None,
-            called_tile=None,
-            consumed_tiles=(),
-            source_offset=None,
-            declares_riichi=False,
-            meld_ref_required=False,
-        )
-
-    return tuple(sorted(templates, key=template_sort_key))
+        for record in records
+    )

@@ -14,11 +14,10 @@ from __future__ import annotations
 
 import hashlib
 import time
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from hydra2.artifacts.canonical import canonical_bytes
-from hydra2.contracts.common import make_digest_text, make_seat, make_tile_id
+from hydra2.contracts.common import ContractError, make_digest_text, make_seat, make_tile_id
 from hydra2.search.common import Planner as Planner
 from hydra2.search.common import ResourceBudget as ResourceBudget
 from hydra2.search.common import candidate_spec_hash as candidate_spec_hash
@@ -26,13 +25,13 @@ from hydra2.search.pbrf_forest import build_pbrf as build_pbrf
 
 if TYPE_CHECKING:
     from hydra2.search.pbrf_forest import ImmutableForest as ImmutableForest
-from hydra2.search.pbrf_partition import _HAS_KERNEL as _HAS_KERNEL
-from hydra2.search.pbrf_partition import _HAS_TELEMETRY as _HAS_TELEMETRY
 from hydra2.search.pbrf_partition import CommitDisposition as CommitDisposition
 from hydra2.search.pbrf_partition import NaturalPacketKernel as NaturalPacketKernel
 from hydra2.search.pbrf_partition import PbrfConfig as PbrfConfig
 from hydra2.search.pbrf_partition import PolicySet as PolicySet
 from hydra2.search.pbrf_partition import _action_id as _action_id
+from hydra2.search.pbrf_partition import _require_kernel as _require_kernel
+from hydra2.search.pbrf_partition import _require_telemetry as _require_telemetry
 from hydra2.search.pbrf_partition import make_resource_telemetry as make_resource_telemetry
 
 __all__ = [
@@ -99,11 +98,14 @@ class PbrfPlannerSearchMixin:
                 self._config = PbrfConfig()
         self._belief = belief
         self._kernel = kernel
-        if self._kernel is None and _HAS_KERNEL:
+        if self._kernel is None:
+            _require_kernel()
             try:
                 self._kernel = NaturalPacketKernel(kernel_tolerance=self._config.kernel_tolerance)  # type: ignore[call-arg]
-            except Exception:
-                self._kernel = None
+            except ImportError:
+                raise
+            except Exception as exc:
+                raise ContractError(f"kernel required: {exc}") from exc
         self._policy_set = policy_set
         if self._policy_set is None:
             try:
@@ -157,60 +159,44 @@ class PbrfPlannerSearchMixin:
         joules = float(self._model_calls) * 0.5 + float(self._transitions) * 0.2
         mode: str = str(getattr(budget, "mode", "gameplay_5s"))
         particles: int = self._config.parent_count
-        if not _HAS_TELEMETRY:
-            # fallback minimal object
-            @dataclass(frozen=True, slots=True)
-            class _Tel:
-                mode: str = mode
-                wall_id: Any = None
-                case_id: str = case_id
-                candidate_spec_hash: str = spec_hash
+        _require_telemetry()
+        try:
+            from hydra2.eval.telemetry import make_resource_telemetry as _mrt
+        except ImportError as exc:
+            raise ImportError(
+                "hydra2.eval.telemetry not importable "
+                f"({exc}); build the bridge with `pixi run build-ext` before PBRF search"
+            ) from exc
+        try:
+            return _mrt(
+                mode=mode,
+                wall_id=None,
+                case_id=case_id,
+                candidate_spec_hash=make_digest_text(spec_hash),
                 # NEVER-bind: fallback digest, not a verified binding.
-                hardware_hash: str = "sha256:" + "0" * 64
-                environment_hash: str = "sha256:" + "0" * 64
-                cold_start: bool = False
-                synchronized_elapsed_ms: float = elapsed_ms
-                model_calls: int = self._model_calls
-                exact_transitions: int = self._transitions
-                particles: int = particles
-                fallback_used: bool = fallback_used
-                timeout: bool = timeout
-                illegal_action: bool = illegal
-                cuda_peak_allocated_bytes: Any = None
-                cuda_peak_reserved_bytes: Any = None
-                host_peak_bytes: Any = None
-                energy_joules: float = joules
-                graph_breaks: Any = None
-                recompiles: Any = None
-                invalid_reason: Any = None
-
-            return _Tel()
-
-        return make_resource_telemetry(
-            mode=mode,
-            wall_id=None,
-            case_id=case_id,
-            candidate_spec_hash=make_digest_text(spec_hash),
-            # NEVER-bind: fallback digest, not a verified binding.
-            hardware_hash=make_digest_text("sha256:" + "0" * 64),
-            # NEVER-bind: fallback digest, not a verified binding.
-            environment_hash=make_digest_text("sha256:" + "0" * 64),
-            cold_start=False,
-            synchronized_elapsed_ms=elapsed_ms,
-            model_calls=self._model_calls,
-            exact_transitions=self._transitions,
-            particles=particles,
-            fallback_used=fallback_used,
-            timeout=timeout,
-            illegal_action=illegal,
-            cuda_peak_allocated_bytes=None,
-            cuda_peak_reserved_bytes=None,
-            host_peak_bytes=None,
-            energy_joules=joules,
-            graph_breaks=None,
-            recompiles=None,
-            invalid_reason=None,
-        )
+                hardware_hash=make_digest_text("sha256:" + "0" * 64),
+                # NEVER-bind: fallback digest, not a verified binding.
+                environment_hash=make_digest_text("sha256:" + "0" * 64),
+                cold_start=False,
+                synchronized_elapsed_ms=elapsed_ms,
+                model_calls=self._model_calls,
+                exact_transitions=self._transitions,
+                particles=particles,
+                fallback_used=fallback_used,
+                timeout=timeout,
+                illegal_action=illegal,
+                cuda_peak_allocated_bytes=None,
+                cuda_peak_reserved_bytes=None,
+                host_peak_bytes=None,
+                energy_joules=joules,
+                graph_breaks=None,
+                recompiles=None,
+                invalid_reason=None,
+            )
+        except ImportError:
+            raise
+        except (AttributeError, ValueError, TypeError, OSError) as exc:
+            raise ContractError(f"pbrf: telemetry build failed: {exc}") from exc
 
     def _candidates_from_parents(self, parents: tuple[Any, ...]) -> tuple[Any, ...]:
         # Frozen candidate generator: deterministic from parent count and spec.

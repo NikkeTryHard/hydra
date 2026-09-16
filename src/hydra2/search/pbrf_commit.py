@@ -24,12 +24,12 @@ from hydra2.search.pbrf_forest import ImmutableForest as ImmutableForest
 from hydra2.search.pbrf_forest import _conditional_carry_logps as _conditional_carry_logps
 from hydra2.search.pbrf_forest import _is_target_compatible as _is_target_compatible
 from hydra2.search.pbrf_forest import _verify_delta_reconstruction as _verify_delta_reconstruction
-from hydra2.search.pbrf_partition import _HAS_RANDOM as _HAS_RANDOM
 from hydra2.search.pbrf_partition import ChildEntry as ChildEntry
 from hydra2.search.pbrf_partition import CommitDisposition as CommitDisposition
 from hydra2.search.pbrf_partition import PbrfConfig as PbrfConfig
 from hydra2.search.pbrf_partition import RandomStream as RandomStream
 from hydra2.search.pbrf_partition import _action_id as _action_id
+from hydra2.search.pbrf_partition import _require_random_stream as _require_random_stream
 from hydra2.search.pbrf_partition import fixed_allocate as fixed_allocate
 
 __all__ = [
@@ -62,15 +62,18 @@ def _fresh_rebuild(
         or len(frozen_candidates) == 0
     ):
         raise ContractError("fresh rebuild requires the committing forest's frozen_candidates")
-    # derive deterministic rng if not supplied
-    if rng is None and _HAS_RANDOM:
+    # derive deterministic rng if not supplied (fail closed, no silent None).
+    if rng is None:
+        _require_random_stream()
         try:
             seed = hashlib.sha256(
                 f"fresh:{authoritative_epoch.target_id}:{authoritative_epoch.epoch}".encode()
             ).digest()
             rng = RandomStream(seed)  # type: ignore[call-arg]
-        except Exception:
-            rng = None
+        except ImportError:
+            raise
+        except Exception as exc:
+            raise ContractError(f"fresh rebuild requires deterministic RNG: {exc}") from exc
     # Wave 2 bridge audit: kept Python — miss-rebuild sampling needs Particle objects
     # from the belief corpus (bridge natural_indices returns indices only).
     new_parents: Any = ()

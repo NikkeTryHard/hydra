@@ -85,9 +85,36 @@ class ActionTable:
         """Generation-order index of ``template``, or ``None`` when absent."""
         if not isinstance(template, CanonicalActionTemplate):
             raise ContractError("index_of expects a CanonicalActionTemplate")
-        position = bisect_left(self._keys, template_sort_key(template))
-        if position < len(self._keys) and self._keys[position] == template_sort_key(template):
-            return position
+        try:
+            from hydra2_replay_rs import contracts as bridge  # pyrefly: ignore[missing-import]
+        except ImportError as exc:
+            raise ImportError(
+                "hydra2 census authority requires the hydra2_replay_rs bridge; "
+                "run `pixi run build-ext` to build the extension before use"
+            ) from exc
+        try:
+            result = bridge.census_index_of(  # type: ignore[attr-defined]
+                template.kind,
+                list(template.consumed_tiles),
+                tile=template.tile,
+                called_tile=template.called_tile,
+                source_offset=template.source_offset,
+            )
+        except ValueError as exc:
+            raise ContractError(f"index_of probe rejected: {exc}") from exc
+        if result is None:
+            return None
+        index = int(result)
+        # Canonical table IS the census: bridge and table indices coincide.
+        # Non-canonical subsets (no current caller; ``build_action_table`` with
+        # explicit actions only) keep the retired bisect so a present template
+        # still resolves to its table position instead of misreporting None.
+        if 0 <= index < len(self.actions) and self.actions[index] == template:
+            return index
+        if len(self.actions) != 6792:
+            position = bisect_left(self._keys, template_sort_key(template))
+            if position < len(self._keys) and self._keys[position] == template_sort_key(template):
+                return position
         return None
 
 

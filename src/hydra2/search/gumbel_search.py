@@ -19,12 +19,12 @@ from hydra2.contracts.common import ContractError as ContractError
 from hydra2.contracts.common import VisibilityViolationError as VisibilityViolationError
 from hydra2.search.gumbel_config import GumbelSearchConfig as GumbelSearchConfig
 from hydra2.search.gumbel_config import _ActionStats as _ActionStats
-from hydra2.search.gumbel_core import _HAS_BELIEF as _HAS_BELIEF
-from hydra2.search.gumbel_core import _HAS_RANDOM as _HAS_RANDOM
 from hydra2.search.gumbel_core import _MASTER_SEED as _MASTER_SEED
 from hydra2.search.gumbel_core import _actor_to_move as _actor_to_move
 from hydra2.search.gumbel_core import _is_terminal as _is_terminal
 from hydra2.search.gumbel_core import _legal_ids_for_observation as _legal_ids_for_observation
+from hydra2.search.gumbel_core import _require_belief as _require_belief
+from hydra2.search.gumbel_core import _require_random_stream as _require_random_stream
 from hydra2.search.gumbel_core import _require_search_bridge as _require_search_bridge
 from hydra2.search.gumbel_core import deterministic_root_gumbels as deterministic_root_gumbels
 from hydra2.search.gumbel_core import exact_transition as exact_transition
@@ -76,13 +76,15 @@ class UniformContinuationPolicy:
         if observation is not None:
             try:
                 from hydra2.contracts.observation import ActorObservation as _Obs
-
-                if not isinstance(observation, _Obs):
-                    raise ContractError(
-                        f"policy input must be ActorObservation, got {type(observation).__name__}"
-                    )
-            except ImportError:
-                pass
+            except ImportError as exc:
+                raise ImportError(
+                    "hydra2.contracts.observation not importable "
+                    f"({exc}); build the bridge with `pixi run build-ext` before Gumbel search"
+                ) from exc
+            if not isinstance(observation, _Obs):
+                raise ContractError(
+                    f"policy input must be ActorObservation, got {type(observation).__name__}"
+                )
             if hasattr(observation, "world_id"):
                 raise VisibilityViolationError(
                     "policy input contains world_id [PBRF_VIS_POLICY_WORLD]"
@@ -97,18 +99,10 @@ class UniformContinuationPolicy:
         if not isinstance(legal, tuple) or len(legal) == 0:
             raise ContractError("legal must be non-empty tuple")
         dist = self.distribution(observation, legal)
-        if _HAS_RANDOM and hasattr(rng, "random_float"):
-            r: float = float(rng.random_float())  # type: ignore[explicit-any]
-        else:
-            r = (
-                int(
-                    hashlib.sha256(
-                        str(getattr(observation, "observation_hash", "")).encode()
-                    ).hexdigest()[:8],
-                    16,
-                )
-                % 1000
-            ) / 1000.0
+        _require_random_stream()
+        if not hasattr(rng, "random_float"):
+            raise ContractError("gumbel: rng must expose random_float; hash%1000 fallback removed")
+        r: float = float(rng.random_float())  # type: ignore[explicit-any]
         cum = 0.0
         for idx, p in enumerate(dist):
             cum += p
@@ -212,6 +206,14 @@ class GumbelSearchPlannerSearchMixin:
         self._simulations = 0
 
     def _world_for_particle(self, particle: Any) -> Any:
+        _require_belief()
+        try:
+            from hydra2.belief.world import make_full_world as _mfw
+        except ImportError as exc:
+            raise ImportError(
+                "hydra2.belief.world not importable "
+                f"({exc}); build the bridge with `pixi run build-ext` before Gumbel search"
+            ) from exc
         if self._belief is not None and hasattr(self._belief, "_worlds"):
             try:
                 return self._belief._worlds[particle.world_ref]
@@ -247,7 +249,8 @@ class GumbelSearchPlannerSearchMixin:
             if self._belief_epoch is not None
             else "sha256:" + "b" * 64
         )
-        return make_full_world(
+        _require_belief()
+        return _mfw(
             concealed_hands=tuple(hands),
             live_wall=live,
             dead_wall=(),
@@ -266,12 +269,21 @@ class GumbelSearchPlannerSearchMixin:
         rng: Any,
     ) -> tuple[Any, tuple[float, float, float, float]]:
         """Exact rollout starting with forced root action, then continuation policies."""
+        _require_belief()
+        try:
+            from hydra2.belief.world import world_actor_observation as _wao
+        except ImportError as exc:
+            raise ImportError(
+                "hydra2.belief.world not importable "
+                f"({exc}); build the bridge with `pixi run build-ext` before Gumbel search"
+            ) from exc
         cur = exact_transition(start_world, root_seat, root_action_id)
         self._transitions += 1
         step = 1
         while step < self._config.max_depth and not _is_terminal(cur, self._config.max_depth, step):
             actor = _actor_to_move(cur)
-            obs = world_actor_observation(cur, actor=actor)
+            _require_belief()
+            obs = _wao(cur, actor=actor)
             legal_ids = _legal_ids_for_observation(obs)
             if len(legal_ids) == 0:
                 break
@@ -399,20 +411,12 @@ class GumbelSearchPlannerSearchMixin:
             if len(survivors) <= 1:
                 break
             visits = self._config.visits_per_round[round_idx]
-            # Synthetic worlds are loop-invariant in visits (observation hash,
-            # candidate, aid only) and consume no rng/counters: build once per
-            # (aid, round). Bit-identical: _rollout never mutates start_world.
-            use_synth = not (self._belief is not None and epoch is not None and _HAS_BELIEF)
+            # Real belief required; synthetic worlds removed (fail closed).
+            _require_belief()
+            if self._belief is None or epoch is None:
+                raise ContractError("gumbel: belief and epoch required; synthetic worlds removed")
             # For each survivor, allocate visits rollouts
             for aid in survivors:
-                synth_world: Any = None
-                if use_synth:
-                    h0 = hashlib.sha256(
-                        f"{getattr(root_observation, 'observation_hash', '')}:{candidate_id}:{aid}".encode()
-                    ).digest()
-                    synth_world = self._world_for_particle(
-                        type("P", (), {"world_ref": h0.hex()[:16]})()
-                    )
                 for _ in range(visits):
                     # Budget checks before rollout
                     if (
@@ -435,25 +439,19 @@ class GumbelSearchPlannerSearchMixin:
                             else 10**9
                         ):
                             break
-                    # Sample natural world
-                    if self._belief is not None and epoch is not None and _HAS_BELIEF:
-                        try:
-                            particles: Any = self._belief.sample_natural(epoch, count=1, rng=rng)  # type: ignore[union-attr]
-                            particle: Any = particles[0]  # type: ignore[explicit-any]
-                            if particle.log_target_density != particle.log_proposal_density:
-                                raise ContractError("natural world must have ratio 1")
-                            if particle.source != "natural":
-                                raise ContractError("gumbel natural may only use natural particles")
-                            cur_world = self._world_for_particle(particle)  # type: ignore[unknown-argument-type]
-                        except Exception as exc:
-                            if isinstance(exc, ContractError):
-                                raise
-                            h = hashlib.sha256(f"{epoch}:{candidate_id}:{rng}".encode()).digest()
-                            cur_world = self._world_for_particle(
-                                type("P", (), {"world_ref": h.hex()[:16]})()
-                            )
-                    else:
-                        cur_world = synth_world
+                    # Sample natural world — real belief required; no synthetic fallback.
+                    try:
+                        particles: Any = self._belief.sample_natural(epoch, count=1, rng=rng)  # type: ignore[union-attr]
+                        particle: Any = particles[0]  # type: ignore[explicit-any]
+                        if particle.log_target_density != particle.log_proposal_density:
+                            raise ContractError("natural world must have ratio 1")
+                        if particle.source != "natural":
+                            raise ContractError("gumbel natural may only use natural particles")
+                        cur_world = self._world_for_particle(particle)  # type: ignore[unknown-argument-type]
+                    except ContractError:
+                        raise
+                    except Exception as exc:
+                        raise ContractError(f"gumbel: belief sampling failed: {exc}") from exc
                     _, vec = self._rollout(
                         start_world=cur_world, root_action_id=aid, root_seat=root_seat, rng=rng
                     )

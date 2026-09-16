@@ -1,4 +1,4 @@
-# ruff: noqa: N814, F841  # reason: legacy blanket kept, not narrowed — narrowing surfaces unrelated mid-flight noise outside the owned error set (B007/F841 intentional scratch loop locals; B904 ContractError preconditions; N814 upstream casing; F401 cross-module names re-exported for the shim path). Evidence: https://docs.astral.sh/ruff/rules/
+# ruff: noqa: F841  # reason: legacy blanket kept, not narrowed — narrowing surfaces unrelated mid-flight noise outside the owned error set (B007/F841 intentional scratch loop locals; B904 ContractError preconditions; N814 upstream casing; F401 cross-module names re-exported for the shim path). Evidence: https://docs.astral.sh/ruff/rules/
 """Candidate 3 PBRF planner adapter — act, observe, ponder.
 
 Owns the Planner protocol surface of :class:`PbrfPlanner`: forest
@@ -24,7 +24,7 @@ from hydra2.search.common import SearchResult as SearchResult
 from hydra2.search.common import candidate_spec_hash as candidate_spec_hash
 from hydra2.search.pbrf_commit import commit as commit
 from hydra2.search.pbrf_forest import build_pbrf as build_pbrf
-from hydra2.search.pbrf_partition import _HAS_BELIEF as _HAS_BELIEF
+from hydra2.search.pbrf_partition import _BELIEF_IMPORT_ERROR as _BELIEF_IMPORT_ERROR
 from hydra2.search.pbrf_partition import NaturalBelief as NaturalBelief
 from hydra2.search.pbrf_partition import RandomStream as RandomStream
 from hydra2.search.pbrf_partition import _action_id as _action_id
@@ -294,10 +294,15 @@ class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
                 fallback_used=True,
                 timeout=True,
             )
-            # Wrap fallback vectors into UtilityVector (zero vector per spec)
+            # Wrap fallback vectors into UtilityVector (zero vector per spec) — fail closed, no raw fallback.
             try:
                 from hydra2.contracts.utility import UtilityVector
-
+            except ImportError as exc:
+                raise ImportError(
+                    "hydra2.contracts.utility not importable "
+                    f"({exc}); build the bridge with `pixi run build-ext` before PBRF search"
+                ) from exc
+            try:
                 fallback_vec = UtilityVector(
                     values=(0.0, 0.0, 0.0, 0.0),
                     utility_id=str(getattr(cand_spec, "utility_id", "expected_final_placement")),
@@ -309,26 +314,10 @@ class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
                     ),
                 )
                 fb_vectors = tuple(fallback_vec for _ in legal)
-            except Exception:
-                # fallback to raw if UtilityVector fails (should not happen with valid spec hashes)
-                fb_vectors = tuple((0.0, 0.0, 0.0, 0.0) for _ in legal)
-                # but SearchResult requires UtilityVector, so try again with dummy hashes
-                try:
-                    from hydra2.contracts.utility import (
-                        UtilityVector as _UV,
-                    )
-
-                    fb_vectors = tuple(
-                        _UV(
-                            values=(0.0, 0.0, 0.0, 0.0),
-                            utility_id="expected_final_placement",
-                            utility_manifest_hash=make_digest_text("sha256:" + "f" * 64),
-                            rules_hash=make_digest_text("sha256:" + "a" * 64),
-                        )
-                        for _ in legal
-                    )
-                except Exception:
-                    pass
+            except ImportError:
+                raise
+            except (AttributeError, ValueError, TypeError, OSError) as exc:
+                raise ContractError(f"pbrf: fallback UtilityVector build failed: {exc}") from exc
             return SearchResult(
                 selected_action=fallback,
                 candidate_actions=legal,
@@ -381,11 +370,16 @@ class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
             )
             try:
                 from hydra2.contracts.utility import UtilityVector
-
+            except ImportError as exc:
+                raise ImportError(
+                    "hydra2.contracts.utility not importable "
+                    f"({exc}); build the bridge with `pixi run build-ext` before PBRF search"
+                ) from exc
+            try:
                 fb2: list[Any] = []
                 for a in legal:
                     vec = value_by_action.get(a, (0.0, 0.0, 0.0, 0.0))
-                    # vec is tuple[float]; wrap
+                    # vec is tuple[float]; wrap — fail closed, no raw fallback.
                     if (
                         isinstance(vec, tuple)
                         and len(vec) == 4
@@ -413,8 +407,10 @@ class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
                         # vec already UtilityVector? keep
                         fb2.append(vec)
                 fb_vectors2 = tuple(fb2)
-            except Exception:
-                fb_vectors2 = tuple(value_by_action.get(a, (0.0, 0.0, 0.0, 0.0)) for a in legal)
+            except ImportError:
+                raise
+            except (AttributeError, ValueError, TypeError, OSError) as exc:
+                raise ContractError(f"pbrf: UtilityVector wrap failed: {exc}") from exc
             return SearchResult(
                 selected_action=fallback,
                 candidate_actions=legal,
@@ -469,10 +465,15 @@ class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
             fallback_used=False,
             timeout=False,
         )
-        # Wrap value vectors into UtilityVector for SearchResult validation
+        # Wrap value vectors into UtilityVector for SearchResult validation — fail closed, no raw fallback.
         try:
             from hydra2.contracts.utility import UtilityVector
-
+        except ImportError as exc:
+            raise ImportError(
+                "hydra2.contracts.utility not importable "
+                f"({exc}); build the bridge with `pixi run build-ext` before PBRF search"
+            ) from exc
+        try:
             wrapped: list[Any] = []
             for a in legal:
                 vec = value_by_action[a]
@@ -491,8 +492,10 @@ class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
                     )
                 )
             value_vectors = tuple(wrapped)
-        except Exception:
-            value_vectors = tuple(value_by_action[a] for a in legal)
+        except ImportError:
+            raise
+        except (AttributeError, ValueError, TypeError, OSError) as exc:
+            raise ContractError(f"pbrf: UtilityVector wrap failed: {exc}") from exc
         self._last_selected_action = selected
         return SearchResult(
             selected_action=selected,

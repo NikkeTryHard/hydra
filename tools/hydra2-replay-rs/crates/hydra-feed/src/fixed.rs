@@ -387,6 +387,50 @@ pub fn exact_total_is_zero(vals: &[f64; 4]) -> Result<bool, FixedError> {
     Ok(acc == 0)
 }
 
+// ---------------------------------------------------------------------------
+// Final-rank resolution (SPEC 5.1, east1 seat-wind tie-break)
+// ---------------------------------------------------------------------------
+
+/// Resolve placement ranks 1..=4 from raw final scores.
+///
+/// Mirrors `resolve_final_ranks` (`rules_manifest.py:397-412`): seats ordered
+/// by `(-score, seat)` (higher score first; ties broken by lower seat index,
+/// the East-1 seat-wind order), rank = position + 1. Total over `[i64; 4]`
+/// (the +/-1e12 input domain is enforced bridge-side, like every arg gate).
+pub fn resolve_final_ranks(scores: [i64; 4]) -> [u8; 4] {
+    // Insertion sort on the strictly total (-score, seat) key: deterministic,
+    // no allocation, identical to Python's `sorted` on distinct keys.
+    let mut order = [0usize, 1, 2, 3];
+    let mut i = 1usize;
+    while i < 4 {
+        let mut j = i;
+        while j > 0 && precedes(order[j], order[j - 1], &scores) {
+            let tmp = order[j];
+            order[j] = order[j - 1];
+            order[j - 1] = tmp;
+            j -= 1;
+        }
+        i += 1;
+    }
+    let mut ranks = [0u8; 4];
+    let mut pos = 0usize;
+    while pos < 4 {
+        // `pos + 1` is 1..=4, always representable.
+        ranks[order[pos]] = (pos + 1) as u8;
+        pos += 1;
+    }
+    ranks
+}
+
+/// True iff seat `a` sorts strictly before seat `b`: higher score first,
+/// lower seat index on ties (east1 wind order).
+fn precedes(a: usize, b: usize, scores: &[i64; 4]) -> bool {
+    if scores[a] != scores[b] {
+        return scores[a] > scores[b];
+    }
+    a < b
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -511,4 +555,20 @@ mod tests {
         // Signed zero decomposes to a zero mantissa and is skipped.
         assert_eq!(exact_total_is_zero(&[-0.0, 0.0, 0.0, 0.0]).unwrap(), true);
     }
+
+    /// SPEC 5.1 rank goldens (`test_rules_wp02b.py` + WP-04A conformance pins).
+    #[test]
+    fn final_ranks_match_pinned_vectors() {
+        assert_eq!(resolve_final_ranks([30000, 25000, 20000, 15000]), [1, 2, 3, 4]);
+        assert_eq!(resolve_final_ranks([25000, 25000, 20000, 30000]), [2, 3, 4, 1]);
+        assert_eq!(resolve_final_ranks([25000, 25000, 25000, 25000]), [1, 2, 3, 4]);
+        assert_eq!(resolve_final_ranks([30000, 30000, 25000, 25000]), [1, 2, 3, 4]);
+        assert_eq!(resolve_final_ranks([40000, 28000, 28000, 24000]), [1, 2, 3, 4]);
+        assert_eq!(resolve_final_ranks([25000, 25000, 40000, 30000]), [3, 4, 1, 2]);
+        assert_eq!(resolve_final_ranks([100, 300, 200, 400]), [4, 2, 3, 1]);
+        assert_eq!(resolve_final_ranks([35000, 25000, 15000, 30000]), [1, 3, 4, 2]);
+        // Negative scores keep total order (tobi finishes below zero).
+        assert_eq!(resolve_final_ranks([-1000, 0, 0, 1000]), [4, 2, 3, 1]);
+    }
+
 }

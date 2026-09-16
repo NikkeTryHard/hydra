@@ -16,7 +16,6 @@ from typing import Any
 
 from hydra2.belief.world import make_full_world, world_actor_observation
 from hydra2.contracts.common import ContractError
-from hydra2.search.ismcts_core import _HAS_BELIEF as _HAS_BELIEF
 from hydra2.search.ismcts_core import _MASTER_SEED as _MASTER_SEED
 from hydra2.search.ismcts_core import InformationSetNode as InformationSetNode
 from hydra2.search.ismcts_core import NaturalISMCTSConfig as NaturalISMCTSConfig
@@ -24,6 +23,7 @@ from hydra2.search.ismcts_core import (
     UniformContinuationPolicy as UniformContinuationPolicy,
 )
 from hydra2.search.ismcts_core import _ActionStats as _ActionStats
+from hydra2.search.ismcts_core import _require_belief as _require_belief
 from hydra2.search.ismcts_core import _uct_select as _uct_select
 from hydra2.search.ismcts_core import info_key_for_observation as info_key_for_observation
 from hydra2.search.ismcts_core import is_redeterminization_enabled as is_redeterminization_enabled
@@ -241,8 +241,9 @@ class NaturalISMCTSPlannerSearchMixin:
         rng: Any,
         tree: dict[str, InformationSetNode],
     ) -> tuple[Any, tuple[float, float, float, float]]:
-        # Sample natural world — real belief required; no synthetic fallback.
-        if self._belief is None or epoch is None or not _HAS_BELIEF:
+        # Sample natural world — real belief required; no synthetic fallback (fail closed).
+        _require_belief()
+        if self._belief is None or epoch is None:
             raise ContractError("ismcts: belief and epoch required; synthetic worlds removed")
         try:
             particles: Any = self._belief.sample_natural(epoch, count=1, rng=rng)  # type: ignore[union-attr]  # pyrefly: ignore[explicit-any]
