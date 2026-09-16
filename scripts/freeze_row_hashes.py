@@ -212,11 +212,11 @@ def _drop_paths(doc: dict, names: tuple[str, ...]) -> dict:
 
 def row_hash(doc: dict, allow: tuple[str, ...], repo_root: Path = REPO_ROOT) -> str:
     """sha256 digest-text over RFC 8785 canonical bytes of the projection."""
-    from hydra2.artifacts.canonical import canonical_bytes
+    from hydra2.artifacts.digest import of_canonical
 
     for name in allow:
         doc = _drop_paths(doc, ALLOW_DROP[name])
-    return "sha256:" + hashlib.sha256(canonical_bytes(doc)).hexdigest()
+    return str(of_canonical(doc))
 
 
 def _parse_allow(values: list[str]) -> tuple[str, ...]:

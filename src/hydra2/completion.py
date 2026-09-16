@@ -22,6 +22,7 @@ from typing import Any, cast
 from hydra2._canon import (
     atomic_write_bytes,
     canonical_json_bytes,
+    sha256_digest,
     sha256_digest_of_json,
     sha256_file,
 )
@@ -324,7 +325,6 @@ def _input_matches(
     matches its declared ``git_baseline`` blob is verified as of that
     baseline. Neither live nor baseline matching is a hard failure.
     """
-    import hashlib
     import subprocess
 
     recomputed = sha256_file(path)
@@ -342,7 +342,7 @@ def _input_matches(
         except (OSError, subprocess.SubprocessError):
             proc = None
         if proc is not None and proc.returncode == 0:
-            blob_hash = "sha256:" + hashlib.sha256(proc.stdout).hexdigest()
+            blob_hash = str(sha256_digest(proc.stdout))
             if blob_hash == recorded:
                 return True, f"git-baseline:{git_baseline}"
     return False, recomputed

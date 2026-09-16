@@ -12,7 +12,6 @@ the import.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -27,6 +26,7 @@ from hydra2.analysis.qual_budget import verify_compute_only as verify_compute_on
 from hydra2.analysis.qual_replay import _spec_hash as _spec_hash
 from hydra2.analysis.qual_replay import compare_gameplay_analysis as compare_gameplay_analysis
 from hydra2.artifacts.canonical import canonical_bytes
+from hydra2.artifacts.digest import of_canonical, sha256_digest
 from hydra2.contracts.common import (
     ContractError,
     DigestText,
@@ -132,7 +132,7 @@ def _load_default_hashes_for_spec() -> dict[str, str]:
         p = repo / rel
         try:
             real = _require_real_file(p, repo)
-            defaults[name] = "sha256:" + hashlib.sha256(real.read_bytes()).hexdigest()
+            defaults[name] = str(sha256_digest(real.read_bytes()))
         except (ImportError, AttributeError, OSError, ValueError, TypeError, ContractError) as exc:
             logger.debug("qualification: default hash fallback for %s", name, exc_info=exc)
             raise ContractError(
@@ -148,19 +148,13 @@ def _load_default_hashes_for_spec() -> dict[str, str]:
         logger.debug("qualification: model-derived hash fallback", exc_info=exc)
         raise ContractError("qualification: cannot derive utility/model hashes from model") from exc
     # RNG / stream / case — candidate0 canonical descriptors verbatim
-    defaults["rng_protocol_hash"] = (
-        "sha256:"
-        + hashlib.sha256(
-            canonical_bytes({"protocol": "counter_based_v1", "version": "1.0.0"})
-        ).hexdigest()
+    defaults["rng_protocol_hash"] = str(
+        of_canonical({"protocol": "counter_based_v1", "version": "1.0.0"})
     )
-    defaults["random_stream_schema_hash"] = (
-        "sha256:"
-        + hashlib.sha256(
-            canonical_bytes({"schema": "random_stream_v1", "purposes": ["candidate0_tie"]})
-        ).hexdigest()
+    defaults["random_stream_schema_hash"] = str(
+        of_canonical({"schema": "random_stream_v1", "purposes": ["candidate0_tie"]})
     )
-    defaults["case_manifest_hash"] = "sha256:" + hashlib.sha256(canonical_bytes([])).hexdigest()
+    defaults["case_manifest_hash"] = str(of_canonical([]))
     return defaults
 
 
@@ -297,8 +291,7 @@ def build_gate_record(
                 live_wall=tuple(range(8, 40)),
                 dead_wall=(),
                 rules_hash=cast(str, gp_spec.rules_hash),
-                observation_hash="sha256:"
-                + hashlib.sha256(canonical_bytes({"case": candidate_id})).hexdigest(),
+                observation_hash=str(of_canonical({"case": candidate_id})),
             )
             obs = world_actor_observation(w, actor=make_seat(0))
             legal = (
@@ -329,9 +322,7 @@ def build_gate_record(
             # Fallback: construct synthetic observation stub
             # Use ActorObservation-like dict with required hash
             class _ObsStub:
-                observation_hash = (
-                    "sha256:" + hashlib.sha256(canonical_bytes({"stub": candidate_id})).hexdigest()
-                )
+                observation_hash = str(of_canonical({"stub": candidate_id}))
                 actor = 0
 
             observation = _ObsStub()
@@ -395,9 +386,9 @@ def build_gate_record(
         "privileged_leak": privileged_leak,
         "eligible": eligible,
         "reason": reason,
-        "comparison_digest": "sha256:" + hashlib.sha256(canonical_bytes(comp)).hexdigest(),
+        "comparison_digest": str(of_canonical(comp)),
     }
-    digest = "sha256:" + hashlib.sha256(canonical_bytes(gate_payload)).hexdigest()
+    digest = str(of_canonical(gate_payload))
     return AnalysisGateRecord(
         candidate_id=candidate_id,
         gameplay_spec_hash=_spec_hash(gp_spec),
@@ -483,7 +474,7 @@ def generate_hashed_analysis_report(
             "deterministic_pass": sum(1 for g in gates if g.deterministic_replay_ok),
         },
     }
-    digest = "sha256:" + hashlib.sha256(canonical_bytes(report_payload)).hexdigest()
+    digest = str(of_canonical(report_payload))
     report_payload["digest"] = digest
 
     # Atomic write to run-id directory and to latest. The first stamp is

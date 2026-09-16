@@ -57,7 +57,7 @@ for _p in (str(REPO_ROOT / "src"), str(REPO_ROOT)):
 
 from hydra2.artifacts.atomic import atomic_replace_bytes  # noqa: E402
 from hydra2.artifacts.canonical import canonical_bytes  # noqa: E402
-from hydra2.artifacts.digest import sha256_file  # noqa: E402
+from hydra2.artifacts.digest import sha256_digest, sha256_file  # noqa: E402
 from hydra2.data.decode import GameRecord  # noqa: E402
 from hydra2.data.replay_expand import (  # noqa: E402
     _END_TYPES,
@@ -374,11 +374,11 @@ def _build_f1(corpus_dir: Path) -> dict[str, object]:
     raw, n_lines = _jsonl_bytes([_f1_events()])
     path = corpus_dir / _CORPUS_FILES["F1"]
     path.write_bytes(raw)
-    digest = hashlib.sha256(raw).hexdigest()
+    digest = str(sha256_digest(raw))
     return {
         "id": "F1",
         "relpath": path.relative_to(REPO_ROOT).as_posix(),
-        "sha256": f"sha256:{digest}",
+        "sha256": digest,
         "n_lines": n_lines,
         "n_games": 1,
         "n_decisions": _F1_DECISIONS,
@@ -414,8 +414,8 @@ def _build_f2(corpus_dir: Path, *, level: int) -> dict[str, object]:
     return {
         "id": "F2",
         "relpath": path.relative_to(REPO_ROOT).as_posix(),
-        "sha256": f"sha256:{hashlib.sha256(zst).hexdigest()}",
-        "sha256_raw": f"sha256:{hashlib.sha256(raw).hexdigest()}",
+        "sha256": str(sha256_digest(zst)),
+        "sha256_raw": str(sha256_digest(raw)),
         "n_lines": n_lines,
         "n_games": len(games),
         "kind": "synth-stream-primary",
@@ -445,7 +445,7 @@ def _build_f8(corpus_dir: Path, *, level: int) -> list[dict[str, object]]:
                 "id": "F8",
                 "part": path.name,
                 "relpath": path.relative_to(REPO_ROOT).as_posix(),
-                "sha256": f"sha256:{hashlib.sha256(zst).hexdigest()}",
+                "sha256": str(sha256_digest(zst)),
                 "n_lines": n_lines,
                 "n_games": len(games),
                 "n_decisions": len(games),
@@ -522,9 +522,9 @@ def _build_f10(corpus_dir: Path, *, level: int) -> list[dict[str, object]]:
     ]
     # Exact per-template decisions (fail-closed: template must expand).
     template_rows = _f10_template_rows(templates)
-    builder_hash = hashlib.sha256(
-        (_F10_BUILDER + "\n" + "\n".join(template_shas)).encode()
-    ).hexdigest()
+    builder_hash = str(
+        sha256_digest((_F10_BUILDER + "\n" + "\n".join(template_shas)).encode())
+    )
     f10_dir = corpus_dir / _CORPUS_FILES["F10_DIR"]
     f10_dir.mkdir(parents=True, exist_ok=True)
     entries: list[dict[str, object]] = []
@@ -545,13 +545,13 @@ def _build_f10(corpus_dir: Path, *, level: int) -> list[dict[str, object]]:
                 "id": "F10",
                 "part": path.name,
                 "relpath": path.relative_to(REPO_ROOT).as_posix(),
-                "sha256": f"sha256:{hashlib.sha256(zst).hexdigest()}",
+                "sha256": str(sha256_digest(zst)),
                 "n_lines": n_lines,
                 "n_games": len(games),
                 "n_decisions": n_decisions,
                 "kind": "decision-primary",
                 "builder": _F10_BUILDER,
-                "builder_hash": f"sha256:{builder_hash}",
+                "builder_hash": builder_hash,
                 "template_sha256": template_shas,
                 "zstd_level": level,
                 "note": "real dahai/hora rows via replay_expand; stream leg expands every game",
@@ -577,9 +577,9 @@ def _build_f11(corpus_dir: Path, *, level: int) -> list[dict[str, object]]:
     ]
     # Exact per-template decisions (fail-closed: template must expand).
     template_rows = _f10_template_rows(templates)
-    builder_hash = hashlib.sha256(
-        (_F11_BUILDER + "\n" + "\n".join(template_shas)).encode()
-    ).hexdigest()
+    builder_hash = str(
+        sha256_digest((_F11_BUILDER + "\n" + "\n".join(template_shas)).encode())
+    )
     f11_dir = corpus_dir / _CORPUS_FILES["F11_DIR"]
     f11_dir.mkdir(parents=True, exist_ok=True)
     entries: list[dict[str, object]] = []
@@ -600,13 +600,13 @@ def _build_f11(corpus_dir: Path, *, level: int) -> list[dict[str, object]]:
                 "id": "F11",
                 "part": path.name,
                 "relpath": path.relative_to(REPO_ROOT).as_posix(),
-                "sha256": f"sha256:{hashlib.sha256(zst).hexdigest()}",
+                "sha256": str(sha256_digest(zst)),
                 "n_lines": n_lines,
                 "n_games": len(games),
                 "n_decisions": n_decisions,
                 "kind": "decision-primary",
                 "builder": _F11_BUILDER,
-                "builder_hash": f"sha256:{builder_hash}",
+                "builder_hash": builder_hash,
                 "template_sha256": template_shas,
                 "zstd_level": level,
                 "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
