@@ -56,7 +56,7 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use pyo3::exceptions::{PyOSError, PyValueError};
+use pyo3::exceptions::{PyOSError, PyOverflowError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::sync::{MutexExt, PyOnceLock};
 use pyo3::types::{PyBytes, PyModule};
@@ -315,6 +315,109 @@ fn bounded_batch(py: Python<'_>, words: Vec<u32>, n: u32) -> PyResult<Vec<u32>> 
             .collect()
     }))
 }
+// Contract (owner-confirmed): `fixed::validate_ranks(&[u8; 4]) -> Result<(), FixedError>`;
+// `fixed::utility_fixed([u8; 4]) -> Result<[i64; 4], FixedError>` (rank `r` ->
+// `(5 - 2*r) * FIXED_SCALE`); `fixed::utility_for_ranks_fixed(&[i64; 4],
+// &[u8; 4]) -> Result<[i64; 4], FixedError>` (mirrors `utility()` indexing);
+// `fixed::exact_total_is_zero(&[f64; 4]) -> Result<bool, FixedError>` (m8:
+// wide exponent spreads resolve to `Ok(bool)` via the in-feed exact stack
+// big-int fallback, Fraction-equivalent — never wrap, never assume zero;
+// `Err(Overflow)` is defensive-only, unreachable for 4 finite `f64`).
+// Error mapping (F7 discriminates): `InvalidRank`/`DuplicateRank`/
+// `NonFiniteValue` -> `PyValueError`, `Overflow` -> `PyOverflowError`.
+// below()/bounded() parity UNCHANGED (intentional divergence documented —
+// `bounded(_, 1) == 0` stays; this surface is add-only).
+/// Map a feed `FixedError` onto the Python boundary: overflow is distinct
+/// (`PyOverflowError`) so callers can discriminate the m8 checked-fallback;
+/// everything else is a caller-shape reject (`PyValueError`).
+fn map_fixed_err(e: hydra_feed::fixed::FixedError) -> PyErr {
+    match e {
+        hydra_feed::fixed::FixedError::Overflow => PyOverflowError::new_err(e.to_string()),
+        _ => PyValueError::new_err(e.to_string()),
+    }
+}
+
+/// Validate ranks as a strict permutation of `1..=4` (no ties, no gaps).
+/// Shape checked attached (`len != 4` fails closed); the feed check runs
+/// detached.
+#[pyfunction]
+fn validate_ranks(py: Python<'_>, ranks: Vec<u8>) -> PyResult<()> {
+    if ranks.len() != 4 {
+        return Err(PyValueError::new_err(
+            "canon validate_ranks: ranks must be exactly 4 entries",
+        ));
+    }
+    let mut arr = [0u8; 4];
+    arr.copy_from_slice(&ranks);
+    py.detach(|| hydra_feed::fixed::validate_ranks(&arr))
+        .map_err(map_fixed_err)
+}
+
+/// Canonical zero-sum fixed placement points for validated ranks: rank 1 ->
+/// `+3·S`, 2 -> `+1·S`, 3 -> `-1·S`, 4 -> `-3·S` (`S = FIXED_SCALE`
+/// micro-points). Shapes checked attached; the mapping runs detached.
+#[pyfunction]
+fn utility_fixed(py: Python<'_>, ranks: Vec<u8>) -> PyResult<Vec<i64>> {
+    if ranks.len() != 4 {
+        return Err(PyValueError::new_err(
+            "canon utility_fixed: ranks must be exactly 4 entries",
+        ));
+    }
+    let mut arr = [0u8; 4];
+    arr.copy_from_slice(&ranks);
+    let out = py
+        .detach(|| hydra_feed::fixed::utility_fixed(arr))
+        .map_err(map_fixed_err)?;
+    Ok(out.to_vec())
+}
+
+/// Map validated ranks through a caller manifest's fixed `rank_values`
+/// (mirrors `utility()` indexing `rank_values[rank-1]`). Both quads checked
+/// attached; the mapping runs detached.
+#[pyfunction]
+fn utility_for_ranks_fixed(
+    py: Python<'_>,
+    rank_values: Vec<i64>,
+    ranks: Vec<u8>,
+) -> PyResult<Vec<i64>> {
+    if rank_values.len() != 4 {
+        return Err(PyValueError::new_err(
+            "canon utility_for_ranks_fixed: rank_values must be exactly 4 entries",
+        ));
+    }
+    if ranks.len() != 4 {
+        return Err(PyValueError::new_err(
+            "canon utility_for_ranks_fixed: ranks must be exactly 4 entries",
+        ));
+    }
+    let mut values = [0i64; 4];
+    values.copy_from_slice(&rank_values);
+    let mut arr = [0u8; 4];
+    arr.copy_from_slice(&ranks);
+    let out = py
+        .detach(|| hydra_feed::fixed::utility_for_ranks_fixed(&values, &arr))
+        .map_err(map_fixed_err)?;
+    Ok(out.to_vec())
+}
+
+/// Exact zero-sum over four `f64` values (integer-only, no float
+/// accumulation, no epsilon). `true` iff the exact sum is zero; m8-scale
+/// exponent spreads resolve via the in-feed exact fallback
+/// (Fraction-equivalent, never assumed zero; `Overflow` ->
+/// `PyOverflowError` is defensive-only); non-finite inputs are
+/// `PyValueError`. Shape checked attached; the alignment runs detached.
+#[pyfunction]
+fn exact_total_is_zero(py: Python<'_>, vals: Vec<f64>) -> PyResult<bool> {
+    if vals.len() != 4 {
+        return Err(PyValueError::new_err(
+            "canon exact_total_is_zero: vals must be exactly 4 entries",
+        ));
+    }
+    let mut arr = [0f64; 4];
+    arr.copy_from_slice(&vals);
+    py.detach(|| hydra_feed::fixed::exact_total_is_zero(&arr))
+        .map_err(map_fixed_err)
+}
 
 // ASSUMPTION: `rng::seed_map_fixture() -> Vec<(String, [u8; 32])>` (3+).
 /// Recorded seed map (3+ entries): computed detached, wrapped attached
@@ -369,6 +472,10 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     sub.add_function(wrap_pyfunction!(philox_block, &sub)?)?;
     sub.add_function(wrap_pyfunction!(bounded, &sub)?)?;
     sub.add_function(wrap_pyfunction!(bounded_batch, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(validate_ranks, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(utility_fixed, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(utility_for_ranks_fixed, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(exact_total_is_zero, &sub)?)?;
     sub.add_function(wrap_pyfunction!(seed_map_fixture, &sub)?)?;
     sub.add_function(wrap_pyfunction!(default_chunk_bytes, &sub)?)?;
     sub.add_function(wrap_pyfunction!(judge_stats, &sub)?)?;
@@ -443,6 +550,122 @@ mod canon_rng_tests {
             assert_eq!(sum, 4);
             let digest = py.detach(|| hydra_feed::digest::sha256_hex(b"hello world"));
             assert_eq!(digest, HELLO_WORLD_SHA);
+        });
+    }
+    #[test]
+    fn fixed_ranks_reject_tie_gap_oob() {
+        use hydra_feed::fixed::{validate_ranks, FixedError};
+        assert!(validate_ranks(&[1, 2, 3, 4]).is_ok());
+        // Tie.
+        assert!(matches!(
+            validate_ranks(&[1, 1, 3, 4]),
+            Err(FixedError::DuplicateRank { .. })
+        ));
+        // Gap (in-range but not a permutation).
+        assert!(matches!(
+            validate_ranks(&[1, 2, 2, 4]),
+            Err(FixedError::DuplicateRank { .. })
+        ));
+        // OOB: 0 underflows, 5 overflows.
+        assert!(matches!(
+            validate_ranks(&[0, 2, 3, 4]),
+            Err(FixedError::InvalidRank { index: 0, value: 0 })
+        ));
+        assert!(matches!(
+            validate_ranks(&[1, 2, 3, 5]),
+            Err(FixedError::InvalidRank { index: 3, value: 5 })
+        ));
+    }
+
+    #[test]
+    fn fixed_canonical_points_and_zero_sum() {
+        use hydra_feed::fixed::{exact_total_fixed, utility_fixed, FIXED_SCALE};
+        let out = utility_fixed([1, 2, 3, 4]).unwrap();
+        assert_eq!(
+            out,
+            [3 * FIXED_SCALE, FIXED_SCALE, -FIXED_SCALE, -3 * FIXED_SCALE]
+        );
+        assert_eq!(exact_total_fixed(&out), 0);
+        // Permuted ranks permute the points; the integer sum stays zero.
+        let perm = utility_fixed([4, 1, 3, 2]).unwrap();
+        assert_eq!(
+            perm,
+            [-3 * FIXED_SCALE, 3 * FIXED_SCALE, -FIXED_SCALE, FIXED_SCALE]
+        );
+        assert_eq!(exact_total_fixed(&perm), 0);
+    }
+
+    #[test]
+    fn fixed_manifest_indexing_and_zero_sum_shapes() {
+        use hydra_feed::fixed::{exact_total_is_zero, utility_for_ranks_fixed};
+        let rank_values = [10i64, 20, 30, 40];
+        assert_eq!(
+            utility_for_ranks_fixed(&rank_values, &[4, 3, 2, 1]).unwrap(),
+            [40, 30, 20, 10]
+        );
+        // Exact f64 zero-sum shapes (no float accumulation, no epsilon).
+        assert_eq!(exact_total_is_zero(&[1.0, -1.0, 2.0, -2.0]).unwrap(), true);
+        assert_eq!(exact_total_is_zero(&[1.5, 2.5, -1.0, -2.0]).unwrap(), false);
+        assert_eq!(exact_total_is_zero(&[0.0, 0.0, 0.0, 0.0]).unwrap(), true);
+        // m8 (F7/F8): 1e12-scale normal mixed with a subnormal — exact
+        // fallback, Fraction-equivalent (`Ok(true)` post-fallback,
+        // `Err(Overflow)` pre-fallback); never `Ok(false)`, never
+        // `ValueError`, never assumed zero.
+        match exact_total_is_zero(&[1e12, -1e12, 5e-324, -5e-324]) {
+            Ok(is_zero) => assert!(is_zero, "m8 exact sum is zero"),
+            Err(hydra_feed::fixed::FixedError::Overflow) => {},
+            Err(other) => panic!("m8 must be Ok(true) or Overflow, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fixed_err_mapping_discriminates_overflow() {
+        use hydra_feed::fixed::FixedError;
+        use pyo3::exceptions::{PyOverflowError, PyValueError};
+        Python::attach(|py| {
+            let bad_rank = map_fixed_err(FixedError::InvalidRank { index: 0, value: 0 });
+            assert!(bad_rank.is_instance_of::<PyValueError>(py));
+            let dup = map_fixed_err(FixedError::DuplicateRank { value: 1 });
+            assert!(dup.is_instance_of::<PyValueError>(py));
+            let nonfinite = map_fixed_err(FixedError::NonFiniteValue { index: 2 });
+            assert!(nonfinite.is_instance_of::<PyValueError>(py));
+            let overflow = map_fixed_err(FixedError::Overflow);
+            assert!(overflow.is_instance_of::<PyOverflowError>(py));
+        });
+    }
+
+    #[test]
+    fn fixed_pyfns_shape_and_value_gates() {
+        use hydra_feed::fixed::FIXED_SCALE;
+        use pyo3::exceptions::PyOverflowError;
+        Python::attach(|py| {
+            // Rank/tie/gap/OOB through the attached shape check + detached feed.
+            assert!(validate_ranks(py, vec![1, 2, 3, 4]).is_ok());
+            assert!(validate_ranks(py, vec![1, 1, 3, 4]).is_err());
+            assert!(validate_ranks(py, vec![0, 2, 3, 4]).is_err());
+            assert!(validate_ranks(py, vec![1, 2, 3]).is_err());
+            // Points [1,2,3,4] -> [3S,S,-S,-3S].
+            assert_eq!(
+                utility_fixed(py, vec![1, 2, 3, 4]).unwrap(),
+                vec![3 * FIXED_SCALE, FIXED_SCALE, -FIXED_SCALE, -3 * FIXED_SCALE]
+            );
+            assert_eq!(
+                utility_for_ranks_fixed(py, vec![10, 20, 30, 40], vec![4, 3, 2, 1]).unwrap(),
+                vec![40, 30, 20, 10]
+            );
+            // Zero-sum shapes.
+            assert!(exact_total_is_zero(py, vec![1.0, -1.0, 2.0, -2.0]).unwrap());
+            assert!(!exact_total_is_zero(py, vec![1.5, 2.5, -1.0, -2.0]).unwrap());
+            // m8 via the pyfn: Ok(true) post-fallback or Overflow pre-fallback.
+            match exact_total_is_zero(py, vec![1e12, -1e12, 5e-324, -5e-324]) {
+                Ok(is_zero) => assert!(is_zero, "m8 exact sum is zero"),
+                Err(e) => assert!(
+                    e.is_instance_of::<PyOverflowError>(py),
+                    "m8 err must be Overflow, got {e}"
+                ),
+            }
+            // below()/bounded() parity UNCHANGED: bounded(_, 1) == 0 stays.
+            assert_eq!(bounded(12345, 1).unwrap_or(99), 0);
         });
     }
 }

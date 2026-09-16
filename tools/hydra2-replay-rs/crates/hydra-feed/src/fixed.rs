@@ -8,8 +8,9 @@
 //!   `0` underflow and `5+` OOB become `Err`, never a panic — Python raises
 //!   `ContractError` (`utility.py:170-177`), so Rust MUST return `Result`.
 //! - Exact zero-sum over `f64` uses `i128` checked shifts over a common
-//!   power-of-two denominator (m8): `1e12` mixed with a subnormal needs a
-//!   1100+ bit shift, which MUST surface as `Err(Overflow)` (fallback, never
+//!   power-of-two denominator, with an exact stack big-int fallback for
+//!   wide spreads (m8): `1e12` mixed with a subnormal needs a 1100+ bit
+//!   shift — the fallback resolves it exactly (Fraction-equivalent, never
 //!   wrap, never assume zero). No `float` accumulation, no epsilon.
 //! - [`utility_fixed`] maps validated ranks onto canonical zero-sum fixed
 //!   placement points; [`utility_for_ranks_fixed`] maps them through a caller
@@ -43,8 +44,10 @@ pub enum FixedError {
         /// Position in the values quad.
         index: usize,
     },
-    /// Exact-sum alignment overflows `i128` (m8 fallback: e.g. `1e12` mixed
-    /// with a subnormal needs a 1100+ bit shift — never wrap, never assume).
+    /// Defensive overflow: the `i128` fast path overflowed AND the exact
+    /// stack big-int fallback carried past its top limb. Unreachable for 4
+    /// finite `f64` (the fallback covers the full 2045-bit spread); retained
+    /// so callers (bridge) keep a fail-closed `Overflow` arm.
     Overflow,
 }
 
@@ -187,13 +190,153 @@ fn decompose_f64(value: f64) -> (i128, i32) {
     (signed, exp)
 }
 
-/// Exact zero-sum over four `f64` values (integer-only, checked).
+// ---------------------------------------------------------------------------
+// Exact fallback: stack big-int for exponent spreads wider than `i128`
+// ---------------------------------------------------------------------------
+
+/// Limbs of the exact-fallback accumulator (little-endian `u64`).
 ///
-/// Equivalent to Python `Fraction` sum `== 0` for the 4-element check:
-/// aligns all mantissae to the minimum exponent with `checked_shl` and
-/// accumulates with `checked_add`. Exponent spreads wider than `i128`
-/// (m8: `1e12` + subnormal ⇒ 1100+ bit shift) yield `Err(Overflow)` —
-/// the checked-shift fallback, never wrapping, never assuming.
+/// Finite-`f64` exponents span `971 - (-1074) = 2045` bits; with a 53-bit
+/// mantissa plus 2 carry bits from summing 4 terms the worst case needs
+/// 2100 bits. 40 limbs = 2560 bits covers every finite quad with margin.
+/// No heap, no new deps. A carry past the top limb is defensive
+/// `Err(Overflow)` (unreachable for 4 finite `f64`).
+const FALLBACK_LIMBS: usize = 40;
+
+/// True when the little-endian magnitude is zero.
+fn big_is_zero(mag: &[u64; FALLBACK_LIMBS]) -> bool {
+    let mut i = 0;
+    while i < FALLBACK_LIMBS {
+        if mag[i] != 0 {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// Big-endian-lexicographic compare of little-endian magnitudes.
+fn big_cmp(a: &[u64; FALLBACK_LIMBS], b: &[u64; FALLBACK_LIMBS]) -> core::cmp::Ordering {
+    let mut i = FALLBACK_LIMBS;
+    while i > 0 {
+        i -= 1;
+        if a[i] != b[i] {
+            return a[i].cmp(&b[i]);
+        }
+    }
+    core::cmp::Ordering::Equal
+}
+
+/// `acc += add`, little-endian. Returns `true` on carry past the top limb
+/// (defensive `Overflow`, unreachable for 4 finite `f64`).
+fn big_add_into(acc: &mut [u64; FALLBACK_LIMBS], add: &[u64; FALLBACK_LIMBS]) -> bool {
+    let mut carry: u128 = 0;
+    let mut i = 0;
+    while i < FALLBACK_LIMBS {
+        let sum = acc[i] as u128 + add[i] as u128 + carry;
+        acc[i] = sum as u64;
+        carry = sum >> 64;
+        i += 1;
+    }
+    carry != 0
+}
+
+/// `acc -= sub`, little-endian. Requires `acc >= sub` (the caller checks
+/// via `big_cmp`); the final borrow is asserted, never wrapped.
+fn big_sub_into(acc: &mut [u64; FALLBACK_LIMBS], sub: &[u64; FALLBACK_LIMBS]) {
+    let mut borrow: u128 = 0;
+    let mut i = 0;
+    while i < FALLBACK_LIMBS {
+        let subtrahend = sub[i] as u128 + borrow;
+        if acc[i] as u128 >= subtrahend {
+            acc[i] = (acc[i] as u128 - subtrahend) as u64;
+            borrow = 0;
+        } else {
+            acc[i] = ((1u128 << 64) + acc[i] as u128 - subtrahend) as u64;
+            borrow = 1;
+        }
+        i += 1;
+    }
+    debug_assert!(borrow == 0);
+}
+
+/// Exact fallback for `exact_total_is_zero`: re-accumulates the
+/// `mantissa * 2^exp` terms as a sign-magnitude stack big-int aligned to
+/// `emin`, so the sum is `S * 2^emin` and zero iff `S == 0` — the exact
+/// analogue of Python `sum(Fraction(v)) == 0`. Uses `unsigned_abs()`
+/// (never `abs()`, so no `MIN`-negation hazard: mantissae fit 53 bits but
+/// the unsigned form is panic-free by construction).
+fn exact_total_fallback(ms: &[i128; 4], es: &[i32; 4], emin: i32) -> Result<bool, FixedError> {
+    let mut acc_mag = [0u64; FALLBACK_LIMBS];
+    let mut acc_sign: i8 = 0;
+    let mut k = 0;
+    while k < 4 {
+        let m = ms[k];
+        if m == 0 {
+            k += 1;
+            continue;
+        }
+        let shift = (es[k] - emin) as u32;
+        let term_sign: i8 = if m > 0 { 1 } else { -1 };
+        // `unsigned_abs` (never `abs()`): exact for every `i128`, no panic.
+        let mant_abs = m.unsigned_abs() as u64;
+        let mut term = [0u64; FALLBACK_LIMBS];
+        let word = (shift / 64) as usize;
+        let bit = shift % 64;
+        if bit == 0 {
+            match term.get_mut(word) {
+                Some(slot) => *slot = mant_abs,
+                None => return Err(FixedError::Overflow),
+            }
+        } else {
+            match term.get_mut(word) {
+                Some(slot) => *slot = mant_abs << bit,
+                None => return Err(FixedError::Overflow),
+            }
+            match term.get_mut(word + 1) {
+                Some(slot) => *slot = mant_abs >> (64 - bit),
+                None => return Err(FixedError::Overflow),
+            }
+        }
+        if acc_sign == 0 {
+            acc_mag = term;
+            acc_sign = term_sign;
+        } else if acc_sign == term_sign {
+            if big_add_into(&mut acc_mag, &term) {
+                return Err(FixedError::Overflow);
+            }
+        } else {
+            match big_cmp(&acc_mag, &term) {
+                core::cmp::Ordering::Equal => {
+                    acc_mag = [0u64; FALLBACK_LIMBS];
+                    acc_sign = 0;
+                }
+                core::cmp::Ordering::Greater => {
+                    big_sub_into(&mut acc_mag, &term);
+                }
+                core::cmp::Ordering::Less => {
+                    let mut next = term;
+                    big_sub_into(&mut next, &acc_mag);
+                    acc_mag = next;
+                    acc_sign = term_sign;
+                }
+            }
+        }
+        k += 1;
+    }
+    Ok(big_is_zero(&acc_mag))
+}
+
+/// Exact zero-sum over four `f64` values (integer-only, Fraction-exact).
+///
+/// Equivalent to Python `sum(Fraction(v)) == 0` for the 4-element check:
+/// fast path aligns all mantissae to the minimum exponent with
+/// `checked_shl`/`checked_add`. A checked failure (m8: `1e12` + subnormal
+/// ⇒ 1100+ bit shift, wider than `i128`) falls back to
+/// [`exact_total_fallback`] — an exact sign-magnitude stack big-int over
+/// the same `(mantissa, exp2)` terms, so the result is still exact and
+/// never assumes zero. `Err(Overflow)` survives only as the defensive
+/// top-limb-carry arm (unreachable for 4 finite `f64`).
 /// Non-finite inputs are `Err` (Python `_require_finite_float` rejects).
 /// No float summation, no epsilon.
 pub fn exact_total_is_zero(vals: &[f64; 4]) -> Result<bool, FixedError> {
@@ -227,13 +370,17 @@ pub fn exact_total_is_zero(vals: &[f64; 4]) -> Result<bool, FixedError> {
             k += 1;
             continue;
         }
+        // `es[k] >= emin` by construction, so the shift is non-negative;
+        // the `u32` range always holds (`f64` exponents span 2045 bits).
         let shift = (es[k] - emin) as u32;
         match ms[k].checked_shl(shift) {
             Some(term) => match acc.checked_add(term) {
                 Some(next) => acc = next,
-                None => return Err(FixedError::Overflow),
+                // Fast-path add overflow ⇒ exact fallback (never wrap).
+                None => return exact_total_fallback(&ms, &es, emin),
             },
-            None => return Err(FixedError::Overflow),
+            // Fast-path shift overflow ⇒ exact fallback (never wrap).
+            None => return exact_total_fallback(&ms, &es, emin),
         }
         k += 1;
     }
@@ -327,12 +474,41 @@ mod tests {
     }
 
     #[test]
-    fn exact_total_f64_overflow_is_err_m8() {
+    fn exact_total_f64_wide_spread_fallback_m8() {
         // m8: 1e12-scale normal mixed with a subnormal needs a 1100+ bit
-        // alignment shift — checked fallback, never wrap, never assume zero.
+        // alignment shift — wider than the `i128` fast path, so the exact
+        // stack big-int fallback resolves it (Fraction-equivalent: the two
+        // pairs cancel exactly ⇒ true). Never wrap, never assume zero.
         assert_eq!(
-            exact_total_is_zero(&[1e12, -1e12, 5e-324, -5e-324]),
-            Err(FixedError::Overflow)
+            exact_total_is_zero(&[1e12, -1e12, 5e-324, -5e-324]).unwrap(),
+            true
         );
+        // Same spread, unbalanced tail ⇒ exactly nonzero. The fallback must
+        // report `false`, never a blanket zero.
+        assert_eq!(
+            exact_total_is_zero(&[1e12, -1e12, 5e-324, 0.0]).unwrap(),
+            false
+        );
+    }
+
+    #[test]
+    fn exact_total_f64_full_spread_extremes() {
+        // Widest finite spread: `f64::MAX` (exp2 971) vs subnormal
+        // (exp2 -1074) = 2045-bit alignment, inside the 40-limb fallback.
+        assert_eq!(
+            exact_total_is_zero(&[f64::MAX, -f64::MAX, 5e-324, -5e-324]).unwrap(),
+            true
+        );
+        assert_eq!(
+            exact_total_is_zero(&[f64::MAX, -f64::MAX, 5e-324, 0.0]).unwrap(),
+            false
+        );
+        // Same-exponent extremes stay exact through either path.
+        assert_eq!(
+            exact_total_is_zero(&[f64::MAX, f64::MAX, -f64::MAX, -f64::MAX]).unwrap(),
+            true
+        );
+        // Signed zero decomposes to a zero mantissa and is skipped.
+        assert_eq!(exact_total_is_zero(&[-0.0, 0.0, 0.0, 0.0]).unwrap(), true);
     }
 }
