@@ -158,21 +158,17 @@ class TestPlainPin:
             assert torch.equal(v, before[k])
 
 
-@pytest.mark.serial
-class TestFabricRebind:
-    def test_rebind_same_precision_ok_different_raises(self) -> None:
-        pytest.importorskip("lightning_fabric")
-        from hydra2.runtime.fabric import FabricRuntimeAdapter
+class TestPlainSetup:
+    def test_plain_setup_returns_same_objects(self) -> None:
+        from hydra2.runtime.plain import PlainPytorchAdapter
 
-        adapter = FabricRuntimeAdapter()
-        spec_fp32 = _fp32_cpu_spec(adapter_id="fabric_2.6.5", precision="fp32")
-        # First bind records precision; second identical bind reuses fabric.
-        first = adapter._ensure_fabric(spec_fp32)
-        second = adapter._ensure_fabric(spec_fp32)
-        assert first is second
-        spec_bf16 = _fp32_cpu_spec(adapter_id="fabric_2.6.5", precision="bf16_mixed")
-        with pytest.raises(ContractError, match="already bound"):
-            adapter._ensure_fabric(spec_bf16)
+        adapter = PlainPytorchAdapter()
+        model = _StubModel()
+        opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
+        spec = _fp32_cpu_spec(adapter_id="plain_pytorch", precision="fp32")
+        handle = adapter.setup(model=model, optimizer=opt, spec=spec)
+        assert handle.model is model
+        assert handle.optimizer is opt
 
 
 class TestReplayPin:
@@ -233,7 +229,7 @@ class TestReplayPin:
         model = _StubModel(feature_dim=8, num_actions=8)
         opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
         config = ReplayConfig(microbatch_size=2, accumulation_steps=1, max_updates=1, seed=0)
-        rt_bf16 = _fp32_cpu_spec(adapter_id="fabric_2.6.5", precision="bf16_mixed")
+        rt_bf16 = _fp32_cpu_spec(adapter_id="plain_pytorch", precision="bf16_mixed")
         with pytest.raises(ContractError, match="fp32-only"):
             ActorLearnerReplay(
                 model=model,
@@ -252,8 +248,6 @@ class TestLoopRuntimeAgreement:
         ("adapter_id", "rt_precision", "loop_precision"),
         [
             ("plain_pytorch", "fp32", "bf16_mixed"),
-            ("fabric_2.6.5", "fp32", "bf16_mixed"),
-            ("fabric_2.6.5", "bf16_mixed", "fp32"),
             ("plain_pytorch", "bf16_mixed", "fp32"),
         ],
     )
@@ -270,7 +264,7 @@ class TestLoopRuntimeAgreement:
 
     @pytest.mark.parametrize(
         ("adapter_id", "precision"),
-        [("plain_pytorch", "fp32"), ("fabric_2.6.5", "fp32"), ("fabric_2.6.5", "bf16_mixed")],
+        [("plain_pytorch", "fp32"), ("plain_pytorch", "bf16_mixed")],
     )
     def test_agreeing_constructs(self, tmp_path: Path, adapter_id: str, precision: str) -> None:
         loop, _ = _build_loop(

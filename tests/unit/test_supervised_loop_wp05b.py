@@ -88,132 +88,69 @@ def test_hot_entry_always_lean(tmp_path: Path, actor_parquet_factory) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 6 Plain vs Fabric identical loop state (GPU when available)
+# 6 Plain seeded repeat identical loop state (GPU when available)
 # ---------------------------------------------------------------------------
 
 
-def test_plain_and_fabric_identical_loop_state(tmp_path: Path, actor_parquet_factory) -> None:
+def test_plain_seeded_repeat_identical_loop_state(tmp_path: Path, actor_parquet_factory) -> None:
     parquet_dir = actor_parquet_factory(num_rows=16)
-    # Only run Fabric path if cuda and fabric available; otherwise skip
-    try:
-        import lightning_fabric  # noqa: F401
-    except Exception:
-        pytest.skip("lightning_fabric not importable")
-
     if not torch.cuda.is_available():
-        pytest.skip("CUDA unavailable — plain vs Fabric comparison requires RTX 5070 per spec")
+        pytest.skip("CUDA unavailable — plain seeded repeat requires RTX 5070 per spec")
 
-    from hydra2.runtime.fabric import FabricRuntimeAdapter
     from hydra2.runtime.plain import PlainPytorchAdapter
     from hydra2.runtime.protocol import RuntimeSpec
 
-    seed = 17
-    # Build plain
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    dataset_plain = AuthoritativeParquetDataset(
-        parquet_dir=parquet_dir,
-        feature_dim=FEATURE_DIM,
-        num_actions=NUM_ACTIONS_SMALL,
-        seed=seed,
-        verify=True,
-        allow_narrow=True,
-    )
-    model_plain = StubPolicyModel().to("cuda")
-    # Clone weights deterministically for fair comparison: copy state dict
-    plain_sd = model_plain.state_dict()
-    optim_plain = torch.optim.AdamW(model_plain.parameters(), lr=1e-3, foreach=True)
-    spec = RuntimeSpec(
-        adapter_id="plain_pytorch",
-        device="cuda:0",
-        precision="fp32",
-        compile_mode="eager",
-        backward_pass_autocast=None,
-    )
-    plain_adapter = PlainPytorchAdapter()
-    handle_plain = plain_adapter.setup(model=model_plain, optimizer=optim_plain, spec=spec)
-    config_plain = TrainingLoopConfig(
-        seed=seed,
-        microbatch_size=4,
-        accumulation_steps=1,
-        max_updates=3,
-        checkpoint_frequency_updates=10,
-    )
-    loop_plain = SupervisedLoop(
-        model=handle_plain.model,  # use wrapped model
-        optimizer=handle_plain.optimizer,
-        dataset=dataset_plain,
-        config=config_plain,
-        checkpoint_dir=tmp_path / "plain_ckpt",
-        manifest_hashes=make_test_manifest_hashes(),  # test-only digests
-        handle=handle_plain,
-        device=handle_plain.device,
-    )
-    # Need to synchronize model weights: the plain adapter's model is already on cuda; copy its state for fabric
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    dataset_fab = AuthoritativeParquetDataset(
-        parquet_dir=parquet_dir,
-        feature_dim=FEATURE_DIM,
-        num_actions=NUM_ACTIONS_SMALL,
-        seed=seed,
-        verify=True,
-        allow_narrow=True,
-    )
-    model_fab_base = StubPolicyModel()
-    model_fab_base.load_state_dict(plain_sd)
-    model_fab_base = model_fab_base.to("cuda")
-    optim_fab_base = torch.optim.AdamW(model_fab_base.parameters(), lr=1e-3, foreach=True)
-    # Load optimizer state to match plain's initial optimizer (which is fresh anyway)
-    spec_fab = RuntimeSpec(
-        adapter_id="fabric_2.6.5",
-        device="cuda:0",
-        precision="fp32",
-        compile_mode="eager",
-        backward_pass_autocast=None,
-    )
-    fab_adapter = FabricRuntimeAdapter()
-    handle_fab = fab_adapter.setup(model=model_fab_base, optimizer=optim_fab_base, spec=spec_fab)
-    config_fab = TrainingLoopConfig(
-        seed=seed,
-        microbatch_size=4,
-        accumulation_steps=1,
-        max_updates=3,
-        checkpoint_frequency_updates=10,
-    )
-    loop_fab = SupervisedLoop(
-        model=handle_fab.model,
-        optimizer=handle_fab.optimizer,
-        dataset=dataset_fab,
-        config=config_fab,
-        checkpoint_dir=tmp_path / "fab_ckpt",
-        manifest_hashes=make_test_manifest_hashes(),  # test-only digests
-        handle=handle_fab,
-        device=handle_fab.device,
-    )
-    # Both loops start from same model state and same dataset order — run 3 updates
-    hist_plain = loop_plain.train(max_updates=3)
-    hist_fab = loop_fab.train(max_updates=3)
-    for hp, hf in zip(hist_plain, hist_fab, strict=True):
-        assert hp["total"] == pytest.approx(hf["total"], rel=1e-4, abs=1e-6), (
-            f"plain {hp} vs fabric {hf}"
+    def run_once(tag: str) -> tuple[list, dict]:
+        seed = 17
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        dataset = AuthoritativeParquetDataset(
+            parquet_dir=parquet_dir,
+            feature_dim=FEATURE_DIM,
+            num_actions=NUM_ACTIONS_SMALL,
+            seed=seed,
+            verify=True,
+            allow_narrow=True,
         )
-    # Also model states should be bitwise close (allow small fp32 fabric differences but deterministic)
+        model = StubPolicyModel().to("cuda")
+        optim = torch.optim.AdamW(model.parameters(), lr=1e-3, foreach=True)
+        spec = RuntimeSpec(
+            adapter_id="plain_pytorch",
+            device="cuda:0",
+            precision="fp32",
+            compile_mode="eager",
+            backward_pass_autocast=None,
+        )
+        adapter = PlainPytorchAdapter()
+        handle = adapter.setup(model=model, optimizer=optim, spec=spec)
+        config = TrainingLoopConfig(
+            seed=seed,
+            microbatch_size=4,
+            accumulation_steps=1,
+            max_updates=3,
+            checkpoint_frequency_updates=10,
+        )
+        loop = SupervisedLoop(
+            model=handle.model,
+            optimizer=handle.optimizer,
+            dataset=dataset,
+            config=config,
+            checkpoint_dir=tmp_path / f"{tag}_ckpt",
+            manifest_hashes=make_test_manifest_hashes(),
+            handle=handle,
+            device=handle.device,
+        )
+        return loop.train(max_updates=3), state_snapshot(handle.model)
+
     from tests.conftest import assert_states_bitwise_equal, state_snapshot
 
-    # Use helper to compare with tolerance? For fp32 eager, they should be bitwise equal
-    plain_state = state_snapshot(handle_plain.model)
-    fab_state = state_snapshot(handle_fab.model)
-    # Fabric may have slightly different numerics due to internal ops; allow small tol for this gate
-    # But per spec they must be identical for fp32 eager — we assert bitwise for now; if fails, report
-    try:
-        assert_states_bitwise_equal(plain_state, fab_state, context="plain vs fabric model state")
-    except AssertionError as e:
-        # If bitwise fails, at least check close
-        for k in plain_state:
-            assert torch.allclose(plain_state[k].float(), fab_state[k].float(), atol=1e-5), (
-                f"param {k} diverged: {e}"
-            )
+    hist_a, state_a = run_once("a")
+    hist_b, state_b = run_once("b")
+    for ha, hb in zip(hist_a, hist_b, strict=True):
+        assert ha["total"] == pytest.approx(hb["total"], rel=1e-4, abs=1e-6), (
+            f"plain {ha} vs repeat {hb}"
+        )
+    assert_states_bitwise_equal(state_a, state_b, context="plain seeded repeat model state")
 
 
 # ---------------------------------------------------------------------------

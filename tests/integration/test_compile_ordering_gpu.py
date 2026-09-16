@@ -1,5 +1,5 @@
-"""GPU probes: real compile-before-Fabric ordering, functorch patch window
-around compile AND setup on the live Fabric path, and eager fallback after
+"""GPU probes: real compile-before-setup ordering, functorch patch window
+around compile AND setup on the live plain path, and eager fallback after
 the compiled path is disabled.
 """
 
@@ -9,7 +9,7 @@ import pytest
 import torch
 
 from hydra2.config import PARITY_ABS_TOL, PARITY_REL_TOL
-from hydra2.runtime.fabric import FabricRuntimeAdapter
+from hydra2.runtime.plain import PlainPytorchAdapter
 from hydra2.runtime.protocol import RuntimeSpec, build_runtime
 from tests.conftest import make_batch, make_model_and_optimizer, run_supervised_steps
 
@@ -23,7 +23,7 @@ _BATCH_FEATURES = 16
 SEED = 777
 
 
-class OrderingRecordingFabric(FabricRuntimeAdapter):
+class OrderingRecordingPlain(PlainPytorchAdapter):
     """Delegating adapter recording what build_runtime handed to setup."""
 
     def __init__(self):
@@ -44,7 +44,7 @@ class OrderingRecordingFabric(FabricRuntimeAdapter):
 
 def spec(**overrides) -> RuntimeSpec:
     fields = {
-        "adapter_id": "fabric_2.6.5",
+        "adapter_id": "plain_pytorch",
         "device": "cuda",
         "precision": "fp32",
         "compile_mode": "default",
@@ -66,11 +66,11 @@ def inductor_available():
 
 
 @pytest.mark.gpu
-class TestCompileBeforeFabric:
+class TestCompileBeforeSetup:
     def test_compiled_fp32_build_orders_compile_before_setup(
         self, require_cuda, inductor_available
     ):
-        adapter = OrderingRecordingFabric()
+        adapter = OrderingRecordingPlain()
         model, optimizer = make_model_and_optimizer(SEED)
         handle = build_runtime(
             adapter=adapter,
@@ -78,24 +78,22 @@ class TestCompileBeforeFabric:
             optimizer=optimizer,
             spec=spec(precision="fp32"),
         )
-        # The model was ALREADY a torch.compile product when Fabric.setup ran.
+        # The model was ALREADY a torch.compile product when Plain.setup ran.
         assert adapter.events == [{"model_compiled": True, "patch_value": "same_as_forward"}]
-        # Fabric rebinds the compiled product as its forward module; the
-        # OptimizedModule must survive inside the returned handle.
-        assert type(handle.model).__name__ == "_FabricModule"
-        assert isinstance(handle.model._forward_module, torch._dynamo.OptimizedModule)
+        # Plain keeps the compiled product directly in the returned handle.
+        assert isinstance(handle.model, torch._dynamo.OptimizedModule)
 
         x, y = make_batch(SEED + 1, rows=_BATCH_ROWS, features=_BATCH_FEATURES)
         losses = run_supervised_steps(handle, x, y, steps=2)
         assert len(losses) == 2 and all(loss > 0 for loss in losses)
 
-    def test_patch_wraps_compile_and_setup_on_real_fabric_amp(
+    def test_patch_wraps_compile_and_setup_on_real_plain_amp(
         self, require_cuda, inductor_available
     ):
         import torch._functorch.config as fcfg
 
         default_value = fcfg.backward_pass_autocast
-        adapter = OrderingRecordingFabric()
+        adapter = OrderingRecordingPlain()
         model, optimizer = make_model_and_optimizer(SEED + 10)
         handle = build_runtime(
             adapter=adapter,
@@ -121,7 +119,7 @@ class TestCompileBeforeFabric:
         x, y = make_batch(SEED + 21, rows=_BATCH_ROWS, features=_BATCH_FEATURES)
 
         def build(compiled: bool):
-            adapter = OrderingRecordingFabric()
+            adapter = OrderingRecordingPlain()
             model, optimizer = make_model_and_optimizer(SEED + 22)
             overrides = {"compile_mode": "default"} if compiled else {"compile_mode": "eager"}
             handle = build_runtime(

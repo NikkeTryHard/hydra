@@ -49,7 +49,6 @@ from hydra2.contracts.observation import make_actor_observation
 from hydra2.models.encoder import ActorTensorBatch, encode_observations
 from hydra2.models.model import Hydra2BaselineModel, masked_policy, select_actions
 from hydra2.models.schema import BASELINE_ACTION_COUNT
-from hydra2.runtime.fabric import FabricRuntimeAdapter
 from hydra2.runtime.plain import PlainPytorchAdapter
 from hydra2.runtime.protocol import RuntimeSpec, build_runtime, runtime_identity
 from hydra2.training.objectives import masked_cross_entropy
@@ -689,7 +688,7 @@ class TestBf16ShortOverlap:
         dut_opt = torch.optim.AdamW(dut_model.parameters(), lr=3e-4, foreach=True)
         ref_spec = _fp32_spec("plain_pytorch")
         dut_spec = RuntimeSpec(
-            adapter_id="fabric_2.6.5",
+            adapter_id="plain_pytorch",
             device="cuda",
             precision="bf16_mixed",
             compile_mode="eager",
@@ -704,7 +703,7 @@ class TestBf16ShortOverlap:
             spec=ref_spec,
         )
         dut_handle = build_runtime(
-            adapter=FabricRuntimeAdapter(),
+            adapter=PlainPytorchAdapter(),
             model=dut_model,
             optimizer=dut_opt,
             spec=dut_spec,
