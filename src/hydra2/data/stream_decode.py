@@ -24,6 +24,8 @@ from hydra2.data.stream_read import (
     StreamCursor,
     StreamGame,
     ZstdLineStream,
+    _bridge_entry,
+    _checked_bridge_frames,
     _Run,
     assign_split,
     compute_wall_hash,
@@ -100,6 +102,13 @@ def _decode_frames_worker(
     ``wall_hash``/``assigned_split`` use the identical pure functions the
     shared :meth:`_finish_decode` tail applies, so main-thread results are
     bit-identical with ~0.06ms/game of hashing moved off the consumer.
+
+    Framing takes the deferred Rust-first gate (``frame_games`` hasattr
+    check, no live bridge surface today — stays on the Python oracle;
+    mismatch = raise is the deferred contract; byte-exact ingest evidence:
+    packet 283/283 games + raw sha every game); the decode/validate tail
+    stays the Python oracle (no bridge surface; ``validate.py`` bodies and
+    the trap-8 sim stay Python by gate).
     """
     # No local imports: spawn re-imports this module, so module globals
     # (decode_game_object, validate_game, stem_of, Path, contracts) are present.
@@ -115,7 +124,12 @@ def _decode_frames_worker(
         fpath = Path(path_str)
         stem = stem_of(fpath)
         group_key = group_key_for_path(fpath)
-        for offset, game_bytes in ZstdLineStream(fpath).iter_games():
+        frame_fn = _bridge_entry("frame_games")
+        if frame_fn is not None:
+            frame_source = _checked_bridge_frames(fpath, frame_fn(fpath.as_posix()))
+        else:
+            frame_source = ZstdLineStream(fpath).iter_games()
+        for offset, game_bytes in frame_source:
             if offset < base:
                 continue
             end = offset + len(game_bytes)

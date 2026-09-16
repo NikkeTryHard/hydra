@@ -191,7 +191,12 @@ class GameStream:
         """Yield ``(file_index, end_offset, game_bytes)`` from the run position.
 
         Read-only over ``run``: position advances in :meth:`_finish_decode`
-        (in-order processing), never on submit-ahead framing.
+        (in-order processing), never on submit-ahead framing. Framing itself
+        takes the deferred Rust-first gate (see
+        :meth:`ZstdLineStream.iter_games`: ``frame_games`` hasattr check,
+        no live bridge surface today — stays on the Python oracle;
+        mismatch = raise is the deferred contract; byte-exact ingest
+        evidence: packet 283/283 games + raw sha every game).
         """
         files = self._manifest.files
         start_file = run.file_index

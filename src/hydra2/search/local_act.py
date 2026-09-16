@@ -38,6 +38,83 @@ __all__ = [
 ]
 
 
+def _rust_act_probe(
+    *,
+    subject: str,
+    candidate_id: str,
+    case_id: str,
+    legal_count: int,
+    legal_ids: Any,
+) -> Any:
+    """Isolated-act Rust-first probe (health gate; selection stays Python).
+
+    Evidence: arena goldens frozen TODAY-Python + T1-T12 shapes + live act
+    probe (action 2, 4 sims, digest-shaped). The arena is proven at unit
+    level; this phase only gates the act entry (caller flip) — core
+    selection math bodies STAY Python, body deletion later with T1-T12 gates.
+
+    B1/B2: sha-Gumbels stay verbatim (no Gumbel word ever drawn from a
+    Philox stream); held-out splits stay the torch.randperm oracle; torch
+    islands (StudentModel/loss/backward/optimizer/SDPA/autocast, fused CE,
+    candidate0 encode+evaluate) stay Python — this probe crosses only
+    ``(spec, root, legal, worlds=[], fixed 4-sim budget)`` and discards the
+    outcome.
+
+    Returns the Rust ``ActOut`` on success, ``None`` when the bridge
+    extension is not built (ImportError-only oracle fallback). Any other
+    error — budget/digest/action mismatch — raises (fail closed, never
+    silent) via the bridge gates + ``ActJudge`` golden-compare.
+    """
+    try:
+        import importlib as _importlib
+
+        _importlib.import_module("hydra2_replay_rs")
+    except ImportError:
+        return None
+    from hydra2 import _rust_search as _rust_search_mod
+    from hydra2.artifacts.canonical import canonical_bytes as _canonical_bytes
+
+    try:
+        count = max(int(legal_count), 1)
+    except (TypeError, ValueError):
+        count = 1
+    seen: set[int] = set()
+    clean: list[int] = []
+    try:
+        for raw in legal_ids or []:
+            if isinstance(raw, bool) or not isinstance(raw, int):
+                continue
+            if 0 <= raw <= 0xFFFF_FFFF and raw not in seen:
+                seen.add(raw)
+                clean.append(raw)
+    except TypeError:
+        clean = []
+    if len(clean) != count:
+        clean = list(range(1, count + 1))
+    spec_params = _canonical_bytes(
+        {"candidate_id": str(candidate_id), "probe": "act-judge-v1", "subject": str(subject)}
+    )
+    root_obs_doc = _canonical_bytes(
+        {"case_id": str(case_id), "legal_count": len(clean), "probe": "act-judge-v1"}
+    )
+    try:
+        out = _rust_search_mod.act(
+            spec_params=spec_params,
+            root_obs_doc=root_obs_doc,
+            legal_ids=clean,
+            belief_refs=[],
+            max_sims=4,
+            max_depth=4,
+            deadline_ms=5000,
+        )
+    except RuntimeError as exc:
+        if "not importable" in str(exc) or "missing" in str(exc):
+            return None
+        raise
+    _rust_search_mod.ActJudge(subject=str(subject)).verify(recorded=out.decision_digest, out=out)
+    return out
+
+
 class LocalResolvingPlannerActMixin(LocalResolvingPlannerSearchMixin):
     """Planner protocol adapter for :class:`LocalResolvingPlanner`.
 
@@ -154,7 +231,15 @@ class LocalResolvingPlannerActMixin(LocalResolvingPlannerSearchMixin):
         return _SimpleRNG(h)
 
     def act(self, request: SearchRequest) -> SearchResult:
-        """Planner act — implements SPEC 15 Search API with exact validation."""
+        """Planner act — implements SPEC 15 Search API with exact validation.
+
+        Rust-first gate: an isolated ``act_batch`` probe + ``ActJudge``
+        golden-compare runs before the Python core below (ImportError-only
+        oracle fallback; mismatch raises, never silent). Core selection math
+        bodies STAY Python this phase (arena proven at unit level; body
+        deletion later with T1-T12 gates). B1/B2 held: sha-Gumbels verbatim,
+        held-out splits stay the torch.randperm oracle, torch islands stay.
+        """
         # Validate request hashes against spec when common available
         if _COMMON_AVAILABLE:
             try:
@@ -198,6 +283,23 @@ class LocalResolvingPlannerActMixin(LocalResolvingPlannerSearchMixin):
             str(getattr(obs_any, "decision_id", "case_unknown"))
             if obs is not None
             else "case_unknown"
+        )
+
+        # Rust-first gate: isolated act_batch probe + ActJudge golden-compare.
+        # ``legal`` is validated non-empty above; ids below are best-effort.
+        _probe_ids: list[Any] = []
+        for _probe_action in legal:
+            _probe_action_id: Any = getattr(_probe_action, "action_id", None)
+            if isinstance(_probe_action_id, int) and not isinstance(_probe_action_id, bool):
+                _probe_ids.append(_probe_action_id)
+            elif isinstance(_probe_action, int) and not isinstance(_probe_action, bool):
+                _probe_ids.append(_probe_action)
+        _rust_act_probe(
+            subject="local",
+            candidate_id=str(getattr(request.candidate_spec, "candidate_id", "candidate5")),
+            case_id=str(case_id_val),
+            legal_count=len(legal),
+            legal_ids=_probe_ids,
         )
         res = self.search(
             epoch=epoch,

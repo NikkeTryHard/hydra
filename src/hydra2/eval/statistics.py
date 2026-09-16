@@ -124,6 +124,20 @@ def fixed_n_samples(*, s: float, delta: float, alpha: float, beta: float) -> int
     return math.ceil(((z_a + z_b) * s / delta) ** 2)
 
 
+def _bootstrap_percentile_indexes(alpha: float, resamples: int) -> tuple[int, int]:
+    """Percentile indexes verbatim (Rust ``eval::statistics::percentile_indexes``).
+
+    ``low = floor(alpha / 2 * R)``, ``high = ceil((1 - alpha / 2) * R) - 1``
+    (T3 pins ``R=2000, alpha=0.05`` → ``(50, 1949)``). Draw-free assembly is
+    Rust-owned; this mirror keeps the numpy-draw lane (M2) byte-identical
+    until a bridge surface lands with a bit-parity KAT.
+    """
+    _validate_alpha_resamples(alpha, resamples)
+    low = math.floor(alpha / 2 * resamples)
+    high = math.ceil((1 - alpha / 2) * resamples) - 1
+    return low, high
+
+
 def bootstrap_blocks(
     block_values: Sequence[float],
     *,
@@ -139,6 +153,17 @@ def bootstrap_blocks(
     Vectorized over a seeded numpy Generator derived from RandomStream
     (counter-based, reproducible); resamples whole blocks with replacement
     as atomic units.
+
+    Rust-first (port-B, M2 measure-first): numpy PCG64 keeps the draws —
+    the ONLY seed source is the legacy CTR stream
+    (``seed = u64BE(stream.get_bytes(8))`` into ``np.default_rng``); the
+    draw-free assembly (block-mean estimate + percentile indexes) mirrors
+    Rust ``eval::statistics::bootstrap_interval``/``percentile_indexes``
+    verbatim via :func:`_bootstrap_percentile_indexes`. No PCG64
+    reimplementation lives anywhere (port-A only behind measurement +
+    bit-parity KAT, never silently). B1/B2: no Gumbel or split draws here —
+    whole-block resampling only; held-out splits stay the torch.randperm
+    oracle behind KAT.
     """
     values = _validate_blocks(block_values)
     _validate_alpha_resamples(alpha, resamples)
@@ -153,8 +178,9 @@ def bootstrap_blocks(
     indices = rng.integers(0, count, size=(resamples, count), dtype=np.intp)
     sample_means = np.take(arr, indices).mean(axis=1)
     sample_means.sort()
-    low = float(sample_means[math.floor(alpha / 2 * resamples)])
-    high = float(sample_means[math.ceil((1 - alpha / 2) * resamples) - 1])
+    low_index, high_index = _bootstrap_percentile_indexes(alpha, resamples)
+    low = float(sample_means[low_index])
+    high = float(sample_means[high_index])
     return float(arr.mean()), low, high
 
 

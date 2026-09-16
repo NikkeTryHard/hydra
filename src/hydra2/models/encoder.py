@@ -55,6 +55,18 @@ _WIND_TO_ID: dict[int, int] = {27: 0, 28: 1, 29: 2, 30: 3}
 # identically. Fused-CE stays forced-Python (M7: per-bucket bakeoff wall +
 # 1e-4 + NaN parity gate; D5 triton_op recipe gated) — gate notes live in
 # ring.rs, which also carries the M5/M8/m3/m6 ledger.
+#
+#: Hardening (fail-closed): the oracle twins below run ONLY when the bridge
+#: surface is absent (``ImportError``/missing attr → ``_ring_native()`` is
+#: ``None``). Any bridge-present error (geometry ``ValueError`` text mapped
+#: 1:1 to ``ContractError``, every other ``Exception`` wrapped as
+#: ``ContractError``) raises — mismatch=raise, never a silent oracle
+#: fallback. Evidence: canon arrays 2.8-3.8x + flats 1.4x Rust-faster linear
+#: + digest parity every doc; ring padding byte-identity pinned by
+#: ``ring_tests::padding_identity_zero_and_neg1_tails`` (0x00 tails on
+#: 0/False planes, 0xFF tails on -1 planes). Torch owns the GPU: torch
+#: allocates/owns the pinned slots physically; Rust only bulk-copies raw
+#: bytes under detach (no GPU math, Burn/Candle out).
 _RING_MOD: Any = None
 _RING_PROBED: bool = False
 
@@ -66,7 +78,12 @@ _RING_NATIVE_OVERRIDE: Any = None
 
 
 def _ring_native() -> Any | None:
-    """Import the built `ring` submodule once; None → oracle fallback."""
+    """Import the built `ring` submodule once; None → oracle fallback.
+
+    ImportError-only oracle: ``None`` means the extension (or its ``ring``
+    surface) is not importable — CPU/test lanes stay byte-identical via the
+    twins below. Any other import-time failure raises (fail-closed).
+    """
     global _RING_MOD, _RING_PROBED
     if _RING_NATIVE_OVERRIDE is not None:
         return _RING_NATIVE_OVERRIDE
@@ -88,9 +105,10 @@ def _ring_native() -> Any | None:
             # `_canon_rng`): import the top-level extension, then take the
             # submodule as an attribute (`add_submodule` publishes it).
             _RING_MOD = importlib.import_module("hydra2_replay_rs").ring
-        except Exception:
-            # Probe must never break the oracle: unbuilt/broken bridge just
-            # means the pure-Python twins below decide (byte-identical).
+        except (ImportError, AttributeError):
+            # Unbuilt extension / bridge without the ring surface only: the
+            # pure-Python twins below decide (byte-identical). Anything else
+            # is a broken bridge → raise, never a silent pass.
             _RING_MOD = None
     return _RING_MOD
 
@@ -411,16 +429,26 @@ def bucket_for_length(actual: int) -> int:
     """Public helper: bucket length for a given history length.
 
     SINGLE ceil fn both sides call (scan-side + ring-side): Rust-first via
-    ``hydra2_replay_rs.ring.bucket_for_length``, oracle ``_bucket_length``
-    fallback (byte-identical). Over-cap returns the max bucket here; callers
-    fail closed before calling (never truncate).
+    ``hydra2_replay_rs.ring.bucket_for_length``; the oracle ``_bucket_length``
+    runs ONLY when the bridge surface is absent (ImportError/missing attr).
+    Bridge-present errors raise ContractError (ValueError text preserved
+    1:1) — mismatch=raise, never a silent fallback. Over-cap returns the
+    max bucket here; callers fail closed before calling (never truncate).
     """
     ring = _ring_native()
     if ring is not None:
         try:
             return int(ring.bucket_for_length(int(actual)))
-        except Exception:
-            pass
+        except ContractError:
+            raise
+        except (ImportError, AttributeError):
+            pass  # bridge surface missing → oracle twin decides
+        except ValueError as exc:
+            raise ContractError(str(exc)) from exc
+        except Exception as exc:
+            raise ContractError(
+                f"ring bucket_for_length failed: {type(exc).__name__}: {exc}"
+            ) from exc
     return _bucket_length(actual)
 
 
@@ -437,7 +465,9 @@ def validate_encoder_batch(
     Pins the T-geom gate: non-empty batch + ``bucket_t`` member + ceil
     agreement + dora ``(5,)`` sentinel + ``A == 6792`` + never-truncate.
     No-op on success; raises :class:`ContractError` with identical text on
-    both paths (Rust ``ValueError`` text is mapped 1:1).
+    both paths (Rust ``ValueError`` text is mapped 1:1). The oracle below
+    runs ONLY when the bridge surface is absent; any bridge-present error
+    raises — mismatch=raise, never a silent pass.
     """
     ring = _ring_native()
     if ring is not None:
@@ -452,11 +482,16 @@ def validate_encoder_batch(
             return
         except ContractError:
             raise
+        except (ImportError, AttributeError):
+            pass  # bridge surface missing → oracle twin decides below
+        except ValueError as exc:
+            raise ContractError(str(exc)) from exc
         except Exception as exc:
-            if isinstance(exc, ValueError):
-                raise ContractError(str(exc)) from exc
-            # Bridge present but unusable (missing attr, overflow, ...):
-            # fall through to the oracle below (byte-identical verdict).
+            # Bridge present but unusable (overflow, descriptor drift, ...):
+            # mismatch=raise — never fall through to the oracle silently.
+            raise ContractError(
+                f"ring validate_encoder_batch failed: {type(exc).__name__}: {exc}"
+            ) from exc
     if batch_size == 0:
         raise ContractError("encode_observations requires at least one observation")
     if bucket_t not in HISTORY_BUCKET_LENGTHS:
@@ -492,45 +527,65 @@ def _stage_pinned_batch(
     Geometry is judged first (fail closed, nothing copied), then ALL planes
     cross in ONE detached ``ring_fill_batch`` bulk copy into pre-pinned
     slots — one release instead of the 29 per-tensor ``pin_memory()`` copies.
-    Any bridge absence/failure falls back to the identical oracle
-    ``pin_memory()`` dict-comp (byte-identical; the caller's pageable
-    fallback still owns unpinnable). Tensors cross as shape-agnostic bytes;
-    padding pre-fill (0/False/-1) rides along untouched (see proof note at
-    the numpy alloc site). Requires contiguous CPU tensors (the encoder's
-    ``from_numpy`` views are); anything else takes the oracle path.
+    Torch owns the GPU: torch allocates/owns the pinned slots physically
+    (pinned tensors, streams, events — no Rust GPU math); Rust moves
+    shape-agnostic bytes verbatim under detach (never re-inits, never
+    interprets padding). The oracle ``pin_memory()`` dict-comp runs ONLY
+    when the bridge surface is absent; non-contiguous/non-tensor inputs take
+    it explicitly (shape precondition, not a bridge verdict). Any
+    bridge-present copy error raises ContractError (Rust ValueError text
+    preserved 1:1) — mismatch=raise, never a silent fallback. Padding
+    pre-fill (0/False/-1) rides along untouched (see proof note at the numpy
+    alloc site).
     """
     validate_encoder_batch(
         batch_size=batch_size, max_history_len=max_history_len, bucket_t=bucket_t
     )
     ring = _ring_native()
-    if ring is not None:
-        try:
-            names = list(mapping.keys())
-            srcs = [mapping[name] for name in names]
-            for tensor in srcs:
-                if not isinstance(tensor, torch.Tensor) or not tensor.is_contiguous():
-                    raise ValueError("stage needs contiguous CPU tensors")
-            slots = [
-                torch.empty(tensor.shape, dtype=tensor.dtype, pin_memory=True) for tensor in srcs
-            ]
-            ring.ring_fill_batch(
-                [int(slot.data_ptr()) for slot in slots],
-                [int(slot.nbytes) for slot in slots],
-                [int(tensor.data_ptr()) for tensor in srcs],
-                [int(tensor.nbytes) for tensor in srcs],
-                int(batch_size),
-                int(max_history_len),
-                5,
-                int(BASELINE_ACTION_COUNT),
-                int(bucket_t),
-            )
-            return dict(zip(names, slots, strict=True))
-        except Exception:
-            pass
-    return {
-        name: tensor.pin_memory()  # type: ignore[attr-defined]  # reason: CPU Tensor.pin_memory; stubs miss
-        for name, tensor in mapping.items()
-    }
+    if ring is None:
+        # ImportError-only oracle (bridge surface absent).
+        return {
+            name: tensor.pin_memory()  # type: ignore[attr-defined]  # reason: CPU Tensor.pin_memory; stubs miss
+            for name, tensor in mapping.items()
+        }
+    names = list(mapping.keys())
+    srcs = [mapping[name] for name in names]
+    for tensor in srcs:
+        if not isinstance(tensor, torch.Tensor) or not tensor.is_contiguous():
+            # Shape precondition, not a bridge mismatch: strided views stay
+            # on the identical oracle path (byte-identical either way).
+            return {
+                name: ten.pin_memory()  # type: ignore[attr-defined]  # reason: CPU Tensor.pin_memory; stubs miss
+                for name, ten in mapping.items()
+            }
+    # Resource alloc stays outside the Rust try: OOM/RuntimeError propagates
+    # raw so the caller's pageable fallback (warn) still owns unpinnable.
+    slots = [torch.empty(tensor.shape, dtype=tensor.dtype, pin_memory=True) for tensor in srcs]
+    try:
+        ring.ring_fill_batch(
+            [int(slot.data_ptr()) for slot in slots],
+            [int(slot.nbytes) for slot in slots],
+            [int(tensor.data_ptr()) for tensor in srcs],
+            [int(tensor.nbytes) for tensor in srcs],
+            int(batch_size),
+            int(max_history_len),
+            5,
+            int(BASELINE_ACTION_COUNT),
+            int(bucket_t),
+        )
+    except ContractError:
+        raise
+    except (ImportError, AttributeError):
+        # Bridge surface vanished mid-call → identical oracle pin path.
+        return {
+            name: tensor.pin_memory()  # type: ignore[attr-defined]  # reason: CPU Tensor.pin_memory; stubs miss
+            for name, tensor in mapping.items()
+        }
+    except (ValueError, BufferError) as exc:
+        raise ContractError(str(exc)) from exc
+    except Exception as exc:
+        raise ContractError(f"ring ring_fill_batch failed: {type(exc).__name__}: {exc}") from exc
+    return dict(zip(names, slots, strict=True))
 
 
 def validate_batch_against_schema(batch: ActorTensorBatch) -> None:

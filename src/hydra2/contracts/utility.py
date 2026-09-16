@@ -8,11 +8,21 @@ contracts never import artifacts — SPEC §1).
 
 Zero-sum is descriptive only and true only when the manifest proves it; no
 code hard-codes a zero-sum vector (BUILD WP-02B).
+
+Rust-judged fixed surface: ``utility()`` ranks/values and the exact-total
+zero-sum check delegate first to the ``hydra2_replay_rs.canon_rng`` fixed
+fns (``validate_ranks`` gate + ``utility_for_ranks_fixed`` indexing +
+``exact_total_is_zero``); the Fraction oracle in this file remains the
+fallback (ImportError-only) and the comparator (mismatch=raise, fail-closed).
+Evidence: ranks/indexing agree both sides; m8 exact-total True both sides
+via the in-feed exact stack big-int fallback (Fraction-equivalent; Overflow
+defensive-only); pyfn probes live.
 """
 
 from __future__ import annotations
 
 import hmac
+import importlib
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -56,6 +66,144 @@ UTILITY_TIE_POLICY = "use_rules_resolved_rank"
 
 _MAX_SAFE_INTEGER = 2**53 - 1
 _SCORE_LIMIT = 10**12
+
+
+#: Injectable native backend for the fixed-point judge (tests monkeypatch
+#: this; production leaves None so `_fixed_native()` imports the compiled
+#: extension). Mirrors `_NATIVE_OVERRIDE` in `_rust_bridge.py` /
+#: `_rust_columnar.py` / `_rust_search.py` and `_RING_NATIVE_OVERRIDE` in
+#: `models/encoder.py`.
+_FIXED_NATIVE_OVERRIDE: Any = None
+
+#: i64 bounds for the bridge fixed surface (integer-only quads).
+_I64_MIN = -(2**63)
+_I64_MAX = 2**63 - 1
+
+
+def _fixed_native() -> Any | None:
+    """Import the built ``canon_rng`` fixed-point surface once; None → oracle.
+
+    ImportError-only fallback: a missing/unbuilt bridge means the Fraction
+    oracle below decides (byte-identical). Any other bridge failure (missing
+    submodule, reject, Overflow, mismatch) raises — never silent.
+    """
+    if _FIXED_NATIVE_OVERRIDE is not None:
+        return _FIXED_NATIVE_OVERRIDE
+    try:
+        return importlib.import_module("hydra2_replay_rs").canon_rng
+    except (ImportError, AttributeError):
+        # Stale/shadowed .so (fixture-copied debug builds predate the fixed
+        # surface): oracle decides, same as unbuilt bridge.
+        return None
+
+
+def _as_i64_quad(values: tuple[float, ...]) -> list[int] | None:
+    """Integral i64 view of a 4-quad, else None (oracle decides alone).
+
+    The bridge fixed surface is integer-only: non-integral or out-of-i64-range
+    rank_values cannot cross, so the Fraction oracle decides those alone (no
+    deletion, no behavior change).
+    """
+    out: list[int] = []
+    for item in values:
+        number = float(item)
+        if not number.is_integer():
+            return None
+        intval = int(number)
+        if intval < _I64_MIN or intval > _I64_MAX:
+            return None
+        out.append(intval)
+    return out
+
+
+def _judge_ranks_and_values(
+    *,
+    rank_values: tuple[float, float, float, float],
+    ranks: tuple[int, int, int, int],
+    values: tuple[float, ...],
+) -> None:
+    """Rust judge over the ranks gate + values indexing (mismatch=raise).
+
+    ``validate_ranks`` gates the oracle-validated permutation and
+    ``utility_for_ranks_fixed`` (mirrors ``rank_values[rank-1]`` indexing)
+    recomputes the values; any divergence from the oracle ``values`` raises
+    :class:`ContractError` (fail-closed). Evidence: ranks/indexing agree both
+    sides; pyfn probes live. ImportError (or non-i64 rank_values) → the
+    Fraction oracle decides alone.
+    """
+    native = _fixed_native()
+    if native is None:
+        return
+    rank_list = [int(rank) for rank in ranks]
+    try:
+        native.validate_ranks(rank_list)
+    except ImportError:
+        return
+    except Exception as exc:
+        raise ContractError(f"utility ranks rejected by Rust validate_ranks gate: {exc}") from exc
+    fixed_values = _as_i64_quad(tuple(rank_values))
+    if fixed_values is None:
+        return
+    try:
+        rust_values = native.utility_for_ranks_fixed(fixed_values, rank_list)
+    except ImportError:
+        return
+    except Exception as exc:
+        raise ContractError(
+            f"utility values rejected by Rust utility_for_ranks_fixed: {exc}"
+        ) from exc
+    if tuple(float(item) for item in rust_values) != tuple(values):
+        raise ContractError(
+            "utility Rust/Python mismatch: "
+            f"rust {tuple(float(item) for item in rust_values)} != python {tuple(values)}"
+        )
+
+
+def _judge_exact_zero(*, values: tuple[float, ...], exact_is_zero: bool) -> None:
+    """Rust judge over exact zero-sum (mismatch=raise).
+
+    ``exact_total_is_zero`` is integer-only (Fraction-exact, no float
+    accumulation, no epsilon); m8 True both sides via the in-feed exact stack
+    big-int fallback, and Overflow stays defensive-only (unreachable for 4
+    finite f64 — raised here if ever observed, fail-closed). ImportError (or a
+    non-4 quad) → the Fraction oracle decides alone.
+    """
+    if len(values) != 4:
+        return
+    native = _fixed_native()
+    if native is None:
+        return
+    try:
+        rust_is_zero = native.exact_total_is_zero([float(item) for item in values])
+    except ImportError:
+        return
+    except Exception as exc:
+        raise ContractError(f"exact total rejected by Rust exact_total_is_zero: {exc}") from exc
+    if bool(rust_is_zero) != exact_is_zero:
+        raise ContractError(
+            "exact-total Rust/Python mismatch: "
+            f"rust is_zero={bool(rust_is_zero)} != python is_zero={exact_is_zero}"
+        )
+
+
+def _judge_values_finite(values: tuple[float, ...]) -> None:
+    """Rust finiteness judge for value vectors (mismatch=raise).
+
+    ``exact_total_is_zero`` rejects any non-finite lane (NonFiniteValue)
+    exactly like the oracle finiteness loop, so its reject arm cross-checks
+    finiteness here; the zero-bool is discarded (a UtilityVector need not sum
+    to zero — zero-sum is manifest-descriptive only). ImportError → the oracle
+    decides alone.
+    """
+    native = _fixed_native()
+    if native is None:
+        return
+    try:
+        native.exact_total_is_zero([float(item) for item in values])
+    except ImportError:
+        return
+    except Exception as exc:
+        raise ContractError(f"utility values rejected by Rust finiteness judge: {exc}") from exc
 
 
 def _require_int(value: int, *, name: str, minimum: int, maximum: int | None) -> int:
@@ -289,10 +437,17 @@ class UtilityManifest:
 
 
 def _exact_total(values: tuple[float, ...]) -> Fraction:
+    """Exact sum over floats via Fraction (no float accumulation, no epsilon).
+
+    Rust-judged via ``exact_total_is_zero`` (mismatch=raise; ImportError-only
+    oracle fallback). Evidence: m8 True both sides (in-feed exact stack
+    big-int fallback, Fraction-equivalent; Overflow defensive-only).
+    """
     total = Fraction(0)
     for item in values:
         fraction = Fraction(item)
         total += fraction
+    _judge_exact_zero(values=values, exact_is_zero=(total == 0))
     return total
 
 
@@ -384,6 +539,14 @@ def utility(outcome: RawOutcome, manifest: UtilityManifest) -> UtilityVector:
     unresolved/tied or non-permutation ranks, and any computed value outside
     the declared bounds (:class:`ContractError`). Sets
     ``utility_manifest_hash=manifest.digest``.
+
+    Rust-first via the bridge ``canon_rng`` fixed fns (``validate_ranks`` gate
+    + ``utility_for_ranks_fixed`` values; ``utility_fixed`` is canonical-points
+    only, so caller manifests go through the indexed fn): the oracle mapping
+    below still decides types/rules/bounds verbatim, then the Rust judge
+    recomputes ranks+values and any mismatch raises (fail-closed, never
+    silent); ImportError-only Fraction oracle fallback. Evidence:
+    ranks/indexing agree both sides; pyfn probes live.
     """
     if not isinstance(outcome, RawOutcome):
         raise ContractError("outcome must be a RawOutcome")
@@ -413,6 +576,7 @@ def utility(outcome: RawOutcome, manifest: UtilityManifest) -> UtilityVector:
                 f"computed utility {item} outside declared bounds "
                 f"[{manifest.value_min}, {manifest.value_max}]"
             )
+    _judge_ranks_and_values(rank_values=manifest.rank_values, ranks=ranks, values=values)
     first, second, third, fourth = values
     return UtilityVector(
         values=(first, second, third, fourth),
@@ -423,13 +587,20 @@ def utility(outcome: RawOutcome, manifest: UtilityManifest) -> UtilityVector:
 
 
 def root_scalar(value: UtilityVector, seat: Seat) -> float:
-    """Acting-seat root scalar: vector index selection (SPEC 5.2)."""
+    """Acting-seat root scalar: vector index selection (SPEC 5.2).
+
+    Rust-judged finiteness via ``exact_total_is_zero`` (reject arm only; the
+    zero-bool is discarded — vectors need not sum to zero); ImportError-only
+    oracle fallback, mismatch=raise. Evidence: m8 True both sides; pyfn probe
+    live.
+    """
     if not isinstance(value, UtilityVector):
         raise ContractError("value must be a UtilityVector")
     seat_index = make_seat(_require_int(seat, name="seat", minimum=0, maximum=3))
     for i, item in enumerate(value.values):
         if not math.isfinite(item):
             raise ContractError(f"utility values[{i}] is non-finite")
+    _judge_values_finite(value.values)
     return value.values[seat_index]
 
 

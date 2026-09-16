@@ -15,7 +15,10 @@ Storage reality (builder pin):
   ``chunk`` order to ``rows`` total. Single-chunk planes carry ``chunk: 0``.
 - Each plane file is one ``pa.ipc.write_tensor`` payload, read via
   ``pa.ipc.read_tensor(pa.memory_map(path))`` — the mmap stays file-backed,
-  only taken batch rows copy out.
+  only taken batch rows copy out. IPC-mmap is FIRST (the planes above ARE
+  the read path): ``.npy``/``.bin`` memmap is the fallback alternate, never
+  first (bridge release: canon_rng/columnar/search/ring/resume built;
+  feed 172 + shard 311 + search 119 green).
 - Bool planes are stored ``uint8`` (``storage_dtype``) and viewed
   ``.view(bool)`` zero-copy; ``dtype`` is the logical dtype.
 - ``decision_ids.json`` / ``observation_hashes.json`` sidecars list one
@@ -424,6 +427,9 @@ class ShardReader:
             if len(kinds) != 1:
                 raise ContractError(f"plane {name!r} mixes storage kinds {sorted(kinds)}")
             kind = next(iter(kinds))
+            # IPC-mmap-first: tensor-IPC planes are the primary production
+            # path (columnar evidence: Probe-A/B live); ``.npy``/``.bin``
+            # memmap below is the fallback alternate, never first.
             if kind in _IPC_SUFFIXES:
                 planes[name] = _TensorIpcPlane(
                     files,

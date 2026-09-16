@@ -121,6 +121,12 @@ def _value_from_ranks_via_utility(ranks_in: Any) -> tuple[float, ...] | None:
     are consistent with the ranks (rank 1 -> 40000, 2 -> 30000, 3 -> 20000,
     4 -> 10000) so utility()'s ranks -> rank_values -> values mapping is
     exact; utility() itself remains the fixed point (never duplicated).
+
+    Single owner: the bridge is owned by contracts.utility (Rust-judged
+    ``validate_ranks`` gate + ``utility_for_ranks_fixed`` indexing;
+    ranks/indexing agree both sides, m8 exact-total True both sides, pyfn
+    probes live) — this call site calls flipped ``utility()`` and never
+    imports the bridge directly.
     """
     if not isinstance(ranks_in, (list, tuple)) or len(ranks_in) != 4:
         return None

@@ -773,7 +773,9 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int | pytest.ExitC
     )
     try:
         atomic_replace_bytes(destination, canonical_bytes(report_document))
-    except OSError:
+    except Exception:
+        # Teardown must never mask lane results: report write is best-effort
+        # (flipped judge, stale bridge, read-only artifact root — all benign).
         return
 
 

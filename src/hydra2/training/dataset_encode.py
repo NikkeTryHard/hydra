@@ -9,6 +9,13 @@ parses rows through :mod:`hydra2.training.dataset_parse`, encodes them
 with the actor-visible encoder, and validates the legal mask and the
 chosen label. Any unparseable row raises :class:`ContractError` — the
 synthetic stand-in is a separate explicit entry, never a fallback.
+
+Hardening (fail-closed): the pinned bulk stage below routes through
+:func:`hydra2.models.encoder._stage_pinned_batch` (bridge ``ring`` first,
+ImportError-only oracle inside; ``ContractError`` propagates — mismatch
+raises, never a silent pass). Torch owns the fold math and the pageable
+fallback (warn, byte-identical either way); held-out ``torch.randperm``
+splits stay the torch oracle by Wave5 B2 (never Philox).
 """
 
 from __future__ import annotations
@@ -284,6 +291,8 @@ def encode_observation_rows(
             # copies; the torch from_numpy views above stay untouched):
             # geometry is the encoding batch's own — batch rows, pure-Python
             # history lens (no extra sync), encoder bucket width.
+            # Fail-closed: ContractError (bridge mismatch) propagates; only a
+            # pin-resource failure warns down to the pageable fallback below.
             staged = _stage_pinned_batch(
                 {
                     "chosen_action_id": chosen_action_id,

@@ -8,6 +8,13 @@ borrowed zero-copy — no pickle opcode executes on the tensor path. The legacy
 compat-read of pre-existing caches and the small-manifest exception, never as
 the default tensor path (M4). Non-tensor blobs use the Arrow IPC-file path,
 never pickle; small deterministic manifests stay canonical-JSON sidecars.
+
+Hardening (fail-closed): safetensors is FIRST — the legacy pickle surface
+runs ONLY behind explicit opt-in flags (`allow_legacy_pickle_write` /
+`allow_legacy_pickle_read`); digest/dtype/layout pins raise ContractError
+(never reshape, never a silent miss); unreadable/corrupt manifests raise
+ContractError (never a raw passthrough). No Rust math here — header parse +
+offset validation are pure Python over mmap; torch owns the tensor views.
 """
 
 from __future__ import annotations
@@ -357,7 +364,12 @@ def load_cache(
         # Small-manifest exception: header-only copy, no tensors resolved.
         # `canonical_bytes` revalidates the manifest; digest/dtype/layout pins
         # are enforced, tensor values intentionally left None.
-        manifest = json.loads(manifest_path.read_bytes().decode("utf-8"))
+        try:
+            manifest = json.loads(manifest_path.read_bytes().decode("utf-8"))
+        except (OSError, ValueError, UnicodeDecodeError) as exc:
+            raise ContractError(
+                f"cache manifest unreadable: {manifest_path} ({type(exc).__name__})"
+            ) from exc
         if not isinstance(manifest, dict):
             raise ContractError("cache manifest must be an object")
         meta = manifest

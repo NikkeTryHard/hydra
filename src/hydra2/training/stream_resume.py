@@ -4,14 +4,21 @@ Owns applying verified payloads to live runtime objects (mutate only
 after verify), reservoir prime snapshots, resume-envelope verification
 (read-only), the caller-owned overlap feed, profiler captures, and the
 train stepper that advances one checkpoint segment at a time.
+Resume/RNG-restore entries are Rust-first via the bridge ``resume`` judges
+(``_pack_cursor`` / ``_unpack_cursor`` / ``_check_buffer_entries`` /
+``_verify_prefix_blob``; ImportError-only oracle, mismatch=raise); torch
+owns the RNG restore and the model/optimizer tensors (no Rust GPU math,
+Burn/Candle out).
 """
 
 from __future__ import annotations
 
 import contextlib
 import hashlib
+import importlib
 import json
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -37,14 +44,236 @@ __all__ = [
     "_apply_resume_payload",
     "_backward_pass_autocast_for",
     "_capture_prime_snapshot",
+    "_check_buffer_entries",
     "_load_prime_snapshot",
     "_load_resume_envelope",
     "_open_gated_feed",
+    "_pack_cursor",
     "_prime_cache_path",
     "_profile_single_update",
     "_save_prime_snapshot",
     "_train_segment",
+    "_unpack_cursor",
+    "_verify_prefix_blob",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Bridge-resume glue (resume/RNG-restore entries only; torch owns GPU/RNG).
+# ---------------------------------------------------------------------------
+#
+# The bridge (`hydra2_replay_rs.resume`, Rust) owns the pure resume-side
+# judges used on the read/verify path: the prefix-hash chain verify
+# (`verify_prefix_blob`: blob sha + count + per-entry `sha256:` shape +
+# sorted order, all detached), cursor pack/unpack (YAML-resume round-trip,
+# bool-rejecting, mirroring `StreamCursor.from_dict`), and buffer-entry
+# shape checks (`check_buffer_entries`). Torch CPU/CUDA RNG restore stays
+# Python (`_restore_rng_state` — no Rust GPU math, Burn/Candle out); the
+# RNG-anchor compare (`_verify_rng_anchors` in `stream_build`) stays Python
+# per `resume.rs`. Every helper below is Rust-first with an ImportError-only
+# oracle fallback (bridge not importable → pure-Python twin, byte-identical
+# on valid inputs); any bridge-present error raises ContractError —
+# mismatch=raise, never a silent pass. Evidence: resume blob parity shapes;
+# seed derivation byte-identical.
+_RESUME_MOD: Any = None
+_RESUME_PROBED: bool = False
+
+#: Injectable native backend (tests monkeypatch this; production leaves None
+#: so `_resume_native()` imports the compiled extension). Mirrors the
+#: `_RING_NATIVE_OVERRIDE` hook in `models/encoder.py`.
+_RESUME_NATIVE_OVERRIDE: Any = None
+
+
+def _resume_native() -> Any | None:
+    """Import the built `resume` submodule once; None → oracle fallback.
+
+    ImportError-only oracle: ``None`` means the extension (or its ``resume``
+    surface) is not importable. Any other import-time failure raises
+    ContractError (mismatch=raise, never a silent pass).
+    """
+    global _RESUME_MOD, _RESUME_PROBED
+    if _RESUME_NATIVE_OVERRIDE is not None:
+        return _RESUME_NATIVE_OVERRIDE
+    if _RESUME_MOD is not None:
+        return _RESUME_MOD
+    late = sys.modules.get("hydra2_replay_rs")
+    if late is not None:
+        mod = getattr(late, "resume", None)
+        if mod is not None:
+            _RESUME_MOD = mod
+            return _RESUME_MOD
+    if not _RESUME_PROBED:
+        _RESUME_PROBED = True
+        try:
+            _RESUME_MOD = importlib.import_module("hydra2_replay_rs").resume
+        except (ImportError, AttributeError):
+            _RESUME_MOD = None
+        except ContractError:
+            raise
+        except Exception as exc:
+            raise ContractError(f"resume bridge unusable: {type(exc).__name__}: {exc}") from exc
+    return _RESUME_MOD
+
+
+def _pack_cursor(*, cursor: DataStreamCursor) -> dict[str, int]:
+    """Cursor pack: six frontier fields → YAML-resume mapping (Rust-first).
+
+    `resume.pack_cursor` first; the oracle mirrors `StreamCursor.to_dict`
+    exactly. Bridge-present errors raise ContractError (mismatch=raise).
+    """
+    resume = _resume_native()
+    if resume is not None:
+        try:
+            packed = resume.pack_cursor(
+                file_index=int(cursor.file_index),
+                byte_offset=int(cursor.byte_offset),
+                games_seen=int(cursor.games_seen),
+                seed=int(cursor.seed),
+                epoch=int(cursor.epoch),
+                shuffle_pos=int(cursor.shuffle_pos),
+            )
+            return dict(packed)
+        except ContractError:
+            raise
+        except (ImportError, AttributeError):
+            pass  # bridge surface missing → oracle mapping below
+        except (ValueError, OverflowError) as exc:
+            raise ContractError(str(exc)) from exc
+        except Exception as exc:
+            raise ContractError(f"resume pack_cursor failed: {type(exc).__name__}: {exc}") from exc
+    return cursor.to_dict()
+
+
+def _unpack_cursor(raw: object) -> DataStreamCursor:
+    """Cursor unpack: YAML-resume mapping → frontier fields (Rust-first).
+
+    `resume.unpack_cursor` first (bool-rejecting, non-negative-int gates —
+    identical to `StreamCursor.from_dict`); the oracle IS `from_dict`.
+    Bridge-present errors raise ContractError (mismatch=raise).
+    """
+    resume = _resume_native()
+    if resume is not None:
+        try:
+            fields = resume.unpack_cursor(dict(raw))  # type: ignore[arg-type]
+            file_index, byte_offset, games_seen, seed, epoch, shuffle_pos = (
+                int(fields[0]),
+                int(fields[1]),
+                int(fields[2]),
+                int(fields[3]),
+                int(fields[4]),
+                int(fields[5]),
+            )
+            return DataStreamCursor(
+                file_index=file_index,
+                byte_offset=byte_offset,
+                games_seen=games_seen,
+                seed=seed,
+                epoch=epoch,
+                shuffle_pos=shuffle_pos,
+            )
+        except ContractError:
+            raise
+        except (ImportError, AttributeError):
+            pass  # bridge surface missing → oracle from_dict below
+        except ValueError as exc:
+            raise ContractError(str(exc)) from exc
+        except Exception as exc:
+            raise ContractError(
+                f"resume unpack_cursor failed: {type(exc).__name__}: {exc}"
+            ) from exc
+    if not isinstance(raw, dict):
+        raise ContractError("cursor must be a mapping")
+    return DataStreamCursor.from_dict(raw)
+
+
+def _check_buffer_entries(entries: object, *, ckpt: Path) -> int:
+    """Buffer-entry shape gate (Rust-first `check_buffer_entries`).
+
+    Each entry carries exactly `{key, path, offset, split, rows}`; the row
+    hash and counter gates stay Python (`_parse_dataset_buffer_sidecar` /
+    `_verify_fast_snapshots`). The oracle below enforces the identical shape
+    (unknown keys, empty key/path/split, negative offset, rows <= 0 all
+    raise); bridge-present errors raise ContractError (mismatch=raise).
+    Returns the entry count.
+    """
+    resume = _resume_native()
+    if resume is not None:
+        try:
+            return int(resume.check_buffer_entries(list(entries)))  # type: ignore[arg-type]
+        except ContractError:
+            raise
+        except (ImportError, AttributeError):
+            pass  # bridge surface missing → oracle gates below
+        except ValueError as exc:
+            raise ContractError(f"checkpoint buffer entries invalid: {ckpt} ({exc})") from exc
+        except Exception as exc:
+            raise ContractError(
+                f"resume check_buffer_entries failed: {ckpt} ({type(exc).__name__}: {exc})"
+            ) from exc
+    if not isinstance(entries, list):
+        raise ContractError(f"checkpoint buffer entries must be a list: {ckpt}")
+    allowed = {"key", "path", "offset", "split", "rows"}
+    for idx, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise ContractError(f"checkpoint buffer entry {idx} must be a mapping: {ckpt}")
+        unknown = sorted(set(entry.keys()) - allowed)
+        if unknown:
+            raise ContractError(f"checkpoint buffer entry {idx} unknown keys {unknown}: {ckpt}")
+        for field in ("key", "path", "split"):
+            value = entry.get(field)
+            if not isinstance(value, str) or value == "":
+                raise ContractError(
+                    f"checkpoint buffer entry {idx} field {field!r} must be non-empty: {ckpt}"
+                )
+        offset = entry.get("offset")
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise ContractError(
+                f"checkpoint buffer entry {idx} field 'offset' must be a non-negative int: {ckpt}"
+            )
+        rows = entry.get("rows")
+        if isinstance(rows, bool) or not isinstance(rows, int) or rows <= 0:
+            raise ContractError(
+                f"checkpoint buffer entry {idx} field 'rows' must be a positive int: {ckpt}"
+            )
+    return len(entries)
+
+
+def _verify_prefix_blob(*, data: bytes, count: int, digest: str, ckpt: Path) -> list[str]:
+    """Prefix-hash chain verify (Rust-first `verify_prefix_blob`).
+
+    Blob sha + line count + per-entry `sha256:` shape + sorted order — the
+    same gates `_load_prefix_hashes` (in `stream_build`) enforces; the blob
+    bytes here ride straight through instead of a file read. The oracle runs
+    ONLY when the bridge surface is absent; bridge-present errors raise
+    ContractError (mismatch=raise, never a silent pass).
+    """
+    resume = _resume_native()
+    if resume is not None:
+        try:
+            return list(resume.verify_prefix_blob(bytes(data), int(count), str(digest)))
+        except ContractError:
+            raise
+        except (ImportError, AttributeError):
+            pass  # bridge surface missing → oracle gates below
+        except ValueError as exc:
+            raise ContractError(f"checkpoint prefix_hashes digest mismatch: {ckpt}") from exc
+        except Exception as exc:
+            raise ContractError(
+                f"resume verify_prefix_blob failed: {ckpt} ({type(exc).__name__}: {exc})"
+            ) from exc
+    if not digest.startswith("sha256:") or digest == "sha256:":
+        raise ContractError(f"checkpoint prefix_hashes digest invalid: {ckpt}")
+    if "sha256:" + hashlib.sha256(bytes(data)).hexdigest() != digest:
+        raise ContractError(f"checkpoint prefix_hashes digest mismatch: {ckpt}")
+    lines = bytes(data).decode("utf-8").splitlines()
+    if len(lines) != count:
+        raise ContractError(f"checkpoint prefix_hashes count mismatch: {ckpt}")
+    for sha in lines:
+        if not sha.startswith("sha256:") or sha == "sha256:":
+            raise ContractError(f"checkpoint prefix_hashes entry invalid: {ckpt}")
+    if lines != sorted(lines):
+        raise ContractError(f"checkpoint prefix_hashes order invalid: {ckpt}")
+    return lines
 
 
 def _apply_resume_payload(
@@ -54,7 +283,14 @@ def _apply_resume_payload(
     payload: Any,
     ckpt: Path,
 ) -> None:
-    """Apply a verified payload to live runtime objects (post-verify mutate)."""
+    """Apply a verified payload to live runtime objects (post-verify mutate).
+
+    RNG-restore entry: torch CPU/CUDA RNG state restores via
+    `_restore_rng_state` (Python, torch-owned — no Rust GPU math); the
+    sidecar RNG anchors were already compared pre-mutate by
+    `_verify_rng_anchors` (Python per `resume.rs`). Mismatch anywhere above
+    raises before any object mutates — never a silent resume.
+    """
     if not isinstance(payload, dict):
         raise ContractError(f"checkpoint payload must be a mapping: {ckpt}")
     for key in ("model_state", "optimizer_state", "training_state", "loss_history"):
@@ -155,7 +391,9 @@ def _capture_prime_snapshot(
             "stream_digest": stream_digest,
             "buffer_entries": live_entries,
             "buffer_rng_state": rng_state,
-            "stream_cursor": live_cursor.to_dict(),
+            # Rust-first cursor pack (bridge `resume.pack_cursor`; oracle
+            # `to_dict` when the bridge is absent — byte-identical mapping).
+            "stream_cursor": _pack_cursor(cursor=live_cursor),
             "prefix_hashes": live_prefix,
             "blob_path": str(blob_path),
             "blob_sha256": index["blob_sha256"],
@@ -251,13 +489,22 @@ def _load_prime_snapshot(*, path: Path, stream_digest: str) -> dict[str, Any] | 
     cursor_raw = raw.get("stream_cursor")
     prefix_raw = raw.get("prefix_hashes")
     try:
-        cursor = DataStreamCursor.from_dict(cursor_raw)  # type: ignore[arg-type]
+        # Rust-first cursor unpack (bool-rejecting, identical gates);
+        # bridge-absent or bridge-rejecting input is a miss either way.
+        cursor = _unpack_cursor(cursor_raw)
     except (ContractError, AttributeError, TypeError):
         return None
+    # Prefix entries keep the oracle shape gates (per-entry `sha256:` form)
+    # plus the sorted-order gate the sidecar path enforces — the prime index
+    # carries no stored blob digest/count record, so the full chain verify
+    # (`_verify_prefix_blob`) stays on the sidecar path only. Any tamper is
+    # a miss, never a partial restore.
     if not isinstance(prefix_raw, list) or any(
         not isinstance(sha, str) or not sha.startswith("sha256:") or sha == "sha256:"
         for sha in prefix_raw
     ):
+        return None
+    if list(prefix_raw) != sorted(prefix_raw):
         return None
     return {
         "buffer_entries": entries,
@@ -282,7 +529,18 @@ class _ResumeEnvelope:
 def _load_resume_envelope(
     *, resume: ResumePlan, run_digest: str, microbatch: int
 ) -> _ResumeEnvelope:
-    """Read and verify the checkpoint sidecar + payload bytes (no mutation)."""
+    """Read and verify the checkpoint sidecar + payload bytes (no mutation).
+
+    Resume-entry hardening: sidecar/payload identity gates below are
+    fail-closed (any mismatch raises before live objects mutate — never a
+    silent resume). The prefix-hash chain and cursor/buffer-entry shape
+    checks further down the resume path are Rust-first via the bridge
+    `resume` judges (`_verify_prefix_blob` / `_unpack_cursor` /
+    `_check_buffer_entries`, ImportError-only oracle inside); torch RNG
+    restore stays Python (`_restore_rng_state` via `_apply_resume_payload`
+    — no Rust GPU math). Evidence: resume blob parity shapes; seed
+    derivation byte-identical.
+    """
     sidecar_path = resume.checkpoint.with_suffix(".json")
     try:
         raw: Any = json.loads(sidecar_path.read_text(encoding="utf-8"))
@@ -322,6 +580,15 @@ def _load_resume_envelope(
     # index + counters + row hash). Absent → pre-simplification sidecar →
     # hard failure at resume (no full-replay drain remains).
     has_fast = isinstance(sidecar.get("dataset_buffer"), dict)
+    if has_fast:
+        # Rust-first buffer-entry shape gate (bridge
+        # `resume.check_buffer_entries`; oracle twin when the bridge is
+        # absent — mismatch raises before any live object mutates). Row-hash
+        # and counter gates stay downstream (row hash is recomputed at
+        # restore; counters are compared in `_verify_fast_snapshots`).
+        raw_entries = sidecar["dataset_buffer"].get("entries")
+        if raw_entries is not None:
+            _check_buffer_entries(raw_entries, ckpt=resume.checkpoint)
     return _ResumeEnvelope(
         sidecar=sidecar,
         blob=blob,

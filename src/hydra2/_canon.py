@@ -46,12 +46,12 @@ __all__ = [
 
 
 def canonical_json_bytes(value: object) -> bytes:
-    """RFC 8785 canonical UTF-8 JSON bytes (delegates to hydra2.artifacts)."""
+    """RFC 8785 canonical bytes (flipped authority, Rust-first)."""
     return canonical_bytes(value)
 
 
 def sha256_digest_of_json(value: object) -> DigestText:
-    """Digest over RFC 8785 canonical bytes of ``value``."""
+    """Digest over RFC 8785 bytes (flipped authority, Rust-first)."""
     return of_canonical(value)
 
 

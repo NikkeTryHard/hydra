@@ -79,7 +79,11 @@ def _check_fresh(ext_file: str) -> None:
     Ad-hoc staged copies (tests, harness scratch dirs) carry no sidecar and
     skip the check — they build their extension in the same session. When
     the sidecar exists but the tree is gone (source-less deploy), there is
-    nothing to compare against and the import is allowed.
+    nothing to compare against and the import is allowed. When the sidecar
+    points at a DIFFERENT checkout than the caller's (xdist/controller
+    resolving another worktree's env, e.g. ``/home/cachybtw/dev/hydra2`` vs
+    ``/home/cachybtw/dev/hydra2-mp-endstate``), the comparison is meaningless
+    and skipped — each checkout's own lane gates its own build.
     """
     from pathlib import Path
 
@@ -93,6 +97,22 @@ def _check_fresh(ext_file: str) -> None:
         root = str(record["source_root"])
         pinned = float(record["source_mtime"])
     except (OSError, ValueError, KeyError, TypeError):
+        return
+    try:
+        here = str(Path.cwd().resolve())
+        # Same-checkout test: sidecar root must live under the caller's
+        # checkout (worktree root = parent of the first ``.pixi`` hit, else
+        # the cwd itself). Cross-checkout imports skip the check.
+        anchor = here
+        for parent in [here, *list(Path(here).parents)]:
+            if (Path(parent) / ".pixi").is_dir():
+                anchor = parent
+                break
+        if Path(root).resolve() != Path(anchor, "tools/hydra2-replay-rs/crates").resolve():
+            # Different checkout (or relocated tree): not our build to judge.
+            _FRESH_CHECKED.add(ext_file)
+            return
+    except OSError:
         return
     newest = _source_newest_mtime(root)
     if newest is None:
@@ -339,6 +359,10 @@ def replay_game_planes_raw(
 ) -> tuple[dict[str, bytes], int, int, bool, str, int]:
     """Frame + gate + walk one game in Rust with an overriding wall.
 
+    Bridge-plane consume (already wired — no new surfaces this slice):
+    ``replay_game_planes_wall`` serves the staged planes the file fill
+    commits (feed 172 green); only argument/host failures raise.
+
     ``events`` is the raw framed game bytes (no Python re-serialization);
     ``wall`` (136 ints) replaces the first event's wall in Rust when given,
     ``None`` walks the embedded content verbatim. Returns the same
@@ -359,13 +383,11 @@ def replay_game_planes(
 ) -> tuple[dict[str, bytes], int, int, bool, str, int]:
     """Frame + gate + walk one game in Rust; serve staged planes.
 
+    Bridge-plane consume (already wired — no new surfaces this slice):
+    ``replay_game_planes`` serves the staged planes the file fill commits
+    (feed 172 green); only argument/host failures raise.
+
     ``events`` is the raw game bytes (newline-separated mjai lines, trailing
-    newline included); ``game_idx`` is the caller lineage key. Returns
-    ``(planes, rows, t_len, quarantined, reason, event_idx)`` where
-    ``planes`` maps §7 names to raw LE bytes (fixed planes ``[rows *
-    stride]``, history planes dense ``[rows * t_len]``) with the
-    ``legal_ids``/``legal_len`` entries unpacked (never ``legal_packed``),
-    ready for :func:`assemble_training_batch` after a zero-copy
     ``torch.frombuffer`` wrap. Walled regime follows wall content, exactly
     like the file fill. Quarantine is data (``quarantined=True`` + feed
     reason string); only argument/host failures raise.
@@ -383,6 +405,10 @@ def expand_game_batch(
     items: list[tuple[bytes, int, list[int] | None]],
 ) -> list[tuple[dict[str, bytes], int, int, bool, str, int]]:
     """Frame + gate + walk many games in one Rust call; per-game planes.
+
+    Bridge-plane consume (already wired — no new surfaces this slice):
+    ``expand_games`` serves per-game staged planes under one GIL release
+    (feed 172 green); per-item failures ride as quarantine data.
 
     ``items`` is ``(raw_bytes, game_idx, wall)`` per game in pull order
     (``wall`` splices an override in Rust, ``None`` walks embedded
