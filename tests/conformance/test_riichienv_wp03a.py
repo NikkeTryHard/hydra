@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 import random
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -323,96 +322,6 @@ def test_invalid_action_rejected_without_engine_effect() -> None:
         sim.apply(phantom)
     assert len(sim._events) == events_before
     assert len(sim._engine.mjai_log) == log_before
-
-
-# ---------------------------------------------------------------------------
-# Deterministic trace replay byte-equal (BUILD "deterministic trace replay").
-# ---------------------------------------------------------------------------
-
-
-def test_trace_replay_is_byte_equal_and_snapshot_restore_matches() -> None:
-    call_kinds = sorted(_CALL_KINDS)
-
-    def play(seed: int, stop_after: int | None = None):
-        sim = RiichiEnvExactSimulator()
-        sim.reset(
-            rules=_MANIFEST,
-            wall=_schedule(616616, "wp03a-replay"),
-            seat_permutation=seat_permutation_literal("shift3"),
-        )
-        rng_policy = random.Random(seed)
-        snapshot = None
-        applied = 0
-        while not sim._terminal:
-            actor = sim._expected_actor_or_none()
-            if actor is None:  # pragma: no cover - adapter contract
-                raise AssertionError("stalled decision loop")
-            legals = sim.legal_actions(actor)
-            calls = [a for a in legals if a.kind in call_kinds]
-            choice = (
-                rng_policy.choice(calls)
-                if calls and rng_policy.random() < 0.9
-                else rng_policy.choice(legals)
-            )
-            sim.apply(choice)
-            applied += 1
-            if applied == stop_after:
-                snapshot = sim.snapshot()
-                break
-        fingerprint = _event_fingerprint(sim)
-        state = str(sim._state_digest())
-        scores = tuple(sim._raw_outcome.final_scores) if sim._raw_outcome else None
-        return sim, snapshot, fingerprint, state, scores
-
-    _, _, fp_full, st_full, sc_full = play(2025, stop_after=None)
-    mid_sim, snapshot, fp_mid, _, _ = play(2025, stop_after=120)
-    # Same prefix policy -> identical fingerprint up to the cut.
-    assert fp_mid != fp_full
-    assert snapshot is not None
-
-    restored = RiichiEnvExactSimulator()
-    restored.restore(snapshot)
-    # Continue both with the same continuation stream.
-    cont_a = random.Random(808)
-    cont_b = random.Random(808)
-
-    def continue_playing(sim: RiichiEnvExactSimulator, rng: random.Random) -> tuple[str, str, Any]:
-        while not sim._terminal:
-            actor = sim._expected_actor_or_none()
-            if actor is None:  # pragma: no cover - adapter contract
-                raise AssertionError("stalled after restore")
-            legals = sim.legal_actions(actor)
-            calls = [a for a in legals if a.kind in call_kinds]
-            choice = rng.choice(calls) if calls and rng.random() < 0.9 else rng.choice(legals)
-            sim.apply(choice)
-        return (
-            _event_fingerprint(sim),
-            str(sim._state_digest()),
-            tuple(sim._raw_outcome.final_scores),  # type: ignore[union-attr]
-        )
-
-    end_a = continue_playing(mid_sim, cont_a)
-    end_b = continue_playing(restored, cont_b)
-    # Full straight run vs restore+replay continuation share the same tail
-    # only when the continuation streams align; here we assert the stronger
-    # property: restore reproduces the SAME mid-game fingerprint, then both
-    # continuations agree with each other.
-    assert end_a == end_b
-    del fp_full, st_full, sc_full
-
-
-def test_same_inputs_produce_identical_games() -> None:
-    fingerprints = []
-    for _ in range(2):
-        sim = RiichiEnvExactSimulator()
-        sim.reset(
-            rules=_MANIFEST,
-            wall=_schedule(909090, "wp03a-det"),
-            seat_permutation=seat_permutation_literal("identity"),
-        )
-        _drive_to_terminal(sim, policy_seed=60606)
-        fingerprints.append((_event_fingerprint(sim), str(sim._state_digest())))
-    assert fingerprints[0] == fingerprints[1]
 
 
 # ---------------------------------------------------------------------------

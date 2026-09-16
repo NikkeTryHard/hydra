@@ -51,6 +51,11 @@ from hydra2.contracts.observation_types import (
     visible_meld_id as visible_meld_id,
 )
 
+try:
+    from hydra2_replay_rs import contracts as bridge  # pyrefly: ignore[missing-import]
+except ImportError:  # pragma: no cover - import-time signal, same text as call-site
+    bridge = None  # type: ignore[assignment]
+
 __all__ = [
     "ActionContext",
     "ActionTable",
@@ -85,13 +90,11 @@ class ActionTable:
         """Generation-order index of ``template``, or ``None`` when absent."""
         if not isinstance(template, CanonicalActionTemplate):
             raise ContractError("index_of expects a CanonicalActionTemplate")
-        try:
-            from hydra2_replay_rs import contracts as bridge  # pyrefly: ignore[missing-import]
-        except ImportError as exc:
+        if bridge is None:
             raise ImportError(
                 "hydra2 census authority requires the hydra2_replay_rs bridge; "
                 "run `pixi run build-ext` to build the extension before use"
-            ) from exc
+            )
         try:
             result = bridge.census_index_of(  # type: ignore[attr-defined]
                 template.kind,

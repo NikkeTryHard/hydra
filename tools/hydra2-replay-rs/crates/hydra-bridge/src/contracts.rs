@@ -7,8 +7,11 @@
 //! (ledgers, registries, builders holding callbacks stay Python-side).
 //! Arg-check runs attached, every compute section runs under ONE
 //! `py.detach(|| ...)` with zero Python API inside, and results are wrapped
-//! attached. Fail-closed: every shape violation is `PyValueError`, never a
-//! default or a fallback.
+//! attached — EXCEPT the frozen-census leaves below (rank 4 size/counts and
+//! rank 5 `census_index_of`): a sub-microsecond slice `binary_search` over the
+//! process-once `frozen_census()` costs less than a GIL round-trip, so those
+//! run attached end-to-end. Fail-closed: every shape violation is
+//! `PyValueError`, never a default or a fallback.
 //!
 //! Rank map (Wave 4 leaves-before-roots; this module fills the deterministic
 //! leaves, the roots stay Python until the caller-migration round):
@@ -297,18 +300,17 @@ impl PyActionTemplate {
     }
 }
 
-/// Census size (6792): counted from the generated census, never hardcoded.
+/// Census size (6792): counted from the frozen process-once census, never hardcoded.
 #[pyfunction]
-fn action_census_count(py: Python<'_>) -> usize {
-    py.detach(hydra_feed::census::generate_census).len()
+fn action_census_count(_py: Python<'_>) -> usize {
+    hydra_feed::census::frozen_census().len()
 }
 
 /// Per-kind template counts in frozen ordinal order, counted from the
-/// generated census (analytic pins live in the feed tests).
+/// frozen census (analytic pins live in the feed tests).
 #[pyfunction]
-fn action_census_counts(py: Python<'_>) -> Vec<(String, usize)> {
-    let census = py.detach(hydra_feed::census::generate_census);
-    hydra_feed::census::census_counts(&census)
+fn action_census_counts(_py: Python<'_>) -> Vec<(String, usize)> {
+    hydra_feed::census::census_counts(hydra_feed::census::frozen_census())
         .iter()
         .map(|(kind, count)| (kind.name().to_string(), *count))
         .collect()
@@ -316,9 +318,8 @@ fn action_census_counts(py: Python<'_>) -> Vec<(String, usize)> {
 
 /// The full 6792-template census in generation order (frozen records).
 #[pyfunction]
-fn action_census(py: Python<'_>) -> Vec<PyActionTemplate> {
-    let census = py.detach(hydra_feed::census::generate_census);
-    census
+fn action_census(_py: Python<'_>) -> Vec<PyActionTemplate> {
+    hydra_feed::census::frozen_census()
         .iter()
         .map(PyActionTemplate::from_template)
         .collect()
@@ -326,8 +327,8 @@ fn action_census(py: Python<'_>) -> Vec<PyActionTemplate> {
 
 /// Generation-order census entry by index (table-id decode leaf).
 #[pyfunction]
-fn census_template_at(py: Python<'_>, index: usize) -> PyResult<PyActionTemplate> {
-    let census = py.detach(hydra_feed::census::generate_census);
+fn census_template_at(_py: Python<'_>, index: usize) -> PyResult<PyActionTemplate> {
+    let census = hydra_feed::census::frozen_census();
     census
         .get(index)
         .map(PyActionTemplate::from_template)
@@ -338,6 +339,7 @@ fn census_template_at(py: Python<'_>, index: usize) -> PyResult<PyActionTemplate
             ))
         })
 }
+
 
 /// Optional validated tile-or-`None` gate shared by the codec leaf.
 fn opt_tile(value: Option<Bound<'_, PyAny>>, name: &str) -> PyResult<Option<u8>> {
@@ -361,7 +363,7 @@ fn opt_tile(value: Option<Bound<'_, PyAny>>, name: &str) -> PyResult<Option<u8>>
 #[pyfunction]
 #[pyo3(signature = (kind, consumed, tile=None, called_tile=None, source_offset=None))]
 fn census_index_of(
-    py: Python<'_>,
+    _py: Python<'_>,
     kind: &str,
     consumed: Vec<Bound<'_, PyAny>>,
     tile: Option<Bound<'_, PyAny>>,
@@ -412,10 +414,13 @@ fn census_index_of(
         declares_riichi: action_kind == hydra_feed::census::ActionKind::RiichiDiscard,
         meld_ref_required: action_kind == hydra_feed::census::ActionKind::Kakan,
     };
-    Ok(py.detach(|| {
-        let census = hydra_feed::census::generate_census();
-        hydra_feed::census::census_index_of(&census, &probe)
-    }))
+    // Attached sub-microsecond binary search over the frozen process-once
+    // census: cheaper than a GIL round-trip (see module docs). Fail-closed
+    // arg-check above is unchanged.
+    Ok(hydra_feed::census::census_index_of(
+        hydra_feed::census::frozen_census(),
+        &probe,
+    ))
 }
 
 // ---------------------------------------------------------------------------

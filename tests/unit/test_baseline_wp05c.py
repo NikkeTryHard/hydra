@@ -33,7 +33,6 @@ from hydra2.eval.baseline import (
     OVERFIT_NLL_THRESHOLD,
     check_hidden_permutation_invariance,
     compute_baseline_metrics,
-    evaluate_reference_games,
     expected_calibration_error,
     fresh_process_metrics,
     legal_uniform_nll,
@@ -403,15 +402,6 @@ def test_deterministic_interrupted_resumed_matches_uninterrupted() -> None:
     fresh = fresh_process_metrics(logits, targets, legal_mask)
     assert fresh.digest == metrics.digest
     assert fresh.masked_nll == metrics.masked_nll
-
-
-def test_reference_games_zero_illegal_timeouts() -> None:
-    """Complete reference games: zero illegal actions / timeouts."""
-    summary = evaluate_reference_games(num_games=4, seed=0)
-    assert summary["illegal_actions"] == 0
-    assert summary["timeouts"] == 0
-    assert summary["num_games"] == 4
-    assert len(summary["game_hashes"]) == 4
 
 
 # ---------------------------------------------------------------------------

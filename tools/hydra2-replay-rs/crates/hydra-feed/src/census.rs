@@ -22,9 +22,22 @@
 //!   that changes the census fails the count tests instead of drifting.
 
 use core::cmp::Ordering;
+use std::sync::LazyLock;
 
 /// Analytic census size: 4 + 3*136 + 4032 + 1224 + 408 + 34 + 136 + 408 + 136 + 2.
 pub const CENSUS_TOTAL: usize = 6792;
+
+/// Process-once frozen census: `generate_census()` computed a single time per
+/// process (feed/validate.rs `SCHEMA_OK` precedent). `Sync` + immutable, so
+/// sharing `&'static [ActionTemplate]` across threads (incl. `py.detach`
+/// workers) is safe; fork children re-init on first touch if untouched.
+static FROZEN_CENSUS: LazyLock<Vec<ActionTemplate>> = LazyLock::new(generate_census);
+
+/// Borrow the frozen process-once census (identical by construction to
+/// `generate_census()` output, so indices coincide bit-for-bit).
+pub fn frozen_census() -> &'static [ActionTemplate] {
+    &FROZEN_CENSUS
+}
 
 /// SPEC 6.1 action kinds in frozen ordinal order (`action_kinds.py:71-85`).
 /// Discriminants ARE the ordinals: never reordered, never extended in place.

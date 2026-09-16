@@ -19,6 +19,7 @@ import json
 import time
 from functools import cache
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -31,6 +32,9 @@ from hydra2.conformance.runner import (
 )
 from hydra2.conformance.walls import build_wall
 from hydra2.contracts.rules import rules_manifest_from_payload
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 pytestmark = pytest.mark.contract_package("WP-04A")
 
@@ -563,77 +567,107 @@ def _record(result: CaseResult) -> CaseResult:
     return result
 
 
-def test_wp04a_intersection_report_and_disposition(tmp_path) -> None:
-    """Publishes the supported-rule report atomically and checks disposition:
-    passed only when zero unresolved mismatches remain AFTER
-    documented-unsupported resolution."""
-    # Self-contained by design: rebuild every case in-process through a
-    # worker-local runner (counterexamples persist under tmp_path, never
-    # the shared artifact root; report publishes under tmp_path — two
-    # workers sharing a second-stamp run_id never clobber). Under xdist
-    # loadscope each file pins its own worker so cross-file globals never
-    # merge (proven: -n 4 fails with coverage gap). Every case test accepts
-    # a runner override forwarded to _run/_record (defaults keep standalone
-    # runs on the shared runner, unchanged).
-    from tests.conformance import test_reference_corpus_claims_wp04a as _claims
-    from tests.conformance import test_reference_corpus_scoring_wp04a as _scoring
-    from tests.conformance import test_reference_corpus_terminals_wp04a as _terminals
+_RULES_MANIFEST_SHA256 = "sha256:3042a493280224f533d831f371275b1c96585cf1db5a2e5fb86ec259f403286b"
 
-    _local_runner = ReferenceTraceRunner(manifest=_MANIFEST, artifact_root_path=tmp_path)
-    test_wp04a_01_fifth_dora_and_kan_ura_timing(runner=_local_runner)
-    test_wp04a_02_chankan_and_rinshan_payout(runner=_local_runner)
-    test_wp04a_11_suufon_renda_documented_unsupported(runner=_local_runner)
-    _claims.test_wp04a_03_kuikae_post_pon_same_meld_swap_barred(runner=_local_runner)
-    _claims.test_wp04a_04a_temp_furiten_clears_then_ron_lands(runner=_local_runner)
-    _claims.test_wp04a_04b_permanent_furiten_after_riichi_miss(runner=_local_runner)
-    _claims.test_wp04a_05_double_ron_priority_packets_upstream_first(runner=_local_runner)
-    _claims.test_wp04a_06_multi_ron_sticks_upstream_with_dealer_co_winner(runner=_local_runner)
-    _scoring.test_wp04a_07_red_five_scoring(runner=_local_runner)
-    _scoring.test_wp04a_08_pao_liability_split_and_kazoe(runner=_local_runner)
-    _scoring.test_wp04a_09_kyuushu_kyuuhai_abort(runner=_local_runner)
-    _scoring.test_wp04a_10_exhaustive_draw_noten_split(runner=_local_runner)
-    _terminals.test_wp04a_12_sanchahou_triple_ron_abort(runner=_local_runner)
-    _terminals.test_wp04a_13_rank_tie_break_and_uma_utility(runner=_local_runner)
-    _terminals.test_wp04a_14a_all_last_dealer_tenpai_stop_yame(runner=_local_runner)
-    _terminals.test_wp04a_14b_west_entry_sudden_death_expected_mismatch(runner=_local_runner)
-    _terminals.test_wp04a_14c_tobi_score_injection_unavailable_blocked(runner=_local_runner)
+# Full 17-case census for the FIX-01 split (WP04A-14c included: it runs in the
+# terminals group and lands in the merged id set even though the pre-split
+# rollup's expected_ids stopped at WP04A-14b).
+EXPECTED_WP04A_CASE_IDS: tuple[str, ...] = (
+    "WP04A-01",
+    "WP04A-02",
+    "WP04A-03",
+    "WP04A-04a",
+    "WP04A-04b",
+    "WP04A-05",
+    "WP04A-06",
+    "WP04A-07",
+    "WP04A-08",
+    "WP04A-09",
+    "WP04A-10",
+    "WP04A-11",
+    "WP04A-12",
+    "WP04A-13",
+    "WP04A-14a",
+    "WP04A-14b",
+    "WP04A-14c",
+)
+
+
+def _publish_group_fragment(
+    *,
+    group: str,
+    case_ids: tuple[str, ...],
+    cases: tuple[Callable[..., None], ...],
+    tmp_path: Path,
+) -> None:
+    """Second-execution home for one FIX-01 case group (no logic duplication).
+
+    Replays the group's case tests through a group-local worker runner
+    (counterexamples persist under tmp_path, never the shared artifact root;
+    the fragment report publishes under tmp_path, so two workers sharing a
+    second-stamp run_id never clobber — same pins as the pre-split rollup).
+    Case logic lives in the existing case modules; this only drives, merges,
+    and publishes. Fails loud on a group coverage gap.
+    """
+    runner = ReferenceTraceRunner(manifest=_MANIFEST, artifact_root_path=tmp_path)
+    for case_fn in cases:
+        case_fn(runner=runner)
     merged = dict(_RESULTS)
     for cid, res in _WAVE_C_RESULTS.items():
         merged.setdefault(cid, res)
-    results = [merged[cid] for cid in sorted(merged)]
-    expected_ids = {
-        "WP04A-01",
-        "WP04A-02",
-        "WP04A-03",
-        "WP04A-04a",
-        "WP04A-04b",
-        "WP04A-05",
-        "WP04A-06",
-        "WP04A-07",
-        "WP04A-08",
-        "WP04A-09",
-        "WP04A-10",
-        "WP04A-11",
-        "WP04A-12",
-        "WP04A-13",
-        "WP04A-14a",
-        "WP04A-14b",
-    }
-    missing = expected_ids - set(merged)
-    assert not missing, f"corpus coverage gap: {sorted(missing)}"
+    missing = set(case_ids) - set(merged)
+    assert not missing, f"corpus coverage gap ({group}): {sorted(missing)}"
+    results = [merged[cid] for cid in sorted(case_ids)]
     document = build_intersection_report(
         rules_id="tenhou_4p_hanchan_v1",
-        rules_manifest_sha256=(
-            "sha256:3042a493280224f533d831f371275b1c96585cf1db5a2e5fb86ec259f403286b"
-        ),
+        rules_manifest_sha256=_RULES_MANIFEST_SHA256,
         results=results,
         documented_unsupported=DOCUMENTED_UNSUPPORTED,
     )
     run_id = time.strftime("%Y%m%dT%H%M%S%fZ", time.gmtime())
-    destination = tmp_path / "reports" / "WP-04A" / run_id / "report.json"
+    destination = tmp_path / "reports" / "WP-04A" / group / run_id / "report.json"
     write_intersection_report(document, destination)
     assert destination.is_file()
     assert document["tally"]["mismatch"] == len(document["unresolved_mismatch_cases"])
     assert document["declared_support"]["verdict"] == (
         "supported" if not document["unresolved_mismatch_cases"] else "blocked"
+    )
+
+
+def test_wp04a_intersection_report_and_disposition() -> None:
+    """Thin partition gate for the FIX-01 split: merged group ids == 17.
+
+    No engine work here (consume, don't re-execute). Each group file replays
+    its own cases and publishes a group-local fragment report from the live
+    CaseResults in its own worker process; those fragment tests are the live
+    coverage proof. This test proves the partition itself: every one of the
+    17 census ids is owned by exactly one group file.
+
+    Live-consumption in this test is impossible by construction, not by
+    omission: under `--dist loadscope` each file pins its own worker, so no
+    single process ever holds all 17 live CaseResults, and the tmp_path-only
+    rule forbids a cross-test filesystem channel. A shared-filesystem result
+    cache was deliberately NOT built (it would violate the self-contained-test
+    rule). If a group file drops a case, its GROUP_CASE_IDS shrinks and this
+    gate fails loud with the coverage-gap message.
+    """
+    from tests.conformance import test_reference_corpus_wp04a_group_claims as _g_claims
+    from tests.conformance import test_reference_corpus_wp04a_group_kept as _g_kept
+    from tests.conformance import test_reference_corpus_wp04a_group_scoring as _g_scoring
+    from tests.conformance import test_reference_corpus_wp04a_group_terminals as _g_term
+
+    groups = {
+        "kept": tuple(_g_kept.GROUP_CASE_IDS),
+        "claims": tuple(_g_claims.GROUP_CASE_IDS),
+        "scoring": tuple(_g_scoring.GROUP_CASE_IDS),
+        "terminals": tuple(_g_term.GROUP_CASE_IDS),
+    }
+    owned = [cid for ids in groups.values() for cid in ids]
+    assert len(owned) == len(set(owned)) == len(EXPECTED_WP04A_CASE_IDS) == 17, (
+        f"corpus partition must own exactly the 17 census ids once each: {sorted(owned)}"
+    )
+    missing = set(EXPECTED_WP04A_CASE_IDS) - set(owned)
+    extra = set(owned) - set(EXPECTED_WP04A_CASE_IDS)
+    assert not missing and not extra, (
+        f"corpus coverage gap: missing={sorted(missing)} extra={sorted(extra)}"
     )

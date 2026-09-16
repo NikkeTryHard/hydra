@@ -673,14 +673,12 @@ class TestBf16GradParity:
 
 
 class TestBf16ShortOverlap:
-    def test_s1_to_s5_train_track_and_divergence(self, corpus_artifact, fp32_payload, require_cuda):
+    def test_s1_to_s5_train_track_and_divergence(self, cuda_batches, fp32_payload, require_cuda):
         assert require_cuda is not None
         steps = _overlap_steps()
-        train = corpus_artifact["microbatches"][:TRAIN_MICROBATCHES]
-        held_out = corpus_artifact["microbatches"][TRAIN_MICROBATCHES:]
-        assert len(held_out) == HELD_OUT_MICROBATCHES
-        train_cuda = [(_to_cuda(batch), targets.to("cuda")) for batch, targets in train]
-        held_cuda = [(_to_cuda(batch), targets.to("cuda")) for batch, targets in held_out]
+        train_cuda = cuda_batches[:TRAIN_MICROBATCHES]
+        held_cuda = cuda_batches[TRAIN_MICROBATCHES:]
+        assert len(held_cuda) == HELD_OUT_MICROBATCHES
         torch.manual_seed(SEED)
         ref_model = _fresh_model(fp32_payload, train=True)
         dut_model = _fresh_model(fp32_payload, train=True)

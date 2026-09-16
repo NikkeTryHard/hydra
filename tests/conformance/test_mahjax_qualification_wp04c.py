@@ -166,6 +166,8 @@ def test_gpu_soak_requires_cuda_device() -> None:
     assert result["status"] == "passed"
 
 
+# cpu_soak jits in-process (differential_modes.py:402); single-process lane only per AGENTS serial rule.
+@pytest.mark.serial
 def test_cpu_soak_bounded_and_deterministic() -> None:
     result = cpu_soak(steps=20)
     assert result["status"] == "passed"
