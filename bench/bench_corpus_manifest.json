@@ -26,7 +26,7 @@
   "thresholds": null
  },
  "created_utc": "2026-09-11T16:30:00+00:00",
- "description": "Wave-G1 single re-pin at Wave-F close: every entry recomputed (cutover code + F10 decision-primary corpus); every local entry pinned by sha256; external probe entries resolved+hashed at bench time. The manifest_digest binds every entry and threshold: ANY byte change voids thresholds. 8a2f baseline stays frozen. WP-14 telemetry re-pin: stream_train.py (mlflow/sampler/profiler hooks) + run_config.py (telemetry section); thresholds stay blank-null. Desync re-pin: rust_observations.py entry removed (module deleted, plane feed supersedes); stream_train.py (device-gate validators, hot scalars, chunked workers, YAML feed knobs) + run_config.py (decode_prefetch/expand_batch_games/fetch_prefetch_depth); thresholds stay blank-null. Slice-E re-pin 2026-09-12: stream_train.py (homogeneous-buckets grouping, entry pins, ring depth 3, lint/format) + run_config.py (homogeneous_buckets flag, lint/format); thresholds stay blank-null.",
+ "description": "Wave-G1 single re-pin at Wave-F close: every entry recomputed (cutover code + F10 decision-primary corpus); every local entry pinned by sha256; external probe entries resolved+hashed at bench time. The manifest_digest binds every entry and threshold: ANY byte change voids thresholds. 8a2f baseline stays frozen. WP-14 telemetry re-pin: stream_train.py (mlflow/sampler/profiler hooks) + run_config.py (telemetry section); thresholds stay blank-null. Desync re-pin: rust_observations.py entry removed (module deleted, plane feed supersedes); stream_train.py (device-gate validators, hot scalars, chunked workers, YAML feed knobs) + run_config.py (decode_prefetch/expand_batch_games/fetch_prefetch_depth); thresholds stay blank-null. Slice-E re-pin 2026-09-12: stream_train.py (homogeneous-buckets grouping, entry pins, ring depth 3, lint/format) + run_config.py (homogeneous_buckets flag, lint/format); thresholds stay blank-null. Shrink re-pin: tests/unit/test_rust_stream_wp14.py + tests/unit/test_replay_backend_wp14.py entries refreshed for the fixture sys.modules-pop fix (hard-delegate cutover, no fallback); thresholds stay blank-null.",
  "entries": [
   {
    "fixtures": [
@@ -1836,7 +1836,7 @@
    ],
    "kind": "cutover-source",
    "relpath": "tests/unit/test_rust_stream_wp14.py",
-   "sha256": "sha256:61f86c53545194062c25aa0f720e55f51c233e16b000d63362f3d5ca42561b49"
+   "sha256": "sha256:2717e2e5c96f2a665a22e0da64ff6a600cd79e81827c48c6e401c833ae7a967e"
   },
   {
    "fixtures": [
@@ -1844,7 +1844,7 @@
    ],
    "kind": "cutover-source",
    "relpath": "tests/unit/test_replay_backend_wp14.py",
-   "sha256": "sha256:07338d4b69cd026aeafb43329e60fa873ee09010f53238373036213f9d3cd0b4"
+   "sha256": "sha256:e88a3fcccc540518825ae681077e8b51a4af42943ff3080ac51b823db55b7465"
   }
  ],
  "fingerprint_fields": [
@@ -1937,6 +1937,6 @@
    "module": "tests.parity.test_parity_gates_g1_g7_wp0b"
   }
  ],
- "manifest_digest": "sha256:6027d66b104fef536c50bcc048107b0567a0ec749c0d874315876d56009a6258",
+ "manifest_digest": "sha256:1ece6991256fc90b7eb5627623b0968138a72aeb0ed080a37711c9ec432076f2",
  "manifest_version": "2"
 }
