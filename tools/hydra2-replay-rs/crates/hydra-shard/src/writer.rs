@@ -621,6 +621,101 @@ pub fn probe_footer_5exact(path: &Path, expected_rows: usize) -> Result<(), Colu
     Ok(())
 }
 
+/// Probe-C canonical row count (same-batches-to-both-writers contract).
+///
+/// `7` is coprime to `24`, so [`parity_probe_ids`] emits a full permutation:
+/// file order is NOT sorted, which proves both `dataset_hash` sides sort
+/// before hashing instead of hashing file order.
+pub const PARITY_PROBE_ROWS: usize = 24;
+
+/// Probe-C canonical decision ids in FILE order (permuted, NOT sorted).
+///
+/// Python mirror (MUST change together):
+/// `tests/unit/test_columnar_parity.py::_probe_ids`
+/// (`f"probe-c:d{(i * 7) % 24:04d}"`). Any one-sided edit raises there
+/// (mismatch=raise).
+pub fn parity_probe_ids() -> Vec<String> {
+    (0..PARITY_PROBE_ROWS)
+        .map(|i| alloc::format!("probe-c:d{:04}", (i * 7) % PARITY_PROBE_ROWS))
+        .collect()
+}
+
+/// Probe-C canonical batch: [`PARITY_PROBE_ROWS`] rows over the CANONICAL
+/// [`crate::replay::expand::actor_schema`] (13 `ACTOR_FIELDS`, `Utf8`/`Int64`,
+/// `chosen_action_id` sole nullable — the real writer input, never a subset).
+///
+/// Logical values are fully pinned here AND in the Python mirror
+/// (`tests/unit/test_columnar_parity.py::_probe_rows`); both files MUST carry
+/// value-identical columns. The parity test compares per-column logical
+/// values, never bytes (`created_by` plus page internals differ by writer).
+pub fn parity_probe_batch() -> Result<RecordBatch, ColumnarWriteError> {
+    use arrow_array::{Int64Array, StringArray};
+    use std::sync::Arc;
+    let schema = crate::replay::expand::actor_schema();
+    let n = PARITY_PROBE_ROWS;
+    let fill_const = |s: &'static str| (0..n).map(|_| Some(s)).collect::<Vec<Option<&str>>>();
+    let game_ids = fill_const("probe-c-g0000");
+    let round_ids: Vec<Option<String>> = (0..n)
+        .map(|i| Some(alloc::format!("probe-c-g0000:r{:02}", i % 4)))
+        .collect();
+    let decision_ids: Vec<Option<String>> = parity_probe_ids().into_iter().map(Some).collect();
+    let seats: Vec<Option<i64>> = (0..n).map(|i| Some((i % 4) as i64)).collect();
+    let sources = fill_const("probe-c-src");
+    let splits = fill_const("train");
+    let rules = fill_const("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    let adapters = fill_const("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    let observations = fill_const("sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc");
+    let action_tables =
+        fill_const("sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd");
+    let derivations =
+        fill_const("sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+    let actor_obs: Vec<Option<String>> = (0..n)
+        .map(|i| Some(alloc::format!("{{\"dora_indicators\":[1,2,3,4,5],\"seat\":{}}}", i % 4)))
+        .collect();
+    let chosen: Vec<Option<i64>> = (0..n).map(|i| Some((i % 9) as i64)).collect();
+    // Column order is the canonical schema order (13 `ACTOR_FIELDS`).
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(StringArray::from(game_ids)) as _,
+            Arc::new(StringArray::from(round_ids)) as _,
+            Arc::new(StringArray::from(decision_ids)) as _,
+            Arc::new(Int64Array::from(seats)) as _,
+            Arc::new(StringArray::from(sources)) as _,
+            Arc::new(StringArray::from(splits)) as _,
+            Arc::new(StringArray::from(rules)) as _,
+            Arc::new(StringArray::from(adapters)) as _,
+            Arc::new(StringArray::from(observations)) as _,
+            Arc::new(StringArray::from(action_tables)) as _,
+            Arc::new(StringArray::from(derivations)) as _,
+            Arc::new(StringArray::from(actor_obs)) as _,
+            Arc::new(Int64Array::from(chosen)) as _,
+        ],
+    )?;
+    debug_assert_eq!(batch.num_rows(), n);
+    Ok(batch)
+}
+
+/// Probe-C harness entry: same-batches-to-both-writers comparison (Rust side).
+///
+/// Writes the caller-supplied batches via the actor 5-exact path (triple
+/// firewall plus [`writer_props_5exact`] plus close-counts plus
+/// [`probe_footer_5exact`]) to `path` and returns the receipt.
+/// `tests/unit/test_columnar_parity.py` builds the IDENTICAL logical batch
+/// via `pq.write_table` 5-exact and compares `dataset_hash` plus the
+/// file-content class (schema/columns/row counts/logical values — NOT bytes:
+/// `created_by` plus page internals differ).
+///
+/// Python writer stays primary until Probe-C green; this entry performs NO
+/// cutover (no caller migration, no fallback logic — see the test module
+/// docstring for the documented next step).
+pub fn write_parity_probe(
+    path: &Path,
+    batches: &[RecordBatch],
+) -> Result<ParquetWriteReceipt, ColumnarWriteError> {
+    write_actor_parquet_5exact(path, batches)
+}
+
 #[cfg(test)]
 mod columnar_probes {
     use super::*;
@@ -746,5 +841,54 @@ mod columnar_probes {
         let b = vec!["g:a".to_string(), "g:b".to_string()];
         assert_eq!(dataset_hash_of_sorted_ids(&a), dataset_hash_of_sorted_ids(&b));
         assert!(dataset_hash_of_sorted_ids(&a).starts_with("sha256:"));
+    }
+
+    /// Probe C (Rust side): canonical batch builds over the real actor schema,
+    /// passes the firewall, and round-trips through [`write_parity_probe`]
+    /// with footer green. Python compares the same logical values.
+    #[test]
+    fn probe_c_parity_batch_round_trip() {
+        let batch = parity_probe_batch().unwrap();
+        assert_eq!(batch.num_rows(), PARITY_PROBE_ROWS);
+        assert_eq!(batch.schema(), crate::replay::expand::actor_schema());
+        // File order is permuted (unsorted) by construction.
+        let ids = parity_probe_ids();
+        assert_eq!(ids.len(), PARITY_PROBE_ROWS);
+        let mut sorted = ids.clone();
+        sorted.sort();
+        assert_ne!(ids, sorted);
+        assert_no_privileged_leak(&batch).unwrap();
+        let dir = std::env::temp_dir().join(alloc::format!(
+            "hydra-writer-probe-c-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("probe-c.parquet");
+        let receipt = write_parity_probe(&path, &[batch]).unwrap();
+        assert_eq!(receipt.rows, PARITY_PROBE_ROWS);
+        probe_footer_5exact(&path, PARITY_PROBE_ROWS).unwrap();
+        // dataset_hash sorts: file order and sorted order agree.
+        assert_eq!(
+            dataset_hash_of_sorted_ids(&ids),
+            dataset_hash_of_sorted_ids(&sorted)
+        );
+
+        // Judge hook: when the Python parity judge sets `HYDRA2_PROBEC_OUT`,
+        // emit a second copy there for file-level comparison. Scratch-only
+        // discipline mirrors `parity_84` (must sit under the platform temp
+        // dir, never inside the repo). Unset: pure self-contained probe.
+        if let Some(out) = std::env::var_os("HYDRA2_PROBEC_OUT") {
+            let out = std::path::PathBuf::from(out);
+            assert!(
+                out.starts_with(std::env::temp_dir()),
+                "HYDRA2_PROBEC_OUT must sit under scratch temp dir {}: {}",
+                std::env::temp_dir().display(),
+                out.display(),
+            );
+            std::fs::create_dir_all(&out).unwrap();
+            write_parity_probe(&out.join("probe-c-rust.parquet"), &[parity_probe_batch().unwrap()])
+                .unwrap();
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
