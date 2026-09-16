@@ -180,29 +180,50 @@ class ActionCodec:
         raise NotImplementedError
 
 
-_OFFSET_DELTA: dict[int, int] = {-1: 3, 0: 0, 1: 1, 2: 2}
-
-
 def _offset_from_source(source: Seat | None, actor: Seat) -> SourceOffset | None:
+    """Relative source offset seen from actor (thin bridge translator).
+
+    The gate lives in ``hydra2_replay_rs.contracts.offset_from_source``;
+    bridge rejections (ValueError/TypeError) surface as InvalidActionError
+    so the codec error contract is unchanged. None in, None out.
+    """
     if source is None:
         return None
-    delta = (int(source) - int(actor)) % 4
-    if delta == 0:  # unreachable for validated actions; defensive
-        raise InvalidActionError("source seat equals actor")
-    assert delta in (1, 2, 3)
-    if delta == 3:
-        return cast("SourceOffset", -1)
-    assert delta in (0, 1, 2)
-    return cast("SourceOffset", delta)
+    if bridge is None:
+        raise ImportError(
+            "hydra2 codec authority requires the hydra2_replay_rs bridge; "
+            "run `pixi run build-ext` to build the extension before use"
+        )
+    try:
+        result = bridge.offset_from_source(source, actor)  # type: ignore[attr-defined]
+    except (ValueError, TypeError) as exc:
+        raise InvalidActionError(f"source offset rejected: {exc}") from exc
+    if result is None:
+        return None
+    return cast("SourceOffset", int(result))
 
 
 def _resolve_source(offset: SourceOffset | None, actor: Seat) -> Seat | None:
+    """Absolute source seat seen from actor (thin bridge translator).
+
+    The gate lives in ``hydra2_replay_rs.contracts.resolve_source``;
+    bridge rejections surface as InvalidActionError so the codec error
+    contract is unchanged. None in, None out.
+    """
     if offset is None:
         return None
-    assert offset in (-1, 0, 1, 2)
-    delta = _OFFSET_DELTA[int(offset)]
-    assert delta in (0, 1, 2, 3)
-    return make_seat((int(actor) + delta) % 4)
+    if bridge is None:
+        raise ImportError(
+            "hydra2 codec authority requires the hydra2_replay_rs bridge; "
+            "run `pixi run build-ext` to build the extension before use"
+        )
+    try:
+        result = bridge.resolve_source(offset, actor)  # type: ignore[attr-defined]
+    except (ValueError, TypeError) as exc:
+        raise InvalidActionError(f"source resolve rejected: {exc}") from exc
+    if result is None:
+        return None
+    return make_seat(int(result))
 
 
 def _find_kakan_base(context: ActionContext, added_tile: TileId) -> VisibleMeld:

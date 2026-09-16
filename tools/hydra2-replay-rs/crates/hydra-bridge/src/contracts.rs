@@ -49,6 +49,7 @@
 //! the Phase-6 maturin `module-name` cutover lands), mirroring
 //! `canon_rng::register`. The legacy `hydra2_replay_rs` entry is untouched.
 
+use std::collections::BTreeMap;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBool, PyBytes, PyModule};
@@ -530,12 +531,463 @@ fn resolve_final_ranks(
         .to_vec())
 }
 
+// ---------------------------------------------------------------------------
+// Wave 4 round-2 - R5 codec pure leaves (SPEC 6.3; context gating stays Python).
+// ---------------------------------------------------------------------------
+
+/// Relative source offset of `source` seen from `actor` (mirrors
+/// `action_table._offset_from_source`): `None` in, `None` out; otherwise
+/// `(source - actor) % 4` mapped `3 -> -1`. `source == actor` fails closed
+/// (defensive; validated actions never self-source). Bool excluded, seats
+/// `0..=3`. Attached (sub-microsecond arithmetic, cheaper than a GIL
+/// round-trip; see census leaf docs). Counter-free deterministic, never
+/// wall-clock.
+#[pyfunction]
+#[pyo3(signature = (source, actor))]
+fn offset_from_source(
+    source: Option<Bound<'_, PyAny>>,
+    actor: Bound<'_, PyAny>,
+) -> PyResult<Option<i8>> {
+    let actor_v = plain_int_or_err(&actor, "actor")?;
+    if !(0..=3).contains(&actor_v) {
+        return Err(PyValueError::new_err(format!(
+            "contracts actor={actor_v} outside [0, 3]"
+        )));
+    }
+    match source {
+        None => Ok(None),
+        Some(obj) => {
+            let source_v = plain_int_or_err(&obj, "source")?;
+            if !(0..=3).contains(&source_v) {
+                return Err(PyValueError::new_err(format!(
+                    "contracts source={source_v} outside [0, 3]"
+                )));
+            }
+            if source_v == actor_v {
+                return Err(PyValueError::new_err(
+                    "contracts source seat equals actor",
+                ));
+            }
+            let delta = (source_v - actor_v).rem_euclid(4);
+            if delta == 3 {
+                Ok(Some(-1))
+            } else {
+                i8::try_from(delta).map(Some).map_err(|_| {
+                    PyValueError::new_err(format!("contracts offset delta {delta} outside i8"))
+                })
+            }
+        }
+    }
+}
+
+/// Absolute source seat of `offset` seen from `actor` (mirrors
+/// `action_table._resolve_source`): `None` in, `None` out; otherwise
+/// `(actor + delta) % 4` with `{-1: 3, 0: 0, 1: 1, 2: 2}`. Offsets outside
+/// `(-1, 0, 1, 2)` fail closed. Attached (see `offset_from_source`).
+/// Counter-free deterministic, never wall-clock.
+#[pyfunction]
+#[pyo3(signature = (offset, actor))]
+fn resolve_source(
+    offset: Option<Bound<'_, PyAny>>,
+    actor: Bound<'_, PyAny>,
+) -> PyResult<Option<u8>> {
+    let actor_v = plain_int_or_err(&actor, "actor")?;
+    if !(0..=3).contains(&actor_v) {
+        return Err(PyValueError::new_err(format!(
+            "contracts actor={actor_v} outside [0, 3]"
+        )));
+    }
+    match offset {
+        None => Ok(None),
+        Some(obj) => {
+            let offset_v = plain_int_or_err(&obj, "source_offset")?;
+            let delta = match offset_v {
+                -1 => 3i64,
+                0 => 0i64,
+                1 => 1i64,
+                2 => 2i64,
+                _ => {
+                    return Err(PyValueError::new_err(format!(
+                        "contracts source_offset={offset_v} must be one of (None, -1, 0, 1, 2)"
+                    )));
+                }
+            };
+            let seat = (actor_v + delta).rem_euclid(4);
+            u8::try_from(seat).map(Some).map_err(|_| {
+                PyValueError::new_err(format!("contracts source seat {seat} outside u8"))
+            })
+        }
+    }
+}
+
+/// Frozen meld kinds (`observation_types.MELD_KINDS`, SPEC 8 order).
+const MELD_KINDS: [&str; 5] = ["chi", "pon", "daiminkan", "ankan", "kakan"];
+
+/// Canonical prior-meld reference `kind:t.t.t` (mirrors
+/// `observation_types.visible_meld_id`): takes scalars (`kind` + tile list),
+/// never a live `VisibleMeld` object, so callers pass ints and get text back
+/// (`PacketSuccessor` precedent). Kind must be a meld kind, tiles must be
+/// valid tile ids `0..=135` (bool excluded). Attached (string join only).
+/// Counter-free deterministic, never wall-clock.
+#[pyfunction]
+#[pyo3(signature = (kind, tiles))]
+fn visible_meld_id(kind: String, tiles: Vec<Bound<'_, PyAny>>) -> PyResult<String> {
+    if !MELD_KINDS.contains(&kind.as_str()) {
+        return Err(PyValueError::new_err(format!(
+            "contracts meld kind must be one of {MELD_KINDS:?}, got {kind:?}"
+        )));
+    }
+    let mut ids: Vec<i64> = Vec::with_capacity(tiles.len());
+    for entry in tiles.iter() {
+        let v = plain_int_or_err(entry, "tiles")?;
+        if !(0..=135).contains(&v) {
+            return Err(PyValueError::new_err(format!(
+                "contracts meld tiles entry {v} outside [0, 135]"
+            )));
+        }
+        ids.push(v);
+    }
+    let joined = ids
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(".");
+    Ok(format!("{kind}:{joined}"))
+}
+
+/// One exposed meld visible to every actor (SPEC 8 exact field order) as a
+/// frozen record: the `PacketSuccessor` precedent for records crossing the
+/// boundary (callers pass scalars, records come back; live
+/// `ObservationBuilder` caches stay Python-side). Validation mirrors
+/// `observation_types.VisibleMeld.__post_init__` bit-for-bit (kind vocab,
+/// seat/tile gates with bool excluded, per-kind length, chi run vs same-type,
+/// ankan consecutive-4, called/source presence with `source != owner` and
+/// `called in tiles`, non-empty `meld_id` derived via `visible_meld_id`
+/// when `None`). Attached (at most 4 tiles; cheaper than a GIL round-trip).
+/// Counter-free deterministic, never wall-clock. Fail-closed: every shape
+/// violation is `PyValueError`, never a default.
+#[pyclass(name = "VisibleMeld", frozen, skip_from_py_object)]
+#[derive(Debug, Clone)]
+pub struct PyVisibleMeld {
+    /// Resolved meld id (derived `kind:tiles` when `None` in).
+    #[pyo3(get)]
+    pub meld_id: String,
+    /// Frozen meld kind literal.
+    #[pyo3(get)]
+    pub kind: String,
+    /// Owning seat `0..=3`.
+    #[pyo3(get)]
+    pub owner: u8,
+    /// Offering seat for chi/pon/daiminkan, `None` for ankan/kakan.
+    #[pyo3(get)]
+    pub source_seat: Option<u8>,
+    /// Claimed tile for chi/pon/daiminkan, `None` for ankan/kakan.
+    #[pyo3(get)]
+    pub called_tile: Option<u8>,
+    /// Meld tiles, unique ascending.
+    #[pyo3(get)]
+    pub tiles: Vec<u8>,
+}
+
+#[pymethods]
+impl PyVisibleMeld {
+    #[new]
+    #[pyo3(signature = (kind, owner, tiles, meld_id=None, source_seat=None, called_tile=None))]
+    fn new(
+        kind: String,
+        owner: Bound<'_, PyAny>,
+        tiles: Vec<Bound<'_, PyAny>>,
+        meld_id: Option<String>,
+        source_seat: Option<Bound<'_, PyAny>>,
+        called_tile: Option<Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        if !MELD_KINDS.contains(&kind.as_str()) {
+            return Err(PyValueError::new_err(format!(
+                "contracts meld kind must be one of {MELD_KINDS:?}, got {kind:?}"
+            )));
+        }
+        let owner_v = plain_int_or_err(&owner, "owner")?;
+        if !(0..=3).contains(&owner_v) {
+            return Err(PyValueError::new_err(format!(
+                "contracts owner={owner_v} outside [0, 3]"
+            )));
+        }
+        let mut tile_ids: Vec<u8> = Vec::with_capacity(tiles.len());
+        for entry in tiles.iter() {
+            let v = plain_int_or_err(entry, "tiles")?;
+            if !(0..=135).contains(&v) {
+                return Err(PyValueError::new_err(format!(
+                    "contracts meld tiles entry {v} outside [0, 135]"
+                )));
+            }
+            let byte = u8::try_from(v).map_err(|_| {
+                PyValueError::new_err(format!("contracts meld tile {v} outside u8"))
+            })?;
+            tile_ids.push(byte);
+        }
+        if tile_ids.is_empty() {
+            return Err(PyValueError::new_err(
+                "contracts meld tiles must be non-empty",
+            ));
+        }
+        let mut sorted = tile_ids.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        if sorted.len() != tile_ids.len() || tile_ids != sorted {
+            return Err(PyValueError::new_err(format!(
+                "contracts {kind} meld tiles must be unique ascending: {tile_ids:?}"
+            )));
+        }
+        let expected_len = match kind.as_str() {
+            "chi" | "pon" => 3,
+            "daiminkan" | "ankan" | "kakan" => 4,
+            _ => {
+                return Err(PyValueError::new_err(format!(
+                    "contracts meld kind must be one of {MELD_KINDS:?}, got {kind:?}"
+                )));
+            }
+        };
+        if tile_ids.len() != expected_len {
+            return Err(PyValueError::new_err(format!(
+                "contracts {kind} meld must hold {expected_len} tiles, got {}",
+                tile_ids.len()
+            )));
+        }
+        let types: Vec<u8> = tile_ids.iter().map(|t| t / 4).collect();
+        if kind == "chi" {
+            let has_honor = types.iter().any(|t| *t >= 27);
+            let mut suits: Vec<u8> = types.iter().map(|t| t / 9).collect();
+            suits.sort_unstable();
+            suits.dedup();
+            let min_type = types.iter().min().copied().unwrap_or(0);
+            let max_type = types.iter().max().copied().unwrap_or(0);
+            let mut uniq_types = types.clone();
+            uniq_types.sort_unstable();
+            uniq_types.dedup();
+            if has_honor || suits.len() != 1 || max_type - min_type != 2 || uniq_types.len() != 3 {
+                return Err(PyValueError::new_err(format!(
+                    "contracts chi meld is not a same-suit run: {tile_ids:?}"
+                )));
+            }
+        } else {
+            let mut uniq_types = types.clone();
+            uniq_types.sort_unstable();
+            uniq_types.dedup();
+            if uniq_types.len() != 1 {
+                return Err(PyValueError::new_err(format!(
+                    "contracts {kind} meld tiles must share one logical type: {tile_ids:?}"
+                )));
+            }
+        }
+        let source_opt: Option<u8> = match source_seat {
+            None => None,
+            Some(obj) => {
+                let v = plain_int_or_err(&obj, "source_seat")?;
+                if !(0..=3).contains(&v) {
+                    return Err(PyValueError::new_err(format!(
+                        "contracts source_seat={v} outside [0, 3]"
+                    )));
+                }
+                Some(v as u8)
+            }
+        };
+        let called_opt: Option<u8> = match called_tile {
+            None => None,
+            Some(obj) => {
+                let v = plain_int_or_err(&obj, "called_tile")?;
+                if !(0..=135).contains(&v) {
+                    return Err(PyValueError::new_err(format!(
+                        "contracts called_tile={v} outside [0, 135]"
+                    )));
+                }
+                Some(v as u8)
+            }
+        };
+        if kind == "ankan" || kind == "kakan" {
+            if called_opt.is_some() || source_opt.is_some() {
+                return Err(PyValueError::new_err(format!(
+                    "contracts {kind} meld has no called tile or source seat"
+                )));
+            }
+            if kind == "ankan" {
+                let base = (types[0] as u16) * 4;
+                let mut want: Vec<u8> = Vec::with_capacity(4);
+                for i in 0..4u16 {
+                    let v = base + i;
+                    let byte = u8::try_from(v).map_err(|_| {
+                        PyValueError::new_err(format!("contracts ankan base {base} outside u8"))
+                    })?;
+                    want.push(byte);
+                }
+                if tile_ids != want {
+                    return Err(PyValueError::new_err(format!(
+                        "contracts ankan meld tiles {tile_ids:?} must be consecutive 4 of type {}",
+                        types[0]
+                    )));
+                }
+            }
+        } else {
+            let source = source_opt.ok_or_else(|| {
+                PyValueError::new_err(format!(
+                    "contracts {kind} meld requires called_tile and source_seat"
+                ))
+            })?;
+            let called = called_opt.ok_or_else(|| {
+                PyValueError::new_err(format!(
+                    "contracts {kind} meld requires called_tile and source_seat"
+                ))
+            })?;
+            if source == (owner_v as u8) {
+                return Err(PyValueError::new_err(format!(
+                    "contracts {kind} meld source seat equals owner"
+                )));
+            }
+            if !tile_ids.contains(&called) {
+                return Err(PyValueError::new_err(format!(
+                    "contracts {kind} meld called tile {called} not among tiles"
+                )));
+            }
+        }
+        let resolved = match meld_id {
+            Some(text) => {
+                if text.is_empty() {
+                    return Err(PyValueError::new_err(
+                        "contracts meld_id must resolve to a non-empty string",
+                    ));
+                }
+                text
+            }
+            None => {
+                let joined = tile_ids
+                    .iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(".");
+                format!("{kind}:{joined}")
+            }
+        };
+        Ok(Self {
+            meld_id: resolved,
+            kind,
+            owner: owner_v as u8,
+            source_seat: source_opt,
+            called_tile: called_opt,
+            tiles: tile_ids,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Wave 4 round-2 - R6 packet folds (SPEC 7.2; live packets stay Python).
+// ---------------------------------------------------------------------------
+
+/// One public-state fold step `sha256(canonical({"prefix": prefix, "event":
+/// event}))` (mirrors `event_packet._fold_public_hash`). Takes the running
+/// prefix digest text plus ONE canonical envelope document (prepared
+/// Python-side via `envelope_identity_document` + `canonical_bytes`, so the
+/// canon authority stays Python and Rust only hashes). Complements the
+/// multi-step `public_chain_hash`. Compute runs detached with zero Python API
+/// inside; prefix shape and doc parse failures are `PyValueError`, never a
+/// default. Counter-free deterministic, never wall-clock.
+#[pyfunction]
+#[pyo3(signature = (prefix, event_doc))]
+fn fold_public_hash(py: Python<'_>, prefix: String, event_doc: Vec<u8>) -> PyResult<String> {
+    if !is_digest_shape(&prefix) {
+        return Err(PyValueError::new_err(format!(
+            "contracts fold_public_hash prefix must be 'sha256:' + 64 lowercase hex, got {prefix:?}"
+        )));
+    }
+    py.detach(|| hydra_feed::chain::fold_public_hash(&prefix, &event_doc))
+        .map_err(|e| PyValueError::new_err(format!("contracts fold_public_hash rejected: {e}")))
+}
+
+/// Packet identity hex over canonical packet-identity bytes (mirrors
+/// `event_packet.compute_packet_id` without the live `ActorVisiblePacket`):
+/// the caller prepares `canonical_bytes(packet_identity_document(packet))`
+/// (packet WITHOUT `packet_id`, canon authority stays Python); Rust
+/// re-canonicalizes through the feed `canon` owner and hashes through the
+/// feed `digest` owner, returning lowercase hex WITHOUT the `sha256:` prefix
+/// (matching `PacketId(hexdigest)`). Distinct from the `sha256:`-prefixed
+/// single-doc digests on `canon_rng.of_canonical_json`. Compute runs detached
+/// with zero Python API inside; parse/canon failures are `PyValueError`.
+/// Counter-free deterministic, never wall-clock.
+#[pyfunction]
+#[pyo3(signature = (packet_doc,))]
+fn packet_id_from_doc(py: Python<'_>, packet_doc: Vec<u8>) -> PyResult<String> {
+    py.detach(|| -> Result<String, String> {
+        let value = hydra_feed::canon::parse_canonical_bytes(&packet_doc, "contracts:packet_id_from_doc")
+            .map_err(|e| e.to_string())?;
+        let bytes = hydra_feed::canon::canonical_bytes_value(&value, "contracts:packet_id_from_doc")
+            .map_err(|e| e.to_string())?;
+        let digest = hydra_feed::digest::sha256_hex(&bytes);
+        digest
+            .strip_prefix("sha256:")
+            .map(|hex| hex.to_string())
+            .ok_or_else(|| "contracts packet_id_from_doc: digest missing prefix".to_string())
+    })
+    .map_err(PyValueError::new_err)
+}
+
+/// Packet-partition span check over `(actor_view, start, end)` triples
+/// (mirrors `event_packet.validate_packet_partition` span half without live
+/// `ActorVisiblePacket`/`EventEnvelope` objects): every span has a valid
+/// actor `0..=3` (bool excluded), nonnegative sequence bounds with
+/// `start <= end`, and per-view spans are ordered and mutually exclusive
+/// (`previous_end < start`, never overlap). Event-level exclusivity (sequence
+/// sets across packets) stays Python as it needs envelope objects. Empty
+/// input is valid (mirrors the Python early return). Attached
+/// (sub-microsecond integer scan, cheaper than a GIL round-trip).
+/// Counter-free deterministic, never wall-clock. Fail-closed: every shape
+/// violation is `PyValueError`, never a silent skip.
+#[pyfunction]
+#[pyo3(signature = (spans,))]
+fn validate_packet_spans(spans: Vec<(Bound<'_, PyAny>, Bound<'_, PyAny>, Bound<'_, PyAny>)>) -> PyResult<()> {
+    let mut per_view: BTreeMap<u8, Vec<(i64, i64)>> = BTreeMap::new();
+    for (view_obj, start_obj, end_obj) in spans.iter() {
+        let view = plain_int_or_err(view_obj, "actor_view")?;
+        if !(0..=3).contains(&view) {
+            return Err(PyValueError::new_err(format!(
+                "contracts actor_view={view} outside [0, 3]"
+            )));
+        }
+        let start = plain_int_or_err(start_obj, "source_sequence_start")?;
+        let end = plain_int_or_err(end_obj, "source_sequence_end")?;
+        if start < 0 || end < 0 {
+            return Err(PyValueError::new_err(format!(
+                "contracts packet span ({start}, {end}) must be nonnegative"
+            )));
+        }
+        if start > end {
+            return Err(PyValueError::new_err(format!(
+                "contracts packet span start {start} exceeds end {end}"
+            )));
+        }
+        per_view.entry(view as u8).or_default().push((start, end));
+    }
+    for (view, mut list) in per_view {
+        list.sort();
+        let mut previous_end: Option<i64> = None;
+        for (start, end) in list {
+            if let Some(prev) = previous_end {
+                if start <= prev {
+                    return Err(PyValueError::new_err(format!(
+                        "contracts packets overlap for actor {view} (mutual exclusivity violated)"
+                    )));
+                }
+            }
+            previous_end = Some(end);
+        }
+    }
+    Ok(())
+}
+
 /// Register the `contracts` submodule (mirrors `canon_rng::register`):
 /// compute detached, wrap attached; single cdylib, no new entry point.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = m.py();
     let sub = PyModule::new(py, "contracts")?;
     sub.add_class::<PyActionTemplate>()?;
+    sub.add_class::<PyVisibleMeld>()?;
     sub.add_function(wrap_pyfunction!(is_seat, &sub)?)?;
     sub.add_function(wrap_pyfunction!(is_tile_id, &sub)?)?;
     sub.add_function(wrap_pyfunction!(is_digest_text, &sub)?)?;
@@ -554,7 +1006,13 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     sub.add_function(wrap_pyfunction!(action_census, &sub)?)?;
     sub.add_function(wrap_pyfunction!(census_template_at, &sub)?)?;
     sub.add_function(wrap_pyfunction!(census_index_of, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(offset_from_source, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(resolve_source, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(visible_meld_id, &sub)?)?;
     sub.add_function(wrap_pyfunction!(public_chain_hash, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(fold_public_hash, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(packet_id_from_doc, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(validate_packet_spans, &sub)?)?;
     sub.add_function(wrap_pyfunction!(ctr_block, &sub)?)?;
     sub.add_function(wrap_pyfunction!(ctr_stream_bytes, &sub)?)?;
     sub.add_function(wrap_pyfunction!(resolve_final_ranks, &sub)?)?;

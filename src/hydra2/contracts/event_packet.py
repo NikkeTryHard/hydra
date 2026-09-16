@@ -42,6 +42,11 @@ from hydra2.contracts.event_vocab import (
     _require_enum,
 )
 
+try:
+    from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+except ImportError:  # pragma: no cover - import-time signal, same text as call-site
+    _bridge_contracts = None  # type: ignore[assignment]
+
 __all__ = [
     "DEFAULT_PACKET_BOUNDARY_SPEC",
     "PACKET_BOUNDARY_ARTIFACT_TYPE",
@@ -303,9 +308,23 @@ def packet_identity_document(packet: ActorVisiblePacket) -> dict[str, object]:
 
 
 def compute_packet_id(packet: ActorVisiblePacket) -> PacketId:
-    """sha256 over canonical bytes excluding packet_id (SPEC 7.2)."""
-    identity = canonical_json_bytes(packet_identity_document(packet))
-    return PacketId(hashlib.sha256(identity).hexdigest())
+    """sha256 over canonical bytes excluding packet_id (SPEC 7.2).
+
+    Thin bridge translator: the identity document and its canonical bytes
+    stay Python (canon authority); Rust only re-canonicalizes and hashes,
+    returning lowercase hex without the ``sha256:`` prefix.
+    """
+    doc_bytes = canonical_json_bytes(packet_identity_document(packet))
+    if _bridge_contracts is None:
+        raise ImportError(
+            "hydra2 packet authority requires the hydra2_replay_rs bridge; "
+            "run `pixi run build-ext` to build the extension before use"
+        )
+    try:
+        hex_text = _bridge_contracts.packet_id_from_doc(bytes(doc_bytes))  # type: ignore[attr-defined]
+    except (ValueError, TypeError) as exc:
+        raise ContractError(f"packet_id rejected: {exc}") from exc
+    return PacketId(hex_text)
 
 
 def make_actor_visible_packet(
@@ -341,8 +360,21 @@ def make_actor_visible_packet(
 
 
 def _fold_public_hash(prefix: DigestText, event: EventEnvelope) -> DigestText:
-    identity = canonical_json_bytes({"prefix": prefix, "event": envelope_identity_document(event)})
-    return DigestText("sha256:" + hashlib.sha256(identity).hexdigest())
+    """One public-state fold step (thin bridge translator).
+
+    The canonical envelope document and its bytes stay Python (canon
+    authority); Rust only hashes ``{"prefix": prefix, "event": doc}``.
+    """
+    event_doc = canonical_json_bytes(envelope_identity_document(event))
+    if _bridge_contracts is None:
+        raise ImportError(
+            "hydra2 packet authority requires the hydra2_replay_rs bridge; "
+            "run `pixi run build-ext` to build the extension before use"
+        )
+    try:
+        return DigestText(_bridge_contracts.fold_public_hash(prefix, bytes(event_doc)))  # type: ignore[attr-defined]
+    except (ValueError, TypeError) as exc:
+        raise ContractError(f"fold_public_hash rejected: {exc}") from exc
 
 
 _EMPTY_CHAIN_DIGEST = DigestText("sha256:" + hashlib.sha256(b"").hexdigest())
@@ -364,6 +396,11 @@ def validate_packet_partition(packets: Sequence[ActorVisiblePacket]) -> None:
     and other seats' private events), so numeric range adjacency is NOT
     required between consecutive packets. Exhaustiveness against a concrete
     stream is enforced by :func:`partition_actor_packets`.
+
+    Thin bridge translator: event-level exclusivity (sequence sets across
+    packets) stays Python as it needs envelope objects; the span half
+    (actor_view/start/end ordered, mutually exclusive) delegates via scalar
+    triples, never live objects. Bridge rejections surface as ContractError.
     """
     if len(packets) == 0:
         return
@@ -371,7 +408,6 @@ def validate_packet_partition(packets: Sequence[ActorVisiblePacket]) -> None:
     for view in views:
         view_packets = [p for p in packets if int(p.actor_view) == view]
         view_packets.sort(key=lambda p: int(cast("Any", p.source_sequence_start)))  # pyrefly: ignore[explicit-any]  # reason: deliberate Any for packet sequence field; int() coerces at runtime
-        previous_end: int | None = None
         seen_sequences: set[int] = set()
         for packet in view_packets:
             for event in packet.events:
@@ -381,9 +417,19 @@ def validate_packet_partition(packets: Sequence[ActorVisiblePacket]) -> None:
                         f"sequence {sequence} appears in two packets (mutual exclusivity violated)"
                     )
                 seen_sequences.add(sequence)
-            if previous_end is not None and int(packet.source_sequence_start) <= previous_end:
-                raise ContractError("packets overlap (mutual exclusivity violated)")
-            previous_end = int(packet.source_sequence_end)
+    if _bridge_contracts is None:
+        raise ImportError(
+            "hydra2 packet authority requires the hydra2_replay_rs bridge; "
+            "run `pixi run build-ext` to build the extension before use"
+        )
+    spans = [
+        (int(p.actor_view), int(p.source_sequence_start), int(p.source_sequence_end))
+        for p in packets
+    ]
+    try:
+        _bridge_contracts.validate_packet_spans(spans)  # type: ignore[attr-defined]
+    except (ValueError, TypeError) as exc:
+        raise ContractError(f"packet partition rejected: {exc}") from exc
 
 
 def partition_actor_packets(
