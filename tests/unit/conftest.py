@@ -58,6 +58,11 @@ def _s8_rust_extension(tmp_path_factory: pytest.TempPathFactory) -> Any:
         yield importlib.import_module("hydra2_replay_rs")
     finally:
         sys.path.remove(str(ext_dir))
+        # Pop the module itself: the tmp copy may predate bridge surfaces
+        # (packet_decode etc.) added later in the session. A stale entry in
+        # sys.modules shadows the fresh installed .so for every later
+        # importer in this worker — import succeeds but attributes miss.
+        sys.modules.pop("hydra2_replay_rs", None)
 
 
 @pytest.fixture(scope="session")

@@ -51,6 +51,7 @@ def rust_extension(tmp_path_factory: pytest.TempPathFactory) -> object:
         yield importlib.import_module("hydra2_replay_rs")
     finally:
         sys.path.remove(str(ext_dir))
+        sys.modules.pop("hydra2_replay_rs", None)
 
 
 def _golden_tmpdir(*, walled: bool) -> Path:

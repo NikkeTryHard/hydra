@@ -1,13 +1,14 @@
 """Canonical identity bytes for contract artifacts — shared leaf module.
 
-Cutover (minimal-Python end-state, Phase 1): the RFC 8785 recipe is now owned
-by the flipped ``hydra2.artifacts.canonical.canonical_bytes`` authority
-(Rust-first judge: bridge computes, Python compares; ``ImportError`` →
-Python oracle; mismatch raises). This module keeps its name and signature as
-a thin delegate with no logic; the import stays lazy so contract import time
-still pulls stdlib only (SPEC 1 import-time property preserved). Byte
-equality with the authority holds by construction (same function); digest
-parity on every doc (arrays ~2.8-3.8x / flats ~1.4x Rust-faster evidence).
+Cutover (shrink end-state): the RFC 8785 recipe is owned by the
+``hydra2.artifacts.canonical.canonical_bytes`` authority (Python serializer
+as canon authority — no bytes-returning ``canon_rng`` pyfn exists — with a
+hard bridge judge; ``ImportError`` raises with a ``build-ext`` hint, NO
+oracle fallback). This module keeps its name and signature as a thin
+delegate with no logic; the import stays lazy so contract import time still
+pulls stdlib only (SPEC 1 import-time property preserved). Evidence: canon
+arrays ~2.8-3.8x / flats ~1.4x Rust-faster (linear); digest parity on every
+doc.
 """
 
 from __future__ import annotations

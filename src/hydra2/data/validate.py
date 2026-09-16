@@ -1,21 +1,29 @@
 """Game validation — checklist item 4.
 
-Checks: structure, event order, tile conservation, red,
-legality, calls, scores, termination, trailing.
-Replays through qualified RiichiEnv adapter (WP-03A).
+Hard dependency (shrink end-state): :func:`validate_game` is a thin
+delegate over the Rust bridge (``hydra2_replay_rs.packet_decode``
+``decode_frames_batch`` for the opaque handle, then ``validate_batch``;
+``hydra-feed`` validate owns the 9-check pipeline plus the
+``sha256(canonical({game_id, checks}))`` seal). ``ImportError`` (extension
+not built) raises with a ``build-ext`` hint — NO oracle fallback, never
+silent. Evidence: packet 283/283 + seals migrated (B3). B1/B2 untouched
+(no RNG/Gumbel/randperm here).
+
+Trap-8: the ``RiichiEnvExactSimulator.reset`` probe stays Python (engine
+slice owns it); Rust takes the ``adapter_ok`` flag and labels the skipped
+path ``skipped_adapter_error:NotWired``. :func:`compute_validation_hash`
+is a thin delegate over the hard-Rust digest owner.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
-from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any
 
-from hydra2.artifacts.canonical import canonical_bytes
-from hydra2.contracts.observation import DORA_SENTINEL
+from hydra2.artifacts.digest import of_canonical
+from hydra2.contracts.common import ContractError
 
 if TYPE_CHECKING:
     from hydra2.data.decode import GameRecord
@@ -27,9 +35,10 @@ __all__ = [
     "validate_game",
 ]
 
-# Red tile physical IDs per SPEC 4.1 / tenhou_4p_hanchan_v1 (aka-dora: ids
-# 16/52/88 are the red fives).
+#: Red tile physical IDs per SPEC 4.1 / tenhou_4p_hanchan_v1 (aka-dora: ids
+#: 16/52/88 are the red fives). Kept as data (no bridge replacement).
 RED_TILE_IDS = (16, 52, 88)
+#: Logical tile types. Kept as data (no bridge replacement).
 LOGICAL_TYPES = range(34)
 
 
@@ -50,295 +59,149 @@ class ValidationOutcome:
     checks: dict[str, str]
 
 
-def compute_validation_hash(game_id: str, checks: dict[str, str]) -> str:
-    payload = {"game_id": game_id, "checks": checks}
-    return "sha256:" + hashlib.sha256(canonical_bytes(payload)).hexdigest()
-
-
-def _load_event_schema_ordering() -> dict[str, object]:
-    # Portable schema path: repo_root() marker walk (pyproject.toml/.git) is
-    # invocation-dir independent; importlib.resources fallback is zip/wheel-safe.
-    # Evidence: https://docs.python.org/3/library/importlib.resources.html#files
-    # Evidence: https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html  # noqa: E501  # reason: evidence URL cannot wrap without breaking link
-    from hydra2.config import repo_root
-
-    schema_path = repo_root() / "configs" / "contracts" / "event_schema_v1.json"
-    if not schema_path.is_file():
-        try:
-            import importlib.resources as _ir
-
-            schema_path = Path(
-                str(_ir.files("hydra2") / "configs" / "contracts" / "event_schema_v1.json")
-            )
-        except Exception:  # why-broad: resource probe failed; retry repo path
-            schema_path = repo_root() / "configs" / "contracts" / "event_schema_v1.json"
-    data_obj: object = json.loads(schema_path.read_bytes())
-    if not isinstance(data_obj, dict):
-        raise ValueError("event schema must be object")
-    data: dict[str, object] = cast("dict[str, object]", data_obj)
-    return data
-
-
-_EVENT_SCHEMA_CACHE: dict[str, object] | None = None
-
-
-def _event_schema() -> dict[str, object]:
-    global _EVENT_SCHEMA_CACHE
-    if _EVENT_SCHEMA_CACHE is None:
-        _EVENT_SCHEMA_CACHE = _load_event_schema_ordering()
-    return _EVENT_SCHEMA_CACHE
-
-
-def validate_game(record: GameRecord) -> ValidationOutcome:
-    checks: dict[str, str] = {}
-    # 1. Structure
-    for idx, ev in enumerate(record.events):
-        if not isinstance(ev.get("type"), str):
-            return ValidationOutcome(
-                game_id=record.game_id,
-                object_id=record.object_id,
-                valid=False,
-                error=ValidationError("structure", idx, "missing type"),
-                validation_hash=None,
-                checks=checks,
-            )
-    checks["structure"] = "ok"
-
-    # 2. Event order vs event_schema_v1
+def _require_packet_decode() -> Any:
+    """Import the built ``packet_decode`` bridge surface (fail closed)."""
     try:
-        _ = _event_schema()
-        checks["event_order"] = "ok"
-    except Exception as exc:  # why-broad: schema probe may fail anywhere;
-        # invalid schema quarantines the game, never raises.
-        return ValidationOutcome(
-            game_id=record.game_id,
-            object_id=record.object_id,
-            valid=False,
-            error=ValidationError("event_order", None, f"schema load failed: {exc}"),
-            validation_hash=None,
-            checks=checks,
+        import hydra2_replay_rs as _ext  # pyrefly: ignore[missing-import]
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2_replay_rs extension with packet_decode not importable; "
+            "build the bridge with `pixi run build-ext` before validating games"
+        ) from exc
+    try:
+        return _ext.packet_decode
+    except AttributeError as exc:
+        raise ImportError(
+            "hydra2_replay_rs.packet_decode submodule missing (stale .so); "
+            "rebuild the bridge with `pixi run build-ext`"
+        ) from exc
+
+
+def compute_validation_hash(game_id: str, checks: dict[str, str]) -> str:
+    """Seal over ``{game_id, checks}`` via the hard-Rust digest owner."""
+    return str(of_canonical({"game_id": game_id, "checks": dict(checks)}))
+
+
+def _adapter_ok(record: GameRecord) -> bool:
+    """Trap-8 sim verdict for the Rust ``adapter_ok`` flag (stays Python).
+
+    Only consulted on the wall+actions path; every other path ignores the
+    probe. ``True`` = full ``legality|calls|scores|termination = ok``;
+    ``False`` pins the bridge ``NotWired`` skipped label.
+    """
+    if record.wall_tiles is None:
+        return True
+    if not any(
+        isinstance(ev, dict) and ("action_id" in ev or "action" in ev) for ev in record.events
+    ):
+        return True
+    try:
+        from hydra2.contracts.common import Seat, TileId
+        from hydra2.contracts.rules import rules_manifest_from_payload
+        from hydra2.engines.protocol import WallSchedule, wall_schedule_digest
+        from hydra2.engines.riichienv.adapter import RiichiEnvExactSimulator
+
+        wall_tiles = tuple(TileId(int(t)) for t in record.wall_tiles)
+        wall_sched = WallSchedule(
+            schedule_id=f"wp04b-{record.game_id}",
+            physical_tiles=wall_tiles,
+            digest=wall_schedule_digest(f"wp04b-{record.game_id}", wall_tiles),
         )
+        from hydra2.config import repo_root as _validate_repo_root
 
-    # 3. Tile conservation
-    if record.wall_tiles is not None:
-        wall = record.wall_tiles
-        if len(wall) != 136:
-            return ValidationOutcome(
-                game_id=record.game_id,
-                object_id=record.object_id,
-                valid=False,
-                error=ValidationError("tile_conservation", None, f"wall length {len(wall)} !=136"),
-                validation_hash=None,
-                checks=checks,
-            )
-        if set(wall) != set(range(136)):
-            dup = len(wall) - len(set(wall))
-            missing = set(range(136)) - set(wall)
-            return ValidationOutcome(
-                game_id=record.game_id,
-                object_id=record.object_id,
-                valid=False,
-                error=ValidationError(
-                    "tile_conservation",
-                    None,
-                    f"wall not permutation: dup {dup} missing {sorted(missing)[:5]}",
-                ),
-                validation_hash=None,
-                checks=checks,
-            )
-        for logic in LOGICAL_TYPES:
-            count = sum(1 for t in wall if t // 4 == logic)
-            if count != 4:
-                return ValidationOutcome(
-                    game_id=record.game_id,
-                    object_id=record.object_id,
-                    valid=False,
-                    error=ValidationError(
-                        "tile_conservation", None, f"logical {logic} count {count} !=4"
-                    ),
-                    validation_hash=None,
-                    checks=checks,
+        rules_path = _validate_repo_root() / "configs" / "rules" / "tenhou_4p_hanchan_v1.json"
+        if not rules_path.is_file():
+            try:
+                import importlib.resources as _ir2
+
+                rules_path = Path(
+                    str(_ir2.files("hydra2") / "configs" / "rules" / "tenhou_4p_hanchan_v1.json")
                 )
-        checks["tile_conservation"] = "ok"
-    else:
-        tile_ids: list[int] = []
-        for ev in record.events:
-            for key in ("tile", "pai", "dora", "tiles", "wall", "hand"):
-                v = ev.get(key)
-                if isinstance(v, int) and 0 <= v < 136:
-                    tile_ids.append(v)
-                elif isinstance(v, list):
-                    for x in v:
-                        if isinstance(x, int) and 0 <= x < 136:
-                            tile_ids.append(x)
-        if len(tile_ids) > 0:
-            logical_counts = Counter(t // 4 for t in tile_ids)
-            for logic, cnt in logical_counts.items():
-                if cnt > 4:
-                    return ValidationOutcome(
-                        game_id=record.game_id,
-                        object_id=record.object_id,
-                        valid=False,
-                        error=ValidationError(
-                            "tile_conservation",
-                            None,
-                            f"logical {logic} exceeds 4 copies ({cnt})",
-                        ),
-                        validation_hash=None,
-                        checks=checks,
-                    )
-        checks["tile_conservation"] = "ok"
-
-    # 4. Red identity
-    for idx, ev in enumerate(record.events):
-        _aka1: object = ev.get("is_aka")
-        if _aka1 is None:
-            _aka1 = ev.get("aka")
-        if _aka1 is None:
-            _aka1 = ev.get("red")
-        is_aka: object = _aka1
-        tile = ev.get("tile")
-        if bool(is_aka) and isinstance(tile, int) and tile not in RED_TILE_IDS:
-            return ValidationOutcome(
-                game_id=record.game_id,
-                object_id=record.object_id,
-                valid=False,
-                error=ValidationError("red_identity", idx, f"red flag on non-red {tile}"),
-                validation_hash=None,
-                checks=checks,
-            )
-        if isinstance(tile, int) and tile in RED_TILE_IDS:
-            logic = tile // 4
-            if logic not in (4, 13, 22):
-                return ValidationOutcome(
-                    game_id=record.game_id,
-                    object_id=record.object_id,
-                    valid=False,
-                    error=ValidationError(
-                        "red_identity", idx, f"red id {tile} wrong logical {logic}"
-                    ),
-                    validation_hash=None,
-                    checks=checks,
+            except Exception:  # why-broad: resource probe failed; retry repo
+                rules_path = (
+                    _validate_repo_root() / "configs" / "rules" / "tenhou_4p_hanchan_v1.json"
                 )
-    checks["red_identity"] = "ok"
+        rules_doc_obj: object = json.loads(rules_path.read_bytes())
+        if not isinstance(rules_doc_obj, dict):
+            return False
+        payload_raw: object = rules_doc_obj.get("payload", rules_doc_obj)
+        if not isinstance(payload_raw, dict):
+            return False
+        rules = rules_manifest_from_payload(payload_raw)
+        sim = RiichiEnvExactSimulator()
+        sim.reset(
+            rules=rules,
+            wall=wall_sched,
+            seat_permutation=(Seat(0), Seat(1), Seat(2), Seat(3)),
+        )
+        return True
+    except Exception:  # why-broad: adapter probe may fail anywhere -> skipped
+        return False
 
-    # 5. Legality vs action table + calls + scores + termination
-    has_actions = any("action_id" in ev or "action" in ev for ev in record.events)
-    if record.wall_tiles is not None and has_actions:
-        try:
-            from hydra2.contracts.common import Seat
-            from hydra2.contracts.rules import rules_manifest_from_payload
-            from hydra2.engines.protocol import WallSchedule, wall_schedule_digest
-            from hydra2.engines.riichienv.adapter import RiichiEnvExactSimulator
 
-            wall_sched = WallSchedule(
-                schedule_id=f"wp04b-{record.game_id}",
-                physical_tiles=tuple(int(t) for t in record.wall_tiles),  # type: ignore[arg-type]
-                # reason: wall tuple is object-typed; int raises on misuse
-                digest=wall_schedule_digest(
-                    f"wp04b-{record.game_id}",
-                    tuple(int(t) for t in record.wall_tiles),  # type: ignore[arg-type]
-                    # reason: wall tuple object-typed; int raises on misuse
-                ),
-            )
-            import json as _json
-
-            from hydra2.config import repo_root as _validate_repo_root
-
-            rules_path = _validate_repo_root() / "configs" / "rules" / "tenhou_4p_hanchan_v1.json"
-            if not rules_path.is_file():
-                try:
-                    import importlib.resources as _ir2
-
-                    rules_path = Path(
-                        str(
-                            _ir2.files("hydra2") / "configs" / "rules" / "tenhou_4p_hanchan_v1.json"
-                        )
-                    )
-                except Exception:  # why-broad: resource probe failed; retry repo
-                    rules_path = (
-                        _validate_repo_root() / "configs" / "rules" / "tenhou_4p_hanchan_v1.json"
-                    )
-            rules_doc_obj: object = _json.loads(rules_path.read_bytes())
-            if not isinstance(rules_doc_obj, dict):
-                raise ValueError("rules doc must be object")
-            rules_doc: dict[str, object] = cast("dict[str, object]", rules_doc_obj)
-            payload_raw: object = rules_doc.get("payload", rules_doc)
-            if not isinstance(payload_raw, dict):
-                raise ValueError("rules payload must be object")
-            payload: dict[str, object] = cast("dict[str, object]", payload_raw)
-            rules = rules_manifest_from_payload(payload)
-            sim = RiichiEnvExactSimulator()
-            sim.reset(
-                rules=rules,
-                wall=wall_sched,
-                seat_permutation=(Seat(0), Seat(1), Seat(2), Seat(3)),
-            )
-        except Exception as exc:  # why-broad: adapter probe may fail anywhere;
-            # legality degrades to skipped, never raises.
-            checks["legality"] = f"skipped_adapter_error:{type(exc).__name__}"
-        else:
-            checks["legality"] = "ok"
-            checks["calls"] = "ok"
-            checks["scores"] = "ok"
-            checks["termination"] = "ok"
-    else:
-        for idx, ev in enumerate(record.events):
-            aid = ev.get("action_id")
-            if isinstance(aid, int) and (aid < 0 or aid > 2000):
-                return ValidationOutcome(
-                    game_id=record.game_id,
-                    object_id=record.object_id,
-                    valid=False,
-                    error=ValidationError("legality", idx, f"action_id {aid} out of range"),
-                    validation_hash=None,
-                    checks=checks,
-                )
-        checks["legality"] = "ok"
-        checks["calls"] = "ok"
-        checks["scores"] = "ok"
-        checks["termination"] = "ok"
-
-    # 6. Dora shape check: hard failure if (4,) shim
-    for idx, ev in enumerate(record.events):
-        _d1: object = ev.get("dora_indicators")
-        if _d1 is None:
-            _d1 = ev.get("dora")
-        if _d1 is None:
-            _d1 = ev.get("indicators")
-        dora: object = _d1
-        if isinstance(dora, list) and len(dora) == 4:
-            return ValidationOutcome(
-                game_id=record.game_id,
-                object_id=record.object_id,
-                valid=False,
-                error=ValidationError("dora_shape", idx, "DORA_SHAPE must be (5,), got (4,)"),
-                validation_hash=None,
-                checks=checks,
-            )
-        if isinstance(dora, list) and len(dora) == 5:
-            seen_sentinel = False
-            for v in dora:
-                if v == DORA_SENTINEL:
-                    seen_sentinel = True
-                elif seen_sentinel and v != DORA_SENTINEL:
-                    return ValidationOutcome(
-                        game_id=record.game_id,
-                        object_id=record.object_id,
-                        valid=False,
-                        error=ValidationError("dora_shape", idx, "dora indicators not contiguous"),
-                        validation_hash=None,
-                        checks=checks,
-                    )
-    checks["dora_shape"] = "ok"
-    checks["trailing_data"] = "ok"
-
-    vhash = compute_validation_hash(record.game_id, checks)
+def _invalid(
+    record: GameRecord, error_class: str, event_index: int | None, message: str
+) -> ValidationOutcome:
     return ValidationOutcome(
         game_id=record.game_id,
         object_id=record.object_id,
-        valid=True,
-        error=None,
-        validation_hash=vhash,
+        valid=False,
+        error=ValidationError(error_class, event_index, message),
+        validation_hash=None,
+        checks={},
+    )
+
+
+def validate_game(record: GameRecord) -> ValidationOutcome:
+    """Validate one decoded game via the Rust bridge (fail closed on content).
+
+    Content rejects arrive as invalid outcomes (never raises); only a
+    malformed bridge call itself raises :class:`ContractError`.
+    """
+    packet_decode = _require_packet_decode()
+    try:
+        payload = (
+            "\n".join(
+                json.dumps(ev, separators=(",", ":"), ensure_ascii=False) for ev in record.events
+            )
+            + "\n"
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        return _invalid(record, "structure", None, f"unserializable event: {exc}")
+    try:
+        slots = packet_decode.decode_frames_batch(
+            [payload], [(record.object_id, record.packaged_object_id)]
+        )
+    except ValueError as exc:
+        return _invalid(record, "structure", None, f"decode rejected: {exc}")
+    slot = slots[0]
+    if not slot["ok"]:
+        return _invalid(
+            record,
+            "structure",
+            slot.get("event_index"),
+            str(slot.get("detail")),
+        )
+    try:
+        outs = packet_decode.validate_batch([slot["record"]], _adapter_ok(record))
+    except ValueError as exc:
+        raise ContractError(f"validate rejected for {record.object_id}: {exc}") from exc
+    out = outs[0]
+    error = None
+    if not out["valid"]:
+        raw_index = out.get("event_index")
+        error = ValidationError(
+            str(out.get("error_class") or "structure"),
+            int(raw_index) if raw_index is not None else None,
+            str(out.get("message") or "invalid"),
+        )
+    raw_hash = out.get("validation_hash")
+    checks = {str(k): str(v) for k, v in dict(out.get("checks") or {}).items()}
+    return ValidationOutcome(
+        game_id=str(out["game_id"]),
+        object_id=str(out["object_id"]),
+        valid=bool(out["valid"]),
+        error=error,
+        validation_hash=str(raw_hash) if raw_hash is not None else None,
         checks=checks,
     )
