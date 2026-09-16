@@ -69,11 +69,6 @@ def of_bytes(data: bytes) -> DigestText:
     return sha256_digest(data)
 
 
-def _of_canonical_oracle(value: object) -> DigestText:
-    """Python oracle for :func:`of_canonical` (kept for fallback)."""
-    return _sha256_digest_oracle(canonical_bytes(value))
-
-
 def of_canonical(value: object) -> DigestText:
     """Digest over RFC 8785 canonical bytes of ``value``.
 

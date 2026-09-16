@@ -515,6 +515,20 @@ def validate_encoder_batch(
         )
 
 
+def _oracle_pin_mapping(mapping: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """ImportError-only oracle pin path (single shared copy).
+
+    Torch owns the pins physically (``Tensor.pin_memory`` per plane);
+    Rust ``ring_fill_batch`` bulk-copies the same bytes when the bridge
+    surface is present (no GPU math, verbatim under detach). Runs ONLY
+    when the bridge surface is absent or as a shape precondition.
+    """
+    return {
+        name: tensor.pin_memory()  # type: ignore[attr-defined]  # reason: CPU Tensor.pin_memory; stubs miss
+        for name, tensor in mapping.items()
+    }
+
+
 def _stage_pinned_batch(
     mapping: dict[str, torch.Tensor],
     *,
@@ -544,20 +558,14 @@ def _stage_pinned_batch(
     ring = _ring_native()
     if ring is None:
         # ImportError-only oracle (bridge surface absent).
-        return {
-            name: tensor.pin_memory()  # type: ignore[attr-defined]  # reason: CPU Tensor.pin_memory; stubs miss
-            for name, tensor in mapping.items()
-        }
+        return _oracle_pin_mapping(mapping)
     names = list(mapping.keys())
     srcs = [mapping[name] for name in names]
     for tensor in srcs:
         if not isinstance(tensor, torch.Tensor) or not tensor.is_contiguous():
             # Shape precondition, not a bridge mismatch: strided views stay
             # on the identical oracle path (byte-identical either way).
-            return {
-                name: ten.pin_memory()  # type: ignore[attr-defined]  # reason: CPU Tensor.pin_memory; stubs miss
-                for name, ten in mapping.items()
-            }
+            return _oracle_pin_mapping(mapping)
     # Resource alloc stays outside the Rust try: OOM/RuntimeError propagates
     # raw so the caller's pageable fallback (warn) still owns unpinnable.
     slots = [torch.empty(tensor.shape, dtype=tensor.dtype, pin_memory=True) for tensor in srcs]
@@ -577,10 +585,7 @@ def _stage_pinned_batch(
         raise
     except (ImportError, AttributeError):
         # Bridge surface vanished mid-call → identical oracle pin path.
-        return {
-            name: tensor.pin_memory()  # type: ignore[attr-defined]  # reason: CPU Tensor.pin_memory; stubs miss
-            for name, tensor in mapping.items()
-        }
+        return _oracle_pin_mapping(mapping)
     except (ValueError, BufferError) as exc:
         raise ContractError(str(exc)) from exc
     except Exception as exc:

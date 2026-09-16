@@ -86,6 +86,12 @@ def _hash_file_stream(path: Path) -> str:
 
     Evidence: https://docs.python.org/3/library/hashlib.html chunked update
     pattern avoids loading entire shard via read_bytes().
+
+    Note (mp-endstate deletion): the ``_sha256_file_chunked``
+    backward-compat alias was deleted (zero non-self callers repo-wide);
+    this function is the sole chunked-hash helper. Rust owner for file
+    hashing is ``canon_rng.sha256_file`` (bridge); this loader keeps the
+    Python oracle as the live path (no bridge call wired here).
     """
     hasher = hashlib.sha256()
     # 1 MiB chunks: iter(lambda: f.read(1<<20), b"") keeps peak ~1 MiB.
@@ -93,16 +99,6 @@ def _hash_file_stream(path: Path) -> str:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             hasher.update(chunk)
     return "sha256:" + hasher.hexdigest()
-
-
-def _sha256_file_chunked(path: Path) -> str:
-    """Stream hash via 1 MiB chunks.
-
-    Evidence: https://docs.python.org/3/library/hashlib.html chunked update
-    pattern avoids loading entire shard via read_bytes().
-    Backward-compat alias for _hash_file_stream.
-    """
-    return _hash_file_stream(path)
 
 
 def verify_and_load_batch(
