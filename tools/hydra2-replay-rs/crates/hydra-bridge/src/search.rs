@@ -337,15 +337,16 @@ mod search_tests {
     fn single_detach_discipline() {
         // Single-consume shape assert: the arena act runs under exactly ONE
         // detach per call (never per-node attach); pure gates run inside
-        // the same detached half in-process.
-        let calls = Cell::new(0u32);
+        // the same detached half in-process. Atomic counter: Cell is not
+        // Ungil (Sync), so the detached closure uses an AtomicU32.
+        let calls = std::sync::atomic::AtomicU32::new(0);
         Python::attach(|py| {
             py.detach(|| {
                 assert!(check_act_args(4, 4, 2).is_ok());
                 assert!(check_budget_args(8, 4, 5000).is_ok());
-                calls.set(calls.get() + 1);
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             });
         });
-        assert_eq!(calls.get(), 1);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }

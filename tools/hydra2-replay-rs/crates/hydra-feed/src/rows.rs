@@ -1711,6 +1711,23 @@ mod tests {
             .canonical_bytes_without_id()
             .unwrap()
             .starts_with(b"{\"canonical_jsonl\":"));
+        // File-head pin: JCS-only out lines open canonical_jsonl-first,
+        // parse order-insensitively, and verify green (locks the canon
+        // render against a serde_json struct-order regression).
+        let out_str = dir.to_str().unwrap().to_owned();
+        let (_, out_path, n) = hook_write_manifest(&out_str, &paths[0], &first);
+        assert_eq!(n, 3);
+        let rendered = std::fs::read_to_string(&out_path).unwrap();
+        let head = rendered.lines().next().unwrap();
+        assert!(
+            head.starts_with("{\"canonical_jsonl\":"),
+            "JCS manifest head must be canonical_jsonl-first, got {:?}",
+            &head[..head.len().min(48)]
+        );
+        for line in rendered.lines() {
+            let value: serde_json::Value = serde_json::from_str(line).unwrap();
+            parse_packaged_row(&value).unwrap().verify_seal().unwrap();
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
