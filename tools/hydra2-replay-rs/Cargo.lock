@@ -634,6 +634,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "hydra-search"
+version = "0.1.0"
+dependencies = [
+ "hydra-feed",
+ "rand",
+ "rand_philox",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "hydra-shard"
 version = "0.1.0"
 dependencies = [
@@ -659,6 +671,7 @@ dependencies = [
  "arrow-array",
  "arrow-schema",
  "hydra-feed",
+ "hydra-search",
  "hydra-shard",
  "pyo3",
 ]

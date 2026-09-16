@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/hydra-feed", "crates/hydra-shard", "crates/hydra-bridge"]
+members = ["crates/hydra-feed", "crates/hydra-shard", "crates/hydra-bridge", "crates/hydra-search"]
 resolver = "2"
 
 [profile.release]
