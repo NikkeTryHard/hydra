@@ -102,14 +102,28 @@ def _check_fresh(ext_file: str) -> None:
         here = str(Path.cwd().resolve())
         # Same-checkout test: sidecar root must live under the caller's
         # checkout (worktree root = parent of the first ``.pixi`` hit, else
-        # the cwd itself). Cross-checkout imports skip the check.
+        # the cwd itself). Cross-checkout imports skip the check. Narrowed
+        # to the REAL stale-bridge shape: the sidecar must sit beside an
+        # installed ``.so`` inside a ``.pixi`` env (``pixi run build-ext``
+        # output). Tmp-fixture sidecars (bare ``build.json`` next to a fake
+        # ``.so`` with no ``.pixi`` ancestor) always get the full freshness
+        # comparison — otherwise the staleness unit test cannot fail closed.
         anchor = here
         for parent in [here, *list(Path(here).parents)]:
             if (Path(parent) / ".pixi").is_dir():
                 anchor = parent
                 break
-        if Path(root).resolve() != Path(anchor, "tools/hydra2-replay-rs/crates").resolve():
-            # Different checkout (or relocated tree): not our build to judge.
+        root_path = Path(root)
+        anchor_path = Path(anchor, "tools/hydra2-replay-rs/crates")
+        ext_in_pixi = ".pixi" in Path(ext_file).parts
+        if (
+            ext_in_pixi
+            and root_path.is_absolute()
+            and anchor_path.is_absolute()
+            and root_path.resolve() != anchor_path.resolve()
+        ):
+            # Different checkout's installed env (or relocated tree): not our
+            # build to judge.
             _FRESH_CHECKED.add(ext_file)
             return
     except OSError:
