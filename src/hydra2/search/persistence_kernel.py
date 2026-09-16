@@ -20,109 +20,23 @@ from __future__ import annotations
 import hashlib
 import math
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Literal
 
 from hydra2.artifacts.canonical import canonical_bytes
 from hydra2.contracts.common import ContractError, DigestText, make_digest_text
 
-if TYPE_CHECKING:
-    from hydra2.eval.telemetry import ResourceTelemetry
-
 try:
     from hydra2.search.common import (
         DEPLOYABLE_DEADLINE_MS,
-        MISSING_HASH,
-        PLACEHOLDER_1,
-        PLACEHOLDER_2,
-        PLACEHOLDER_A,
-        PLACEHOLDER_B,
-        PLACEHOLDER_C,
-        PLACEHOLDER_D,
-        PLACEHOLDER_E,
-        PLACEHOLDER_F,
-        REPO_ROOT,
         CandidateSpec,
-        ResourceBudget,
-        SearchRequest,
-        SearchResult,
     )
 
     _COMMON_AVAILABLE = True
-except ImportError:
-    _COMMON_AVAILABLE = False
-
-    DEPLOYABLE_DEADLINE_MS = 5000  # type: ignore[no-redef]
-    MISSING_HASH = "0" * 64  # type: ignore[no-redef]
-    PLACEHOLDER_A = "a" * 64  # type: ignore[no-redef]
-    PLACEHOLDER_B = "b" * 64  # type: ignore[no-redef]
-    PLACEHOLDER_C = "c" * 64  # type: ignore[no-redef]
-    PLACEHOLDER_D = "d" * 64  # type: ignore[no-redef]
-    PLACEHOLDER_E = "e" * 64  # type: ignore[no-redef]
-    PLACEHOLDER_F = "f" * 64  # type: ignore[no-redef]
-    PLACEHOLDER_1 = "1" * 64  # type: ignore[no-redef]
-    PLACEHOLDER_2 = "2" * 64  # type: ignore[no-redef]
-    # Portable repo root via marker walk (pyproject.toml/.git), not parents[3] brittle depth.
-    # Evidence: https://docs.python.org/3/library/pathlib.html#pathlib.Path.resolve
-    # Evidence: https://github.com/fsspec/universal_pathlib + https://github.com/tox-dev/platformdirs
-    # Evidence: https://docs.python.org/3/library/importlib.resources.html
-    # Legacy: previously __import__("pathlib").Path(__file__).resolve().parents[3].
-    from pathlib import Path  # noqa: TC003, I001 — runtime Path for REPO_ROOT
-    from hydra2.config import repo_root  # portable marker walk, cached
-
-    REPO_ROOT: Path = repo_root()  # type: ignore[no-redef]
-
-    @dataclass(frozen=True, slots=True)
-    class ResourceBudget:
-        mode: str = "gameplay_5s"
-        deadline_ms: int = DEPLOYABLE_DEADLINE_MS
-        fallback_margin_ms: int = 500
-        max_model_calls: int | None = 32
-        max_transitions: int | None = 128
-        max_particles: int | None = 32
-        max_memory_bytes: int | None = None
-
-    @dataclass(frozen=True, slots=True)
-    class CandidateSpec:
-        candidate_id: str = "persistence-B"
-        algorithm: str = "persistence_factorial"
-        algorithm_version: str = "1.0.0"
-        # dummy-until-real: pilot default, replaced by _canonical_hashes/caller before commit.
-        rules_hash: str = "sha256:" + PLACEHOLDER_A
-        utility_id: str = "expected_final_placement"
-        utility_manifest_hash: str = "sha256:" + PLACEHOLDER_B
-        action_table_hash: str = "sha256:" + PLACEHOLDER_C
-        observation_schema_hash: str = "sha256:" + PLACEHOLDER_D
-        packet_boundary_hash: str = "sha256:" + PLACEHOLDER_E
-        model_hash: str = "sha256:" + PLACEHOLDER_F
-        belief_model_hash: str | None = None
-        event_model_hash: str | None = None
-        continuation_policy_hashes: tuple[str, ...] = ()
-        proposal_spec_hash: str | None = None
-        case_manifest_hash: str = "sha256:" + MISSING_HASH
-        resource_budget: ResourceBudget = field(default_factory=ResourceBudget)
-        fallback_candidate_id: str = "candidate0"
-        tie_break: str = "greedy"
-        rng_protocol_hash: str = "sha256:" + PLACEHOLDER_1
-        random_stream_schema_hash: str = "sha256:" + PLACEHOLDER_2
-        parameters: dict[str, Any] = field(default_factory=dict)
-
-    @dataclass(frozen=True, slots=True)
-    class SearchRequest:
-        observation: Any
-        legal_actions: tuple[Any, ...]
-        candidate_spec: CandidateSpec
-        deadline_monotonic_ns: int
-        belief_epoch: Any | None = None
-
-    @dataclass(frozen=True, slots=True)
-    class SearchResult:
-        selected_action: Any
-        candidate_actions: tuple[Any, ...]
-        value_vectors: tuple[Any, ...]
-        candidate_spec_hash: str
-        telemetry: ResourceTelemetry
-        evidence_refs: tuple[str, ...]
-        completed: bool
+except ImportError as exc:
+    raise ImportError(
+        "hydra2.search.common is required for persistence_kernel; "
+        "the minimal-contract fallback was removed (single authority is search.common)"
+    ) from exc
 
 
 __all__ = [

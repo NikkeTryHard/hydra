@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import subprocess
 import sys
@@ -82,23 +81,19 @@ def _load_manifest(manifest_path: Path) -> DatasetManifest:
 
 
 def _hash_file_stream(path: Path) -> str:
-    """Stream hash via 1 MiB chunks — helper alias for spec.
+    """Shard digest via the hard-Rust digest owner (bridge judge).
 
-    Evidence: https://docs.python.org/3/library/hashlib.html chunked update
-    pattern avoids loading entire shard via read_bytes().
-
-    Note (mp-endstate deletion): the ``_sha256_file_chunked``
-    backward-compat alias was deleted (zero non-self callers repo-wide);
-    this function is the sole chunked-hash helper. Rust owner for file
-    hashing is ``canon_rng.sha256_file`` (bridge); this loader keeps the
-    Python oracle as the live path (no bridge call wired here).
+    Thin delegate over :func:`hydra2.artifacts.digest.sha256_file`
+    (``canon_rng.sha256_file`` detached batch path, native 1 MiB chunks —
+    same digest, byte-identical). ``ImportError`` (extension not built)
+    raises with a ``build-ext`` hint — NO oracle fallback, never silent.
+    Missing/unreadable shards raise ``OSError`` (bridge ``PyOSError``),
+    which the caller maps to :class:`CorruptArtifactError` — the same
+    contract the ``hashlib`` oracle had.
     """
-    hasher = hashlib.sha256()
-    # 1 MiB chunks: iter(lambda: f.read(1<<20), b"") keeps peak ~1 MiB.
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            hasher.update(chunk)
-    return "sha256:" + hasher.hexdigest()
+    from hydra2.artifacts.digest import sha256_file as _bridge_sha256_file
+
+    return str(_bridge_sha256_file(path))
 
 
 def verify_and_load_batch(
@@ -119,9 +114,9 @@ def verify_and_load_batch(
     corrupt shard ignored (must raise).
 
     Perf:
-    - Shard hashes via 1 MiB chunked streaming + per-path cache avoids
+    - Shard hashes via the bridge digest judge (``artifacts.digest``
+      ``sha256_file``, native 1 MiB chunks) + per-path cache avoids
       rehashing same actor_parquet when fallback missing.
-      Evidence https://docs.python.org/3/library/hashlib.html
     - Zero-copy IPC-mmap-first: pq.read_table(..., memory_map=True,
       pre_buffer=True, use_threads=True) + table.slice(0, batch_size) +
       to_batches column pull (record batches over the mmap); to_pydict is

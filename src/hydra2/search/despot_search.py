@@ -123,94 +123,59 @@ class NaturalDespotPlannerSearchMixin:
     ) -> tuple[NaturalScenario, ...]:
         """Sample ``k`` natural scenarios (world, semantic seed) deterministically.
 
-        When a real ``NaturalBelief`` and epoch are available, worlds are drawn
-        via ``sample_natural`` with deterministic per-scenario seeds. Otherwise
-        a deterministic synthetic world set is used so unit tests remain
-        self-contained. In both paths:
-        - weight is uniform 1/K,
-        - log_target == log_proposal,
-        - no proposal distribution is consulted.
+        Real ``NaturalBelief`` and epoch required; no synthetic fallback.
+        Weight is uniform 1/K, log_target == log_proposal, no proposal used.
         """
         if not isinstance(k, int) or isinstance(k, bool) or k <= 0:
             raise ContractError("k must be positive int")
+        if not _HAS_BELIEF or self._belief is None or belief_epoch is None:
+            raise ContractError("despot: belief and epoch required; synthetic worlds removed")
         weight = 1.0 / k
         logp = -math.log(k)
         scenarios: list[NaturalScenario] = []
-        # Try real belief path
-        if _HAS_BELIEF and self._belief is not None and belief_epoch is not None:
-            try:
-                # Use belief to enumerate corpus worlds deterministically
-                # Sample one particle per scenario using deterministic seeds
-                # We don't use global RNG; we derive per-scenario seed and sample
-                # via hashlib index.
-                from hydra2.contracts.randomness import RandomStream
+        try:
+            # Use belief to enumerate corpus worlds deterministically
+            # Sample one particle per scenario using deterministic seeds
+            # We don't use global RNG; we derive per-scenario seed and sample
+            # via hashlib index.
+            from hydra2.contracts.randomness import RandomStream
 
-                # Per-scenario deterministic streams avoid ledger duplication:
-                # each scenario draws count=1 from an independent stream, so
-                # no scenario shares ledger entries with another.
-                # Fallback to synthetic if any error.
-                for idx in range(k):
-                    seed = _scenario_seed_bytes(
-                        candidate_id=candidate_id, case_id=case_id, scenario_idx=idx
-                    )
-                    # Use RandomStream to sample world index deterministically
-                    rs = RandomStream(seed)
-                    # Corpus size is discovered by sampling, not assumed: draw
-                    # one particle and inspect the belief registry below.
-                    try:
-                        particles: Any = self._belief.sample_natural(belief_epoch, count=1, rng=rs)  # type: ignore[union-attr]
-                        wref: str = cast("str", particles[0].world_ref)
-                    except (AttributeError, ValueError, TypeError, LookupError, OSError) as exc:
-                        logger.debug("despot: synthetic world_ref fallback", exc_info=exc)
-                        # fallback synthetic world_ref
-                        wref = (
-                            "world_synth:"
-                            + hashlib.sha256(
-                                f"{case_id}:{idx}:{candidate_id}".encode()
-                            ).hexdigest()[:16]
-                        )
-                        # validate deterministic
-                    scenarios.append(
-                        NaturalScenario(
-                            scenario_id=idx,
-                            world_ref=wref,
-                            semantic_seed_bytes=seed,
-                            log_target_density=logp,
-                            log_proposal_density=logp,
-                            weight=weight,
-                        )
-                    )
-                return tuple(scenarios)
-            except (
-                AttributeError,
-                ValueError,
-                TypeError,
-                OSError,
-                ImportError,
-                RuntimeError,
-            ) as exc:
-                logger.debug("despot: belief path fallback to synthetic", exc_info=exc)
-                pass  # fall through to synthetic
-        # Synthetic deterministic path (unit-test self-contained)
-        for idx in range(k):
-            seed = _scenario_seed_bytes(
-                candidate_id=candidate_id, case_id=case_id, scenario_idx=idx
-            )
-            wref = (
-                "world_synth:"
-                + hashlib.sha256(f"{case_id}:{idx}:{candidate_id}".encode()).hexdigest()[:16]
-            )
-            scenarios.append(
-                NaturalScenario(
-                    scenario_id=idx,
-                    world_ref=wref,
-                    semantic_seed_bytes=seed,
-                    log_target_density=logp,
-                    log_proposal_density=logp,
-                    weight=weight,
+            # Per-scenario deterministic streams avoid ledger duplication:
+            # each scenario draws count=1 from an independent stream, so
+            # no scenario shares ledger entries with another.
+            for idx in range(k):
+                seed = _scenario_seed_bytes(
+                    candidate_id=candidate_id, case_id=case_id, scenario_idx=idx
                 )
-            )
-        return tuple(scenarios)
+                # Use RandomStream to sample world index deterministically
+                rs = RandomStream(seed)
+                try:
+                    particles: Any = self._belief.sample_natural(belief_epoch, count=1, rng=rs)  # type: ignore[union-attr]
+                    wref: str = cast("str", particles[0].world_ref)
+                except (AttributeError, ValueError, TypeError, LookupError, OSError) as exc:
+                    raise ContractError(f"despot: belief sampling failed: {exc}") from exc
+                scenarios.append(
+                    NaturalScenario(
+                        scenario_id=idx,
+                        world_ref=wref,
+                        semantic_seed_bytes=seed,
+                        log_target_density=logp,
+                        log_proposal_density=logp,
+                        weight=weight,
+                    )
+                )
+            return tuple(scenarios)
+        except ContractError:
+            raise
+        except (
+            AttributeError,
+            ValueError,
+            TypeError,
+            OSError,
+            ImportError,
+            RuntimeError,
+        ) as exc:
+            raise ContractError(f"despot: belief path failed: {exc}") from exc
 
     # -- lower policy value (feasible, not bound) --------------------------
 

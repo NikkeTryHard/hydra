@@ -23,8 +23,6 @@ from hydra2.contracts.common import ContractError, DigestText, make_digest_text
 from hydra2.search.common import (
     DEPLOYABLE_DEADLINE_MS,
     HASH63_MOD,
-    MISSING_HASH,
-    PLACEHOLDER_1,
     REPO_ROOT,
 )
 
@@ -153,8 +151,9 @@ def _load_default_hashes() -> dict[str, str]:
         ("model_input_hash", "configs/models/model_input_v1.json"),
     ):
         p = repo / rel
-        # dummy-until-real: file hash wins when the config is present.
-        out[key] = _file_sha256(p) if p.exists() else "sha256:" + MISSING_HASH
+        if not p.exists():
+            raise ContractError(f"candidate0: required config missing: {p}")
+        out[key] = _file_sha256(p)
     # Try to upgrade to canonical contract digests where modules available
     try:
         from hydra2.contracts.observation import observation_schema_digest
@@ -260,19 +259,20 @@ def make_candidate0_spec(
     from hydra2.search.common import CandidateSpec, ResourceBudget
 
     defaults = _load_default_hashes()
-    # Utility manifest: derive from Synthetic golden manifest identical to model init
+    # Utility manifest: live model digest required; no placeholder fallback.
     if utility_manifest_hash is None:
         try:
             from hydra2.models.model import Hydra2BaselineModel
 
             probe: Any = Hydra2BaselineModel() if model is None else model
-            # dummy-until-real: live model digest wins when available.
-            probe_hash_raw: Any = getattr(probe, "utility_manifest_hash", "sha256:" + MISSING_HASH)
+            probe_hash_raw: Any = getattr(probe, "utility_manifest_hash", None)
+            if probe_hash_raw is None or str(probe_hash_raw) == "":
+                raise ContractError("candidate0: utility_manifest_hash missing from model")
             utility_manifest_hash = str(probe_hash_raw)
+        except ContractError:
+            raise
         except (ImportError, AttributeError, ValueError, TypeError, OSError) as exc:
-            logger.debug("candidate0: utility_manifest_hash fallback", exc_info=exc)
-            # dummy-until-real: live model digest wins when available.
-            utility_manifest_hash = "sha256:" + PLACEHOLDER_1
+            raise ContractError(f"candidate0: utility_manifest_hash required: {exc}") from exc
         rules_hash = defaults["rules_hash"]
         # Prefer verified manifest digest when file contains envelope
         try:

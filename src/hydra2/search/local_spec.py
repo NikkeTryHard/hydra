@@ -172,7 +172,7 @@ def _load_default_hashes() -> dict[str, str]:
     from pathlib import Path
 
     from hydra2.config import repo_root
-    from hydra2.search.common import MISSING_HASH, _require_real_file
+    from hydra2.search.common import _require_real_file
 
     repo = repo_root()
     out: dict[str, str] = {}
@@ -194,10 +194,11 @@ def _load_default_hashes() -> dict[str, str]:
                 logger.debug("local_resolving: rules manifest fallback", exc_info=exc)
                 out["rules_hash"] = _file_sha256(p)
         else:
-            out["rules_hash"] = "sha256:" + MISSING_HASH
-    except (OSError, ValueError, TypeError, ContractError, json.JSONDecodeError) as exc:
-        logger.debug("local_resolving: rules_hash fallback", exc_info=exc)
-        out["rules_hash"] = "sha256:" + MISSING_HASH
+            raise ContractError("local_resolving: required rules config missing")
+    except ContractError:
+        raise
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise ContractError(f"local_resolving: rules_hash required: {exc}") from exc
     for key, rel in [
         ("action_table_hash", "configs/contracts/action_table_v1.json"),
         ("observation_schema_hash", "configs/contracts/observation_schema_v1.json"),
@@ -206,8 +207,7 @@ def _load_default_hashes() -> dict[str, str]:
         try:
             out[key] = _file_sha256(repo / rel)
         except (OSError, ValueError, TypeError, ContractError) as exc:
-            logger.debug("local_resolving: %s fallback", key, exc_info=exc)
-            out[key] = "sha256:" + MISSING_HASH
+            raise ContractError(f"local_resolving: {key} required: {exc}") from exc
     return out
 
 

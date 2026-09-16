@@ -138,19 +138,17 @@ class GumbelSearchPlannerActMixin(GumbelSearchPlannerSearchMixin):
             _dec2: Any | None = getattr(request.observation, "decision_id", None)
             case_id = _dec2 if isinstance(_dec2, str) and _dec2 != "" else "case_default"
         candidate_id = getattr(request.candidate_spec, "candidate_id", self._config.candidate_id)
-        if _HAS_RANDOM:
-            try:
-                from hydra2.contracts.randomness import RandomStream
+        # Deterministic counter-based stream required; no secrets fallback.
+        if not _HAS_RANDOM:
+            raise ContractError("gumbel: hydra2.contracts.randomness required; no secrets fallback")
+        try:
+            from hydra2.contracts.randomness import RandomStream
 
-                epoch_id = str(getattr(belief_epoch, "epoch", "0"))
-                seed = hashlib.sha256(f"{candidate_id}:{case_id}:{epoch_id}".encode()).digest()
-                rng = RandomStream(seed)
-            except Exception:
-                rng = RandomStream(hashlib.sha256(f"{candidate_id}:{case_id}".encode()).digest())  # type: ignore[call-arg]
-        else:
-            import secrets as _secrets
-
-            rng = _secrets.token_bytes(32)
+            epoch_id = str(getattr(belief_epoch, "epoch", "0"))
+            seed = hashlib.sha256(f"{candidate_id}:{case_id}:{epoch_id}".encode()).digest()
+            rng = RandomStream(seed)
+        except Exception as exc:
+            raise ContractError(f"gumbel: deterministic RNG required: {exc}") from exc
 
         # Probe framing must never break the oracle below (best-effort ids).
         try:
@@ -180,23 +178,13 @@ class GumbelSearchPlannerActMixin(GumbelSearchPlannerSearchMixin):
             case_id=str(case_id),
         )
 
+        # Typed telemetry required; no dict/NEVER-bind fallback.
         try:
             from hydra2.contracts.utility import UtilityVector as _UV
             from hydra2.eval.telemetry import make_resource_telemetry as _mrt
             from hydra2.search.common import candidate_spec_hash as _csh
-        except Exception:
-            return SearchResult(
-                selected_action=res["selected_action"],
-                candidate_actions=res["candidate_actions"],
-                value_vectors=res["value_vectors"],
-                # NEVER-bind: fallback digest, not a verified binding.
-                candidate_spec_hash=getattr(
-                    request.candidate_spec, "candidate_spec_hash", "sha256:" + "a" * 64
-                ),
-                telemetry=res["telemetry"],
-                evidence_refs=(),
-                completed=res["completed"],
-            )
+        except Exception as exc:
+            raise ContractError(f"gumbel: typed telemetry contract required: {exc}") from exc
 
         u_vectors: list[Any] = []
         for vec in res["value_vectors"]:
@@ -230,9 +218,8 @@ class GumbelSearchPlannerActMixin(GumbelSearchPlannerSearchMixin):
                 u_vectors.append(vec)
         try:
             spec_hash = _csh(request.candidate_spec)  # type: ignore[call-arg]
-        except Exception:
-            # NEVER-bind: fallback digest, not a verified binding.
-            spec_hash = "sha256:" + "a" * 64
+        except Exception as exc:
+            raise ContractError(f"gumbel: candidate_spec_hash required: {exc}") from exc
         try:
             telem = _mrt(
                 mode=str(getattr(request.candidate_spec.resource_budget, "mode", "gameplay_5s")),
@@ -259,8 +246,10 @@ class GumbelSearchPlannerActMixin(GumbelSearchPlannerSearchMixin):
                 recompiles=None,
                 invalid_reason=None,
             )
-        except Exception:
-            telem = res["telemetry"]
+        except ContractError:
+            raise
+        except Exception as exc:
+            raise ContractError(f"gumbel: typed telemetry build failed: {exc}") from exc
         return SearchResult(
             selected_action=res["selected_action"],
             candidate_actions=tuple(res["candidate_actions"]),

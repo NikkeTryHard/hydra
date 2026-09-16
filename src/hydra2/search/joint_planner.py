@@ -125,79 +125,30 @@ class JointTypeWorldPlanner(Planner):  # type: ignore[misc]
                     return self._joint_posterior
             except Exception:
                 pass
-        # Build belief epoch and tiny corpus — initialize belief to avoid unbound
-        belief: Any = None
-        if _HAS_BELIEF:
-            from hydra2.belief.natural import NaturalBelief as _NB
+        # Build belief epoch and tiny corpus — real belief required; no synthetic fallback.
+        if not _HAS_BELIEF:
+            raise ContractError("joint: belief required; synthetic worlds removed")
+        from hydra2.belief.natural import NaturalBelief as _NB
 
-            belief = _NB()
-            epoch = belief.begin(observation)
-            # Use belief's tiny corpus builder via side-effect of sample_natural count
-            # Instead we directly use private _build_tiny_corpus_for_epoch
-            try:
-                from hydra2.belief.natural import (
-                    _build_tiny_corpus_for_epoch,
-                )
-
-                worlds = _build_tiny_corpus_for_epoch(epoch, registry={})
-            except Exception:
-                # Fallback: generate 2 tiny worlds with fixed tiles
-                from hydra2.belief.world import make_full_world as _mfw
-
-                worlds = [
-                    _mfw(
-                        concealed_hands=((0, 1), (2, 3), (4, 5), (6, 7)),
-                        live_wall=tuple(range(8, 40)),
-                        dead_wall=(),
-                        rules_hash="sha256:" + "a" * 64,
-                        observation_hash=getattr(
-                            observation, "observation_hash", "sha256:" + "0" * 64
-                        ),
-                    ),
-                    _mfw(
-                        concealed_hands=((0, 1), (4, 5), (2, 3), (6, 7)),
-                        live_wall=tuple(range(8, 40)),
-                        dead_wall=(),
-                        rules_hash="sha256:" + "a" * 64,
-                        observation_hash=getattr(
-                            observation, "observation_hash", "sha256:" + "0" * 64
-                        ),
-                    ),
-                ]
-        else:
-            # Minimal fallback without belief module
-            from hydra2.belief.world import (
-                make_full_world as _mfw,
+        belief: Any = _NB()
+        epoch = belief.begin(observation)
+        # Use belief's tiny corpus builder via side-effect of sample_natural count
+        # Instead we directly use private _build_tiny_corpus_for_epoch
+        try:
+            from hydra2.belief.natural import (
+                _build_tiny_corpus_for_epoch,
             )
 
-            worlds = [
-                _mfw(
-                    concealed_hands=((0, 1), (2, 3), (4, 5), (6, 7)),
-                    live_wall=tuple(range(8, 40)),
-                    dead_wall=(),
-                    rules_hash="sha256:" + "a" * 64,
-                    observation_hash=getattr(observation, "observation_hash", "sha256:" + "0" * 64),
-                ),
-                _mfw(
-                    concealed_hands=((0, 1), (4, 5), (2, 3), (6, 7)),
-                    live_wall=tuple(range(8, 40)),
-                    dead_wall=(),
-                    rules_hash="sha256:" + "a" * 64,
-                    observation_hash=getattr(observation, "observation_hash", "sha256:" + "0" * 64),
-                ),
-            ]
-            epoch = None
+            worlds = _build_tiny_corpus_for_epoch(epoch, registry={})
+        except Exception as exc:
+            raise ContractError(f"joint: belief corpus build failed: {exc}") from exc
         # Limit to max_particles // num_theta worlds
         max_worlds = max(1, self.config.max_particles // max(1, len(self.config.theta_ids)))
         worlds = worlds[:max_worlds]
         self._worlds_by_ref = {w.world_id: w for w in worlds}
-        # Need target_id for particles
-        if epoch is not None:
-            target_id = str(getattr(epoch, "target_id", "sha256:" + "f" * 64))
-            epoch_id = int(getattr(epoch, "epoch", 0))
-        else:
-            target_id = "sha256:" + "f" * 64
-            epoch_id = 0
+        # Need target_id for particles (real epoch required)
+        target_id = str(getattr(epoch, "target_id", "sha256:" + "f" * 64))
+        epoch_id = int(getattr(epoch, "epoch", 0))
         num_theta = len(self.config.theta_ids)
         num_world = len(worlds)
         total = num_theta * num_world
@@ -221,7 +172,7 @@ class JointTypeWorldPlanner(Planner):  # type: ignore[misc]
             theta_ids=tuple(self.config.theta_ids),
             normalized=True,
         )
-        self._belief = belief if _HAS_BELIEF else None
+        self._belief = belief
         self._epoch = epoch
         self._joint_posterior = posterior
         return posterior

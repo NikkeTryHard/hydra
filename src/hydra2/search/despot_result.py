@@ -15,12 +15,12 @@ import time
 from typing import Any, cast
 
 from hydra2.artifacts.canonical import canonical_bytes
+from hydra2.search.common import SearchResult as SearchResult
 from hydra2.search.despot_core import _COMMON_AVAILABLE as _COMMON_AVAILABLE
 from hydra2.search.despot_core import _HAS_TELEMETRY as _HAS_TELEMETRY
 from hydra2.search.despot_core import _HAS_UTILITY as _HAS_UTILITY
 from hydra2.search.despot_core import DespotConfig as DespotConfig
 from hydra2.search.despot_core import ResourceTelemetry as ResourceTelemetry
-from hydra2.search.despot_core import SearchResult as SearchResult
 from hydra2.search.despot_core import UtilityVector as UtilityVector
 from hydra2.search.despot_core import _DespotNode as _DespotNode
 from hydra2.search.despot_search import (

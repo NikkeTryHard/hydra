@@ -79,97 +79,22 @@ __all__ = [
 
 # ---------------------------------------------------------------------------
 # Shared search contract lives in common.py, which is authoritative.
-# The fallback below stays for offline/unit testability without the full
-# contract stack.
+# The import below raises when common.py is unavailable (single authority;
+# no minimal-contract fallback).
 # ---------------------------------------------------------------------------
 
-try:  # shared contracts live in common.py
+try:  # shared contracts live in common.py (single authority)
     from hydra2.search.common import (
         CandidateSpec,
-        Planner,
         ResourceBudget,
-        SearchRequest,
-        SearchResult,
     )
 
     _COMMON_AVAILABLE = True
-except ImportError:  # fallback minimal contracts compatible with SPEC 15
-    _COMMON_AVAILABLE = False
-
-    @dataclass(frozen=True, slots=True)
-    class ResourceBudget:
-        mode: Literal["gameplay_5s", "ponder", "analysis"] = "gameplay_5s"
-        deadline_ms: int = 5000
-        fallback_margin_ms: int = 200
-        max_model_calls: int | None = 32
-        max_transitions: int | None = 128
-        max_particles: int | None = 64
-        max_memory_bytes: int | None = None
-
-        def __post_init__(self) -> None:
-            if self.deadline_ms <= 0:
-                raise ValueError("deadline_ms must be positive")
-            if self.fallback_margin_ms < 0 or self.fallback_margin_ms >= self.deadline_ms:
-                raise ValueError("fallback_margin_ms must be in [0, deadline_ms)")
-            for name in ("max_model_calls", "max_transitions", "max_particles"):
-                v = getattr(self, name)
-                if v is not None and (not isinstance(v, int) or isinstance(v, bool) or v <= 0):
-                    raise ValueError(f"{name} must be positive int or None")
-
-    @dataclass(frozen=True, slots=True)
-    class CandidateSpec:
-        candidate_id: str
-        algorithm: str = "despot_natural"
-        algorithm_version: str = "1.0.0"
-        rules_hash: str = "sha256:" + "a" * 64
-        # dummy-until-real: pilot default, replaced by _canonical_hashes/caller before commit.
-        utility_id: str = "expected_final_placement"
-        utility_manifest_hash: str = "sha256:" + "b" * 64
-        action_table_hash: str = "sha256:" + "c" * 64
-        observation_schema_hash: str = "sha256:" + "d" * 64
-        packet_boundary_hash: str = "sha256:" + "e" * 64
-        model_hash: str = "sha256:" + "f" * 64
-        belief_model_hash: str | None = None
-        event_model_hash: str | None = None
-        continuation_policy_hashes: tuple[str, ...] = ()
-        proposal_spec_hash: str | None = None
-        case_manifest_hash: str = "sha256:" + "0" * 64
-        resource_budget: ResourceBudget = field(default_factory=ResourceBudget)
-        fallback_candidate_id: Literal["candidate0"] = "candidate0"
-        tie_break: str = "lexicographic"
-        rng_protocol_hash: str = "sha256:" + "1" * 64
-        random_stream_schema_hash: str = "sha256:" + "2" * 64
-        parameters: dict[str, Any] = field(default_factory=dict)
-
-    @dataclass(frozen=True, slots=True)
-    class SearchRequest:
-        observation: Any
-        legal_actions: tuple[Any, ...]
-        candidate_spec: CandidateSpec
-        deadline_monotonic_ns: int | None = None
-        belief_epoch: Any | None = None
-        case_id: str | None = None
-        root_seat: int | None = None
-
-    @dataclass(frozen=True, slots=True)
-    class SearchResult:
-        selected_action: Any
-        candidate_actions: tuple[Any, ...]
-        value_vectors: tuple[Any, ...]
-        candidate_spec_hash: str
-        telemetry: Any
-        evidence_refs: tuple[str, ...]
-        completed: bool
-
-    class Planner:
-        def act(self, request: SearchRequest) -> SearchResult:  # pragma: no cover
-            raise NotImplementedError
-
-        def observe(self, packet: Any) -> None:  # pragma: no cover
-            pass
-
-        def ponder(self, *, deadline_monotonic_ns: int) -> None:  # pragma: no cover
-            pass
+except ImportError as exc:
+    raise ImportError(
+        "hydra2.search.common is required for despot_core; "
+        "the minimal-contract fallback was removed (single authority is search.common)"
+    ) from exc
 
 # ---------------------------------------------------------------------------
 # Scenario — natural (world, semantic randomness)
@@ -441,18 +366,7 @@ class _DespotNode:
 
 
 def _default_budget() -> Any:
-    """Default gameplay_5s budget for tests (uses common contract when available)."""
-    if _COMMON_AVAILABLE:
-        return ResourceBudget(
-            mode="gameplay_5s",
-            deadline_ms=5000,
-            fallback_margin_ms=200,
-            max_model_calls=64,
-            max_transitions=256,
-            max_particles=16,
-            max_memory_bytes=None,
-        )
-    # fallback local
+    """Default gameplay_5s budget for tests (common contract, single authority)."""
     return ResourceBudget(
         mode="gameplay_5s",
         deadline_ms=5000,
@@ -509,10 +423,6 @@ def make_despot_candidate_spec(
             parameters=params,
         )
     except (AttributeError, ValueError, TypeError) as exc:
-        logger.debug("despot: CandidateSpec fallback minimal", exc_info=exc)
-        # WHY retained: offline/unit tests can build a minimal spec when the
-        # shared contract stack is unavailable; common.py stays authoritative.
-        # Fallback for when common is unavailable (uses local minimal CandidateSpec)
-        return CandidateSpec(  # type: ignore[missing-argument]  # pyrefly: ignore[missing-argument]
-            candidate_id=candidate_id, parameters=params, resource_budget=resource_budget
-        )  # type: ignore[call-arg]  # pyrefly: ignore[missing-argument]
+        raise ContractError(
+            f"despot: CandidateSpec build requires search.common contract: {exc}"
+        ) from exc

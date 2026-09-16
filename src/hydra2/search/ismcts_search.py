@@ -12,7 +12,6 @@ review-size ceiling.
 
 from __future__ import annotations
 
-import hashlib
 from typing import Any
 
 from hydra2.belief.world import make_full_world, world_actor_observation
@@ -227,51 +226,11 @@ class NaturalISMCTSPlannerSearchMixin:
         if self._belief is not None and hasattr(self._belief, "_worlds"):
             try:
                 return self._belief._worlds[particle.world_ref]
-            except Exception:
-                pass
-        # synthetic fallback: create world with deterministic hands from world_ref hash
-        ref = getattr(particle, "world_ref", str(particle))
-        h = hashlib.sha256(ref.encode()).digest()
-        # produce 4 hands of 2 tiles each from hash bytes
-        hands = []
-        for seat in range(4):
-            t0 = h[seat * 2] % 136
-            t1 = h[seat * 2 + 1] % 136
-            if t0 > t1:
-                t0, t1 = t1, t0
-            if t0 == t1:
-                t1 = (t1 + 1) % 136
-                if t0 > t1:
-                    t0, t1 = t1, t0
-            hands.append((t0, t1))
-        # live wall remaining
-        live = tuple(b % 136 for b in h[8:12])
-        latent = {
-            "step": 0,
-            "turn": int(getattr(self._belief_epoch, "root_actor", 0))
-            if self._belief_epoch is not None
-            else 0,
-        }
-        # Need rules_hash etc from epoch if available
-        rules_hash = (
-            getattr(self._belief_epoch, "rules_hash", "sha256:" + "a" * 64)
-            if self._belief_epoch is not None
-            else "sha256:" + "a" * 64
-        )
-        obs_hash = (
-            getattr(self._belief_epoch, "observation_hash", "sha256:" + "b" * 64)
-            if self._belief_epoch is not None
-            else "sha256:" + "b" * 64
-        )
-        return make_full_world(
-            concealed_hands=tuple(hands),
-            live_wall=live,
-            dead_wall=(),
-            latent_state=latent,
-            rules_hash=rules_hash,
-            observation_hash=obs_hash,
-            simulator_snapshot=f"ismcts_synth:{ref}",
-        )
+            except Exception as exc:
+                raise ContractError(
+                    "ismcts: belief world missing for particle; real belief required"
+                ) from exc
+        raise ContractError("ismcts: belief world required; synthetic worlds removed")
 
     def _search_once(
         self,
@@ -282,29 +241,22 @@ class NaturalISMCTSPlannerSearchMixin:
         rng: Any,
         tree: dict[str, InformationSetNode],
     ) -> tuple[Any, tuple[float, float, float, float]]:
-        # Sample natural world
-        if self._belief is not None and epoch is not None and _HAS_BELIEF:
-            try:
-                particles: Any = self._belief.sample_natural(epoch, count=1, rng=rng)  # type: ignore[union-attr]  # pyrefly: ignore[explicit-any]
-                particle: Any = particles[0]  # pyrefly: ignore[explicit-any]
-                # verify natural ratio one
-                if particle.log_target_density != particle.log_proposal_density:
-                    raise ContractError("natural world must have log_target == log_proposal")
-                if particle.source != "natural":
-                    raise ContractError("ISMCTS natural may only use natural particles")
-                cur_world = self._world_for_particle(particle)
-            except Exception as exc:
-                if isinstance(exc, ContractError):
-                    raise
-                # fallback synthetic
-                h = hashlib.sha256(f"{epoch}:{self._config.candidate_id}:{rng}".encode()).digest()
-                cur_world = self._world_for_particle(type("P", (), {"world_ref": h.hex()[:16]})())
-        else:
-            # Self-contained synthetic world (no belief)
-            h = hashlib.sha256(
-                f"{getattr(root_obs, 'observation_hash', '')}:{self._config.candidate_id}".encode()
-            ).digest()
-            cur_world = self._world_for_particle(type("P", (), {"world_ref": h.hex()[:16]})())
+        # Sample natural world — real belief required; no synthetic fallback.
+        if self._belief is None or epoch is None or not _HAS_BELIEF:
+            raise ContractError("ismcts: belief and epoch required; synthetic worlds removed")
+        try:
+            particles: Any = self._belief.sample_natural(epoch, count=1, rng=rng)  # type: ignore[union-attr]  # pyrefly: ignore[explicit-any]
+            particle: Any = particles[0]  # pyrefly: ignore[explicit-any]
+            # verify natural ratio one
+            if particle.log_target_density != particle.log_proposal_density:
+                raise ContractError("natural world must have log_target == log_proposal")
+            if particle.source != "natural":
+                raise ContractError("ISMCTS natural may only use natural particles")
+            cur_world = self._world_for_particle(particle)
+        except ContractError:
+            raise
+        except Exception as exc:
+            raise ContractError(f"ismcts: belief sampling failed: {exc}") from exc
 
         root_seat = (
             int(getattr(epoch, "root_actor", getattr(root_obs, "actor", 0)))

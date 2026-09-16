@@ -10,12 +10,11 @@ the ``fetch_game_at`` fail-closed single-game fetch.
 from __future__ import annotations
 
 import hashlib
-import importlib
 import random  # noqa: TC003  # reason: TC003 random.Random builds RNGs at runtime in _ShuffleState
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import zstandard as zstd
 
@@ -47,79 +46,13 @@ _END_TYPES = frozenset({"end_game", "endGame", "game_end", "end"})
 _CHUNK_SIZE = 65536
 _DIGIT_RUN = re.compile(r"[0-9]+")
 
-#: Bridge packet-surface probe cache (M5-locked import order). ``None`` once
-#: probed means the bridge is unavailable — the Python oracle below is the
-#: live path (byte-exact ingest evidence: packet 283/283 games + raw sha
-#: every game; Probe-A/B surfaces live, Probe-C writer greenfield).
-#: No live bridge framing surface exists: lib.rs registers only
-#: stream/replay/canon_rng/resume/ring/columnar/search (no iter_games /
-#: fetch / decode_frames) — the ``frame_games`` gate below is a deferred
-#: hasattr liveness check that stays on the oracle until a packet cutover
-#: lands one (no new pyfunction invented here).
-_BRIDGE_PACKET: Any = None
-_BRIDGE_PACKET_PROBED = False
-
-
-def _bridge_packet() -> Any | None:
-    """M5-locked bridge module or ``None`` (ImportError-only fallback).
-
-    Tries ``hydra_bridge._native`` first, then the legacy
-    ``hydra2_replay_rs`` shim. Only ``ImportError`` falls back (returns
-    ``None``); any other bridge failure propagates (fail-closed, never
-    silent). The module import alone never diverts framing — diversion
-    additionally requires the deferred ``frame_games`` hasattr gate below,
-    which has no live surface today, so the byte-exact Python oracle runs.
-    """
-    global _BRIDGE_PACKET, _BRIDGE_PACKET_PROBED
-    if _BRIDGE_PACKET_PROBED:
-        return _BRIDGE_PACKET
-    _BRIDGE_PACKET_PROBED = True
-    for mod_name in ("hydra_bridge._native", "hydra2_replay_rs"):
-        try:
-            _BRIDGE_PACKET = importlib.import_module(mod_name)
-            return _BRIDGE_PACKET
-        except ImportError:
-            continue
-    _BRIDGE_PACKET = None
-    return None
-
-
-def _bridge_entry(name: str) -> Any | None:
-    """Deferred hasattr liveness gate: bridge entry ``name`` or ``None``.
-
-    No live framing surface exists today (see module note), so this
-    returns ``None`` and callers stay on the Python oracle. When a packet
-    cutover lands the entry, callers divert through
-    :func:`_checked_bridge_frames` (mismatch = raise, deferred contract).
-    """
-    bridge = _bridge_packet()
-    if bridge is None:
-        return None
-    return getattr(bridge, name, None)
-
-
-def _checked_bridge_frames(path: Path, frames: object) -> Iterator[tuple[int, bytes]]:
-    """Yield validated bridge frames; raise on any shape/offset mismatch.
-
-    DEFERRED contract (no live surface today — see module note): when a
-    packet cutover lands the gated entry, every item must be an
-    ``(offset, bytes)`` pair with non-negative int offsets in strictly
-    increasing order — anything else raises ``ContractError``
-    (mismatch = raise, never silent).
-    """
-    if not isinstance(frames, (list, tuple)):
-        raise ContractError(f"bridge frames for {path} must be a list of (offset, bytes)")
-    previous = -1
-    for item in frames:
-        if not isinstance(item, (list, tuple)) or len(item) != 2:
-            raise ContractError(f"bridge frame for {path} must be (offset, bytes)")
-        offset, payload = item
-        if type(offset) is not int or offset < 0 or offset <= previous:
-            raise ContractError(f"bridge frame offset out of order at {path}:{offset!r}")
-        if not isinstance(payload, (bytes, bytearray)):
-            raise ContractError(f"bridge frame payload must be bytes at {path}:{offset}")
-        previous = offset
-        yield offset, bytes(payload)
+#: Framing authority: the byte-exact Python oracle below is the live path
+#: (packet 283/283 games + raw sha every game). The deferred top-level
+#: ``frame_games`` hasattr gate was deleted (Wave 0 — dead two ways: the
+#: bridge registers framing only on the ``packet`` submodule, and its
+#: signature takes ``(compressed, file_idx, base)``, not a path). A future
+#: packet cutover must add a new correctly-shaped ``packet``-submodule call
+#: here, not restore the probe.
 
 
 def fetch_game_at(
@@ -131,12 +64,11 @@ def fetch_game_at(
     expected_sha: str | None = None,
 ) -> StreamGame:
     """Fetch one game by decompressed-byte ``game_offset`` (fail-closed).
-    Deferred Rust-first gate: the ``frame_games`` hasattr check has no live
-    bridge surface today, so framing stays on the Python oracle below
-    (ImportError-only fallback; mismatch = raise is the deferred contract;
-    byte-exact ingest evidence: packet 283/283 games + raw sha every game).
-    Verifies ``expected_sha`` (raw_bytes_sha256) when given; split assignment
-    uses ``seed``/``ratios`` identically to the live stream.
+
+    Framing is the byte-exact Python oracle (:class:`ZstdLineStream`;
+    packet 283/283 games + raw sha every game). Verifies ``expected_sha``
+    (raw_bytes_sha256) when given; split assignment uses ``seed``/``ratios``
+    identically to the live stream.
     """
     from hydra2.data.decode import decode_game_object as _decode
     from hydra2.data.validate import validate_game as _validate
@@ -145,13 +77,7 @@ def fetch_game_at(
     if type(game_offset) is not int or game_offset < 0:
         raise ContractError(f"game offset must be a non-negative int, got {game_offset!r}")
     found: bytes | None = None
-    frame_fn = _bridge_entry("frame_games")
-    if frame_fn is not None:
-        frame_source: Iterator[tuple[int, bytes]] = _checked_bridge_frames(
-            fpath, frame_fn(fpath.as_posix())
-        )
-    else:
-        frame_source = ZstdLineStream(fpath).iter_games()
+    frame_source = ZstdLineStream(fpath).iter_games()
     for offset, game_bytes in frame_source:
         if offset == game_offset:
             found = game_bytes
@@ -356,18 +282,7 @@ class ZstdLineStream:
         return self._path
 
     def iter_games(self) -> Iterator[tuple[int, bytes]]:
-        """Yield framed games in file order.
-
-        Deferred Rust-first gate: the ``frame_games`` hasattr check has no
-        live bridge surface today, so this stays on the Python oracle below
-        (ImportError-only fallback; mismatch = raise is the deferred
-        contract; byte-exact ingest evidence: packet 283/283 games + raw
-        sha every game).
-        """
-        frame_fn = _bridge_entry("frame_games")
-        if frame_fn is not None:
-            yield from _checked_bridge_frames(self._path, frame_fn(self._path.as_posix()))
-            return
+        """Yield framed games in file order (byte-exact Python oracle)."""
         pending: list[bytes] = []
         pending_start = 0
         in_game = False

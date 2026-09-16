@@ -89,16 +89,17 @@ def decode_game_object(
         if error_class == "blank_line":
             raise CorruptArtifactError(message)
         raise ContractError(message)
-    # Transport materialization for the thin type (gate already passed, so
-    # utf-8/split cannot fail; dict shape re-checked fail-closed).
+    # Transport materialization for the thin type (bridge owns every gate
+    # above; this loop only materializes events — no bridge line-parse pyfn
+    # exists. The count judge fails closed on any materialization drift).
     parsed: list[dict[str, object]] = []
     for line in raw.decode("utf-8").splitlines():
-        value = json.loads(line)
-        if not isinstance(value, dict):
-            raise ContractError(f"decode shape reject for {object_id}: line must be object")
-        parsed.append(cast("dict[str, object]", value))
-    if len(parsed) == 0:
-        raise ContractError(f"empty payload for {object_id}: no game records")
+        parsed.append(cast("dict[str, object]", json.loads(line)))
+    if len(parsed) != slot["event_count"]:
+        raise ContractError(
+            f"decode materialization drift for {object_id}: "
+            f"{len(parsed)} parsed vs bridge event_count {slot['event_count']}"
+        )
     first = parsed[0]
     first_type = first.get("type")
     source: dict[str, object] = {"type": first_type} if isinstance(first_type, str) else {}

@@ -46,8 +46,6 @@ def _load_default_hashes() -> dict[str, str]:
     """
     from pathlib import Path  # noqa: TC003
 
-    from hydra2.search.common import MISSING_HASH
-
     repo = REPO_ROOT
     defaults: dict[str, str] = {}
     try:
@@ -69,19 +67,13 @@ def _load_default_hashes() -> dict[str, str]:
             "packet_boundary_hash": repo / "configs" / "contracts" / "packet_boundary_v1.json",
         }
         for key, path in mapping.items():
-            if path.exists():
-                defaults[key] = _sha(path)
-            else:
-                defaults[key] = "sha256:" + MISSING_HASH
-    except (ImportError, AttributeError, OSError, ValueError, TypeError, ContractError) as exc:
-        logger.debug("gumbel: file-backed default hashes fallback", exc_info=exc)
-        for key in (
-            "rules_hash",
-            "action_table_hash",
-            "observation_schema_hash",
-            "packet_boundary_hash",
-        ):
-            _ = defaults.setdefault(key, "sha256:" + MISSING_HASH)
+            if not path.exists():
+                raise ContractError(f"gumbel: required config missing: {path}")
+            defaults[key] = _sha(path)
+    except ContractError:
+        raise
+    except (ImportError, AttributeError, OSError, ValueError, TypeError) as exc:
+        raise ContractError(f"gumbel: file-backed default hashes required: {exc}") from exc
     return defaults
 
 

@@ -153,21 +153,18 @@ class NaturalISMCTSPlannerActMixin(NaturalISMCTSPlannerSearchMixin):
         else:
             case_id = "case_default"
         candidate_id = getattr(request.candidate_spec, "candidate_id", self._config.candidate_id)
-        # Use semantic seed if available, else deterministic hash
-        if _HAS_RANDOM:
-            try:
-                from hydra2.contracts.randomness import RandomStream
+        # Deterministic counter-based stream required; no secrets fallback.
+        if not _HAS_RANDOM:
+            raise ContractError("ismcts: hydra2.contracts.randomness required; no secrets fallback")
+        try:
+            from hydra2.contracts.randomness import RandomStream
 
-                # Derive stream from (candidate_id, case_id, belief_epoch)
-                epoch_id = str(getattr(belief_epoch, "epoch", "0"))
-                seed = hashlib.sha256(f"{candidate_id}:{case_id}:{epoch_id}".encode()).digest()
-                rng = RandomStream(seed)
-            except Exception:
-                rng = RandomStream(hashlib.sha256(f"{candidate_id}:{case_id}".encode()).digest())  # type: ignore[call-arg]
-        else:
-            import secrets as _secrets  # fallback
-
-            rng = _secrets.token_bytes(32)
+            # Derive stream from (candidate_id, case_id, belief_epoch)
+            epoch_id = str(getattr(belief_epoch, "epoch", "0"))
+            seed = hashlib.sha256(f"{candidate_id}:{case_id}:{epoch_id}".encode()).digest()
+            rng = RandomStream(seed)
+        except Exception as exc:
+            raise ContractError(f"ismcts: deterministic RNG required: {exc}") from exc
 
         # Probe framing must never break the oracle below (best-effort ids).
         try:
@@ -196,25 +193,13 @@ class NaturalISMCTSPlannerActMixin(NaturalISMCTSPlannerSearchMixin):
             rng=rng,
         )
 
-        # Wrap into SearchResult with UtilityVector etc if telemetry available
+        # Typed telemetry required; no dict/NEVER-bind fallback.
         try:
             from hydra2.contracts.utility import UtilityVector as _UV
             from hydra2.eval.telemetry import make_resource_telemetry as _mrt
             from hydra2.search.common import candidate_spec_hash as _csh
-        except Exception:
-            # fallback minimal result for unit tests
-            return SearchResult(
-                selected_action=res["selected_action"],
-                candidate_actions=res["candidate_actions"],
-                value_vectors=res["value_vectors"],
-                # NEVER-bind: fallback digest, not a verified binding.
-                candidate_spec_hash=getattr(
-                    request.candidate_spec, "candidate_spec_hash", "sha256:" + "a" * 64
-                ),
-                telemetry=res["telemetry"],
-                evidence_refs=(),
-                completed=res["completed"],
-            )
+        except Exception as exc:
+            raise ContractError(f"ismcts: typed telemetry contract required: {exc}") from exc
 
         # Build UtilityVectors (vector preserved, identity from manifest)
         u_vectors: list[Any] = []
@@ -239,9 +224,8 @@ class NaturalISMCTSPlannerActMixin(NaturalISMCTSPlannerSearchMixin):
                 u_vectors.append(vec)
         try:
             spec_hash = _csh(request.candidate_spec)  # type: ignore[call-arg]
-        except Exception:
-            # NEVER-bind: fallback digest, not a verified binding.
-            spec_hash = "sha256:" + "a" * 64
+        except Exception as exc:
+            raise ContractError(f"ismcts: candidate_spec_hash required: {exc}") from exc
         try:
             _telemetry_dict: Any = res["telemetry"]  # pyrefly: ignore[explicit-any]
             _actual_calls_raw: Any = _telemetry_dict["model_calls"]  # pyrefly: ignore[explicit-any]
@@ -254,8 +238,10 @@ class NaturalISMCTSPlannerActMixin(NaturalISMCTSPlannerSearchMixin):
                 actual_duration_ms=0,
                 completed=bool(_completed_raw),  # pyrefly: ignore[explicit-any]
             )
-        except Exception:
-            telem = res["telemetry"]
+        except ContractError:
+            raise
+        except Exception as exc:
+            raise ContractError(f"ismcts: typed telemetry build failed: {exc}") from exc
         return SearchResult(
             selected_action=res["selected_action"],
             candidate_actions=tuple(res["candidate_actions"]),

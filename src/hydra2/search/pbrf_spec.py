@@ -44,9 +44,8 @@ def _file_sha256(path: Any) -> DigestText:
     from pathlib import Path
 
     p = Path(path)
-    # dummy-until-real: file content hash wins when the config is present.
     if not p.exists():
-        return make_digest_text("sha256:" + "0" * 64)
+        raise ContractError(f"pbrf: required config missing: {p}")
     return make_digest_text("sha256:" + hashlib.sha256(p.read_bytes()).hexdigest())
 
 
@@ -58,7 +57,6 @@ def _load_default_hashes() -> dict[str, str]:
     never constant hashes here. Portable repo root via marker walk.
     """
     from hydra2.config import repo_root
-    from hydra2.search.common import MISSING_HASH
 
     repo = repo_root()
     defaults: dict[str, str] = {}
@@ -70,14 +68,13 @@ def _load_default_hashes() -> dict[str, str]:
     ]:
         try:
             p = repo / rel
-            # dummy-until-real: file content hash wins when the config is present.
-            if p.exists():
-                defaults[key] = str(_file_sha256(p))
-            else:
-                defaults[key] = "sha256:" + MISSING_HASH
-        except (OSError, ValueError, TypeError, ContractError) as exc:
-            logger.debug("pbrf: default hash fallback for %s", key, exc_info=exc)
-            defaults[key] = "sha256:" + MISSING_HASH
+            if not p.exists():
+                raise ContractError(f"pbrf: required config missing: {p}")
+            defaults[key] = str(_file_sha256(p))
+        except ContractError:
+            raise
+        except (OSError, ValueError, TypeError) as exc:
+            raise ContractError(f"pbrf: default hash required for {key}: {exc}") from exc
     # also try observation schema contract path (upgrade when present)
     try:
         p = repo / "configs/contracts/observation_schema_v1.json"

@@ -3,20 +3,16 @@
 Owns the evidence-fixed vocabulary every rules manifest builds on: the
 ``tenhou_4p_hanchan_v1`` identity constants, the closed policy-enum
 inventories, the payload field list, and the small field validators shared
-by the manifest dataclasses. Also hosts the contract-local canonical JSON
-writer: contracts may not import artifacts (SPEC §1), so the RFC 8785 writer
-lives here and tests prove byte-equality against that authority.
+by the manifest dataclasses. The RFC 8785 writer below is a thin delegate
+to :mod:`hydra2.artifacts.canonical` (THE single authority); tests prove
+byte-identity, never a second implementation.
 """
 
 from __future__ import annotations
 
-import math
 from typing import TYPE_CHECKING, Any
 
-from hydra2.contracts.common import (
-    CanonicalizationError,
-    ContractError,
-)
+from hydra2.contracts.common import ContractError
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -239,112 +235,21 @@ _TENHOU_MAN_URL = "https://tenhou.net/man/"
 
 
 # ---------------------------------------------------------------------------
-# Contract-local canonical JSON (RFC 8785 JCS subset over the JSON domain).
-# Mirrors hydra2.artifacts.canonical byte-for-byte; contracts may not import
-# artifacts (SPEC §1), so the writer lives here and tests prove equivalence.
+# Canonical JSON — thin delegate to hydra2.artifacts.canonical (single authority).
+# No second implementation lives here; byte-identity is proven by contract tests.
+# Lazy import keeps the contracts layer importable without eagerly binding artifacts.
 # ---------------------------------------------------------------------------
-
-_MAX_SAFE_INTEGER = 2**53 - 1
-
-_SHORT_ESCAPES = {
-    0x08: "\\b",
-    0x09: "\\t",
-    0x0A: "\\n",
-    0x0C: "\\f",
-    0x0D: "\\r",
-}
-
-
-def _es6_number_to_string(value: float) -> str:
-    if math.isnan(value) or math.isinf(value):
-        raise CanonicalizationError(f"non-finite number {value!r} has no canonical serialization")
-    if value == 0:  # -0.0 -> "0" (RFC 8785 Appendix B row 2)
-        return "0"
-    sign = "-" if value < 0 else ""
-    mantissa, _, exponent_text = repr(abs(value)).partition("e")
-    exponent10 = int(exponent_text) if exponent_text != "" else 0
-    integer_part, _, fraction_part = mantissa.partition(".")
-    raw_digits = integer_part + fraction_part
-    _stripped = raw_digits.lstrip("0").rstrip("0")
-    digits = _stripped if _stripped != "" else "0"
-    k = len(digits)
-    trailing_stripped = len(raw_digits) - len(raw_digits.rstrip("0"))
-    n = k + trailing_stripped + exponent10 - len(fraction_part)
-    if k <= n <= 21:
-        return sign + digits + "0" * (n - k)
-    if 0 < n <= 21:
-        return sign + digits[:n] + "." + digits[n:]
-    if -6 < n <= 0:
-        return sign + "0." + "0" * (-n) + digits
-    scientific_exponent = n - 1
-    exponent_form = (
-        f"e+{scientific_exponent}" if scientific_exponent >= 0 else f"e{scientific_exponent}"
-    )
-    head = digits[0] + ("." + digits[1:] if k > 1 else "")
-    return sign + head + exponent_form
-
-
-def _serialize_string(text: str) -> str:
-    try:
-        _ = text.encode("utf-8")
-    except UnicodeEncodeError as exc:
-        raise CanonicalizationError(
-            f"string contains an unpaired surrogate (invalid Unicode): {text!r}"
-        ) from exc
-    pieces: list[str] = ['"']
-    for char in text:
-        code = ord(char)
-        if code in _SHORT_ESCAPES:
-            pieces.append(_SHORT_ESCAPES[code])
-        elif code < 0x20:
-            pieces.append(f"\\u{code:04x}")
-        elif char == '"':
-            pieces.append('\\"')
-        elif char == "\\":
-            pieces.append("\\\\")
-        else:
-            pieces.append(char)
-    pieces.append('"')
-    return "".join(pieces)
-
-
-def _serialize(value: Any) -> str:
-    if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int):
-        if abs(value) > _MAX_SAFE_INTEGER:
-            raise CanonicalizationError(
-                f"integer {value} exceeds the IEEE 754 double-safe range "
-                f"(±{_MAX_SAFE_INTEGER}); serialize it as a float or string"
-            )
-        return str(value)
-    if isinstance(value, float):
-        return _es6_number_to_string(value)
-    if isinstance(value, str):
-        return _serialize_string(value)
-    if isinstance(value, list):
-        return "[" + ",".join(_serialize(item) for item in value) + "]"  # pyrefly: ignore[unknown-argument-type]  # reason: list-checked above; recursion validates each item
-    if isinstance(value, dict):
-        for key in value:
-            if not isinstance(key, str):
-                raise CanonicalizationError(
-                    f"object key {key!r} is not a string; JSON objects are string-keyed only"
-                )
-        ordered_keys = sorted(value, key=lambda key: key.encode("utf-16-be"))  # RFC 8785 §3.2.3
-        members = (f"{_serialize_string(key)}:{_serialize(value[key])}" for key in ordered_keys)  # pyrefly: ignore[unknown-argument-type]  # reason: keys str-checked above; recursion validates each member
-        return "{" + ",".join(members) + "}"
-    raise CanonicalizationError(
-        f"value of type {type(value).__name__} is outside the canonical JSON domain"
-    )
 
 
 def canonical_contract_json_text(value: Any) -> str:
-    """RFC 8785 canonical JSON text over the JSON domain (contract-local)."""
-    return _serialize(value)
+    """RFC 8785 canonical JSON text; delegates to artifacts.canonical."""
+    from hydra2.artifacts.canonical import canonicalize as _authority_text
+
+    return _authority_text(value)
 
 
 def canonical_contract_json_bytes(value: Any) -> bytes:
     """RFC 8785 canonical UTF-8 bytes; identical to artifacts.canonical output."""
-    return canonical_contract_json_text(value).encode("utf-8")
+    from hydra2.artifacts.canonical import canonical_bytes as _authority_bytes
+
+    return _authority_bytes(value)

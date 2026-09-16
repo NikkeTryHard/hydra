@@ -1,4 +1,4 @@
-# ruff: noqa: N814, F841, SIM105  # reason: legacy blanket kept, not narrowed — narrowing surfaces unrelated mid-flight noise outside the owned error set (SIM105 fallback-chain try/except-pass idiom; B007/F841 intentional scratch loop locals; B904 ContractError preconditions; N814 upstream casing; F401 cross-module names re-exported for the shim path). Evidence: https://docs.astral.sh/ruff/rules/
+# ruff: noqa: N814, F841  # reason: legacy blanket kept, not narrowed — narrowing surfaces unrelated mid-flight noise outside the owned error set (B007/F841 intentional scratch loop locals; B904 ContractError preconditions; N814 upstream casing; F401 cross-module names re-exported for the shim path). Evidence: https://docs.astral.sh/ruff/rules/
 """Candidate 3 PBRF planner adapter — act, observe, ponder.
 
 Owns the Planner protocol surface of :class:`PbrfPlanner`: forest
@@ -196,15 +196,7 @@ class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
         )
         belief_epoch: Any = getattr(request, "belief_epoch", None)
         if belief_epoch is None:
-            # Need epoch; create synthetic from request observation if possible
-            obs = getattr(request, "observation", None)
-            if obs is not None and self._belief is not None:
-                try:
-                    belief_epoch = self._belief.begin(obs)  # type: ignore[union-attr]
-                except Exception:
-                    belief_epoch = None
-            if belief_epoch is None:
-                raise ContractError("belief_epoch is required for PBRF core")
+            raise ContractError("belief_epoch is required for PBRF core")
         _budget_raw: Any = getattr(cand_spec, "resource_budget", None)
         budget: Any = _budget_raw if _budget_raw is not None else self._budget()
         if hasattr(budget, "resource_budget"):
@@ -245,33 +237,17 @@ class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
         frozen_candidates = _freeze_candidates(legal)
 
         # -- build PBRF forest ------------------------------------------------
-        # Use a deterministic RNG derived from (candidate_id, case_id)
+        # Deterministic RNG derived from (candidate_id, case_id); no silent None.
         try:
             seed_bytes = hashlib.sha256(f"{candidate_id}:{case_id}:pbrf_core".encode()).digest()
             rng = RandomStream(seed_bytes)  # type: ignore[call-arg]
-        except Exception:
-            rng = None
+        except Exception as exc:
+            raise ContractError(f"pbrf: deterministic RNG required: {exc}") from exc
 
-        # Need belief for sampling; if not supplied use stored
+        # Need belief for sampling; real belief required, no rebuild.
         belief = self._belief
         if belief is None:
-            # Attempt to create a default NaturalBelief if available
-            if _HAS_BELIEF:
-                try:
-                    belief = NaturalBelief()  # type: ignore[call-arg]
-                    # Adopt epochs across belief instances for determinism:
-                    # rebuild from the same observation when the epoch came
-                    # from a different belief store.
-                    obs2 = getattr(request, "observation", None)
-                    if obs2 is not None:
-                        try:
-                            belief_epoch = belief.begin(obs2)
-                        except Exception:
-                            pass
-                except Exception:
-                    belief = None
-            if belief is None:
-                raise ContractError("belief is required for PBRF planner")
+            raise ContractError("belief is required for PBRF planner")
 
         # candidates_fn closure that returns frozen_candidates regardless of parents (ensures freeze)
         def _cand_fn(_parents: Any) -> tuple[Any, ...]:

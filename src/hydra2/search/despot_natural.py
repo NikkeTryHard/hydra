@@ -36,6 +36,9 @@ __all__ = [
 # Names importable from this path before the split that live in the
 # submodules now (kept so the search package, lazy candidate factories,
 # and type-checking imports resolve without touching the new paths).
+from hydra2.search.common import Planner as Planner
+from hydra2.search.common import SearchRequest as SearchRequest
+from hydra2.search.common import SearchResult as SearchResult
 from hydra2.search.despot_act import NaturalDespotPlannerActMixin as NaturalDespotPlannerActMixin
 from hydra2.search.despot_core import _COMMON_AVAILABLE as _COMMON_AVAILABLE
 from hydra2.search.despot_core import _HAS_BELIEF as _HAS_BELIEF
@@ -50,12 +53,9 @@ from hydra2.search.despot_core import Literal as Literal
 from hydra2.search.despot_core import NaturalBelief as NaturalBelief
 from hydra2.search.despot_core import NaturalPacketKernel as NaturalPacketKernel
 from hydra2.search.despot_core import PacketPartitionError as PacketPartitionError
-from hydra2.search.despot_core import Planner as Planner
 from hydra2.search.despot_core import RandomStream as RandomStream
 from hydra2.search.despot_core import ResourceBudget as ResourceBudget
 from hydra2.search.despot_core import ResourceTelemetry as ResourceTelemetry
-from hydra2.search.despot_core import SearchRequest as SearchRequest
-from hydra2.search.despot_core import SearchResult as SearchResult
 from hydra2.search.despot_core import UtilityVector as UtilityVector
 from hydra2.search.despot_core import _default_budget as _default_budget
 from hydra2.search.despot_core import canonical_bytes as canonical_bytes
