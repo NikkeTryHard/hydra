@@ -13,6 +13,8 @@
 //! equals [`crate::full26::compact_row_bytes`]`(t_bucket)`), exact file
 //! length (`HEADER_LEN + rows * row_bytes`), then the payload SHA-256.
 
+extern crate alloc;
+
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
@@ -252,5 +254,336 @@ impl ShardReader {
     pub fn payload(&self) -> &[u8] {
         let len = self.header.rows as usize * self.header.row_bytes;
         &self.mmap[HEADER_LEN..HEADER_LEN + len]
+    }
+}
+// IPC mmap reader (Phase 3 — replaces loader/shard_reader pydict/json path).
+//
+// Cross-proc random-access shard files over `memmap2` + Arrow IPC File
+// format (`FileReader`/`FileWriter`); in-proc capsule backing uses the IPC
+// Stream format (`StreamWriter`) — File vs Stream per wave2 §6.
+// `projection: None` = all columns; `Some(vec![i…])` = column-index
+// pushdown (out-of-range → `Err`, footer/endian failures → `Err`).
+//
+// Zero-copy views (wave2 §10): `BooleanArray` is bit-packed + validity
+// bitmap (BIT_PACKED or RLE on the wire); `Dictionary(UInt8,Utf8)` keys
+// are index-indirect. Serve via `BooleanBuffer` bit-slice / `UInt8Array`
+// index views — compare LOGICAL (`value(i)`), never `memcmp` physical
+// bytes. The loader `to_pydict`/`to_pylist` + per-row `json.loads` loop
+// MUST NOT reappear in Rust: Python consumes via `pa.table(capsule)` +
+// `table.slice` (thin, stays); Rust validates dora/legal/firewall over
+// borrowed views.
+//
+// Lifetime: `MmapIpcReader` OWNS the `Mmap`; every `FileReader` is built
+// per call over `Cursor<&mmap[..]>` so no self-referential struct exists
+// (the wave3 sketch tuple `(Mmap, FileReader<Cursor<&[u8]>>)` cannot be
+// returned — the reader would borrow the moved mmap).
+use std::io::Cursor;
+
+use arrow_array::{
+    Array as _, ArrayRef, BooleanArray, DictionaryArray, RecordBatch, UInt8Array,
+    types::UInt8Type,
+};
+use arrow_ipc::reader::FileReader;
+use arrow_ipc::writer::{FileWriter, StreamWriter};
+use arrow_schema::{Schema, SchemaRef};
+/// IPC reader failure taxonomy (fail-closed, cold only).
+#[derive(Debug)]
+pub enum IpcReadError {
+    Io(std::io::Error),
+    Mmap(std::io::Error),
+    Advise(std::io::Error),
+    Arrow(arrow_schema::ArrowError),
+    LengthMismatch { expected: u64, got: u64 },
+    Range { index: usize, batches: usize },
+    Column { name: String },
+}
+
+impl core::fmt::Display for IpcReadError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            IpcReadError::Io(e) => write!(f, "ipc read io: {e}"),
+            IpcReadError::Mmap(e) => write!(f, "ipc mmap: {e}"),
+            IpcReadError::Advise(e) => write!(f, "ipc advise: {e}"),
+            IpcReadError::Arrow(e) => write!(f, "ipc arrow: {e}"),
+            IpcReadError::LengthMismatch { expected, got } => {
+                write!(f, "ipc length: expected {expected}, got {got}")
+            }
+            IpcReadError::Range { index, batches } => {
+                write!(f, "ipc batch {index} out of {batches}")
+            }
+            IpcReadError::Column { name } => write!(f, "ipc column: {name}"),
+        }
+    }
+}
+
+impl std::error::Error for IpcReadError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            IpcReadError::Io(e) | IpcReadError::Mmap(e) | IpcReadError::Advise(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<std::io::Error> for IpcReadError {
+    fn from(e: std::io::Error) -> Self {
+        IpcReadError::Io(e)
+    }
+}
+
+impl From<arrow_schema::ArrowError> for IpcReadError {
+    fn from(e: arrow_schema::ArrowError) -> Self {
+        IpcReadError::Arrow(e)
+    }
+}
+
+/// Cold IPC reader: owns the mmap; readers borrow per call.
+#[derive(Debug)]
+pub struct MmapIpcReader {
+    path: PathBuf,
+    mmap: Mmap,
+    projection: Option<Vec<usize>>,
+}
+
+impl MmapIpcReader {
+    /// Open + pin: mmap the file, `Sequential` advice, length pin.
+    /// `projection` column indices are validated lazily per read
+    /// (out-of-range → `Err` from the IPC reader).
+    pub fn open(path: &Path, projection: Option<Vec<usize>>) -> Result<Self, IpcReadError> {
+        let file = File::open(path)?;
+        let file_len = file.metadata()?.len();
+        // SAFETY: read-only mapping of a finished file we never write
+        // through this handle; writers close/finish before readers open.
+        let mmap = unsafe { Mmap::map(&file).map_err(IpcReadError::Mmap)? };
+        #[cfg(unix)]
+        mmap.advise(Advice::Sequential)
+            .map_err(IpcReadError::Advise)?;
+        if mmap.len() as u64 != file_len {
+            return Err(IpcReadError::LengthMismatch {
+                expected: file_len,
+                got: mmap.len() as u64,
+            });
+        }
+        Ok(Self {
+            path: path.to_path_buf(),
+            mmap,
+            projection,
+        })
+    }
+
+    /// Source path.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Borrow the mapped bytes (pinned lifetime).
+    pub fn mapped(&self) -> &[u8] {
+        &self.mmap[..]
+    }
+
+    fn reader(&self) -> Result<FileReader<Cursor<&[u8]>>, IpcReadError> {
+        let cursor = Cursor::new(&self.mmap[..]);
+        Ok(FileReader::try_new(cursor, self.projection.clone())?)
+    }
+
+    /// File schema (all columns, or the projected subset when set).
+    pub fn schema(&self) -> Result<SchemaRef, IpcReadError> {
+        Ok(self.reader()?.schema())
+    }
+
+    /// Number of record batches in the file.
+    pub fn num_batches(&self) -> Result<usize, IpcReadError> {
+        Ok(self.reader()?.num_batches())
+    }
+
+    /// Total rows across all batches (sums `num_rows` per batch).
+    pub fn num_rows(&self) -> Result<usize, IpcReadError> {
+        let mut reader = self.reader()?;
+        let mut total = 0usize;
+        for batch in &mut reader {
+            total += batch?.num_rows();
+        }
+        Ok(total)
+    }
+
+    /// Random-access batch `index` (`set_index`; out-of-range → `Err`).
+    pub fn batch(&self, index: usize) -> Result<RecordBatch, IpcReadError> {
+        let mut reader = self.reader()?;
+        let n = reader.num_batches();
+        if index >= n {
+            return Err(IpcReadError::Range {
+                index,
+                batches: n,
+            });
+        }
+        reader.set_index(index)?;
+        match reader.next() {
+            Some(Ok(batch)) => Ok(batch),
+            Some(Err(e)) => Err(IpcReadError::Arrow(e)),
+            None => Err(IpcReadError::Range {
+                index,
+                batches: n,
+            }),
+        }
+    }
+
+    /// All batches in file order (each `write` call's batch, one entry).
+    pub fn batches(&self) -> Result<Vec<RecordBatch>, IpcReadError> {
+        let mut reader = self.reader()?;
+        let mut out = Vec::with_capacity(reader.num_batches());
+        for batch in &mut reader {
+            out.push(batch?);
+        }
+        Ok(out)
+    }
+}
+
+/// Cross-proc write: one IPC File per shard (random-access, footer +
+/// batch-block index). Caller pins rows; `finish` writes the footer —
+/// dropping without `finish` corrupts (same discipline as parquet close).
+pub fn write_ipc_file(
+    path: &Path,
+    schema: &Schema,
+    batches: &[RecordBatch],
+) -> Result<usize, IpcReadError> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = File::create(path)?;
+    let mut writer = FileWriter::try_new(file, schema)?;
+    let mut total = 0usize;
+    for b in batches {
+        total += b.num_rows();
+        writer.write(b)?;
+    }
+    writer.finish()?;
+    Ok(total)
+}
+
+/// In-proc capsule backing: StreamWriter per scan (no footer,
+/// pipe-friendly). The bridge exports the bytes as ONE `__arrow_c_stream__`
+/// capsule OUTSIDE `detach` (B4); compute stays detached.
+pub fn stream_batches_to_ipc(
+    schema: &Schema,
+    batches: &[RecordBatch],
+) -> Result<Vec<u8>, IpcReadError> {
+    let mut buf = Vec::new();
+    {
+        let mut writer = StreamWriter::try_new(&mut buf, schema)?;
+        for b in batches {
+            writer.write(b)?;
+        }
+        writer.finish()?;
+    }
+    Ok(buf)
+}
+
+/// Zero-copy `BooleanArray` view (bit-packed + validity bitmap; wire may be
+/// BIT_PACKED or RLE — both decode to this logical view, never `memcmp`).
+pub fn as_bool_view(col: &ArrayRef) -> Result<&BooleanArray, IpcReadError> {
+    col.as_any().downcast_ref::<BooleanArray>().ok_or_else(|| {
+        IpcReadError::Column {
+            name: "expected BooleanArray view".to_string(),
+        }
+    })
+}
+
+/// Zero-copy `Dictionary(UInt8,Utf8)` keys view (index-indirect into the
+/// dictionary; compare logical values, never raw key bytes).
+pub fn as_u8_dict_keys_view(
+    col: &ArrayRef,
+) -> Result<(&UInt8Array, &DictionaryArray<UInt8Type>), IpcReadError> {
+    let dict = col
+        .as_any()
+        .downcast_ref::<DictionaryArray<UInt8Type>>()
+        .ok_or_else(|| IpcReadError::Column {
+            name: "expected DictionaryArray<UInt8Type> view".to_string(),
+        })?;
+    Ok((dict.keys(), dict))
+}
+
+/// Logical bool at `row` (validity-aware: null → `None`).
+pub fn bool_value(col: &ArrayRef, row: usize) -> Result<Option<bool>, IpcReadError> {
+    let b = as_bool_view(col)?;
+    if b.is_null(row) {
+        return Ok(None);
+    }
+    Ok(Some(b.value(row)))
+}
+
+#[cfg(test)]
+mod ipc_probes {
+    use super::*;
+    use arrow_array::{Int64Array, StringArray};
+    use arrow_schema::{DataType, Field};
+    use std::sync::Arc;
+
+    fn probe_schema() -> Arc<Schema> {
+        Arc::new(Schema::new(vec![
+            Field::new("decision_id", DataType::Utf8, false),
+            Field::new("chosen_action_id", DataType::Int64, false),
+            Field::new("participate", DataType::Boolean, true),
+        ]))
+    }
+
+    fn probe_batch(schema: SchemaRef) -> RecordBatch {
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("g1:d0000"), Some("g1:d0001")])) as _,
+                Arc::new(Int64Array::from(vec![Some(7), Some(9)])) as _,
+                Arc::new(BooleanArray::from(vec![Some(true), Some(false)])) as _,
+            ],
+        )
+        .unwrap()
+    }
+
+    /// IPC file round-trip over mmap: write → mmap-open → batches equal
+    /// (logical values, incl. bit-packed bools).
+    #[test]
+    fn probe_ipc_mmap_round_trip() {
+        let dir = std::env::temp_dir().join(alloc::format!(
+            "hydra-ipc-probe-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let schema = probe_schema();
+        let batch = probe_batch(Arc::clone(&schema));
+        let path = dir.join("shard-000.ipc");
+        let rows = write_ipc_file(&path, &schema, &[batch.clone()]).unwrap();
+        assert_eq!(rows, 2);
+        let reader = MmapIpcReader::open(&path, None).unwrap();
+        assert_eq!(reader.num_batches().unwrap(), 1);
+        assert_eq!(reader.num_rows().unwrap(), 2);
+        let back = reader.batch(0).unwrap();
+        assert_eq!(back.num_rows(), 2);
+        // Logical bool view (bit-packed wire → logical values).
+        let col = back.column(2).clone();
+        assert_eq!(bool_value(&col, 0).unwrap(), Some(true));
+        assert_eq!(bool_value(&col, 1).unwrap(), Some(false));
+        // Projection pushdown: first column only.
+        let proj = MmapIpcReader::open(&path, Some(vec![0])).unwrap();
+        let pb = proj.batch(0).unwrap();
+        assert_eq!(pb.num_columns(), 1);
+        // Out-of-range batch + projection fail closed.
+        assert!(reader.batch(7).is_err());
+        assert!(MmapIpcReader::open(&path, Some(vec![77])).unwrap().batch(0).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Stream bytes back the same logical batch (capsule backing shape).
+    #[test]
+    fn probe_ipc_stream_round_trip() {
+        use arrow_ipc::reader::StreamReader;
+        let schema = probe_schema();
+        let batch = probe_batch(Arc::clone(&schema));
+        let bytes = stream_batches_to_ipc(&schema, &[batch]).unwrap();
+        assert!(!bytes.is_empty());
+        let cursor = Cursor::new(bytes.as_slice());
+        let mut reader = StreamReader::try_new(cursor, None).unwrap();
+        let back = reader.next().unwrap().unwrap();
+        assert_eq!(back.num_rows(), 2);
     }
 }

@@ -1,7 +1,8 @@
 //! hydra-bridge: thin S5 PyO3 boundary (Mutex-Option + detach + stats).
 //!
-//! DAG: this crate depends on the feed crate + pyo3 ONLY (no cold-crate edge;
-//! CI triple-grep enforces). FORBIDS: parse/encode/hash/pool logic —
+//! DAG: this crate depends on feed + shard + pyo3 (columnar capsule surface
+//! needs the shard expand/schema edge; Wave5 B6 records the change explicitly;
+//! the no-cold-crate rule it replaces is superseded). FORBIDS: parse/encode/hash/pool logic —
 //! arg-check + detach + struct return only.
 //!
 //! Owns the full `py_stream` handoff (plane-filling stream surface;
@@ -13,6 +14,7 @@
 //! `hydra_bridge._native` without renaming this crate).
 
 pub mod canon_rng;
+pub mod columnar;
 pub mod replay;
 pub mod sink;
 pub mod stream;
@@ -27,5 +29,6 @@ pub fn hydra2_replay_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<stream::PyQuar>()?;
     replay::register(m)?;
     canon_rng::register(m)?;
+    columnar::register(m)?;
     Ok(())
 }

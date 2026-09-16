@@ -600,6 +600,8 @@ mod tests {
     }
 
     fn game(game_id: &str, group: &str, wall: Option<&str>) -> GameIdentity {
+        // Distinct hash per game: sha256 over the game_id itself (NOT its
+        // length — same-length ids collided and tripped exact-dup detection).
         GameIdentity::new(
             game_id,
             &format!("obj-{game_id}"),
@@ -607,7 +609,7 @@ mod tests {
             vec!["p1".to_string()],
             Some("2024-01-01T00:00:00Z".to_string()),
             wall.map(str::to_string),
-            &format!("sha256:{:0>64x}", game_id.len()),
+            &crate::digest::sha256_hex(game_id.as_bytes()),
         )
     }
 
@@ -865,12 +867,6 @@ mod tests {
             game("g1", "srcA", None),
             game("g2", "srcB", None),
         ];
-        // `game()` helper hashes by id length only — g1/g2 collide (both len 2)
-        // and trip exact-dup detection. Rebind distinct decoded hashes so the
-        // digest-stability gate tests what it means to test.
-        let mut games = games;
-        games[0].decoded_hash = format!("sha256:{:0>64x}", 0x11u64);
-        games[1].decoded_hash = format!("sha256:{:0>64x}", 0x22u64);
         let m = assign_partitions(&games, &spec).unwrap();
         assert!(is_digest_text(&m.digest));
         assert!(is_digest_text(&m.input_hashes["spec"]));
