@@ -256,6 +256,8 @@ class JointTypeWorldPlanner(Planner):  # type: ignore[misc]
                 leaf_val = (int.from_bytes(h[:4], "big") / 4294967296.0) * 2.0 - 1.0  # in [-1,1)
                 score += p.weight * leaf_val
             # Add deterministic joint gumbel perturbation for robust tie-breaking (same for determinism proof)
+            # Wave 2 bridge audit: kept Python — joint (theta, action) Gumbel domain
+            # differs from bridge gumbel_for_action (no theta lane); no pyfn covers it.
             g_sum = 0.0
             for theta in self.config.theta_ids:
                 g = deterministic_joint_gumbel(

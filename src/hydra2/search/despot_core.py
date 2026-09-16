@@ -323,6 +323,8 @@ def _scenario_seed_bytes(
 
 def _hash_tie_break(actions: tuple[Any, ...], candidate_id: str) -> Any:
     """Stable lexicographic tie break via hash of candidate_id + action id."""
+    # Wave 2 bridge audit: kept Python — candidate+aid hash tie-break is not a bridge
+    # selection cut (no survivors/means/gumbels or node visits/sums cross it).
 
     def aid(a: Any) -> int:
         v = getattr(a, "action_id", None)
@@ -351,6 +353,9 @@ def _hash_tie_break(actions: tuple[Any, ...], candidate_id: str) -> Any:
 @dataclass(slots=True)
 class _DespotNode:
     """One DESPOT belief-action node (actor-visible)."""
+
+    # Wave 2 bridge audit: kept Python — node tables stay Python (lower_value is a
+    # feasible-policy estimate, priority_proxy explicitly not an upper bound; no UCT/PUCT pyfn covers it).
 
     node_id: str
     depth: int

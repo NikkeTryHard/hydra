@@ -50,6 +50,7 @@
 
 
 pub mod arena;
+pub mod belief;
 pub mod despot;
 pub mod gumbel;
 pub mod ismcts;

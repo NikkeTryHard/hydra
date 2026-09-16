@@ -126,6 +126,8 @@ class NaturalDespotPlannerSearchMixin:
         Real ``NaturalBelief`` and epoch required; no synthetic fallback.
         Weight is uniform 1/K, log_target == log_proposal, no proposal used.
         """
+        # Wave 2 bridge audit: kept Python — per-scenario count=1 draws resolve to Particle
+        # world_refs via belief (bridge natural_indices returns indices only; corpus lives in belief).
         if not isinstance(k, int) or isinstance(k, bool) or k <= 0:
             raise ContractError("k must be positive int")
         if not _HAS_BELIEF or self._belief is None or belief_epoch is None:
@@ -191,6 +193,8 @@ class NaturalDespotPlannerSearchMixin:
         This is intentionally not value-optimal; DESPOT's lower value tracks
         this feasible policy, not an upper bound.
         """
+        # Wave 2 bridge audit: kept Python — blueprint/min-aid feasible policy + hash
+        # lower values + priority proxy are rollout/spec logic, not UCT/PUCT/Gumbel cuts.
         if self._blueprint is not None:
             try:
                 return self._blueprint(legal_actions, scenario_seed)
@@ -229,6 +233,8 @@ class NaturalDespotPlannerSearchMixin:
         the lower estimate feasible and deterministic without needing a full
         Mahjong simulator.
         """
+        # Wave 2 bridge audit: kept Python — rollout mean over scenario world_refs stays
+        # Python (needs scenario seeds/weights; no pyfn covers rollout averaging).
         if len(scenarios) == 0:
             return 0.0
         total = 0.0

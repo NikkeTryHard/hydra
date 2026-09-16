@@ -262,6 +262,8 @@ class PbrfPlannerSearchMixin:
         Vector remains 4-seat; scalarization at root uses s_i. For tiny domain we
         derive deterministic values from hash(action, packet_id, target_id).
         """
+        # Wave 2 bridge audit: kept Python — leaf-vector derivation needs forest ChildEntry
+        # weights + model/spec vectors (rollout/spec logic stays Python; no pyfn covers it).
         entries = forest.children.get((_action_id(action), packet_id))
         if entries is None:
             return (0.0, 0.0, 0.0, 0.0)

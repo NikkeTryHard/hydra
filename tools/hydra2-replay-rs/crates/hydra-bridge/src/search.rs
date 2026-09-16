@@ -74,6 +74,10 @@
 
 use std::sync::Mutex;
 use hydra_search::arena::{act_batch as arena_act_batch, Budget};
+use hydra_search::belief as belief_mod;
+use hydra_search::gumbel as gumbel_mod;
+use hydra_search::ismcts::{ActionStats, IsNode, IsmctsParams, TieBreak};
+use hydra_search::SearchError;
 #[cfg(test)]
 use hydra_search::arena::ActOut;
 use pyo3::exceptions::{PyOSError, PyValueError};
@@ -162,6 +166,368 @@ fn check_digest_shape(text: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// Map a search-side failure onto the boundary (caller-shape rejects only;
+/// the arena `act_batch` frontier path above never raises for selection
+/// outcomes — these step kernels fail closed like `canon_rng::bounded`).
+fn search_err(err: SearchError) -> PyErr {
+    PyValueError::new_err(err.to_string())
+}
+
+/// Parse the frozen tie-break vocabulary (attached; pure string match).
+fn parse_tie(name: &str) -> Result<TieBreak, PyErr> {
+    TieBreak::parse(name).map_err(search_err)
+}
+
+/// Build one information-set node from parallel arrays (pure, detach-safe).
+///
+/// `actions`/`visits` pair up 1:1; `sums_flat` holds 4 back-up sums per
+/// action in `actions` order; `total` becomes `node.visits` (the UCT
+/// exploration term reads it verbatim, mirroring `InformationSetNode.visits`).
+/// Uniqueness rides a sorted-window scan (never `hash()`); visited arms with
+/// non-finite sums fail closed here, unvisited arms skip the check exactly
+/// like `scalar_mean` (visits `0` reads as unvisited).
+fn build_node(
+    actions: Vec<u32>,
+    visits: Vec<u64>,
+    sums_flat: Vec<f64>,
+    total: u64,
+) -> Result<IsNode, SearchError> {
+    if actions.len() != visits.len() {
+        return Err(SearchError::InvalidArg { detail: "node actions/visits length mismatch" });
+    }
+    let want = actions
+        .len()
+        .checked_mul(4)
+        .ok_or(SearchError::InvalidArg { detail: "node actions too many" })?;
+    if sums_flat.len() != want {
+        return Err(SearchError::InvalidArg { detail: "node sums must hold 4 entries per action" });
+    }
+    let mut order = actions.clone();
+    order.sort_unstable();
+    if let Some(dup) = order.windows(2).find(|w| w[0] == w[1]).map(|w| w[0]) {
+        return Err(SearchError::DuplicateAction { action: dup });
+    }
+    let mut arms = Vec::with_capacity(actions.len());
+    let mut i = 0usize;
+    while i < actions.len() {
+        let action = match actions.get(i) {
+            Some(action) => *action,
+            None => return Err(SearchError::InvalidArg { detail: "node action out of range" }),
+        };
+        let n = match visits.get(i) {
+            Some(n) => *n,
+            None => return Err(SearchError::InvalidArg { detail: "node visits out of range" }),
+        };
+        let mut sum = [0.0f64; 4];
+        let mut j = 0usize;
+        while j < 4 {
+            let value = match sums_flat.get(i * 4 + j) {
+                Some(value) => *value,
+                None => return Err(SearchError::InvalidArg { detail: "node sums out of range" }),
+            };
+            if n > 0 && !value.is_finite() {
+                return Err(SearchError::NonFinite { context: "search node value sum" });
+            }
+            sum[j] = value;
+            j += 1;
+        }
+        arms.push((action, ActionStats { visits: n, value_sum: sum }));
+        i += 1;
+    }
+    Ok(IsNode { visits: total, arms })
+}
+
+/// B1-verbatim deterministic Gumbel for one action
+/// (`gumbel_core.py:117-156` via `hydra_search::gumbel`).
+///
+/// Pure sha draw — identical inputs give identical outputs regardless of call
+/// order or global RNG. Compute runs detached; only owned scalars cross.
+#[pyfunction]
+#[pyo3(signature = (case_id, root_seat, candidate_id, action_id))]
+fn gumbel_for_action(
+    py: Python<'_>,
+    case_id: String,
+    root_seat: u32,
+    candidate_id: String,
+    action_id: u32,
+) -> PyResult<f64> {
+    if case_id.is_empty() {
+        return Err(PyValueError::new_err("search gumbel case_id must be non-empty"));
+    }
+    if candidate_id.is_empty() {
+        return Err(PyValueError::new_err("search gumbel candidate_id must be non-empty"));
+    }
+    if root_seat >= 4 {
+        return Err(PyValueError::new_err("seat must be 0..3"));
+    }
+    let out =
+        py.detach(|| gumbel_mod::deterministic_gumbel(&case_id, root_seat, &candidate_id, action_id));
+    out.map_err(search_err)
+}
+
+/// Deterministic Gumbels for every legal action (`deterministic_root_gumbels`).
+#[pyfunction]
+#[pyo3(signature = (case_id, root_seat, candidate_id, legal_ids))]
+fn gumbel_roots(
+    py: Python<'_>,
+    case_id: String,
+    root_seat: u32,
+    candidate_id: String,
+    legal_ids: Vec<u32>,
+) -> PyResult<Vec<(u32, f64)>> {
+    if case_id.is_empty() {
+        return Err(PyValueError::new_err("search gumbel case_id must be non-empty"));
+    }
+    if candidate_id.is_empty() {
+        return Err(PyValueError::new_err("search gumbel candidate_id must be non-empty"));
+    }
+    if legal_ids.is_empty() {
+        return Err(PyValueError::new_err("legal set must be non-empty"));
+    }
+    let out = py.detach(|| {
+        gumbel_mod::deterministic_root_gumbels(&case_id, root_seat, &candidate_id, &legal_ids)
+    });
+    out.map_err(search_err)
+}
+
+/// One sequential-halving cut (`gumbel_search.py:494-499` via `halving_cut`):
+/// keep the top half of `survivors` by `score = q + g` (`1e-12` eps + tie arm).
+#[pyfunction]
+#[pyo3(signature = (survivors, means, gumbels, tie_break))]
+fn halving_cut(
+    py: Python<'_>,
+    survivors: Vec<u32>,
+    means: Vec<(u32, f64)>,
+    gumbels: Vec<(u32, f64)>,
+    tie_break: String,
+) -> PyResult<Vec<u32>> {
+    let tie = parse_tie(&tie_break)?;
+    let out = py.detach(|| gumbel_mod::halving_cut(&survivors, &means, &gumbels, tie));
+    out.map_err(search_err)
+}
+
+/// Final Gumbel selection over the last survivors (`gumbel_search.py:514-539`
+/// via `gumbel_select`): max `g + q`, `1e-12` eps + tie arm.
+#[pyfunction]
+#[pyo3(signature = (survivors, means, gumbels, tie_break))]
+fn gumbel_select(
+    py: Python<'_>,
+    survivors: Vec<u32>,
+    means: Vec<(u32, f64)>,
+    gumbels: Vec<(u32, f64)>,
+    tie_break: String,
+) -> PyResult<u32> {
+    let tie = parse_tie(&tie_break)?;
+    let out = py.detach(|| gumbel_mod::gumbel_select(&survivors, &means, &gumbels, tie));
+    out.map_err(search_err)
+}
+
+/// UCT select over one information-set node (`ismcts_core.py:520-555` via
+/// `uct_select`): unvisited arms win in sorted order first, else `q+u`.
+///
+/// Node shape crosses as parallel arrays (`actions`, per-action `visits`,
+/// `sums_flat` with 4 back-up sums per action) plus the caller-visible
+/// `total_visits` (`InformationSetNode.visits`); only scalars cross, never
+/// hidden worlds (info-keys only).
+#[pyfunction]
+#[pyo3(signature = (actions, visits, sums_flat, legal_ids, root_seat, total_visits, uct_c, tie_break))]
+fn uct_select(
+    py: Python<'_>,
+    actions: Vec<u32>,
+    visits: Vec<u64>,
+    sums_flat: Vec<f64>,
+    legal_ids: Vec<u32>,
+    root_seat: u32,
+    total_visits: u64,
+    uct_c: f64,
+    tie_break: String,
+) -> PyResult<u32> {
+    if root_seat >= 4 {
+        return Err(PyValueError::new_err("seat must be 0..3"));
+    }
+    if !uct_c.is_finite() || uct_c <= 0.0 {
+        return Err(PyValueError::new_err("uct_c must be finite >0"));
+    }
+    let tie = parse_tie(&tie_break)?;
+    let out = py.detach(|| {
+        let node = build_node(actions, visits, sums_flat, total_visits)?;
+        let mut params = IsmctsParams::defaults();
+        params.uct_c = uct_c;
+        params.tie = tie;
+        params.validate()?;
+        hydra_search::ismcts::uct_select(&node, &legal_ids, root_seat, &params)
+    });
+    out.map_err(search_err)
+}
+
+/// PUCT comparator select (`gumbel_puct.py:240-258` via `puct_select`):
+/// `q + c*prior*sqrt(N)/(1+n)` with uniform priors, `1e-12` eps + tie arm.
+#[pyfunction]
+#[pyo3(signature = (actions, visits, sums_flat, legal_ids, root_seat, puct_c, tie_break))]
+fn puct_select(
+    py: Python<'_>,
+    actions: Vec<u32>,
+    visits: Vec<u64>,
+    sums_flat: Vec<f64>,
+    legal_ids: Vec<u32>,
+    root_seat: u32,
+    puct_c: f64,
+    tie_break: String,
+) -> PyResult<u32> {
+    if root_seat >= 4 {
+        return Err(PyValueError::new_err("seat must be 0..3"));
+    }
+    if !puct_c.is_finite() || puct_c <= 0.0 {
+        return Err(PyValueError::new_err("puct_c must be finite >0"));
+    }
+    let tie = parse_tie(&tie_break)?;
+    let out = py.detach(|| {
+        let total = total_visits_for(&actions, &visits, &legal_ids);
+        let node = build_node(actions, visits, sums_flat, total)?;
+        gumbel_mod::puct_select(&node, &legal_ids, root_seat, puct_c, tie)
+    });
+    out.map_err(search_err)
+}
+/// PUCT visit total: `sum(visits)` over the legal set only (mirrors the
+/// crate, which totals `node.stats` over legal internally — kept explicit
+/// here so `build_node` keeps one shape and `node.visits` stays truthful).
+fn total_visits_for(actions: &[u32], visits: &[u64], legal: &[u32]) -> u64 {
+    let mut total = 0u64;
+    let mut i = 0usize;
+    while i < actions.len() && i < visits.len() {
+        if let Some(action) = actions.get(i) {
+            if legal.contains(action) {
+                if let Some(n) = visits.get(i) {
+                    total = total.saturating_add(*n);
+                }
+            }
+        }
+        i += 1;
+    }
+    total
+}
+
+/// Deterministic corpus indices for `count` natural draws over `K` worlds
+/// (`natural.py:298-336` via `belief::natural_indices`): CTR-exact, including
+/// the `K == 1` no-consume rule. Returns `(indices, end_cursor)` for exact
+/// replay (`checkpoint`/`jump_to` shape).
+#[pyfunction]
+#[pyo3(signature = (k, count, seed, cursor))]
+fn natural_indices(
+    py: Python<'_>,
+    k: u32,
+    count: u32,
+    seed: Vec<u8>,
+    cursor: u64,
+) -> PyResult<(Vec<u32>, u64)> {
+    if k == 0 {
+        return Err(PyValueError::new_err("natural corpus size must be >= 1"));
+    }
+    if count == 0 {
+        return Err(PyValueError::new_err("natural count must be >= 1"));
+    }
+    if seed.is_empty() {
+        return Err(PyValueError::new_err("ctr seed must be non-empty"));
+    }
+    let out = py.detach(|| belief_mod::natural_indices(k, count, &seed, cursor));
+    out.map_err(search_err)
+}
+
+/// Categorical draws over the exhaustive frame law (`sampled_kernel.py:137-147`
+/// via `belief::sampled_draws`): `(chosen, raw_weights, end_cursor)` with
+/// `raw_weight = P(chosen) / draws`.
+#[pyfunction]
+#[pyo3(signature = (probs, draws, seed, cursor))]
+fn sampled_draws(
+    py: Python<'_>,
+    probs: Vec<f64>,
+    draws: u32,
+    seed: Vec<u8>,
+    cursor: u64,
+) -> PyResult<(Vec<u32>, Vec<f64>, u64)> {
+    if probs.is_empty() {
+        return Err(PyValueError::new_err("sampled frame must be non-empty"));
+    }
+    if draws == 0 {
+        return Err(PyValueError::new_err("sampled draws must be >= 1"));
+    }
+    if seed.is_empty() {
+        return Err(PyValueError::new_err("ctr seed must be non-empty"));
+    }
+    let out = py.detach(|| belief_mod::sampled_draws(&probs, draws, &seed, cursor));
+    out.map_err(search_err)
+}
+
+/// One enumerated packet successor crossing the boundary (digest/text shapes
+/// only — info-keys, never world blobs).
+#[pyclass(name = "PacketSuccessor", frozen, skip_from_py_object)]
+#[derive(Debug, Clone)]
+pub struct PyPacketSuccessor {
+    #[pyo3(get)]
+    pub successor_world_ref: String,
+    #[pyo3(get)]
+    pub successor_delta: String,
+    #[pyo3(get)]
+    pub tile: u32,
+    #[pyo3(get)]
+    pub seq: u32,
+    #[pyo3(get)]
+    pub actor: u32,
+    #[pyo3(get)]
+    pub probability: f64,
+    #[pyo3(get)]
+    pub log_physical: f64,
+    #[pyo3(get)]
+    pub log_policy: f64,
+    #[pyo3(get)]
+    pub observation_hash: String,
+    #[pyo3(get)]
+    pub packet_id: String,
+    #[pyo3(get)]
+    pub chain_after: String,
+}
+
+/// Exhaustive next-packet enumeration (`kernel.py:155-260` via
+/// `belief::enumerate_next`): exactly 2 disjoint successors per
+/// `(parent_ref, action_id)` with unit mass. Compute runs detached; the
+/// outcome wraps attached (packet construction holds no interpreter state).
+#[pyfunction]
+#[pyo3(signature = (parent_ref, action_id, root_actor, rules_hash))]
+fn packet_successors(
+    py: Python<'_>,
+    parent_ref: String,
+    action_id: u32,
+    root_actor: u32,
+    rules_hash: String,
+) -> PyResult<Vec<PyPacketSuccessor>> {
+    if parent_ref.is_empty() {
+        return Err(PyValueError::new_err("belief parent_ref must be non-empty"));
+    }
+    if root_actor >= 4 {
+        return Err(PyValueError::new_err("seat must be 0..3"));
+    }
+    check_digest_shape(&rules_hash).map_err(PyValueError::new_err)?;
+    let staged =
+        py.detach(|| belief_mod::enumerate_next(&parent_ref, action_id, root_actor, &rules_hash));
+    let staged = staged.map_err(search_err)?;
+    Ok(staged
+        .into_iter()
+        .map(|succ| PyPacketSuccessor {
+            successor_world_ref: succ.successor_world_ref,
+            successor_delta: succ.successor_delta,
+            tile: succ.tile,
+            seq: succ.seq,
+            actor: succ.actor,
+            probability: succ.probability,
+            log_physical: succ.log_physical,
+            log_policy: succ.log_policy,
+            observation_hash: succ.observation_hash,
+            packet_id: succ.packet_id,
+            chain_after: succ.chain_after,
+        })
+        .collect())
 }
 
 /// Run ONE isolated arena act: owned inputs in, owned outcome out.
@@ -256,6 +622,16 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let sub = PyModule::new(py, "search")?;
     sub.add_function(wrap_pyfunction!(act_batch, &sub)?)?;
     sub.add_function(wrap_pyfunction!(act_stats, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(gumbel_for_action, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(gumbel_roots, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(halving_cut, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(gumbel_select, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(uct_select, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(puct_select, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(natural_indices, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(sampled_draws, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(packet_successors, &sub)?)?;
+    sub.add_class::<PyPacketSuccessor>()?;
     m.add_submodule(&sub)?;
     Ok(())
 }

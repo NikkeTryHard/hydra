@@ -237,6 +237,8 @@ class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
         frozen_candidates = _freeze_candidates(legal)
 
         # -- build PBRF forest ------------------------------------------------
+        # Wave 2 bridge audit: kept Python — semantic-seed derivation has no pyfn
+        # cover (bridge natural_indices takes seed bytes; derivation stays Python).
         # Deterministic RNG derived from (candidate_id, case_id); no silent None.
         try:
             seed_bytes = hashlib.sha256(f"{candidate_id}:{case_id}:pbrf_core".encode()).digest()
@@ -437,6 +439,8 @@ class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
             except Exception:
                 return 0.0
 
+        # Wave 2 bridge audit: kept Python — scalar-max + hash tie-break over value
+        # vectors is not a bridge selection cut (no halving/gumbel/UCT/PUCT pyfn covers it).
         # Find max scalar; tie break deterministically
         max_scalar = max(_scalar(v) for v in value_by_action.values())
         tied = [a for a, v in value_by_action.items() if abs(_scalar(v) - max_scalar) < 1e-12]

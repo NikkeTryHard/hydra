@@ -421,7 +421,8 @@ def build_pbrf(
         except Exception:
             raise ContractError("rng is required")
 
-    # Validate rng has required interface (random_below for belief sampling)
+    # Wave 2 bridge audit: kept Python — needs Particle objects from the belief
+    # corpus (bridge natural_indices returns indices only; corpus/worlds live in belief).
     parents = belief.sample_natural(epoch, count=n, rng=rng)  # type: ignore[union-attr]
     if not isinstance(parents, (list, tuple)) or len(parents) != n:
         raise ContractError(f"belief.sample_natural must return {n} particles")
@@ -450,6 +451,8 @@ def build_pbrf(
                 raise StaleBeliefError("stale particle epoch for kernel [PBRF_STALE_EPOCH]")
             if getattr(parent, "target_id", epoch.target_id) != epoch.target_id:  # type: ignore[attr-defined]
                 raise StaleBeliefError("stale particle target for kernel [PBRF_STALE_TARGET]")
+            # Wave 2 bridge audit: kept Python — needs full ActorVisiblePacket objects
+            # (bridge packet_successors returns digest-only PacketSuccessor; PBRF keys on packet.packet_id + actor_view).
             successors = kernel.enumerate_next(
                 epoch=epoch, particle=parent, action=action, policy_set=policy_set
             )

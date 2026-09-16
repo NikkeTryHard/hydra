@@ -108,6 +108,25 @@ FORBIDDEN_IN_TREE_KEY: frozenset[str] = frozenset(
 _MASTER_SEED = b"wp09e_gumbel_v1"
 _GUMBEL_SEED_DOMAIN = b"gumbel_root_v1"
 
+
+def _require_search_bridge() -> Any:
+    """Import the built ``search`` bridge surface (fail closed)."""
+    try:
+        import hydra2_replay_rs as _ext  # pyrefly: ignore[missing-import]
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2_replay_rs extension with search not importable; "
+            "build the bridge with `pixi run build-ext` before Gumbel search"
+        ) from exc
+    try:
+        return _ext.search
+    except AttributeError as exc:
+        raise ImportError(
+            "hydra2_replay_rs.search submodule missing (stale .so); "
+            "rebuild the bridge with `pixi run build-ext`"
+        ) from exc
+
+
 # ---------------------------------------------------------------------------
 # Deterministic Gumbel helpers — SPEC 16.7 root Gumbels derive from
 # (case_id, root_seat, candidate_id, action_id). No global RNG.
@@ -132,28 +151,16 @@ def deterministic_gumbel(
         raise ContractError(f"candidate_id must be non-empty str, got {candidate_id!r}")
     if not isinstance(action_id, int) or isinstance(action_id, bool):
         raise ContractError(f"action_id must be int, got {action_id!r}")
-    payload = f"{case_id}:{root_seat}:{candidate_id}:{action_id}".encode()
-    h = hashlib.sha256(_GUMBEL_SEED_DOMAIN + payload).digest()
-    # 8 bytes big-endian -> uniform
-    int_val = int.from_bytes(h[:8], "big")
-    # Avoid 0 or 1: map to (0,1) exclusive via (x+0.5)/2**64
-    u = (int_val + 0.5) / U64_DENOM  # 2**64
-    # Clamp to avoid numerical log issues (should be unnecessary but defensive)
-    if u <= 0.0:
-        u = 1e-12
-    if u >= 1.0:
-        u = 1.0 - 1e-12
-    # Clip to (1e-12, 1-1e-12) for log safety
-    u = min(max(u, 1e-12), 1.0 - 1e-12)
-    g = -math.log(-math.log(u))
-    if not math.isfinite(g):
-        raise ContractError(f"gumbel must be finite, got {g!r} for u={u}")
-    # Clamp extreme tails to keep finite deterministic range for tests
-    if g > 20.0:
-        g = 20.0
-    if g < -20.0:
-        g = -20.0
-    return g
+    # B1 draw rides the bridge (sha-verbatim); Python validation above keeps
+    # the ContractError contract, rollout/descent/table code stays Python.
+    try:
+        return float(
+            _require_search_bridge().gumbel_for_action(case_id, root_seat, candidate_id, action_id)
+        )
+    except ImportError:
+        raise
+    except Exception as exc:
+        raise ContractError(f"gumbel bridge draw failed: {exc}") from exc
 
 
 def deterministic_root_gumbels(
@@ -162,16 +169,23 @@ def deterministic_root_gumbels(
     """Deterministic Gumbels for every legal action."""
     if not isinstance(legal_action_ids, tuple) or len(legal_action_ids) == 0:
         raise ContractError("legal_action_ids must be non-empty tuple")
-    out: dict[int, float] = {}
+    seen: set[int] = set()
     for aid in legal_action_ids:
         if not isinstance(aid, int) or isinstance(aid, bool):
             raise ContractError(f"action_id must be int, got {aid!r}")
-        if aid in out:
+        if aid in seen:
             raise ContractError(f"duplicate action_id {aid}")
-        out[aid] = deterministic_gumbel(
-            case_id=case_id, root_seat=root_seat, candidate_id=candidate_id, action_id=aid
+        seen.add(aid)
+    # Batch draw rides the bridge (one detached call, dict assembled here).
+    try:
+        pairs = _require_search_bridge().gumbel_roots(
+            case_id, root_seat, candidate_id, list(legal_action_ids)
         )
-    return out
+    except ImportError:
+        raise
+    except Exception as exc:
+        raise ContractError(f"gumbel bridge batch draw failed: {exc}") from exc
+    return {int(a): float(g) for a, g in pairs}
 
 
 # ---------------------------------------------------------------------------

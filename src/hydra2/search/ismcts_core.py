@@ -112,6 +112,24 @@ FORBIDDEN_IN_TREE_KEY: frozenset[str] = frozenset(
 _MASTER_SEED = b"wp08b_ismcts_natural_v1"
 
 
+def _require_search_bridge() -> Any:
+    """Import the built ``search`` bridge surface (fail closed)."""
+    try:
+        import hydra2_replay_rs as _ext  # pyrefly: ignore[missing-import]
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2_replay_rs extension with search not importable; "
+            "build the bridge with `pixi run build-ext` before ISMCTS selection"
+        ) from exc
+    try:
+        return _ext.search
+    except AttributeError as exc:
+        raise ImportError(
+            "hydra2_replay_rs.search submodule missing (stale .so); "
+            "rebuild the bridge with `pixi run build-ext`"
+        ) from exc
+
+
 def is_redeterminization_enabled() -> bool:
     """Re-determinization is disabled until a named conditional-law proof exists.
 
@@ -448,36 +466,45 @@ class UniformContinuationPolicy:
 def _uct_select(
     node: InformationSetNode, legal: tuple[int, ...], root_seat: int, uct_c: float, tie_break: str
 ) -> int:
-    # Prefer unvisited actions in deterministic order
-    for a in sorted(legal):
-        st = node.action_stats.get(a)
-        if st is None or st.visits == 0:
-            return a
-    total = node.visits
-    best: int | None = None
-    best_val = float("-inf")
-    for a in sorted(legal):
-        mv = node.mean_vector(a)
-        if mv is None:
+    # UCT pick rides the bridge (unvisited-first + q+u with 1e-12 eps + tie
+    # arm, bit-identical to the oracle below); node tables stay Python —
+    # only visited-arm scalars cross, never hidden worlds (info-keys only).
+    try:
+        stat_ids = sorted(node.action_stats.keys())
+    except Exception as exc:
+        raise ContractError(f"uct node stats unreadable: {exc}") from exc
+    actions: list[int] = []
+    visits: list[int] = []
+    sums_flat: list[float] = []
+    for aid in stat_ids:
+        st = node.action_stats.get(aid)
+        if st is None:
             continue
-        q = scalarize_vector(mv, root_seat)
-        st = node.action_stats[a]
-        u = uct_c * math.sqrt(math.log(total + 1) / st.visits)
-        val = q + u
-        if val > best_val + 1e-12:
-            best_val = val
-            best = a
-        elif abs(val - best_val) <= 1e-12 and best is not None:
-            # tie break
-            if tie_break == "lowest_action_id":
-                if a < best:
-                    best = a
-            elif tie_break in ("stable_hash", "lexicographic"):
-                # deterministic hash tie
-                h_a = hashlib.sha256(f"{a}".encode()).hexdigest()
-                h_best = hashlib.sha256(f"{best}".encode()).hexdigest()
-                if h_a < h_best:
-                    best = a
-    if best is None:
-        return sorted(legal)[0]
-    return best
+        try:
+            n = int(st.visits)  # type: ignore[arg-type]
+            quad = tuple(float(v) for v in st.value_sum)
+        except Exception as exc:
+            raise ContractError(f"uct node stats malformed for {aid!r}: {exc}") from exc
+        if len(quad) != 4:
+            raise ContractError(f"uct node value_sum must hold 4 entries for {aid!r}")
+        actions.append(int(aid))
+        visits.append(n)
+        sums_flat.extend(quad)
+    try:
+        total = int(node.visits)  # type: ignore[arg-type]
+        return int(
+            _require_search_bridge().uct_select(
+                actions,
+                visits,
+                sums_flat,
+                [int(a) for a in legal],
+                int(root_seat),
+                total,
+                float(uct_c),
+                str(tie_break),
+            )
+        )
+    except ImportError:
+        raise
+    except Exception as exc:
+        raise ContractError(f"ismcts bridge uct failed: {exc}") from exc

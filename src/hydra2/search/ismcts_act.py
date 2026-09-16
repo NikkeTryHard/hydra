@@ -43,12 +43,13 @@ def _rust_act_probe(
     legal_count: int,
     legal_ids: Any,
 ) -> Any:
-    """Isolated-act Rust-first probe (health gate; selection stays Python).
+    """Isolated-act Rust-first probe (health gate; selection rides the bridge search pyfns).
 
     Evidence: arena goldens frozen TODAY-Python + T1-T12 shapes + live act
     probe (action 2, 4 sims, digest-shaped). The arena is proven at unit
-    level; this phase only gates the act entry (caller flip) — core
-    selection math bodies STAY Python, body deletion later with T1-T12 gates.
+    level; this phase gates the act entry (caller flip) — UCT selection
+    rides the bridge search pyfns bit-identical to the oracle, descent
+    loop/node tables stay Python.
 
     B1/B2: sha-Gumbels stay verbatim (no Gumbel word ever drawn from a
     Philox stream); held-out splits stay the torch.randperm oracle; torch
@@ -128,14 +129,14 @@ class NaturalISMCTSPlannerActMixin(NaturalISMCTSPlannerSearchMixin):
     # -- Planner protocol adapter -----------------------------------------
 
     def act(self, request: SearchRequest) -> SearchResult:
-        """Planner act — Rust-gated entry, Python core decides.
+        """Planner act — Rust-gated entry, bridge-routed core decides.
 
         Rust-first gate: an isolated ``act_batch`` probe + ``ActJudge``
-        golden-compare runs before the Python core below (ImportError-only
-        oracle fallback; mismatch raises, never silent). Core selection math
-        bodies STAY Python this phase (arena proven at unit level; body
-        deletion later with T1-T12 gates). B1/B2 held: sha-Gumbels verbatim,
-        held-out splits stay the torch.randperm oracle, torch islands stay.
+        golden-compare runs before the core below (ImportError-only oracle
+        fallback; mismatch raises, never silent). UCT selection rides the
+        bridge search pyfns bit-identical to the oracle; descent loop/node
+        tables stay Python. B1/B2 held: sha-Gumbels verbatim, held-out
+        splits stay the torch.randperm oracle, torch islands stay.
         """
         if not isinstance(request, SearchRequest):
             raise ContractError(f"request must be SearchRequest, got {type(request).__name__}")

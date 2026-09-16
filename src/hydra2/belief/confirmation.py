@@ -6,10 +6,10 @@ Runs decision cases under the exact tiny simulator using semantic confirmation s
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from hydra2.artifacts.digest import sha256_digest
 from hydra2.contracts.common import ContractError, DigestText, make_digest_text
 
 if TYPE_CHECKING:
@@ -80,10 +80,12 @@ class NaturalConfirmationRunner:
             act = rng.random_below(2)
             # Value derived from hash of world_id + observation_hash + rng seed (deterministic)
             seed_hex = rng.checkpoint().seed_hex if hasattr(rng, "checkpoint") else "noseed"
+            # Digest line via the canon bridge (byte-identical to the retired
+            # hashlib hexdigest slice; ImportError with build-ext hint).
             val_raw = int(
-                hashlib.sha256(
-                    f"{case.world_id}:{case.observation_hash}:{seed_hex}".encode()
-                ).hexdigest()[:8],
+                str(
+                    sha256_digest(f"{case.world_id}:{case.observation_hash}:{seed_hex}".encode())
+                ).removeprefix("sha256:")[:8],
                 16,
             )
             value = (val_raw % 1000) / 1000.0  # 0..0.999

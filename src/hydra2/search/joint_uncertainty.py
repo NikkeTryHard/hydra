@@ -228,6 +228,8 @@ def coherent_trajectory(
     Returns (world, sampled_action_id) with law induced by exact simulator + behavioral policy.
     Proves trajectory is coherent (uses joint, respects legal masks, same-info).
     """
+    # Wave 2 bridge audit: kept Python — joint-posterior hash draws need live worlds +
+    # policy tables (generic hash, not CTR natural_indices/sampled_draws; no pyfn covers it).
     # Deterministically sample joint via hash of posterior weights
     # Compute cumulative weights
     if len(joint_posterior.particles) == 0:

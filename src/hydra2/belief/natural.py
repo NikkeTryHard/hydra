@@ -6,12 +6,11 @@ Implements SPEC 14.2 Target and proposal, and Belief protocol for natural worlds
 
 from __future__ import annotations
 
-import hashlib
 import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
-from hydra2.artifacts.canonical import canonical_bytes
+from hydra2.artifacts.digest import of_canonical
 from hydra2.contracts.common import (
     BeliefEpochId,
     ContractError,
@@ -27,6 +26,51 @@ from hydra2.contracts.common import (
 )
 from hydra2.contracts.event_packet import ActorVisiblePacket
 from hydra2.contracts.observation import ActorObservation
+
+
+def _require_search_bridge() -> Any:
+    """Import the built ``search`` bridge surface (fail closed)."""
+    try:
+        import hydra2_replay_rs as _ext  # pyrefly: ignore[missing-import]
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2_replay_rs extension with search not importable; "
+            "build the bridge with `pixi run build-ext` before sampling belief"
+        ) from exc
+    try:
+        mod = _ext.search
+    except AttributeError as exc:
+        raise ImportError(
+            "hydra2_replay_rs.search submodule missing (stale .so); "
+            "rebuild the bridge with `pixi run build-ext`"
+        ) from exc
+    if not hasattr(mod, "natural_indices"):
+        raise ImportError(
+            "hydra2_replay_rs.search.natural_indices missing (stale .so); "
+            "rebuild the bridge with `pixi run build-ext`"
+        )
+    return mod
+
+
+def _ctr_seed_cursor(rng: Any) -> tuple[bytes, int]:
+    """Extract CTR (seed, cursor) for bridge replay (fail closed, no fallback)."""
+    try:
+        cp = rng.checkpoint()
+        seed_hex = cp.seed_hex
+        cursor = int(cp.cursor)
+        seed = bytes.fromhex(str(seed_hex))
+    except AttributeError as exc:
+        raise ContractError(
+            "rng must expose checkpoint() with seed_hex/cursor for bridge replay"
+        ) from exc
+    except (ValueError, TypeError) as exc:
+        raise ContractError(f"rng checkpoint malformed: {exc}") from exc
+    if len(seed) == 0:
+        raise ContractError("rng seed must be non-empty bytes")
+    if cursor < 0 or cursor > 0xFFFF_FFFF_FFFF_FFFF:
+        raise ContractError(f"rng cursor out of u64 range: {cursor!r}")
+    return seed, cursor
+
 
 if TYPE_CHECKING:
     from hydra2.belief.world import FullWorld
@@ -116,7 +160,10 @@ def _target_id_for(
         "event_model_hash": event_model_hash,
         "proposal_spec_hash": proposal_spec_hash,
     }
-    return DigestText("sha256:" + hashlib.sha256(canonical_bytes(doc)).hexdigest())
+    # Digest line via the canon bridge (byte-identical to the retired
+    # hashlib-over-canonical_bytes loop; ImportError with build-ext hint,
+    # no oracle fallback). Math/doc shape untouched.
+    return of_canonical(doc)
 
 
 def _validate_finite(value: float, *, name: str) -> float:
@@ -154,9 +201,6 @@ def _build_tiny_corpus_for_epoch(
     # No stored corpus: synthesize 4 worlds consistent by construction with
     # the same root hand, then bind their observation_hash to the epoch so
     # the generated worlds match the epoch observation.
-    # Seed-documentation digest (result unused): records that the corpus is
-    # deterministically bound to target_id even though hands are fixed.
-    _ = hashlib.sha256(epoch.target_id.encode()).digest()
     # Tiny-domain tile pool 0..11: seats hold variants over 0..7, the wall
     # holds 8..11. Root hand stays fixed for hidden-permutation invariance.
     base_hands_options = [
@@ -308,9 +352,35 @@ class NaturalBelief:
             raise ContractError("empty corpus for epoch")
         log_prob = -math.log(K)
         _ = _validate_finite(log_prob, name="log_target_density")
+        # Draws via the search bridge (CTR-exact, including the K==1
+        # no-consume rule). Cursor replay: seed/cursor in, end_cursor out,
+        # rng jumped so the stream continues exactly (checkpoint/jump_to
+        # shape). ImportError with build-ext hint, no oracle fallback.
+        seed, cursor = _ctr_seed_cursor(rng)
+        search_mod = _require_search_bridge()
+        try:
+            indices, end_cursor = search_mod.natural_indices(K, count, seed, cursor)
+        except ImportError:
+            raise
+        except (ValueError, OverflowError, TypeError) as exc:
+            raise ContractError(f"natural_indices bridge rejected input: {exc}") from exc
+        try:
+            rng.jump_to(int(end_cursor))
+        except (AttributeError, ValueError, TypeError) as exc:
+            raise ContractError(f"rng jump_to failed for bridge replay: {exc}") from exc
+        try:
+            idx_list = list(indices)
+        except TypeError as exc:
+            raise ContractError(f"natural_indices bridge returned non-sequence: {exc}") from exc
+        if len(idx_list) != count:
+            raise ContractError(
+                f"natural_indices bridge returned {len(idx_list)} indices, expected {count}"
+            )
         out: list[Particle] = []
-        for _ in range(count):
-            idx = rng.random_below(K) if K > 1 else 0
+        for raw_idx in idx_list:
+            idx = int(raw_idx)
+            if idx < 0 or idx >= K:
+                raise ContractError(f"bridge index {idx!r} out of range for K={K}")
             world = corpus[idx]
             # For natural, log_target == log_proposal, ratio 1
             pid = make_parent_id(
@@ -408,6 +478,8 @@ class NaturalBelief:
     ) -> tuple[Particle, ...]:
         if not isinstance(actor_observation, ActorObservation):
             raise ContractError("actor_observation must be ActorObservation")
+        if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
+            raise ContractError("count must be positive int")
         _ = self._require_epoch(epoch)
         # Immutable-constraint filter: keep worlds whose concealed hand for
         # the queried seat exactly equals the observation's concealed hand.
@@ -426,9 +498,33 @@ class NaturalBelief:
             )
         K = len(filtered)
         log_prob = -math.log(K) if K > 0 else float("-inf")
+        # Draws via the search bridge (CTR-exact, K==1 no-consume). Cursor
+        # replay keeps the stream exact; ImportError with build-ext hint.
+        seed, cursor = _ctr_seed_cursor(rng)
+        search_mod = _require_search_bridge()
+        try:
+            indices, end_cursor = search_mod.natural_indices(K, count, seed, cursor)
+        except ImportError:
+            raise
+        except (ValueError, OverflowError, TypeError) as exc:
+            raise ContractError(f"natural_indices bridge rejected input: {exc}") from exc
+        try:
+            rng.jump_to(int(end_cursor))
+        except (AttributeError, ValueError, TypeError) as exc:
+            raise ContractError(f"rng jump_to failed for bridge replay: {exc}") from exc
+        try:
+            idx_list = list(indices)
+        except TypeError as exc:
+            raise ContractError(f"natural_indices bridge returned non-sequence: {exc}") from exc
+        if len(idx_list) != count:
+            raise ContractError(
+                f"natural_indices bridge returned {len(idx_list)} indices, expected {count}"
+            )
         out: list[Particle] = []
-        for _ in range(count):
-            idx = rng.random_below(K) if K > 1 else 0
+        for raw_idx in idx_list:
+            idx = int(raw_idx)
+            if idx < 0 or idx >= K:
+                raise ContractError(f"bridge index {idx!r} out of range for K={K}")
             world = filtered[idx]
             pid = make_parent_id(
                 world.world_id.split(":")[1][:16] if ":" in world.world_id else world.world_id[:16]

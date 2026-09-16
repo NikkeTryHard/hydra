@@ -21,6 +21,51 @@ from typing import TYPE_CHECKING, Any
 from hydra2.belief.kernel import NaturalPacketKernel
 from hydra2.contracts.common import ContractError, StaleBeliefError
 
+
+def _require_search_bridge() -> Any:
+    """Import the built ``search`` bridge surface (fail closed)."""
+    try:
+        import hydra2_replay_rs as _ext  # pyrefly: ignore[missing-import]
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2_replay_rs extension with search not importable; "
+            "build the bridge with `pixi run build-ext` before sampling traces"
+        ) from exc
+    try:
+        mod = _ext.search
+    except AttributeError as exc:
+        raise ImportError(
+            "hydra2_replay_rs.search submodule missing (stale .so); "
+            "rebuild the bridge with `pixi run build-ext`"
+        ) from exc
+    if not hasattr(mod, "sampled_draws"):
+        raise ImportError(
+            "hydra2_replay_rs.search.sampled_draws missing (stale .so); "
+            "rebuild the bridge with `pixi run build-ext`"
+        )
+    return mod
+
+
+def _ctr_seed_cursor(rng: Any) -> tuple[bytes, int]:
+    """Extract CTR (seed, cursor) for bridge replay (fail closed, no fallback)."""
+    try:
+        cp = rng.checkpoint()
+        seed_hex = cp.seed_hex
+        cursor = int(cp.cursor)
+        seed = bytes.fromhex(str(seed_hex))
+    except AttributeError as exc:
+        raise ContractError(
+            "rng must expose checkpoint() with seed_hex/cursor for bridge replay"
+        ) from exc
+    except (ValueError, TypeError) as exc:
+        raise ContractError(f"rng checkpoint malformed: {exc}") from exc
+    if len(seed) == 0:
+        raise ContractError("rng seed must be non-empty bytes")
+    if cursor < 0 or cursor > 0xFFFF_FFFF_FFFF_FFFF:
+        raise ContractError(f"rng cursor out of u64 range: {cursor!r}")
+    return seed, cursor
+
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
@@ -134,17 +179,45 @@ def enumerate_sampled(
     if not math.isfinite(total) or total <= 0:
         raise ContractError("frame kernel total mass must be positive finite")
     draws = cfg.samples_per_parent_action
-    for _ in range(draws):
-        u: float = rng.random_float()
-        if not 0.0 <= u < 1.0:
-            raise ContractError("rng.random_float must lie in [0, 1)")
-        cumulative = 0.0
-        chosen = frame[-1]
-        for successor, prob in zip(frame, probs, strict=True):
-            cumulative += prob / total
-            if u < cumulative:
-                chosen = successor
-                break
+    # Draws via the search bridge (CTR-exact categorical over the frame law).
+    # Cursor replay: seed/cursor in, end_cursor out, rng jumped so the stream
+    # continues exactly. raw_weight = P(chosen)/draws comes from the bridge
+    # (proven equal below). ImportError with build-ext hint, no fallback.
+    seed, cursor = _ctr_seed_cursor(rng)
+    search_mod = _require_search_bridge()
+    try:
+        chosen_idx, raw_weights, end_cursor = search_mod.sampled_draws(probs, draws, seed, cursor)
+    except ImportError:
+        raise
+    except (ValueError, OverflowError, TypeError) as exc:
+        raise ContractError(f"sampled_draws bridge rejected input: {exc}") from exc
+    try:
+        rng.jump_to(int(end_cursor))
+    except (AttributeError, ValueError, TypeError) as exc:
+        raise ContractError(f"rng jump_to failed for bridge replay: {exc}") from exc
+    try:
+        picks = list(chosen_idx)
+        weights = list(raw_weights)
+    except TypeError as exc:
+        raise ContractError(f"sampled_draws bridge returned non-sequence: {exc}") from exc
+    if len(picks) != draws or len(weights) != draws:
+        raise ContractError(
+            f"sampled_draws bridge returned {len(picks)}/{len(weights)} draws, expected {draws}"
+        )
+    out: list[SampledSuccessor] = []
+    for pick_raw, w_raw in zip(picks, weights, strict=True):
+        pick = int(pick_raw)
+        if pick < 0 or pick >= len(frame):
+            raise ContractError(f"bridge pick {pick!r} out of frame range")
+        chosen = frame[pick]
+        # Byte-identity: bridge weight must equal P(chosen)/draws exactly.
+        # Bridge computes same division, so exact equality holds; mismatch
+        # fail-closes (1e-15 admits float noise only, never drift).
+        exp_w = _frame_probability(chosen) / draws
+        if float(w_raw) != exp_w and abs(float(w_raw) - exp_w) > 1e-15:
+            raise ContractError(
+                f"bridge raw_weight {float(w_raw)!r} != P/draws {exp_w!r} (bridge!=oracle)"
+            )
         packet = getattr(chosen, "packet", None)
         if packet is None:
             raise ContractError("frame successor must carry a packet")
@@ -155,7 +228,7 @@ def enumerate_sampled(
                 successor_delta=str(
                     getattr(chosen, "delta_ref", getattr(chosen, "successor_delta", ""))
                 ),
-                raw_weight=_frame_probability(chosen) / draws,
+                raw_weight=float(w_raw),
                 provenance={
                     "mode": SAMPLED_KERNEL_MODE,
                     "samples_per_parent_action": draws,

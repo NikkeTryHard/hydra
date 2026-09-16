@@ -112,6 +112,8 @@ def make_uniform_strategy(abstraction: LocalResolvingAbstraction) -> tuple[float
 # ---------------------------------------------------------------------------
 # Update rules — frozen, empirical optimizers only (never equilibrium)
 # ---------------------------------------------------------------------------
+# Wave 2 bridge audit: kept Python — regret/hedge/fictitious-play table updates
+# are empirical optimizers, not UCT/PUCT/Gumbel selection cuts; no pyfn covers them.
 
 _VALID_UPDATE_RULES = frozenset({"regret_matching", "hedge", "fictitious_play"})
 _VALID_AVERAGING = frozenset({"uniform", "linear"})

@@ -167,6 +167,8 @@ class LocalResolvingPlannerSearchMixin:
         visit_counts: dict[tuple[int, str], int] = dict(table.visit_counts)
 
         # Need worlds for leaf evaluation: sample from belief if available else synthetic
+        # Wave 2 bridge audit: kept Python — iteration worlds resolve behind particle
+        # refs via the belief registry (bridge natural_indices returns indices only).
         worlds: list[Any] = []
         if self.belief is not None and epoch is not None and _HAS_BELIEF:
             try:
@@ -282,6 +284,8 @@ class LocalResolvingPlannerSearchMixin:
             avg_weights[(root_actor, root_info)] = 0.0
             visit_counts[(root_actor, root_info)] = 0
 
+        # Wave 2 bridge audit: kept Python — descent loop + node tables need live worlds
+        # and model leaf vectors (no pyfn covers traversal; regret/hedge/FP updates stay Python).
         for it in range(1, self.config.iterations + 1):
             # Select world cyclically
             world = worlds[(it - 1) % len(worlds)]
@@ -420,6 +424,8 @@ class LocalResolvingPlannerSearchMixin:
         if root_avg is None:
             root_avg = table.table.get((root_actor, root_info), make_uniform_strategy(ab))
         # Tie break handling
+        # Wave 2 bridge audit: kept Python — greedy/temperature/value_break tie-breaks
+        # are not bridge selection cuts (no halving/gumbel/UCT/PUCT pyfn covers them).
         selected_abstract_idx: int
         if self.config.tie_break == "greedy":
             max_p = max(root_avg)

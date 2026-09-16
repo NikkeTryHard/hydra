@@ -141,6 +141,8 @@ def model_vector_for_world(
     Uses world_id hash to derive bounded values; sum is zero to preserve
     general-sum feasibility (zero-sum subset). Finite and reproducible.
     """
+    # Wave 2 bridge audit: kept Python — leaf/model vectors need live worlds
+    # (rollout/spec logic stays Python; no pyfn covers value derivation).
     wid = str(getattr(world, "world_id", "world_unknown"))
     h = hashlib.sha256((wid + ":" + leaf_kind).encode()).digest()
     # 4 values in [-1, 1] from bytes

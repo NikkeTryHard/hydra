@@ -33,6 +33,31 @@ from hydra2.contracts.event_packet import (
     public_state_chain_hash,
 )
 
+
+def _require_search_bridge() -> Any:
+    """Import the built ``search`` bridge surface (fail closed)."""
+    try:
+        import hydra2_replay_rs as _ext  # pyrefly: ignore[missing-import]
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2_replay_rs extension with search not importable; "
+            "build the bridge with `pixi run build-ext` before enumerating packets"
+        ) from exc
+    try:
+        mod = _ext.search
+    except AttributeError as exc:
+        raise ImportError(
+            "hydra2_replay_rs.search submodule missing (stale .so); "
+            "rebuild the bridge with `pixi run build-ext`"
+        ) from exc
+    if not hasattr(mod, "packet_successors"):
+        raise ImportError(
+            "hydra2_replay_rs.search.packet_successors missing (stale .so); "
+            "rebuild the bridge with `pixi run build-ext`"
+        )
+    return mod
+
+
 __all__ = ["NaturalPacketKernel", "PacketSuccessor"]
 
 
@@ -189,15 +214,54 @@ class NaturalPacketKernel:
         rh = epoch.rules_hash
         # Use event_schema_hash dummy as c*64 for packet events
         sh = _valid_digest("sha256:" + "c" * 64)
-        # Two successors:
+        # Bridge assembly: successor/chain/hash via search.packet_successors.
+        # The bridge computes tile/seq/actor layout, successor/delta refs,
+        # observation/packet/chain hashes, and split mass detached; Python
+        # rebuilds the packet objects and fail-closes on any byte/hash
+        # mismatch (bridge==oracle proof, no fallback).
+        if not isinstance(particle.world_ref, str) or particle.world_ref == "":
+            raise ContractError("particle world_ref must be non-empty str")
+        try:
+            root_seat = int(epoch.root_actor)
+        except Exception as exc:
+            raise ContractError(f"epoch root_actor must be int seat: {exc}") from exc
+        if root_seat < 0 or root_seat > 3:
+            raise ContractError(f"epoch root_actor must be 0..3, got {root_seat!r}")
+        if isinstance(aid, bool) or not isinstance(aid, int) or aid < 0 or aid > 0xFFFF_FFFF:
+            raise ContractError(f"action_id must be u32, got {aid!r}")
+        rules_hash_str = str(rh)
+        search_mod = _require_search_bridge()
+        try:
+            bridge_rows = search_mod.packet_successors(
+                particle.world_ref, aid, root_seat, rules_hash_str
+            )
+        except ImportError:
+            raise
+        except (ValueError, OverflowError, TypeError) as exc:
+            raise ContractError(f"packet successor bridge rejected input: {exc}") from exc
+        try:
+            rows = list(bridge_rows)
+        except TypeError as exc:
+            raise ContractError(f"packet successor bridge returned non-sequence: {exc}") from exc
+        if len(rows) != 2:
+            raise ContractError(f"packet successor bridge must return exactly 2, got {len(rows)}")
+        # Two successors (bridge order is idx order: tile 8+idx, seq 100+idx):
         successors: list[PacketSuccessor] = []
         # Physical probabilities: uniform 0.5 each
         # Policy probabilities: uniform 1.0 (deterministic opponent)
         # Combined prob = 0.5 * 1.0 = 0.5
-        for idx in range(2):
-            tile = 8 + idx  # distinct tile
-            seq = 100 + idx  # distinct sequence to ensure disjoint
-            actor_opponent = (int(epoch.root_actor) + 1 + idx) % 4
+        for idx, brow in enumerate(rows):
+            tile = int(brow.tile)
+            seq = int(brow.seq)
+            actor_opponent = int(brow.actor)
+            exp_tile = 8 + idx
+            exp_seq = 100 + idx
+            exp_actor = (root_seat + 1 + idx) % 4
+            if tile != exp_tile or seq != exp_seq or actor_opponent != exp_actor:
+                raise ContractError(
+                    f"bridge layout mismatch idx={idx}: got {(tile, seq, actor_opponent)}, "
+                    f"expected {(exp_tile, exp_seq, exp_actor)}"
+                )
             # Ensure actor_opponent != root_actor to make packet actor-visible?
             # Use opponent as actor of discard
             event = _make_public_discard_event(
@@ -213,6 +277,11 @@ class NaturalPacketKernel:
             after = public_state_chain_hash([event])
             # observation_hash_after: derive from packet contents deterministically
             obs_hash = _cached_observation_hash(tile, seq)
+            # Byte/hash equality: bridge hashes must equal the oracle hashes.
+            if str(obs_hash) != str(brow.observation_hash):
+                raise ContractError(f"observation hash mismatch idx={idx} (bridge!=oracle)")
+            if str(after) != str(brow.chain_after):
+                raise ContractError(f"chain_after mismatch idx={idx} (bridge!=oracle)")
             packet = make_actor_visible_packet(
                 actor_view=epoch.root_actor,
                 events=(event,),
@@ -220,11 +289,21 @@ class NaturalPacketKernel:
                 public_state_hash_after=after,
                 observation_hash_after=obs_hash,
             )
+            if str(packet.packet_id) != str(brow.packet_id):
+                raise ContractError(f"packet_id mismatch idx={idx} (bridge!=oracle)")
             # Successor world: deterministic new world id derived from particle+tile
-            succ_world_ref, delta_ref = _cached_successor_refs(particle.world_ref, tile, aid)
-            prob = 0.5
-            log_phys = math.log(0.5)
-            log_policy = 0.0  # log(1.0)
+            exp_succ, exp_delta = _cached_successor_refs(particle.world_ref, tile, aid)
+            if exp_succ != str(brow.successor_world_ref):
+                raise ContractError(f"successor ref mismatch idx={idx} (bridge!=oracle)")
+            if exp_delta != str(brow.successor_delta):
+                raise ContractError(f"delta ref mismatch idx={idx} (bridge!=oracle)")
+            prob = float(brow.probability)
+            log_phys = float(brow.log_physical)
+            log_policy = float(brow.log_policy)
+            if abs(prob - 0.5) > 1e-12:
+                raise ContractError(f"bridge probability {prob!r} != 0.5")
+            if abs(log_phys - math.log(0.5)) > 1e-12 or abs(log_policy - 0.0) > 1e-12:
+                raise ContractError("bridge log split mismatch (bridge!=oracle)")
             # Verify probability == exp(log_phys+log_policy)
             recomb = math.exp(log_phys + log_policy)
             if abs(recomb - prob) > 1e-12:
@@ -232,8 +311,8 @@ class NaturalPacketKernel:
             successors.append(
                 PacketSuccessor(
                     packet=packet,
-                    successor_world_ref=succ_world_ref,
-                    delta_ref=delta_ref,
+                    successor_world_ref=str(brow.successor_world_ref),
+                    delta_ref=str(brow.successor_delta),
                     probability=prob,
                     log_physical_probability=log_phys,
                     log_actor_policy_probability=log_policy,

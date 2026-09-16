@@ -9,11 +9,11 @@ domain but preserve the required invariants for testing.
 
 from __future__ import annotations
 
-import hashlib
 import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from hydra2.artifacts.digest import sha256_digest
 from hydra2.belief.world import FullWorld, make_full_world
 from hydra2.contracts.common import DigestText, make_digest_text
 
@@ -117,7 +117,10 @@ def build_tiny_corpus(
             dead_wall=(),
             latent_state={
                 "corpus_idx": idx,
-                "tag": hashlib.sha256(f"{obs_hash}:{idx}".encode()).hexdigest()[:8],
+                # Digest line via the canon bridge (byte-identical to the
+                # retired hashlib hexdigest slice; ImportError with build-ext
+                # hint, no fallback). Corpus order (sorted world_id) untouched.
+                "tag": str(sha256_digest(f"{obs_hash}:{idx}".encode())).removeprefix("sha256:")[:8],
             },
             rules_hash=r_hash,
             observation_hash=obs_hash,

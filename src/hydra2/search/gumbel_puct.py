@@ -28,6 +28,7 @@ from hydra2.search.gumbel_core import _MASTER_SEED as _MASTER_SEED
 from hydra2.search.gumbel_core import _actor_to_move as _actor_to_move
 from hydra2.search.gumbel_core import _is_terminal as _is_terminal
 from hydra2.search.gumbel_core import _legal_ids_for_observation as _legal_ids_for_observation
+from hydra2.search.gumbel_core import _require_search_bridge as _require_search_bridge
 from hydra2.search.gumbel_core import exact_transition as exact_transition
 from hydra2.search.gumbel_core import make_digest_text as make_digest_text
 from hydra2.search.gumbel_core import make_full_world as make_full_world
@@ -237,27 +238,52 @@ class PuctBaselinePlanner(Planner):  # type: ignore[misc]
                 and self._transitions >= self._config.max_transitions
             ):
                 break
-            # PUCT selection
-            best_aid = None
-            best_score = float("-inf")
-            total_visits = sum(visits.values())
-            for aid in legal_ids:
-                n = visits[aid]
-                if n == 0:
-                    score = float("inf")  # prioritize unvisited
-                else:
-                    mv = tuple(v / n for v in value_sum[aid])
-                    q = scalarize_vector(mv, root_seat)
-                    u = self._config.puct_c * priors[aid] * math.sqrt(total_visits) / (1 + n)
-                    score = q + u
-                if score > best_score + 1e-12:
-                    best_score = score
-                    best_aid = aid
-                elif best_aid is not None and abs(score - best_score) <= 1e-12:
-                    if self._config.tie_break == "lowest_action_id" and aid < best_aid:
+            # PUCT selection — unvisited arms win in legal order first (oracle
+            # rule the bridge does not replicate: it scores unvisited as q=0).
+            # Fully-visited lowest-arm scoring rides the bridge (uniform
+            # priors, 1e-12 eps + tie arm); any other shape stays on the
+            # oracle path below. Rollout interleaving stays Python.
+            if all(visits[aid] > 0 for aid in legal_ids) and self._config.tie_break == (
+                "lowest_action_id"
+            ):
+                try:
+                    _puct_acts = [int(a) for a in legal_ids]
+                    best_aid = int(
+                        _require_search_bridge().puct_select(
+                            _puct_acts,
+                            [int(visits[a]) for a in legal_ids],
+                            [float(v) for a in legal_ids for v in value_sum[a]],
+                            _puct_acts,
+                            int(root_seat),
+                            float(self._config.puct_c),
+                            str(self._config.tie_break),
+                        )
+                    )
+                except ImportError:
+                    raise
+                except Exception as exc:
+                    raise ContractError(f"puct bridge select failed: {exc}") from exc
+            else:
+                best_aid = None
+                best_score = float("-inf")
+                total_visits = sum(visits.values())
+                for aid in legal_ids:
+                    n = visits[aid]
+                    if n == 0:
+                        score = float("inf")  # prioritize unvisited
+                    else:
+                        mv = tuple(v / n for v in value_sum[aid])
+                        q = scalarize_vector(mv, root_seat)
+                        u = self._config.puct_c * priors[aid] * math.sqrt(total_visits) / (1 + n)
+                        score = q + u
+                    if score > best_score + 1e-12:
+                        best_score = score
                         best_aid = aid
-            if best_aid is None:
-                best_aid = legal_ids[0]
+                    elif best_aid is not None and abs(score - best_score) <= 1e-12:
+                        if self._config.tie_break == "lowest_action_id" and aid < best_aid:
+                            best_aid = aid
+                if best_aid is None:
+                    best_aid = legal_ids[0]
             # Sample world and rollout
             if self._belief is not None and _HAS_BELIEF:
                 try:

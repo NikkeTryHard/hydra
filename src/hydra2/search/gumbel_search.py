@@ -25,6 +25,7 @@ from hydra2.search.gumbel_core import _MASTER_SEED as _MASTER_SEED
 from hydra2.search.gumbel_core import _actor_to_move as _actor_to_move
 from hydra2.search.gumbel_core import _is_terminal as _is_terminal
 from hydra2.search.gumbel_core import _legal_ids_for_observation as _legal_ids_for_observation
+from hydra2.search.gumbel_core import _require_search_bridge as _require_search_bridge
 from hydra2.search.gumbel_core import deterministic_root_gumbels as deterministic_root_gumbels
 from hydra2.search.gumbel_core import exact_transition as exact_transition
 from hydra2.search.gumbel_core import make_full_world as make_full_world
@@ -472,31 +473,57 @@ class GumbelSearchPlannerSearchMixin:
                     and self._transitions >= self._config.max_transitions
                 ):
                     break
-            # Score survivors by gumbel + scalarized mean (vector backup -> scalarize at root only)
-            scored: list[tuple[float, int]] = []
+            # Score survivors by gumbel + scalarized mean (vector backup -> scalarize at root only).
+            # The cut rides the bridge when every survivor was visited (finite
+            # means); budget-exhausted -inf means stay on the oracle path the
+            # bridge rejects as non-finite.
+            cut_means: dict[int, float] = {}
+            cut_complete = True
             for aid in survivors:
-                st = stats[aid]
-                mv = st.mean_vector()
-                q = scalarize_vector(mv, root_seat) if mv is not None else float("-inf")
-                g = gumbels[aid]
-                # Gumbel score rule: g + q (MuZero style uses g + logits + sigma(q); we use g+q)
-                score = g + q
-                scored.append((score, aid))
-            # Sort descending by score, tie_break deterministic
-            scored.sort(
-                key=lambda x: (
-                    -x[0],
-                    x[1]
-                    if self._config.tie_break == "lowest_action_id"
-                    else hashlib.sha256(f"{x[1]}".encode()).hexdigest(),
+                mv = stats[aid].mean_vector()
+                if mv is None:
+                    cut_complete = False
+                    break
+                cut_means[aid] = scalarize_vector(mv, root_seat)
+            if cut_complete:
+                try:
+                    survivors = tuple(
+                        _require_search_bridge().halving_cut(
+                            list(survivors),
+                            [(aid, cut_means[aid]) for aid in survivors],
+                            [(aid, gumbels[aid]) for aid in survivors],
+                            str(self._config.tie_break),
+                        )
+                    )
+                except ImportError:
+                    raise
+                except Exception as exc:
+                    raise ContractError(f"gumbel bridge halving cut failed: {exc}") from exc
+            else:
+                scored: list[tuple[float, int]] = []
+                for aid in survivors:
+                    st = stats[aid]
+                    mv = st.mean_vector()
+                    q = scalarize_vector(mv, root_seat) if mv is not None else float("-inf")
+                    g = gumbels[aid]
+                    # Gumbel score rule: g + q (MuZero style uses g + logits + sigma(q); we use g+q)
+                    score = g + q
+                    scored.append((score, aid))
+                # Sort descending by score, tie_break deterministic
+                scored.sort(
+                    key=lambda x: (
+                        -x[0],
+                        x[1]
+                        if self._config.tie_break == "lowest_action_id"
+                        else hashlib.sha256(f"{x[1]}".encode()).hexdigest(),
+                    )
                 )
-            )
-            # Keep ceil(n/2) survivors (sequential halving)
-            keep = (len(survivors) + 1) // 2
-            if keep < 1:
-                keep = 1
-            # If all scores are -inf (no visits), keep original order
-            survivors = tuple(aid for _, aid in scored[:keep])
+                # Keep ceil(n/2) survivors (sequential halving)
+                keep = (len(survivors) + 1) // 2
+                if keep < 1:
+                    keep = 1
+                # If all scores are -inf (no visits), keep original order
+                survivors = tuple(aid for _, aid in scored[:keep])
             # Budget exhausted -> break early
             if (
                 self._config.max_transitions is not None
@@ -511,32 +538,57 @@ class GumbelSearchPlannerSearchMixin:
                 # vectors; the return rule below picks the max-Gumbel survivor.
                 pass
 
-        # Final selection: survivor with max gumbel score
-        best_id: int | None = None
-        best_score = float("-inf")
+        # Final selection: survivor with max gumbel score. The pick rides the
+        # bridge when every survivor was visited; the no-visit fallback stays
+        # on the oracle path (bridge rejects non-finite means).
+        final_means: dict[int, float] = {}
+        final_complete = len(survivors) > 0
         for aid in survivors:
-            st = stats[aid]
-            mv = st.mean_vector()
-            q = scalarize_vector(mv, root_seat) if mv is not None else float("-inf")
-            score = gumbels[aid] + q
-            if score > best_score + 1e-12:
-                best_score = score
-                best_id = aid
-            elif best_id is not None and abs(score - best_score) <= 1e-12:
-                if self._config.tie_break == "lowest_action_id" and aid < best_id:
+            mv = stats[aid].mean_vector()
+            if mv is None:
+                final_complete = False
+                break
+            final_means[aid] = scalarize_vector(mv, root_seat)
+        best_id: int | None = None
+        if final_complete:
+            try:
+                best_id = int(
+                    _require_search_bridge().gumbel_select(
+                        list(survivors),
+                        [(aid, final_means[aid]) for aid in survivors],
+                        [(aid, gumbels[aid]) for aid in survivors],
+                        str(self._config.tie_break),
+                    )
+                )
+            except ImportError:
+                raise
+            except Exception as exc:
+                raise ContractError(f"gumbel bridge select failed: {exc}") from exc
+        else:
+            best_score = float("-inf")
+            for aid in survivors:
+                st = stats[aid]
+                mv = st.mean_vector()
+                q = scalarize_vector(mv, root_seat) if mv is not None else float("-inf")
+                score = gumbels[aid] + q
+                if score > best_score + 1e-12:
+                    best_score = score
                     best_id = aid
-                elif self._config.tie_break in ("stable_hash", "lexicographic"):
-                    ha = hashlib.sha256(f"{aid}".encode()).hexdigest()
-                    hb = hashlib.sha256(f"{best_id}".encode()).hexdigest()
-                    if ha < hb:
+                elif best_id is not None and abs(score - best_score) <= 1e-12:
+                    if self._config.tie_break == "lowest_action_id" and aid < best_id:
                         best_id = aid
-        if best_id is None:
-            # Fallback: highest gumbel alone (no visits)
-            best_id = (
-                max(survivors, key=lambda aid: gumbels[aid])  # type: ignore[unknown-argument-type,explicit-any]
-                if len(survivors) > 0
-                else sorted_ids[0]
-            )
+                    elif self._config.tie_break in ("stable_hash", "lexicographic"):
+                        ha = hashlib.sha256(f"{aid}".encode()).hexdigest()
+                        hb = hashlib.sha256(f"{best_id}".encode()).hexdigest()
+                        if ha < hb:
+                            best_id = aid
+            if best_id is None:
+                # Fallback: highest gumbel alone (no visits)
+                best_id = (
+                    max(survivors, key=lambda aid: gumbels[aid])  # type: ignore[unknown-argument-type,explicit-any]
+                    if len(survivors) > 0
+                    else sorted_ids[0]
+                )
 
         # Value vectors for each legal action (mean vectors, or placeholder for unvisited)
         vecs: list[tuple[float, float, float, float]] = []

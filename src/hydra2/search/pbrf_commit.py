@@ -71,6 +71,8 @@ def _fresh_rebuild(
             rng = RandomStream(seed)  # type: ignore[call-arg]
         except Exception:
             rng = None
+    # Wave 2 bridge audit: kept Python — miss-rebuild sampling needs Particle objects
+    # from the belief corpus (bridge natural_indices returns indices only).
     new_parents: Any = ()
     if belief is not None and rng is not None:
         try:
@@ -114,6 +116,8 @@ def rekey_and_verify(
 
     Raises ``DigestMismatchError`` or ``StaleBeliefError`` on failure.
     """
+    # Wave 2 bridge audit: kept Python — delta-reconstruction needs parent/delta packet
+    # refs (bridge PacketSuccessor carries digests only, not the parent world_ref lookup).
     if len(matching) == 0:
         raise ContractError("matching child must be non-empty")
     # Verify provenance target and epoch

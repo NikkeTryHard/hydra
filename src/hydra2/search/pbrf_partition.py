@@ -218,6 +218,8 @@ class CommitDisposition:
 
 
 def _action_id(action: Any) -> int:
+    # Wave 2 bridge audit: kept Python — action-id normalization (incl. raw-int
+    # passthrough and hash fallback) has no pyfn cover; bridge takes aid explicitly.
     v: Any = getattr(action, "action_id", None)
     if isinstance(v, int) and not isinstance(v, bool):
         return v
@@ -295,6 +297,8 @@ def fixed_allocate(
 ) -> dict[tuple[int, str], int]:
     """Allocate fixed search batches deterministically across children.
 
+    Wave 2 bridge audit: kept Python — frozen schedule allocation is not a
+    sequential-halving cut (no survivors/means/gumbels); no pyfn covers it.
     Deterministic: sorted keys get base batches, remainder distributed by hash order.
     The schedule is frozen before search; outcome-derived reallocation is prohibited.
     """
