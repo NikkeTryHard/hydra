@@ -18,6 +18,7 @@
 //!   exactly like every other seal path.
 
 use serde::Serialize;
+use std::collections::HashSet;
 
 /// Canonicalization failure: which I-JSON boundary rejected the input, and
 /// which record it came from (never silent coercion).
@@ -77,6 +78,27 @@ impl core::fmt::Display for CanonError {
 
 impl std::error::Error for CanonError {}
 
+/// Map a `serde_jcs` serialization failure to the typed error: `NaN`/±Inf
+/// (the only values that stage-but-not-serialize) → `NonFinite`, everything
+/// else → `Jcs` (e.g. non-string map keys surface here with the record id).
+fn jcs_err(detail: String, record: &str) -> CanonError {
+    let lower = detail.to_lowercase();
+    if lower.contains("finite")
+        || lower.contains("nan")
+        || lower.contains("inf")
+        || lower.contains("float")
+    {
+        return CanonError::NonFinite {
+            record: record.to_string(),
+            detail,
+        };
+    }
+    CanonError::Jcs {
+        record: record.to_string(),
+        detail,
+    }
+}
+
 /// The ONE canonical byte function (pure JCS, fallible with record id).
 ///
 /// Generic over `Serialize` so row structs (field order = declaration order,
@@ -97,24 +119,23 @@ pub fn canonical_bytes<T: Serialize + ?Sized>(
     // configs (no staging error) but `serde_jcs` rejects non-finite floats.
     // Map any JCS float-domain failure to NonFinite (never generic Jcs):
     // NaN/±Inf are the only values that stage-but-not-serialize.
-    serde_jcs::to_vec(value).map_err(|e| {
-        let detail = e.to_string();
-        let lower = detail.to_lowercase();
-        if lower.contains("finite")
-            || lower.contains("nan")
-            || lower.contains("inf")
-            || lower.contains("float")
-        {
-            return CanonError::NonFinite {
-                record: record.to_string(),
-                detail,
-            };
-        }
-        CanonError::Jcs {
-            record: record.to_string(),
-            detail,
-        }
-    })
+    serde_jcs::to_vec(value).map_err(|e| jcs_err(e.to_string(), record))
+}
+
+/// Staged-`Value` entry: same bytes as [`canonical_bytes`], without the
+/// `serde_json::to_value` clone. For callers that already hold a staged
+/// `Value` (e.g. [`parse_canonical_bytes`] output): single
+/// [`reject_unsafe_integers`] walk, then JCS emits the staged value
+/// directly. `Value` cannot hold NaN/Inf, duplicate keys, or lone
+/// surrogates, so staging is exact here — unlike the generic path, where
+/// JCS must see the ORIGINAL value to report staged-away non-finite floats
+/// (KAT-6 `rec-float-nan`).
+pub fn canonical_bytes_value(
+    value: &serde_json::Value,
+    record: &str,
+) -> Result<Vec<u8>, CanonError> {
+    reject_unsafe_integers(value, record)?;
+    serde_jcs::to_vec(value).map_err(|e| jcs_err(e.to_string(), record))
 }
 
 
@@ -134,7 +155,8 @@ fn reject_unsafe_integers(value: &serde_json::Value, record: &str) -> Result<(),
     match value {
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                if i.abs() > MAX_SAFE_INTEGER {
+                // `i.abs()` panics on `i64::MIN`; `unsigned_abs` is total.
+                if i.unsigned_abs() > MAX_SAFE_INTEGER as u64 {
                     return Err(CanonError::UnsafeNumber {
                         record: record.to_string(),
                         detail: format!(
@@ -185,24 +207,7 @@ pub fn canonical_writer<W: std::io::Write, T: Serialize + ?Sized>(
     if let Ok(v) = serde_json::to_value(value) {
         reject_unsafe_integers(&v, record)?;
     }
-    serde_jcs::to_writer(writer, value).map_err(|e| {
-        let detail = e.to_string();
-        let lower = detail.to_lowercase();
-        if lower.contains("finite")
-            || lower.contains("nan")
-            || lower.contains("inf")
-            || lower.contains("float")
-        {
-            return CanonError::NonFinite {
-                record: record.to_string(),
-                detail,
-            };
-        }
-        CanonError::Jcs {
-            record: record.to_string(),
-            detail,
-        }
-    })
+    serde_jcs::to_writer(writer, value).map_err(|e| jcs_err(e.to_string(), record))
 }
 
 /// I-JSON boundary: raw document bytes → clean `Value` (reject table BEFORE
@@ -236,51 +241,247 @@ pub fn parse_canonical_bytes(doc: &[u8], record: &str) -> Result<serde_json::Val
             record: record.to_string(),
         });
     }
-    reject_bare_constants(text, record)?;
-    reject_lone_surrogate_escapes(text, record)?;
+    // Single fused text-domain pass: bare/surrogate errors return
+    // immediately; an integer over-range is DEFERRED (returned after
+    // `from_str` + dup) so InvalidJson/dup keep precedence over UnsafeNumber.
+    let unsafe_int = reject_text_domain(text.as_bytes(), record)?;
     let value: serde_json::Value =
         serde_json::from_str(text).map_err(|e| CanonError::InvalidJson {
             record: record.to_string(),
             detail: e.to_string(),
         })?;
     reject_duplicate_keys_text(text, record)?;
+    if let Some(lex) = unsafe_int {
+        return Err(unsafe_number(record, &lex));
+    }
     reject_unsafe_integers(&value, record)?;
     Ok(value)
 }
 
-/// Reject `NaN` / `Infinity` / `-Infinity` literals ANYWHERE outside strings
-/// (top-level or nested like `[NaN]` / `{"a":Infinity}`): `serde_json` would
-/// reject them as invalid JSON — mapped to the typed `NonFinite` arm so the
-/// KAT-6 table names the right error. String contents are skipped via
-/// [`scan_string`] so `"NaN"` as data never trips this.
-fn reject_bare_constants(text: &str, record: &str) -> Result<(), CanonError> {
-    let bytes = text.as_bytes();
+/// Fused text-domain pre-pass: bare constants + lone-surrogate escapes +
+/// integer lexemes in ONE byte walk (strings skipped via [`string_extent`],
+/// never decoded twice).
+///
+/// - `NaN` / `Infinity` / `-Infinity` outside strings (top-level or nested
+///   like `[NaN]` / `{"a":Infinity}`) → `NonFinite`: first-byte dispatch per
+///   token + [`check_bare_token`] boundaries, so `"NaN"` as data never trips
+///   this. `serde_json` would reject these as invalid JSON — mapped to the
+///   typed `NonFinite` arm so the KAT-6 table names the right error.
+/// - `\uD800`-`\uDFFF` halves → `LoneSurrogate`: inside strings via the
+///   [`string_extent`] error table (same accept/reject shape as
+///   [`scan_string`], pairs accepted); outside strings via the verbatim
+///   relocated table below (a lone half outside strings stays
+///   `LoneSurrogate`, never `InvalidJson`, matching the old two-scan order).
+/// - Integer lexemes (no `.`/`e`/`E`) with `|n| > MAX_SAFE_INTEGER`: the
+///   FIRST over-range lexeme is DEFERRED (returned as `Ok(Some)`, reported
+///   after `from_str` + dup) — never immediate, so a later bare/surrogate
+///   error, malformed JSON, or dup key keeps precedence. Fast filter: ≤15
+///   digits always safe; ≥16 digits exact `u128` magnitude — string-based,
+///   so `i64::MIN` and beyond-`u64` magnitudes never touch `abs()`.
+///
+/// Malformed strings/numbers are left to `from_str` (`InvalidJson`); dup
+/// keys stay a post-parse loop ([`reject_duplicate_keys_text`]), preserving
+/// the reject order NonFinite/LoneSurrogate < InvalidJson < DuplicateKey <
+/// UnsafeNumber. The typed [`reject_unsafe_integers`] walk still guards the
+/// staged path (kept on the parse path as a linear safety net).
+fn reject_text_domain(bytes: &[u8], record: &str) -> Result<Option<String>, CanonError> {
     let mut i = 0usize;
+    let mut unsafe_int: Option<String> = None;
     while i < bytes.len() {
-        if bytes[i] == b'"' {
-            match scan_string(bytes, i) {
-                Ok((_, next)) => {
+        match bytes[i] {
+            b'"' => match string_extent(bytes, i) {
+                Ok(next) => {
                     i = next;
                     continue;
                 }
-                Err(_) => return Ok(()),
+                Err(e) => {
+                    // `string_extent` validates every escape (incl. surrogate
+                    // pairs): a lone half inside strings fails typed here;
+                    // any other malformed string is `from_str`'s InvalidJson —
+                    // hand it the whole text, with any integer seen so far.
+                    if e.contains("lone surrogate") {
+                        return Err(CanonError::LoneSurrogate {
+                            record: record.to_string(),
+                            detail: e,
+                        });
+                    }
+                    return Ok(unsafe_int);
+                }
+            },
+            b'N' => {
+                check_bare_token(bytes, i, b"NaN", record)?;
+                i += 1;
             }
-        }
-        for tok in ["-Infinity", "Infinity", "NaN"] {
-            let tb = tok.as_bytes();
-            if bytes[i..].starts_with(tb) {
-                let before_ok = i == 0 || !is_token_char(bytes[i - 1]);
-                let after = i + tb.len();
-                let after_ok = after >= bytes.len() || !is_token_char(bytes[after]);
-                if before_ok && after_ok {
-                    return Err(CanonError::NonFinite {
-                        record: record.to_string(),
-                        detail: format!("bare {tok} is not in the canonical domain"),
-                    });
+            b'I' => {
+                check_bare_token(bytes, i, b"Infinity", record)?;
+                i += 1;
+            }
+            b'-' => {
+                // `-Infinity` first (bare token), then a `-<digit>` integer
+                // lexeme; anything else advances one byte (`from_str` owns it).
+                check_bare_token(bytes, i, b"-Infinity", record)?;
+                if i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() {
+                    let (next, over) = scan_int_lexeme(bytes, i);
+                    if over.is_some() && unsafe_int.is_none() {
+                        unsafe_int = over;
+                    }
+                    i = next;
+                } else {
+                    i += 1;
                 }
             }
+            b'0'..=b'9' => {
+                let (next, over) = scan_int_lexeme(bytes, i);
+                if over.is_some() && unsafe_int.is_none() {
+                    unsafe_int = over;
+                }
+                i = next;
+            }
+            b'\\' => {
+                // Outside strings: verbatim the old lone-surrogate table
+                // (inside strings is covered by the `string_extent` arm).
+                if i + 1 < bytes.len() && bytes[i + 1] == b'u' && i + 6 <= bytes.len()
+                {
+                    if let Ok(hex) = core::str::from_utf8(&bytes[i + 2..i + 6]) {
+                        if let Ok(unit) = u16::from_str_radix(hex, 16) {
+                            if (0xD800..0xE000).contains(&unit) {
+                                let is_high = (0xD800..0xDC00).contains(&unit);
+                                if is_high {
+                                    let next = &bytes[i + 6..];
+                                    let paired = next.len() >= 6
+                                        && next[0] == b'\\'
+                                        && next[1] == b'u'
+                                        && core::str::from_utf8(&next[2..6])
+                                            .ok()
+                                            .and_then(|h| u16::from_str_radix(h, 16).ok())
+                                            .is_some_and(|u| (0xDC00..0xE000).contains(&u));
+                                    if !paired {
+                                        return Err(CanonError::LoneSurrogate {
+                                            record: record.to_string(),
+                                            detail: format!("lone surrogate escape \\u{hex}"),
+                                        });
+                                    }
+                                } else {
+                                    return Err(CanonError::LoneSurrogate {
+                                        record: record.to_string(),
+                                        detail: format!("lone surrogate escape \\u{hex}"),
+                                    });
+                                }
+                            }
+                            i += 6;
+                            continue;
+                        }
+                    }
+                }
+                i += 1;
+            }
+            _ => {
+                i += 1;
+            }
         }
-        i += 1;
+    }
+    Ok(unsafe_int)
+}
+
+/// Scan one integer lexeme at `s` (`-`? digits; the caller guarantees a
+/// digit starts the magnitude). Returns the offset past the full number plus
+/// the lexeme IFF it is a pure integer (`-`? digits, clean token boundaries)
+/// with `|n| > MAX_SAFE_INTEGER` — else `None` (floats, fuzzy boundaries,
+/// and safe integers are the caller's/`from_str`'s business, never an error
+/// here). Allocates only on the over-range path.
+fn scan_int_lexeme(bytes: &[u8], s: usize) -> (usize, Option<String>) {
+    let mut j = s;
+    if bytes[j] == b'-' {
+        j += 1;
+    }
+    while j < bytes.len() && bytes[j].is_ascii_digit() {
+        j += 1;
+    }
+    let mut k = j;
+    if k < bytes.len() && bytes[k] == b'.' {
+        k += 1;
+        while k < bytes.len() && bytes[k].is_ascii_digit() {
+            k += 1;
+        }
+    }
+    if k < bytes.len() && (bytes[k] == b'e' || bytes[k] == b'E') {
+        k += 1;
+        if k < bytes.len() && (bytes[k] == b'+' || bytes[k] == b'-') {
+            k += 1;
+        }
+        while k < bytes.len() && bytes[k].is_ascii_digit() {
+            k += 1;
+        }
+    }
+    // Double lexeme (the typed walk ignores floats): skip whole, no verdict.
+    if k != j {
+        return (k, None);
+    }
+    // Fuzzy adjacencies (`1NaN`, `a1`) belong to `from_str`, not the guard.
+    let before_ok = s == 0 || !is_token_char(bytes[s - 1]);
+    let after_ok = j >= bytes.len() || !is_token_char(bytes[j]);
+    if !before_ok || !after_ok {
+        return (j, None);
+    }
+    let mag = if bytes[s] == b'-' {
+        &bytes[s + 1..j]
+    } else {
+        &bytes[s..j]
+    };
+    let mut stripped = mag;
+    while stripped.len() > 1 && stripped[0] == b'0' {
+        stripped = &stripped[1..];
+    }
+    // ≤15 digits always fit (±(10**15-1) < 2**53-1): no parse needed.
+    if stripped.len() <= 15 {
+        return (j, None);
+    }
+    let over = match core::str::from_utf8(stripped)
+        .ok()
+        .and_then(|m| m.parse::<u128>().ok())
+    {
+        Some(m) => m > MAX_SAFE_INTEGER as u128,
+        // Beyond `u128`: certainly beyond 2**53-1.
+        None => true,
+    };
+    if over {
+        let lex = core::str::from_utf8(&bytes[s..j]).unwrap_or("?").to_string();
+        return (j, Some(lex));
+    }
+    (j, None)
+}
+
+/// Shared UnsafeNumber constructor (raw deferred lexeme + nothing else —
+/// the typed walk keeps its inline wording).
+fn unsafe_number(record: &str, lex: &str) -> CanonError {
+    CanonError::UnsafeNumber {
+        record: record.to_string(),
+        detail: format!(
+            "integer {lex} exceeds the IEEE 754 double-safe range (±{MAX_SAFE_INTEGER})"
+        ),
+    }
+}
+
+/// Single bare-token probe at `i` (lead byte already dispatched): error iff
+/// the token matches here with non-token bytes on both sides, so `NaNfoo`,
+/// `Infinity2`, `1NaN` never count as bare tokens.
+fn check_bare_token(
+    bytes: &[u8],
+    i: usize,
+    tok: &[u8],
+    record: &str,
+) -> Result<(), CanonError> {
+    if bytes[i..].starts_with(tok) {
+        let before_ok = i == 0 || !is_token_char(bytes[i - 1]);
+        let after = i + tok.len();
+        let after_ok = after >= bytes.len() || !is_token_char(bytes[after]);
+        if before_ok && after_ok {
+            let name = core::str::from_utf8(tok).unwrap_or("?");
+            return Err(CanonError::NonFinite {
+                record: record.to_string(),
+                detail: format!("bare {name} is not in the canonical domain"),
+            });
+        }
     }
     Ok(())
 }
@@ -291,52 +492,6 @@ fn is_token_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_' || b == b'.'
 }
 
-/// Reject `\uD800`-`\uDFFF` escape halves (lone surrogates) at the text
-/// level: `serde_json` would decode a PAIR to the astral char (fine), but a
-/// lone half decodes to U+FFFD or errors — either way it must fail typed,
-/// never silently coerce.
-fn reject_lone_surrogate_escapes(text: &str, record: &str) -> Result<(), CanonError> {
-    let bytes = text.as_bytes();
-    let mut i = 0usize;
-    while i < bytes.len() {
-        if bytes[i] == b'\\' && i + 1 < bytes.len() && bytes[i + 1] == b'u' && i + 6 <= bytes.len() {
-            if let Ok(hex) = core::str::from_utf8(&bytes[i + 2..i + 6]) {
-                if let Ok(unit) = u16::from_str_radix(hex, 16) {
-                    if (0xD800..0xE000).contains(&unit) {
-                        // High half must be followed by a low-half escape;
-                        // low half must follow a high half — else lone.
-                        let is_high = (0xD800..0xDC00).contains(&unit);
-                        if is_high {
-                            let next = &bytes[i + 6..];
-                            let paired = next.len() >= 6
-                                && next[0] == b'\\'
-                                && next[1] == b'u'
-                                && core::str::from_utf8(&next[2..6])
-                                    .ok()
-                                    .and_then(|h| u16::from_str_radix(h, 16).ok())
-                                    .is_some_and(|u| (0xDC00..0xE000).contains(&u));
-                            if !paired {
-                                return Err(CanonError::LoneSurrogate {
-                                    record: record.to_string(),
-                                    detail: format!("lone surrogate escape \\u{hex}"),
-                                });
-                            }
-                        } else {
-                            return Err(CanonError::LoneSurrogate {
-                                record: record.to_string(),
-                                detail: format!("lone surrogate escape \\u{hex}"),
-                            });
-                        }
-                    }
-                    i += 6;
-                    continue;
-                }
-            }
-        }
-        i += 1;
-    }
-    Ok(())
-}
 
 /// Duplicate-key scan over the raw text: re-parse with a minimal scanner
 /// that tracks object scopes and fails on a repeated key in one scope.
@@ -347,8 +502,8 @@ fn reject_lone_surrogate_escapes(text: &str, record: &str) -> Result<(), CanonEr
 fn reject_duplicate_keys_text(text: &str, record: &str) -> Result<(), CanonError> {
     let bytes = text.as_bytes();
     let mut i = 0usize;
-    // Stack of per-object key sets (as unescaped Strings).
-    let mut scopes: Vec<Vec<String>> = Vec::new();
+    // Stack of per-object key sets (unescaped Strings, O(1) probe per key).
+    let mut scopes: Vec<HashSet<String>> = Vec::new();
     // True when the next string at this depth is an object key (vs value).
     let mut expect_key: Vec<bool> = Vec::new();
     // Whether the current container level is an object (vs array).
@@ -358,13 +513,13 @@ fn reject_duplicate_keys_text(text: &str, record: &str) -> Result<(), CanonError
         let b = bytes[i];
         match b {
             b'{' => {
-                scopes.push(Vec::new());
+                scopes.push(HashSet::new());
                 expect_key.push(true);
                 is_obj.push(true);
                 i += 1;
             }
             b'[' => {
-                scopes.push(Vec::new());
+                scopes.push(HashSet::new());
                 expect_key.push(false);
                 is_obj.push(false);
                 i += 1;
@@ -383,33 +538,48 @@ fn reject_duplicate_keys_text(text: &str, record: &str) -> Result<(), CanonError
                 }
             }
             b'"' => {
-                let (s, next) = scan_string(bytes, i).map_err(|d| CanonError::InvalidJson {
-                    record: record.to_string(),
-                    detail: d,
-                })?;
                 let in_object = is_obj.last().copied().unwrap_or(false);
                 let want_key = expect_key.last().copied().unwrap_or(false);
                 if in_object && want_key {
+                    // Key position: full decode (unescaped compare, RFC 8785
+                    // §3.2.3) — container logic below untouched.
+                    let (s, next) =
+                        scan_string(bytes, i).map_err(|d| CanonError::InvalidJson {
+                            record: record.to_string(),
+                            detail: d,
+                        })?;
                     let scope = scopes.last_mut().ok_or_else(|| CanonError::InvalidJson {
                         record: record.to_string(),
                         detail: "object key outside scope".to_string(),
                     })?;
-                    if scope.iter().any(|k| k == &s) {
+                    if scope.contains(&s) {
                         return Err(CanonError::DuplicateKey {
                             record: record.to_string(),
                             detail: format!("duplicate object key {s:?}"),
                         });
                     }
-                    scope.push(s);
+                    scope.insert(s);
                     if let Some(ek) = expect_key.last_mut() {
                         *ek = false;
                     }
-                } else if in_object {
-                    if let Some(ek) = expect_key.last_mut() {
-                        *ek = true;
+                    i = next;
+                } else {
+                    // Value / array / top-level string: index-only skip, no
+                    // unescape allocation. Extent accepts exactly what
+                    // scan_string accepts, so the skip lands on the same
+                    // offset; state update mirrors the old else-branch.
+                    let next =
+                        string_extent(bytes, i).map_err(|d| CanonError::InvalidJson {
+                            record: record.to_string(),
+                            detail: d,
+                        })?;
+                    if in_object {
+                        if let Some(ek) = expect_key.last_mut() {
+                            *ek = true;
+                        }
                     }
+                    i = next;
                 }
-                i = next;
             }
             b':' | b',' | b' ' | b'\t' | b'\n' | b'\r' => {
                 i += 1;
@@ -429,15 +599,187 @@ fn reject_duplicate_keys_text(text: &str, record: &str) -> Result<(), CanonError
     Ok(())
 }
 
+/// UTF-8 continuation byte (`10xxxxxx`).
+fn is_cont(b: u8) -> bool {
+    b & 0xC0 == 0x80
+}
+
+/// Width (in bytes) of the raw UTF-8 char led by `first`, checking the
+/// continuation bytes are present. `Err` on truncation or a bad lead /
+/// continuation (surfaces as `InvalidJson` at the text boundary).
+fn raw_char_width(bytes: &[u8], i: usize) -> Result<usize, String> {
+    let first = bytes[i];
+    if first < 0x80 {
+        return Ok(1);
+    }
+    let (width, need) = if first >= 0xC2 && first <= 0xDF {
+        (2, 1)
+    } else if first >= 0xE0 && first <= 0xEF {
+        (3, 2)
+    } else if first >= 0xF0 && first <= 0xF4 {
+        (4, 3)
+    } else {
+        return Err(format!("bad UTF-8 lead byte 0x{first:02x}"));
+    };
+    if i + width > bytes.len() {
+        return Err("truncated UTF-8 char".to_string());
+    }
+    let mut k = 1;
+    while k <= need {
+        if !is_cont(bytes[i + k]) {
+            return Err(format!("bad UTF-8 continuation at offset {k}"));
+        }
+        k += 1;
+    }
+    Ok(width)
+}
+
+/// Parse 4 ASCII hex digits at `bytes[i..i+4]` (caller bounds-checks).
+fn parse_hex4(bytes: &[u8], i: usize) -> Result<u16, String> {
+    let mut unit: u16 = 0;
+    let mut k = 0;
+    while k < 4 {
+        let b = bytes[i + k];
+        let d = if b.is_ascii_digit() {
+            b - b'0'
+        } else if (b'a'..=b'f').contains(&b) {
+            b - b'a' + 10
+        } else if (b'A'..=b'F').contains(&b) {
+            b - b'A' + 10
+        } else {
+            return Err(format!("bad \\u hex byte 0x{b:02x}"));
+        };
+        unit = unit * 16 + d as u16;
+        k += 1;
+    }
+    Ok(unit)
+}
+
+/// Validate one `\uXXXX` escape at `bytes[i] == b'u'` (caller bounds-checks
+/// `i + 5 <= len`); consume a low-half escape after a high half. Returns the
+/// decoded char (astral pair combined) and the offset past the escape.
+/// Surrogate table is verbatim the old `scan_string` one: lone halves `Err`.
+fn decode_unicode_escape(bytes: &[u8], i: usize) -> Result<(char, usize), String> {
+    let hex = core::str::from_utf8(&bytes[i + 1..i + 5]).map_err(|e| e.to_string())?;
+    let unit = parse_hex4(bytes, i + 1)?;
+    let mut next = i + 5;
+    if (0xD800..0xDC00).contains(&unit) {
+        // High half: require a low half right after.
+        if next + 6 <= bytes.len() && bytes[next] == b'\\' && bytes[next + 1] == b'u' {
+            // No separate UTF-8 check on `next + 2..next + 6`: `parse_hex4`
+            // rejects every non-ASCII-hex byte (incl. >=0x80).
+            let unit2 = parse_hex4(bytes, next + 2)?;
+            if (0xDC00..0xE000).contains(&unit2) {
+                let hi = (unit as u32) - 0xD800;
+                let lo = (unit2 as u32) - 0xDC00;
+                let cp = 0x10000 + ((hi << 10) | lo);
+                let ch = char::from_u32(cp).ok_or("bad pair")?;
+                next += 6;
+                return Ok((ch, next));
+            }
+            return Err(format!("lone surrogate \\u{hex}"));
+        }
+        return Err(format!("lone surrogate \\u{hex}"));
+    }
+    if (0xDC00..0xE000).contains(&unit) {
+        return Err(format!("lone surrogate \\u{hex}"));
+    }
+    let ch = char::from_u32(unit as u32).ok_or("bad unit")?;
+    Ok((ch, next))
+}
+
+/// Validate one `\uXXXX` escape at `bytes[i] == b'u'` WITHOUT allocating;
+/// same table as [`decode_unicode_escape`]. Returns the offset past the
+/// escape.
+fn skip_unicode_escape(bytes: &[u8], i: usize) -> Result<usize, String> {
+    let hex = core::str::from_utf8(&bytes[i + 1..i + 5]).map_err(|e| e.to_string())?;
+    let unit = parse_hex4(bytes, i + 1)?;
+    let mut next = i + 5;
+    if (0xD800..0xDC00).contains(&unit) {
+        // High half: require a low half right after.
+        if next + 6 <= bytes.len() && bytes[next] == b'\\' && bytes[next + 1] == b'u' {
+            // No separate UTF-8 check on `next + 2..next + 6`: `parse_hex4`
+            // rejects every non-ASCII-hex byte (incl. >=0x80).
+            let unit2 = parse_hex4(bytes, next + 2)?;
+            if (0xDC00..0xE000).contains(&unit2) {
+                next += 6;
+                return Ok(next);
+            }
+            return Err(format!("lone surrogate \\u{hex}"));
+        }
+        return Err(format!("lone surrogate \\u{hex}"));
+    }
+    if (0xDC00..0xE000).contains(&unit) {
+        return Err(format!("lone surrogate \\u{hex}"));
+    }
+    if char::from_u32(unit as u32).is_none() {
+        return Err("bad unit".to_string());
+    }
+    Ok(next)
+}
+
+/// End offset (past the closing quote) of the JSON string opening at
+/// `bytes[start]`, WITHOUT allocating or unescaping. Raw chars skip by
+/// UTF-8 width; escapes validate (incl. surrogate pairs); `Err` on
+/// truncation / bad escapes / bad UTF-8 — same accept/reject shape as
+/// [`scan_string`] so skips never diverge from decodes.
+pub(crate) fn string_extent(bytes: &[u8], start: usize) -> Result<usize, String> {
+    let mut i = start + 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => return Ok(i + 1),
+            b'\\' => {
+                i += 1;
+                if i >= bytes.len() {
+                    return Err("truncated escape".to_string());
+                }
+                match bytes[i] {
+                    b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => {
+                        i += 1;
+                    }
+                    b'u' => {
+                        if i + 4 >= bytes.len() {
+                            return Err("truncated \\u escape".to_string());
+                        }
+                        i = skip_unicode_escape(bytes, i)?;
+                    }
+                    other => {
+                        return Err(format!("bad escape \\{other}"));
+                    }
+                }
+            }
+            _ => {
+                i += raw_char_width(bytes, i)?;
+            }
+        }
+    }
+    Err("unterminated string".to_string())
+}
+
 /// Scan a JSON string starting at the opening quote; return the UNESCAPED
 /// name and the offset past the closing quote.
 fn scan_string(bytes: &[u8], start: usize) -> Result<(String, usize), String> {
     let mut out = String::new();
     let mut i = start + 1;
+    // Pending raw run: bytes[run_start..i] are validated UTF-8 (width
+    // skips), flushed with ONE from_utf8 per run — never from_utf8(tail)
+    // per char.
+    let mut run_start = i;
     while i < bytes.len() {
         match bytes[i] {
-            b'"' => return Ok((out, i + 1)),
+            b'"' => {
+                out.push_str(
+                    core::str::from_utf8(&bytes[run_start..i]).map_err(|e| e.to_string())?,
+                );
+                return Ok((out, i + 1));
+            }
             b'\\' => {
+                if run_start < i {
+                    out.push_str(
+                        core::str::from_utf8(&bytes[run_start..i])
+                            .map_err(|e| e.to_string())?,
+                    );
+                }
                 i += 1;
                 if i >= bytes.len() {
                     return Err("truncated escape".to_string());
@@ -455,58 +797,21 @@ fn scan_string(bytes: &[u8], start: usize) -> Result<(String, usize), String> {
                         if i + 4 >= bytes.len() {
                             return Err("truncated \\u escape".to_string());
                         }
-                        let hex = core::str::from_utf8(&bytes[i + 1..i + 5])
-                            .map_err(|e| e.to_string())?;
-                        let unit =
-                            u16::from_str_radix(hex, 16).map_err(|e| e.to_string())?;
-                        i += 4;
-                        if (0xD800..0xDC00).contains(&unit) {
-                            // High half: require a low half right after.
-                            if i + 2 < bytes.len()
-                                && bytes[i + 1] == b'\\'
-                                && bytes[i + 2] == b'u'
-                                && i + 6 < bytes.len()
-                            {
-                                let hex2 = core::str::from_utf8(&bytes[i + 3..i + 7])
-                                    .map_err(|e| e.to_string())?;
-                                let unit2 = u16::from_str_radix(hex2, 16)
-                                    .map_err(|e| e.to_string())?;
-                                if (0xDC00..0xE000).contains(&unit2) {
-                                    let hi = (unit as u32) - 0xD800;
-                                    let lo = (unit2 as u32) - 0xDC00;
-                                    let cp = 0x10000 + ((hi << 10) | lo);
-                                    out.push(
-                                        char::from_u32(cp).ok_or("bad pair")?,
-                                    );
-                                    i += 6;
-                                } else {
-                                    return Err(format!(
-                                        "lone surrogate \\u{hex}"
-                                    ));
-                                }
-                            } else {
-                                return Err(format!("lone surrogate \\u{hex}"));
-                            }
-                        } else if (0xDC00..0xE000).contains(&unit) {
-                            return Err(format!("lone surrogate \\u{hex}"));
-                        } else {
-                            out.push(
-                                char::from_u32(unit as u32).ok_or("bad unit")?,
-                            );
-                        }
+                        let (ch, next) = decode_unicode_escape(bytes, i)?;
+                        out.push(ch);
+                        i = next;
+                        run_start = i;
+                        continue;
                     }
                     other => {
                         return Err(format!("bad escape \\{other}"));
                     }
                 }
                 i += 1;
+                run_start = i;
             }
             _ => {
-                // Raw UTF-8 char (multi-byte aware).
-                let rest = core::str::from_utf8(&bytes[i..]).map_err(|e| e.to_string())?;
-                let ch = rest.chars().next().ok_or("empty")?;
-                out.push(ch);
-                i += ch.len_utf8();
+                i += raw_char_width(bytes, i)?;
             }
         }
     }
