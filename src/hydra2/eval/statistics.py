@@ -31,6 +31,7 @@ from statistics import NormalDist, fmean
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
+from hydra2_replay_rs import eval as _bridge_eval  # pyrefly: ignore[missing-import]
 
 from hydra2.contracts.common import ContractError
 from hydra2.contracts.randomness import RandomStream
@@ -39,7 +40,6 @@ from hydra2.eval.blocks import (
     ExcludedBlock,
     WallBlock,
     aggregate_blocks,
-    aggregate_wall_block,
 )
 
 if TYPE_CHECKING:
@@ -103,7 +103,7 @@ def placement_block_contrast(blocks: tuple[WallBlock, ...]) -> tuple[float, ...]
     if len(blocks) == 0:
         raise ContractError("need at least one wall block for a contrast")
     ordered = sorted(blocks, key=lambda block: block.wall_id)
-    contrasts = tuple(aggregate_wall_block(block) for block in ordered)
+    contrasts = tuple(_bridge_eval.aggregate_wall_block(block) for block in ordered)
     for value in contrasts:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ContractError(f"block contrast must be finite, got {value!r}")

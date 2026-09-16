@@ -26,7 +26,7 @@
   "thresholds": null
  },
  "created_utc": "2026-09-11T16:30:00+00:00",
- "description": "Wave-G1 single re-pin at Wave-F close: every entry recomputed (cutover code + F10 decision-primary corpus); every local entry pinned by sha256; external probe entries resolved+hashed at bench time. The manifest_digest binds every entry and threshold: ANY byte change voids thresholds. 8a2f baseline stays frozen. WP-14 telemetry re-pin: stream_train.py (mlflow/sampler/profiler hooks) + run_config.py (telemetry section); thresholds stay blank-null. Desync re-pin: rust_observations.py entry removed (module deleted, plane feed supersedes); stream_train.py (device-gate validators, hot scalars, chunked workers, YAML feed knobs) + run_config.py (decode_prefetch/expand_batch_games/fetch_prefetch_depth); thresholds stay blank-null. Slice-E re-pin 2026-09-12: stream_train.py (homogeneous-buckets grouping, entry pins, ring depth 3, lint/format) + run_config.py (homogeneous_buckets flag, lint/format); thresholds stay blank-null. Shrink re-pin: tests/unit/test_rust_stream_wp14.py + tests/unit/test_replay_backend_wp14.py entries refreshed for the fixture sys.modules-pop fix (hard-delegate cutover, no fallback); thresholds stay blank-null.",
+ "description": "Wave-G1 single re-pin at Wave-F close: every entry recomputed (cutover code + F10 decision-primary corpus); every local entry pinned by sha256; external probe entries resolved+hashed at bench time. The manifest_digest binds every entry and threshold: ANY byte change voids thresholds. 8a2f baseline stays frozen. WP-14 telemetry re-pin: stream_train.py (mlflow/sampler/profiler hooks) + run_config.py (telemetry section); thresholds stay blank-null. Desync re-pin: rust_observations.py entry removed (module deleted, plane feed supersedes); stream_train.py (device-gate validators, hot scalars, chunked workers, YAML feed knobs) + run_config.py (decode_prefetch/expand_batch_games/fetch_prefetch_depth); thresholds stay blank-null. Slice-E re-pin 2026-09-12: stream_train.py (homogeneous-buckets grouping, entry pins, ring depth 3, lint/format) + run_config.py (homogeneous_buckets flag, lint/format); thresholds stay blank-null. Shrink re-pin: tests/unit/test_rust_stream_wp14.py + tests/unit/test_replay_backend_wp14.py entries refreshed for the fixture sys.modules-pop fix (hard-delegate cutover, no fallback); thresholds stay blank-null. Wave 3 re-pin: training/stream_train.py entry refreshed for the loop-counting bridge cutover (counting oracle tails deleted, bridge-direct fail-closed); thresholds stay blank-null.",
  "entries": [
   {
    "fixtures": [
@@ -1812,7 +1812,7 @@
    ],
    "kind": "cutover-source",
    "relpath": "src/hydra2/training/stream_train.py",
-   "sha256": "sha256:6e07c7e02395bc11a03d97095b99f912dfad1554214c5d3cbf5b8eff98c677c7"
+   "sha256": "sha256:482c125e0aa1fa7f1f7a7640f11e4084093aafc3c71132d205b96a44331452ca"
   },
   {
    "fixtures": [
@@ -1937,6 +1937,6 @@
    "module": "tests.parity.test_parity_gates_g1_g7_wp0b"
   }
  ],
- "manifest_digest": "sha256:1ece6991256fc90b7eb5627623b0968138a72aeb0ed080a37711c9ec432076f2",
+ "manifest_digest": "sha256:46333f42afaf228a3b7abfc9876ca50f7999e0ff855c9776ff761d08980f0751",
  "manifest_version": "2"
 }

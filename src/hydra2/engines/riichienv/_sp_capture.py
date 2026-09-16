@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING as TYPE_CHECKING
 from typing import cast as cast
 
+from hydra2_replay_rs import tiles  # pyrefly: ignore[missing-import]
+
 from hydra2.artifacts.digest import of_canonical as of_canonical
 from hydra2.contracts.action import CanonicalAction as CanonicalAction
 from hydra2.contracts.common import ContractError as ContractError
@@ -17,7 +19,6 @@ from hydra2.engines.riichienv._oracle_base import _adapter_hash as _adapter_hash
 from hydra2.engines.riichienv._sp_records import SIM_DERIVATION_MARK as SIM_DERIVATION_MARK
 from hydra2.engines.riichienv._sp_records import _copies_of_string as _copies_of_string
 from hydra2.engines.riichienv._sp_records import _snapshot_at_row as _snapshot_at_row
-from hydra2.engines.riichienv.tiles import mjai_string_of as mjai_string_of
 
 if TYPE_CHECKING:
     from collections.abc import Sequence as Sequence
@@ -43,7 +44,7 @@ def _distinct_copies(ids: tuple[int, ...]) -> tuple[int, ...]:
     counts: dict[str, int] = {}
     out: list[int] = []
     for tile in ids:
-        pai = mjai_string_of(tile)
+        pai = tiles.mjai_string_of(tile)
         pool = _copies_of_string(pai)
         seen = counts.get(pai, 0)
         out.append(pool[seen] if seen < len(pool) else tile)
@@ -71,7 +72,7 @@ def _tracked_consumed(
     picked: list[int] = []
     for pai in sorted(s for s in consumed_strings):
         for index, candidate in enumerate(pool):
-            if mjai_string_of(candidate) == pai:
+            if tiles.mjai_string_of(candidate) == pai:
                 picked.append(pool.pop(index))
                 break
         else:
@@ -81,7 +82,7 @@ def _tracked_consumed(
     if called is not None:
         for pos, tile in enumerate(picked):
             if tile == called:
-                pai = mjai_string_of(tile)
+                pai = tiles.mjai_string_of(tile)
                 used = set(picked) | {called}
                 for candidate in _copies_of_string(pai):
                     if candidate not in used:

@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING as TYPE_CHECKING
 
 import riichienv
+from hydra2_replay_rs import tiles  # pyrefly: ignore[missing-import]
 
 from hydra2.contracts.common import ContractError as ContractError
 from hydra2.engines.riichienv._lr_rows import _copies_of_string as _copies_of_string
-from hydra2.engines.riichienv.tiles import mjai_string_of as mjai_string_of
 
 if TYPE_CHECKING:
     from collections.abc import Sequence as Sequence
@@ -82,11 +82,11 @@ def _track_remove(
     hand: list[int], pai: str, state: _GameState, kyoku: int, *, drawn: int | None, where: str
 ) -> int:
     """Remove one tracked copy rendering ``pai`` (drawn tile preferred, fail closed)."""
-    if drawn is not None and mjai_string_of(drawn) == pai and drawn in hand:
+    if drawn is not None and tiles.mjai_string_of(drawn) == pai and drawn in hand:
         hand.remove(drawn)
         return drawn
     for tile in hand:
-        if mjai_string_of(tile) == pai:
+        if tiles.mjai_string_of(tile) == pai:
             hand.remove(tile)
             return tile
     raise state.fail(kyoku, where, f"no tracked copy of discard {pai!r} in hand")
@@ -98,7 +98,7 @@ def _track_remove_consumed(
     """Remove one tracked copy per logged consumed string (fail closed)."""
     for pai in sorted(s for s in consumed):
         for tile in hand:
-            if mjai_string_of(tile) == pai:
+            if tiles.mjai_string_of(tile) == pai:
                 hand.remove(tile)
                 break
         else:
@@ -111,7 +111,7 @@ def _chi_offered(hand: Sequence[int], tile: str, *, kamicha: bool) -> bool:
         return False
     counts: dict[str, int] = {}
     for raw in hand:
-        rendered = _norm_pai(mjai_string_of(raw))
+        rendered = _norm_pai(tiles.mjai_string_of(raw))
         counts[rendered] = counts.get(rendered, 0) + 1
     value = int(tile[0])
     suit = tile[1]
@@ -196,7 +196,7 @@ def _responder_eval(
     win_tile = _copies_of_string(tile)[0]
     if not _shape_is_win(concealed, melds, win_tile):
         return (False, False, False)
-    river = {_norm_pai(mjai_string_of(t)) for t in walk.rivers[seat]}
+    river = {_norm_pai(tiles.mjai_string_of(t)) for t in walk.rivers[seat]}
     if _norm_pai(tile) in river:
         return (True, False, False)
     for kind in river:
@@ -225,7 +225,7 @@ def _thin_window_open(
 ) -> bool:
     """Python claim-window predicate over tracked hands (no engine)."""
     del kyoku
-    tile_norm = _norm_pai(mjai_string_of(tile))
+    tile_norm = _norm_pai(tiles.mjai_string_of(tile))
     for seat in range(4):
         if seat == discarder:
             continue
@@ -236,7 +236,7 @@ def _thin_window_open(
             continue
         counts: dict[str, int] = {}
         for raw in walk.hands[seat]:
-            rendered = _norm_pai(mjai_string_of(raw))
+            rendered = _norm_pai(tiles.mjai_string_of(raw))
             counts[rendered] = counts.get(rendered, 0) + 1
         if not chankan and counts.get(tile_norm, 0) >= 2:
             return True
@@ -268,8 +268,8 @@ def _assert_tracker_matches_engine(
     except Exception as exc:
         raise state.fail(kyoku, where, f"tracker cross-check query failed: {exc}") from exc
     for seat in range(4):
-        engine_hand = sorted(mjai_string_of(int(t)) for t in hands[seat])
-        tracked_hand = sorted(mjai_string_of(t) for t in walk.hands[seat])
+        engine_hand = sorted(tiles.mjai_string_of(int(t)) for t in hands[seat])
+        tracked_hand = sorted(tiles.mjai_string_of(t) for t in walk.hands[seat])
         if engine_hand != tracked_hand:
             # The countdown wall pre-draws ahead of the log: once logged draws
             # run out the engine holds filler the log never names. Filler is
@@ -283,7 +283,7 @@ def _assert_tracker_matches_engine(
                     raise state.fail(
                         kyoku, where, f"tracker hand differs from engine state for seat {seat}"
                     )
-            queued = [mjai_string_of(entry[0]) for entry in walk.draw_queues[seat]]
+            queued = [tiles.mjai_string_of(entry[0]) for entry in walk.draw_queues[seat]]
             for rendered in remaining:
                 if rendered in queued:
                     raise state.fail(
@@ -291,8 +291,8 @@ def _assert_tracker_matches_engine(
                         where,
                         f"tracker missed a logged pre-draw for seat {seat}",
                     )
-        engine_river = [mjai_string_of(int(t)) for t in rivers[seat]]
-        tracked_river = [mjai_string_of(t) for t in walk.rivers[seat]]
+        engine_river = [tiles.mjai_string_of(int(t)) for t in rivers[seat]]
+        tracked_river = [tiles.mjai_string_of(t) for t in walk.rivers[seat]]
         if engine_river != tracked_river:
             raise state.fail(
                 kyoku, where, f"tracker river differs from engine state for seat {seat}"

@@ -60,6 +60,8 @@ from pathlib import Path as Path
 from typing import TYPE_CHECKING as TYPE_CHECKING
 from typing import cast as cast
 
+from hydra2_replay_rs import tiles  # pyrefly: ignore[missing-import]
+
 from hydra2.contracts.action import CanonicalAction as CanonicalAction
 from hydra2.contracts.common import ContractError as ContractError
 from hydra2.contracts.common import make_digest_text as make_digest_text
@@ -101,7 +103,6 @@ from hydra2.engines.riichienv._lr_walk import _strict_row as _strict_row
 from hydra2.engines.riichienv._oracle_base import _TRANSPARENT_KINDS as _TRANSPARENT_KINDS
 from hydra2.engines.riichienv.events import make_delta as make_delta
 from hydra2.engines.riichienv.events import reason_kind as reason_kind
-from hydra2.engines.riichienv.tiles import mjai_string_of as mjai_string_of
 
 if TYPE_CHECKING:
     from collections.abc import Sequence as Sequence
@@ -186,8 +187,8 @@ def _do_hora(state: _GameState, walk: _KyokuWalk, kyoku: int, event: dict[str, o
             offered=live_offered,
         )
         try:
-            walk.tw.do_tsumo_win(winner, mjai_string_of(tile))
-        except ContractError as exc:
+            walk.tw.do_tsumo_win(winner, tiles.mjai_string_of(tile))
+        except (ContractError, ValueError) as exc:
             raise state.fail(kyoku, "hora", f"oracle win failed: {exc}") from exc
         source: int | None = None
     else:
@@ -202,7 +203,7 @@ def _do_hora(state: _GameState, walk: _KyokuWalk, kyoku: int, event: dict[str, o
         if step.mjai_type != "hora":
             raise state.fail(kyoku, "hora", f"seat {winner} oracle holds {step.mjai_type}")
         tile = state.last_discard[1]
-        if step.tile is not None and mjai_string_of(step.tile) != mjai_string_of(tile):
+        if step.tile is not None and tiles.mjai_string_of(step.tile) != tiles.mjai_string_of(tile):
             raise state.fail(kyoku, "hora", "ron tile differs from the offered discard")
         expected = CanonicalAction(
             kind=cast("Any", "ron"),

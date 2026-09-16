@@ -526,9 +526,9 @@ class AdapterEventsBMixin:
             missing = [t for t in pre if post.count(t) < pre.count(t)]
             if len(missing) == 1:
                 return missing[0]
-        from hydra2.engines.riichienv.tiles import physical_of
+        from hydra2_replay_rs import tiles  # pyrefly: ignore[missing-import]
 
-        return int(physical_of(mjai_pai))
+        return int(tiles.physical_of(mjai_pai))
 
     def _last_discard_int(self, engine_pid: int) -> int:
         """Exact physical id of the engine seat's latest offered discard."""

@@ -230,10 +230,10 @@ def _require_actor(event: dict[str, object], *, where: str) -> int:
     return actor
 
 
-def _mjai_strings(tiles: Sequence[TileId]) -> list[str]:
-    from hydra2.engines.riichienv.tiles import mjai_string_of
+def _mjai_strings(tile_ids: Sequence[TileId]) -> list[str]:
+    from hydra2_replay_rs import tiles  # pyrefly: ignore[missing-import]
 
-    return [mjai_string_of(int(t)) for t in tiles]
+    return [tiles.mjai_string_of(int(t)) for t in tile_ids]
 
 
 def _wall_id_for(game_id: str, wall_tiles: tuple[int, ...] | None) -> str | None:
@@ -717,9 +717,9 @@ def _optional_tile_key(action: CanonicalAction) -> int:
 
 
 def _tile_string(tile: int) -> str:
-    from hydra2.engines.riichienv.tiles import mjai_string_of
+    from hydra2_replay_rs import tiles  # pyrefly: ignore[missing-import]
 
-    return mjai_string_of(tile)
+    return tiles.mjai_string_of(tile)
 
 
 def _matches_pai(tile: int | None, pai: str) -> bool:

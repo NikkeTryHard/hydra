@@ -28,12 +28,14 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from hydra2_replay_rs import tiles as _tiles_bridge
 
 from hydra2.contracts.common import ContractError
 from hydra2.data.decode import GameRecord
 from hydra2.engines.riichienv import log_replay as drained
 from hydra2.engines.riichienv import single_pass as live
-from hydra2.engines.riichienv.tiles import mjai_string_of
+
+mjai_string_of = _tiles_bridge.mjai_string_of
 
 pytestmark = pytest.mark.contract_package("WP-14")
 

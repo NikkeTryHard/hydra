@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING as TYPE_CHECKING
 from typing import cast as cast
 
 import riichienv
+from hydra2_replay_rs import tiles  # pyrefly: ignore[missing-import]
 
 from hydra2.artifacts.digest import of_canonical as of_canonical
 from hydra2.contracts.action import ActionContext as ActionContext
@@ -25,8 +26,6 @@ from hydra2.engines.riichienv._oracle_base import _legal_mjai_type as _legal_mja
 from hydra2.engines.riichienv.actions import legal_view as legal_view
 from hydra2.engines.riichienv.events import make_envelope as make_envelope
 from hydra2.engines.riichienv.state import seat_winds_for_dealer as seat_winds_for_dealer
-from hydra2.engines.riichienv.tiles import mjai_string_of as mjai_string_of
-from hydra2.engines.riichienv.tiles import physical_of as physical_of
 
 if TYPE_CHECKING:
     from collections.abc import Sequence as Sequence
@@ -51,7 +50,7 @@ SIM_DERIVATION_MARK = "sim-replay-wall-less-v1"
 def _copies_of_string(pai: str) -> list[int]:
     """Ordered physical copies for one MJAI string (red-aware)."""
 
-    first = int(physical_of(pai))
+    first = int(tiles.physical_of(pai))
     if pai in ("5mr", "0m"):
         return [16]
     if pai in ("5pr", "0p"):
@@ -264,7 +263,7 @@ def _expand_nonclaim_legals(
             offered_tile is not None
             and tile_raw is not None
             and is_ron
-            and mjai_string_of(int(tile_raw)) == mjai_string_of(offered_tile)
+            and tiles.mjai_string_of(int(tile_raw)) == tiles.mjai_string_of(offered_tile)
             and int(tile_raw) != offered_tile
         ):
             raw = SimpleNamespace(
@@ -304,7 +303,7 @@ def _distinct_copies(ids: tuple[int, ...]) -> tuple[int, ...]:
     counts: dict[str, int] = {}
     out: list[int] = []
     for tile in ids:
-        pai = mjai_string_of(tile)
+        pai = tiles.mjai_string_of(tile)
         pool = _copies_of_string(pai)
         seen = counts.get(pai, 0)
         out.append(pool[seen] if seen < len(pool) else tile)
@@ -332,7 +331,7 @@ def _tracked_consumed(
     picked: list[int] = []
     for pai in sorted(s for s in consumed_strings):
         for index, candidate in enumerate(pool):
-            if mjai_string_of(candidate) == pai:
+            if tiles.mjai_string_of(candidate) == pai:
                 picked.append(pool.pop(index))
                 break
         else:
@@ -342,7 +341,7 @@ def _tracked_consumed(
     if called is not None:
         for pos, tile in enumerate(picked):
             if tile == called:
-                pai = mjai_string_of(tile)
+                pai = tiles.mjai_string_of(tile)
                 used = set(picked) | {called}
                 for candidate in _copies_of_string(pai):
                     if candidate not in used:
@@ -360,10 +359,10 @@ def _tracked_discard_tile(step: _SimStep, pai: str) -> int:
     The drawn tile leads so tsumogiri resolves to the draw itself, otherwise
     the first tracked copy rendering the string. Absence fails closed.
     """
-    if step.drawn is not None and mjai_string_of(step.drawn) == pai:
+    if step.drawn is not None and tiles.mjai_string_of(step.drawn) == pai:
         return step.drawn
     for tile in step.hand:
-        if mjai_string_of(tile) == pai:
+        if tiles.mjai_string_of(tile) == pai:
             return tile
     raise ContractError(f"no tracked copy of discard {pai!r} in hand")
 

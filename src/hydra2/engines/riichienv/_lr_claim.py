@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING as TYPE_CHECKING
 from typing import cast as cast
 
+from hydra2_replay_rs import tiles  # pyrefly: ignore[missing-import]
+
 from hydra2.contracts.action import CanonicalAction as CanonicalAction
 from hydra2.contracts.action import canonical_action_codec as canonical_action_codec
 from hydra2.contracts.common import ContractError as ContractError
@@ -33,8 +35,6 @@ from hydra2.engines.riichienv._lr_walk import _strict_row as _strict_row
 from hydra2.engines.riichienv._oracle_base import _legal_mjai_type as _legal_mjai_type
 from hydra2.engines.riichienv.events import make_delta as make_delta
 from hydra2.engines.riichienv.events import meld_delta_value as meld_delta_value
-from hydra2.engines.riichienv.tiles import mjai_string_of as mjai_string_of
-from hydra2.engines.riichienv.tiles import physical_of as physical_of
 
 if TYPE_CHECKING:
     from typing import Any as Any
@@ -83,7 +83,7 @@ def _do_reach(
         and reach_step.drawn is not None
         and decl_head.drawn == reach_step.drawn
         and decl_head.tile is not None
-        and mjai_string_of(decl_head.tile) == pai
+        and tiles.mjai_string_of(decl_head.tile) == pai
     ):
         _ = _pop(state, walk, kyoku, actor, why="reach-declaration")  # consume decl; head held
         declaration_tile = decl_head.tile
@@ -169,7 +169,7 @@ def _match_stashed_claim(
     pai = event.get("pai")
     if not isinstance(pai, str) or pai == "":
         raise state.fail(kyoku, kind, "logged claim without a pai string")
-    if step.tile is None or mjai_string_of(step.tile) != pai:
+    if step.tile is None or tiles.mjai_string_of(step.tile) != pai:
         raise state.fail(kyoku, kind, "claim names a different tile than the oracle")
     consumed = event.get("consumed")
     if not isinstance(consumed, (list, tuple)):
@@ -179,7 +179,7 @@ def _match_stashed_claim(
         raise state.fail(kyoku, kind, "logged claim without a valid target seat")
     if target != discarder:
         raise state.fail(kyoku, kind, f"claim target {target} != discarder {discarder}")
-    yielded_strings = sorted(mjai_string_of(t) for t in step.consume)
+    yielded_strings = sorted(tiles.mjai_string_of(t) for t in step.consume)
     logged_strings = sorted(str(t) for t in consumed)
     # Yielded consume repeats the called tile (degenerate); the log lists the
     # called tile once plus the hand tiles.
@@ -344,7 +344,7 @@ def _do_ankan(state: _GameState, walk: _KyokuWalk, kyoku: int, event: dict[str, 
     step = _pop_draw_head(state, walk, kyoku, actor, why="ankan")
     if step.mjai_type != "ankan":
         raise state.fail(kyoku, "ankan", f"seat {actor} oracle holds {step.mjai_type}")
-    yielded_strings = sorted(mjai_string_of(t) for t in step.consume)
+    yielded_strings = sorted(tiles.mjai_string_of(t) for t in step.consume)
     if yielded_strings != sorted(str(t) for t in consumed):
         raise state.fail(kyoku, "ankan", "ankan tiles differ from the oracle")
     try:
@@ -445,7 +445,7 @@ def _do_kakan(
     step = _pop_draw_head(state, walk, kyoku, actor, why="kakan")
     if step.mjai_type != "kakan":
         raise state.fail(kyoku, "kakan", f"seat {actor} oracle holds {step.mjai_type}")
-    if step.tile is None or mjai_string_of(step.tile) != pai:
+    if step.tile is None or tiles.mjai_string_of(step.tile) != pai:
         raise state.fail(kyoku, "kakan", "kakan names a different tile than the oracle")
     # The added fourth copy may be the drawn tile or a tile held since the
     # deal; either way the collapsed id equals the logged string.
@@ -458,7 +458,7 @@ def _do_kakan(
     # contract-valid, and exact on min-rule-disciplined logs).
     pool = _copies_of_string(pai)
     if pai[0] == "5" and len(pai) == 2:
-        base = (int(physical_of(pai)) // 4) * 4
+        base = (int(tiles.physical_of(pai)) // 4) * 4
         pool = [base, base + 1, base + 2, base + 3]
     missing = [c for c in pool if c not in {int(t) for t in prior.tiles}]
     if len(missing) != 1:

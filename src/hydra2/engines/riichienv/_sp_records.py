@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING as TYPE_CHECKING
 from typing import cast as cast
 
 import riichienv
+from hydra2_replay_rs import tiles  # pyrefly: ignore[missing-import]
 
 from hydra2.artifacts.digest import of_canonical as of_canonical
 from hydra2.contracts.action import ActionContext as ActionContext
@@ -24,8 +25,6 @@ from hydra2.engines.riichienv.actions import legal_view as legal_view
 from hydra2.engines.riichienv.events import make_envelope as make_envelope
 from hydra2.engines.riichienv.identity import ENGINE_IDENTITY as ENGINE_IDENTITY
 from hydra2.engines.riichienv.state import seat_winds_for_dealer as seat_winds_for_dealer
-from hydra2.engines.riichienv.tiles import mjai_string_of as mjai_string_of
-from hydra2.engines.riichienv.tiles import physical_of as physical_of
 
 if TYPE_CHECKING:
     from collections.abc import Sequence as Sequence
@@ -206,7 +205,7 @@ def _coerce_game(game: GameRecord | bytes | str | Path) -> GameRecord:
 def _copies_of_string(pai: str) -> list[int]:
     """Ordered physical copies for one MJAI string (red-aware)."""
 
-    first = int(physical_of(pai))
+    first = int(tiles.physical_of(pai))
     if pai in ("5mr", "0m"):
         return [16]
     if pai in ("5pr", "0p"):
@@ -420,7 +419,7 @@ def _expand_nonclaim_legals(
             offered_tile is not None
             and tile_raw is not None
             and is_ron
-            and mjai_string_of(int(tile_raw)) == mjai_string_of(offered_tile)
+            and tiles.mjai_string_of(int(tile_raw)) == tiles.mjai_string_of(offered_tile)
             and int(tile_raw) != offered_tile
         ):
             raw = SimpleNamespace(

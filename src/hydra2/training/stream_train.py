@@ -88,6 +88,7 @@ from hydra2.training.stream_build import _sidecar_cursor as _sidecar_cursor
 from hydra2.training.stream_build import _verify_rng_anchors as _verify_rng_anchors
 from hydra2.training.stream_checkpoint import _append_new_history as _append_new_history
 from hydra2.training.stream_checkpoint import _ckpt_names as _ckpt_names
+from hydra2.training.stream_checkpoint import _epoch_seed as _epoch_seed
 from hydra2.training.stream_checkpoint import _prune_checkpoints as _prune_checkpoints
 from hydra2.training.stream_checkpoint import _run_holdout_eval as _run_holdout_eval
 from hydra2.training.stream_checkpoint import (
@@ -413,7 +414,9 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
             raise ContractError(f"checkpoint microbatch count mismatch: {resume.checkpoint}")
         shuffle_raw = envelope.sidecar.get("shuffle")
         assert isinstance(shuffle_raw, dict)
-        if int(shuffle_raw.get("epoch_seed", -1)) != config.seeds.data_seed + dataset.epoch:
+        if int(shuffle_raw.get("epoch_seed", -1)) != _epoch_seed(
+            data_seed=config.seeds.data_seed, epoch=dataset.epoch
+        ):
             raise ContractError(f"checkpoint shuffle epoch_seed mismatch: {resume.checkpoint}")
         if int(shuffle_raw.get("buffer_size", -1)) != config.data.shuffle_buffer_size:
             raise ContractError(f"checkpoint shuffle buffer_size mismatch: {resume.checkpoint}")

@@ -7,12 +7,11 @@ from typing import TYPE_CHECKING as TYPE_CHECKING
 from typing import cast as cast
 
 import riichienv
+from hydra2_replay_rs import tiles  # pyrefly: ignore[missing-import]
 
 from hydra2.contracts.common import ContractError as ContractError
 from hydra2.engines.riichienv._oracle_base import _TRANSPARENT_KINDS as _TRANSPARENT_KINDS
 from hydra2.engines.riichienv._sp_records import _TablePosition as _TablePosition
-from hydra2.engines.riichienv.tiles import mjai_string_of as mjai_string_of
-from hydra2.engines.riichienv.tiles import physical_of as physical_of
 
 if TYPE_CHECKING:
     from collections.abc import Sequence as Sequence
@@ -120,7 +119,7 @@ class _WindowOracle:
 
         def take(pai: str) -> int:
             if pai not in pools:
-                first = int(physical_of(pai))
+                first = int(tiles.physical_of(pai))
                 if pai in ("5mr", "0m"):
                     pools[pai] = [16]
                 elif pai in ("5pr", "0p"):
@@ -216,10 +215,10 @@ class _WindowOracle:
                 continue
             if tile_str is not None:
                 tile_raw: Any = raw.tile
-                if tile_raw is None or mjai_string_of(int(tile_raw)) != tile_str:
+                if tile_raw is None or tiles.mjai_string_of(int(tile_raw)) != tile_str:
                     continue
             if consumed_strs is not None:
-                got = sorted(mjai_string_of(int(t)) for t in raw.consume_tiles)
+                got = sorted(tiles.mjai_string_of(int(t)) for t in raw.consume_tiles)
                 if got != sorted(consumed_strs):
                     continue
             matches.append(raw)
@@ -237,14 +236,14 @@ class _WindowOracle:
         """Assert-or-draw the logged tsumo (rinshan draws included)."""
         self._missed.discard(actor)
         drawn_raw: Any = self._engine.drawn_tile
-        if drawn_raw is not None and mjai_string_of(int(drawn_raw)) == pai:
+        if drawn_raw is not None and tiles.mjai_string_of(int(drawn_raw)) == pai:
             self._confirm_draw_holder(actor, pai, drawn_raw)
             return
         if drawn_raw is not None:
             raise self._fail(f"seat {actor} drew a different tile than logged")
         self._step({}, where=f"tsumo seat {actor}")
         drawn_raw = self._engine.drawn_tile
-        if drawn_raw is None or mjai_string_of(int(drawn_raw)) != pai:
+        if drawn_raw is None or tiles.mjai_string_of(int(drawn_raw)) != pai:
             raise self._fail(f"seat {actor} drew a different tile than logged")
         self._confirm_draw_holder(actor, pai, drawn_raw)
         return

@@ -3,10 +3,11 @@
 Owns atomic publication of ``ckpt-<update>.pt`` plus its ResumeExactPlan
 sidecar (payload hash, RNG anchors, shuffle and buffer snapshots),
 checkpoint pruning, resume-safe metrics append, and the observer-only
-held-out eval (failures log, never abort training). Resume/RNG-restore
-entries are Rust-first via the bridge ``resume`` judge (``_epoch_seed``;
-ImportError-only oracle, mismatch=raise); torch owns the RNG capture and
-the payload tensors (no Rust GPU math, Burn/Candle out).
+held-out eval (failures log, never abort training). The shuffle epoch-seed
+entry is bridge-direct via the ``resume`` judge (``_epoch_seed``; missing
+bridge raises ContractError with a build-ext hint, never an oracle);
+torch owns the RNG capture and the payload tensors (no Rust GPU math,
+Burn/Candle out).
 """
 
 from __future__ import annotations
@@ -56,18 +57,16 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # Bridge-resume glue (resume/RNG-restore entries only; torch owns GPU/RNG).
 # ---------------------------------------------------------------------------
-#
-# The bridge (`hydra2_replay_rs.resume`, Rust) owns the pure resume-side
-# judges used on the checkpoint write path: `epoch_seed` (wrapping
-# `data_seed + epoch`, mirroring the sidecar `epoch_seed`), the prefix-hash
-# chain verify, cursor pack/unpack, and buffer-entry shape checks. Torch
-# CPU/CUDA RNG capture/restore stays Python (`capture_rng_state` /
+# The bridge (`hydra2_replay_rs.resume`, Rust) owns the shuffle epoch-seed
+# judge used on the checkpoint write path: `epoch_seed` (wrapping
+# `data_seed + epoch`, mirroring the sidecar `epoch_seed`). Torch CPU/CUDA
+# RNG capture/restore stays Python (`capture_rng_state` /
 # `_restore_rng_state` — no Rust GPU math, Burn/Candle out); the RNG-anchor
-# compare (`_verify_rng_anchors`) stays Python per `resume.rs`. Every helper
-# below is Rust-first with an ImportError-only oracle fallback (bridge not
-# importable → pure-Python twin, byte-identical on valid inputs); any
-# bridge-present error raises ContractError — mismatch=raise, never a silent
-# pass. Evidence: resume blob parity shapes; seed derivation byte-identical.
+# compare (`_verify_rng_anchors`) stays Python per `resume.rs`. The helper
+# below is bridge-direct (no oracle body: bridge==oracle proven by the
+# throwaway parity script — wrapping `+` identical for all reachable seeds;
+# missing bridge or any bridge error raises ContractError with a build-ext
+# hint — mismatch=raise, never a silent pass).
 _RESUME_MOD: Any = None
 _RESUME_PROBED: bool = False
 
@@ -77,11 +76,12 @@ _RESUME_NATIVE_OVERRIDE: Any = None
 
 
 def _resume_native() -> Any | None:
-    """Import the built `resume` submodule once; None → oracle fallback.
+    """Import the built `resume` submodule once; None → fail-closed for counting.
 
-    ImportError-only oracle: ``None`` means the extension (or its ``resume``
-    surface) is not importable. Any other import-time failure raises
-    ContractError (mismatch=raise, never a silent pass).
+    ``None`` means the extension (or its ``resume`` surface) is not
+    importable; `_epoch_seed` raises ContractError with a build-ext hint on
+    ``None`` (no oracle). Any other import-time failure raises ContractError
+    (mismatch=raise, never a silent pass).
     """
     global _RESUME_MOD, _RESUME_PROBED
     if _RESUME_NATIVE_OVERRIDE is not None:
@@ -108,32 +108,38 @@ def _resume_native() -> Any | None:
 
 
 def _epoch_seed(*, data_seed: int, epoch: int) -> int:
-    """Shuffle epoch seed: Rust-first `resume.epoch_seed`, oracle `+`.
+    """Shuffle epoch seed: bridge-direct `resume.epoch_seed`.
 
-    `epoch_seed = data_seed + epoch` (wrapping add u64 both sides; the
+    `epoch_seed = data_seed + epoch` (wrapping add u64 bridge-side; the
     stream builder owns the draw, the sidecar only pins it). Inputs are
     validated (bool/non-int/negative → ContractError, mirroring the sidecar
-    `epoch_seed >= 0` gate); the oracle runs ONLY when the bridge surface is
-    absent. Bridge-present errors raise ContractError — mismatch=raise,
-    never a silent pass.
+    `epoch_seed >= 0` gate — the gate stays Python because the u64 FFI
+    accepts bool-as-int). Missing bridge or any bridge error raises
+    ContractError with a build-ext hint (mismatch=raise, never an oracle).
     """
     if isinstance(data_seed, bool) or not isinstance(data_seed, int) or data_seed < 0:
         raise ContractError(f"epoch_seed data_seed must be a non-negative int, got {data_seed!r}")
     if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0:
         raise ContractError(f"epoch_seed epoch must be a non-negative int, got {epoch!r}")
     resume = _resume_native()
-    if resume is not None:
-        try:
-            return int(resume.epoch_seed(int(data_seed), int(epoch)))
-        except ContractError:
-            raise
-        except (ImportError, AttributeError):
-            pass  # bridge surface missing → oracle sum below
-        except ValueError as exc:
-            raise ContractError(str(exc)) from exc
-        except Exception as exc:
-            raise ContractError(f"resume epoch_seed failed: {type(exc).__name__}: {exc}") from exc
-    return data_seed + epoch
+    if resume is None:
+        raise ContractError(
+            "resume bridge unavailable; run `pixi run build-ext` to build "
+            "hydra2_replay_rs before deriving an epoch seed"
+        )
+    try:
+        return int(resume.epoch_seed(int(data_seed), int(epoch)))
+    except ContractError:
+        raise
+    except (ImportError, AttributeError) as exc:
+        raise ContractError(
+            "resume epoch_seed bridge surface missing; rebuild the bridge "
+            f"(`pixi run build-ext`): {type(exc).__name__}: {exc}"
+        ) from exc
+    except ValueError as exc:
+        raise ContractError(str(exc)) from exc
+    except Exception as exc:
+        raise ContractError(f"resume epoch_seed failed: {type(exc).__name__}: {exc}") from exc
 
 
 def _write_streaming_checkpoint(
@@ -149,10 +155,10 @@ def _write_streaming_checkpoint(
 ) -> Path:
     """Atomically publish ``ckpt-<update>.pt`` + ResumeExactPlan sidecar.
 
-    Resume/RNG-restore entries are Rust-first: ``epoch_seed`` crosses the
-    bridge ``resume`` judge (wrapping ``data_seed + epoch``, oracle sum when
-    the bridge is absent — mismatch=raise), while ``rng_state`` capture and
-    the ``_rng_anchors()`` bundle stay torch/Python (no Rust GPU math).
+    Resume/RNG-restore entries are bridge-direct: ``epoch_seed`` crosses the
+    bridge ``resume`` judge (wrapping ``data_seed + epoch``; missing bridge
+    raises — mismatch=raise, never an oracle), while ``rng_state`` capture
+    and the ``_rng_anchors()`` bundle stay torch/Python (no Rust GPU math).
     """
     checkpoint_dir = run_dir / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)

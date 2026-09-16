@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING as TYPE_CHECKING
 
+from hydra2_replay_rs import tiles  # pyrefly: ignore[missing-import]
+
 from hydra2.contracts.common import ContractError as ContractError
 from hydra2.engines.riichienv._lr_frame import _END as _END
 from hydra2.engines.riichienv._lr_track import _take_next as _take_next
@@ -11,7 +13,6 @@ from hydra2.engines.riichienv._lr_track import _track_remove as _track_remove
 from hydra2.engines.riichienv._lr_track import _wall_filler_ids as _wall_filler_ids
 from hydra2.engines.riichienv._lr_walk import _split_kyoku_draws as _split_kyoku_draws
 from hydra2.engines.riichienv._oracle_base import _TRANSPARENT_KINDS as _TRANSPARENT_KINDS
-from hydra2.engines.riichienv.tiles import mjai_string_of as mjai_string_of
 
 if TYPE_CHECKING:
     from collections.abc import Sequence as Sequence
@@ -138,7 +139,7 @@ def _track_draw(state: _GameState, walk: _KyokuWalk, kyoku: int, actor: int, pai
     if len(queue) == 0:
         raise state.fail(kyoku, "tsumo", f"seat {actor} drew a different tile than logged")
     copy, marked = queue[0]
-    if mjai_string_of(copy) != pai:
+    if tiles.mjai_string_of(copy) != pai:
         raise state.fail(kyoku, "tsumo", f"seat {actor} drew a different tile than logged")
     _ = queue.pop(0)  # discard consumed draw entry; copy/marked already captured
     if marked != 0:
@@ -221,7 +222,7 @@ def _track_discard(
     """Mirror one logged discard: hand removal plus river, then drawer update."""
     if tile not in walk.hands[actor]:
         _ = _track_remove(
-            walk.hands[actor], mjai_string_of(tile), state, kyoku, drawn=drawn, where=where
+            walk.hands[actor], tiles.mjai_string_of(tile), state, kyoku, drawn=drawn, where=where
         )  # discard removed tile id; hand mutation is the effect
     else:
         walk.hands[actor].remove(tile)

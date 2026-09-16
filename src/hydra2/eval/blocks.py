@@ -23,6 +23,15 @@ from hydra2.eval.telemetry import (
     telemetry_invalid_reason,
 )
 
+try:
+    from hydra2_replay_rs import eval as _bridge_eval  # pyrefly: ignore[missing-import]
+except ImportError as exc:
+    raise ImportError(
+        "hydra2_replay_rs extension with eval not importable; "
+        "build the bridge with `pixi run build-ext` before aggregating wall blocks"
+    ) from exc
+
+
 __all__ = [
     "EXCLUSION_REASONS",
     "BlockAggregateResult",
@@ -30,7 +39,6 @@ __all__ = [
     "ExcludedBlock",
     "WallBlock",
     "aggregate_blocks",
-    "aggregate_wall_block",
 ]
 
 
@@ -56,13 +64,6 @@ class WallBlock:
                 or not math.isfinite(float(value))
             ):
                 raise ContractError(f"contrast must be finite, got {value!r}")
-
-
-def aggregate_wall_block(block: WallBlock) -> float:
-    """Collapse the block to ONE number; games inside are not independent."""
-    if len(block.contrasts) == 0:
-        raise ContractError(f"wall block {block.wall_id!r} has no games")
-    return math.fsum(block.contrasts) / len(block.contrasts)
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,7 +123,7 @@ def aggregate_blocks(
         if exclusion is not None:
             excluded.append(exclusion)
             continue
-        valid.append((block.wall_id, aggregate_wall_block(block)))
+        valid.append((block.wall_id, _bridge_eval.aggregate_wall_block(block)))
     return BlockAggregateResult(valid=tuple(valid), excluded=tuple(excluded))
 
 

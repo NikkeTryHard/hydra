@@ -16,6 +16,7 @@
 
 pub mod canon_rng;
 pub mod columnar;
+pub mod eval;
 pub mod mirror;
 pub mod packet;
 pub mod packet_decode;
@@ -25,6 +26,7 @@ pub mod ring;
 pub mod search;
 pub mod sink;
 pub mod stream;
+pub mod tiles;
 use pyo3::prelude::*;
 
 /// Extension module: `import hydra2_replay_rs`.
@@ -43,5 +45,7 @@ pub fn hydra2_replay_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     packet::register(m)?;
     mirror::register(m)?;
     packet_decode::register(m)?;
+    tiles::register(m)?;
+    eval::register(m)?;
     Ok(())
 }

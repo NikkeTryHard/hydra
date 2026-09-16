@@ -496,7 +496,9 @@ def test_compare_duplicate_blocks_without_changing_frozen_supervised_gate() -> N
         )
 
     # Verify whole-wall-block is independent unit: test via eval.blocks aggregation
-    from hydra2.eval.blocks import WallBlock, aggregate_wall_block
+    from hydra2_replay_rs import eval as _bridge_eval
+
+    from hydra2.eval.blocks import WallBlock
 
     # Create real WallBlocks and ensure our compare aligns with eval.blocks semantics
     wall_blocks = [
@@ -508,7 +510,9 @@ def test_compare_duplicate_blocks_without_changing_frozen_supervised_gate() -> N
     # Our function would compute mean per wall wall
     # aggregate_wall_block collapses one wall to mean
     for wb in wall_blocks:
-        assert aggregate_wall_block(wb) == pytest.approx(sum(wb.contrasts) / len(wb.contrasts))
+        assert _bridge_eval.aggregate_wall_block(wb) == pytest.approx(
+            sum(wb.contrasts) / len(wb.contrasts)
+        )
 
 
 # ---------------------------------------------------------------------------

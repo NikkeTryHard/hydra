@@ -6,6 +6,8 @@ from dataclasses import replace as replace
 from typing import TYPE_CHECKING as TYPE_CHECKING
 from typing import cast as cast
 
+from hydra2_replay_rs import tiles  # pyrefly: ignore[missing-import]
+
 from hydra2.contracts.action import CanonicalAction as CanonicalAction
 from hydra2.contracts.common import ContractError as ContractError
 from hydra2.contracts.common import make_seat as make_seat
@@ -26,8 +28,6 @@ from hydra2.engines.riichienv._sp_windows import _require_actor as _require_acto
 from hydra2.engines.riichienv._sp_windows import _resolve_dora as _resolve_dora
 from hydra2.engines.riichienv.events import make_delta as make_delta
 from hydra2.engines.riichienv.events import meld_delta_value as meld_delta_value
-from hydra2.engines.riichienv.tiles import mjai_string_of as mjai_string_of
-from hydra2.engines.riichienv.tiles import physical_of as physical_of
 
 if TYPE_CHECKING:
     from typing import Any as Any
@@ -161,7 +161,7 @@ def _do_kakan(
     if not any(
         _safe_mjai_type(raw) == "kakan"
         and raw.tile is not None
-        and mjai_string_of(int(raw.tile)) == pai
+        and tiles.mjai_string_of(int(raw.tile)) == pai
         for raw in step.raw_legals
     ):
         raise state.fail(kyoku, "kakan", "kakan names a different tile than the oracle")
@@ -171,7 +171,7 @@ def _do_kakan(
     # on the same copy as the drained pipeline.
     pool = _copies_of_string(pai)
     if pai[0] == "5" and len(pai) == 2:
-        base = (int(physical_of(pai)) // 4) * 4
+        base = (int(tiles.physical_of(pai)) // 4) * 4
         pool = [base, base + 1, base + 2, base + 3]
     try:
         prior = _find_prior_pon(state, actor, pool[0])
@@ -260,7 +260,7 @@ def _do_dora(state: _GameState, walk: _KyokuWalk, kyoku: int, event: dict[str, o
     # Kan-dora indicators are log-faithful first-copies per marker (census:
     # the drain binds the first physical copy of every marker string); the
     # engine's filler dead wall can never name them. Track reveals in Python.
-    indicator = int(physical_of(marker))
+    indicator = int(tiles.physical_of(marker))
     walk.dora_revealed.append(indicator)
     walk.last_oracle_dora = tuple(walk.dora_revealed)
     tile = _resolve_dora(state, walk, kyoku, marker)

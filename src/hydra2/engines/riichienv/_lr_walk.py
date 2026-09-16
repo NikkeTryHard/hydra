@@ -6,6 +6,8 @@ from dataclasses import dataclass as dataclass
 from typing import TYPE_CHECKING as TYPE_CHECKING
 from typing import cast as cast
 
+from hydra2_replay_rs import tiles  # pyrefly: ignore[missing-import]
+
 from hydra2.contracts.action import canonical_action_codec as canonical_action_codec
 from hydra2.contracts.common import ContractError as ContractError
 from hydra2.contracts.common import IllegalActionError as IllegalActionError
@@ -21,7 +23,6 @@ from hydra2.engines.riichienv._oracle_base import _BAKAZE_TO_WIND as _BAKAZE_TO_
 from hydra2.engines.riichienv._oracle_base import _TRANSPARENT_KINDS as _TRANSPARENT_KINDS
 from hydra2.engines.riichienv._oracle_base import _WINDOW_HEAD_TYPES as _WINDOW_HEAD_TYPES
 from hydra2.engines.riichienv.events import make_delta as make_delta
-from hydra2.engines.riichienv.tiles import mjai_string_of as mjai_string_of
 
 if TYPE_CHECKING:
     from collections.abc import Sequence as Sequence
@@ -137,7 +138,7 @@ def _pop_window_heads(
     for its own discard instead of being eaten here and cleared as an orphan.
     """
     del kyoku
-    pai = mjai_string_of(tile)
+    pai = tiles.mjai_string_of(tile)
     claim_kind = str(claim_ev.get("type", "")) if isinstance(claim_ev, dict) else ""
     claim_actor = claim_ev.get("actor") if isinstance(claim_ev, dict) else None
     for seat in range(4):
@@ -153,13 +154,13 @@ def _pop_window_heads(
         ):
             continue
         if head.mjai_type in ("chi", "pon", "daiminkan") and (
-            head.tile is None or mjai_string_of(head.tile) != pai
+            head.tile is None or tiles.mjai_string_of(head.tile) != pai
         ):
             continue
         if head.mjai_type == "hora" and not (
             head.drawn is None
             and head.tile is not None
-            and mjai_string_of(head.tile) == mjai_string_of(tile)
+            and tiles.mjai_string_of(head.tile) == tiles.mjai_string_of(tile)
         ):
             # A future tsumo win is not part of this window; leave it queued.
             continue

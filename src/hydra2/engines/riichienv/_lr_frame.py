@@ -16,7 +16,6 @@ from hydra2.contracts.common import ContractError as ContractError
 from hydra2.data.decode import GameRecord as GameRecord
 from hydra2.data.decode import decode_game_object as decode_game_object
 from hydra2.engines.riichienv.identity import ENGINE_IDENTITY as ENGINE_IDENTITY
-from hydra2.engines.riichienv.tiles import mjai_string_of as mjai_string_of
 
 if TYPE_CHECKING:
     from typing import Any as Any

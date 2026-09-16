@@ -6,6 +6,8 @@ from dataclasses import replace as replace
 from typing import TYPE_CHECKING as TYPE_CHECKING
 from typing import cast as cast
 
+from hydra2_replay_rs import tiles  # pyrefly: ignore[missing-import]
+
 from hydra2.contracts.action import CanonicalAction as CanonicalAction
 from hydra2.contracts.action import canonical_action_codec as canonical_action_codec
 from hydra2.contracts.common import ContractError as ContractError
@@ -28,7 +30,6 @@ from hydra2.engines.riichienv._sp_windows import _open_window as _open_window
 from hydra2.engines.riichienv._sp_windows import _require_actor as _require_actor
 from hydra2.engines.riichienv.events import make_delta as make_delta
 from hydra2.engines.riichienv.events import meld_delta_value as meld_delta_value
-from hydra2.engines.riichienv.tiles import mjai_string_of as mjai_string_of
 
 if TYPE_CHECKING:
     from typing import Any as Any
@@ -73,13 +74,13 @@ def _do_reach(
     if not any(
         _safe_mjai_type(raw) == "dahai"
         and raw.tile is not None
-        and mjai_string_of(int(raw.tile)) == pai
+        and tiles.mjai_string_of(int(raw.tile)) == pai
         for raw in step.raw_legals
     ):
         raise state.fail(kyoku, "reach", "declaration discard not owned: no offer")
     declaration_tile: int | None = None
     for owned in step.hand:
-        if mjai_string_of(owned) != pai:
+        if tiles.mjai_string_of(owned) != pai:
             continue
         if declaration_tile is None:
             declaration_tile = owned
@@ -172,7 +173,7 @@ def _match_stashed_claim(
         if not is_kind:
             continue
         tile_raw: Any = raw.tile
-        if tile_raw is None or mjai_string_of(int(tile_raw)) != pai:
+        if tile_raw is None or tiles.mjai_string_of(int(tile_raw)) != pai:
             continue
         candidates.append(raw)
     if len(candidates) == 0:
@@ -187,7 +188,7 @@ def _match_stashed_claim(
         # offer's own tile, not repeated inside); the log lists the same
         # hand tiles. Several chi variants can share one called tile, so
         # the logged consumed set selects the variant, never list order.
-        yielded_strings = sorted(mjai_string_of(int(t)) for t in raw.consume_tiles)
+        yielded_strings = sorted(tiles.mjai_string_of(int(t)) for t in raw.consume_tiles)
         if yielded_strings == logged_strings:
             offer = raw
             break

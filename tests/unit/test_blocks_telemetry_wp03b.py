@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import pytest
+from hydra2_replay_rs import eval as _bridge_eval
 
 from hydra2.contracts.common import ContractError
 from hydra2.eval.blocks import (
     BlockTolerance,
     WallBlock,
     aggregate_blocks,
-    aggregate_wall_block,
 )
 from hydra2.eval.telemetry import (
     REQUIRED_CORE_FIELDS,
@@ -122,7 +122,7 @@ def test_row_marked_invalid_surfaces_verbatim() -> None:
 def test_block_aggregation_collapses_games_to_one_value() -> None:
     """Games inside a wall are NOT independent units: one number per block."""
     block = WallBlock(wall_id="w-1", game_ids=("g1", "g2", "g3"), contrasts=(1.0, 2.0, 6.0))
-    assert aggregate_wall_block(block) == pytest.approx(3.0)
+    assert _bridge_eval.aggregate_wall_block(block) == pytest.approx(3.0)
     with pytest.raises(ContractError):
         WallBlock(wall_id="w-2", game_ids=("g1",), contrasts=())
     with pytest.raises(ContractError):
