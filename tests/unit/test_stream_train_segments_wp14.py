@@ -342,9 +342,7 @@ class TestTelemetryWiring:
         assert "profiler:update=000002 skipped (cpu-device)" in train_log
 
     def test_mlflow_quiet_mirror_writes_store(self, tmp_path: Path, monkeypatch: Any) -> None:
-        """MLflow on: SQLite store + persisted run id appear; training intact."""
-        mlflow = pytest.importorskip("mlflow")
-        _ = mlflow
+        """MLflow on: REST fallback record + persisted run id appear; training intact."""
         monkeypatch.delenv("HYDRA2_MLFLOW_DISABLED", raising=False)
         train_stems, _ = _pick_stems(need_train=2, need_val=0)
         corpus = tmp_path / "corpus" / "tenhou"
@@ -365,13 +363,21 @@ class TestTelemetryWiring:
         summary = run_stream_training(config, None)
         assert summary["end_update"] == 2
         run_dir = Path(summary["run_dir"])
-        assert (tmp_path / "artifacts" / "mirror" / "mlflow" / "mlruns.db").is_file()
+        fallback = tmp_path / "artifacts" / "mirror" / "mlflow" / "mirror.jsonl"
+        assert fallback.is_file()
+        ops = [
+            json.loads(line)
+            for line in fallback.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert ops[0]["op"] == "start_run"
+        assert any(op["op"] == "log_update" for op in ops)
         run_id_text = (run_dir / "mirror" / "mlflow_run_id").read_text(encoding="utf-8")
         assert run_id_text.strip() != ""
+        assert run_id_text.strip() == ops[0]["run_id"]
 
     def test_mlflow_run_id_survives_resume(self, tmp_path: Path, monkeypatch: Any) -> None:
         """Resume appends to the stored MLflow run instead of opening a new one."""
-        mlflow = pytest.importorskip("mlflow")
         monkeypatch.delenv("HYDRA2_MLFLOW_DISABLED", raising=False)
         train_stems, _ = _pick_stems(need_train=2, need_val=0)
         corpus = tmp_path / "corpus" / "tenhou"
@@ -400,11 +406,18 @@ class TestTelemetryWiring:
         continued = run_stream_training(config, resume)
         assert continued["end_update"] == 2
         assert id_file.read_text(encoding="utf-8").strip() == first_id
-        client = mlflow.tracking.MlflowClient(
-            tracking_uri=f"sqlite:///{tmp_path}/artifacts/mirror/mlflow/mlruns.db"
-        )
+        fallback = tmp_path / "artifacts" / "mirror" / "mlflow" / "mirror.jsonl"
+        ops = [
+            json.loads(line)
+            for line in fallback.read_text(encoding="utf-8").splitlines()
+            if line.strip() != ""
+        ]
         # Fresh run logs updates 1,2; resume re-logs update 2 into the same run.
-        assert sorted(p.step for p in client.get_metric_history(first_id, "total")) == [1, 2, 2]
+        assert sorted(
+            op["step"]
+            for op in ops
+            if op["op"] == "log_update" and op["run_id"] == first_id and "total" in op["metrics"]
+        ) == [1, 2, 2]
 
 
 class TestTrainSegment:

@@ -33,6 +33,26 @@
 //! T4/T5 (NLL/top1, teacher-gate) guard torch islands (`StudentModel`,
 //! `_teacher_policy_and_value`) that STAY Python per invariants — no
 //! Rust surface exists for them here by design (no Rust GPU math).
+//!
+//! PCG64 draw-path decision (2026-09-16, conditional GO for port-A,
+//! port-B stands until the KAT lands): numpy `bootstrap_blocks` wall
+//! (min over 60/30/15 reps, R=2000, Intel Ultra 7 265KF, numpy 2.5.3,
+//! rustc 1.98 -O; /tmp throwaway bench, deleted after measurement) vs a
+//! Rust same-shape draw+mean+sort kernel. N=30 (canonical
+//! `SelectionConfig`): numpy 0.327ms vs PCG64-DXSM proxy 0.125ms (+162%)
+//! vs Xoshiro256++ ceiling 0.067ms; N=100: 0.935 vs 0.387 (+142%);
+//! N=500: 2.867 vs 1.554 (+84%). The proxy is a 128-bit LCG +
+//! DXSM-class mixer (op-equivalent, NOT bit-exact) with numpy-verbatim
+//! `bounded_uint64` Lemire draws — the honest port-A wall, not the
+//! Xoshiro ceiling. Gate 1 (>=20% win): PASS on all shapes. Gate 2 (KS
+//! parity, K=300 reps at N=30, per-rep seeds `sha256("pcg64-ks-{k}")`):
+//! low/high CI bounds numpy-vs-each-Rust-lane p=0.71..0.94 (bar
+//! p>=0.05) with bit-identical estimates — PASS. Absolute saving is
+//! ~0.2ms/call at N=30 on cold-path callers (selection gates,
+//! teacher-eval, persistence reports), so port-A is AUTHORISED but NOT
+//! started here: it lands only as a bit-exact PCG64-DXSM reimplementation
+//! (exact SeedSequence init + stream) behind a bit-parity KAT vs numpy,
+//! never as the Xoshiro lane.
 
 use std::collections::HashMap;
 

@@ -29,6 +29,11 @@ hydra-feed = { path = "../hydra-feed" }
 hydra-shard = { path = "../hydra-shard" }
 hydra-search = { path = "../hydra-search" }
 pyo3 = { version = "0.29.2", features = ["auto-initialize"] }
+# M2 mirror REST transport (dep-add APPROVED — locked-goal ledger entry lives
+# with the MirrorREST slice yield: observer-only reqwest, blocking + json +
+# rustls-tls, timeout 5s, retries 0; every transport failure returns false so
+# Python keeps its warn-only + file-fallback shape. Pinned exact.).
+reqwest = { version = "=0.12.28", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 arrow-array = { version = "=59.3.0", features = ["ffi"] }
 arrow-schema = { version = "=59.3.0", features = ["ffi"] }
 

@@ -16,6 +16,7 @@
 
 pub mod canon_rng;
 pub mod columnar;
+pub mod mirror;
 pub mod packet;
 pub mod packet_decode;
 pub mod replay;
@@ -40,6 +41,7 @@ pub fn hydra2_replay_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     columnar::register(m)?;
     search::register(m)?;
     packet::register(m)?;
+    mirror::register(m)?;
     packet_decode::register(m)?;
     Ok(())
 }
