@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 from hydra2.contracts.common import ContractError as ContractError
 from hydra2.data.replay_expand import expand_privileged_rows as expand_privileged_rows
-from hydra2.data.stream import StreamCursor as DataStreamCursor
+from hydra2.data.stream_read import StreamCursor as DataStreamCursor
 from hydra2.training.stream_expand import (
     _PARALLEL_EXPAND_MAX_WORKERS as _PARALLEL_EXPAND_MAX_WORKERS,
 )
@@ -44,8 +44,8 @@ from hydra2.training.stream_expand import _slim_row_dicts as _slim_row_dicts
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
-    from hydra2.data.stream import GameStream as GameStream
-    from hydra2.data.stream import StreamGame as StreamGame
+    from hydra2.data.stream_iter import GameStream as GameStream
+    from hydra2.data.stream_read import StreamGame as StreamGame
 
 __all__ = [
     "_StreamDatasetCore",

@@ -12,23 +12,24 @@ import pytest
 import zstandard as zstd
 
 from hydra2.contracts.common import ContractError
-from hydra2.data.stream import (
-    GameStream,
+from hydra2.data.stream_decode import (
     PrefetchGameStream,
+    actor_payload,
+    check_wall_disjoint,
+    count_decisions,
+    slice_microbatches,
+    verify_no_privileged_leakage,
+)
+from hydra2.data.stream_iter import GameStream
+from hydra2.data.stream_manifest import build_manifest, manifest_digest
+from hydra2.data.stream_read import (
     StreamCursor,
     ZstdLineStream,
-    actor_payload,
     assign_split,
-    build_manifest,
-    check_wall_disjoint,
     compute_wall_hash,
-    count_decisions,
     group_key_for,
     group_key_for_path,
-    manifest_digest,
-    slice_microbatches,
     stem_of,
-    verify_no_privileged_leakage,
 )
 
 if TYPE_CHECKING:
@@ -146,7 +147,7 @@ def test_manifest_digest_matches_canonical_oracle(tmp_path: Path) -> None:
 def test_reservoir_blob_round_trip_and_corrupt_miss(tmp_path: Path) -> None:
     """Blob holds buffer-order raw bytes; any corruption fails closed."""
     from hydra2.contracts.common import ContractError
-    from hydra2.data.stream import read_reservoir_blob, write_reservoir_blob
+    from hydra2.data.stream_manifest import read_reservoir_blob, write_reservoir_blob
 
     raws = [b'{"type":"start_game"}\n', b'{"type":"end_game"}\n', b"x" * 1000]
     target = tmp_path / "buf.zst"
@@ -171,10 +172,8 @@ def test_snapshot_blob_restore_matches_refetch(tmp_path: Path) -> None:
     Fails without the blob path (no second materialization to agree with)
     and on any decode/gate drift between the two materializations.
     """
-    from hydra2.data.stream import (
-        GameStream,
-        write_reservoir_blob,
-    )
+    from hydra2.data.stream_iter import GameStream
+    from hydra2.data.stream_manifest import write_reservoir_blob
 
     for index in range(3):
         _write(
@@ -190,7 +189,7 @@ def test_snapshot_blob_restore_matches_refetch(tmp_path: Path) -> None:
         {"key": g.game.raw_bytes_sha256, "path": g.path.as_posix(), "offset": g.offset}
         for g in games
     ]
-    from hydra2.data.stream import serialize_shuffle_rng
+    from hydra2.data.stream_manifest import serialize_shuffle_rng
 
     rng = __import__("random").Random(1234)
     rng_state = serialize_shuffle_rng(rng)
@@ -216,10 +215,10 @@ def test_snapshot_blob_restore_matches_refetch(tmp_path: Path) -> None:
         shuffle_restore_rng=rng_state,
         snapshot_blob=target,
     )
-    run_a = __import__("hydra2.data.stream", fromlist=["_Run"])._Run(
+    run_a = __import__("hydra2.data.stream_read", fromlist=["_Run"])._Run(
         file_index=0, byte_offset=0, games_seen=0, stats=None, hashes=set()
     )
-    run_b = __import__("hydra2.data.stream", fromlist=["_Run"])._Run(
+    run_b = __import__("hydra2.data.stream_read", fromlist=["_Run"])._Run(
         file_index=0, byte_offset=0, games_seen=0, stats=None, hashes=set()
     )
     buf_a = refetch._restore_shuffle_state(run_a)
@@ -237,7 +236,8 @@ def test_snapshot_hit_seeks_past_primed_games(tmp_path: Path) -> None:
     then restores through the full GameStream path and asserts the emitted
     tail matches the un-snapshotted continuation exactly.
     """
-    from hydra2.data.stream import GameStream, StreamCursor
+    from hydra2.data.stream_iter import GameStream
+    from hydra2.data.stream_read import StreamCursor
 
     for index in range(3):
         _write(
@@ -521,7 +521,7 @@ def test_throughput_informational(tmp_path: Path) -> None:
 
 def test_scan_cache_round_trip_and_corrupt_miss(tmp_path: Path) -> None:
     """Manifest/split cache reloads on exact key, misses on stale/corrupt."""
-    from hydra2.data.stream import load_scan_cache, save_scan_cache
+    from hydra2.data.stream_manifest import load_scan_cache, save_scan_cache
 
     for index in range(3):
         _write(
@@ -627,7 +627,7 @@ def test_shuffle_rng_round_trip_and_tamper() -> None:
     """Shuffle RNG state survives JSON round-trip; malformed states raise."""
     import random
 
-    from hydra2.data.stream import parse_shuffle_rng, serialize_shuffle_rng
+    from hydra2.data.stream_manifest import parse_shuffle_rng, serialize_shuffle_rng
 
     rng = random.Random(12345)
     for _ in range(10):
@@ -700,7 +700,7 @@ def test_shuffle_snapshot_restore_verbatim(tmp_path: Path) -> None:
 
 def test_fetch_game_at_boundary_and_tamper(tmp_path: Path) -> None:
     """Single-game fetch seeks to offsets; off-boundary/sha mismatch raises."""
-    from hydra2.data.stream import fetch_game_at
+    from hydra2.data.stream_read import fetch_game_at
 
     raw_a, raw_b = _game_bytes("fa"), _game_bytes("fb")
     path = _tenhou_name(tmp_path, "2024010100gm-00a9-0000-90330000")

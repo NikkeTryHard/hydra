@@ -58,35 +58,39 @@ _NATURAL_NAMES = frozenset(
 _WORLD_NAMES = frozenset({"FullWorld"})
 # WP-07B oracle exports (fail closed on use)
 try:
-    from hydra2.belief.oracle_distillation import (
+    from hydra2.belief.oracle_guard import (
+        AUTHORIZED_TRAIN_SPLIT,
+        FORBIDDEN_IN_ACTOR_KEYS,
+        PRIVILEGED_KEYS,
+        check_split_disjoint,
+        check_wall_leakage,
+        validate_actor_batch_no_privileged,
+    )
+    from hydra2.belief.oracle_join import (
+        assert_privileged_loader_isolated_from_encoder,
+        load_oracle_batch_in_subprocess,
+    )
+    from hydra2.belief.oracle_models import (
+        DistillationConfig,
+        OracleTeacher,
+        StudentBeliefModel,
+        distillation_loss,
+    )
+    from hydra2.belief.oracle_scores import (
         BrierScoreResult,
         CalibrationResult,
-        DistillationConfig,
         DistillationMetrics,
         DuplicateBlockComparison,
-        OracleTeacher,
         ProperScoreResult,
-        StudentBeliefModel,
         brier_score,
         calibration_ece,
         compare_duplicate_blocks,
         compute_proper_scores,
-        distillation_loss,
         expected_calibration_error,
         hidden_permutation_invariance_check,
     )
-    from hydra2.belief.oracle_loader import (
-        AUTHORIZED_TRAIN_SPLIT,
-        FORBIDDEN_IN_ACTOR_KEYS,
-        PRIVILEGED_KEYS,
-        OracleTarget,
-        PrivilegedOracleLoader,
-        assert_privileged_loader_isolated_from_encoder,
-        check_split_disjoint,
-        check_wall_leakage,
-        load_oracle_batch_in_subprocess,
-        validate_actor_batch_no_privileged,
-    )
+    from hydra2.belief.oracle_store import PrivilegedOracleLoader
+    from hydra2.belief.oracle_targets import OracleTarget
 except ImportError as _oracle_exc:
     _ORACLE_IMPORT_ERROR: ImportError | None = _oracle_exc
 else:

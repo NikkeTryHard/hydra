@@ -672,7 +672,7 @@ def test_real_mode_bad_row_raises_contract_error(tmp_path: Path) -> None:
 
 def test_supervised_loop_wall_ledger_overlap_raises(tmp_path: Path, actor_parquet_factory) -> None:
     """Loop ledger mirrors replay: ranks-written corpus overlapping eval walls raises from the join."""
-    from hydra2.belief.oracle_loader import PrivilegedOracleLoader
+    from hydra2.belief.oracle_store import PrivilegedOracleLoader
     from hydra2.data.parquet import write_privileged_ranks
 
     parquet_dir = actor_parquet_factory(num_rows=8)

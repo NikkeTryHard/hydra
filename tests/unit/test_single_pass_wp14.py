@@ -33,11 +33,13 @@ from hydra2_replay_rs import tiles as _tiles_bridge
 from hydra2.contracts.common import ContractError
 from hydra2.data.decode import GameRecord
 from hydra2.engines.riichienv import (
-    log_replay as drained,
+    _lr_end as drained,
 )
 from hydra2.engines.riichienv import (
-    single_pass as live,
+    _sp_game as live,
 )
+from hydra2.engines.riichienv._lr_rows import SIM_DERIVATION_MARK as _DRAINED_SIM_MARK
+from hydra2.engines.riichienv._sp_records import SIM_DERIVATION_MARK as _LIVE_SIM_MARK
 
 mjai_string_of = _tiles_bridge.mjai_string_of
 
@@ -200,9 +202,9 @@ def test_kyushu_offered_live_past_first_discard() -> None:
 
 def test_derivation_marker_rev_bump_pinned() -> None:
     """Single-pass rows carry marker rev v2, never silently mixing with v1."""
-    assert live.SIM_DERIVATION_MARK == "sim-replay-wall-less-v2"
-    assert drained.SIM_DERIVATION_MARK == "sim-replay-wall-less-v1"
-    assert live.SIM_DERIVATION_MARK != drained.SIM_DERIVATION_MARK
+    assert _LIVE_SIM_MARK == "sim-replay-wall-less-v2"
+    assert _DRAINED_SIM_MARK == "sim-replay-wall-less-v1"
+    assert _LIVE_SIM_MARK != _DRAINED_SIM_MARK
 
 
 def test_tampered_dahai_still_fails_closed() -> None:

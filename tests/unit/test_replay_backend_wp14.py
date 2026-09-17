@@ -26,7 +26,9 @@ import yaml
 import zstandard as zstd
 
 from hydra2.contracts.common import ContractError
-from hydra2.data.stream import GameStream, assign_split, build_manifest, group_key_for_path
+from hydra2.data.stream_iter import GameStream
+from hydra2.data.stream_manifest import build_manifest
+from hydra2.data.stream_read import assign_split, group_key_for_path
 from hydra2.training import stream_train as driver
 from hydra2.training._rc_digest import run_config_digest, run_config_to_dict
 from hydra2.training._rc_root import load_run_config
@@ -221,7 +223,7 @@ class TestFlag:
 
     def test_python_backend_matches_direct_calls(self, rust_extension: Any) -> None:
         from hydra2.data.replay_expand import expand_game
-        from hydra2.engines.riichienv.log_replay import replay_game
+        from hydra2.engines.riichienv._lr_end import replay_game
 
         wall_less = _decode_game("flag-py-direct")
         rows, sim_path = driver._expand_game_rows(wall_less, "train", "python")
@@ -261,7 +263,7 @@ class TestPlaneBackend:
         must equal the python oracle's choices. String decision ids live
         cold-side only and have no plane equivalent by design.
         """
-        from hydra2.engines.riichienv.log_replay import replay_game
+        from hydra2.engines.riichienv._lr_end import replay_game
         from hydra2.training import rust_stream
 
         game = _decode_game("flag-plane-seq")
@@ -300,7 +302,7 @@ class TestPlaneBackend:
         codes (never a new code) while the python oracle raises
         ContractError — both reject the same game.
         """
-        from hydra2.engines.riichienv.log_replay import replay_game
+        from hydra2.engines.riichienv._lr_end import replay_game
         from hydra2.training import rust_stream
 
         bad = _decode_bad_game("flag-plane-q")

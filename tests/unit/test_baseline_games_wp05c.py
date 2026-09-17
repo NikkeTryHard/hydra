@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from hydra2.eval.baseline import evaluate_reference_games
+from hydra2.eval.baseline_eval import evaluate_reference_games
 
 pytestmark = pytest.mark.contract_package("WP-05C")
 

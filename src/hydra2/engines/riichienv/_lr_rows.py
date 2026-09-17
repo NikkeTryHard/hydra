@@ -20,7 +20,7 @@ from hydra2.contracts.action_table import ActionContext as ActionContext
 from hydra2.contracts.common import ContractError as ContractError
 from hydra2.contracts.observation_assembly import HISTORY_EVENT_CAP as HISTORY_EVENT_CAP
 from hydra2.data.parquet import DecisionRow as DecisionRow
-from hydra2.data.stream import verify_no_privileged_leakage as verify_no_privileged_leakage
+from hydra2.data.stream_decode import verify_no_privileged_leakage as verify_no_privileged_leakage
 from hydra2.engines.riichienv._lr_frame import _event_schema_hash as _event_schema_hash
 from hydra2.engines.riichienv._oracle_base import (
     _BAKAZE_TO_WIND as _BAKAZE_TO_WIND,

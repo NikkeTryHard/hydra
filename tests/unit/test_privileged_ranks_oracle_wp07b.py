@@ -8,7 +8,8 @@ from pathlib import Path
 import pyarrow.parquet as pq
 import pytest
 
-from hydra2.belief.oracle_loader import PrivilegedOracleLoader, join_oracle_targets
+from hydra2.belief.oracle_join import join_oracle_targets
+from hydra2.belief.oracle_store import PrivilegedOracleLoader
 from hydra2.contracts.common import ContractError
 from hydra2.data.parquet import (
     validate_privileged_ranks,
@@ -146,10 +147,8 @@ def test_legacy_write_privileged_shards_also_glob_visible(tmp_path: Path) -> Non
 
 
 def test_ranks_from_final_scores_golden_matches_utility(tmp_path: Path) -> None:
-    from hydra2.belief.oracle_loader import (
-        _value_from_ranks_via_utility,
-        ranks_from_final_scores,
-    )
+    from hydra2.belief.oracle_join import ranks_from_final_scores
+    from hydra2.belief.oracle_targets import _value_from_ranks_via_utility
     from hydra2.contracts.rules_manifest import resolve_final_ranks
 
     scores = [35000, 25000, 15000, 30000]
@@ -188,7 +187,7 @@ def test_ranks_from_final_scores_golden_matches_utility(tmp_path: Path) -> None:
     ],
 )
 def test_ranks_from_final_scores_strict(bad_scores: object) -> None:
-    from hydra2.belief.oracle_loader import ranks_from_final_scores
+    from hydra2.belief.oracle_join import ranks_from_final_scores
 
     with pytest.raises(ContractError):
         ranks_from_final_scores(bad_scores)

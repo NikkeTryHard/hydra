@@ -846,7 +846,7 @@ class StubValueModel(nn.Module):
 
 
 def test_join_oracle_targets_known_ranks() -> None:
-    from hydra2.belief.oracle_loader import join_oracle_targets
+    from hydra2.belief.oracle_join import join_oracle_targets
 
     store = PrivilegedLabelStore()
     store.add("dec-join-0000", {"ranks": [2, 1, 4, 3]})
@@ -871,7 +871,7 @@ def test_join_oracle_targets_known_ranks() -> None:
 
 
 def test_join_oracle_targets_missing_raises() -> None:
-    from hydra2.belief.oracle_loader import join_oracle_targets
+    from hydra2.belief.oracle_join import join_oracle_targets
 
     store = PrivilegedLabelStore()
     store.add("dec-present", {"ranks": [1, 2, 3, 4]})
@@ -929,7 +929,7 @@ def test_replay_w_value_train_joins_value_targets(tmp_path: Path, actor_parquet_
 
 
 def test_replay_join_leakage_still_rejected(tmp_path: Path, actor_parquet_factory) -> None:
-    from hydra2.belief.oracle_loader import join_oracle_targets
+    from hydra2.belief.oracle_join import join_oracle_targets
 
     parquet_dir = actor_parquet_factory(num_rows=8)
     dataset = AuthoritativeParquetDataset(

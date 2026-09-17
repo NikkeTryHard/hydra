@@ -99,7 +99,7 @@ def _adapter_ok(record: GameRecord) -> bool:
         from hydra2.contracts.common import Seat, TileId
         from hydra2.contracts.rules_manifest import rules_manifest_from_payload
         from hydra2.engines.protocol import WallSchedule, wall_schedule_digest
-        from hydra2.engines.riichienv.adapter import RiichiEnvExactSimulator
+        from hydra2.engines.riichienv.adapter_core import RiichiEnvExactSimulator
 
         wall_tiles = tuple(TileId(int(t)) for t in record.wall_tiles)
         wall_sched = WallSchedule(

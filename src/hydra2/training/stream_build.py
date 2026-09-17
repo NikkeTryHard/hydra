@@ -20,7 +20,7 @@ from hydra2.artifacts.digest import (
     sha256_digest as sha256_digest,
 )
 from hydra2.contracts.common import ContractError as ContractError
-from hydra2.data.stream import manifest_digest as manifest_digest
+from hydra2.data.stream_manifest import manifest_digest as manifest_digest
 from hydra2.runtime.checkpoint import capture_rng_state as capture_rng_state
 from hydra2.training._rc_digest import run_config_digest as run_config_digest
 from hydra2.training.stream_expand import _MODEL_PARAMETERS as _MODEL_PARAMETERS
@@ -29,8 +29,8 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import Path
 
-    from hydra2.data.stream import StreamCursor as DataStreamCursor
-    from hydra2.data.stream import StreamManifest as StreamManifest
+    from hydra2.data.stream_manifest import StreamManifest as StreamManifest
+    from hydra2.data.stream_read import StreamCursor as DataStreamCursor
     from hydra2.training._rc_sections import RunConfig as RunConfig
 
 __all__ = [

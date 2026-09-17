@@ -99,7 +99,7 @@ def _object_id(prefix: str, rel: str) -> str:
 
 def _replay_wall_less(rel: str) -> list[Any]:
     """Replay one vendored game through the wall-less Python oracle."""
-    from hydra2.engines.riichienv.log_replay import replay_game
+    from hydra2.engines.riichienv._lr_end import replay_game
 
     return replay_game(_decode(rel, object_id=_object_id("g1", rel)))
 
@@ -479,7 +479,7 @@ def _check_deltas_conserved(deltas: list[int], *, winner: int, tsumo: bool) -> N
 
 def test_g4_hora_scores_vs_delta_ron_and_tsumo() -> None:
     """Logged hora deltas are conserved with the winner paid (ron + tsumo)."""
-    from hydra2.engines.riichienv.log_replay import replay_game
+    from hydra2.engines.riichienv._lr_end import replay_game
 
     ron_rows = replay_game(_invented_game("g4-ron", _RON_TEHAIS, _RON_BODY))
     assert len(ron_rows) == 11
@@ -515,7 +515,7 @@ def test_g4_han_fu_recompute_agrees_score_core() -> None:
 
 def test_g4_mismatch_and_other_quarantine_whole_game() -> None:
     """Double-ron mismatch and unmapped (Other) events quarantine the whole game."""
-    from hydra2.engines.riichienv.log_replay import replay_game
+    from hydra2.engines.riichienv._lr_end import replay_game
 
     with pytest.raises(ContractError, match="double ron on one discard is quarantined"):
         replay_game(_decode("s4/q-double-ron.jsonl", object_id="g4-double-ron"))
@@ -614,7 +614,7 @@ def _quarantine_record(
 
 def _sweep_s4_corpus() -> tuple[dict[str, int], dict[str, int], list[dict[str, Any]]]:
     """Replay the vendored s4 corpus: per-file rows-out + quarantine records."""
-    from hydra2.engines.riichienv.log_replay import replay_game
+    from hydra2.engines.riichienv._lr_end import replay_game
 
     rows_out: dict[str, int] = {}
     codes: dict[str, int] = {}
@@ -729,8 +729,8 @@ def test_g5_record_shape_identity_event_idx_reason_obs_hash_lineage() -> None:
 
 def test_g6_wall_less_sim_mark_never_digest() -> None:
     """Wall-less derivations recompute with wall_digest None + SIM mark (no digest)."""
-    from hydra2.engines.riichienv import log_replay as wall_less_oracle
-    from hydra2.engines.riichienv.log_replay import SIM_DERIVATION_MARK
+    from hydra2.engines.riichienv import _oracle_base as wall_less_oracle
+    from hydra2.engines.riichienv._lr_rows import SIM_DERIVATION_MARK
 
     assert SIM_DERIVATION_MARK == "sim-replay-wall-less-v1"
     rows = _replay_wall_less("s4/good-b.jsonl")
@@ -756,7 +756,7 @@ def test_g6_wall_less_sim_mark_never_digest() -> None:
 
 def test_g6_walled_real_digest_no_sim_mark() -> None:
     """Walled derivations bind the REAL schedule digest; the SIM mark is retired."""
-    from hydra2.engines.riichienv import log_replay as wall_less_oracle
+    from hydra2.engines.riichienv import _oracle_base as wall_less_oracle
 
     rows = _replay_walled("s7/walled-synth.jsonl")
     game = _decode("s7/walled-synth.jsonl", object_id=_object_id("g6", "s7/walled-synth.jsonl"))

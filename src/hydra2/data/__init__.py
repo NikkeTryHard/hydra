@@ -22,15 +22,10 @@ from hydra2.data.parquet import (
 from hydra2.data.partition import GameIdentity, SplitManifest, SplitSpec, assign_partitions
 from hydra2.data.quarantine import QuarantinedRecord, quarantine_invalid
 from hydra2.data.rows import PackagedObjectRow, RawObjectRow, make_raw_object_row
-from hydra2.data.stream import (
-    GameStream,
-    StreamCursor,
-    StreamGame,
-    StreamManifest,
-    assign_split,
-    build_manifest,
-    check_wall_disjoint,
-)
+from hydra2.data.stream_decode import check_wall_disjoint
+from hydra2.data.stream_iter import GameStream
+from hydra2.data.stream_manifest import StreamManifest, build_manifest
+from hydra2.data.stream_read import StreamCursor, StreamGame, assign_split
 from hydra2.data.validate import ValidationOutcome, validate_game
 
 __all__ = [

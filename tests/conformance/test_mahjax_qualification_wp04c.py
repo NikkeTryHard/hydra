@@ -19,19 +19,23 @@ from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[m
 
 from hydra2.config import artifact_root
 from hydra2.engines.mahjax.capture import capture_mahjax_tuple
-from hydra2.engines.mahjax.differential import (
-    CONVERGENT_DORA_INDICATOR_TYPES,
-    DECLARED_INTERSECTION,
-    EXCLUDED_DIMENSIONS,
-    SCENARIO_REGISTRY,
-    DifferentialResult,
-    build_seeded_round_state,
+from hydra2.engines.mahjax.differential_cases import SCENARIO_REGISTRY
+from hydra2.engines.mahjax.differential_modes import (
     cpu_soak,
     execution_mode_sweep,
     gpu_soak_probe,
+)
+from hydra2.engines.mahjax.differential_projection import (
+    DifferentialResult,
+    build_seeded_round_state,
     make_single_round_env,
-    run_differential,
     wall_to_mahjax_deck,
+)
+from hydra2.engines.mahjax.differential_runner import (
+    CONVERGENT_DORA_INDICATOR_TYPES,
+    DECLARED_INTERSECTION,
+    EXCLUDED_DIMENSIONS,
+    run_differential,
 )
 from hydra2.engines.mahjax.quarantine import ADAPTER_VERSION, OBSERVATION_MODE
 from hydra2.engines.mahjax.shell import MahJaxQuarantineShell

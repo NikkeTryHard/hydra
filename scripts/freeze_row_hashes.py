@@ -54,9 +54,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # The tile codec moved to Rust in Wave 3 (tiles.py deleted); its owner
 # files are pinned here like any other oracle input.
 ORACLE_INPUTS = (
-    "src/hydra2/engines/riichienv/log_replay.py",
-    "src/hydra2/engines/riichienv/single_pass.py",
-    "src/hydra2/engines/riichienv/adapter.py",
     "src/hydra2/engines/riichienv/actions.py",
     "src/hydra2/engines/riichienv/events.py",
     "tools/hydra2-replay-rs/crates/hydra-shard/src/tile.rs",

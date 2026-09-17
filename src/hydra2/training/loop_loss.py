@@ -108,7 +108,7 @@ class SupervisedLoopLossMixin:
             return batch
         decision_ids_raw: list[object] = list(decision_ids_any)
         decision_ids: list[str] = [str(x) for x in decision_ids_raw]
-        from hydra2.belief.oracle_loader import join_oracle_targets
+        from hydra2.belief.oracle_join import join_oracle_targets
 
         joined = join_oracle_targets(decision_ids, src, evaluation_wall_ids=evaluation_wall_ids)
         merged: dict[str, Any] = dict(batch)

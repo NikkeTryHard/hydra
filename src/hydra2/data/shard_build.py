@@ -146,7 +146,7 @@ def _expand_shard_game(
             actor_rows = expand_game(game, split=split)
             sim_path = False
         else:
-            from hydra2.engines.riichienv.log_replay import replay_game as _replay_sim_game
+            from hydra2.engines.riichienv._lr_end import replay_game as _replay_sim_game
 
             actor_rows = _replay_sim_game(game, split=split)
             sim_path = True

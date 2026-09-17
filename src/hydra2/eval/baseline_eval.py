@@ -92,7 +92,7 @@ torch.use_deterministic_algorithms(True)
 from pathlib import Path
 import sys
 sys.path.insert(0, "src")
-from hydra2.eval.baseline import compute_baseline_metrics
+from hydra2.eval.baseline_metrics import compute_baseline_metrics
 import json as _json
 in_path = Path(sys.argv[1])
 out_path = Path(sys.argv[2])

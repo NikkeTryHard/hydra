@@ -85,7 +85,7 @@ if TYPE_CHECKING:
     from hydra2.contracts.observation_actor import ActorObservation
     from hydra2.contracts.rules_manifest import RulesManifest
     from hydra2.data.decode import GameRecord
-    from hydra2.engines.riichienv.adapter import RiichiEnvExactSimulator
+    from hydra2.engines.riichienv.adapter_core import RiichiEnvExactSimulator
 
 __all__ = [
     "ReplayExpander",
@@ -314,7 +314,7 @@ class ReplayExpander:
     __slots__ = ("_rules", "_sim")
 
     def __init__(self) -> None:
-        from hydra2.engines.riichienv.adapter import RiichiEnvExactSimulator
+        from hydra2.engines.riichienv.adapter_core import RiichiEnvExactSimulator
 
         self._sim: RiichiEnvExactSimulator = RiichiEnvExactSimulator()
         self._rules: RulesManifest = _load_rules()
@@ -761,7 +761,7 @@ def expand_privileged_rows(
     privileged writer; ``wall_id`` defaults to the game wall digest when
     ``game.wall_tiles`` is present and is omitted otherwise (never invented).
     """
-    from hydra2.belief.oracle_loader import ranks_from_final_scores
+    from hydra2.belief.oracle_join import ranks_from_final_scores
 
     if split == "":
         raise ContractError("split must be a non-empty string")

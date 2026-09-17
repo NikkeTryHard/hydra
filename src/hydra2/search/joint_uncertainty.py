@@ -102,18 +102,32 @@ def exact_joint_posterior_oracle(
     # seed domains assemble caller-side over live worlds (FullWorld objects
     # never cross), then ``search.joint_posterior_weights`` runs the
     # likelihood + normalize detached. Fail closed on any bridge error.
+    # Memo: info_key depends on (world, opponent_seat) only, NOT theta
+    # (``_wao(world, actor=seat)`` + ``info_key_for_observation`` touch no
+    # theta). Prior is Theta x Worlds, so each world repeats across theta
+    # sharers — exact 2x dedup. Byte-exact: same inputs, same key bytes.
     from hydra2.belief.world import world_actor_observation as _wao
 
     info_keys: list[str] = []
     seed_domains: list[bytes] = []
     legal_sorted = tuple(sorted(int(a) for a in legal_action_ids))
+    _info_key_cache: dict[str, str] = {}
+    _seed_cache: dict[str, bytes] = {}
     for particle in prior.particles:
-        world = worlds_by_ref.get(particle.world_ref)
-        if world is None:
-            raise ContractError(f"world_ref {particle.world_ref!r} not in worlds_by_ref")
-        obs_j = _wao(world, actor=opponent_seat)
-        info_keys.append(info_key_for_observation(obs_j))
-        seed_domains.append(bytes(policy_for_theta[particle.theta].seed_domain))
+        cached_key = _info_key_cache.get(particle.world_ref)
+        if cached_key is None:
+            world = worlds_by_ref.get(particle.world_ref)
+            if world is None:
+                raise ContractError(f"world_ref {particle.world_ref!r} not in worlds_by_ref")
+            obs_j = _wao(world, actor=opponent_seat)
+            cached_key = info_key_for_observation(obs_j)
+            _info_key_cache[particle.world_ref] = cached_key
+        info_keys.append(cached_key)
+        cached_seed = _seed_cache.get(particle.theta)
+        if cached_seed is None:
+            cached_seed = bytes(policy_for_theta[particle.theta].seed_domain)
+            _seed_cache[particle.theta] = cached_seed
+        seed_domains.append(cached_seed)
     try:
         from hydra2_replay_rs import search as _joint_bridge
 

@@ -65,11 +65,11 @@ from hydra2.data.replay_expand import (  # noqa: E402
     expand_game,
     iter_microbatches,
 )
-from hydra2.data.stream import (  # noqa: E402
+from hydra2.data.stream_decode import (  # noqa: E402
     PrefetchGameStream,
-    build_manifest,
     slice_microbatches,
 )
+from hydra2.data.stream_manifest import build_manifest  # noqa: E402
 from hydra2.training.pinned_ring import (  # noqa: E402
     PinnedRing,
     ring_nbytes,

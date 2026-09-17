@@ -57,15 +57,10 @@ from typing import TYPE_CHECKING, Any, cast
 import torch
 
 from hydra2.contracts.common import ContractError
-from hydra2.data.stream import (
-    GameStream,
-    PrefetchGameStream,
-    build_manifest,
-    manifest_digest,
-)
-from hydra2.data.stream import (
-    StreamCursor as DataStreamCursor,
-)
+from hydra2.data.stream_decode import PrefetchGameStream
+from hydra2.data.stream_iter import GameStream
+from hydra2.data.stream_manifest import build_manifest, manifest_digest
+from hydra2.data.stream_read import StreamCursor as DataStreamCursor
 from hydra2.training._rc_digest import create_run_layout, run_config_digest
 from hydra2.training.loop_batch import (
     summarize_telemetry,

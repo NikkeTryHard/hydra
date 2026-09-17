@@ -1812,7 +1812,7 @@
    ],
    "kind": "cutover-source",
    "relpath": "src/hydra2/training/stream_train.py",
-   "sha256": "sha256:304ab1e2702f13782c7a97421c102aa9da008976e075d4a7e3da9484696a6117"
+   "sha256": "sha256:d3cd522e29a922fe765e31705bb49fb0f97707990dbfd18e42b15c431eb05db3"
   },
   {
    "fixtures": [
@@ -1820,7 +1820,7 @@
    ],
    "kind": "cutover-source",
    "relpath": "tests/parity/test_parity_gates_g1_g7_wp0b.py",
-   "sha256": "sha256:cd5da75f384cee45c37a76d9f614cc36deb4059f999d605fb372c6fb0e3fc5db"
+   "sha256": "sha256:5cc481eb6ff57418c01936f5147dc114fa76b6974ef2e739343f3995e2c967cb"
   },
   {
    "fixtures": [
@@ -1836,7 +1836,7 @@
    ],
    "kind": "cutover-source",
    "relpath": "tests/unit/test_replay_backend_wp14.py",
-   "sha256": "sha256:59df4e0e03259130c18f7b6011703728e111fafeaba892aca76ee8f31818f95f"
+   "sha256": "sha256:3e3cc7d53467cf229b8e9b2197e04e9a1dabf329ce36d4da1d4ad77a6ddd0abd"
   }
  ],
  "fingerprint_fields": [
@@ -1929,6 +1929,6 @@
    "module": "tests.parity.test_parity_gates_g1_g7_wp0b"
   }
  ],
- "manifest_digest": "sha256:445445ea703965945c4544aa6bade2aebbeae05b3bbdcda347fcce00a414fcd5",
+ "manifest_digest": "sha256:3e63d4dfab657b13db77d83db072e8fcadb4b5bc347b50ced0167d2d7edba4d6",
  "manifest_version": "2"
 }

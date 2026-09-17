@@ -28,13 +28,13 @@ import torch
 from hydra2.artifacts.atomic import atomic_replace_bytes as atomic_replace_bytes
 from hydra2.artifacts.digest import sha256_digest as sha256_digest
 from hydra2.contracts.common import ContractError as ContractError
-from hydra2.data.stream import StreamCursor as DataStreamCursor
+from hydra2.data.stream_read import StreamCursor as DataStreamCursor
 from hydra2.training.loop_state import TrainingState as TrainingState
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from hydra2.data.stream import StreamManifest as StreamManifest
+    from hydra2.data.stream_manifest import StreamManifest as StreamManifest
     from hydra2.training._rc_sections import ResumePlan as ResumePlan
     from hydra2.training.loop_train import SupervisedLoop as SupervisedLoop
     from hydra2.training.stream_dataset_buffer import _StreamDataset as _StreamDataset
@@ -334,7 +334,7 @@ def _capture_prime_snapshot(
     the index, and saves the index atomically. Miss-on-anything: returns
     the blob path on success, None on any anomaly (normal fill continues).
     """
-    from hydra2.data.stream import write_reservoir_blob
+    from hydra2.data.stream_manifest import write_reservoir_blob
 
     if buffer_size <= 0:
         return None

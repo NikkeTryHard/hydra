@@ -43,7 +43,8 @@ def _golden_tmpdir(*, walled: bool) -> Path:
 
 def _both_batches(*, walled: bool) -> tuple[dict, dict]:
     """Python training input vs Rust-assembled input on the golden rows."""
-    from hydra2.data.stream import GameStream, build_manifest
+    from hydra2.data.stream_iter import GameStream
+    from hydra2.data.stream_manifest import build_manifest
     from hydra2.models.schema import BASELINE_ACTION_COUNT
     from hydra2.training import rust_stream
     from hydra2.training.dataset_encode import encode_observation_rows
@@ -58,7 +59,7 @@ def _both_batches(*, walled: bool) -> tuple[dict, dict]:
 
         rows = expand_game(game, split="train")
     else:
-        from hydra2.engines.riichienv.log_replay import replay_game
+        from hydra2.engines.riichienv._lr_end import replay_game
 
         rows = replay_game(game, split="train")
     assert len(rows) == 5
@@ -131,7 +132,8 @@ def test_assembled_batch_forward_loss_bitwise(rust_extension: object, walled: bo
 
 def _game_pull_vs_python(*, walled: bool) -> tuple[list[dict], list[dict]]:
     """Game-pull slim rows vs python oracle rows on the golden 5-row game."""
-    from hydra2.data.stream import GameStream, build_manifest
+    from hydra2.data.stream_iter import GameStream
+    from hydra2.data.stream_manifest import build_manifest
     from hydra2.training.stream_train import _expand_game_planes, _expand_game_rows, _row_to_dict
 
     corpus = _golden_tmpdir(walled=walled)
@@ -188,7 +190,8 @@ def test_game_pull_batch_matches_python(rust_extension: object, walled: bool) ->
 
 def test_dataset_game_pull_sequence_restore_parity(rust_extension: object) -> None:
     _ = rust_extension
-    from hydra2.data.stream import GameStream, build_manifest
+    from hydra2.data.stream_iter import GameStream
+    from hydra2.data.stream_manifest import build_manifest
     from hydra2.models.schema import BASELINE_ACTION_COUNT
     from hydra2.training import stream_train as driver
 
@@ -245,7 +248,8 @@ def test_expand_raw_matches_rebuilt(rust_extension: object, tmp_path: Path, wall
     wall-less and walled games.
     """
     _ = rust_extension
-    from hydra2.data.stream import GameStream, build_manifest
+    from hydra2.data.stream_iter import GameStream
+    from hydra2.data.stream_manifest import build_manifest
     from hydra2.training import stream_train as driver
     from tests.unit.test_parallel_expand_wp14 import _good_events, _write_events
 
@@ -273,7 +277,8 @@ def test_expand_raw_quarantine_matches_rebuilt(
     """Quarantine behavior is identical on raw and rebuilt bytes."""
     _ = rust_extension
     from hydra2.contracts.common import ContractError
-    from hydra2.data.stream import GameStream, build_manifest
+    from hydra2.data.stream_iter import GameStream
+    from hydra2.data.stream_manifest import build_manifest
     from hydra2.training import stream_train as driver
     from tests.unit.test_parallel_expand_wp14 import _quarantine_events, _write_events
 
@@ -296,7 +301,8 @@ def test_batch_pull_matches_serial_pull(rust_extension: object, tmp_path: Path) 
     wall-less, and quarantine-bearing games.
     """
     _ = rust_extension
-    from hydra2.data.stream import GameStream, build_manifest
+    from hydra2.data.stream_iter import GameStream
+    from hydra2.data.stream_manifest import build_manifest
     from hydra2.models.schema import BASELINE_ACTION_COUNT
     from hydra2.training import stream_train as driver
     from tests.unit.test_parallel_expand_wp14 import (
@@ -404,7 +410,8 @@ def test_multi_group_gather_matches_python(rust_extension: object) -> None:
     assertion here is byte equality with the python encoder path.
     """
     _ = rust_extension
-    from hydra2.data.stream import GameStream, build_manifest
+    from hydra2.data.stream_iter import GameStream
+    from hydra2.data.stream_manifest import build_manifest
     from hydra2.models.schema import BASELINE_ACTION_COUNT
     from hydra2.training.dataset_encode import encode_observation_rows
     from hydra2.training.rust_batch import assemble_slim_batch

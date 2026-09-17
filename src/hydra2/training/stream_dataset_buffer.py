@@ -227,7 +227,7 @@ class _StreamDatasetBufferMixin(_StreamDatasetCore):
         counters. Only the buffered tail is re-expanded (``O(buffer)``), never
         the epoch.
         """
-        from hydra2.data.stream import fetch_game_at as _fetch
+        from hydra2.data.stream_read import fetch_game_at as _fetch
 
         if not isinstance(snapshot, dict):
             raise ContractError("dataset buffer snapshot must be a mapping")

@@ -26,20 +26,22 @@ import torch
 from hydra2.artifacts.canonical import canonical_bytes
 from hydra2.artifacts.digest import of_canonical
 from hydra2.contracts.common import ContractError
-from hydra2.eval.baseline import (
+from hydra2.eval.baseline_eval import (
+    check_hidden_permutation_invariance,
+    fresh_process_metrics,
+    make_baseline_report,
+    tiny_shard_overfit,
+)
+from hydra2.eval.baseline_metrics import (
     BASELINE_METRICS_VERSION,
     COMPILE_ORDER,
     EAGER_ORACLE_ID,
     OVERFIT_NLL_THRESHOLD,
-    check_hidden_permutation_invariance,
     compute_baseline_metrics,
     expected_calibration_error,
-    fresh_process_metrics,
     legal_uniform_nll,
-    make_baseline_report,
     masked_cross_entropy,
     split_held_out,
-    tiny_shard_overfit,
     top_k_accuracy,
     verify_held_out_disjoint,
 )
@@ -168,7 +170,7 @@ def test_held_out_split_disjoint_and_deterministic() -> None:
     assert 1 <= len(split.held_out_ids) <= len(all_ids) - 1
 
     # Leakage negative: overlapping sets must be rejected
-    from hydra2.eval.baseline import HeldOutSplit
+    from hydra2.eval.baseline_metrics import HeldOutSplit
 
     with pytest.raises(ContractError, match="leakage"):
         bad = HeldOutSplit(

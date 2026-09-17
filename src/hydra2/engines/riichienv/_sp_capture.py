@@ -17,7 +17,7 @@ from hydra2.contracts.action_model import CanonicalAction as CanonicalAction
 from hydra2.contracts.common import ContractError as ContractError
 from hydra2.contracts.observation_assembly import HISTORY_EVENT_CAP as HISTORY_EVENT_CAP
 from hydra2.data.parquet import DecisionRow as DecisionRow
-from hydra2.data.stream import verify_no_privileged_leakage as verify_no_privileged_leakage
+from hydra2.data.stream_decode import verify_no_privileged_leakage as verify_no_privileged_leakage
 from hydra2.engines.riichienv._oracle_base import _adapter_hash as _adapter_hash
 from hydra2.engines.riichienv._sp_records import (
     SIM_DERIVATION_MARK as SIM_DERIVATION_MARK,

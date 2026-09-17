@@ -185,7 +185,7 @@ def _expand_game_rows(
     if game.wall_tiles is not None:
         return (expand_game(game, split=split), False)
 
-    from hydra2.engines.riichienv.log_replay import replay_game as _replay_sim_game
+    from hydra2.engines.riichienv._lr_end import replay_game as _replay_sim_game
 
     return (_replay_sim_game(game, split=split), True)
 

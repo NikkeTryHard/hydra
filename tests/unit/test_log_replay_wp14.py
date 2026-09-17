@@ -31,7 +31,8 @@ from hydra2.contracts.common import ContractError
 from hydra2.data.decode import GameRecord
 from hydra2.data.parquet import FORBIDDEN_IN_ACTOR
 from hydra2.data.replay_expand import expand_game, expand_privileged_rows
-from hydra2.engines.riichienv.log_replay import SIM_DERIVATION_MARK, replay_game
+from hydra2.engines.riichienv._lr_end import replay_game
+from hydra2.engines.riichienv._lr_rows import SIM_DERIVATION_MARK
 
 mjai_string_of = _tiles_bridge.mjai_string_of
 

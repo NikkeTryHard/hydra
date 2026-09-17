@@ -6,7 +6,7 @@ the import-verified :data:`ENGINE_IDENTITY`.
 
 from __future__ import annotations
 
-from hydra2.engines.riichienv.adapter import RiichiEnvExactSimulator
+from hydra2.engines.riichienv.adapter_core import RiichiEnvExactSimulator
 from hydra2.engines.riichienv.identity import (
     ADAPTER_VERSION,
     ENGINE_IDENTITY,

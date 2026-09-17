@@ -69,11 +69,11 @@ def _synthetic_targets(num: int, num_actions: int, seed: int) -> torch.Tensor:
 
 
 def test_separate_privileged_loader_namespace_process_boundary(tmp_path: Path) -> None:
-    from hydra2.belief.oracle_loader import (
-        PrivilegedOracleLoader,
+    from hydra2.belief.oracle_join import (
         assert_privileged_loader_isolated_from_encoder,
         load_oracle_batch_in_subprocess,
     )
+    from hydra2.belief.oracle_store import PrivilegedOracleLoader
 
     # Only train split authorized; held_out must raise
     # tmp_path has no shards; loader will be empty but still enforces split
@@ -125,7 +125,7 @@ def test_train_belief_value_targets_only_from_authorized_train_split(tmp_path: P
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    from hydra2.belief.oracle_loader import PrivilegedOracleLoader
+    from hydra2.belief.oracle_store import PrivilegedOracleLoader
 
     # Create a privileged shard with one train and one held_out row (privileged-*.parquet)
     dest = tmp_path / "privileged_train_test"
@@ -168,7 +168,7 @@ def test_train_belief_value_targets_only_from_authorized_train_split(tmp_path: P
     assert len(target.value_target) == 4
     # Day-one: value path pinned to utility() (ranks->rank_values->values),
     # zero-sum NOT a distribution (20/10/-10/-20 permuted).
-    from hydra2.belief.oracle_loader import _oracle_utility_manifest
+    from hydra2.belief.oracle_targets import _oracle_utility_manifest
     from hydra2.contracts.utility import RawOutcome, utility
 
     manifest = _oracle_utility_manifest()
@@ -223,11 +223,11 @@ def test_train_belief_value_targets_only_from_authorized_train_split(tmp_path: P
 
 
 def test_never_expose_privileged_fields_to_inference_encoder() -> None:
-    from hydra2.belief.oracle_distillation import StudentBeliefModel
-    from hydra2.belief.oracle_loader import (
+    from hydra2.belief.oracle_guard import (
         FORBIDDEN_IN_ACTOR_KEYS,
         validate_actor_batch_no_privileged,
     )
+    from hydra2.belief.oracle_models import StudentBeliefModel
 
     model = StudentBeliefModel(feature_dim=16, hidden_dim=32, num_actions=16)
     actor_features = _synthetic_features(4, 16, seed=0)
@@ -268,7 +268,7 @@ def test_never_expose_privileged_fields_to_inference_encoder() -> None:
         assert allowed not in FORBIDDEN_IN_ACTOR_KEYS
 
     # Teacher may see privileged (no validation on teacher forward)
-    from hydra2.belief.oracle_distillation import OracleTeacher
+    from hydra2.belief.oracle_models import OracleTeacher
 
     teacher = OracleTeacher(feature_dim=16, privileged_dim=8, hidden_dim=32, num_actions=16)
     priv = _synthetic_features(4, 8, seed=5)
@@ -282,7 +282,7 @@ def test_never_expose_privileged_fields_to_inference_encoder() -> None:
 
 
 def test_report_proper_scores_calibration_on_held_out_data() -> None:
-    from hydra2.belief.oracle_distillation import (
+    from hydra2.belief.oracle_scores import (
         brier_score,
         compute_proper_scores,
         expected_calibration_error,
@@ -348,10 +348,8 @@ def test_report_proper_scores_calibration_on_held_out_data() -> None:
     assert ece <= 1.0
 
     # Synthetic distillation run reports held-out proper scores
-    from hydra2.belief.oracle_distillation import (
-        DistillationConfig,
-        run_synthetic_distillation_for_metrics,
-    )
+    from hydra2.belief.oracle_models import DistillationConfig
+    from hydra2.belief.oracle_scores import run_synthetic_distillation_for_metrics
 
     config = DistillationConfig(
         seed=42,
@@ -406,7 +404,7 @@ def test_report_proper_scores_calibration_on_held_out_data() -> None:
 
 
 def test_compare_duplicate_blocks_without_changing_frozen_supervised_gate() -> None:
-    from hydra2.belief.oracle_distillation import compare_duplicate_blocks
+    from hydra2.belief.oracle_scores import compare_duplicate_blocks
 
     # Frozen baseline checkpoint hash (simulated)
     baseline_hash = "sha256:" + "a" * 64
@@ -521,11 +519,9 @@ def test_compare_duplicate_blocks_without_changing_frozen_supervised_gate() -> N
 
 
 def test_hidden_permutation_and_split_wall_leakage() -> None:
-    from hydra2.belief.oracle_distillation import (
-        StudentBeliefModel,
-        hidden_permutation_invariance_check,
-    )
-    from hydra2.belief.oracle_loader import check_split_disjoint, check_wall_leakage
+    from hydra2.belief.oracle_guard import check_split_disjoint, check_wall_leakage
+    from hydra2.belief.oracle_models import StudentBeliefModel
+    from hydra2.belief.oracle_scores import hidden_permutation_invariance_check
 
     # Wall leakage: overlapping wall_ids must raise
     train_walls = ["wall-001", "wall-002", "wall-003"]
@@ -558,7 +554,7 @@ def test_hidden_permutation_and_split_wall_leakage() -> None:
     )
 
     # Teacher sensitivity: permuting privileged should change teacher output (at least not identical)
-    from hydra2.belief.oracle_distillation import OracleTeacher
+    from hydra2.belief.oracle_models import OracleTeacher
 
     teacher = OracleTeacher(feature_dim=8, privileged_dim=4, hidden_dim=16, num_actions=8)
     # Teacher invariance check is actually sensitivity check; we just ensure no crash and returns True
@@ -584,12 +580,12 @@ def test_hidden_permutation_and_split_wall_leakage() -> None:
 
 
 def test_teacher_student_deterministic() -> None:
-    from hydra2.belief.oracle_distillation import (
+    from hydra2.belief.oracle_models import (
         DistillationConfig,
         OracleTeacher,
         StudentBeliefModel,
-        deterministic_distillation_step,
     )
+    from hydra2.belief.oracle_scores import deterministic_distillation_step
 
     config = DistillationConfig(
         seed=123,
@@ -702,11 +698,10 @@ def test_end_to_end_synthetic_split_deterministic_and_no_leakage(tmp_path: Path)
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    from hydra2.belief.oracle_distillation import (
-        DistillationConfig,
-        run_synthetic_distillation_for_metrics,
-    )
-    from hydra2.belief.oracle_loader import PrivilegedOracleLoader, check_wall_leakage
+    from hydra2.belief.oracle_guard import check_wall_leakage
+    from hydra2.belief.oracle_models import DistillationConfig
+    from hydra2.belief.oracle_scores import run_synthetic_distillation_for_metrics
+    from hydra2.belief.oracle_store import PrivilegedOracleLoader
 
     # Create synthetic actor shards for train and held_out (actor only)
     # We use the real data/parquet helper to write actor shards, then verify leakage checks on wall_ids
@@ -851,8 +846,8 @@ def test_oracle_synthetic_helpers_fail_closed_and_legacy_rank_utility_scale(
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    from hydra2.belief.oracle_loader import (
-        PrivilegedOracleLoader,
+    from hydra2.belief.oracle_store import PrivilegedOracleLoader
+    from hydra2.belief.oracle_targets import (
         _belief_target_from_privileged,
         _oracle_utility_manifest,
         _value_target_from_privileged,
@@ -905,7 +900,7 @@ def test_oracle_synthetic_helpers_fail_closed_and_legacy_rank_utility_scale(
 def test_value_passthrough_validated_against_manifest_bounds() -> None:
     """Explicit 4-list value claims are checked finite + within manifest
     value_min/value_max (+ zero-sum where declared); violations raise."""
-    from hydra2.belief.oracle_loader import (
+    from hydra2.belief.oracle_targets import (
         _oracle_utility_manifest,
         _value_target_from_privileged,
     )

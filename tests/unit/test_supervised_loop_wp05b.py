@@ -592,7 +592,7 @@ def test_oracle_join_injects_placement_and_value_targets(
     assert placement[0].tolist() == [0, 1, 2, 3]
     assert placement[1].tolist() == [3, 2, 1, 0]
     # ranks -> values go through utility() (UtilityVector.values, never synthesized)
-    from hydra2.belief.oracle_loader import _value_from_ranks_via_utility
+    from hydra2.belief.oracle_targets import _value_from_ranks_via_utility
 
     expected_values = _value_from_ranks_via_utility([1, 2, 3, 4])
     assert expected_values is not None

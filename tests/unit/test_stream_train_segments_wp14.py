@@ -42,7 +42,8 @@ pytestmark = [pytest.mark.contract_package("WP-14"), pytest.mark.slow]
 class TestBufferCompaction:
     def _dataset(self, tmp_path: Path, monkeypatch: Any, threshold: int) -> Any:
         import hydra2.training.stream_train as driver
-        from hydra2.data.stream import GameStream, build_manifest
+        from hydra2.data.stream_iter import GameStream
+        from hydra2.data.stream_manifest import build_manifest
 
         monkeypatch.setattr(driver, "_BUFFER_COMPACT_ROWS", threshold)
         train_stems, _ = _pick_stems(need_train=4, need_val=0)
@@ -183,7 +184,8 @@ class TestSeekResume:
     def test_dataset_buffer_round_trip_verbatim(self, tmp_path: Path) -> None:
         """Dataset tail re-expansion is verbatim (rows + hash + counters)."""
         import hydra2.training.stream_train as driver
-        from hydra2.data.stream import GameStream, build_manifest
+        from hydra2.data.stream_iter import GameStream
+        from hydra2.data.stream_manifest import build_manifest
 
         train_stems, _ = _pick_stems(need_train=4, need_val=0)
         corpus = tmp_path / "corpus" / "tenhou"
@@ -563,7 +565,7 @@ class TestHomogeneousBuckets:
         assert grouped.get_sampler_state()["offset"] == legacy.get_sampler_state()["offset"] == 8
 
     def _long_manifest(self, tmp_path: Path, *, games: int = 4) -> Any:
-        from hydra2.data.stream import build_manifest
+        from hydra2.data.stream_manifest import build_manifest
 
         train_stems, _ = _pick_stems(need_train=games, need_val=0)
         corpus = tmp_path / "corpus" / "tenhou"
@@ -574,7 +576,7 @@ class TestHomogeneousBuckets:
 
     def _long_dataset(self, manifest: Any, **kwargs: Any) -> Any:
         import hydra2.training.stream_train as driver
-        from hydra2.data.stream import GameStream
+        from hydra2.data.stream_iter import GameStream
 
         # Python backend rows carry live ActorObservation histories, so the
         # visible_history key path is exercised end to end over histories

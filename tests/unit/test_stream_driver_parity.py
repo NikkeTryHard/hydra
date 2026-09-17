@@ -26,12 +26,9 @@ import zstandard as zstd
 
 from hydra2.contracts.common import ContractError
 from hydra2.contracts.randomness import RandomStream, make_random_stream_key, semantic_seed
-from hydra2.data.stream import (
-    GameStream,
-    actor_payload,
-    build_manifest,
-    verify_no_privileged_leakage,
-)
+from hydra2.data.stream_decode import actor_payload, verify_no_privileged_leakage
+from hydra2.data.stream_iter import GameStream
+from hydra2.data.stream_manifest import build_manifest
 from hydra2.data.stream_read import StreamCursor
 from hydra2.training import stream_train as driver
 

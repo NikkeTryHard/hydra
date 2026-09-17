@@ -88,6 +88,7 @@ use hydra_search::SearchError;
 use hydra_search::builtin_sum;
 use hydra_search::joint as joint_mod;
 use hydra_search::persistence_kernel as persist_mod;
+use hydra_search::persistence_spec as spec_mod;
 use sha2::{Digest, Sha256};
 #[cfg(test)]
 use hydra_search::arena::ActOut;
@@ -1498,6 +1499,182 @@ fn joint_normalize_weights(
     py.detach(|| joint_normalize(&weights, &likelihoods, physical_t)).map_err(search_err)
 }
 
+/// Lowercase hex of raw bytes (bridge-local mirror of
+/// `hydra_search::eval::hex_of`, which is `pub(crate)` to its crate; the
+/// fused joint hashes canonical obs bytes detached and must render the same
+/// `sha256:<64 lower hex>` info keys Python `hashlib.sha256(payload).hexdigest()`
+/// produces).
+fn hex_lower(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        out.push(DIGITS[(b >> 4) as usize] as char);
+        out.push(DIGITS[(b & 0x0F) as usize] as char);
+        i += 1;
+    }
+    out
+}
+
+/// Fused joint posterior over per-world canonical obs bytes
+/// (`exact_joint_posterior_oracle` fused: per-world canonical bytes +
+/// per-particle theta/policy/weights in, normalized weights out, single FFI
+/// incl normalize).
+///
+/// `world_obs_bytes` carries one `canonical_bytes(identity_doc)` blob per
+/// unique world (Python `_wao` + identity doc + `canonical_bytes`, memoized
+/// per world_ref; FullWorlds never cross, guards stay Python). `world_idx`
+/// maps each particle to its world (`len == N`, values `< W`).
+/// `thetas`/`seed_domains`/`weights` ride per particle (`len == N`).
+/// `legal_ids`/`observed_id` are the shared observed-action context.
+/// Likelihood enters exactly once per particle, detached; returns normalized
+/// weights in particle order (caller rebuilds `JointParticle`s).
+#[pyfunction]
+#[pyo3(signature = (*, weights, thetas, seed_domains, world_idx, world_obs_bytes, legal_ids, observed_id, physical_t=1.0))]
+#[allow(clippy::too_many_arguments)]
+fn joint_posterior_fused(
+    py: Python<'_>,
+    weights: Vec<f64>,
+    thetas: Vec<String>,
+    seed_domains: Vec<Vec<u8>>,
+    world_idx: Vec<usize>,
+    world_obs_bytes: Vec<Vec<u8>>,
+    legal_ids: Vec<u32>,
+    observed_id: u32,
+    physical_t: f64,
+) -> PyResult<Vec<f64>> {
+    let lanes = weights.len();
+    if lanes == 0
+        || thetas.len() != lanes
+        || seed_domains.len() != lanes
+        || world_idx.len() != lanes
+        || world_obs_bytes.is_empty()
+    {
+        return Err(PyValueError::new_err(
+            "search joint_posterior_fused: particle/world lane length mismatch",
+        ));
+    }
+    let out = py.detach(|| -> Result<Vec<f64>, SearchError> {
+        if !physical_t.is_finite() || physical_t <= 0.0 || physical_t > 1.0 {
+            return Err(SearchError::InvalidArg {
+                detail: "joint physical_transition_prob must be in (0,1]",
+            });
+        }
+        if legal_ids.is_empty() {
+            return Err(SearchError::InvalidArg {
+                detail: "joint legal_action_ids must be non-empty",
+            });
+        }
+        let mut world_keys: Vec<String> = Vec::with_capacity(world_obs_bytes.len());
+        for blob in &world_obs_bytes {
+            if blob.is_empty() {
+                return Err(SearchError::InvalidArg {
+                    detail: "joint world obs bytes must be non-empty",
+                });
+            }
+            let mut hasher = Sha256::new();
+            hasher.update(blob);
+            let digest = hasher.finalize();
+            let mut key = String::with_capacity(7 + 64);
+            key.push_str("sha256:");
+            key.push_str(&hex_lower(digest.as_slice()));
+            world_keys.push(key);
+        }
+        let mut likelihoods: Vec<f64> = Vec::with_capacity(lanes);
+        let mut n = 0;
+        while n < lanes {
+            let info_key = world_keys.get(world_idx[n]).ok_or(SearchError::InvalidArg {
+                detail: "joint world_idx out of range",
+            })?;
+            likelihoods.push(joint_row_likelihood(
+                &thetas[n],
+                &seed_domains[n],
+                info_key,
+                &legal_ids,
+                observed_id,
+            )?);
+            n += 1;
+        }
+        joint_normalize(&weights, &likelihoods, physical_t)
+    });
+    out.map_err(search_err)
+}
+
+/// Python `math.isclose(a, b)` replica with planner defaults
+/// (`rel_tol=1e-09`, `abs_tol=0.0`): `abs(a-b) <= 1e-9 * max(abs(a), abs(b))`.
+/// (`persistence_planner.py:150` tie arm uses bare `math.isclose`.)
+fn py_isclose(a: f64, b: f64) -> bool {
+    (a - b).abs() <= 1e-9 * a.abs().max(b.abs())
+}
+
+/// Fused persistence pick over N action ids
+/// (`PersistencePlanner._pick_action_deterministically` batch: N action ids
+/// in, best position out, single FFI).
+///
+/// `action_ids` are Python `_action_key` ints in caller order (action objects
+/// never cross; guards stay Python). Scores replicate
+/// `deterministic_gumbel_for_arm` (default seed `b"hydra2-persistence-v1"`)
+/// + per-arm bias `% 1.0` with `math.isclose` ties to the smaller aid.
+/// Returns the best position (caller maps back to its action table; indices
+/// preserve identity when aids collide).
+#[pyfunction]
+#[pyo3(signature = (arm_id, case_id, action_ids))]
+fn persistence_pick_batch(
+    py: Python<'_>,
+    arm_id: String,
+    case_id: String,
+    action_ids: Vec<u64>,
+) -> PyResult<usize> {
+    if action_ids.is_empty() {
+        return Err(PyValueError::new_err(
+            "search persistence_pick_batch: legal actions must be non-empty",
+        ));
+    }
+    let out = py.detach(|| -> Result<usize, SearchError> {
+        let arm = persist_mod::ArmId::parse(&arm_id)?;
+        let bias = match arm {
+            persist_mod::ArmId::B => 0.0,
+            persist_mod::ArmId::F => 0.1,
+            persist_mod::ArmId::R => 0.12,
+            persist_mod::ArmId::P => 0.18,
+            persist_mod::ArmId::C => 0.19,
+        };
+        let mut best_pos = 0usize;
+        let mut best_aid = action_ids[0];
+        let mut best_score = -1.0f64;
+        let mut i = 0;
+        while i < action_ids.len() {
+            let aid = action_ids[i];
+            let g = spec_mod::deterministic_gumbel_for_arm(
+                arm,
+                &case_id,
+                aid,
+                spec_mod::GUMBEL_SEED_DEFAULT,
+            );
+            if !g.is_finite() || g < 0.0 || g >= 1.0 {
+                return Err(SearchError::NonFinite {
+                    context: "persistence pick gumbel",
+                });
+            }
+            let score = (g + bias) % 1.0;
+            if !score.is_finite() || score < 0.0 || score >= 1.0 {
+                return Err(SearchError::NonFinite {
+                    context: "persistence pick score",
+                });
+            }
+            if score > best_score || (py_isclose(score, best_score) && aid < best_aid) {
+                best_score = score;
+                best_aid = aid;
+                best_pos = i;
+            }
+            i += 1;
+        }
+        Ok(best_pos)
+    });
+    out.map_err(search_err)
+}
+
 
 /// Fail-close comparator for the in-module judge tests (mirrors
 /// `canon_rng::check_match` / columnar `check_match`: recomputed ==
@@ -1552,6 +1729,8 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     sub.add_function(wrap_pyfunction!(persistence_distribute_quota, &sub)?)?;
     sub.add_function(wrap_pyfunction!(joint_posterior_weights, &sub)?)?;
     sub.add_function(wrap_pyfunction!(joint_normalize_weights, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(joint_posterior_fused, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(persistence_pick_batch, &sub)?)?;
     sub.add_class::<PyPacketSuccessor>()?;
     m.add_submodule(&sub)?;
     Ok(())
