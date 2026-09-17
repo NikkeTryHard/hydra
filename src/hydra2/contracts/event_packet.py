@@ -333,23 +333,9 @@ def packet_identity_document(packet: ActorVisiblePacket) -> dict[str, object]:
 
 
 def compute_packet_id(packet: ActorVisiblePacket) -> PacketId:
-    """sha256 over canonical bytes excluding packet_id (SPEC 7.2).
-
-    Thin bridge translator: the identity document and its canonical bytes
-    stay Python (canon authority); Rust only re-canonicalizes and hashes,
-    returning lowercase hex without the ``sha256:`` prefix.
-    """
+    """sha256 over canonical bytes excluding packet_id (SPEC 7.2)."""
     doc_bytes = canonical_json_bytes(packet_identity_document(packet))
-    if _bridge_contracts is None:
-        raise ImportError(
-            "hydra2 packet authority requires the hydra2_replay_rs bridge; "
-            "run `pixi run build-ext` to build the extension before use"
-        )
-    try:
-        hex_text = _bridge_contracts.packet_id_from_doc(bytes(doc_bytes))  # type: ignore[attr-defined]
-    except (ValueError, TypeError) as exc:
-        raise ContractError(f"packet_id rejected: {exc}") from exc
-    return PacketId(hex_text)
+    return PacketId(hashlib.sha256(doc_bytes).hexdigest())
 
 
 def make_actor_visible_packet(
@@ -388,21 +374,13 @@ _EMPTY_CHAIN_DIGEST = DigestText("sha256:" + hashlib.sha256(b"").hexdigest())
 
 
 def public_state_chain_hash(events: Sequence[EventEnvelope]) -> DigestText:
-    """Fold public event identities into a chained state hash (deterministic).
-
-    The canonical envelope document and its bytes stay Python (canon
-    authority); Rust only hashes ``{"prefix": prefix, "event": doc}``.
-    """
+    """Fold public event identities into a chained state hash (deterministic)."""
     digest = _EMPTY_CHAIN_DIGEST
     for event in events:
         if event.visibility == "public":
-            event_doc = canonical_json_bytes(envelope_identity_document(event))
-            if _bridge_contracts is None:
-                raise ImportError(
-                    "hydra2 packet authority requires the hydra2_replay_rs bridge; "
-                    "run `pixi run build-ext` to build the extension before use"
-                )
-            digest = DigestText(_bridge_contracts.fold_public_hash(digest, bytes(event_doc)))  # type: ignore[attr-defined]
+            fold_doc = {"prefix": str(digest), "event": envelope_identity_document(event)}
+            fold_bytes = canonical_json_bytes(fold_doc)
+            digest = DigestText("sha256:" + hashlib.sha256(fold_bytes).hexdigest())
     return digest
 
 

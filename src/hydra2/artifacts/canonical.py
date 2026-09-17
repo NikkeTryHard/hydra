@@ -10,20 +10,15 @@ object. NaN/Inf, non-string object keys, integers outside the IEEE 754
 double-safe range, lone surrogates, and duplicate keys at the parse boundary
 raise :class:`CanonicalizationError`/:class:`ContractError`.
 
-Hard dependency (shrink end-state): the Python serializer below stays the
-canon authority — the bridge exposes digests only (``sha256_hex``,
-``sha256_file``, ``of_canonical_json``, batch paths), no bytes-returning
-canonicalizer — and :func:`canonical_bytes` hard-verifies every output through
-the bridge judge (``of_canonical_json`` over those bytes, detached batch of
-one). ``ImportError`` (extension not built) or a stale ``.so`` without
-``canon_rng`` raises with a ``build-ext`` hint — NO oracle fallback, never
-silent. Evidence: canon arrays ~2.8-3.8x / flats ~1.4x Rust-faster (linear);
-digest parity on every doc.
+The Python serializer below is the canon authority (no bytes-returning
+``canon_rng`` pyfn exists). :func:`canonical_bytes` is pure Python with no
+bridge judge on the hot path — digests are ``hashlib.sha256`` over these
+bytes at the call sites; cross-implementation parity stays pinned by tests,
+never by per-call recomputation.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 from typing import Any, cast
@@ -205,24 +200,12 @@ def _require_bridge() -> Any:
 
 
 def canonical_bytes(value: Any) -> bytes:
-    """RFC 8785 canonical UTF-8 bytes for ``value``; SPEC 2.2 identity form.
-
-    Hard-dependency cutover: the Python serializer (kept authority — no
-    bytes-returning ``canon_rng`` pyfn exists) frames the doc bytes, then the
-    bridge judge (``DigestJudge.verify`` → ``of_canonical_json`` over those
-    bytes, detached batch of one) recomputes the digest for Python comparison
-    — mismatch raises. ``ImportError`` raises with a ``build-ext`` hint, NO
-    oracle fallback. Evidence: canon arrays ~2.8-3.8x / flats ~1.4x
-    Rust-faster (linear); digest parity on every doc.
-    """
+    """RFC 8785 canonical UTF-8 bytes for ``value``; SPEC 2.2 identity form."""
     # Every string (values and keys) is validated during serialization, so the
-    # final encode cannot fail on unpaired surrogates.
-    framed = canonicalize(value).encode("utf-8")
-    bridge = _require_bridge()
-    bridge.DigestJudge(subject="canonical_bytes").verify(
-        recorded="sha256:" + hashlib.sha256(framed).hexdigest(), doc=framed
-    )
-    return framed
+    # final encode cannot fail on unpaired surrogates. Pure Python: no bridge
+    # judge here; digest call sites hash these bytes with hashlib and tests
+    # pin Rust parity.
+    return canonicalize(value).encode("utf-8")
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
