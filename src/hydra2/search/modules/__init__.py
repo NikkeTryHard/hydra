@@ -77,6 +77,55 @@ def _generator(seed: int) -> torch.Generator:
     return g
 
 
+def _bridge_transform(
+    module_id: str,
+    context: PbrfContext,
+    *,
+    meta: dict[str, Any] | None = None,
+) -> PbrfContext | None:
+    """ONE bridge call + ``PbrfContext`` rebuild (ImportError -> ``None``).
+
+    The Rust batch returns ``(particles, weights, calls, trans, meta_json)``;
+    ``meta`` carries the arm's validated context params (``voc`` arm only —
+    JSON-encoded caller-side, ``None`` crosses ``b""``). Bridge validation
+    failures surface as ``ContractError`` (fail closed, never silent
+    fallback); the caller's oracle body below runs on ``None`` only.
+    ``voc_allocation`` normalizes list -> tuple at the single return site.
+    """
+    try:
+        from hydra2_replay_rs import search as _mod_bridge
+    except ImportError:
+        return None
+    import json as _json
+
+    try:
+        out = _mod_bridge.pbrf_module_transform(
+            module_id,
+            list(context.particles),
+            list(context.weights),
+            context.budget_calls,
+            context.budget_transitions,
+            0,
+            b"" if meta is None else _json.dumps(meta).encode(),
+        )
+    except ImportError:
+        return None
+    except Exception as exc:
+        raise ContractError(f"module {module_id} rejected: {exc}") from exc
+    updates: dict[str, Any] = dict(_json.loads(bytes(out[4])))
+    if "voc_allocation" in updates and not isinstance(updates["voc_allocation"], tuple):
+        updates["voc_allocation"] = tuple(int(a) for a in updates["voc_allocation"])
+    return PbrfContext(
+        candidate_id=context.candidate_id,
+        case_id=context.case_id,
+        particles=tuple(float(p) for p in out[0]),
+        weights=tuple(float(w) for w in out[1]),
+        budget_calls=int(out[2]),
+        budget_transitions=int(out[3]),
+        metadata={**context.metadata, **updates},
+    )
+
+
 # ---------------------------------------------------------------------------
 # PbrfContext — minimal privileged-agnostic search state
 # ---------------------------------------------------------------------------
@@ -194,13 +243,13 @@ class RaoBlackwellModule(_BaseModule):
             raise ContractError("rb_charge_calls must be non-negative int")
 
     def transform(self, context: PbrfContext) -> PbrfContext:
-        # Enumerate finite Y (2 values) with conditional P(Y|X) = 0.6, 0.4
-        # RB(X) = sum_y p(y|x) g(x,y). Use deterministic g(x,y)= x + offset_y.
+        hit = _bridge_transform(self.module_id, context)
+        if hit is not None:
+            return hit
         new_particles: list[float] = []
         for x in context.particles:
             rb = 0.6 * (x + 0.1) + 0.4 * (x - 0.1)  # = x + 0.02
             new_particles.append(rb)
-        # RB charges every conditional evaluation (2 per particle)
         added_calls = len(context.particles) * 2
         return PbrfContext(
             candidate_id=context.candidate_id,
@@ -272,13 +321,10 @@ class DefensiveMISModule(_BaseModule):
             pass
 
     def transform(self, context: PbrfContext) -> PbrfContext:
-        # Defensive MIS reweights with b*L/m where m = (n0 q0 + n1 q1)/(n0+n1)
-        # For this harness, use q0=uniform, q1=targeted (biased to low-prob region)
-        # Here we just rescale weights defensively: w_i' proportional to w_i * (b*L/m)
-        # Simplified deterministic transform: preserve sum-to-one, shrink variance.
-        # Charge n0+n1 evaluations.
+        hit = _bridge_transform(self.module_id, context)
+        if hit is not None:
+            return hit
         ws = list(context.weights)
-        # deterministic pseudo likelihood ratio 1.2 for even index, 0.8 for odd (balanced)
         ratios = [1.2 if i % 2 == 0 else 0.8 for i in range(len(ws))]
         new_ws = [w * r for w, r in zip(ws, ratios, strict=True)]
         s = sum(new_ws)
@@ -311,11 +357,6 @@ class DefensiveMISModule(_BaseModule):
             "double_correction_wrong": double_is_wrong,
             "single_denominator": True,
         }
-
-
-# ---------------------------------------------------------------------------
-# Structural CRN
-# ---------------------------------------------------------------------------
 
 
 class StructuralCRNModule(_BaseModule):
@@ -406,13 +447,11 @@ class FixedMLMCModule(_BaseModule):
             raise ContractError("mlmc_counts must match ladder length")
 
     def transform(self, context: PbrfContext) -> PbrfContext:
-        # Fixed MLMC telescope: D_L = D0 + sum (D_ell - D_{ell-1})
-        # Here levels correspond to fidelity ladder [0,1,2]; each correction is deterministic
-        # Paired randomness: D_ell and D_{ell-1} share same semantic draw (common randomness)
+        hit = _bridge_transform(self.module_id, context)
+        if hit is not None:
+            return hit
         base = sum(context.particles) / len(context.particles) if len(context.particles) > 0 else 0
-        # Signed corrections: level0 = base, level1 diff 0.05, level2 diff -0.02 => telescope  base+0.05-0.02 = base+0.03
         corrected = base + 0.05 - 0.02
-        # If any correction omitted, fails (detected by oracle)
         new_particles = tuple(corrected for _ in context.particles)
         return PbrfContext(
             candidate_id=context.candidate_id,
@@ -524,8 +563,10 @@ class ScenarioCoresetModule(_BaseModule):
             raise ContractError("coreset_k must be positive int")
 
     def transform(self, context: PbrfContext) -> PbrfContext:
-        k = 2  # small subset for harness
-        # select top-k weighted particles (deterministic), renormalize weights summing to one, keep original IDs
+        hit = _bridge_transform(self.module_id, context)
+        if hit is not None:
+            return hit
+        k = 2
         paired: list[tuple[float, float]] = sorted(
             zip(context.weights, context.particles, strict=True), reverse=True
         )[:k]
@@ -535,7 +576,6 @@ class ScenarioCoresetModule(_BaseModule):
         new_ws: tuple[float, ...] = (
             tuple(w / s for w in ws) if s > 0 else tuple(1.0 / len(ws) for _ in ws)
         )
-        # weighted replay equals selected empirical objective (by construction)
         return PbrfContext(
             candidate_id=context.candidate_id,
             case_id=context.case_id,
@@ -582,8 +622,9 @@ class PrimalDualPruningModule(_BaseModule):
             raise ContractError("pruning_alpha must be in (0,1)")
 
     def transform(self, context: PbrfContext) -> PbrfContext:
-        # Simultaneous one-sided intervals: L_a = mean_a - z*se, U_b = mean_b + z*se
-        # Here A,B correspond to first half vs second half of particles as proxy for two actions.
+        hit = _bridge_transform(self.module_id, context)
+        if hit is not None:
+            return hit
         n = len(context.particles)
         if n < 4:
             return context
@@ -664,14 +705,9 @@ class ControlledSMCModule(_BaseModule):
             raise ContractError("smc_populations must be >=2")
 
     def transform(self, context: PbrfContext) -> PbrfContext:
-        # Propagate, multiply exact incremental ratios G_t, unbiased resampling
-        # Uncertainty unit is independent population, not descendants.
-        # Normalized ratio gamma_hat_T(f)/gamma_hat_T(1) is biased fixture.
-        # Here: gamma_hat_T(f) = mean(w * f), unnormalized.
-        # Kish ESS gate (Blueprint 11.8, SMC.lean essKishTrigger at eta=1/2,
-        # practiced N/2 threshold): resample iff ess <= 0.5*n else copy.
-        # Copy charges nothing; resample charges +n/+n (the meter behind
-        # SMC.lean resample_skip_budget: each skip banks cRes-cCopy).
+        hit = _bridge_transform(self.module_id, context)
+        if hit is not None:
+            return hit
         n = len(context.particles)
         # Incremental weight 1.0 for harness (exact)
         ws = [w * 1.0 for w in context.weights]
@@ -740,9 +776,9 @@ class PersistentForestModule(_BaseModule):
             raise ContractError("forest_promotion must be bool")
 
     def transform(self, context: PbrfContext) -> PbrfContext:
-        # After packet e_star, rebuild or verify authoritative transition, rekey epoch,
-        # promote matching child, transport only target-identical artifacts, delete siblings.
-        # This harness simulates by tagging epoch increment and sibling squash.
+        hit = _bridge_transform(self.module_id, context)
+        if hit is not None:
+            return hit
         return PbrfContext(
             candidate_id=context.candidate_id,
             case_id=context.case_id,
@@ -822,11 +858,21 @@ class VOCRoutingModule(_BaseModule):
             raise ContractError("voc_floor must be <= voc_cap")
 
     def transform(self, context: PbrfContext) -> PbrfContext:
-        # Exact frozen routing (SPEC 16.5 PR3): floor, 20/20/60 pools, cap,
-        # largest-remainder quantization, unused retention, charged overhead.
-        # Modules are stateless singletons: routing params ride in
-        # context.metadata (validated here, same rules as validate_spec);
-        # absent keys fall back to pilot-frozen defaults.
+        meta_in = context.metadata if isinstance(context.metadata, dict) else {}
+        hit = _bridge_transform(
+            self.module_id,
+            context,
+            meta={
+                "floor": meta_in.get("voc_floor", 1),
+                "cap": meta_in.get("voc_cap", 6),
+                "budget": meta_in.get("voc_budget", 12),
+                "scores": None
+                if meta_in.get("voc_scores", None) is None
+                else [float(v) for v in meta_in["voc_scores"] if isinstance(v, (int, float)) and not isinstance(v, bool)],
+            },
+        )
+        if hit is not None:
+            return hit
         meta = context.metadata if isinstance(context.metadata, dict) else {}
         floor = meta.get("voc_floor", 1)
         cap = meta.get("voc_cap", 6)

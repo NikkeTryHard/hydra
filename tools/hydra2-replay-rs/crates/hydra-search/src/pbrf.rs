@@ -228,6 +228,57 @@ pub fn ess_gate(ess: f64, parents: u32, threshold: f64) -> Result<bool, SearchEr
     Ok(ess < threshold * parents as f64)
 }
 
+/// Deterministic leaf vector for ONE `(action, packet)` child
+/// (`pbrf_search.py:252-294` parity): `z = sum(raw)` (pack order); `z <= 0`
+/// reads as the zero vector (the oracle's early return — note `NaN <= 0`
+/// is false, so a `NaN` mass flows through to a `NaN` scalar exactly as
+/// the oracle, and the caller fails it closed on finiteness). Otherwise
+/// each entry contributes `u32BE(sha256(canon({action, packet, parent,
+/// target}))[:4]) / 0xFFFFFFFF * (raw / z)` with `parent`/`target`
+/// truncated to 8 chars caller-side, summed in entry order; the scalar
+/// expands to the 4-seat vector `(s, (1-s)*0.3, (1-s)*0.3, (1-s)*0.4)`
+/// with the oracle's op order.
+///
+/// Canon-wins (B3): the payload serializes through `feed::canon`
+/// (`BTreeMap` discipline matches the oracle's `canonical_bytes`;
+/// `action` crosses as a JSON number, matching the oracle's int).
+pub fn child_value(
+    parent8s: &[String],
+    target8s: &[String],
+    raw_weights: &[f64],
+    aid: u32,
+    packet_id: &str,
+) -> Result<(f64, f64, f64, f64), SearchError> {
+    if parent8s.len() != target8s.len() || parent8s.len() != raw_weights.len() {
+        return Err(SearchError::InvalidArg { detail: "pbrf child row length mismatch" });
+    }
+    if parent8s.is_empty() {
+        return Ok((0.0, 0.0, 0.0, 0.0));
+    }
+    let z = crate::builtin_sum(raw_weights);
+    if z <= 0.0 {
+        return Ok((0.0, 0.0, 0.0, 0.0));
+    }
+    let mut terms = Vec::with_capacity(parent8s.len());
+    let mut idx = 0;
+    while idx < parent8s.len() {
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("action".to_string(), serde_json::json!(aid));
+        map.insert("packet".to_string(), serde_json::json!(packet_id));
+        map.insert("parent".to_string(), serde_json::json!(parent8s[idx]));
+        map.insert("target".to_string(), serde_json::json!(target8s[idx]));
+        let bytes = hydra_feed::canon::canonical_bytes(&map, "pbrf:child_value")
+            .map_err(|err| SearchError::Canon { detail: err.to_string() })?;
+        let digest = Sha256::digest(bytes.as_slice());
+        let word = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]);
+        let val = word as f64 / crate::despot::HASH_UNIT;
+        terms.push(val * (raw_weights[idx] / z));
+        idx += 1;
+    }
+    let scalar = crate::builtin_sum(&terms);
+    Ok((scalar, (1.0 - scalar) * 0.3, (1.0 - scalar) * 0.3, (1.0 - scalar) * 0.4))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

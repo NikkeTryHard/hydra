@@ -300,9 +300,20 @@ class NaturalISMCTSPlannerSearchMixin:
         max_trans = cfg.max_transitions
 
         worlds_json: list[dict[str, Any]] = []
-        keys_rows: list[list[str]] = []
-        dirs_rows: list[list[int]] = []
         draws: list[float] = []
+        # Envelope skeleton: one row per visited non-root-key step. Each row
+        # carries the ACTING hand only (plus live/actor/step/sim): the doc
+        # mirrors (_doc_for_step/_info_key_for_step/_policy_dir_for_step)
+        # read hands[actor] alone for concealed_hand/decision_id, so one
+        # hand reproduces the full-hands call bit-identically (parity probe).
+        # Step-0 root rows carry root_key, never a hash — recorded per sim.
+        skel_hand: list[list[int]] = []
+        skel_live: list[int] = []
+        skel_actor: list[int] = []
+        skel_want: list[bool] = []
+        skel_sim: list[int] = []
+        skel_step: list[int] = []
+        root_at_zero: list[bool] = []
         transitions = 0
 
         for _ in range(sims_to_run):
@@ -332,6 +343,7 @@ class NaturalISMCTSPlannerSearchMixin:
             live_len = len(live_start)
             actor = _actor_to_move(cur_world)
 
+            sim_idx = len(worlds_json)
             worlds_json.append(
                 {
                     "world_id": str(cur_world.world_id),
@@ -344,19 +356,25 @@ class NaturalISMCTSPlannerSearchMixin:
                     "snapshot": str(cur_world.simulator_snapshot),
                 }
             )
-            row_keys = [""] * max_depth
-            row_dirs = [0] * max_depth
+            root_at_zero.append(actor == root_seat)
             step = 0
             stepped = 0 if _step0 is None else int(_step0)
             while step < max_depth and stepped < max_depth and live_len > 0:
                 if actor == root_seat:
-                    if step == 0:
-                        row_keys[step] = root_key
-                    else:
-                        row_keys[step] = _info_key_for_step(_template_doc, hands, live_len, actor)
+                    if step != 0:
+                        skel_hand.append(list(hands[actor]))
+                        skel_live.append(live_len)
+                        skel_actor.append(actor)
+                        skel_want.append(True)
+                        skel_sim.append(sim_idx)
+                        skel_step.append(step)
                 else:
-                    d = _policy_dir_for_step(_template_doc, hands, live_len, actor)
-                    row_dirs[step] = d
+                    skel_hand.append(list(hands[actor]))
+                    skel_live.append(live_len)
+                    skel_actor.append(actor)
+                    skel_want.append(False)
+                    skel_sim.append(sim_idx)
+                    skel_step.append(step)
                     draws.append(float(rng.random_float()))
                 # Budget gate before the transition (mirrors the retired loop
                 # and the Rust dry-run/replay: sample-then-gate, so breaking
@@ -370,11 +388,52 @@ class NaturalISMCTSPlannerSearchMixin:
                 actor = (actor + 1) % 4
                 if max_trans is not None and transitions >= max_trans:
                     break
-            keys_rows.append(row_keys)
-            dirs_rows.append(row_dirs)
             if max_trans is not None and transitions >= max_trans:
                 break
 
+        # Resolve the envelope hashes: ONE batch over the acting-hand rows
+        # (Rust parses the template once; ImportError-only oracle fallback
+        # recomputes the identical helpers with the stored acting hand —
+        # the doc mirrors read hands[actor] alone, so one hand reproduces
+        # the full-hands call bit-identically). Refill by (sim, step) index;
+        # step-0 root rows carry root_key only when the step-0 actor was
+        # root (original condition preserved), else "".
+        keys_rows: list[list[str]] = [[""] * max_depth for _ in worlds_json]
+        dirs_rows: list[list[int]] = [[0] * max_depth for _ in worlds_json]
+        for sim, at_root in enumerate(root_at_zero):
+            if at_root:
+                keys_rows[sim][0] = root_key
+        try:
+            from hydra2_replay_rs import search as _step_bridge
+
+            _tpl_json = json.dumps(_template_doc).encode()
+            _keys, _dirs = _step_bridge.ismcts_step_hashes(
+                _tpl_json, skel_hand, skel_live, skel_actor, skel_want
+            )
+            if len(_keys) != len(skel_hand) or len(_dirs) != len(skel_hand):
+                raise ContractError("ismcts: step batch length mismatch")
+            for row in range(len(skel_hand)):
+                sim = skel_sim[row]
+                step = skel_step[row]
+                if skel_want[row]:
+                    keys_rows[sim][step] = str(_keys[row])
+                else:
+                    dirs_rows[sim][step] = int(_dirs[row])
+        except ImportError:
+            for row in range(len(skel_hand)):
+                sim = skel_sim[row]
+                step = skel_step[row]
+                key, direction = _hashes_for_one_hand(
+                    _template_doc,
+                    tuple(skel_hand[row]),
+                    skel_live[row],
+                    skel_actor[row],
+                    want_key=skel_want[row],
+                )
+                if skel_want[row]:
+                    keys_rows[sim][step] = key
+                else:
+                    dirs_rows[sim][step] = direction
         batch = {
             "worlds": worlds_json,
             "rules_hash": str(getattr(epoch, "rules_hash", "")),
@@ -527,6 +586,37 @@ class NaturalISMCTSPlannerSearchMixin:
             "completed": completed and not budget_exhausted,
             "budget_exhausted": budget_exhausted,
         }
+
+
+def _hashes_for_one_hand(
+    template: dict[str, Any],
+    hand: tuple[int, ...],
+    live_len: int,
+    actor: int,
+    *,
+    want_key: bool,
+) -> tuple[str, int]:
+    """Acting-hand-only mirror of the step helpers (bit-identical).
+
+    The doc mirrors read ``hands[actor]`` alone for ``concealed_hand`` /
+    ``decision_id`` (other seats' hands never enter the doc), so one hand
+    reproduces the full-hands call exactly: key drops ``legal_mask``,
+    direction hashes the masked doc then tilts on ``sha256(text)[0] & 1``.
+    Shared by the ImportError fallback above (single oracle site).
+    """
+    from hydra2.artifacts.canonical import canonical_bytes as _cb
+
+    doc = dict(template)
+    doc["concealed_hand"] = sorted(hand)
+    doc["live_wall_tiles_remaining"] = live_len
+    doc["actor"] = actor
+    doc["turn_actor"] = actor
+    doc["decision_id"] = f"dec_hand_{'_'.join(str(t) for t in hand)}_{actor}"
+    if want_key:
+        payload = _cb({k: v for k, v in doc.items() if k != "legal_mask"})
+        return ("sha256:" + hashlib.sha256(payload).hexdigest(), 0)
+    obs_hash = "sha256:" + hashlib.sha256(_cb(doc)).hexdigest()
+    return ("", hashlib.sha256(obs_hash.encode()).digest()[0] & 1)
 
 
 def _doc_for_step(

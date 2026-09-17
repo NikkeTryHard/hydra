@@ -1,13 +1,10 @@
-# ruff: noqa: F841  # reason: legacy blanket kept, not narrowed — narrowing surfaces unrelated mid-flight noise outside the owned error set (B007/F841 intentional scratch loop locals; B904 ContractError preconditions; N814 upstream casing; F401 cross-module names re-exported for the shim path). Evidence: https://docs.astral.sh/ruff/rules/
-"""Candidate 3 PBRF planner adapter — act, observe, ponder.
+"""Candidate 3 PBRF planner adapter — construction, act, observe, ponder.
 
-Owns the Planner protocol surface of :class:`PbrfPlanner`: forest
-construction and fixed-batch evaluation in ``act``,
-authoritative-child commit in ``observe``, the no-background-work
-ponder no-op, and the thin join over the search mixin. The
-construction plus budget/telemetry/value driver arrives via the search
-mixin in :mod:`hydra2.search.pbrf_search` so each file stays inside
-the review-size ceiling.
+Owns the construction plus budget/telemetry/value driver (folded from the
+deleted ``pbrf_search`` split host) and the Planner protocol surface of
+:class:`PbrfPlanner`: forest construction and fixed-batch evaluation in
+``act``, authoritative-child commit in ``observe``, the no-background-work
+ponder no-op, and the thin join over the search mixin.
 """
 
 from __future__ import annotations
@@ -19,29 +16,42 @@ from typing import Any
 
 from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
+from hydra2.artifacts.canonical import canonical_bytes
 from hydra2.contracts.common import ContractError, PacketPartitionError, StaleBeliefError
 from hydra2.search.common import (
     Planner as Planner,
 )
 from hydra2.search.common import (
+    ResourceBudget as ResourceBudget,
+)
+from hydra2.search.common import (
     SearchResult as SearchResult,
 )
+from hydra2.search.common import candidate_spec_hash as candidate_spec_hash
 from hydra2.search.pbrf_commit import commit as commit
+from hydra2.search.pbrf_forest import ImmutableForest as ImmutableForest
 from hydra2.search.pbrf_forest import build_pbrf as build_pbrf
 from hydra2.search.pbrf_partition import (
-    _BELIEF_IMPORT_ERROR as _BELIEF_IMPORT_ERROR,
+    CommitDisposition as CommitDisposition,
 )
 from hydra2.search.pbrf_partition import (
     NaturalBelief as NaturalBelief,
 )
+from hydra2.search.pbrf_partition import (
+    NaturalPacketKernel as NaturalPacketKernel,
+)
+from hydra2.search.pbrf_partition import PbrfConfig as PbrfConfig
+from hydra2.search.pbrf_partition import PolicySet as PolicySet
 from hydra2.search.pbrf_partition import RandomStream as RandomStream
 from hydra2.search.pbrf_partition import _action_id as _action_id
 from hydra2.search.pbrf_partition import _freeze_candidates as _freeze_candidates
-from hydra2.search.pbrf_search import PbrfPlannerSearchMixin as PbrfPlannerSearchMixin
+from hydra2.search.pbrf_partition import _require_kernel as _require_kernel
+from hydra2.search.pbrf_partition import _require_telemetry as _require_telemetry
 
 __all__ = [
     "PbrfPlanner",
     "PbrfPlannerActMixin",
+    "PbrfPlannerSearchMixin",
 ]
 
 
@@ -120,6 +130,227 @@ def _rust_act_probe(
         raise
     _rust_search_mod.ActJudge(subject=str(subject)).verify(recorded=out.decision_digest, out=out)
     return out
+
+
+class PbrfPlannerSearchMixin:
+    """Search half of :class:`PbrfPlanner` (folded from deleted pbrf_search).
+
+    Construction plus budget/telemetry/value driver; the act/observe/ponder
+    protocol surface arrives via the act-mixin subclass below.
+    """
+
+    def __init__(
+        self,
+        *,
+        candidate_spec: Any,
+        belief: Any | None = None,
+        kernel: Any | None = None,
+        policy_set: Any | None = None,
+        config: PbrfConfig | None = None,
+    ) -> None:
+        self._spec = candidate_spec
+        if config is not None:
+            self._config = config
+        else:
+            try:
+                _params_raw: Any = getattr(candidate_spec, "parameters", None)
+                if (
+                    _params_raw is None
+                    or not isinstance(_params_raw, dict)
+                    or len(_params_raw) == 0
+                ):
+                    params: dict[str, Any] = {}
+                else:
+                    params = _params_raw  # type: ignore[assignment]
+                _pc_raw: Any = params.get("parent_count", 16)
+                _kt_raw: Any = params.get("kernel_tolerance", 1e-9)
+                _mb_raw: Any = params.get("max_search_batches", 64)
+                _rv_raw: Any = params.get("resource_view", "calls")
+                self._config = PbrfConfig(
+                    parent_count=int(_pc_raw),
+                    kernel_tolerance=float(_kt_raw),
+                    max_search_batches=int(_mb_raw),
+                    resource_view=str(_rv_raw),  # type: ignore[arg-type]
+                    tie_break=str(getattr(candidate_spec, "tie_break", "lexicographic")),
+                )
+            except Exception:
+                self._config = PbrfConfig()
+        self._belief = belief
+        self._kernel = kernel
+        if self._kernel is None:
+            _require_kernel()
+            try:
+                self._kernel = NaturalPacketKernel(kernel_tolerance=self._config.kernel_tolerance)  # type: ignore[call-arg]
+            except ImportError:
+                raise
+            except Exception as exc:
+                raise ContractError(f"kernel required: {exc}") from exc
+        self._policy_set = policy_set
+        if self._policy_set is None:
+            try:
+                self._policy_set = PolicySet()  # type: ignore[call-arg]
+            except Exception:
+                self._policy_set = None
+        self._forest: ImmutableForest | None = None
+        self._last_commit: CommitDisposition | None = None
+        self._last_selected_action: Any | None = None
+        self._model_calls = 0
+        self._transitions = 0
+
+    def _budget(self) -> Any:
+        b = getattr(self._spec, "resource_budget", None)
+        if b is not None:
+            return b
+        return ResourceBudget(
+            mode="gameplay_5s",
+            deadline_ms=5000,
+            fallback_margin_ms=200,
+            max_model_calls=64,
+            max_transitions=256,
+            max_particles=self._config.parent_count,
+            max_memory_bytes=None,
+        )
+
+    def _spec_hash(self) -> str:
+        try:
+            return str(candidate_spec_hash(self._spec))
+        except Exception:
+            return "sha256:" + hashlib.sha256(canonical_bytes(str(self._spec).encode())).hexdigest()
+
+    def _make_telemetry(
+        self,
+        *,
+        start_ns: int,
+        budget: Any,
+        completed: bool,
+        spec_hash: str,
+        case_id: str,
+        fallback_used: bool = False,
+        timeout: bool = False,
+        illegal: bool = False,
+    ) -> Any:
+        elapsed_ms = (time.monotonic_ns() - start_ns) / 1e6
+        joules = float(self._model_calls) * 0.5 + float(self._transitions) * 0.2
+        mode: str = str(getattr(budget, "mode", "gameplay_5s"))
+        particles: int = self._config.parent_count
+        _require_telemetry()
+        try:
+            from hydra2.eval.telemetry import make_resource_telemetry as _mrt
+        except ImportError as exc:
+            raise ImportError(
+                "hydra2.eval.telemetry not importable "
+                f"({exc}); build the bridge with `pixi run build-ext` before PBRF search"
+            ) from exc
+        try:
+            return _mrt(
+                mode=mode,
+                wall_id=None,
+                case_id=case_id,
+                candidate_spec_hash=_bridge_contracts.make_digest_text(spec_hash),
+                hardware_hash=_bridge_contracts.make_digest_text("sha256:" + "0" * 64),
+                environment_hash=_bridge_contracts.make_digest_text("sha256:" + "0" * 64),
+                cold_start=False,
+                synchronized_elapsed_ms=elapsed_ms,
+                model_calls=self._model_calls,
+                exact_transitions=self._transitions,
+                particles=particles,
+                fallback_used=fallback_used,
+                timeout=timeout,
+                illegal_action=illegal,
+                cuda_peak_allocated_bytes=None,
+                cuda_peak_reserved_bytes=None,
+                host_peak_bytes=None,
+                energy_joules=joules,
+                graph_breaks=None,
+                recompiles=None,
+                invalid_reason=None,
+            )
+        except ImportError:
+            raise
+        except (AttributeError, ValueError, TypeError, OSError) as exc:
+            raise ContractError(f"pbrf: telemetry build failed: {exc}") from exc
+
+    def _candidates_from_parents(self, parents: tuple[Any, ...]) -> tuple[Any, ...]:
+        from hydra2.contracts.action_model import CanonicalAction  # local
+
+        try:
+            a0 = CanonicalAction(
+                kind="pass",
+                actor=_bridge_contracts.make_seat(0),
+                tile=None,
+                called_tile=None,
+                consumed_tiles=(),
+                source_seat=None,
+                declares_riichi=False,
+                metadata=(),
+            )
+            a1 = CanonicalAction(
+                kind="discard",
+                actor=_bridge_contracts.make_seat(0),
+                tile=_bridge_contracts.make_tile_id(0),
+                called_tile=None,
+                consumed_tiles=(),
+                source_seat=None,
+                declares_riichi=False,
+                metadata=(),
+            )
+            return (a0, a1)
+        except Exception:
+
+            class _A:
+                def __init__(self, aid: int):
+                    self.action_id = aid
+
+            return (_A(0), _A(1))
+
+    def _value_for_child(
+        self, *, action: Any, packet_id: str, forest: ImmutableForest
+    ) -> tuple[float, float, float, float]:
+        """Deterministic leaf vector for a specific (action, packet) child.
+
+        Rust-first: the weight-averaged hash batch rides
+        ``search.pbrf_child_value`` (bit-identical); ImportError-only
+        oracle fallback below.
+        """
+        entries = forest.children.get((_action_id(action), packet_id))
+        if entries is None:
+            return (0.0, 0.0, 0.0, 0.0)
+        try:
+            from hydra2_replay_rs import search as _search_bridge
+
+            rows_p = [e.parent_id[:8] for e in entries]
+            rows_t = [str(e.target_id)[:8] for e in entries]
+            rows_w = [e.raw_weight for e in entries]
+            out = _search_bridge.pbrf_child_value(
+                rows_p, rows_t, rows_w, _action_id(action), packet_id
+            )
+            return (float(out[0]), float(out[1]), float(out[2]), float(out[3]))
+        except ImportError:
+            pass
+        _total = 0.0
+        z = sum(e.raw_weight for e in entries)
+        if z <= 0:
+            return (0.0, 0.0, 0.0, 0.0)
+        vals: list[float] = []
+        for e in entries:
+            payload = canonical_bytes(
+                {
+                    "action": _action_id(action),
+                    "packet": packet_id,
+                    "parent": e.parent_id[:8],
+                    "target": str(e.target_id)[:8],
+                }
+            )
+            h = hashlib.sha256(payload).digest()
+            v = int.from_bytes(h[:4], "big") / 0xFFFFFFFF
+            vals.append(v * (e.raw_weight / z))
+        scalar = sum(vals)
+        return (
+            scalar,
+            (1.0 - scalar) * 0.3,
+            (1.0 - scalar) * 0.3,
+            (1.0 - scalar) * 0.4,
+        )
 
 
 class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
@@ -238,7 +469,7 @@ class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
         self._model_calls = 0
         self._transitions = 0
         completed = True
-        fallback_used = False
+        _fallback_used = False
 
         # -- candidate generator (frozen before enumeration) -----------------
         # Freeze candidates before any packet enumeration evidence: we capture legal as frozen_candidates
@@ -283,7 +514,7 @@ class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
             # Check budget exhaustion after forest build
             if exhausted():
                 completed = False
-                fallback_used = True
+                _fallback_used = True
         except (PacketPartitionError, StaleBeliefError, ContractError):
             raise
         except Exception as exc:

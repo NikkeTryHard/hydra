@@ -3,14 +3,12 @@
 
 Re-export facade over the split modules: :mod:`hydra2.search.pbrf_partition`
 (frozen config, child records, allocation guards plus the guarded
-dependency flags), :mod:`hydra2.search.pbrf_forest` (carry laws,
 verification, immutable forest, core builder),
 :mod:`hydra2.search.pbrf_commit` (miss rebuild, rekey and verify,
 authoritative commit), :mod:`hydra2.search.pbrf_spec` (CandidateSpec
-factory), :mod:`hydra2.search.pbrf_search` (Planner construction plus
-budget/telemetry/value driver), and :mod:`hydra2.search.pbrf_act`
-(Planner act plus :class:`PbrfPlanner`). Import from this path; it
-preserves every public name and ``__all__``.
+factory), and :mod:`hydra2.search.pbrf_act` (Planner construction plus
+budget/telemetry/value driver, Planner act plus :class:`PbrfPlanner`).
+Import from this path; it preserves every public name and ``__all__``.
 
 Implements SPEC 16.4 + Blueprint §10 PBRF core:
 
@@ -36,6 +34,7 @@ from hydra2.search.pbrf_act import (
 from hydra2.search.pbrf_act import (
     PbrfPlannerActMixin as PbrfPlannerActMixin,
 )
+from hydra2.search.pbrf_act import PbrfPlannerSearchMixin as PbrfPlannerSearchMixin
 from hydra2.search.pbrf_commit import (
     _fresh_rebuild as _fresh_rebuild,
 )
@@ -78,7 +77,6 @@ from hydra2.search.pbrf_partition import (
 from hydra2.search.pbrf_partition import (
     validate_packet_partition as validate_packet_partition,
 )
-from hydra2.search.pbrf_search import PbrfPlannerSearchMixin as PbrfPlannerSearchMixin
 from hydra2.search.pbrf_spec import (
     _canonical_hashes as _canonical_hashes,
 )

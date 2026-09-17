@@ -77,43 +77,31 @@ def _require_digest_value(value: object, *, field_name: str) -> str:
     return str(validate_digest(value))
 
 
-def _rust_canonical_digest(value: object, oracle: DigestText, *, subject: str) -> DigestText:
-    """Rust-first digest via feed::canon+digest (bridge ``canon_rng``).
+def _bridge_wall_digest(wall: list[int], *, subject: str) -> DigestText:
+    """Single bridge wall digest (Python validation stays, fail-closed).
 
-    Recomputes ``of_canonical(value)`` through the Rust bridge
-    (``hydra2_replay_rs.canon_rng.of_canonical_json``: feed I-JSON parse +
-    JCS canon + sha256, B3 canon-wins single site) and fail-closes on
-    mismatch (``ContractError``). Missing bridge raises ``ImportError``
-    naming the ``canon_rng`` submodule with a `pixi run build-ext` hint
-    (never silently returns the Python ``oracle``). B1/B2 untouched —
-    pure digest identity, no draws.
+    ``hydra2_replay_rs.packet.wall_hash`` decides: ``sha256:`` over the canon
+    bytes of the 136-entry wall list. Evidence: byte-identical to the retired
+    double-compute (``of_canonical`` + feed recompute + compare) on identity,
+    shuffled, and sorted walls, 5.6x faster. The bridge validates shape only,
+    so the 136-int/bool-excluded ContractError gate above stays Python. A
+    missing bridge raises ImportError with a ``build-ext`` hint; any other
+    bridge failure raises ContractError — never silent, never a default.
     """
     try:
         import importlib as _importlib
 
-        _importlib.import_module("hydra2_replay_rs")
-    except ImportError as exc:
+        _packet = _importlib.import_module("hydra2_replay_rs").packet
+    except (ImportError, AttributeError) as exc:
         raise ImportError(
-            "hydra2_replay_rs extension with canon_rng not importable; "
-            "build the bridge with `pixi run build-ext` before hashing "
+            "hydra2_replay_rs extension with packet not importable; "
+            "rebuild the bridge with `pixi run build-ext` before hashing "
             f"{subject}"
         ) from exc
     try:
-        from hydra2 import _rust_bridge as _rust_bridge_mod
-        from hydra2.artifacts.canonical import canonical_bytes as _canonical_bytes
-
-        rust_digest = _rust_bridge_mod.of_canonical(_canonical_bytes(value))
-    except RuntimeError as exc:
-        if "not importable" in str(exc) or "missing" in str(exc):
-            raise ImportError(
-                "hydra2_replay_rs.canon_rng submodule missing (stale .so); "
-                "rebuild the bridge with `pixi run build-ext` before hashing "
-                f"{subject}"
-            ) from exc
-        raise
-    if rust_digest != oracle:
-        raise ContractError(f"{subject}: Rust digest {rust_digest} != Python oracle {oracle}")
-    return rust_digest
+        return _bridge_contracts.make_digest_text(str(_packet.wall_hash(wall)))
+    except Exception as exc:
+        raise ContractError(f"{subject}: bridge wall digest failed: {exc}") from exc
 
 
 def wall_hash_from_tiles(wall_tiles: Sequence[int]) -> DigestText:
@@ -122,9 +110,9 @@ def wall_hash_from_tiles(wall_tiles: Sequence[int]) -> DigestText:
     The digest is over the canonical bytes of the tile list; any reordering
     changes the hash. Use :func:`wall_fingerprint` for a permutation-insensitive
     near-duplicate check.
-    Rust-first via :func:`_rust_canonical_digest` (feed::canon+digest, B3
-    canon-wins; mismatch raises ContractError, missing bridge raises ImportError).
-    B2 held:
+    Bridge-first via :func:`_bridge_wall_digest` (``packet.wall_hash`` decides;
+    the 136-int ContractError gate above stays Python because the bridge only
+    checks shape). B2 held:
     no split permutation lives here — splits stay the torch.randperm oracle.
     """
     if len(wall_tiles) != 136:
@@ -133,7 +121,7 @@ def wall_hash_from_tiles(wall_tiles: Sequence[int]) -> DigestText:
         if not isinstance(tile, int) or isinstance(tile, bool) or not 0 <= tile < 136:
             raise ContractError(f"tile ids must be int in [0,136), got {tile!r}")
     tiles = list(wall_tiles)
-    return _rust_canonical_digest(tiles, of_canonical(tiles), subject="wall_hash_from_tiles")
+    return _bridge_wall_digest(tiles, subject="wall_hash_from_tiles")
 
 
 def wall_fingerprint(wall_tiles: Sequence[int]) -> DigestText:
@@ -142,9 +130,9 @@ def wall_fingerprint(wall_tiles: Sequence[int]) -> DigestText:
     Two walls with identical tile multisets in different dealing orders share
     the same fingerprint (near duplicate). Exact duplicates require
     byte-identical wall order and are caught by :func:`wall_hash_from_tiles`.
-    Rust-first via :func:`_rust_canonical_digest` (feed::canon+digest, B3
-    canon-wins; mismatch raises ContractError, missing bridge raises ImportError).
-    B2 held:
+    Bridge-first via :func:`_bridge_wall_digest` (``packet.wall_hash`` decides
+    over the sorted multiset; the 136-int ContractError gate above stays
+    Python because the bridge only checks shape). B2 held:
     no split permutation lives here — splits stay the torch.randperm oracle.
     """
     if len(wall_tiles) != 136:
@@ -153,9 +141,7 @@ def wall_fingerprint(wall_tiles: Sequence[int]) -> DigestText:
         if not isinstance(tile, int) or isinstance(tile, bool) or not 0 <= tile < 136:
             raise ContractError(f"tile ids must be int in [0,136), got {tile!r}")
     sorted_tiles = sorted(wall_tiles)
-    return _rust_canonical_digest(
-        sorted_tiles, of_canonical(sorted_tiles), subject="wall_fingerprint"
-    )
+    return _bridge_wall_digest(sorted_tiles, subject="wall_fingerprint")
 
 
 def find_exact_duplicates(wall_hashes: Mapping[str, str]) -> list[tuple[str, str]]:

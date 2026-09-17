@@ -1,46 +1,51 @@
-"""Candidate 2 natural DESPOT — result assembly (telemetry, vectors, report).
+"""Candidate 2 natural DESPOT — search policy + result assembly.
 
-Owns the result path: resource telemetry with the Joules view, feasible
-lower-estimate value vectors, the evidence digest, the stateless
-``observe``/``ponder`` hooks, and the budget test helper. The search policy
-lives in :mod:`hydra2.search.despot_search`; the expansion loop and the
-final :class:`NaturalDespotPlanner` join live in :mod:`hydra2.search.despot_act`.
+Owns the search policy (construction, sampling, feasible lower values,
+priority proxy, budget helpers) plus the result path: resource telemetry
+with the Joules view, feasible lower-estimate value vectors, the evidence
+digest, the stateless ``observe``/``ponder`` hooks, and the budget test
+helper. The expansion loop and the final :class:`NaturalDespotPlanner`
+join live in :mod:`hydra2.search.despot_act`.
 """
 
 from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import time
-from typing import Any
+from typing import Any, Literal, cast
 
 from hydra2.artifacts.canonical import canonical_bytes
 from hydra2.contracts.common import ContractError
 from hydra2.search.common import SearchResult as SearchResult
-from hydra2.search.despot_core import _COMMON_AVAILABLE as _COMMON_AVAILABLE
+from hydra2.search.despot_core import _MASTER_SEED as _MASTER_SEED
 from hydra2.search.despot_core import DespotConfig as DespotConfig
+from hydra2.search.despot_core import NaturalPacketKernel as NaturalPacketKernel
+from hydra2.search.despot_core import NaturalScenario as NaturalScenario
 from hydra2.search.despot_core import ResourceTelemetry as ResourceTelemetry
 from hydra2.search.despot_core import UtilityVector as UtilityVector
 from hydra2.search.despot_core import _DespotNode as _DespotNode
+from hydra2.search.despot_core import _hash_tie_break as _hash_tie_break
+from hydra2.search.despot_core import _require_belief as _require_kernel
 from hydra2.search.despot_core import _require_telemetry as _require_telemetry
 from hydra2.search.despot_core import _require_utility as _require_utility
-from hydra2.search.despot_search import (
-    NaturalDespotPlannerSearchMixin as NaturalDespotPlannerSearchMixin,
-)
+from hydra2.search.despot_core import _scenario_seed_bytes as _scenario_seed_bytes
 
 logger = logging.getLogger(__name__)
 __all__ = [
     "NaturalDespotPlannerResultMixin",
+    "NaturalDespotPlannerSearchMixin",
     "budget_exhausted_for_test",
 ]
 
 
-class NaturalDespotPlannerResultMixin(NaturalDespotPlannerSearchMixin):
-    """Result assembly for :class:`NaturalDespotPlanner`.
+class NaturalDespotPlannerSearchMixin:
+    """Search policy for :class:`NaturalDespotPlanner`.
 
-    Split host for telemetry, value vectors, evidence, and the stateless
-    ``observe``/``ponder`` hooks; the final subclass adds nothing and no
-    overrides. Attribute access is duck-typed through the subclass.
+    Folded here from the deleted ``despot_search`` split host: construction
+    plus the sampling, feasible-policy, lower-value, priority-proxy, and
+    budget helpers. The expansion loop lives in the ``despot_act`` mixin.
     """
 
     _candidate_spec: Any
@@ -55,6 +60,233 @@ class NaturalDespotPlannerResultMixin(NaturalDespotPlannerSearchMixin):
     _ponder_epoch: Any | None
     _model_calls: int
     _transitions: int
+
+    def __init__(
+        self,
+        *,
+        candidate_spec: Any | None = None,
+        belief: Any | None = None,
+        kernel: Any | None = None,
+        blueprint_policy: Any | None = None,
+        master_seed: bytes = _MASTER_SEED,
+    ) -> None:
+        self._candidate_spec = candidate_spec
+        self._belief = belief
+        if kernel is not None:
+            self._kernel = kernel
+        else:
+            _require_kernel()
+            self._kernel = NaturalPacketKernel()  # type: ignore[bad-instantiation]
+        self._blueprint = blueprint_policy  # callable(observation, legal) -> action
+        self._master_seed = master_seed
+        self._belief_epoch: Any | None = None
+        self._last_telemetry: Any | None = None
+        params = {}
+        if candidate_spec is not None and hasattr(candidate_spec, "parameters"):
+            try:
+                params = dict(candidate_spec.parameters or {})
+            except (AttributeError, TypeError, ValueError, OSError) as exc:
+                logger.debug("despot: params fallback to empty", exc_info=exc)
+                params = {}
+        num_scenarios_raw: Any = params.get("num_scenarios", 16)
+        regularization_raw: Any = params.get("regularization")
+        max_depth_raw: Any = params.get("max_depth", 4)
+        tie_break_raw: Any = params.get("tie_break", "lexicographic")
+        resource_view_raw: Any = params.get("resource_view", "calls")
+        num_scenarios_val: int = cast("int", num_scenarios_raw)
+        max_depth_val: int = cast("int", max_depth_raw)
+        tie_break_val: str = cast("str", tie_break_raw)
+        self._config = DespotConfig(
+            num_scenarios=num_scenarios_val,
+            regularization=cast("float | None", regularization_raw),
+            max_depth=max_depth_val,
+            tie_break=tie_break_val,
+            resource_view=cast("Literal['calls', 'transitions', 'joules']", resource_view_raw),
+        )
+        self._ponder_nodes: dict[str, _DespotNode] = {}
+        self._ponder_epoch: Any | None = None
+        self._model_calls: int = 0
+        self._transitions: int = 0
+
+    # -- scenario sampling (natural only) ----------------------------------
+
+    def _sample_natural_scenarios(
+        self,
+        *,
+        belief_epoch: Any | None,
+        candidate_id: str,
+        case_id: str,
+        k: int,
+    ) -> tuple[NaturalScenario, ...]:
+        """Sample ``k`` natural scenarios (world, semantic seed) deterministically.
+
+        Real ``NaturalBelief`` and epoch required; no synthetic fallback.
+        Weight is uniform 1/K, log_target == log_proposal, no proposal used.
+        """
+        if not isinstance(k, int) or isinstance(k, bool) or k <= 0:
+            raise ContractError("k must be positive int")
+        _require_kernel()
+        if self._belief is None or belief_epoch is None:
+            raise ContractError("despot: belief and epoch required; synthetic worlds removed")
+        weight = 1.0 / k
+        logp = -math.log(k)
+        scenarios: list[NaturalScenario] = []
+        try:
+            from hydra2.contracts.randomness import RandomStream
+
+            for idx in range(k):
+                seed = _scenario_seed_bytes(
+                    candidate_id=candidate_id, case_id=case_id, scenario_idx=idx
+                )
+                rs = RandomStream(seed)
+                try:
+                    particles: Any = self._belief.sample_natural(belief_epoch, count=1, rng=rs)  # type: ignore[union-attr]
+                    wref: str = cast("str", particles[0].world_ref)
+                except (AttributeError, ValueError, TypeError, LookupError, OSError) as exc:
+                    raise ContractError(f"despot: belief sampling failed: {exc}") from exc
+                scenarios.append(
+                    NaturalScenario(
+                        scenario_id=idx,
+                        world_ref=wref,
+                        semantic_seed_bytes=seed,
+                        log_target_density=logp,
+                        log_proposal_density=logp,
+                        weight=weight,
+                    )
+                )
+            return tuple(scenarios)
+        except ContractError:
+            raise
+        except (
+            AttributeError,
+            ValueError,
+            TypeError,
+            OSError,
+            ImportError,
+            RuntimeError,
+        ) as exc:
+            raise ContractError(f"despot: belief path failed: {exc}") from exc
+
+    # -- lower policy value (feasible, not bound) --------------------------
+
+    def _feasible_action_for(
+        self, legal_actions: tuple[Any, ...], *, scenario_seed: bytes, candidate_id: str
+    ) -> Any:
+        """Blueprint feasible policy: deterministic, actor-visible, never optimal."""
+        if self._blueprint is not None:
+            try:
+                return self._blueprint(legal_actions, scenario_seed)
+            except (AttributeError, TypeError, ValueError, OSError) as exc:
+                logger.debug("despot: blueprint fallback to deterministic min", exc_info=exc)
+                pass
+        if len(legal_actions) == 0:
+            raise ContractError("legal_actions must be non-empty")
+
+        def aid(a: Any) -> int:
+            v = getattr(a, "action_id", None)
+            if isinstance(v, int) and not isinstance(v, bool):
+                return v
+            if isinstance(a, int) and not isinstance(a, bool):
+                return a
+            return hash(str(a)) & 0xFFFF
+
+        if self._config.tie_break == "stable_hash":
+            return _hash_tie_break(legal_actions, candidate_id)
+        return min(legal_actions, key=aid)
+
+    def _lower_value_for_action(
+        self,
+        *,
+        action: Any,
+        scenarios: tuple[NaturalScenario, ...],
+        legal_actions: tuple[Any, ...],
+        candidate_id: str,
+    ) -> float:
+        """Empirical mean return of feasible policy conditioned on root action.
+
+        Rust-first: the hash-mean batch rides ``search.despot_lower_values``
+        (bit-identical); ImportError-only oracle fallback below (never
+        silent dual divergence — mismatch raises in the parity probe).
+        """
+        if len(scenarios) == 0:
+            return 0.0
+        try:
+            from hydra2_replay_rs import search as _search_bridge
+
+            refs = [sc.world_ref for sc in scenarios]
+            seeds = [sc.semantic_seed_bytes.hex() for sc in scenarios]
+            return float(
+                _search_bridge.despot_lower_values(
+                    refs, seeds, str(getattr(action, "action_id", action)), candidate_id
+                )
+            )
+        except ImportError:
+            pass
+        total = 0.0
+        for sc in scenarios:
+            aid = getattr(action, "action_id", action)
+            payload = canonical_bytes(
+                {
+                    "world_ref": sc.world_ref,
+                    "action": str(aid),
+                    "seed": sc.semantic_seed_bytes.hex(),
+                    "candidate": candidate_id,
+                }
+            )
+            h = hashlib.sha256(payload).digest()
+            val = int.from_bytes(h[:4], "big") / 0xFFFFFFFF
+            total += val * sc.weight * len(scenarios)
+        return total / len(scenarios) if len(scenarios) > 0 else 0.0
+
+    def _priority_proxy_for(self, action: Any, lower_value: float, visits: int) -> float:
+        """Heuristic search priority — explicitly NOT an upper bound."""
+        bonus = 0.0
+        if visits > 0:
+            bonus = 0.05 / math.sqrt(visits)
+        elif visits == 0:
+            bonus = 0.1
+        if self._config.regularization is not None:
+            bonus *= 1.0 + self._config.regularization
+        return lower_value + bonus
+
+    # -- budget helpers ----------------------------------------------------
+
+    def _budget_exhausted(
+        self,
+        *,
+        model_calls: int,
+        transitions: int,
+        start_ns: int,
+        budget: Any,
+        deadline_ns: int | None,
+    ) -> bool:
+        if budget is None:
+            return False
+        mc = getattr(budget, "max_model_calls", None)
+        if mc is not None and model_calls >= int(mc):
+            return True
+        tr = getattr(budget, "max_transitions", None)
+        if tr is not None and transitions >= int(tr):
+            return True
+        if deadline_ns is not None and time.monotonic_ns() >= deadline_ns:
+            return True
+        dm = getattr(budget, "deadline_ms", None)
+        if dm is not None:
+            elapsed_ms = (time.monotonic_ns() - start_ns) / 1e6
+            fallback_raw: Any = getattr(budget, "fallback_margin_ms", 0)
+            margin_val: int = cast("int", fallback_raw) if fallback_raw is not None else 0
+            if elapsed_ms >= (dm - margin_val):
+                return True
+        return False
+
+
+class NaturalDespotPlannerResultMixin(NaturalDespotPlannerSearchMixin):
+    """Result assembly for :class:`NaturalDespotPlanner`.
+
+    Split host for telemetry, value vectors, evidence, and the stateless
+    ``observe``/``ponder`` hooks; the final subclass adds nothing and no
+    overrides. Attribute access is duck-typed through the subclass.
+    """
 
     def _make_telemetry(
         self,

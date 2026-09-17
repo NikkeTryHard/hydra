@@ -403,14 +403,21 @@ def resolve_final_ranks(final_scores: Sequence[int]) -> tuple[int, int, int, int
     seat wind order of East-1 (man.html L1025 「終了時に同点の場合は東1局の風順で順位を決定」).
     Seats 0..3 align with East/South/West/North winds (SPEC §8), so the lower
     seat index takes the better rank on ties.
+    Thin bridge delegate: ``hydra2_replay_rs.contracts.resolve_final_ranks``
+    decides (same tie-break, same +/-1e12 domain, bool excluded). Evidence:
+    value parity on strict/tie/edge quads, 1.06-1.16x faster. Bridge rejects
+    surface as ContractError (fail-closed); a missing bridge raises
+    ImportError with a build-ext hint.
     """
-    scores = _require_quad_ints(
-        final_scores, name="final_scores", minimum=-(10**12), maximum=10**12
-    )
-    order = sorted(range(4), key=lambda seat: (-scores[seat], seat))  # pyrefly: ignore[unknown-argument-type]  # reason: scores quad-validated above; key indexes validated ints
-    ranks = [0, 0, 0, 0]
-    for position, seat in enumerate(order):
-        ranks[seat] = position + 1
+    try:
+        ranks = _bridge_contracts.resolve_final_ranks(tuple(final_scores))
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2_replay_rs extension with contracts not importable; "
+            "rebuild the bridge with `pixi run build-ext` before resolving ranks"
+        ) from exc
+    except Exception as exc:
+        raise ContractError(f"final_scores rejected: {exc}") from exc
     return (ranks[0], ranks[1], ranks[2], ranks[3])
 
 

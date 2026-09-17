@@ -6,7 +6,7 @@ actor-visible packet children validated through
 :mod:`hydra2.search.despot_core`, deterministic best-feasible-action
 selection, and the final :class:`NaturalDespotPlanner` join over the
 search and result mixins. Construction and the sampling/value/budget
-helpers live in :mod:`hydra2.search.despot_search`; result assembly lives
+helpers live in :mod:`hydra2.search.despot_result`; result assembly lives
 in :mod:`hydra2.search.despot_result`.
 """
 

@@ -224,6 +224,55 @@ pub fn best_feasible(
     }
 }
 
+/// `0xFFFFFFFF` as `f64` (hash-to-unit denominator, `despot_search.py:286`).
+pub const HASH_UNIT: f64 = 4_294_967_295.0;
+
+/// Feasible-policy lower value for ONE root action over a scenario pack
+/// (`despot_search.py:251-295` parity): per scenario the return is
+/// `u32BE(sha256(canon({world_ref, action, seed, candidate}))[:4]) /
+/// 0xFFFFFFFF`, accumulated as `total += val * (1/K) * K` in pack order,
+/// returned as `total / K` (the weight-`K` round-trip is load-bearing for
+/// bit-identity — do NOT simplify to a plain mean).
+///
+/// Canon-wins (B3): the payload serializes through `feed::canon`
+/// (`BTreeMap` discipline matches the oracle's `canonical_bytes`).
+/// `seed_hexes` carry the oracle's `semantic_seed_bytes.hex()` verbatim
+/// (no re-encode). Empty pack reads as `0.0` (the oracle's early return),
+/// never an error.
+pub fn lower_value(
+    world_refs: &[String],
+    seed_hexes: &[String],
+    aid: &str,
+    candidate_id: &str,
+) -> Result<f64, SearchError> {
+    if world_refs.len() != seed_hexes.len() {
+        return Err(SearchError::InvalidArg { detail: "despot refs/seeds length mismatch" });
+    }
+    let count = world_refs.len();
+    if count == 0 {
+        return Ok(0.0);
+    }
+    let count_f = count as f64;
+    let weight = 1.0 / count_f;
+    let mut total = 0.0;
+    let mut idx = 0;
+    while idx < count {
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("action".to_string(), serde_json::json!(aid));
+        map.insert("candidate".to_string(), serde_json::json!(candidate_id));
+        map.insert("seed".to_string(), serde_json::json!(seed_hexes[idx]));
+        map.insert("world_ref".to_string(), serde_json::json!(world_refs[idx]));
+        let bytes = hydra_feed::canon::canonical_bytes(&map, "despot:lower_value")
+            .map_err(|err| SearchError::Canon { detail: err.to_string() })?;
+        let digest = Sha256::digest(bytes.as_slice());
+        let word = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]);
+        let val = word as f64 / HASH_UNIT;
+        total += val * weight * count_f;
+        idx += 1;
+    }
+    Ok(total / count_f)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

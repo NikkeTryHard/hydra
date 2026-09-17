@@ -80,6 +80,10 @@ use hydra_search::ismcts::{ActionStats, IsNode, IsmctsParams, TieBreak};
 use hydra_search::ismcts_driver as driver_mod;
 use hydra_search::gumbel_driver as gumbel_driver_mod;
 use hydra_search::local_driver as local_driver_mod;
+use hydra_search::despot as despot_mod;
+use hydra_search::pbrf as pbrf_mod;
+use hydra_search::step_hash as step_hash_mod;
+use hydra_search::modules as modules_mod;
 use hydra_search::SearchError;
 #[cfg(test)]
 use hydra_search::arena::ActOut;
@@ -1013,6 +1017,117 @@ fn act_stats(py: Python<'_>) -> PyResult<(u64, u64)> {
     Ok((guard.acts, guard.completed))
 }
 
+/// Feasible-policy lower value for ONE root action over a scenario pack
+/// (`despot_search.py:251-295` via `despot::lower_value`): per-scenario
+/// hash returns averaged with the oracle's weight-`K` round-trip.
+/// `world_refs`/`seed_hexes` ride parallel (seed hex verbatim); empty pack
+/// reads as `0.0`. Compute runs detached; only owned scalars cross.
+#[pyfunction]
+#[pyo3(signature = (world_refs, seed_hexes, aid, candidate_id))]
+fn despot_lower_values(
+    py: Python<'_>,
+    world_refs: Vec<String>,
+    seed_hexes: Vec<String>,
+    aid: String,
+    candidate_id: String,
+) -> PyResult<f64> {
+    if world_refs.len() != seed_hexes.len() {
+        return Err(PyValueError::new_err("search despot refs/seeds length mismatch"));
+    }
+    if candidate_id.is_empty() {
+        return Err(PyValueError::new_err("search despot candidate_id must be non-empty"));
+    }
+    let out = py.detach(|| despot_mod::lower_value(&world_refs, &seed_hexes, &aid, &candidate_id));
+    out.map_err(search_err)
+}
+
+/// Deterministic leaf vector for ONE `(action, packet)` child
+/// (`pbrf_search.py:252-294` via `pbrf::child_value`): weight-averaged
+/// hash scalars expanded to the 4-seat vector. Rows ride parallel
+/// (`parent8s`/`target8s` truncated caller-side); `z <= 0` reads as the
+/// zero vector. Compute runs detached; only owned scalars cross.
+#[pyfunction]
+#[pyo3(signature = (parent8s, target8s, raw_weights, aid, packet_id))]
+fn pbrf_child_value(
+    py: Python<'_>,
+    parent8s: Vec<String>,
+    target8s: Vec<String>,
+    raw_weights: Vec<f64>,
+    aid: u32,
+    packet_id: String,
+) -> PyResult<(f64, f64, f64, f64)> {
+    if parent8s.len() != target8s.len() || parent8s.len() != raw_weights.len() {
+        return Err(PyValueError::new_err("search pbrf child row length mismatch"));
+    }
+    let out = py.detach(|| pbrf_mod::child_value(&parent8s, &target8s, &raw_weights, aid, &packet_id));
+    out.map_err(search_err)
+}
+
+/// One-call batch for the ISMCTS envelope step hashes
+/// (`ismcts_search.py:532-570` via `step_hash::step_hashes`): the template
+/// identity doc parses once, each row substitutes hand/live/actor and
+/// yields the info key (`want_keys`) or the tilt direction. Lanes ride
+/// parallel; the unused lane carries `""`/`0`. Compute runs detached.
+#[pyfunction]
+#[pyo3(signature = (template_json, hands, live_lens, actors, want_keys))]
+fn ismcts_step_hashes(
+    py: Python<'_>,
+    template_json: Vec<u8>,
+    hands: Vec<Vec<u32>>,
+    live_lens: Vec<u32>,
+    actors: Vec<u32>,
+    want_keys: Vec<bool>,
+) -> PyResult<(Vec<String>, Vec<u32>)> {
+    if template_json.is_empty() {
+        return Err(PyValueError::new_err("search step template must be non-empty"));
+    }
+    if hands.len() != live_lens.len()
+        || hands.len() != actors.len()
+        || hands.len() != want_keys.len()
+    {
+        return Err(PyValueError::new_err("search step lane length mismatch"));
+    }
+    let out = py.detach(|| step_hash_mod::step_hashes(&template_json, &hands, &live_lens, &actors, &want_keys));
+    out.map_err(search_err)
+}
+
+/// One Candidate 4 module transform over owned vectors
+/// (`search/modules/__init__.py` transform bodies via
+/// `modules::module_transform`): `seed` is the caller-derived
+/// `_semantic_seed` int (the seed formula stays Python's single site);
+/// `meta_json` carries the arm's validated context params (`voc` arm:
+/// `floor`/`cap`/`budget`/`scores`-or-null; empty otherwise). Returns
+/// `(particles, weights, budget_calls, budget_transitions, meta_json)`.
+/// Compute runs detached; only owned vectors cross.
+#[pyfunction]
+#[pyo3(signature = (module_id, particles, weights, budget_calls, budget_transitions, seed, meta_json))]
+fn pbrf_module_transform(
+    py: Python<'_>,
+    module_id: String,
+    particles: Vec<f64>,
+    weights: Vec<f64>,
+    budget_calls: u64,
+    budget_transitions: u64,
+    seed: u64,
+    meta_json: Vec<u8>,
+) -> PyResult<(Vec<f64>, Vec<f64>, u64, u64, Vec<u8>)> {
+    if particles.len() != weights.len() {
+        return Err(PyValueError::new_err("search module particles/weights length mismatch"));
+    }
+    let out = py.detach(|| {
+        modules_mod::module_transform(
+            &module_id,
+            &particles,
+            &weights,
+            budget_calls,
+            budget_transitions,
+            seed,
+            &meta_json,
+        )
+    });
+    out.map_err(search_err)
+}
+
 /// Fail-close comparator for the in-module judge tests (mirrors
 /// `canon_rng::check_match` / columnar `check_match`: recomputed ==
 /// recorded or `Err`, never a default/empty accept).
@@ -1053,6 +1168,10 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     sub.add_class::<PyLocalResolvingOut>()?;
     sub.add_function(wrap_pyfunction!(uct_select, &sub)?)?;
     sub.add_function(wrap_pyfunction!(puct_select, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(despot_lower_values, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(pbrf_child_value, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(ismcts_step_hashes, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(pbrf_module_transform, &sub)?)?;
     sub.add_function(wrap_pyfunction!(natural_indices, &sub)?)?;
     sub.add_function(wrap_pyfunction!(sampled_draws, &sub)?)?;
     sub.add_function(wrap_pyfunction!(packet_successors, &sub)?)?;

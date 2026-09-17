@@ -60,12 +60,104 @@ pub mod joint;
 pub mod keys;
 pub mod local;
 pub mod local_driver;
+pub mod modules;
 pub mod pbrf;
 pub mod rng;
+pub mod step_hash;
 pub mod eval;
 pub mod persistence_factorial;
 pub mod persistence_kernel;
 pub mod persistence_planner;
+
+// ---------------------------------------------------------------------------
+// Shared exact-summation helpers (bit-parity with the Python oracles)
+// ---------------------------------------------------------------------------
+
+/// CPython `builtin sum()` over finite floats (Neumaier single-compensation).
+///
+/// The oracle calls builtin `sum()` (NOT a plain loop, NOT `math.fsum`):
+/// `t = s + x`, compensating into `c` on the `|s| >= |x|` arm, result
+/// `s + c`. Non-finite lanes fold plainly (matching the oracle's
+/// `inf`/`nan` propagation on valid-input-unreachable shapes).
+pub(crate) fn builtin_sum(xs: &[f64]) -> f64 {
+    let mut finite = true;
+    for x in xs {
+        if !x.is_finite() {
+            finite = false;
+            break;
+        }
+    }
+    if !finite {
+        let mut acc = 0.0;
+        for x in xs {
+            acc += *x;
+        }
+        return acc;
+    }
+    let mut sum = 0.0;
+    let mut comp = 0.0;
+    for x in xs {
+        let t = sum + x;
+        if sum.abs() >= x.abs() {
+            comp += (sum - t) + x;
+        } else {
+            comp += (x - t) + sum;
+        }
+        sum = t;
+    }
+    sum + comp
+}
+
+/// CPython `math.fsum()` over finite floats (Shewchuk TwoSum partials with
+/// an ascending final pass — correctly rounded, matching the oracle's
+/// exact total). Non-finite lanes fold plainly (fail-closed callers never
+/// feed them; the oracle's `inf`/`nan` shapes propagate identically).
+pub(crate) fn fsum(xs: &[f64]) -> f64 {
+    let mut finite = true;
+    for x in xs {
+        if !x.is_finite() {
+            finite = false;
+            break;
+        }
+    }
+    if !finite {
+        let mut acc = 0.0;
+        for x in xs {
+            acc += *x;
+        }
+        return acc;
+    }
+    let mut partials: Vec<f64> = Vec::new();
+    for x in xs {
+        let mut xi = *x;
+        let mut idx = 0;
+        while idx < partials.len() {
+            let mut yi = partials[idx];
+            if xi.abs() < yi.abs() {
+                let tmp = xi;
+                xi = yi;
+                yi = tmp;
+            }
+            let hi = xi + yi;
+            let lo = yi - (hi - xi);
+            if lo != 0.0 {
+                partials[idx] = lo;
+                idx += 1;
+            } else {
+                partials.remove(idx);
+            }
+            xi = hi;
+        }
+        partials.push(xi);
+    }
+    partials.sort_by(|a, b| a.abs().total_cmp(&b.abs()));
+    let mut total = 0.0;
+    for p in &partials {
+        total += *p;
+    }
+    total
+}
+
 pub mod persistence_report;
 pub mod persistence_spec;
 

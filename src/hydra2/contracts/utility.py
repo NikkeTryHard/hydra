@@ -159,31 +159,24 @@ def _judge_ranks_and_values(
         )
 
 
-def _judge_exact_zero(*, values: tuple[float, ...], exact_is_zero: bool) -> None:
-    """Rust judge over exact zero-sum (mismatch=raise).
+def _rank_values_sum_is_zero(values: tuple[float, ...]) -> bool:
+    """Bridge-first exact zero-sum (Fraction oracle on ImportError only).
 
-    ``exact_total_is_zero`` is integer-only (Fraction-exact, no float
-    accumulation, no epsilon); m8 True both sides via the in-feed exact stack
-    big-int fallback, and Overflow stays defensive-only (unreachable for 4
-    finite f64 — raised here if ever observed, fail-closed). ImportError (or a
-    non-4 quad) → the Fraction oracle decides alone.
+    ``canon_rng.exact_total_is_zero`` decides: integer-only, Fraction-exact,
+    no float accumulation, no epsilon (m8 True both sides via the in-feed
+    exact stack big-int fallback; Overflow defensive-only, unreachable for
+    finite f64). Evidence: 4.0-4.7x faster than the Fraction loop with
+    byte-identical bools on the zero/non-zero/exotic-exponent matrix. A
+    missing/unbuilt bridge falls back to the exact Fraction loop
+    (byte-identical); any other bridge failure raises — never silent.
     """
-    if len(values) != 4:
-        return
     native = _fixed_native()
-    if native is None:
-        return
-    try:
-        rust_is_zero = native.exact_total_is_zero([float(item) for item in values])
-    except ImportError:
-        return
-    except Exception as exc:
-        raise ContractError(f"exact total rejected by Rust exact_total_is_zero: {exc}") from exc
-    if bool(rust_is_zero) != exact_is_zero:
-        raise ContractError(
-            "exact-total Rust/Python mismatch: "
-            f"rust is_zero={bool(rust_is_zero)} != python is_zero={exact_is_zero}"
-        )
+    if native is not None:
+        try:
+            return bool(native.exact_total_is_zero([float(item) for item in values]))
+        except ImportError:
+            pass
+    return _exact_total(values) == 0
 
 
 def _judge_values_finite(values: tuple[float, ...]) -> None:
@@ -423,7 +416,7 @@ class UtilityManifest:
         object.__setattr__(self, "value_max", value_max)
         if not isinstance(self.zero_sum, bool):
             raise ContractError(f"zero_sum must be a bool, got {type(self.zero_sum).__name__}")
-        if self.zero_sum and _exact_total(rank_values) != 0:
+        if self.zero_sum and not _rank_values_sum_is_zero(rank_values):
             raise ContractError(
                 "zero_sum=true requires the rank_values total to be exactly zero; "
                 "zero-sum is never assumed"
@@ -443,17 +436,15 @@ class UtilityManifest:
 
 
 def _exact_total(values: tuple[float, ...]) -> Fraction:
-    """Exact sum over floats via Fraction (no float accumulation, no epsilon).
+    """Exact sum over floats via Fraction (ImportError-only fallback core).
 
-    Rust-judged via ``exact_total_is_zero`` (mismatch=raise; ImportError-only
-    oracle fallback). Evidence: m8 True both sides (in-feed exact stack
-    big-int fallback, Fraction-equivalent; Overflow defensive-only).
+    Kept as the byte-identical fallback behind :func:`_rank_values_sum_is_zero`
+    when the bridge is missing/unbuilt; the bridge decides whenever present.
     """
     total = Fraction(0)
     for item in values:
         fraction = Fraction(item)
         total += fraction
-    _judge_exact_zero(values=values, exact_is_zero=(total == 0))
     return total
 
 
