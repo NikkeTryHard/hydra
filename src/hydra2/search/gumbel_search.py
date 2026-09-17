@@ -517,6 +517,12 @@ class GumbelSearchPlannerSearchMixin:
         worlds_live_lens: list[int] = []
         first_cont_legal: tuple[int, ...] | None = None
         transitions_sim = 0
+        # Memo: continuation obs depends on (world, actor, live_len) only, NOT
+        # visit order (``_wao(fake, actor)`` + legal + direction touch no RNG).
+        # Corpus K=4 with ~16 visits => each world repeats ~4x — same class as
+        # the joint memo 1.94x win. Byte-exact: same inputs, same dir bytes.
+        # RNG floats still consumed per visit (stream order preserved).
+        _cont_memo: dict[tuple[str, int, int], tuple[tuple[int, ...], int]] = {}
 
         # Precompute walk in oracle visit order (round-major, slot-minor,
         # visit-minor); budget truncation stops the tail only. Belief draws +
@@ -578,36 +584,51 @@ class GumbelSearchPlannerSearchMixin:
                     row_dirs = [0] * max_depth
                     cstep = 0
                     while step < max_depth and live_len > 0:
-                        fake = types.SimpleNamespace(
-                            concealed_hands=hands,
-                            live_wall=tuple([0] * live_len),
-                            rules_hash=str(cur_world.rules_hash),
-                        )
-                        try:
-                            obs = _wao(fake, actor=actor)  # pyrefly: ignore[bad-argument-type]
-                        except ImportError:
-                            raise
-                        except Exception as exc:
-                            raise ContractError(
-                                f"gumbel: continuation observation failed: {exc}"
-                            ) from exc
-                        legal_next = _legal_ids_for_observation(obs)
-                        if len(legal_next) == 0:
-                            break
-                        if first_cont_legal is None:
-                            first_cont_legal = legal_next
-                        elif legal_next != first_cont_legal:
-                            raise ContractError(
-                                "gumbel: varying continuation legal has no batch envelope; fail closed"
+                        _ckey = (str(cur_world.world_id), int(actor), int(live_len))
+                        _hit = _cont_memo.get(_ckey)
+                        if _hit is None:
+                            fake = types.SimpleNamespace(
+                                concealed_hands=hands,
+                                live_wall=tuple([0] * live_len),
+                                rules_hash=str(cur_world.rules_hash),
                             )
-                        try:
-                            _h: Any | None = getattr(obs, "observation_hash", None)
-                            hs: str = _h if isinstance(_h, str) and _h != "" else ""
-                            direction = hashlib.sha256(hs.encode()).digest()[0] & 1
-                        except Exception as exc:
-                            raise ContractError(
-                                f"gumbel: continuation direction failed: {exc}"
-                            ) from exc
+                            try:
+                                obs = _wao(fake, actor=actor)  # pyrefly: ignore[bad-argument-type]
+                            except ImportError:
+                                raise
+                            except Exception as exc:
+                                raise ContractError(
+                                    f"gumbel: continuation observation failed: {exc}"
+                                ) from exc
+                            legal_next = _legal_ids_for_observation(obs)
+                            if len(legal_next) == 0:
+                                _cont_memo[_ckey] = ((), 0)
+                                break
+                            if first_cont_legal is None:
+                                first_cont_legal = legal_next
+                            elif legal_next != first_cont_legal:
+                                raise ContractError(
+                                    "gumbel: varying continuation legal has no batch envelope; fail closed"
+                                )
+                            try:
+                                _h: Any | None = getattr(obs, "observation_hash", None)
+                                hs: str = _h if isinstance(_h, str) and _h != "" else ""
+                                direction = hashlib.sha256(hs.encode()).digest()[0] & 1
+                            except Exception as exc:
+                                raise ContractError(
+                                    f"gumbel: continuation direction failed: {exc}"
+                                ) from exc
+                            _cont_memo[_ckey] = (legal_next, direction)
+                        else:
+                            legal_next, direction = _hit
+                            if len(legal_next) == 0:
+                                break
+                            if first_cont_legal is None:
+                                first_cont_legal = legal_next
+                            elif legal_next != first_cont_legal:
+                                raise ContractError(
+                                    "gumbel: varying continuation legal has no batch envelope; fail closed"
+                                )
                         row_dirs[cstep] = direction
                         try:
                             draws.append(float(rng.random_float()))

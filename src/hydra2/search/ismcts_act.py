@@ -1,4 +1,3 @@
-# ruff: noqa: N814  # reason: legacy blanket kept, not narrowed — narrowing surfaces unrelated mid-flight noise outside the owned error set (N814 upstream belief symbol casing). Evidence: https://docs.astral.sh/ruff/rules/
 """Candidate 1 ISMCTS Planner adapter — act, observe, ponder, and weighting oracle.
 
 Owns the Planner protocol surface of :class:`NaturalISMCTSPlanner`: RNG
@@ -12,7 +11,6 @@ review-size ceiling.
 
 from __future__ import annotations
 
-import hashlib
 from typing import TYPE_CHECKING, Any
 
 from hydra2.contracts.common import ContractError
@@ -129,138 +127,24 @@ class NaturalISMCTSPlannerActMixin(NaturalISMCTSPlannerSearchMixin):
     # -- Planner protocol adapter -----------------------------------------
 
     def act(self, request: SearchRequest) -> SearchResult:
-        """Planner act — Rust-gated entry, bridge-routed core decides.
+        """Planner act — RETIRED (fail closed, never silent).
 
-        Rust-first gate: an isolated ``act_batch`` probe + ``ActJudge``
-        golden-compare runs before the core below (ImportError-only oracle
-        fallback; mismatch raises, never silent). UCT selection rides the
-        bridge search pyfns bit-identical to the oracle; descent loop/node
-        tables stay Python. B1/B2 held: sha-Gumbels verbatim, held-out
-        splits stay the torch.randperm oracle, torch islands stay.
+        Retired 2026-09-17: this entry raised ``TypeError`` on every valid
+        input — ``SearchRequest`` requires ``CanonicalAction`` legals, which
+        carry no ``action_id`` int, so the search mapping crashed; the
+        telemetry call also used retired ``make_resource_telemetry`` kwargs.
+        Zero repo callers (Serena: no references; no suite calls ``act`` —
+        all coverage drives ``search()`` directly). Use ``search()`` with an
+        explicit ``RandomStream`` instead. Request guards below are kept so
+        invalid requests still raise ``ContractError``, never a result.
         """
         if not isinstance(request, SearchRequest):
             raise ContractError(f"request must be SearchRequest, got {type(request).__name__}")
-        # Validate request hashes against candidate spec (lightweight)
-        belief_epoch = getattr(request, "belief_epoch", None)
-        if belief_epoch is None:
+        if getattr(request, "belief_epoch", None) is None:
             raise ContractError("belief_epoch must be BeliefEpoch for ISMCTS natural")
-        # Derive RNG from request deadline / case_id if available
-        _case_id_raw: Any = getattr(request, "case_id", None)  # pyrefly: ignore[explicit-any]
-        _decision_id_raw: Any = getattr(request.observation, "decision_id", "case_default")  # pyrefly: ignore[explicit-any]
-        if _case_id_raw is not None and str(_case_id_raw) != "":
-            case_id: str = str(_case_id_raw)  # pyrefly: ignore[explicit-any]
-        elif _decision_id_raw is not None and str(_decision_id_raw) != "":
-            case_id = str(_decision_id_raw)  # pyrefly: ignore[explicit-any]
-        else:
-            case_id = "case_default"
-        candidate_id = getattr(request.candidate_spec, "candidate_id", self._config.candidate_id)
-        # Deterministic counter-based stream required; no secrets fallback (fail closed).
-        _require_random_stream()
-        try:
-            from hydra2.contracts.randomness import RandomStream
-        except ImportError as exc:
-            raise ImportError(
-                "hydra2.contracts.randomness not importable "
-                f"({exc}); build the bridge with `pixi run build-ext` before ISMCTS search"
-            ) from exc
-        try:
-            # Derive stream from (candidate_id, case_id, belief_epoch)
-            epoch_id = str(getattr(belief_epoch, "epoch", "0"))
-            seed = hashlib.sha256(f"{candidate_id}:{case_id}:{epoch_id}".encode()).digest()
-            rng = RandomStream(seed)
-        except ImportError:
-            raise
-        except Exception as exc:
-            raise ContractError(f"ismcts: deterministic RNG required: {exc}") from exc
-
-        # Probe framing must never break the oracle below (best-effort ids).
-        try:
-            _probe_legal: tuple[Any, ...] = tuple(request.legal_actions)
-        except Exception:
-            _probe_legal = ()
-        _probe_ids: list[Any] = []
-        for _probe_action in _probe_legal:
-            _probe_action_id: Any = getattr(_probe_action, "action_id", None)
-            if isinstance(_probe_action_id, int) and not isinstance(_probe_action_id, bool):
-                _probe_ids.append(_probe_action_id)
-            elif isinstance(_probe_action, int) and not isinstance(_probe_action, bool):
-                _probe_ids.append(_probe_action)
-        _rust_act_probe(
-            subject="ismcts",
-            candidate_id=str(candidate_id),
-            case_id=str(case_id),
-            legal_count=len(_probe_legal),
-            legal_ids=_probe_ids,
-        )
-
-        res = self.search(
-            epoch=belief_epoch,
-            root_observation=request.observation,
-            legal_actions=request.legal_actions,
-            rng=rng,
-        )
-
-        # Typed telemetry required; no dict/NEVER-bind fallback (fail closed).
-        try:
-            from hydra2.contracts.utility import UtilityVector as _UV
-            from hydra2.eval.telemetry import make_resource_telemetry as _mrt
-            from hydra2.search.common import candidate_spec_hash as _csh
-        except ImportError as exc:
-            raise ImportError(
-                "hydra2.contracts.utility/telemetry not importable "
-                f"({exc}); build the bridge with `pixi run build-ext` before ISMCTS search"
-            ) from exc
-
-        # Build UtilityVectors (vector preserved, identity from manifest) — fail closed, no raw fallback.
-        u_vectors: list[Any] = []
-        for vec in res["value_vectors"]:
-            try:
-                u_vectors.append(
-                    _UV(
-                        values=tuple(float(v) for v in vec),  # type: ignore[arg-type]
-                        utility_id=getattr(
-                            request.candidate_spec, "utility_id", "expected_final_placement"
-                        ),
-                        utility_manifest_hash=getattr(  # type: ignore[arg-type]
-                            request.candidate_spec, "utility_manifest_hash", "sha256:" + "b" * 64
-                        ),
-                        rules_hash=getattr(  # type: ignore[arg-type]
-                            request.candidate_spec, "rules_hash", "sha256:" + "a" * 64
-                        ),
-                    )
-                )
-            except ImportError:
-                raise
-            except (AttributeError, ValueError, TypeError, OSError) as exc:
-                raise ContractError(f"ismcts: UtilityVector build failed: {exc}") from exc
-        try:
-            spec_hash = _csh(request.candidate_spec)  # type: ignore[call-arg]
-        except Exception as exc:
-            raise ContractError(f"ismcts: candidate_spec_hash required: {exc}") from exc
-        try:
-            _telemetry_dict: Any = res["telemetry"]  # pyrefly: ignore[explicit-any]
-            _actual_calls_raw: Any = _telemetry_dict["model_calls"]  # pyrefly: ignore[explicit-any]
-            _actual_trans_raw: Any = _telemetry_dict["transitions"]  # pyrefly: ignore[explicit-any]
-            _completed_raw: Any = res["completed"]  # pyrefly: ignore[explicit-any]
-            telem: Any = _mrt(  # pyrefly: ignore[explicit-any]
-                budget=request.candidate_spec.resource_budget,
-                actual_calls=int(_actual_calls_raw),  # pyrefly: ignore[explicit-any]
-                actual_transitions=int(_actual_trans_raw),  # pyrefly: ignore[explicit-any]
-                actual_duration_ms=0,
-                completed=bool(_completed_raw),  # pyrefly: ignore[explicit-any]
-            )
-        except ContractError:
-            raise
-        except Exception as exc:
-            raise ContractError(f"ismcts: typed telemetry build failed: {exc}") from exc
-        return SearchResult(
-            selected_action=res["selected_action"],
-            candidate_actions=tuple(res["candidate_actions"]),
-            value_vectors=tuple(u_vectors),
-            candidate_spec_hash=spec_hash,
-            telemetry=telem,
-            evidence_refs=(),
-            completed=res["completed"],
+        raise ContractError(
+            "NaturalISMCTSPlanner.act() is retired: it never returned successfully "
+            "(TypeError on all valid inputs); use search() directly"
         )
 
     def observe(self, packet: Any) -> None:
