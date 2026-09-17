@@ -75,15 +75,6 @@ def _valid_digest(s: str) -> DigestText:
     return _bridge_contracts.make_digest_text(s)
 
 
-def _dummy_hashes() -> tuple[DigestText, DigestText, DigestText, DigestText]:
-    return (
-        _valid_digest("sha256:" + "a" * 64),
-        _valid_digest("sha256:" + "b" * 64),
-        _valid_digest("sha256:" + "c" * 64),
-        _valid_digest("sha256:" + "d" * 64),
-    )
-
-
 def _make_public_discard_event(
     *,
     sequence: int,
