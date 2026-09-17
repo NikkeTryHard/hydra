@@ -413,7 +413,7 @@ def build_shards(
 
     Returns the manifest dict (also written to ``manifest.json``).
     """
-    from hydra2.training.dataset import encode_observation_rows
+    from hydra2.training.dataset_encode import encode_observation_rows
 
     if not isinstance(games, (list, tuple)) or len(games) == 0:
         detail = str(len(games)) if isinstance(games, (list, tuple)) else type(games).__name__

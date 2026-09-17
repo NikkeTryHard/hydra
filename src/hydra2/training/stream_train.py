@@ -66,13 +66,17 @@ from hydra2.data.stream import (
 from hydra2.data.stream import (
     StreamCursor as DataStreamCursor,
 )
-from hydra2.training.loop import (
-    SupervisedLoop,
-    TrainingLoopConfig,
+from hydra2.training._rc_digest import create_run_layout, run_config_digest
+from hydra2.training.loop_batch import (
     summarize_telemetry,
     summarize_update_telemetry,
 )
-from hydra2.training.run_config import create_run_layout, run_config_digest
+from hydra2.training.loop_state import (
+    TrainingLoopConfig,
+)
+from hydra2.training.loop_train import (
+    SupervisedLoop,
+)
 from hydra2.training.stream_build import _NO_DECAY_NAME_TAGS as _NO_DECAY_NAME_TAGS
 from hydra2.training.stream_build import _POLICY_HEAD_PREFIX as _POLICY_HEAD_PREFIX
 from hydra2.training.stream_build import _build_model as _build_model
@@ -151,7 +155,7 @@ from hydra2.training.stream_scan import _shared_scan_cache_path as _shared_scan_
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from hydra2.training.run_config import ResumePlan, RunConfig
+    from hydra2.training._rc_sections import ResumePlan, RunConfig
 
 __all__ = ["SPLIT_RATIOS", "run_stream_training"]
 

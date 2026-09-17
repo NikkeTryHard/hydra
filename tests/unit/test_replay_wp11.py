@@ -28,10 +28,12 @@ from hydra2.contracts.common import ContractError
 from hydra2.data.parquet import DecisionRow, write_actor_shards
 from hydra2.eval.blocks import WallBlock
 from hydra2.runtime.checkpoint import hash_state_tree
-from hydra2.training.dataset import AuthoritativeParquetDataset
-from hydra2.training.replay import (
-    FORBIDDEN_REPLAY_KEYS,
+from hydra2.training.dataset_store import AuthoritativeParquetDataset
+from hydra2.training.replay_engine import (
     ActorLearnerReplay,
+)
+from hydra2.training.replay_state import (
+    FORBIDDEN_REPLAY_KEYS,
     PrivilegedLabelStore,
     ReplayConfig,
 )

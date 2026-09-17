@@ -26,17 +26,21 @@ from pathlib import Path
 
 import pytest
 
-from hydra2.analysis.qualification import (
+from hydra2.analysis.qual_budget import (
     ANALYSIS_BUDGETS,
     ANALYSIS_CANDIDATE_IDS,
     GAMEPLAY_BUDGETS,
     analysis_budget_for,
-    analysis_gate_for,
-    compare_gameplay_analysis,
-    deterministic_replay_hash,
-    generate_hashed_analysis_report,
     make_analysis_spec,
     verify_compute_only,
+)
+from hydra2.analysis.qual_gates import (
+    analysis_gate_for,
+    generate_hashed_analysis_report,
+)
+from hydra2.analysis.qual_replay import (
+    compare_gameplay_analysis,
+    deterministic_replay_hash,
 )
 from hydra2.artifacts.canonical import canonical_bytes
 from hydra2.contracts.common import ContractError, VisibilityViolationError
@@ -51,13 +55,13 @@ pytestmark = pytest.mark.contract_package("WP-12")
 
 
 def _make_gameplay_spec(candidate_id: str) -> CandidateSpec:
-    from hydra2.analysis.qualification import _make_gameplay_spec_for
+    from hydra2.analysis.qual_gates import _make_gameplay_spec_for
 
     return _make_gameplay_spec_for(candidate_id)  # type: ignore[no-untyped-call]
 
 
 def _obs_and_legal(candidate_id: str):
-    from hydra2.analysis.qualification import _make_gameplay_spec_for
+    from hydra2.analysis.qual_gates import _make_gameplay_spec_for
     from hydra2.contracts.action_model import CanonicalAction
 
     spec = _make_gameplay_spec_for(candidate_id)
@@ -164,7 +168,7 @@ def test_analysis_budgets_finite_not_unbounded() -> None:
         assert b.max_transitions is not None
         assert b.max_memory_bytes is not None
     # Also test that an unbounded analysis budget is rejected via _require_finite_budget
-    from hydra2.analysis.qualification import _require_finite_budget
+    from hydra2.analysis.qual_budget import _require_finite_budget
 
     unbounded = ResourceBudget(
         mode="analysis",
@@ -298,7 +302,7 @@ def test_permit_only_additional_charged_compute() -> None:
 
 def test_uncharged_work_rejected() -> None:
     # Analysis budget with missing (uncharged) caps must be rejected via _require_finite_budget
-    from hydra2.analysis.qualification import _require_finite_budget
+    from hydra2.analysis.qual_budget import _require_finite_budget
 
     uncharged = ResourceBudget(
         mode="analysis",
@@ -519,7 +523,7 @@ def test_reject_hidden_fields() -> None:
             "privileged": True,
             "hidden": [1, 2, 3],
         }
-        from hydra2.analysis.qualification import check_no_privileged_leak
+        from hydra2.analysis.qual_budget import check_no_privileged_leak
 
         check_no_privileged_leak(an, fake_priv)  # type: ignore[arg-type]
 
@@ -531,11 +535,11 @@ def test_reject_hidden_fields() -> None:
         hidden_wall = (1, 2, 3)
 
     with pytest.raises(VisibilityViolationError):
-        from hydra2.analysis.qualification import check_no_privileged_leak
+        from hydra2.analysis.qual_budget import check_no_privileged_leak
 
         check_no_privileged_leak(an, BadObs())  # type: ignore[arg-type]
     # Valid observation passes
-    from hydra2.analysis.qualification import check_no_privileged_leak
+    from hydra2.analysis.qual_budget import check_no_privileged_leak
 
     check_no_privileged_leak(an, obs)  # should not raise
 

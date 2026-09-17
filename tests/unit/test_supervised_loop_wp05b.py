@@ -32,8 +32,9 @@ from hydra2.data.parquet import (
 )
 from hydra2.eval.blocks import WallBlock
 from hydra2.models.schema import BASELINE_ACTION_COUNT
-from hydra2.training.dataset import AuthoritativeParquetDataset
-from hydra2.training.loop import FORBIDDEN_BATCH_KEYS, SupervisedLoop, TrainingLoopConfig
+from hydra2.training.dataset_store import AuthoritativeParquetDataset
+from hydra2.training.loop_state import FORBIDDEN_BATCH_KEYS, TrainingLoopConfig
+from hydra2.training.loop_train import SupervisedLoop
 from tests.unit._manifest_helpers import make_test_manifest_hashes
 from tests.unit._supervised_loop_helpers import (
     StubModelPerSeat,
@@ -644,7 +645,7 @@ def test_real_model_input_bridge_end_to_end(tmp_path: Path) -> None:
     """
     from hydra2.models.encoder import ActorTensorBatch
     from hydra2.models.model import Hydra2BaselineModel
-    from hydra2.training.loop import _move_batch_to_device
+    from hydra2.training.loop_batch import _move_batch_to_device
 
     torch.manual_seed(0)
     hands = [
@@ -705,7 +706,7 @@ def test_real_model_input_bridge_end_to_end(tmp_path: Path) -> None:
 
 def test_actor_batch_absent_falls_back_to_legacy_path(tmp_path: Path) -> None:
     """Without ``actor_batch`` the loop uses the legacy forward(dict) path."""
-    from hydra2.training.loop import _model_forward
+    from hydra2.training.loop_batch import _model_forward
 
     torch.manual_seed(0)
     sentinel: dict[str, torch.Tensor] = {"policy_logits": torch.randn(2, NUM_ACTIONS_SMALL)}

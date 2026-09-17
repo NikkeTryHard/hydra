@@ -55,15 +55,17 @@ from hydra2.models.schema import (
     BASELINE_ACTION_COUNT,
     HISTORY_BUCKET_LENGTHS,
 )
+from hydra2.training._rc_root import load_run_config
 from hydra2.training.adapters import model_output_to_loss_dict
-from hydra2.training.objectives import (
+from hydra2.training.objectives_loss import (
     _check_total_finite,
-    compute_hot_scalars,
     global_grad_norm_is_finite,
     supervised_loss_kernel,
     validate_supervised_inputs,
 )
-from hydra2.training.run_config import load_run_config
+from hydra2.training.objectives_metrics import (
+    compute_hot_scalars,
+)
 
 _SYNTH_SEED = 20260912
 

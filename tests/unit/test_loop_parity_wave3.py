@@ -24,7 +24,7 @@ from hydra2.contracts.randomness import (
     make_random_stream_key,
     semantic_seed,
 )
-from hydra2.training._rc_sections import SchedulerConfig
+from hydra2.training._rc_sections import RunConfig, SchedulerConfig
 from hydra2.training.loop_batch import (
     MicrobatchTelemetry,
     _quantile_sorted,
@@ -33,8 +33,8 @@ from hydra2.training.loop_batch import (
     summarize_telemetry,
 )
 from hydra2.training.loop_state import FORBIDDEN_BATCH_KEYS
-from hydra2.training.objectives import compute_hot_scalars, masked_cross_entropy
-from hydra2.training.run_config import RunConfig
+from hydra2.training.objectives_loss import masked_cross_entropy
+from hydra2.training.objectives_metrics import compute_hot_scalars
 from hydra2.training.stream_build import _build_scheduler
 
 pytestmark = pytest.mark.contract_package("WP-05B")

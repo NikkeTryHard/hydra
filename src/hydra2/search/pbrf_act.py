@@ -308,9 +308,8 @@ class PbrfPlannerSearchMixin:
     ) -> tuple[float, float, float, float]:
         """Deterministic leaf vector for a specific (action, packet) child.
 
-        Rust-first: the weight-averaged hash batch rides
-        ``search.pbrf_child_value`` (bit-identical); ImportError-only
-        oracle fallback below.
+        Bridge is the single implementation (``search.pbrf_child_value``);
+        missing extension raises ``ImportError`` (fail closed).
         """
         entries = forest.children.get((_action_id(action), packet_id))
         if entries is None:
@@ -326,30 +325,7 @@ class PbrfPlannerSearchMixin:
             )
             return (float(out[0]), float(out[1]), float(out[2]), float(out[3]))
         except ImportError:
-            pass
-        z = sum(e.raw_weight for e in entries)
-        if z <= 0:
-            return (0.0, 0.0, 0.0, 0.0)
-        vals: list[float] = []
-        for e in entries:
-            payload = canonical_bytes(
-                {
-                    "action": _action_id(action),
-                    "packet": packet_id,
-                    "parent": e.parent_id[:8],
-                    "target": str(e.target_id)[:8],
-                }
-            )
-            h = hashlib.sha256(payload).digest()
-            v = int.from_bytes(h[:4], "big") / 0xFFFFFFFF
-            vals.append(v * (e.raw_weight / z))
-        scalar = sum(vals)
-        return (
-            scalar,
-            (1.0 - scalar) * 0.3,
-            (1.0 - scalar) * 0.3,
-            (1.0 - scalar) * 0.4,
-        )
+            raise
 
 
 class PbrfPlannerActMixin(PbrfPlannerSearchMixin):

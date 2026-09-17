@@ -243,23 +243,13 @@ class RaoBlackwellModule(_BaseModule):
             raise ContractError("rb_charge_calls must be non-negative int")
 
     def transform(self, context: PbrfContext) -> PbrfContext:
+        """Bridge is the single implementation (fail closed)."""
         hit = _bridge_transform(self.module_id, context)
-        if hit is not None:
-            return hit
-        new_particles: list[float] = []
-        for x in context.particles:
-            rb = 0.6 * (x + 0.1) + 0.4 * (x - 0.1)  # = x + 0.02
-            new_particles.append(rb)
-        added_calls = len(context.particles) * 2
-        return PbrfContext(
-            candidate_id=context.candidate_id,
-            case_id=context.case_id,
-            particles=tuple(new_particles),
-            weights=context.weights,
-            budget_calls=context.budget_calls + added_calls,
-            budget_transitions=context.budget_transitions + added_calls,
-            metadata={**context.metadata, "rb_applied": True},
-        )
+        if hit is None:
+            raise ImportError(
+                "hydra2_replay_rs.search missing; rebuild the bridge with `pixi run build-ext`"
+            )
+        return hit
 
     def tiny_oracle(self) -> dict[str, Any]:
         """Two-state, two-draw exact enumerated expectation vs sampled."""
@@ -321,23 +311,13 @@ class DefensiveMISModule(_BaseModule):
             pass
 
     def transform(self, context: PbrfContext) -> PbrfContext:
+        """Bridge is the single implementation (fail closed)."""
         hit = _bridge_transform(self.module_id, context)
-        if hit is not None:
-            return hit
-        ws = list(context.weights)
-        ratios = [1.2 if i % 2 == 0 else 0.8 for i in range(len(ws))]
-        new_ws = [w * r for w, r in zip(ws, ratios, strict=True)]
-        s = sum(new_ws)
-        new_ws = [w / s for w in new_ws]
-        return PbrfContext(
-            candidate_id=context.candidate_id,
-            case_id=context.case_id,
-            particles=context.particles,
-            weights=tuple(new_ws),
-            budget_calls=context.budget_calls + len(ws) * 2,
-            budget_transitions=context.budget_transitions + len(ws) * 2,
-            metadata={**context.metadata, "mis_applied": True, "mis_single_denominator": True},
-        )
+        if hit is None:
+            raise ImportError(
+                "hydra2_replay_rs.search missing; rebuild the bridge with `pixi run build-ext`"
+            )
+        return hit
 
     def tiny_oracle(self) -> dict[str, Any]:
         """Unequal two-state law where b/q twice gives wrong value; verify single correction."""
@@ -447,21 +427,13 @@ class FixedMLMCModule(_BaseModule):
             raise ContractError("mlmc_counts must match ladder length")
 
     def transform(self, context: PbrfContext) -> PbrfContext:
+        """Bridge is the single implementation (fail closed)."""
         hit = _bridge_transform(self.module_id, context)
-        if hit is not None:
-            return hit
-        base = sum(context.particles) / len(context.particles) if len(context.particles) > 0 else 0
-        corrected = base + 0.05 - 0.02
-        new_particles = tuple(corrected for _ in context.particles)
-        return PbrfContext(
-            candidate_id=context.candidate_id,
-            case_id=context.case_id,
-            particles=new_particles,
-            weights=context.weights,
-            budget_calls=context.budget_calls + 6,
-            budget_transitions=context.budget_transitions + 6,
-            metadata={**context.metadata, "mlmc_applied": True, "mlmc_telescope": corrected},
-        )
+        if hit is None:
+            raise ImportError(
+                "hydra2_replay_rs.search missing; rebuild the bridge with `pixi run build-ext`"
+            )
+        return hit
 
     def tiny_oracle(self) -> dict[str, Any]:
         # Deterministic three-level telescope with signed corrections; omit one fails
@@ -563,28 +535,13 @@ class ScenarioCoresetModule(_BaseModule):
             raise ContractError("coreset_k must be positive int")
 
     def transform(self, context: PbrfContext) -> PbrfContext:
+        """Bridge is the single implementation (fail closed)."""
         hit = _bridge_transform(self.module_id, context)
-        if hit is not None:
-            return hit
-        k = 2
-        paired: list[tuple[float, float]] = sorted(
-            zip(context.weights, context.particles, strict=True), reverse=True
-        )[:k]
-        ws: tuple[float, ...] = tuple(w for w, _ in paired) if len(paired) > 0 else ()
-        ps: tuple[float, ...] = tuple(p for _, p in paired) if len(paired) > 0 else ()
-        s: float = sum(ws)
-        new_ws: tuple[float, ...] = (
-            tuple(w / s for w in ws) if s > 0 else tuple(1.0 / len(ws) for _ in ws)
-        )
-        return PbrfContext(
-            candidate_id=context.candidate_id,
-            case_id=context.case_id,
-            particles=tuple(ps),
-            weights=new_ws,
-            budget_calls=context.budget_calls + k,
-            budget_transitions=context.budget_transitions + k,
-            metadata={**context.metadata, "coreset_applied": True, "coreset_search_only": True},
-        )
+        if hit is None:
+            raise ImportError(
+                "hydra2_replay_rs.search missing; rebuild the bridge with `pixi run build-ext`"
+            )
+        return hit
 
     def tiny_oracle(self) -> dict[str, Any]:
         # Weighted replay equals selected empirical objective; unweighted fails
@@ -622,28 +579,13 @@ class PrimalDualPruningModule(_BaseModule):
             raise ContractError("pruning_alpha must be in (0,1)")
 
     def transform(self, context: PbrfContext) -> PbrfContext:
+        """Bridge is the single implementation (fail closed)."""
         hit = _bridge_transform(self.module_id, context)
-        if hit is not None:
-            return hit
-        n = len(context.particles)
-        if n < 4:
-            return context
-        # For harness values, mean_a ~ mean_b, so prune stays False
-        prune = False
-        return PbrfContext(
-            candidate_id=context.candidate_id,
-            case_id=context.case_id,
-            particles=context.particles,
-            weights=context.weights,
-            budget_calls=context.budget_calls + 2,
-            budget_transitions=context.budget_transitions + 2,
-            metadata={
-                **context.metadata,
-                "pruning_applied": True,
-                "pruned": prune,
-                "simultaneous": True,
-            },
-        )
+        if hit is None:
+            raise ImportError(
+                "hydra2_replay_rs.search missing; rebuild the bridge with `pixi run build-ext`"
+            )
+        return hit
 
     def tiny_oracle(self) -> dict[str, Any]:
         # Noisy two-action where means favor pruning but intervals overlap -> must not prune
@@ -705,48 +647,13 @@ class ControlledSMCModule(_BaseModule):
             raise ContractError("smc_populations must be >=2")
 
     def transform(self, context: PbrfContext) -> PbrfContext:
+        """Bridge is the single implementation (fail closed)."""
         hit = _bridge_transform(self.module_id, context)
-        if hit is not None:
-            return hit
-        n = len(context.particles)
-        # Incremental weight 1.0 for harness (exact)
-        ws = [w * 1.0 for w in context.weights]
-        s = sum(w * w for w in ws)
-        ess = (1.0 / s) if s > 0.0 else 0.0
-        if ess <= 0.5 * n:
-            # offspring frequencies match declared scheme (deterministic systematic)
-            return PbrfContext(
-                candidate_id=context.candidate_id,
-                case_id=context.case_id,
-                particles=context.particles,
-                weights=tuple(ws),
-                budget_calls=context.budget_calls + n,
-                budget_transitions=context.budget_transitions + n,
-                metadata={
-                    **context.metadata,
-                    "smc_applied": True,
-                    "unnormalized": True,
-                    "resample_fired": True,
-                    "resample_skipped": False,
-                    "ess": ess,
-                },
+        if hit is None:
+            raise ImportError(
+                "hydra2_replay_rs.search missing; rebuild the bridge with `pixi run build-ext`"
             )
-        return PbrfContext(
-            candidate_id=context.candidate_id,
-            case_id=context.case_id,
-            particles=context.particles,
-            weights=tuple(ws),
-            budget_calls=context.budget_calls,
-            budget_transitions=context.budget_transitions,
-            metadata={
-                **context.metadata,
-                "smc_applied": True,
-                "unnormalized": True,
-                "resample_fired": False,
-                "resample_skipped": True,
-                "ess": ess,
-            },
-        )
+        return hit
 
     def tiny_oracle(self) -> dict[str, Any]:
         # Exact two-stage finite law checks unnormalized expectation across populations;
@@ -776,23 +683,13 @@ class PersistentForestModule(_BaseModule):
             raise ContractError("forest_promotion must be bool")
 
     def transform(self, context: PbrfContext) -> PbrfContext:
+        """Bridge is the single implementation (fail closed)."""
         hit = _bridge_transform(self.module_id, context)
-        if hit is not None:
-            return hit
-        return PbrfContext(
-            candidate_id=context.candidate_id,
-            case_id=context.case_id,
-            particles=context.particles,
-            weights=context.weights,
-            budget_calls=context.budget_calls + 1,
-            budget_transitions=context.budget_transitions + 1,
-            metadata={
-                **context.metadata,
-                "forest_applied": True,
-                "epoch_incremented": True,
-                "siblings_squashed": True,
-            },
-        )
+        if hit is None:
+            raise ImportError(
+                "hydra2_replay_rs.search missing; rebuild the bridge with `pixi run build-ext`"
+            )
+        return hit
 
     def tiny_oracle(self) -> dict[str, Any]:
         # Each packet-child commit matches from-scratch posterior rebuild
@@ -858,6 +755,7 @@ class VOCRoutingModule(_BaseModule):
             raise ContractError("voc_floor must be <= voc_cap")
 
     def transform(self, context: PbrfContext) -> PbrfContext:
+        """Bridge is the single implementation (fail closed)."""
         meta_in = context.metadata if isinstance(context.metadata, dict) else {}
         hit = _bridge_transform(
             self.module_id,
@@ -871,108 +769,11 @@ class VOCRoutingModule(_BaseModule):
                 else list(meta_in["voc_scores"]),
             },
         )
-        if hit is not None:
-            return hit
-        meta = context.metadata if isinstance(context.metadata, dict) else {}
-        floor = meta.get("voc_floor", 1)
-        cap = meta.get("voc_cap", 6)
-        budget = meta.get("voc_budget", 12)
-        if not isinstance(floor, int) or isinstance(floor, bool) or floor < 0:
-            raise ContractError("voc_floor must be a non-negative int")
-        if not isinstance(cap, int) or isinstance(cap, bool) or cap <= 0:
-            raise ContractError("voc_cap must be a positive int")
-        if not isinstance(budget, int) or isinstance(budget, bool) or budget <= 0:
-            raise ContractError("voc_budget must be a positive int")
-        if floor > cap:
-            raise ContractError("voc_floor must be <= voc_cap")
-        scores_raw = meta.get("voc_scores", None)
-        if scores_raw is None:
-            scores = tuple(context.weights)
-        else:
-            if (
-                not isinstance(scores_raw, tuple)
-                or len(scores_raw) != len(context.particles)
-                or any(
-                    not isinstance(v, (int, float))
-                    or isinstance(v, bool)
-                    or not math.isfinite(float(v))
-                    or float(v) < 0
-                    for v in scores_raw
-                )
-            ):
-                raise ContractError(
-                    "voc_scores must be a tuple of finite nonnegative numbers matching particles"
-                )
-            validated_scores: list[float] = []
-            for raw_value in scores_raw:
-                value_obj: object = raw_value
-                if isinstance(value_obj, bool) or not isinstance(value_obj, (int, float)):
-                    raise ContractError(
-                        "voc_scores must be a tuple of finite nonnegative numbers matching particles"
-                    )
-                validated_scores.append(float(value_obj))
-            scores = tuple(validated_scores)
-        cells = list(range(len(context.particles)))
-        if len(cells) == 0:
-            raise ContractError("voc routing needs at least one cell")
-        count = len(cells)
-        floor_eff = min(floor, budget // count) if count > 0 else 0
-        relaxed = floor_eff < floor
-        alloc = [floor_eff] * count
-        remaining = budget - floor_eff * count
-        support_pool = min(budget // 5, remaining)
-        remaining -= support_pool
-        robin_pool = min(budget // 5, remaining)
-        # Round-robin: at most one unit per allocated cell until the pool exhausts.
-        robin_order = list(range(count))
-        spent_robin = 0
-        while spent_robin < robin_pool:
-            progressed = False
-            for idx in robin_order:
-                if spent_robin >= robin_pool:
-                    break
-                alloc[idx] += 1
-                spent_robin += 1
-                progressed = True
-            if not progressed:
-                break
-        remaining -= spent_robin
-        # VOC pool: largest-remainder shares of frozen scores.
-        voc_pool = remaining
-        shares = _largest_remainder(scores, voc_pool)
-        for idx, extra in enumerate(shares):
-            alloc[idx] += extra
-        # Cap each cell at max(0.25, 1/m) of the budget; truncate surplus to unused.
-        cap_frac = max(0.25, 1.0 / count)
-        cap_units = math.ceil(cap_frac * budget)
-        cap_units = min(cap_units, cap)
-        dropped = 0
-        for idx in range(count):
-            if alloc[idx] > cap_units:
-                dropped += alloc[idx] - cap_units
-                alloc[idx] = cap_units
-        unused = budget - sum(alloc)
-        assert unused >= 0
-        overhead = count
-        return PbrfContext(
-            candidate_id=context.candidate_id,
-            case_id=context.case_id,
-            particles=context.particles,
-            weights=context.weights,
-            budget_calls=context.budget_calls + overhead,
-            budget_transitions=context.budget_transitions + overhead,
-            metadata={
-                **context.metadata,
-                "voc_applied": True,
-                "voc_allocation": tuple(alloc),
-                "voc_unused": unused,
-                "voc_dropped_by_cap": dropped,
-                "voc_relaxed": relaxed,
-                "voc_floor_respected": not relaxed,
-                "voc_cap_respected": True,
-                "voc_total_equals_budget": sum(alloc) + unused == budget,
-            },
-        )
+        if hit is None:
+            raise ImportError(
+                "hydra2_replay_rs.search missing; rebuild the bridge with `pixi run build-ext`"
+            )
+        return hit
 
     def tiny_oracle(self) -> dict[str, Any]:
         return {

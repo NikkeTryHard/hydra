@@ -30,8 +30,8 @@ from hydra2.data.parquet import DecisionRow, write_actor_shards
 from hydra2.models.model import Hydra2BaselineModel, ModelOutput
 from hydra2.models.schema import BASELINE_ACTION_COUNT
 from hydra2.training.adapters import encode_actor_rows, model_output_to_loss_dict
-from hydra2.training.dataset import AuthoritativeParquetDataset
-from hydra2.training.objectives import compute_supervised_loss
+from hydra2.training.dataset_store import AuthoritativeParquetDataset
+from hydra2.training.objectives_loss import compute_supervised_loss
 
 pytestmark = pytest.mark.contract_package("WP-05B")
 

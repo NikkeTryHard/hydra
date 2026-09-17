@@ -63,7 +63,7 @@ from hydra2.data.decode import GameRecord, decode_game_object
 from hydra2.data.parquet import ACTOR_FIELDS, _actor_observation_is_privileged_free
 from hydra2.engines.protocol import wall_schedule_digest
 from hydra2.models.encoder import encode_observations
-from hydra2.training.replay import FORBIDDEN_REPLAY_KEYS
+from hydra2.training.replay_state import FORBIDDEN_REPLAY_KEYS
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 FIXTURES = REPO_ROOT / "tools" / "hydra2-replay-rs" / "tests" / "fixtures"

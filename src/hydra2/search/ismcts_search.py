@@ -392,12 +392,8 @@ class NaturalISMCTSPlannerSearchMixin:
                 break
 
         # Resolve the envelope hashes: ONE batch over the acting-hand rows
-        # (Rust parses the template once; ImportError-only oracle fallback
-        # recomputes the identical helpers with the stored acting hand —
-        # the doc mirrors read hands[actor] alone, so one hand reproduces
-        # the full-hands call bit-identically). Refill by (sim, step) index;
-        # step-0 root rows carry root_key only when the step-0 actor was
-        # root (original condition preserved), else "".
+        # (Rust parses the template once). Bridge is the single implementation;
+        # missing extension raises ``ImportError`` (fail closed).
         keys_rows: list[list[str]] = [[""] * max_depth for _ in worlds_json]
         dirs_rows: list[list[int]] = [[0] * max_depth for _ in worlds_json]
         for sim, at_root in enumerate(root_at_zero):
@@ -420,20 +416,7 @@ class NaturalISMCTSPlannerSearchMixin:
                 else:
                     dirs_rows[sim][step] = int(_dirs[row])
         except ImportError:
-            for row in range(len(skel_hand)):
-                sim = skel_sim[row]
-                step = skel_step[row]
-                key, direction = _hashes_for_one_hand(
-                    _template_doc,
-                    tuple(skel_hand[row]),
-                    skel_live[row],
-                    skel_actor[row],
-                    want_key=skel_want[row],
-                )
-                if skel_want[row]:
-                    keys_rows[sim][step] = key
-                else:
-                    dirs_rows[sim][step] = direction
+            raise
         batch = {
             "worlds": worlds_json,
             "rules_hash": str(getattr(epoch, "rules_hash", "")),
@@ -586,37 +569,6 @@ class NaturalISMCTSPlannerSearchMixin:
             "completed": completed and not budget_exhausted,
             "budget_exhausted": budget_exhausted,
         }
-
-
-def _hashes_for_one_hand(
-    template: dict[str, Any],
-    hand: tuple[int, ...],
-    live_len: int,
-    actor: int,
-    *,
-    want_key: bool,
-) -> tuple[str, int]:
-    """Acting-hand-only mirror of the step helpers (bit-identical).
-
-    The doc mirrors read ``hands[actor]`` alone for ``concealed_hand`` /
-    ``decision_id`` (other seats' hands never enter the doc), so one hand
-    reproduces the full-hands call exactly: key drops ``legal_mask``,
-    direction hashes the masked doc then tilts on ``sha256(text)[0] & 1``.
-    Shared by the ImportError fallback above (single oracle site).
-    """
-    from hydra2.artifacts.canonical import canonical_bytes as _cb
-
-    doc = dict(template)
-    doc["concealed_hand"] = sorted(hand)
-    doc["live_wall_tiles_remaining"] = live_len
-    doc["actor"] = actor
-    doc["turn_actor"] = actor
-    doc["decision_id"] = f"dec_hand_{'_'.join(str(t) for t in hand)}_{actor}"
-    if want_key:
-        payload = _cb({k: v for k, v in doc.items() if k != "legal_mask"})
-        return ("sha256:" + hashlib.sha256(payload).hexdigest(), 0)
-    obs_hash = "sha256:" + hashlib.sha256(_cb(doc)).hexdigest()
-    return ("", hashlib.sha256(obs_hash.encode()).digest()[0] & 1)
 
 
 def _doc_for_step(

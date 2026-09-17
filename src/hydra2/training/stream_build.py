@@ -22,7 +22,7 @@ from hydra2.artifacts.digest import (
 from hydra2.contracts.common import ContractError as ContractError
 from hydra2.data.stream import manifest_digest as manifest_digest
 from hydra2.runtime.checkpoint import capture_rng_state as capture_rng_state
-from hydra2.training.run_config import run_config_digest as run_config_digest
+from hydra2.training._rc_digest import run_config_digest as run_config_digest
 from hydra2.training.stream_expand import _MODEL_PARAMETERS as _MODEL_PARAMETERS
 
 if TYPE_CHECKING:
@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 
     from hydra2.data.stream import StreamCursor as DataStreamCursor
     from hydra2.data.stream import StreamManifest as StreamManifest
-    from hydra2.training.run_config import RunConfig as RunConfig
+    from hydra2.training._rc_sections import RunConfig as RunConfig
 
 __all__ = [
     "_NO_DECAY_NAME_TAGS",

@@ -57,7 +57,7 @@ from hydra2.models.model import Hydra2BaselineModel, masked_policy, select_actio
 from hydra2.models.schema import BASELINE_ACTION_COUNT
 from hydra2.runtime.plain import PlainPytorchAdapter
 from hydra2.runtime.protocol import RuntimeSpec, build_runtime, runtime_identity
-from hydra2.training.objectives import masked_cross_entropy
+from hydra2.training.objectives_loss import masked_cross_entropy
 from tests.conftest import unwrap_model
 
 pytestmark = pytest.mark.gpu

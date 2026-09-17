@@ -27,7 +27,7 @@ from hydra2.artifacts.digest import sha256_digest as sha256_digest
 from hydra2.contracts.common import ContractError as ContractError
 from hydra2.data.stream import GameStream as GameStream
 from hydra2.runtime.checkpoint import capture_rng_state as capture_rng_state
-from hydra2.training.dataset import encode_observation_rows as encode_observation_rows
+from hydra2.training.dataset_encode import encode_observation_rows as encode_observation_rows
 from hydra2.training.stream_build import (
     _prefix_hashes_name as _prefix_hashes_name,
 )
@@ -49,8 +49,8 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from hydra2.data.stream import StreamManifest as StreamManifest
-    from hydra2.training.loop import SupervisedLoop as SupervisedLoop
-    from hydra2.training.run_config import RunConfig as RunConfig
+    from hydra2.training._rc_sections import RunConfig as RunConfig
+    from hydra2.training.loop_train import SupervisedLoop as SupervisedLoop
     from hydra2.training.stream_dataset_buffer import _StreamDataset as _StreamDataset
 
 __all__ = [

@@ -72,7 +72,7 @@ def validate_actor_batch(batch: ActorTensorBatch, action_count: int | None = Non
 def _fail_closed_actor_rows(legal_mask: torch.Tensor) -> None:
     """Legal-rows gate: device assert on CUDA, exact raise elsewhere.
 
-    Twin of ``hydra2.training.objectives._fail_closed_gate`` (kept separate:
+    Twin of ``hydra2.training.objectives_loss._fail_closed_gate`` (kept separate:
     models must not import training — layer direction).
     """
     pred = legal_mask.any(dim=1).all()

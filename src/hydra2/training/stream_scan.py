@@ -34,7 +34,7 @@ from hydra2.training.stream_expand import _pool_worker_init as _pool_worker_init
 
 if TYPE_CHECKING:
     from hydra2.data.stream import StreamManifest as StreamManifest
-    from hydra2.training.run_config import RunConfig as RunConfig
+    from hydra2.training._rc_sections import RunConfig as RunConfig
 
 __all__ = [
     "_ScanReport",

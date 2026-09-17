@@ -15,7 +15,7 @@ import torch
 
 from hydra2.contracts.common import ContractError as ContractError
 from hydra2.data.replay_expand import expand_privileged_rows as expand_privileged_rows
-from hydra2.training.dataset import encode_observation_rows as encode_observation_rows
+from hydra2.training.dataset_encode import encode_observation_rows as encode_observation_rows
 from hydra2.training.stream_dataset import _StreamDatasetCore as _StreamDatasetCore
 from hydra2.training.stream_expand import _expand_game_planes as _expand_game_planes
 from hydra2.training.stream_expand import _expand_game_rows as _expand_game_rows

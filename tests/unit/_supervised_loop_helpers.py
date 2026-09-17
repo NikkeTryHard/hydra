@@ -24,8 +24,9 @@ from hydra2.contracts.observation_actor import make_actor_observation
 from hydra2.data.parquet import DecisionRow, write_actor_shards
 from hydra2.eval.blocks import WallBlock
 from hydra2.models.schema import BASELINE_ACTION_COUNT
-from hydra2.training.dataset import AuthoritativeParquetDataset
-from hydra2.training.loop import SupervisedLoop, TrainingLoopConfig
+from hydra2.training.dataset_store import AuthoritativeParquetDataset
+from hydra2.training.loop_state import TrainingLoopConfig
+from hydra2.training.loop_train import SupervisedLoop
 from tests.unit._manifest_helpers import make_test_manifest_hashes
 from tests.unit.test_supervised_objectives_wp05b import (
     StubModelPerSeat,

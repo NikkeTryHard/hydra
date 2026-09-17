@@ -20,17 +20,25 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 from hydra2.contracts.common import ContractError
-from hydra2.training.run_config import (
-    StreamCursor,
+from hydra2.training._rc_digest import (
     create_run_layout,
-    deep_merge,
-    find_latest_checkpoint,
-    format_plan,
-    load_run_config,
     read_latest_run,
-    resolve_resume_plan,
     run_config_digest,
     run_config_to_dict,
+)
+from hydra2.training._rc_require import (
+    deep_merge,
+)
+from hydra2.training._rc_resume import (
+    find_latest_checkpoint,
+    format_plan,
+    resolve_resume_plan,
+)
+from hydra2.training._rc_root import (
+    load_run_config,
+)
+from hydra2.training._rc_sections import (
+    StreamCursor,
 )
 
 

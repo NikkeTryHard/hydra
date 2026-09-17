@@ -46,7 +46,7 @@ def _both_batches(*, walled: bool) -> tuple[dict, dict]:
     from hydra2.data.stream import GameStream, build_manifest
     from hydra2.models.schema import BASELINE_ACTION_COUNT
     from hydra2.training import rust_stream
-    from hydra2.training.dataset import encode_observation_rows
+    from hydra2.training.dataset_encode import encode_observation_rows
     from hydra2.training.rust_batch import assemble_training_batch
     from hydra2.training.stream_train import _row_to_dict
 
@@ -115,7 +115,7 @@ def test_assembled_batch_forward_loss_bitwise(rust_extension: object, walled: bo
     py, got = _both_batches(walled=walled)
     from hydra2.models.model import Hydra2BaselineModel
     from hydra2.training.adapters import model_output_to_loss_dict
-    from hydra2.training.objectives import compute_supervised_loss
+    from hydra2.training.objectives_loss import compute_supervised_loss
 
     model = Hydra2BaselineModel().eval()
     weights = {"w_policy": 1.0}
@@ -172,7 +172,7 @@ def test_game_pull_rows_match_python(rust_extension: object, walled: bool) -> No
 def test_game_pull_batch_matches_python(rust_extension: object, walled: bool) -> None:
     _ = rust_extension
     from hydra2.models.schema import BASELINE_ACTION_COUNT
-    from hydra2.training.dataset import encode_observation_rows
+    from hydra2.training.dataset_encode import encode_observation_rows
     from hydra2.training.rust_batch import assemble_slim_batch
 
     rust, py = _game_pull_vs_python(walled=walled)
@@ -406,7 +406,7 @@ def test_multi_group_gather_matches_python(rust_extension: object) -> None:
     _ = rust_extension
     from hydra2.data.stream import GameStream, build_manifest
     from hydra2.models.schema import BASELINE_ACTION_COUNT
-    from hydra2.training.dataset import encode_observation_rows
+    from hydra2.training.dataset_encode import encode_observation_rows
     from hydra2.training.rust_batch import assemble_slim_batch
     from hydra2.training.stream_train import _expand_game_planes, _expand_game_rows, _row_to_dict
 

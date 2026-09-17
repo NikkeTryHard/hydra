@@ -11,27 +11,33 @@ import torch
 
 from hydra2.artifacts.canonical import canonical_bytes
 from hydra2.contracts.common import ContractError
-from hydra2.distillation.teacher import (
-    REJECTED_CANDIDATES,
-    TEACHER_CANDIDATES,
-    DistillationConfig,
-    TeacherJustification,
-    TrajectoryRecord,
+from hydra2.distillation._teacher_eval import (
     audit_leakage,
-    build_student_model,
     calibration_report,
     check_teacher_replacement_invalidates,
-    compute_distillation_loss,
     evaluate_five_arms,
-    features_for_record,
     frozen_checkpoint_identity,
     frozen_split_manifest,
-    generate_privileged_labels,
-    generate_trajectories,
+)
+from hydra2.distillation._teacher_gate import (
+    REJECTED_CANDIDATES,
+    TEACHER_CANDIDATES,
+    TeacherJustification,
     load_analysis_gate,
     select_teacher,
-    train_student_distillation,
+)
+from hydra2.distillation._teacher_records import (
+    TrajectoryRecord,
+    generate_privileged_labels,
+    generate_trajectories,
     validate_trajectory_record,
+)
+from hydra2.distillation._teacher_student import (
+    DistillationConfig,
+    build_student_model,
+    compute_distillation_loss,
+    features_for_record,
+    train_student_distillation,
 )
 
 pytestmark = pytest.mark.contract_package("WP-10")
@@ -54,7 +60,7 @@ def _real_wp12_gates(
     """
     global _REAL_WP12_ART
     if _REAL_WP12_ART is None:
-        from hydra2.analysis.qualification import generate_hashed_analysis_report
+        from hydra2.analysis.qual_gates import generate_hashed_analysis_report
 
         art = tmp_path_factory.mktemp("wp10_real_wp12")
         generate_hashed_analysis_report(artifact_root=art)
@@ -68,10 +74,12 @@ def _real_teacher_policy_fn(teacher_id: str = "candidate6", seed: int = 0):  # t
     Rebuilds the case observation with the eval seed material and runs the
     spec-bound teacher prior — the same real path trajectories use.
     """
-    from hydra2.distillation.teacher import (
+    from hydra2.distillation._teacher_cases import (
         _case_observation,
-        _real_candidate_spec,
         _teacher_policy_and_value,
+    )
+    from hydra2.distillation._teacher_gate import (
+        _real_candidate_spec,
     )
 
     spec = _real_candidate_spec(teacher_id)

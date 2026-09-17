@@ -532,7 +532,7 @@ def test_ece_default_matches_frozen_objectives_bins() -> None:
     """Baseline ECE defaults to the frozen 10-bin grid shared with train metrics."""
     import inspect
 
-    from hydra2.training.objectives import _ECE_NUM_BINS
+    from hydra2.training.objectives_metrics import _ECE_NUM_BINS
 
     ece_default = inspect.signature(expected_calibration_error).parameters["num_bins"].default
     bundle_default = inspect.signature(compute_baseline_metrics).parameters["num_bins"].default

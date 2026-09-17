@@ -46,13 +46,13 @@ from hydra2.training.loop_state import _atomic_publish_best as _atomic_publish_b
 from hydra2.training.loop_state import (
     _verify_best_ckpt as _verify_best_ckpt,
 )
-from hydra2.training.objectives import (
+from hydra2.training.objectives_metrics import (
     compute_metrics as compute_metrics,
 )
-from hydra2.training.objectives import (
+from hydra2.training.objectives_metrics import (
     compute_per_type_metrics as compute_per_type_metrics,
 )
-from hydra2.training.objectives import (
+from hydra2.training.objectives_metrics import (
     fit_temperature_scaling as fit_temperature_scaling,
 )
 

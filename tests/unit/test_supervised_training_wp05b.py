@@ -20,13 +20,16 @@ import torch
 from hydra2.contracts.common import ContractError
 from hydra2.models.schema import BASELINE_ACTION_COUNT
 from hydra2.runtime.checkpoint import hash_state_tree
-from hydra2.training.dataset import (
-    AuthoritativeParquetDataset,
+from hydra2.training.dataset_encode import (
     encode_observation_rows,
     tensorize_actor_row,
 )
-from hydra2.training.loop import SupervisedLoop, TrainingLoopConfig
-from hydra2.training.objectives import compute_supervised_loss, masked_cross_entropy
+from hydra2.training.dataset_store import (
+    AuthoritativeParquetDataset,
+)
+from hydra2.training.loop_state import TrainingLoopConfig
+from hydra2.training.loop_train import SupervisedLoop
+from hydra2.training.objectives_loss import compute_supervised_loss, masked_cross_entropy
 from tests.unit._manifest_helpers import make_test_manifest_hashes
 from tests.unit._supervised_loop_helpers import (
     StubModelPerSeat,
@@ -113,7 +116,7 @@ def test_fused_hot_scalars_matches_eager(monkeypatch: pytest.MonkeyPatch) -> Non
     fused_ce = pytest.importorskip("hydra2.training.fused_ce")
     if not fused_ce.TRITON_AVAILABLE:
         pytest.skip("needs triton")
-    from hydra2.training.objectives import compute_hot_scalars
+    from hydra2.training.objectives_metrics import compute_hot_scalars
 
     gen = torch.Generator(device="cpu").manual_seed(20260913)
     b, a = 64, 1536

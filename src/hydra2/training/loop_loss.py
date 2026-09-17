@@ -24,10 +24,10 @@ from hydra2.training.loop_batch import (
 from hydra2.training.loop_batch import (
     _validate_batch_no_privileged as _validate_batch_no_privileged,
 )
-from hydra2.training.objectives import (
+from hydra2.training.objectives_loss import (
     _check_total_finite as _check_total_finite,
 )
-from hydra2.training.objectives import (
+from hydra2.training.objectives_loss import (
     validate_supervised_inputs as validate_supervised_inputs,
 )
 

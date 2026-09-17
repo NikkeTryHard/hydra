@@ -252,7 +252,8 @@ def test_loop_maybe_join_forwards_evaluation_walls() -> None:
     wall overlap fails closed on the scoring path; default stays unchecked."""
     import inspect
 
-    from hydra2.training.loop import SupervisedLoop, TrainingLoopConfig
+    from hydra2.training.loop_state import TrainingLoopConfig
+    from hydra2.training.loop_train import SupervisedLoop
 
     sig = inspect.signature(SupervisedLoop._maybe_join_oracle_targets)
     assert "evaluation_wall_ids" in sig.parameters

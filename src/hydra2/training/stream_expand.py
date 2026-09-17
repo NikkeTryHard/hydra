@@ -28,7 +28,7 @@ from hydra2.data.replay_expand import pop_live_observation as pop_live_observati
 if TYPE_CHECKING:
     from hydra2.data.decode import GameRecord as GameRecord
     from hydra2.data.parquet import DecisionRow as DecisionRow
-    from hydra2.training.run_config import RunConfig as RunConfig
+    from hydra2.training._rc_sections import RunConfig as RunConfig
 
 __all__ = [
     "SPLIT_RATIOS",

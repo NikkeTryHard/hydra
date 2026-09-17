@@ -98,49 +98,53 @@ def exact_joint_posterior_oracle(
                 f"policy theta mismatch: {policy_for_theta[theta].theta!r} vs {theta!r}"
             )
 
-    # Compute unnormalized weights: w_next = w_prior * q_j(a | I_j, theta) * T
-    # Preserve correlation: each joint particle scaled individually, not via marginal product
-    unnorm: list[tuple[JointParticle, float]] = []
-    total = 0.0
+    # Bridge is the single implementation for the weight math: info keys +
+    # seed domains assemble caller-side over live worlds (FullWorld objects
+    # never cross), then ``search.joint_posterior_weights`` runs the
+    # likelihood + normalize detached. Fail closed on any bridge error.
+    from hydra2.belief.world import world_actor_observation as _wao
+
+    info_keys: list[str] = []
+    seed_domains: list[bytes] = []
+    legal_sorted = tuple(sorted(int(a) for a in legal_action_ids))
     for particle in prior.particles:
         world = worlds_by_ref.get(particle.world_ref)
         if world is None:
             raise ContractError(f"world_ref {particle.world_ref!r} not in worlds_by_ref")
-        from hydra2.belief.world import (
-            world_actor_observation as _wao,
-        )
-
         obs_j = _wao(world, actor=opponent_seat)
-        key_j = info_key_for_observation(obs_j)
-        policy = policy_for_theta[particle.theta]
-        # Likelihood exactly once
-        lp = policy.log_prob(
-            info_key=key_j, legal_action_ids=legal_action_ids, action_id=observed_action_id
-        )
-        likelihood = math.exp(lp)  # in (0,1]
-        # Audit: ensure likelihood was applied once — check finite
-        if not math.isfinite(likelihood) or not 0.0 < likelihood <= 1.0:
-            raise ContractError(f"likelihood must be in (0,1], got {likelihood}")
-        w_unnorm = particle.weight * likelihood * physical_transition_prob
-        if not math.isfinite(w_unnorm) or w_unnorm < 0.0:
-            raise ContractError(f"unnorm weight must be finite non-negative, got {w_unnorm}")
-        unnorm.append((particle, w_unnorm))
-        total += w_unnorm
+        info_keys.append(info_key_for_observation(obs_j))
+        seed_domains.append(bytes(policy_for_theta[particle.theta].seed_domain))
+    try:
+        from hydra2_replay_rs import search as _joint_bridge
 
+        normed = _joint_bridge.joint_posterior_weights(
+            prior=prior,
+            info_keys=info_keys,
+            seed_domains=seed_domains,
+            legal_ids=[int(a) for a in legal_sorted],
+            observed_id=int(observed_action_id),
+            physical_t=float(physical_transition_prob),
+        )
+    except ImportError:
+        raise
+    except Exception as exc:
+        raise ContractError(f"joint bridge posterior failed: {exc}") from exc
+    weights_in = [float(p.weight) for p in prior.particles]
+    total = sum(weights_in)
     if total <= 0.0 or not math.isfinite(total):
         raise ContractError(f"posterior normalizer must be positive finite, got {total}")
 
-    # Normalize preserving joint correlation
+    # Rebuild preserving joint correlation from bridge-normalized weights.
     new_particles: list[JointParticle] = []
-    for particle, w_u in unnorm:
-        w_norm = w_u / total
-        if not math.isfinite(w_norm) or w_norm < 0.0:
-            raise ContractError(f"normalized weight must be finite non-negative, got {w_norm}")
+    for particle, w_norm in zip(prior.particles, list(normed), strict=True):
+        w_norm_f = float(w_norm)
+        if not math.isfinite(w_norm_f) or w_norm_f < 0.0:
+            raise ContractError(f"normalized weight must be finite non-negative, got {w_norm_f}")
         new_particles.append(
             JointParticle(
                 theta=particle.theta,
                 world_ref=particle.world_ref,
-                weight=w_norm,
+                weight=w_norm_f,
                 epoch=particle.epoch,
                 target_id=particle.target_id,
             )

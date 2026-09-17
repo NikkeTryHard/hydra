@@ -165,41 +165,22 @@ def model_vector_for_world(
     general-sum feasibility (zero-sum subset). Finite and reproducible.
     """
     wid = str(getattr(world, "world_id", "world_unknown"))
-    # Leaf math rides the bridge (bit-identical; the bridge maps "" ->
-    # "world_unknown" per ismcts_driver::local_model_vector — wid_in mirrors
-    # that mapping while the oracle below keeps the exact original wid).
-    # ImportError keeps the oracle (no bridge built); mismatch raises, never silent.
+    # Bridge is the single implementation (fail closed).
     wid_in = "world_unknown" if wid == "" else wid
     try:
         out = _require_search_bridge().ismcts_local_model_vector(wid_in, str(leaf_kind))
         return (float(out[0]), float(out[1]), float(out[2]), float(out[3]))
     except ImportError:
-        pass
+        raise
     except Exception as exc:
         raise ContractError(f"local bridge model vector failed: {exc}") from exc
-    h = hashlib.sha256((wid + ":" + leaf_kind).encode()).digest()
-    # 4 values in [-1, 1] from bytes
-    raw = [int.from_bytes(h[i * 2 : i * 2 + 2], "little") for i in range(4)]
-    vals = tuple(((r / 65535.0) * 2.0 - 1.0) for r in raw)
-    # enforce zero-sum for conservation test (general-sum allows non-zero but zero satisfies spec)
-    s = sum(vals)
-    # shift to zero-sum
-    centered = tuple(v - s / 4.0 for v in vals)
-    # bounds check
-    for v in centered:
-        if not math.isfinite(v) or abs(v) > 2.0:
-            raise ContractError(f"vector value out of bounds {v}")
-    return centered  # type: ignore[return-value]
 
 
 def terminal_vector_for_world(world: Any) -> tuple[float, float, float, float]:
-    """Exact terminal settlement vector derived from concealed hands + wall."""
-    # Test proxy only: deterministic hash-derived vectors stand in for
-    # model scores in unit tests; never feed them to real utility.
-    # Settlement math rides the bridge (bit-identical on 4-seat worlds; the
-    # bridge gates malformed shapes fail-closed while the oracle below keeps
-    # ImportError-only duty for no-bridge environments). None wall == [] (proven
-    # equivalent: empty live contributes zero wall influence on both sides).
+    """Exact terminal settlement vector derived from concealed hands + wall.
+
+    Bridge is the single implementation (fail closed).
+    """
     try:
         hands_in_raw = getattr(world, "concealed_hands", ((0,),) * 4)
         wall_raw = getattr(world, "live_wall", ())
@@ -208,45 +189,11 @@ def terminal_vector_for_world(world: Any) -> tuple[float, float, float, float]:
         out = _require_search_bridge().ismcts_local_terminal_vector(hands_in, live_in)
         return (float(out[0]), float(out[1]), float(out[2]), float(out[3]))
     except ImportError:
-        pass
+        raise
     except ContractError:
         raise
     except Exception as exc:
         raise ContractError(f"local bridge terminal vector failed: {exc}") from exc
-    try:
-        hands = getattr(world, "concealed_hands", ((0,),) * 4)
-        # sum tiles per seat as strength proxy
-        sums = []
-        for hand in hands:
-            try:
-                s = sum(int(t) for t in hand)
-            except Exception:
-                s = 0
-            sums.append(float(s))
-        # normalize to zero-sum settlement
-        mean = sum(sums) / 4.0
-        centered = tuple((s - mean) / 10.0 for s in sums)
-        # add wall influence
-        try:
-            # Wall = undealt tile stock: live = drawable, dead = dora reserve.
-            wall = getattr(world, "live_wall", ())
-            wall_sum = sum(int(t) for t in wall) / 100.0
-            centered = tuple(
-                v + wall_sum * (0.1 if i == 0 else -0.03) for i, v in enumerate(centered)
-            )
-            # re-center
-            mean2 = sum(centered) / 4.0
-            centered = tuple(v - mean2 for v in centered)
-        except Exception:
-            pass
-        for v in centered:
-            if not math.isfinite(v):
-                raise ContractError("terminal vector nonfinite")
-        return centered  # type: ignore[return-value]
-    except ContractError:
-        raise
-    except Exception as exc:
-        raise ContractError(f"terminal vector failed: {exc}") from exc
 
 
 def preserves_vector_returns(vector: tuple[float, ...]) -> bool:

@@ -4,18 +4,17 @@ Owns applying verified payloads to live runtime objects (mutate only
 after verify), reservoir prime snapshots, resume-envelope verification
 (read-only), the caller-owned overlap feed, profiler captures, and the
 train stepper that advances one checkpoint segment at a time.
-Resume/RNG-restore counting entries are bridge-direct via the ``resume``
-judges (``_pack_cursor`` / ``_unpack_cursor`` / ``_check_buffer_entries``;
-missing bridge or any bridge error raises ContractError with a build-ext
-hint, never an oracle fallback); ``_verify_prefix_blob`` stays Rust-first
-with an ImportError-only oracle; torch owns the RNG restore and the
-model/optimizer tensors (no Rust GPU math, Burn/Candle out).
+Resume/RNG-restore entries are bridge-direct via the ``resume`` judges
+(``_pack_cursor`` / ``_unpack_cursor`` / ``_check_buffer_entries`` /
+``_verify_prefix_blob``; missing bridge or any bridge error raises
+ContractError with a build-ext hint, never an oracle fallback); torch owns
+the RNG restore and the model/optimizer tensors (no Rust GPU math,
+Burn/Candle out).
 """
 
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import importlib
 import json
 import os
@@ -30,14 +29,14 @@ from hydra2.artifacts.atomic import atomic_replace_bytes as atomic_replace_bytes
 from hydra2.artifacts.digest import sha256_digest as sha256_digest
 from hydra2.contracts.common import ContractError as ContractError
 from hydra2.data.stream import StreamCursor as DataStreamCursor
-from hydra2.training.loop import TrainingState as TrainingState
+from hydra2.training.loop_state import TrainingState as TrainingState
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from hydra2.data.stream import StreamManifest as StreamManifest
-    from hydra2.training.loop import SupervisedLoop as SupervisedLoop
-    from hydra2.training.run_config import ResumePlan as ResumePlan
+    from hydra2.training._rc_sections import ResumePlan as ResumePlan
+    from hydra2.training.loop_train import SupervisedLoop as SupervisedLoop
     from hydra2.training.stream_dataset_buffer import _StreamDataset as _StreamDataset
 
 __all__ = [
@@ -67,9 +66,9 @@ __all__ = [
 # The bridge (`hydra2_replay_rs.resume`, Rust) owns the pure resume-side
 # judges used on the read/verify path: the prefix-hash chain verify
 # (`verify_prefix_blob`: blob sha + count + per-entry `sha256:` shape +
-# sorted order, all detached; Rust-first with an ImportError-only oracle),
-# cursor pack/unpack (YAML-resume round-trip, bool-rejecting, bridge-direct)
-# and buffer-entry shape checks (`check_buffer_entries`, bridge-direct).
+# sorted order, all detached, bridge-direct), cursor pack/unpack
+# (YAML-resume round-trip, bool-rejecting, bridge-direct) and buffer-entry
+# shape checks (`check_buffer_entries`, bridge-direct).
 # Torch CPU/CUDA RNG restore stays Python (`_restore_rng_state` — no Rust
 # GPU math, Burn/Candle out); the RNG-anchor compare (`_verify_rng_anchors`
 # in `stream_build`) stays Python per `resume.rs`. The counting helpers below
@@ -90,11 +89,10 @@ def _resume_native() -> Any | None:
     """Import the built `resume` submodule once; None → fail-closed for counting.
 
     ``None`` means the extension (or its ``resume`` surface) is not
-    importable. Counting callers (`_pack_cursor` / `_unpack_cursor` /
-    `_check_buffer_entries`) raise ContractError with a build-ext hint on
-    ``None`` (no oracle); only `_verify_prefix_blob` keeps the
-    ImportError-only oracle below. Any other import-time failure raises
-    ContractError (mismatch=raise, never a silent pass).
+    importable. All callers (`_pack_cursor` / `_unpack_cursor` /
+    `_check_buffer_entries` / `_verify_prefix_blob`) raise ContractError
+    with a build-ext hint on ``None`` (no oracle). Any other import-time
+    failure raises ContractError (mismatch=raise, never a silent pass).
     """
     global _RESUME_MOD, _RESUME_PROBED
     if _RESUME_NATIVE_OVERRIDE is not None:
@@ -234,41 +232,35 @@ def _check_buffer_entries(entries: object, *, ckpt: Path) -> int:
 
 
 def _verify_prefix_blob(*, data: bytes, count: int, digest: str, ckpt: Path) -> list[str]:
-    """Prefix-hash chain verify (Rust-first `verify_prefix_blob`).
+    """Prefix-hash chain verify (bridge-direct `verify_prefix_blob`).
 
     Blob sha + line count + per-entry `sha256:` shape + sorted order — the
     same gates `_load_prefix_hashes` (in `stream_build`) enforces; the blob
-    bytes here ride straight through instead of a file read. The oracle runs
-    ONLY when the bridge surface is absent; bridge-present errors raise
-    ContractError (mismatch=raise, never a silent pass).
+    bytes here ride straight through instead of a file read. Missing bridge
+    or any bridge error raises ContractError (fail-closed with a build-ext
+    hint, never an oracle).
     """
     resume = _resume_native()
-    if resume is not None:
-        try:
-            return list(resume.verify_prefix_blob(bytes(data), int(count), str(digest)))
-        except ContractError:
-            raise
-        except (ImportError, AttributeError):
-            pass  # bridge surface missing → oracle gates below
-        except ValueError as exc:
-            raise ContractError(f"checkpoint prefix_hashes digest mismatch: {ckpt}") from exc
-        except Exception as exc:
-            raise ContractError(
-                f"resume verify_prefix_blob failed: {ckpt} ({type(exc).__name__}: {exc})"
-            ) from exc
-    if not digest.startswith("sha256:") or digest == "sha256:":
-        raise ContractError(f"checkpoint prefix_hashes digest invalid: {ckpt}")
-    if "sha256:" + hashlib.sha256(bytes(data)).hexdigest() != digest:
-        raise ContractError(f"checkpoint prefix_hashes digest mismatch: {ckpt}")
-    lines = bytes(data).decode("utf-8").splitlines()
-    if len(lines) != count:
-        raise ContractError(f"checkpoint prefix_hashes count mismatch: {ckpt}")
-    for sha in lines:
-        if not sha.startswith("sha256:") or sha == "sha256:":
-            raise ContractError(f"checkpoint prefix_hashes entry invalid: {ckpt}")
-    if lines != sorted(lines):
-        raise ContractError(f"checkpoint prefix_hashes order invalid: {ckpt}")
-    return lines
+    if resume is None:
+        raise ContractError(
+            "resume bridge unavailable; run `pixi run build-ext` to build "
+            f"hydra2_replay_rs before verifying prefix hashes: {ckpt}"
+        )
+    try:
+        return list(resume.verify_prefix_blob(bytes(data), int(count), str(digest)))
+    except ContractError:
+        raise
+    except (ImportError, AttributeError) as exc:
+        raise ContractError(
+            "resume verify_prefix_blob bridge surface missing; rebuild the bridge "
+            f"(`pixi run build-ext`): {ckpt} ({type(exc).__name__}: {exc})"
+        ) from exc
+    except ValueError as exc:
+        raise ContractError(f"checkpoint prefix_hashes digest mismatch: {ckpt}") from exc
+    except Exception as exc:
+        raise ContractError(
+            f"resume verify_prefix_blob failed: {ckpt} ({type(exc).__name__}: {exc})"
+        ) from exc
 
 
 def _apply_resume_payload(
@@ -529,9 +521,9 @@ def _load_resume_envelope(
 
     Resume-entry hardening: sidecar/payload identity gates below are
     fail-closed (any mismatch raises before live objects mutate — never a
-    silent resume). The prefix-hash chain check stays Rust-first via the
-    bridge `resume` judge (`_verify_prefix_blob`, ImportError-only oracle
-    inside); the cursor/buffer-entry shape checks are bridge-direct
+    silent resume). The prefix-hash chain check is bridge-direct via the
+    bridge `resume` judge (`_verify_prefix_blob` — missing bridge raises);
+    the cursor/buffer-entry shape checks are bridge-direct
     (`_unpack_cursor` / `_check_buffer_entries`, no oracle — missing bridge
     raises); torch RNG restore stays Python (`_restore_rng_state` via
     `_apply_resume_payload` — no Rust GPU math). Evidence: resume blob

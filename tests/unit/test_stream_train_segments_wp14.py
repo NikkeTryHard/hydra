@@ -18,7 +18,8 @@ import pytest
 import torch
 
 from hydra2.contracts.common import ContractError
-from hydra2.training.run_config import load_run_config, resolve_resume_plan
+from hydra2.training._rc_resume import resolve_resume_plan
+from hydra2.training._rc_root import load_run_config
 from hydra2.training.stream_train import (
     _backward_pass_autocast_for,
     run_stream_training,

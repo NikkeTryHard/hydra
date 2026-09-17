@@ -18,11 +18,13 @@ import torch
 import torch.nn as nn
 
 from hydra2.contracts.common import ContractError, CorruptArtifactError
-from hydra2.training.dataset import AuthoritativeParquetDataset
-from hydra2.training.objectives import (
-    compute_metrics,
+from hydra2.training.dataset_store import AuthoritativeParquetDataset
+from hydra2.training.objectives_loss import (
     compute_supervised_loss,
     global_grad_norm_is_finite,
+)
+from hydra2.training.objectives_metrics import (
+    compute_metrics,
 )
 from hydra2.training.replay_checkpoint import ActorLearnerReplayCheckpointMixin
 from hydra2.training.replay_state import (

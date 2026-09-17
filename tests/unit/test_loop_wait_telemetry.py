@@ -1,6 +1,6 @@
 """Phase-3 wait-telemetry hooks on SupervisedLoop (JSONL + p50/p99).
 
-Covers the telemetry-only surface added to :mod:`hydra2.training.loop`:
+Covers the telemetry-only surface of the training loop (``loop_batch``
 per-microbatch JSONL rows (queue_wait_ms, fetch_decode_ms, h2d_ms,
 compute_ms), the trailing p50/p99 summary row, the in-memory
 ``telemetry_summary``, opt-out by default, and duck-typed consumption of
@@ -22,12 +22,12 @@ import pytest
 import torch
 import torch.nn as nn
 
-from hydra2.training.loop import (
+from hydra2.training.loop_batch import (
     MicrobatchTelemetry,
-    SupervisedLoop,
-    TrainingLoopConfig,
     summarize_telemetry,
 )
+from hydra2.training.loop_state import TrainingLoopConfig
+from hydra2.training.loop_train import SupervisedLoop
 from tests.unit._manifest_helpers import make_test_manifest_hashes
 
 pytestmark = pytest.mark.contract_package("WP-05B")

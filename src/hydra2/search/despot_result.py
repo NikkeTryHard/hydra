@@ -204,9 +204,8 @@ class NaturalDespotPlannerSearchMixin:
     ) -> float:
         """Empirical mean return of feasible policy conditioned on root action.
 
-        Rust-first: the hash-mean batch rides ``search.despot_lower_values``
-        (bit-identical); ImportError-only oracle fallback below (never
-        silent dual divergence — mismatch raises in the parity probe).
+        Bridge is the single implementation (``search.despot_lower_values``);
+        missing extension raises ``ImportError`` (fail closed).
         """
         if len(scenarios) == 0:
             return 0.0
@@ -221,22 +220,7 @@ class NaturalDespotPlannerSearchMixin:
                 )
             )
         except ImportError:
-            pass
-        total = 0.0
-        for sc in scenarios:
-            aid = getattr(action, "action_id", action)
-            payload = canonical_bytes(
-                {
-                    "world_ref": sc.world_ref,
-                    "action": str(aid),
-                    "seed": sc.semantic_seed_bytes.hex(),
-                    "candidate": candidate_id,
-                }
-            )
-            h = hashlib.sha256(payload).digest()
-            val = int.from_bytes(h[:4], "big") / 0xFFFFFFFF
-            total += val * sc.weight * len(scenarios)
-        return total / len(scenarios) if len(scenarios) > 0 else 0.0
+            raise
 
     def _priority_proxy_for(self, action: Any, lower_value: float, visits: int) -> float:
         """Heuristic search priority — explicitly NOT an upper bound."""

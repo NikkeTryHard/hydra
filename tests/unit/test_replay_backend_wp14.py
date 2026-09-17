@@ -28,7 +28,8 @@ import zstandard as zstd
 from hydra2.contracts.common import ContractError
 from hydra2.data.stream import GameStream, assign_split, build_manifest, group_key_for_path
 from hydra2.training import stream_train as driver
-from hydra2.training.run_config import load_run_config, run_config_digest, run_config_to_dict
+from hydra2.training._rc_digest import run_config_digest, run_config_to_dict
+from hydra2.training._rc_root import load_run_config
 
 pytestmark = [pytest.mark.contract_package("WP-14")]
 
@@ -412,7 +413,8 @@ class TestPlaneBackend:
 @pytest.mark.slow
 class TestResumeRefusal:
     def test_resume_refuses_digest_change(self, tmp_path: Path) -> None:
-        from hydra2.training.run_config import load_run_config, resolve_resume_plan
+        from hydra2.training._rc_resume import resolve_resume_plan
+        from hydra2.training._rc_root import load_run_config
         from hydra2.training.stream_train import run_stream_training
 
         train_stems, _ = _pick_stems(need_train=1)

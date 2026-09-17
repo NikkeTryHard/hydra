@@ -20,7 +20,6 @@ import zstandard as zstd
 
 from hydra2.contracts.common import ContractError, CorruptArtifactError
 from hydra2.data.decode import decode_json_line
-from hydra2.data.stream_manifest import PARTITION_ORDER
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -164,30 +163,40 @@ def fetch_game_at(
 
 
 def stem_of(path: Path) -> str:
-    """Game identity stem: ``<stem>.mjai.json.zst`` -> ``<stem>``."""
-    name = path.name
-    for suffix in (".mjai.json.zst", ".mjai.json", ".zst"):
-        if name.endswith(suffix):
-            return name[: -len(suffix)]
-    return path.stem
+    """Game identity stem: ``<stem>.mjai.json.zst`` -> ``<stem>``.
+
+    Thin delegate over the ``packet`` bridge (``packet.stem_of`` over the
+    file name; suffixes strip longest-first, anything else keeps
+    ``Path.stem`` behavior — byte-identical to the retired Python loop).
+    ``ImportError`` fails closed with a ``build-ext`` hint.
+    """
+    packet = _require_packet()
+    return str(packet.stem_of(path.name))
 
 
 def group_key_for(*, source: str, time: str) -> str:
-    """Group key identical to partition ``(source, time)`` grouping join."""
-    return f"{source}|{time}"
+    """Group key identical to partition ``(source, time)`` grouping join.
+
+    Thin delegate over the ``packet`` bridge (``packet.group_key_for``; the
+    single ``source|time`` join string lives in ``hydra-feed``).
+    ``ImportError`` fails closed with a ``build-ext`` hint.
+    """
+    packet = _require_packet()
+    return str(packet.group_key_for(str(source), str(time)))
 
 
 def group_key_for_path(path: Path) -> str:
     """Derive the ``(source, time)`` group from a corpus path.
 
-    Source is the parent directory name (mount-independent); time is the
-    leading digit run of the filename stem (Tenhou ``YYYYMMDDHH...``),
-    else ``"unknown"``.
+    Thin delegate over the ``packet`` bridge
+    (``packet.group_key_for_path`` over the parent directory name and file
+    name; source is mount-independent, empty/``.`` maps to ``"unknown"``,
+    time is the leading digit run of the stem else ``"unknown"`` —
+    byte-identical to the retired Python derivation). ``ImportError`` fails
+    closed with a ``build-ext`` hint.
     """
-    source = path.parent.name if path.parent.name not in ("", ".") else "unknown"
-    match = _DIGIT_RUN.match(stem_of(path))
-    time = match.group(0) if match is not None else "unknown"
-    return group_key_for(source=source, time=time)
+    packet = _require_packet()
+    return str(packet.group_key_for_path(path.parent.name, path.name))
 
 
 def compute_wall_hash(game: GameRecord) -> str | None:
@@ -211,39 +220,21 @@ def compute_wall_hash(game: GameRecord) -> str | None:
 def assign_split(*, group_key: str, seed: int, ratios: Mapping[str, float]) -> str:
     """Assign a group to a partition; math identical to ``assign_partitions``.
 
-    Cumulative thresholds over :data:`PARTITION_ORDER` on
-    ``sha256(f"{seed}|{group_key}")`` scaled to ``[0, 1)``.
+    Thin delegate over the ``packet`` bridge (``packet.assign_one`` over
+    ``(group_key, seed, ratios)``; cumulative thresholds over
+    ``PARTITION_ORDER`` on ``sha256(f"{seed}|{group_key}")`` scaled to
+    ``[0, 1)`` — byte-identical to the retired Python loop, 294-case
+    differential clean). ``ImportError`` fails closed with a ``build-ext``
+    hint; bridge rejects (bad ratios, non-u64 seed) surface as
+    :class:`ContractError`.
     """
-    if len(ratios) == 0:
-        raise ContractError("split ratios must not be empty")
-    weights: dict[str, float] = {}
-    for name, value in ratios.items():
-        # reason: type arg-type on ratios mapping value; float() guarded
-        # below, ContractError on non-numeric.
-        try:
-            weight = float(value)  # type: ignore[arg-type]
-        except (TypeError, ValueError) as exc:
-            raise ContractError(f"split ratio for {name!r} not numeric: {value!r}") from exc
-        if weight < 0.0:
-            raise ContractError(f"split ratio for {name!r} negative: {weight}")
-        weights[name] = weight
-    total = sum(weights.values())
-    if abs(total - 1.0) > 1e-6:
-        raise ContractError(f"split ratios must sum to 1.0, got {total}")
-    cumulative: list[tuple[str, float]] = []
-    running = 0.0
-    for part in PARTITION_ORDER:
-        if part in weights and weights[part] > 0.0:
-            running += weights[part]
-            cumulative.append((part, running))
-    if len(cumulative) == 0:
-        raise ContractError("no active partitions in ratios")
-    digest = hashlib.sha256(f"{seed}|{group_key}".encode()).digest()
-    draw = int.from_bytes(digest[:8], "big") / 2**64
-    for part, threshold in cumulative:
-        if draw < threshold:
-            return part
-    return cumulative[-1][0]
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise ContractError(f"split seed must be an int, got {seed!r}")
+    packet = _require_packet()
+    try:
+        return str(packet.assign_one(str(group_key), seed, dict(ratios)))
+    except (ValueError, OverflowError, TypeError) as exc:
+        raise ContractError(f"split assignment rejected: {exc}") from exc
 
 
 @dataclass(frozen=True, slots=True)
