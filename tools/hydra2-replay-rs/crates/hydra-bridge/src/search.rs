@@ -85,12 +85,16 @@ use hydra_search::pbrf as pbrf_mod;
 use hydra_search::step_hash as step_hash_mod;
 use hydra_search::modules as modules_mod;
 use hydra_search::SearchError;
+use hydra_search::builtin_sum;
+use hydra_search::joint as joint_mod;
+use hydra_search::persistence_kernel as persist_mod;
+use sha2::{Digest, Sha256};
 #[cfg(test)]
 use hydra_search::arena::ActOut;
 use pyo3::exceptions::{PyOSError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::sync::MutexExt;
-use pyo3::types::PyModule;
+use pyo3::types::{PyAny, PyModule};
 
 /// Max deadline mirrored from `search/common.py::_require_deadline_ms`
 /// (`(0, 60000]`); the arena owns enforcement, the bridge fails closed
@@ -1127,6 +1131,373 @@ fn pbrf_module_transform(
     });
     out.map_err(search_err)
 }
+// ---------------------------------------------------------------------------
+// Persistence kernel + joint posterior pyfns (prizes 1-2).
+//
+// Thin mirrors of `persistence_kernel.py` enumerate/rebuild/commit/quota and
+// `joint_uncertainty.py::exact_joint_posterior_oracle` over live
+// epoch/packet/posterior objects: fields are read attached (callers pass
+// their `BeliefEpochLite` / `FinitePacket` / `JointPosterior` straight
+// through, no repackaging), every hash/sum runs detached through the
+// existing owners (`persistence_kernel`, `joint`, `feed::canon` via those
+// owners — never a second printer/hasher). The joint likelihood replicates
+// `OpponentTypePolicy.distribution_for` + `log_prob` + `exp` verbatim
+// (hash-seeded Dirichlet pseudo-counts, Neumaier `builtin_sum`, `ln`/`exp`
+// audit to `(0,1]`); the posterior half replicates the oracle's plain-loop
+// normalizer with the `1 +- 1e-9` mass audit. Fail-closed: every shape
+// violation is `ValueError`, never a default.
+// ---------------------------------------------------------------------------
+
+/// Read a `str` arriving bare or carried by a live object under `field`
+/// (`BeliefEpochLite.epoch`, packet `epoch_before`): `str` passes through,
+/// otherwise the attribute is read attached.
+fn str_or_field(obj: &Bound<'_, PyAny>, field: &str, ctx: &str) -> PyResult<String> {
+    if let Ok(text) = obj.extract::<String>() {
+        return Ok(text);
+    }
+    obj.getattr(field)
+        .map_err(|e| PyValueError::new_err(format!("search {ctx}: .{field} unreadable: {e}")))?
+        .extract::<String>()
+        .map_err(|_| PyValueError::new_err(format!("search {ctx}: .{field} must be str")))
+}
+
+/// Read one `(theta, weight)` row attached from a live `JointParticle`
+/// (epoch/target provenance stays caller-side; only the math lanes cross).
+fn particle_theta_weight(particle: &Bound<'_, PyAny>) -> PyResult<(String, f64)> {
+    let theta: String = particle
+        .getattr("theta")
+        .map_err(|e| PyValueError::new_err(format!("search joint: .theta unreadable: {e}")))?
+        .extract()
+        .map_err(|_| PyValueError::new_err("search joint: .theta must be str"))?;
+    let weight: f64 = particle
+        .getattr("weight")
+        .map_err(|e| PyValueError::new_err(format!("search joint: .weight unreadable: {e}")))?
+        .extract()
+        .map_err(|_| PyValueError::new_err("search joint: .weight must be float"))?;
+    Ok((theta, weight))
+}
+
+/// `math.isclose(x, 1.0, rel_tol=1e-9, abs_tol=1e-9)` replica for the
+/// posterior mass audit.
+fn isclose_unit_1e9(value: f64) -> bool {
+    (value - 1.0).abs() <= (1e-9 * value.abs().max(1.0)).max(1e-9)
+}
+
+/// Digest-shape predicate over an owned string (info keys are canon-form
+/// `sha256:<64 hex>` exactly like decision digests).
+fn is_digest_shape(text: &str) -> bool {
+    check_digest_shape(text).is_ok()
+}
+
+/// One particle likelihood (`OpponentTypePolicy.distribution_for` +
+/// `log_prob` + `exp`, `joint_types.py:290-354`): hash-seeded Dirichlet
+/// pseudo-counts over the ascending legal set, observed probability through
+/// `ln`/`exp` with the `(0,1]` finite audit. Pure and detach-safe.
+fn joint_row_likelihood(
+    theta: &str,
+    seed_domain: &[u8],
+    info_key: &str,
+    legal_ids: &[u32],
+    observed_id: u32,
+) -> Result<f64, SearchError> {
+    joint_mod::check_theta(theta)?;
+    if seed_domain.is_empty() {
+        return Err(SearchError::InvalidArg { detail: "joint seed_domain must be non-empty bytes" });
+    }
+    if !is_digest_shape(info_key) {
+        return Err(SearchError::InvalidArg { detail: "joint info_key must be sha256:<hex>" });
+    }
+    if legal_ids.is_empty() {
+        return Err(SearchError::InvalidArg { detail: "joint legal_action_ids must be non-empty" });
+    }
+    let mut sorted: Vec<u32> = legal_ids.to_vec();
+    sorted.sort_unstable();
+    let mut dup: Option<u32> = None;
+    for pair in sorted.windows(2) {
+        if pair[0] == pair[1] {
+            dup = Some(pair[0]);
+            break;
+        }
+    }
+    if let Some(action) = dup {
+        return Err(SearchError::DuplicateAction { action });
+    }
+    let mut csv = String::new();
+    for (idx, aid) in sorted.iter().enumerate() {
+        if idx > 0 {
+            csv.push(',');
+        }
+        csv.push_str(&aid.to_string());
+    }
+    let observed_pos = sorted.iter().position(|aid| *aid == observed_id).ok_or(
+        SearchError::InvalidArg { detail: "joint observed_action_id not in legal set" },
+    )?;
+    let msg = format!("{theta}:{info_key}:{csv}");
+    let mut seed_hasher = Sha256::new();
+    seed_hasher.update(seed_domain);
+    seed_hasher.update(msg.as_bytes());
+    let seed = seed_hasher.finalize();
+    let mut counts: Vec<f64> = Vec::with_capacity(sorted.len());
+    for (idx, _aid) in sorted.iter().enumerate() {
+        if idx > u16::MAX as usize {
+            return Err(SearchError::InvalidArg { detail: "joint legal set too large" });
+        }
+        let mut obscure = Sha256::new();
+        obscure.update(seed);
+        obscure.update((idx as u16).to_be_bytes());
+        let digest = obscure.finalize();
+        let val = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]) as f64
+            / 4294967296.0;
+        let mut base = 0.5 + val * 2.0;
+        if theta == joint_mod::THETA_TIGHT {
+            if idx == 0 {
+                base *= 2.0;
+            }
+        } else if theta == joint_mod::THETA_LOOSE {
+            base = 1.0 + val * 0.5;
+        }
+        counts.push(base);
+    }
+    let total = builtin_sum(&counts);
+    let slot = counts.get(observed_pos).ok_or(SearchError::InvalidArg {
+        detail: "joint observed position out of range",
+    })?;
+    let likelihood = (*slot / total).ln().exp();
+    if !likelihood.is_finite() || likelihood <= 0.0 || likelihood > 1.0 {
+        return Err(SearchError::BadLikelihood);
+    }
+    Ok(likelihood)
+}
+
+/// Normalize one joint posterior (`exact_joint_posterior_oracle` tail,
+/// `joint_uncertainty.py:124-158`): `w * lik * T` in a plain loop (the
+/// oracle accumulates with `+=`, NOT `fsum`), `Z > 0` finite, divide,
+/// Neumaier mass audit to `1 +- 1e-9`. Pure and detach-safe.
+fn joint_normalize(
+    weights: &[f64],
+    likelihoods: &[f64],
+    physical_t: f64,
+) -> Result<Vec<f64>, SearchError> {
+    if weights.is_empty() || weights.len() != likelihoods.len() {
+        return Err(SearchError::InvalidArg { detail: "joint weights/likelihoods must align non-empty" });
+    }
+    if !physical_t.is_finite() || physical_t <= 0.0 || physical_t > 1.0 {
+        return Err(SearchError::InvalidArg {
+            detail: "joint physical_transition_prob must be in (0,1]",
+        });
+    }
+    let mut unnorm: Vec<f64> = Vec::with_capacity(weights.len());
+    let mut total = 0.0;
+    for (weight, likelihood) in weights.iter().zip(likelihoods.iter()) {
+        if !weight.is_finite() || *weight < 0.0 {
+            return Err(SearchError::NonFinite { context: "joint prior weight" });
+        }
+        if !likelihood.is_finite() || *likelihood <= 0.0 || *likelihood > 1.0 {
+            return Err(SearchError::BadLikelihood);
+        }
+        let wu = *weight * *likelihood * physical_t;
+        if !wu.is_finite() || wu < 0.0 {
+            return Err(SearchError::NonFinite { context: "joint unnorm weight" });
+        }
+        unnorm.push(wu);
+        total += wu;
+    }
+    if !total.is_finite() || total <= 0.0 {
+        return Err(SearchError::ZeroMass);
+    }
+    let mut out: Vec<f64> = Vec::with_capacity(unnorm.len());
+    for wu in &unnorm {
+        let w = *wu / total;
+        if !w.is_finite() || w < 0.0 {
+            return Err(SearchError::NonFinite { context: "joint norm weight" });
+        }
+        out.push(w);
+    }
+    if !isclose_unit_1e9(builtin_sum(&out)) {
+        return Err(SearchError::BadPartition);
+    }
+    Ok(out)
+}
+
+/// Exhaustive disjoint packet kernel over a live epoch
+/// (`persistence_kernel.py:250-296` via `persistence_kernel::enumerate_packets_for`):
+/// `epoch` is the caller's `BeliefEpochLite` or a bare epoch string (read
+/// attached, never repackaged). Returns one row per branch
+/// `(packet_id, epoch_after, probability, branch)`; the facade rebuilds the
+/// `FinitePacket` tuple around them. Compute runs detached.
+#[pyfunction]
+#[pyo3(signature = (epoch, action_id, num_branches=2))]
+fn persistence_packets_for(
+    py: Python<'_>,
+    epoch: Bound<'_, PyAny>,
+    action_id: u64,
+    num_branches: usize,
+) -> PyResult<Vec<(String, String, f64, u64)>> {
+    let epoch_id = str_or_field(&epoch, "epoch", "persistence_packets_for")?;
+    if epoch_id.is_empty() {
+        return Err(PyValueError::new_err("search persistence_packets_for: epoch must be non-empty"));
+    }
+    let staged = py.detach(|| persist_mod::enumerate_packets_for(&epoch_id, action_id, num_branches));
+    let packets = staged.map_err(search_err)?;
+    let mut rows: Vec<(String, String, f64, u64)> = Vec::with_capacity(packets.len());
+    for (branch, packet) in packets.into_iter().enumerate() {
+        rows.push((packet.packet_id, packet.epoch_after, packet.probability, branch as u64));
+    }
+    Ok(rows)
+}
+
+/// Authoritative fresh posterior `epoch_after` over live objects
+/// (`fresh_rebuild_epoch`): `epoch_before` is a `BeliefEpochLite` or bare
+/// string, `packet` the caller's `FinitePacket` (both read attached).
+/// Compute runs detached.
+#[pyfunction]
+#[pyo3(signature = (epoch_before, packet))]
+fn persistence_rebuild_epoch(
+    py: Python<'_>,
+    epoch_before: Bound<'_, PyAny>,
+    packet: Bound<'_, PyAny>,
+) -> PyResult<String> {
+    let epoch_id = str_or_field(&epoch_before, "epoch", "persistence_rebuild_epoch")?;
+    let packet_id = str_or_field(&packet, "packet_id", "persistence_rebuild_epoch")?;
+    let packet_before = str_or_field(&packet, "epoch_before", "persistence_rebuild_epoch")?;
+    let probe = persist_mod::FinitePacket {
+        packet_id,
+        action_id: 0,
+        epoch_before: packet_before,
+        epoch_after: String::new(),
+        probability: 1.0,
+        delta: Vec::new(),
+    };
+    py.detach(|| persist_mod::fresh_rebuild_epoch(&epoch_id, &probe)).map_err(search_err)
+}
+
+/// Commit/rebuild equality over live objects (`commit_equals_rebuild`):
+/// same attached reads as [`persistence_rebuild_epoch`], detached compare.
+#[pyfunction]
+#[pyo3(signature = (epoch_before, packet))]
+fn persistence_commit_equals_rebuild(
+    py: Python<'_>,
+    epoch_before: Bound<'_, PyAny>,
+    packet: Bound<'_, PyAny>,
+) -> PyResult<bool> {
+    let epoch_id = str_or_field(&epoch_before, "epoch", "persistence_commit_equals_rebuild")?;
+    let packet_id = str_or_field(&packet, "packet_id", "persistence_commit_equals_rebuild")?;
+    let packet_before = str_or_field(&packet, "epoch_before", "persistence_commit_equals_rebuild")?;
+    let packet_after = str_or_field(&packet, "epoch_after", "persistence_commit_equals_rebuild")?;
+    let probe = persist_mod::FinitePacket {
+        packet_id,
+        action_id: 0,
+        epoch_before: packet_before,
+        epoch_after: packet_after,
+        probability: 1.0,
+        delta: Vec::new(),
+    };
+    py.detach(|| persist_mod::commit_equals_rebuild(&epoch_id, &probe)).map_err(search_err)
+}
+#[pyfunction]
+#[pyo3(signature = (sorted_pids, quota))]
+fn persistence_distribute_quota(
+    sorted_pids: Vec<String>,
+    quota: usize,
+) -> PyResult<Vec<(String, usize)>> {
+    let mut dist: Vec<(String, usize)> = Vec::new();
+    for pid in &sorted_pids {
+        if !dist.iter().any(|(seen, _)| seen == pid) {
+            dist.push((pid.clone(), 0));
+        }
+    }
+    let mut remaining = quota;
+    while remaining > 0 && !dist.is_empty() {
+        for pid in &sorted_pids {
+            if remaining == 0 {
+                break;
+            }
+            if let Some(slot) = dist.iter_mut().find(|(seen, _)| seen == pid) {
+                slot.1 = slot.1.saturating_add(1);
+                remaining -= 1;
+            }
+        }
+    }
+    Ok(dist)
+}
+/// Exact joint posterior weights over a live prior
+/// (`exact_joint_posterior_oracle`, `joint_uncertainty.py:53-158`): `prior`
+/// is the caller's live `JointPosterior` (particles read attached, epoch /
+/// target provenance stays caller-side); `info_keys` / `seed_domains` ride
+/// aligned 1:1 with the particles (facade derives them from the live
+/// `worlds_by_ref` map + `policy_for_theta` policies, which never cross);
+/// `legal_ids` / `observed_id` are the shared observed-action context.
+/// Likelihood enters exactly once per particle, detached; returns
+/// normalized weights in particle order (the facade rebuilds
+/// `JointParticle`s preserving epoch/target provenance).
+#[pyfunction]
+#[pyo3(signature = (*, prior, info_keys, seed_domains, legal_ids, observed_id, physical_t=1.0))]
+#[allow(clippy::too_many_arguments)]
+fn joint_posterior_weights(
+    py: Python<'_>,
+    prior: Bound<'_, PyAny>,
+    info_keys: Vec<String>,
+    seed_domains: Vec<Vec<u8>>,
+    legal_ids: Vec<u32>,
+    observed_id: u32,
+    physical_t: f64,
+) -> PyResult<Vec<f64>> {
+    let particles: Vec<Bound<'_, PyAny>> = prior
+        .getattr("particles")
+        .map_err(|e| PyValueError::new_err(format!("search joint_posterior_weights: .particles unreadable: {e}")))?
+        .extract()
+        .map_err(|_| {
+            PyValueError::new_err("search joint_posterior_weights: .particles must be a sequence")
+        })?;
+    if particles.is_empty()
+        || info_keys.len() != particles.len()
+        || seed_domains.len() != particles.len()
+    {
+        return Err(PyValueError::new_err(
+            "search joint_posterior_weights: particle lane length mismatch",
+        ));
+    }
+    let mut thetas: Vec<String> = Vec::with_capacity(particles.len());
+    let mut weights: Vec<f64> = Vec::with_capacity(particles.len());
+    for particle in &particles {
+        let (theta, weight) = particle_theta_weight(particle)?;
+        thetas.push(theta);
+        weights.push(weight);
+    }
+    let lanes = thetas.len();
+    let out = py.detach(|| -> Result<Vec<f64>, SearchError> {
+        let mut likelihoods: Vec<f64> = Vec::with_capacity(lanes);
+        for ((theta, domain), info_key) in
+            thetas.iter().zip(seed_domains.iter()).zip(info_keys.iter())
+        {
+            likelihoods.push(joint_row_likelihood(
+                theta,
+                domain,
+                info_key,
+                &legal_ids,
+                observed_id,
+            )?);
+        }
+        joint_normalize(&weights, &likelihoods, physical_t)
+    });
+    out.map_err(search_err)
+}
+
+/// Likelihood-free posterior tail (`exact_joint_posterior_oracle`
+/// normalize half): caller-supplied likelihoods (one per prior weight,
+/// each already audited to `(0,1]` here) through the plain-loop normalizer.
+/// Detached; the draw-free fallback when info-key assembly stays Python.
+#[pyfunction]
+#[pyo3(signature = (weights, likelihoods, physical_t=1.0))]
+fn joint_normalize_weights(
+    py: Python<'_>,
+    weights: Vec<f64>,
+    likelihoods: Vec<f64>,
+    physical_t: f64,
+) -> PyResult<Vec<f64>> {
+    py.detach(|| joint_normalize(&weights, &likelihoods, physical_t)).map_err(search_err)
+}
+
 
 /// Fail-close comparator for the in-module judge tests (mirrors
 /// `canon_rng::check_match` / columnar `check_match`: recomputed ==
@@ -1175,6 +1546,12 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     sub.add_function(wrap_pyfunction!(natural_indices, &sub)?)?;
     sub.add_function(wrap_pyfunction!(sampled_draws, &sub)?)?;
     sub.add_function(wrap_pyfunction!(packet_successors, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(persistence_packets_for, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(persistence_rebuild_epoch, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(persistence_commit_equals_rebuild, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(persistence_distribute_quota, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(joint_posterior_weights, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(joint_normalize_weights, &sub)?)?;
     sub.add_class::<PyPacketSuccessor>()?;
     m.add_submodule(&sub)?;
     Ok(())

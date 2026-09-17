@@ -980,6 +980,82 @@ fn validate_packet_spans(spans: Vec<(Bound<'_, PyAny>, Bound<'_, PyAny>, Bound<'
     }
     Ok(())
 }
+// ---------------------------------------------------------------------------
+// Engine-state scalar leaves (prize 3, portable remainder).
+//
+// Pure integer/literal mirrors of `engines/riichienv/state.py`: the seat-wind
+// permutation, the canonical score reorder, the dead-wall-adjusted wall
+// count, and the furiten literal. The live `riichienv` package object never
+// crosses — callers read attributes/methods Python-side (framework-locked
+// lines) and hand detached scalars across. Settlement facts, envelope
+// constructors, and `state_digest` stay Python: they build live contract
+// dataclasses or walk the package object (attached-construction barrier;
+// the digest itself already rides the canon bridge via `of_canonical`).
+// Fail-closed: every shape violation is `ValueError`, never a default.
+// ---------------------------------------------------------------------------
+
+/// Seat winds for a dealer (`state.py:63-68`): `27 + floormod(dealer+off)`.
+/// The oracle validates nothing (any int maps, negatives included) —
+/// mirrored exactly via floor-mod, attached (sub-microsecond leaf).
+#[pyfunction]
+fn seat_winds_for_dealer(dealer: i64) -> (u8, u8, u8, u8) {
+    let aligned = ((dealer % 4) + 4) % 4;
+    (
+        (27 + aligned) as u8,
+        (27 + ((aligned + 1) % 4)) as u8,
+        (27 + ((aligned + 2) % 4)) as u8,
+        (27 + ((aligned + 3) % 4)) as u8,
+    )
+}
+
+/// Canonical-order scores (`state.py:71-74`): `raw[permutation[seat]]` for
+/// seats `0..3`. The oracle indexes blindly (`IndexError` on bad shapes);
+/// this leaf fails closed (`ValueError`) instead — valid shapes are
+/// identical, attached (four-element gather).
+#[pyfunction]
+fn engine_scores_canonical_order(
+    scores: Vec<i64>,
+    permutation: Vec<u8>,
+) -> PyResult<Vec<i64>> {
+    if permutation.len() != 4 {
+        return Err(PyValueError::new_err(
+            "contracts engine_scores permutation must hold exactly 4 seats",
+        ));
+    }
+    let mut out: Vec<i64> = Vec::with_capacity(4);
+    for seat in 0..4 {
+        let src = permutation.get(seat).ok_or_else(|| {
+            PyValueError::new_err("contracts engine_scores permutation out of range")
+        })?;
+        let value = scores.get(*src as usize).ok_or_else(|| {
+            PyValueError::new_err("contracts engine_scores seat maps outside scores")
+        })?;
+        out.push(*value);
+    }
+    Ok(out)
+}
+
+/// Drawable live-wall tiles left (`state.py:77-80`): `max(0, len - 14)`.
+/// Attached trivial leaf (`saturating_sub` is exactly the oracle clamp).
+#[pyfunction]
+fn live_wall_remaining(wall_len: usize) -> usize {
+    wall_len.saturating_sub(14)
+}
+
+/// Furiten literal (`state.py:83-91`): riichi beats temporary beats none.
+/// The caller reads the two package-object flags Python-side and crosses
+/// the bools; attached trivial leaf.
+#[pyfunction]
+fn furiten_of(riichi_declared: bool, missed_agari_doujun: bool) -> &'static str {
+    if riichi_declared {
+        "riichi"
+    } else if missed_agari_doujun {
+        "temporary"
+    } else {
+        "none"
+    }
+}
+
 
 /// Register the `contracts` submodule (mirrors `canon_rng::register`):
 /// compute detached, wrap attached; single cdylib, no new entry point.
@@ -1013,6 +1089,10 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     sub.add_function(wrap_pyfunction!(fold_public_hash, &sub)?)?;
     sub.add_function(wrap_pyfunction!(packet_id_from_doc, &sub)?)?;
     sub.add_function(wrap_pyfunction!(validate_packet_spans, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(seat_winds_for_dealer, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(engine_scores_canonical_order, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(live_wall_remaining, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(furiten_of, &sub)?)?;
     sub.add_function(wrap_pyfunction!(ctr_block, &sub)?)?;
     sub.add_function(wrap_pyfunction!(ctr_stream_bytes, &sub)?)?;
     sub.add_function(wrap_pyfunction!(resolve_final_ranks, &sub)?)?;

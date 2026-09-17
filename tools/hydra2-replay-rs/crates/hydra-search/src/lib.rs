@@ -79,7 +79,7 @@ pub mod persistence_planner;
 /// `t = s + x`, compensating into `c` on the `|s| >= |x|` arm, result
 /// `s + c`. Non-finite lanes fold plainly (matching the oracle's
 /// `inf`/`nan` propagation on valid-input-unreachable shapes).
-pub(crate) fn builtin_sum(xs: &[f64]) -> f64 {
+pub fn builtin_sum(xs: &[f64]) -> f64 {
     let mut finite = true;
     for x in xs {
         if !x.is_finite() {

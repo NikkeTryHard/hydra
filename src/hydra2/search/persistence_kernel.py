@@ -40,6 +40,35 @@ except ImportError as exc:
         "the minimal-contract fallback was removed (single authority is search.common)"
     ) from exc
 
+_BRIDGE_FNS = (
+    "persistence_packets_for",
+    "persistence_rebuild_epoch",
+    "persistence_commit_equals_rebuild",
+    "persistence_distribute_quota",
+)
+
+
+def _require_search_bridge() -> Any:
+    """Import the built ``search`` bridge surface (fail closed).
+
+    ``ImportError`` (extension not built or stale ``.so`` without the
+    persistence pyfns) carries the ``build-ext`` hint — the ONLY oracle
+    fallback trigger. Any other bridge error raises, never silent.
+    """
+    try:
+        from hydra2_replay_rs import search as bridge  # pyrefly: ignore[missing-import]
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2_replay_rs.search missing; rebuild the bridge with `pixi run build-ext`"
+        ) from exc
+    for fn in _BRIDGE_FNS:
+        if not hasattr(bridge, fn):
+            raise ImportError(
+                f"hydra2_replay_rs.search.{fn} missing (stale .so); "
+                "rebuild the bridge with `pixi run build-ext`"
+            )
+    return bridge
+
 
 __all__ = [
     "ARM_DEFS",
@@ -258,7 +287,49 @@ def enumerate_packets_for(
     Deterministic via semantic seeds: (epoch, action_id). Probabilities are
     fixed by branch index to keep fixtures reproducible; they sum to one and
     are pairwise disjoint by packet_id.
+
+    Rust-first: packet ids + successors ride
+    ``search.persistence_packets_for`` over the live epoch (bit-identical);
+    ``ImportError``-only oracle fallback below (never silent divergence —
+    bridge rejects raise as :class:`ContractError`).
     """
+    if isinstance(num_branches, bool):
+        num_branches = int(num_branches)
+    if not isinstance(num_branches, int) or num_branches <= 0:
+        raise ContractError("num_branches must be positive")
+    if isinstance(action_id, bool) or not isinstance(action_id, int) or action_id < 0:
+        raise ContractError(f"action_id must be a non-negative plain int, got {action_id!r}")
+    try:
+        bridge = _require_search_bridge()
+    except ImportError:
+        return _enumerate_packets_for_oracle(
+            epoch=epoch, action_id=action_id, num_branches=num_branches
+        )
+    try:
+        rows = bridge.persistence_packets_for(epoch, action_id, num_branches=num_branches)
+    except (ValueError, TypeError) as exc:
+        raise ContractError(f"persistence packets rejected: {exc}") from exc
+    epoch_id = epoch.epoch if isinstance(epoch, BeliefEpochLite) else epoch
+    return tuple(
+        FinitePacket(
+            packet_id=packet_id,
+            action_id=action_id,
+            epoch_before=epoch_id,
+            epoch_after=epoch_after,
+            probability=probability,
+            delta=(action_id, branch),
+        )
+        for packet_id, epoch_after, probability, branch in rows
+    )
+
+
+def _enumerate_packets_for_oracle(
+    *,
+    epoch: BeliefEpochLite | str,
+    action_id: int,
+    num_branches: int = 2,
+) -> tuple[FinitePacket, ...]:
+    """Oracle packet kernel (pre-bridge body; ``ImportError``-only fallback)."""
     if num_branches <= 0:
         raise ContractError("num_branches must be positive")
     epoch_id = epoch.epoch if isinstance(epoch, BeliefEpochLite) else epoch
@@ -305,7 +376,27 @@ def fresh_rebuild_epoch(
 
     Must digest-equal the successor stored in packet.epoch_after when the packet
     is the REALIZED one (mass-one partition guarantee).
+
+    Rust-first: the successor digest rides
+    ``search.persistence_rebuild_epoch`` over the live packet
+    (bit-identical); ``ImportError``-only oracle fallback below.
     """
+    try:
+        bridge = _require_search_bridge()
+    except ImportError:
+        return _fresh_rebuild_epoch_oracle(epoch_before=epoch_before, packet=packet)
+    try:
+        return str(bridge.persistence_rebuild_epoch(epoch_before, packet))
+    except (ValueError, TypeError) as exc:
+        raise ContractError(f"persistence rebuild rejected: {exc}") from exc
+
+
+def _fresh_rebuild_epoch_oracle(
+    *,
+    epoch_before: BeliefEpochLite | str,
+    packet: FinitePacket,
+) -> str:
+    """Oracle rebuild (pre-bridge body; ``ImportError``-only fallback)."""
     epoch_id = epoch_before.epoch if isinstance(epoch_before, BeliefEpochLite) else epoch_before
     if packet.epoch_before != epoch_id:
         raise ContractError(f"packet epoch_before {packet.epoch_before!r} != epoch {epoch_id!r}")
@@ -319,9 +410,20 @@ def commit_equals_rebuild(
     epoch_before: BeliefEpochLite | str,
     packet: FinitePacket,
 ) -> bool:
-    """Check commit/rebuild equality fixture."""
-    rebuilt = fresh_rebuild_epoch(epoch_before=epoch_before, packet=packet)
-    return rebuilt == packet.epoch_after
+    """Check commit/rebuild equality fixture.
+
+    Rust-first: ``search.persistence_commit_equals_rebuild`` over the live
+    packet (bit-identical); ``ImportError``-only oracle fallback below.
+    """
+    try:
+        bridge = _require_search_bridge()
+    except ImportError:
+        rebuilt = _fresh_rebuild_epoch_oracle(epoch_before=epoch_before, packet=packet)
+        return rebuilt == packet.epoch_after
+    try:
+        return bool(bridge.persistence_commit_equals_rebuild(epoch_before, packet))
+    except (ValueError, TypeError) as exc:
+        raise ContractError(f"persistence commit check rejected: {exc}") from exc
 
 
 def _distribute_quota(sorted_pids: list[str], quota: int) -> dict[str, int]:
@@ -330,7 +432,29 @@ def _distribute_quota(sorted_pids: list[str], quota: int) -> dict[str, int]:
     Round-robin one unit per pid until quota exhausts. Pure function of its
     inputs; the returned per-pid units sum to min(quota, distributed). Callers
     charge every counter from the returned mapping so stats stay coherent.
+
+    Rust-first: the round-robin rides ``search.persistence_distribute_quota``
+    (order-preserving, dupe double-count identical);
+    ``ImportError``-only oracle fallback below.
     """
+    if isinstance(quota, bool):
+        quota = int(quota)
+    if not isinstance(quota, int) or quota <= 0:
+        if not isinstance(quota, int):
+            raise ContractError(f"quota must be a plain int, got {quota!r}")
+        return dict.fromkeys(sorted_pids, 0)
+    try:
+        bridge = _require_search_bridge()
+    except ImportError:
+        return _distribute_quota_oracle(sorted_pids, quota)
+    try:
+        return dict(bridge.persistence_distribute_quota(list(sorted_pids), quota))
+    except (ValueError, TypeError) as exc:
+        raise ContractError(f"persistence quota rejected: {exc}") from exc
+
+
+def _distribute_quota_oracle(sorted_pids: list[str], quota: int) -> dict[str, int]:
+    """Oracle quota spread (pre-bridge body; ``ImportError``-only fallback)."""
     dist: dict[str, int] = dict.fromkeys(sorted_pids, 0)
     remaining = quota
     while remaining > 0 and len(dist) > 0:
