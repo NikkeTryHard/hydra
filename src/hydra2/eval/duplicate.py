@@ -196,9 +196,6 @@ class DuplicateReport:
     exact_duplicates: tuple[tuple[str, str], ...]
     near_duplicates: tuple[tuple[str, str], ...]
 
-    def is_clean(self) -> bool:
-        return len(self.exact_duplicates) == 0 and len(self.near_duplicates) == 0
-
 
 def validate_walls_disjoint(*wall_collections: Iterable[str]) -> None:
     """Raise :class:`ContractError` when a wall id appears in more than one collection.
@@ -392,11 +389,6 @@ class BlockSplit:
     seed: int
     held_out_ratio: float
     digest: DigestText
-
-    def all_wall_ids(self) -> tuple[str, ...]:
-        return tuple(block.wall_id for block in self.train_blocks) + tuple(
-            block.wall_id for block in self.held_out_blocks
-        )
 
 
 def _validate_block_split_input(

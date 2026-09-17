@@ -59,12 +59,6 @@ class TinyCorpus:
                 return math.log(p) if p > 0 else float("-inf")
         return float("-inf")
 
-    def prob(self, world_id: str) -> float:
-        for w, p in zip(self.worlds, self.probabilities, strict=False):
-            if w.world_id == world_id:
-                return p
-        return 0.0
-
 
 def build_tiny_corpus(
     *,

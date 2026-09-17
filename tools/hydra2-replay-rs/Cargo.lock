@@ -781,6 +781,7 @@ dependencies = [
  "hydra-shard",
  "pyo3",
  "reqwest",
+ "serde_json",
  "sha2",
 ]
 

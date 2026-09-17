@@ -652,10 +652,6 @@ class ShardReader:
         return self._epoch
 
     @property
-    def sample_in_epoch(self) -> int:
-        return self._sample_in_epoch
-
-    @property
     def manifest(self) -> dict[str, Any]:
         return dict(self._manifest)
 

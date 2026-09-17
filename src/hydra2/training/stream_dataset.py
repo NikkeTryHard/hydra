@@ -137,11 +137,6 @@ class _StreamDatasetCore:
         """Rows consumed (plus tail-dropped) in the live epoch."""
         return self._offset
 
-    @property
-    def microbatches_in_epoch(self) -> int:
-        """Microbatches consumed in the live epoch (resume-drain count)."""
-        return self._microbatches_in_epoch
-
     def stream_cursor(self) -> DataStreamCursor:
         """Pulled-game frontier of the live stream (resume anchor)."""
         if self._stream is None:

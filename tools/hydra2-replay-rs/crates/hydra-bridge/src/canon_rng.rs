@@ -59,7 +59,7 @@ use std::sync::Mutex;
 use pyo3::exceptions::{PyOSError, PyOverflowError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::sync::{MutexExt, PyOnceLock};
-use pyo3::types::{PyBytes, PyModule};
+use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyModule, PyString};
 
 /// 1 MiB chunk default for the file digest path (mirrors
 /// `artifacts/digest.py` `_CHUNK_SIZE`; the feed pure function owns the
@@ -258,6 +258,148 @@ fn batch_of_canonical(py: Python<'_>, items: Vec<Vec<u8>>) -> PyResult<Vec<Strin
     bump_digests(py, count);
     bump_batches(py, 1);
     Ok(out)
+}
+
+// ASSUMPTION: `canon::canonical_bytes_value(&Value, &str) -> Result<Vec<u8>, CanonError>`
+// (staged-`Value` JCS entry, same bytes as the digest path) +
+// `canon::MAX_SAFE_INTEGER: i64` (double-safe window, mirrors canonical.py).
+/// Stage one closed-domain Python object to a serde `Value` (attached only:
+/// touches Python memory, never detached).
+///
+/// Argument extraction in the `encoder::extract_row` family: mirrors
+/// `artifacts/canonical.py::_serialize` arm-for-arm (`None` -> null; `bool`
+/// BEFORE `int` since Python `bool` subclasses `int`; `int` with
+/// `|n| > MAX_SAFE_INTEGER` rejected, ints beyond `i64` over-window by
+/// construction; finite `float` only; `str`, where lone surrogates surface as
+/// the UTF-8 extraction failure; `list` element-wise, where `tuple` is NOT a
+/// list and is rejected exactly like the Python authority; `dict` with
+/// non-`str` keys rejected; anything else rejected). All JCS bytes math stays
+/// in `feed::canon`; `record` names the batch item for errors.
+fn py_to_value(obj: &Bound<'_, PyAny>, record: &str) -> Result<serde_json::Value, String> {
+    if obj.is_none() {
+        return Ok(serde_json::Value::Null);
+    }
+    if obj.is_instance_of::<PyBool>() {
+        let flag = obj
+            .extract::<bool>()
+            .map_err(|e| format!("{record}: bool unreadable: {e}"))?;
+        return Ok(serde_json::Value::Bool(flag));
+    }
+    if obj.is_instance_of::<PyInt>() {
+        match obj.extract::<i64>() {
+            Ok(n) => {
+                if n > hydra_feed::canon::MAX_SAFE_INTEGER
+                    || n < -hydra_feed::canon::MAX_SAFE_INTEGER
+                {
+                    return Err(format!(
+                        "{record}: integer {n} exceeds the IEEE 754 double-safe range; serialize it as a float or string"
+                    ));
+                }
+                return Ok(serde_json::Value::Number(n.into()));
+            }
+            Err(_) => {
+                return Err(format!(
+                    "{record}: integer exceeds the IEEE 754 double-safe range; serialize it as a float or string"
+                ));
+            }
+        }
+    }
+    if obj.is_instance_of::<PyFloat>() {
+        let value = obj
+            .extract::<f64>()
+            .map_err(|e| format!("{record}: float unreadable: {e}"))?;
+        if !value.is_finite() {
+            return Err(format!(
+                "{record}: non-finite number {value:?} has no canonical serialization"
+            ));
+        }
+        match serde_json::Number::from_f64(value) {
+            Some(number) => return Ok(serde_json::Value::Number(number)),
+            None => {
+                return Err(format!(
+                    "{record}: non-finite number has no canonical serialization"
+                ));
+            }
+        }
+    }
+    if obj.is_instance_of::<PyString>() {
+        match obj.extract::<String>() {
+            Ok(text) => return Ok(serde_json::Value::String(text)),
+            Err(e) => {
+                return Err(format!(
+                    "{record}: string contains an unpaired surrogate (invalid Unicode): {e}"
+                ));
+            }
+        }
+    }
+    if obj.is_instance_of::<PyList>() {
+        let elements: Vec<Bound<'_, PyAny>> = obj
+            .extract()
+            .map_err(|e| format!("{record}: list unreadable: {e}"))?;
+        let mut array = Vec::with_capacity(elements.len());
+        for item in &elements {
+            array.push(py_to_value(item, record)?);
+        }
+        return Ok(serde_json::Value::Array(array));
+    }
+    if obj.is_instance_of::<PyDict>() {
+        let dict: Bound<'_, PyDict> = obj
+            .extract()
+            .map_err(|e| format!("{record}: dict unreadable: {e}"))?;
+        let mut map = serde_json::Map::with_capacity(dict.len());
+        for (key, value) in dict.iter() {
+            if !key.is_instance_of::<PyString>() {
+                return Err(format!(
+                    "{record}: object key is not a string; JSON objects are string-keyed only"
+                ));
+            }
+            let name: String = key.extract().map_err(|e| {
+                format!("{record}: object key contains an unpaired surrogate (invalid Unicode): {e}")
+            })?;
+            map.insert(name, py_to_value(&value, record)?);
+        }
+        return Ok(serde_json::Value::Object(map));
+    }
+    Err(format!(
+        "{record}: value is outside the canonical JSON domain (null, bool, string, finite number, array, string-keyed object only)"
+    ))
+}
+
+/// Detached batch canonical-JSON bytes over structured Python objects: one
+/// `detach` around the whole fan-out (never per-item attach), blobs wrapped
+/// attached.
+///
+/// Blob `i` is byte-identical to `artifacts/canonical.py::canonical_bytes`
+/// of `items[i]`: staged `Value`s go through the same
+/// [`hydra_feed::canon::canonical_bytes_value`] JCS entry as the digest path,
+/// so parity holds by construction, never by per-call recomputation. The
+/// first reject fails the whole call as `ValueError` naming the item index
+/// (row-level record ids belong to the packet slice, not this thin boundary).
+/// Observability: one batch tick (no digests: bytes out, not hashes).
+#[pyfunction]
+fn batch_canonical_bytes(py: Python<'_>, items: Vec<Bound<'_, PyAny>>) -> PyResult<Vec<Py<PyBytes>>> {
+    let mut staged: Vec<serde_json::Value> = Vec::with_capacity(items.len());
+    for (idx, obj) in items.iter().enumerate() {
+        let record = format!("bridge:batch_canonical_bytes[{idx}]");
+        staged.push(py_to_value(obj, &record).map_err(PyValueError::new_err)?);
+    }
+    let out = py
+        .detach(|| -> Result<Vec<Vec<u8>>, String> {
+            let mut acc: Vec<Vec<u8>> = Vec::with_capacity(staged.len());
+            for (idx, value) in staged.iter().enumerate() {
+                let record = format!("bridge:batch_canonical_bytes[{idx}]");
+                let bytes = hydra_feed::canon::canonical_bytes_value(value, &record)
+                    .map_err(|e| format!("canon JCS emit rejected: {e:?}"))?;
+                acc.push(bytes);
+            }
+            Ok(acc)
+        })
+        .map_err(PyValueError::new_err)?;
+    bump_batches(py, 1);
+    Ok(out
+        .iter()
+        .map(|blob| PyBytes::new(py, blob).unbind())
+        .collect())
 }
 
 /// Open a NEW stream spec (validated frozen value, no RNG consumed yet).
@@ -468,6 +610,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     sub.add_function(wrap_pyfunction!(of_canonical_json, &sub)?)?;
     sub.add_function(wrap_pyfunction!(batch_sha256, &sub)?)?;
     sub.add_function(wrap_pyfunction!(batch_of_canonical, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(batch_canonical_bytes, &sub)?)?;
     sub.add_function(wrap_pyfunction!(open_stream, &sub)?)?;
     sub.add_function(wrap_pyfunction!(philox_block, &sub)?)?;
     sub.add_function(wrap_pyfunction!(bounded, &sub)?)?;

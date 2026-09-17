@@ -15,8 +15,6 @@ from hydra2.artifacts.digest import sha256_digest
 from hydra2.contracts.common import ContractError, DigestText
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from hydra2.belief.corpus import TinyCorpus
     from hydra2.contracts.randomness import RandomStream
 
@@ -107,16 +105,3 @@ class NaturalConfirmationRunner:
                 )
             )
         return tuple(out)
-
-    def replay_is_deterministic(
-        self,
-        cases: tuple[ConfirmationCase, ...],
-        *,
-        make_rng: Callable[[], RandomStream],
-    ) -> bool:
-        """Helper for test: same make_rng() must produce identical results."""
-        rng1: RandomStream = make_rng()
-        rng2: RandomStream = make_rng()
-        r1 = self.confirm(cases, rng=rng1)
-        r2 = self.confirm(cases, rng=rng2)
-        return r1 == r2

@@ -149,20 +149,6 @@ class OracleTeacher(nn.Module):
             )
         return out
 
-    def soft_targets(
-        self, actor_features: torch.Tensor, privileged_features: torch.Tensor
-    ) -> dict[str, torch.Tensor]:
-        _ = self.eval()
-        with torch.no_grad():
-            out = self.forward(actor_features, privileged_features)
-            # Soft targets via temperature 1.0 softmax
-            return {
-                "belief_probs": F.softmax(out["belief_logits"], dim=-1),
-                "value_probs": F.softmax(out["value_logits"], dim=-1),
-                "event_probs": F.softmax(out["event_logits"], dim=-1),
-                "policy_probs": F.softmax(out["policy_logits"].float(), dim=-1),
-            }
-
 
 class StudentBeliefModel(nn.Module):
     """Actor-visible student — never sees privileged features.

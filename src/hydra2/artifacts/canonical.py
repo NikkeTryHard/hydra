@@ -10,11 +10,13 @@ object. NaN/Inf, non-string object keys, integers outside the IEEE 754
 double-safe range, lone surrogates, and duplicate keys at the parse boundary
 raise :class:`CanonicalizationError`/:class:`ContractError`.
 
-The Python serializer below is the canon authority (no bytes-returning
-``canon_rng`` pyfn exists). :func:`canonical_bytes` is pure Python with no
-bridge judge on the hot path — digests are ``hashlib.sha256`` over these
-bytes at the call sites; cross-implementation parity stays pinned by tests,
-never by per-call recomputation.
+The Python serializer below is the canon authority. :func:`canonical_bytes`
+is pure Python with no bridge judge on the hot path — digests are
+``hashlib.sha256`` over these bytes at the call sites;
+:func:`canonical_bytes_batch` moves the same serialization across ONE bridge
+FFI per batch (byte-identical blobs, amortized over an act's docs).
+Cross-implementation parity stays pinned by tests, never by per-call
+recomputation.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ from hydra2.contracts.common import CanonicalizationError, ContractError
 __all__ = [
     "MAX_SAFE_INTEGER",
     "canonical_bytes",
+    "canonical_bytes_batch",
     "canonicalize",
     "es6_number_to_string",
     "loads_canonical",
@@ -206,6 +209,25 @@ def canonical_bytes(value: Any) -> bytes:
     # judge here; digest call sites hash these bytes with hashlib and tests
     # pin Rust parity.
     return canonicalize(value).encode("utf-8")
+
+
+def canonical_bytes_batch(values: list[Any]) -> list[bytes]:
+    """RFC 8785 canonical UTF-8 bytes for each of ``values`` via ONE bridge FFI.
+
+    Byte-identical to ``[canonical_bytes(v) for v in values]``: the batch
+    crosses the interpreter boundary once (amortized over an act's packet /
+    observation / telemetry docs) instead of paying one FFI per doc. The Rust
+    side stages each object (closed domain: None/bool/int/float/str/list/dict;
+    bool-before-int, tuples rejected, non-string keys rejected,
+    ``|int| > MAX_SAFE_INTEGER`` rejected, NaN/Inf and lone surrogates
+    rejected) then JCS-emits the staged values detached. The first reject
+    fails the whole call with ``ValueError`` naming the item index.
+    Fail-closed: ``ImportError`` with a ``build-ext`` hint when the bridge is
+    not built; bridge errors raise, never silent.
+    """
+    bridge = _require_bridge()
+    native_out = bridge._canon_rng().batch_canonical_bytes(values)
+    return [bytes(blob) for blob in native_out]
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
