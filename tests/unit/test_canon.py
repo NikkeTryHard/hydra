@@ -10,12 +10,14 @@ import json
 
 import pytest
 
-from hydra2._canon import (
-    atomic_write_bytes,
-    canonical_json_bytes,
+from hydra2.artifacts.atomic import atomic_replace_bytes as atomic_write_bytes
+from hydra2.artifacts.canonical import canonical_bytes as canonical_json_bytes
+from hydra2.artifacts.digest import (
+    of_canonical as sha256_digest_of_json,
+)
+from hydra2.artifacts.digest import (
     require_digest_match,
     sha256_digest,
-    sha256_digest_of_json,
 )
 from hydra2.contracts.common import (
     CanonicalizationError,
