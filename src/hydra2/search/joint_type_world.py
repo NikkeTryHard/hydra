@@ -14,6 +14,9 @@ from hydra2.search.joint_types import (
     FORBIDDEN_IN_TREE_KEY as FORBIDDEN_IN_TREE_KEY,
 )
 from hydra2.search.joint_types import (
+    THETA_IDS as THETA_IDS,
+)
+from hydra2.search.joint_types import (
     JointParticle as JointParticle,
 )
 from hydra2.search.joint_types import (

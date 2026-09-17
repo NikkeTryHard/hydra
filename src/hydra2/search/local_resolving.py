@@ -87,6 +87,9 @@ from hydra2.search.local_strategy import (
     _fictitious_play_update as _fictitious_play_update,
 )
 from hydra2.search.local_strategy import (
+    exhaustive_tiny_game_values as exhaustive_tiny_game_values,
+)
+from hydra2.search.local_strategy import (
     is_equilibrium_claimed as is_equilibrium_claimed,
 )
 from hydra2.search.local_strategy import (

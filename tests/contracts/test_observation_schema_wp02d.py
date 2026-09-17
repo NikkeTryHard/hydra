@@ -189,7 +189,7 @@ class TestSchemaHashWiring:
             "rules_hash": wp02d._RULES_HASH,
             "action_table_hash": DigestText("sha256:" + "7b" * 32),
             "expected_legal_mask_length": 32,
-            "event_schema_hash": wp02d.ev.load_event_schema(wp02d.EVENT_SCHEMA_PATH)["payload"][
+            "event_schema_hash": wp02d.load_event_schema(wp02d.EVENT_SCHEMA_PATH)["payload"][
                 "digest"
             ],
             "packet_boundary_hash": wp02d._PACKET_BOUNDARY_HASH,

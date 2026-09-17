@@ -42,11 +42,23 @@ from hydra2.search.pbrf_commit import (
 from hydra2.search.pbrf_commit import (
     commit as commit,
 )
+from hydra2.search.pbrf_commit import (
+    rekey_and_verify as rekey_and_verify,
+)
 from hydra2.search.pbrf_forest import (
     ImmutableForest as ImmutableForest,
 )
 from hydra2.search.pbrf_forest import (
     _conditional_carry_logps as _conditional_carry_logps,
+)
+from hydra2.search.pbrf_forest import (
+    _is_target_compatible as _is_target_compatible,
+)
+from hydra2.search.pbrf_forest import (
+    _tile_for_successor as _tile_for_successor,
+)
+from hydra2.search.pbrf_forest import (
+    _verify_delta_reconstruction as _verify_delta_reconstruction,
 )
 from hydra2.search.pbrf_forest import (
     build_pbrf as build_pbrf,
