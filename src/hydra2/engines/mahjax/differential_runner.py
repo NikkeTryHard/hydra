@@ -12,10 +12,14 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.artifacts.digest import of_canonical
 from hydra2.conformance.runner import TraceRunnerError, wall_schedule_for
 from hydra2.engines.mahjax.differential_cases import SCENARIO_REGISTRY
-from hydra2.engines.mahjax.differential_compare import _compare_projections as _compare_projections
+from hydra2.engines.mahjax.differential_compare import (
+    _compare_projections as _compare_projections,
+)
 from hydra2.engines.mahjax.differential_compare import (
     _persist_counterexample as _persist_counterexample,
 )
@@ -32,7 +36,9 @@ from hydra2.engines.mahjax.differential_projection import (
     _ACTION_TSUMOGIRI,
     _mahjax_modules,
 )
-from hydra2.engines.mahjax.differential_projection import CheckpointFailure as CheckpointFailure
+from hydra2.engines.mahjax.differential_projection import (
+    CheckpointFailure as CheckpointFailure,
+)
 from hydra2.engines.mahjax.differential_projection import DifferentialResult as DifferentialResult
 from hydra2.engines.mahjax.differential_projection import Scenario as Scenario
 from hydra2.engines.mahjax.differential_projection import _wall_for_scenario as _wall_for_scenario
@@ -49,7 +55,7 @@ from hydra2.engines.mahjax.differential_projection import wall_to_mahjax_deck as
 
 if TYPE_CHECKING:
     from hydra2.contracts.common import DigestText
-    from hydra2.contracts.rules import RulesManifest
+    from hydra2.contracts.rules_manifest import RulesManifest
 
 __all__ = [
     "CONVERGENT_DORA_INDICATOR_TYPES",
@@ -352,7 +358,7 @@ def run_differential(
         import json as _json
 
         from hydra2.config import repo_root as _diff_repo_root
-        from hydra2.contracts.rules import rules_manifest_from_payload
+        from hydra2.contracts.rules_manifest import rules_manifest_from_payload
 
         # Portable payload path: repo_root() marker walk (not parents[3] depth).
         # Evidence: https://docs.python.org/3/library/pathlib.html#pathlib.Path.resolve
@@ -374,9 +380,6 @@ def run_differential(
     # rules_id
     if rules_id is None:
         # use manifest digest
-        from hydra2.contracts.rules import (
-            rules_manifest_from_payload as _rmp,  # noqa: F401  # reason: fn-scope import
-        )
 
         # manifest has rules_id attribute? It's string id
         try:
@@ -388,9 +391,6 @@ def run_differential(
 
             # compute from file
             from hydra2.config import repo_root as _rr
-            from hydra2.contracts.rules import (
-                RulesManifest,  # noqa: F401  # reason: fn-scope import
-            )
 
             _ = _rr() / "configs" / "rules" / "tenhou_4p_hanchan_v1.json"
             # The file contains envelope with payload; we need payload digest?
@@ -418,9 +418,7 @@ def run_differential(
     if isinstance(rules_id, str) and not rules_id.startswith("sha256:"):
         # try to coerce
         try:
-            from hydra2.contracts.common import make_digest_text
-
-            rules_id = str(make_digest_text(rules_id))
+            rules_id = str(_bridge_contracts.make_digest_text(rules_id))
         except Exception:
             rules_id = "sha256:" + hashlib.sha256(str(rules_id).encode()).hexdigest()
     # run scenarios
@@ -464,7 +462,6 @@ def run_differential(
         try:
             # rules_id for token is the manifest's rules_id string? Use the same as shell expects
             # Shell expects DigestText of rules_id; we have payload digest
-            from hydra2.contracts.common import make_digest_text
 
             # Try to use actual manifest rules_id if available
             try:
@@ -476,9 +473,9 @@ def run_differential(
                 # The shell's qualify checks token.rules_id
                 # == supplied rules_id, so we must be consistent
                 # Use payload digest as token's rules_id
-                token_rules_id = make_digest_text(rules_id)
+                token_rules_id = _bridge_contracts.make_digest_text(rules_id)
             except Exception:
-                token_rules_id = make_digest_text(rules_id)
+                token_rules_id = _bridge_contracts.make_digest_text(rules_id)
             p, d = _publish_token(root, str(token_rules_id))
             token_path = str(p)
             token_digest = d

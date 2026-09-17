@@ -615,7 +615,7 @@ def test_determinism() -> None:
     )
     assert res3["selected_abstract"] == res4["selected_abstract"]
     # via act API also deterministic — use canonical actions for SearchRequest
-    from hydra2.contracts.action import CanonicalAction
+    from hydra2.contracts.action_model import CanonicalAction
 
     def _canon_legal() -> tuple[CanonicalAction, ...]:
         # Two simple discards that pass structural validation
@@ -725,7 +725,7 @@ def test_report_and_candidate_spec_binding() -> None:
     spec2 = make_candidate5_spec(config=config2)
     assert candidate_spec_hash(spec2) != h1
     # act returns result bound to spec hash — use canonical actions
-    from hydra2.contracts.action import CanonicalAction
+    from hydra2.contracts.action_model import CanonicalAction
 
     def _canon_legal2() -> tuple[CanonicalAction, ...]:
         return (

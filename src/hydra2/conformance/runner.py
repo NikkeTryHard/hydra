@@ -21,16 +21,16 @@ from hydra2.artifacts.atomic import atomic_replace_bytes
 from hydra2.artifacts.digest import of_bytes, of_canonical
 from hydra2.config import artifact_root, repo_root
 from hydra2.contracts.common import Seat, TileId
-from hydra2.contracts.rules import resolve_final_ranks
+from hydra2.contracts.rules_manifest import resolve_final_ranks
 from hydra2.engines.protocol import WallSchedule, wall_schedule_digest
 from hydra2.engines.riichienv import RiichiEnvExactSimulator
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from hydra2.contracts.action import CanonicalAction
+    from hydra2.contracts.action_model import CanonicalAction
     from hydra2.contracts.event_envelope import EventEnvelope
-    from hydra2.contracts.rules import RulesManifest
+    from hydra2.contracts.rules_manifest import RulesManifest
 __all__ = [
     "CaseResult",
     "ExpectationStep",

@@ -18,12 +18,9 @@ import warnings
 from pathlib import Path
 from typing import Any
 
-from hydra2._canon import (
-    atomic_write_bytes,
-    canonical_json_bytes,
-    sha256_digest_of_json,
-    sha256_file,
-)
+from hydra2.artifacts.atomic import atomic_replace_bytes
+from hydra2.artifacts.canonical import canonical_bytes
+from hydra2.artifacts.digest import of_canonical, sha256_file
 from hydra2.config import MAHJAX_GIT_URL, MAHJAX_PIN_SHA, repo_root
 
 ENV_MANIFEST_ARTIFACT_TYPE = "hydra2.environment"
@@ -151,13 +148,13 @@ def capture_environment_manifest() -> tuple[dict[str, Any], str]:
             "jax": dist_version("jax"),
         },
     }
-    return manifest, sha256_digest_of_json(manifest)
+    return manifest, of_canonical(manifest)
 
 
 def write_environment_manifest(destination: Path) -> tuple[Path, str]:
     """Capture and atomically publish the manifest; returns (path, sha256)."""
     manifest, digest = capture_environment_manifest()
-    atomic_write_bytes(Path(destination), canonical_json_bytes(manifest))
+    atomic_replace_bytes(Path(destination), canonical_bytes(manifest))
     return Path(destination), digest
 
 

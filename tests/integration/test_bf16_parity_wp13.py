@@ -44,8 +44,14 @@ import pytest
 import torch
 
 from hydra2.contracts.common import ContractError
-from hydra2.contracts.event import EVENT_KINDS, EventEnvelope, EventPayload
-from hydra2.contracts.observation import make_actor_observation
+from hydra2.contracts.event_envelope import (
+    EventEnvelope,
+    EventPayload,
+)
+from hydra2.contracts.event_vocab import (
+    EVENT_KINDS,
+)
+from hydra2.contracts.observation_actor import make_actor_observation
 from hydra2.models.encoder import ActorTensorBatch, encode_observations
 from hydra2.models.model import Hydra2BaselineModel, masked_policy, select_actions
 from hydra2.models.schema import BASELINE_ACTION_COUNT

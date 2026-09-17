@@ -31,14 +31,13 @@ _COMMON_AVAILABLE = True  # common.py is the single authority, imported directly
 
 try:
     from hydra2.artifacts.canonical import canonical_bytes
-    from hydra2.contracts.common import ContractError, DigestText, make_digest_text
+    from hydra2.contracts.common import ContractError, DigestText
 
     _CONTRACTS_IMPORT_ERROR: ImportError | None = None
 except ImportError as exc:  # pragma: no cover
     canonical_bytes = Any  # type: ignore[no-redef]  # placeholder; _require_contracts() raises on use
     ContractError = Any  # type: ignore[no-redef]
     DigestText = Any  # type: ignore[no-redef]
-    make_digest_text = Any  # type: ignore[no-redef]
     _CONTRACTS_IMPORT_ERROR = exc
 
 
@@ -95,7 +94,7 @@ def _require_belief() -> None:
 
 
 try:
-    from hydra2.contracts.observation import make_actor_observation
+    from hydra2.contracts.observation_actor import make_actor_observation
 
     _OBS_IMPORT_ERROR: ImportError | None = None
 except ImportError as exc:

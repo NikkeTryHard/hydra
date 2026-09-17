@@ -17,15 +17,23 @@ import math
 import time
 from typing import Any
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.contracts.common import ContractError, PacketPartitionError, StaleBeliefError
-from hydra2.contracts.common import make_digest_text as make_digest_text
-from hydra2.search.common import Planner as Planner
-from hydra2.search.common import SearchResult as SearchResult
-from hydra2.search.common import candidate_spec_hash as candidate_spec_hash
+from hydra2.search.common import (
+    Planner as Planner,
+)
+from hydra2.search.common import (
+    SearchResult as SearchResult,
+)
 from hydra2.search.pbrf_commit import commit as commit
 from hydra2.search.pbrf_forest import build_pbrf as build_pbrf
-from hydra2.search.pbrf_partition import _BELIEF_IMPORT_ERROR as _BELIEF_IMPORT_ERROR
-from hydra2.search.pbrf_partition import NaturalBelief as NaturalBelief
+from hydra2.search.pbrf_partition import (
+    _BELIEF_IMPORT_ERROR as _BELIEF_IMPORT_ERROR,
+)
+from hydra2.search.pbrf_partition import (
+    NaturalBelief as NaturalBelief,
+)
 from hydra2.search.pbrf_partition import RandomStream as RandomStream
 from hydra2.search.pbrf_partition import _action_id as _action_id
 from hydra2.search.pbrf_partition import _freeze_candidates as _freeze_candidates
@@ -306,10 +314,10 @@ class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
                 fallback_vec = UtilityVector(
                     values=(0.0, 0.0, 0.0, 0.0),
                     utility_id=str(getattr(cand_spec, "utility_id", "expected_final_placement")),
-                    utility_manifest_hash=make_digest_text(
+                    utility_manifest_hash=_bridge_contracts.make_digest_text(
                         str(getattr(cand_spec, "utility_manifest_hash", "sha256:" + "0" * 64))
                     ),
-                    rules_hash=make_digest_text(
+                    rules_hash=_bridge_contracts.make_digest_text(
                         str(getattr(cand_spec, "rules_hash", "sha256:" + "a" * 64))
                     ),
                 )
@@ -322,9 +330,9 @@ class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
                 selected_action=fallback,
                 candidate_actions=legal,
                 value_vectors=fb_vectors,
-                candidate_spec_hash=make_digest_text(spec_hash),
+                candidate_spec_hash=_bridge_contracts.make_digest_text(spec_hash),
                 telemetry=telemetry,
-                evidence_refs=(make_digest_text(spec_hash),),
+                evidence_refs=(_bridge_contracts.make_digest_text(spec_hash),),
                 completed=False,
             )
         # -- evaluate each action's aggregated child values -------------------
@@ -391,14 +399,14 @@ class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
                                 utility_id=str(
                                     getattr(cand_spec, "utility_id", "expected_final_placement")
                                 ),
-                                utility_manifest_hash=make_digest_text(
+                                utility_manifest_hash=_bridge_contracts.make_digest_text(
                                     str(
                                         getattr(
                                             cand_spec, "utility_manifest_hash", "sha256:" + "f" * 64
                                         )
                                     )
                                 ),
-                                rules_hash=make_digest_text(
+                                rules_hash=_bridge_contracts.make_digest_text(
                                     str(getattr(cand_spec, "rules_hash", "sha256:" + "a" * 64))
                                 ),
                             )
@@ -415,9 +423,9 @@ class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
                 selected_action=fallback,
                 candidate_actions=legal,
                 value_vectors=fb_vectors2,
-                candidate_spec_hash=make_digest_text(spec_hash),
+                candidate_spec_hash=_bridge_contracts.make_digest_text(spec_hash),
                 telemetry=telemetry,
-                evidence_refs=(make_digest_text(spec_hash),),
+                evidence_refs=(_bridge_contracts.make_digest_text(spec_hash),),
                 completed=False,
             )
 
@@ -483,10 +491,10 @@ class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
                         utility_id=str(
                             getattr(cand_spec, "utility_id", "expected_final_placement")
                         ),
-                        utility_manifest_hash=make_digest_text(
+                        utility_manifest_hash=_bridge_contracts.make_digest_text(
                             str(getattr(cand_spec, "utility_manifest_hash", "sha256:" + "f" * 64))
                         ),
-                        rules_hash=make_digest_text(
+                        rules_hash=_bridge_contracts.make_digest_text(
                             str(getattr(cand_spec, "rules_hash", "sha256:" + "a" * 64))
                         ),
                     )
@@ -501,9 +509,9 @@ class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
             selected_action=selected,
             candidate_actions=legal,
             value_vectors=value_vectors,
-            candidate_spec_hash=make_digest_text(spec_hash),
+            candidate_spec_hash=_bridge_contracts.make_digest_text(spec_hash),
             telemetry=telemetry,
-            evidence_refs=(make_digest_text(spec_hash),),
+            evidence_refs=(_bridge_contracts.make_digest_text(spec_hash),),
             completed=True,
         )
 

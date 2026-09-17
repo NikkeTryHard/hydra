@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from hydra2.artifacts.digest import of_canonical
-from hydra2.contracts.rules import rules_manifest_from_payload
+from hydra2.contracts.rules_manifest import rules_manifest_from_payload
 from hydra2.engines.protocol import (
     WallSchedule,
     seat_permutation_literal,
@@ -27,7 +27,7 @@ from hydra2.engines.riichienv import RiichiEnvExactSimulator
 if TYPE_CHECKING:
     from typing import Any
 
-    from hydra2.contracts.action import CanonicalAction
+    from hydra2.contracts.action_model import CanonicalAction
 
 pytestmark = pytest.mark.contract_package("WP-03A")
 

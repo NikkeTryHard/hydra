@@ -15,34 +15,40 @@ import hashlib
 from typing import TYPE_CHECKING, Any, cast
 
 import riichienv
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
-from hydra2.contracts.action import canonical_action_codec as canonical_action_codec
-from hydra2.contracts.common import ContractError as ContractError
-from hydra2.contracts.common import IllegalActionError as IllegalActionError
-from hydra2.contracts.common import make_digest_text as make_digest_text
-from hydra2.contracts.common import make_seat as make_seat
-from hydra2.contracts.common import make_tile_id as make_tile_id
-from hydra2.contracts.observation import ObservationBuilder as ObservationBuilder
+from hydra2.contracts.action_table import canonical_action_codec as canonical_action_codec
+from hydra2.contracts.common import (
+    ContractError as ContractError,
+)
+from hydra2.contracts.common import (
+    IllegalActionError as IllegalActionError,
+)
+from hydra2.contracts.observation_assembly import ObservationBuilder as ObservationBuilder
 from hydra2.engines.protocol import TransitionResult as TransitionResult
 from hydra2.engines.riichienv.actions import legal_view as legal_view
 from hydra2.engines.riichienv.adapter_events_a import AdapterEventsAMixin as AdapterEventsAMixin
 from hydra2.engines.riichienv.adapter_events_b import AdapterEventsBMixin as AdapterEventsBMixin
 from hydra2.engines.riichienv.adapter_identity import _BAKAZE_TO_TILE_TYPE as _BAKAZE_TO_TILE_TYPE
 from hydra2.engines.riichienv.events import make_envelope as make_envelope
-from hydra2.engines.riichienv.state import live_wall_remaining as live_wall_remaining
-from hydra2.engines.riichienv.state import seat_winds_for_dealer as seat_winds_for_dealer
+from hydra2.engines.riichienv.state import (
+    live_wall_remaining as live_wall_remaining,
+)
+from hydra2.engines.riichienv.state import (
+    seat_winds_for_dealer as seat_winds_for_dealer,
+)
 from hydra2.engines.riichienv.state import state_digest as state_digest
 from hydra2.engines.riichienv.walls import WALL_STREAM_NAME as WALL_STREAM_NAME
 
 if TYPE_CHECKING:
     from collections.abc import Sequence as Sequence
 
-    from hydra2.contracts.action import CanonicalAction as CanonicalAction
-    from hydra2.contracts.action import Phase as Phase
+    from hydra2.contracts.action_kinds import Phase as Phase
+    from hydra2.contracts.action_model import CanonicalAction as CanonicalAction
     from hydra2.contracts.common import Seat as Seat
     from hydra2.contracts.common import TileId as TileId
     from hydra2.contracts.event_envelope import EventEnvelope as EventEnvelope
-    from hydra2.contracts.rules import RulesManifest as RulesManifest
+    from hydra2.contracts.rules_manifest import RulesManifest as RulesManifest
     from hydra2.contracts.utility import RawOutcome as RawOutcome
 
 __all__ = [
@@ -165,11 +171,11 @@ class AdapterStepMixin(AdapterEventsAMixin, AdapterEventsBMixin):
         self._builder = ObservationBuilder(
             game_id=self._game_id,
             rules_id=self._rules.rules_id,
-            rules_hash=make_digest_text(self._rules_hash),
+            rules_hash=_bridge_contracts.make_digest_text(self._rules_hash),
             action_table_hash=self._table.digest,
             expected_legal_mask_length=len(self._table.actions),
-            event_schema_hash=make_digest_text(self._event_schema_hash),
-            packet_boundary_hash=make_digest_text(self._packet_boundary_hash),
+            event_schema_hash=_bridge_contracts.make_digest_text(self._event_schema_hash),
+            packet_boundary_hash=_bridge_contracts.make_digest_text(self._packet_boundary_hash),
         )
         self._mode = None
         self._decision_seat = None
@@ -228,7 +234,7 @@ class AdapterStepMixin(AdapterEventsAMixin, AdapterEventsBMixin):
 
     def _context_for(self, seat: int, *, phase_override: str | None = None):
         assert self._env is not None
-        from hydra2.contracts.action import ActionContext
+        from hydra2.contracts.action_table import ActionContext
 
         engine_pid = int(self._perm[seat])
         hand = list(self._env.hands[engine_pid])
@@ -249,12 +255,14 @@ class AdapterStepMixin(AdapterEventsAMixin, AdapterEventsBMixin):
                 phase = "draw_decision"
         offered = self._last_discard[1]
         return ActionContext(
-            actor=make_seat(seat),
+            actor=_bridge_contracts.make_seat(seat),
             action_table_hash=self._table.digest,
             phase=cast("Phase", phase),
-            offered_tile=None if offered is None else make_tile_id(offered),
-            offered_by=None if self._last_discard[0] is None else make_seat(self._last_discard[0]),
-            own_concealed_tiles=tuple(make_tile_id(t) for t in sorted(hand)),
+            offered_tile=None if offered is None else _bridge_contracts.make_tile_id(offered),
+            offered_by=None
+            if self._last_discard[0] is None
+            else _bridge_contracts.make_seat(self._last_discard[0]),
+            own_concealed_tiles=tuple(_bridge_contracts.make_tile_id(t) for t in sorted(hand)),
             visible_melds=tuple(melds),
         )
 
@@ -317,10 +325,10 @@ class AdapterStepMixin(AdapterEventsAMixin, AdapterEventsBMixin):
     def _result(self, marker: int, *, next_actor: int | None) -> TransitionResult:
         return TransitionResult(
             events=tuple(self._events[marker:]),
-            next_actor=None if next_actor is None else make_seat(next_actor),
+            next_actor=None if next_actor is None else _bridge_contracts.make_seat(next_actor),
             terminal=self._terminal,
             raw_outcome=self._raw_outcome,
-            state_digest=make_digest_text(self._state_digest()),
+            state_digest=_bridge_contracts.make_digest_text(self._state_digest()),
         )
 
     def _state_digest(self) -> str:

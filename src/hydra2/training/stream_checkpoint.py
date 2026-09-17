@@ -13,7 +13,6 @@ Burn/Candle out).
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import importlib
 import io
 import json
@@ -24,15 +23,24 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 from hydra2.artifacts.atomic import atomic_replace_bytes as atomic_replace_bytes
+from hydra2.artifacts.digest import sha256_digest as sha256_digest
 from hydra2.contracts.common import ContractError as ContractError
 from hydra2.data.stream import GameStream as GameStream
 from hydra2.runtime.checkpoint import capture_rng_state as capture_rng_state
 from hydra2.training.dataset import encode_observation_rows as encode_observation_rows
-from hydra2.training.stream_build import _prefix_hashes_name as _prefix_hashes_name
-from hydra2.training.stream_build import _rng_anchors as _rng_anchors
+from hydra2.training.stream_build import (
+    _prefix_hashes_name as _prefix_hashes_name,
+)
+from hydra2.training.stream_build import (
+    _rng_anchors as _rng_anchors,
+)
 from hydra2.training.stream_build import _sidecar_cursor as _sidecar_cursor
-from hydra2.training.stream_expand import _FEATURE_FOLD_DIM as _FEATURE_FOLD_DIM
-from hydra2.training.stream_expand import _SINGLETON_RANK as _SINGLETON_RANK
+from hydra2.training.stream_expand import (
+    _FEATURE_FOLD_DIM as _FEATURE_FOLD_DIM,
+)
+from hydra2.training.stream_expand import (
+    _SINGLETON_RANK as _SINGLETON_RANK,
+)
 from hydra2.training.stream_expand import _expand_game_planes as _expand_game_planes
 from hydra2.training.stream_expand import _expand_game_rows as _expand_game_rows
 from hydra2.training.stream_expand import _row_to_dict as _row_to_dict
@@ -186,7 +194,7 @@ def _write_streaming_checkpoint(
     prefix_record = {
         "file": prefix_name,
         "count": len(prefix_hashes),
-        "sha256": "sha256:" + hashlib.sha256(prefix_blob).hexdigest(),
+        "sha256": str(sha256_digest(prefix_blob)),
     }
     payload: dict[str, Any] = {
         "model_state": loop.model.state_dict(),
@@ -212,7 +220,7 @@ def _write_streaming_checkpoint(
     buffer = io.BytesIO()
     torch.save(payload, buffer)
     blob = buffer.getvalue()
-    payload_digest = "sha256:" + hashlib.sha256(blob).hexdigest()
+    payload_digest = str(sha256_digest(blob))
     ckpt_path = checkpoint_dir / f"ckpt-{update:06d}.pt"
     atomic_replace_bytes(ckpt_path, blob)
 

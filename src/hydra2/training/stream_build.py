@@ -9,12 +9,16 @@ helpers the checkpoint writer and resume gates share.
 
 from __future__ import annotations
 
-import hashlib
 from typing import TYPE_CHECKING, Any
 
 import torch
 
-from hydra2.artifacts.digest import of_canonical as of_canonical
+from hydra2.artifacts.digest import (
+    of_canonical as of_canonical,
+)
+from hydra2.artifacts.digest import (
+    sha256_digest as sha256_digest,
+)
 from hydra2.contracts.common import ContractError as ContractError
 from hydra2.data.stream import manifest_digest as manifest_digest
 from hydra2.runtime.checkpoint import capture_rng_state as capture_rng_state
@@ -267,8 +271,8 @@ def _manifest_hashes_for_loop(
     config sections. Derivation failure raises loudly.
     """
     from hydra2.config import repo_root
-    from hydra2.contracts.action import load_action_table
-    from hydra2.contracts.observation import observation_schema_digest
+    from hydra2.contracts.action_artifact import load_action_table
+    from hydra2.contracts.observation_schema import observation_schema_digest
     from hydra2.engines.riichienv.identity import ENGINE_IDENTITY
 
     repo = repo_root()
@@ -304,7 +308,7 @@ def _manifest_hashes_for_loop(
         "optimizer_spec_hash": str(of_canonical(optimizer_doc)),
         "scheduler_spec_hash": str(of_canonical(scheduler_doc)),
         "environment_hash": str(ENGINE_IDENTITY.environment_hash),
-        "rules_hash": "sha256:" + hashlib.sha256(rules_bytes).hexdigest(),
+        "rules_hash": str(sha256_digest(rules_bytes)),
         "utility_manifest_hash": str(model.utility_manifest_hash),
         "action_schema_hash": action_digest,
         "observation_schema_hash": observation_digest,
@@ -315,17 +319,15 @@ def _manifest_hashes_for_loop(
 def _rng_anchors() -> dict[str, Any]:
     """JSON-safe anchors over the live torch RNG states (sidecar bundle)."""
     state = capture_rng_state()
-    anchors: dict[str, Any] = {
-        "torch_cpu_sha256": "sha256:" + hashlib.sha256(bytes(state["cpu"])).hexdigest()
-    }
+    anchors: dict[str, Any] = {"torch_cpu_sha256": str(sha256_digest(bytes(state["cpu"])))}
     if "cuda" in state and state["cuda"] is not None:
         cuda = state["cuda"]
         if isinstance(cuda, list):
             anchors["torch_cuda_sha256"] = [
-                "sha256:" + hashlib.sha256(bytes(device_state)).hexdigest() for device_state in cuda
+                str(sha256_digest(bytes(device_state))) for device_state in cuda
             ]
         else:
-            anchors["torch_cuda_sha256"] = "sha256:" + hashlib.sha256(bytes(cuda)).hexdigest()
+            anchors["torch_cuda_sha256"] = str(sha256_digest(bytes(cuda)))
     else:
         anchors["torch_cuda_sha256"] = None
     return anchors
@@ -338,7 +340,7 @@ def _verify_rng_anchors(payload_rng: Any, anchors: Any, *, ckpt: Path) -> None:
     if not isinstance(anchors, dict):
         raise ContractError(f"checkpoint sidecar rng_state must be a mapping: {ckpt}")
     expected_cpu = anchors.get("torch_cpu_sha256")
-    actual_cpu = "sha256:" + hashlib.sha256(bytes(payload_rng["cpu"])).hexdigest()
+    actual_cpu = str(sha256_digest(bytes(payload_rng["cpu"])))
     if expected_cpu != actual_cpu:
         raise ContractError(f"checkpoint RNG state mismatch (torch cpu): {ckpt}")
     payload_cuda = payload_rng.get("cuda")
@@ -348,9 +350,9 @@ def _verify_rng_anchors(payload_rng: Any, anchors: Any, *, ckpt: Path) -> None:
     if payload_cuda is None or expected_cuda is None:
         raise ContractError(f"checkpoint RNG state mismatch (torch cuda): {ckpt}")
     actual_list = (
-        ["sha256:" + hashlib.sha256(bytes(s)).hexdigest() for s in payload_cuda]
+        [str(sha256_digest(bytes(s))) for s in payload_cuda]
         if isinstance(payload_cuda, list)
-        else "sha256:" + hashlib.sha256(bytes(payload_cuda)).hexdigest()
+        else str(sha256_digest(bytes(payload_cuda)))
     )
     if actual_list != expected_cuda:
         raise ContractError(f"checkpoint RNG state mismatch (torch cuda): {ckpt}")
@@ -391,7 +393,7 @@ def _load_prefix_hashes(
         blob = (Path(checkpoint_dir) / name).read_bytes()
     except OSError as exc:
         raise ContractError(f"checkpoint prefix_hashes unreadable: {ckpt} ({exc})") from exc
-    if "sha256:" + hashlib.sha256(blob).hexdigest() != digest:
+    if str(sha256_digest(blob)) != digest:
         raise ContractError(f"checkpoint prefix_hashes digest mismatch: {ckpt}")
     lines = blob.decode("utf-8").splitlines()
     if len(lines) != count:

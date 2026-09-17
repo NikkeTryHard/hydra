@@ -33,7 +33,7 @@ from hydra2.models.schema import BASELINE_ACTION_COUNT
 from hydra2.training.dataset_parse import _resolve_live_or_parse
 
 if TYPE_CHECKING:
-    from hydra2.contracts.observation import ActorObservation
+    from hydra2.contracts.observation_actor import ActorObservation
 
 __all__ = [
     "_REAL_COUNT_KEYS",

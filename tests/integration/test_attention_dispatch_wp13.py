@@ -25,8 +25,11 @@ import pytest
 import torch
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from hydra2.contracts.event import EventEnvelope, EventPayload
-from hydra2.contracts.observation import make_actor_observation
+from hydra2.contracts.event_envelope import (
+    EventEnvelope,
+    EventPayload,
+)
+from hydra2.contracts.observation_actor import make_actor_observation
 from hydra2.models.encoder import ActorTensorBatch, encode_observations
 from hydra2.models.model import Hydra2BaselineModel
 from hydra2.models.schema import BASELINE_ACTION_COUNT

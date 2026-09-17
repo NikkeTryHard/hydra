@@ -18,20 +18,38 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 
 import riichienv
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
-from hydra2.contracts.action import ACTION_PHASES, CanonicalAction, canonical_action_codec
+from hydra2.contracts.action_kinds import (
+    ACTION_PHASES,
+)
+from hydra2.contracts.action_model import (
+    CanonicalAction,
+)
+from hydra2.contracts.action_table import (
+    canonical_action_codec,
+)
 from hydra2.contracts.common import (
     ContractError,
     InvalidActionError,
-    make_seat,
-    make_tile_id,
 )
-from hydra2.contracts.observation import VisibleMeld, visible_meld_id
+from hydra2.contracts.observation_types import (
+    VisibleMeld,
+    visible_meld_id,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from hydra2.contracts.action import ActionContext, ActionKind, ActionTable, JsonValue, Phase
+    from hydra2.contracts.action_kinds import (
+        ActionKind,
+        JsonValue,
+        Phase,
+    )
+    from hydra2.contracts.action_table import (
+        ActionContext,
+        ActionTable,
+    )
 __all__ = ["engine_matches_canonical", "expand_engine_legals", "legal_view"]
 
 _AT = riichienv.ActionType
@@ -65,11 +83,11 @@ def _action(
 ) -> CanonicalAction:
     return CanonicalAction(
         kind=cast("ActionKind", kind),
-        actor=make_seat(actor),
-        tile=None if tile is None else make_tile_id(tile),
-        called_tile=None if called_tile is None else make_tile_id(called_tile),
-        consumed_tiles=tuple(make_tile_id(t) for t in consumed),
-        source_seat=None if source is None else make_seat(source),
+        actor=_bridge_contracts.make_seat(actor),
+        tile=None if tile is None else _bridge_contracts.make_tile_id(tile),
+        called_tile=None if called_tile is None else _bridge_contracts.make_tile_id(called_tile),
+        consumed_tiles=tuple(_bridge_contracts.make_tile_id(t) for t in consumed),
+        source_seat=None if source is None else _bridge_contracts.make_seat(source),
         declares_riichi=(kind == "riichi_discard"),
         metadata=cast("tuple[tuple[str, JsonValue], ...]", metadata),
     )

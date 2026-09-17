@@ -17,22 +17,31 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from hydra2.artifacts.canonical import canonical_bytes
-from hydra2.contracts.common import ContractError, make_digest_text, make_seat, make_tile_id
-from hydra2.search.common import Planner as Planner
-from hydra2.search.common import ResourceBudget as ResourceBudget
+from hydra2.contracts.common import ContractError
+from hydra2.search.common import (
+    Planner as Planner,
+)
+from hydra2.search.common import (
+    ResourceBudget as ResourceBudget,
+)
 from hydra2.search.common import candidate_spec_hash as candidate_spec_hash
 from hydra2.search.pbrf_forest import build_pbrf as build_pbrf
 
 if TYPE_CHECKING:
     from hydra2.search.pbrf_forest import ImmutableForest as ImmutableForest
-from hydra2.search.pbrf_partition import CommitDisposition as CommitDisposition
-from hydra2.search.pbrf_partition import NaturalPacketKernel as NaturalPacketKernel
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
+from hydra2.search.pbrf_partition import (
+    CommitDisposition as CommitDisposition,
+)
+from hydra2.search.pbrf_partition import (
+    NaturalPacketKernel as NaturalPacketKernel,
+)
 from hydra2.search.pbrf_partition import PbrfConfig as PbrfConfig
 from hydra2.search.pbrf_partition import PolicySet as PolicySet
 from hydra2.search.pbrf_partition import _action_id as _action_id
 from hydra2.search.pbrf_partition import _require_kernel as _require_kernel
 from hydra2.search.pbrf_partition import _require_telemetry as _require_telemetry
-from hydra2.search.pbrf_partition import make_resource_telemetry as make_resource_telemetry
 
 __all__ = [
     "PbrfPlannerSearchMixin",
@@ -172,11 +181,11 @@ class PbrfPlannerSearchMixin:
                 mode=mode,
                 wall_id=None,
                 case_id=case_id,
-                candidate_spec_hash=make_digest_text(spec_hash),
+                candidate_spec_hash=_bridge_contracts.make_digest_text(spec_hash),
                 # NEVER-bind: fallback digest, not a verified binding.
-                hardware_hash=make_digest_text("sha256:" + "0" * 64),
+                hardware_hash=_bridge_contracts.make_digest_text("sha256:" + "0" * 64),
                 # NEVER-bind: fallback digest, not a verified binding.
-                environment_hash=make_digest_text("sha256:" + "0" * 64),
+                environment_hash=_bridge_contracts.make_digest_text("sha256:" + "0" * 64),
                 cold_start=False,
                 synchronized_elapsed_ms=elapsed_ms,
                 model_calls=self._model_calls,
@@ -208,12 +217,12 @@ class PbrfPlannerSearchMixin:
         # The actual legal actions are passed via request and frozen via _freeze_candidates
         # Here we just return a placeholder; the real candidates are supplied by caller via build_pbrf's candidates_fn
         # We will generate 2 dummy actions if needed
-        from hydra2.contracts.action import CanonicalAction  # local
+        from hydra2.contracts.action_model import CanonicalAction  # local
 
         try:
             a0 = CanonicalAction(
                 kind="pass",
-                actor=make_seat(0),
+                actor=_bridge_contracts.make_seat(0),
                 tile=None,
                 called_tile=None,
                 consumed_tiles=(),
@@ -223,8 +232,8 @@ class PbrfPlannerSearchMixin:
             )
             a1 = CanonicalAction(
                 kind="discard",
-                actor=make_seat(0),
-                tile=make_tile_id(0),
+                actor=_bridge_contracts.make_seat(0),
+                tile=_bridge_contracts.make_tile_id(0),
                 called_tile=None,
                 consumed_tiles=(),
                 source_seat=None,

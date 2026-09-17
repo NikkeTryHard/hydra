@@ -24,14 +24,14 @@ import math
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.artifacts.canonical import canonical_bytes
 from hydra2.contracts.common import (
     ContractError,
     DigestText,
     PacketPartitionError,
-    make_digest_text,
     make_parent_id,
-    make_tile_id,
 )
 
 try:
@@ -243,7 +243,7 @@ class ChildEntry:
             or self.raw_weight < 0
         ):
             raise ContractError("raw_weight must be finite nonnegative float")
-        object.__setattr__(self, "target_id", make_digest_text(self.target_id))
+        object.__setattr__(self, "target_id", _bridge_contracts.make_digest_text(self.target_id))
         if not isinstance(self.ancestors, tuple) or any(
             not isinstance(a, str) or a == "" for a in self.ancestors
         ):
@@ -254,8 +254,8 @@ class ChildEntry:
             if isinstance(self.tile, bool) or not isinstance(self.tile, int):
                 raise ContractError("tile must be a TileId int or None")
             try:
-                object.__setattr__(self, "tile", int(make_tile_id(self.tile)))
-            except ContractError:
+                object.__setattr__(self, "tile", int(_bridge_contracts.make_tile_id(self.tile)))
+            except ValueError:
                 raise ContractError("tile must be a TileId in 0..135 or None")
 
 

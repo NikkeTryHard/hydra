@@ -31,7 +31,7 @@ from hydra2.conformance.runner import (
     expect_predicate,
 )
 from hydra2.conformance.walls import build_wall
-from hydra2.contracts.rules import rules_manifest_from_payload
+from hydra2.contracts.rules_manifest import rules_manifest_from_payload
 
 if TYPE_CHECKING:
     from collections.abc import Callable

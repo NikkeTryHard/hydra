@@ -30,35 +30,52 @@ Ownership: this module owns the PBRF core contracts; peers extend without redefi
 
 from __future__ import annotations
 
-from hydra2.search.pbrf_act import PbrfPlanner as PbrfPlanner
-from hydra2.search.pbrf_act import PbrfPlannerActMixin as PbrfPlannerActMixin
-from hydra2.search.pbrf_commit import _fresh_rebuild as _fresh_rebuild
-from hydra2.search.pbrf_commit import commit as commit
-from hydra2.search.pbrf_commit import rekey_and_verify as rekey_and_verify
-from hydra2.search.pbrf_forest import ImmutableForest as ImmutableForest
-from hydra2.search.pbrf_forest import _conditional_carry_logps as _conditional_carry_logps
-from hydra2.search.pbrf_forest import _is_target_compatible as _is_target_compatible
-from hydra2.search.pbrf_forest import _tile_for_successor as _tile_for_successor
-from hydra2.search.pbrf_forest import _verify_delta_reconstruction as _verify_delta_reconstruction
-from hydra2.search.pbrf_forest import build_pbrf as build_pbrf
-from hydra2.search.pbrf_partition import ChildEntry as ChildEntry
-from hydra2.search.pbrf_partition import CommitDisposition as CommitDisposition
-from hydra2.search.pbrf_partition import PbrfConfig as PbrfConfig
-from hydra2.search.pbrf_partition import _action_id as _action_id
-from hydra2.search.pbrf_partition import _ess_for_key as _ess_for_key
-from hydra2.search.pbrf_partition import _freeze_candidates as _freeze_candidates
-from hydra2.search.pbrf_partition import _normalized_weights as _normalized_weights
-from hydra2.search.pbrf_partition import _require_partition as _require_partition
-from hydra2.search.pbrf_partition import _z_hat_for_key as _z_hat_for_key
-from hydra2.search.pbrf_partition import fixed_allocate as fixed_allocate
-from hydra2.search.pbrf_partition import validate_packet_partition as validate_packet_partition
+from hydra2.search.pbrf_act import (
+    PbrfPlanner as PbrfPlanner,
+)
+from hydra2.search.pbrf_act import (
+    PbrfPlannerActMixin as PbrfPlannerActMixin,
+)
+from hydra2.search.pbrf_commit import (
+    _fresh_rebuild as _fresh_rebuild,
+)
+from hydra2.search.pbrf_commit import (
+    commit as commit,
+)
+from hydra2.search.pbrf_forest import (
+    ImmutableForest as ImmutableForest,
+)
+from hydra2.search.pbrf_forest import (
+    _conditional_carry_logps as _conditional_carry_logps,
+)
+from hydra2.search.pbrf_forest import (
+    build_pbrf as build_pbrf,
+)
+from hydra2.search.pbrf_partition import (
+    ChildEntry as ChildEntry,
+)
+from hydra2.search.pbrf_partition import (
+    CommitDisposition as CommitDisposition,
+)
+from hydra2.search.pbrf_partition import (
+    PbrfConfig as PbrfConfig,
+)
+from hydra2.search.pbrf_partition import (
+    fixed_allocate as fixed_allocate,
+)
+from hydra2.search.pbrf_partition import (
+    validate_packet_partition as validate_packet_partition,
+)
 from hydra2.search.pbrf_search import PbrfPlannerSearchMixin as PbrfPlannerSearchMixin
-from hydra2.search.pbrf_spec import _canonical_hashes as _canonical_hashes
-from hydra2.search.pbrf_spec import _derive_utility_manifest_hash as _derive_utility_manifest_hash
-from hydra2.search.pbrf_spec import _file_sha256 as _file_sha256
-from hydra2.search.pbrf_spec import _load_default_hashes as _load_default_hashes
-from hydra2.search.pbrf_spec import _model_hash_from_identity as _model_hash_from_identity
-from hydra2.search.pbrf_spec import make_pbrf_candidate_spec as make_pbrf_candidate_spec
+from hydra2.search.pbrf_spec import (
+    _canonical_hashes as _canonical_hashes,
+)
+from hydra2.search.pbrf_spec import (
+    _derive_utility_manifest_hash as _derive_utility_manifest_hash,
+)
+from hydra2.search.pbrf_spec import (
+    make_pbrf_candidate_spec as make_pbrf_candidate_spec,
+)
 
 __all__ = [
     "ChildEntry",
@@ -76,27 +93,9 @@ __all__ = [
 # Names importable from this path before the split that live in the
 # submodules now (kept so the search package, lazy candidate factories,
 # and type-checking imports resolve without touching the new paths).
-from hydra2.search.pbrf_partition import _BELIEF_IMPORT_ERROR as _BELIEF_IMPORT_ERROR
-from hydra2.search.pbrf_partition import _KERNEL_IMPORT_ERROR as _KERNEL_IMPORT_ERROR
-from hydra2.search.pbrf_partition import _PACKET_IMPORT_ERROR as _PACKET_IMPORT_ERROR
-from hydra2.search.pbrf_partition import _RANDOM_IMPORT_ERROR as _RANDOM_IMPORT_ERROR
-from hydra2.search.pbrf_partition import _TELEMETRY_IMPORT_ERROR as _TELEMETRY_IMPORT_ERROR
-from hydra2.search.pbrf_partition import ActorVisiblePacket as ActorVisiblePacket
-from hydra2.search.pbrf_partition import Any as Any
-from hydra2.search.pbrf_partition import BeliefEpoch as BeliefEpoch
-from hydra2.search.pbrf_partition import Literal as Literal
-from hydra2.search.pbrf_partition import NaturalBelief as NaturalBelief
-from hydra2.search.pbrf_partition import NaturalPacketKernel as NaturalPacketKernel
-from hydra2.search.pbrf_partition import PacketSuccessor as PacketSuccessor
-from hydra2.search.pbrf_partition import Particle as Particle
-from hydra2.search.pbrf_partition import PolicySet as PolicySet
-from hydra2.search.pbrf_partition import RandomStream as RandomStream
-from hydra2.search.pbrf_partition import ResourceTelemetry as ResourceTelemetry
-from hydra2.search.pbrf_partition import canonical_bytes as canonical_bytes
-from hydra2.search.pbrf_partition import dataclass as dataclass
-from hydra2.search.pbrf_partition import hashlib as hashlib
-from hydra2.search.pbrf_partition import logger as logger
-from hydra2.search.pbrf_partition import logging as logging
-from hydra2.search.pbrf_partition import make_digest_text as make_digest_text
-from hydra2.search.pbrf_partition import make_resource_telemetry as make_resource_telemetry
-from hydra2.search.pbrf_partition import math as math
+from hydra2.search.pbrf_partition import (
+    _BELIEF_IMPORT_ERROR as _BELIEF_IMPORT_ERROR,
+)
+from hydra2.search.pbrf_partition import (
+    _KERNEL_IMPORT_ERROR as _KERNEL_IMPORT_ERROR,
+)

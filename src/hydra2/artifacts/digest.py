@@ -19,11 +19,12 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.artifacts.canonical import _require_bridge, canonical_bytes
 from hydra2.contracts.common import (
     DigestMismatchError,
     DigestText,
-    make_digest_text,
 )
 
 if TYPE_CHECKING:
@@ -74,8 +75,8 @@ def of_canonical(value: object) -> DigestText:
 
 
 def validate_digest(text: str) -> DigestText:
-    """Validate ``sha256:<64 lowercase hex>``; raises ContractError otherwise."""
-    return make_digest_text(text)
+    """Validate ``sha256:<64 lowercase hex>``; raises ValueError otherwise."""
+    return _bridge_contracts.make_digest_text(text)
 
 
 def sha256_file(path: str | Path) -> DigestText:
@@ -97,7 +98,7 @@ def require_digest_match(*, recorded: str, recomputed: DigestText, subject: str)
     Ownership: this stays the Python judge — Rust computes, Python compares.
     """
     try:
-        recorded_digest = make_digest_text(recorded)
+        recorded_digest = _bridge_contracts.make_digest_text(recorded)
     except Exception as exc:
         raise DigestMismatchError(
             f"{subject}: recorded digest {recorded!r} is not a valid sha256 digest"

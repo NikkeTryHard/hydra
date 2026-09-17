@@ -4,27 +4,20 @@ This module is the bootstrap subset of the contract layer owned by WP-01.
 Full contract modules (rules, utility, tile, action, event, observation)
 arrive in WP-02; nothing here anticipates them.
 
-Wave 4 R2 (shrink end-state): the R2 comparator/validator bodies
-(``is_seat``/``is_tile``/``is_digest``, ``make_seat``/``make_tile_id``/
-``make_action_id``/``make_digest_text``) are thin translators over the
-``hydra2_replay_rs.contracts`` bridge — the bridge owns the gate, Python
-keeps the typed ``ContractError`` surface callers rely on. Hard dependency:
-an unbuilt extension raises ``ImportError`` with a ``build-ext`` hint, NO
-oracle fallback, never silent.
+Deletion wave (minimal-Python end-state): the R2 comparator/validator
+translators (``is_seat``/``is_tile``/``is_digest``, ``make_seat``/
+``make_tile_id``/``make_action_id``/``make_digest_text``) are deleted —
+callers import the ``hydra2_replay_rs.contracts`` bridge directly
+(parity battery + differential probe green on this tree; the bridge raises
+``ValueError``/``TypeError`` where the translators raised ``ContractError``).
+This module keeps the SPEC 2.1 aliases, the SPEC 3 failure hierarchy, and
+the makers with no bridge counterpart.
 """
 
 from __future__ import annotations
 
 import re
-from typing import NewType, TypeGuard
-
-try:
-    from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
-except ImportError as exc:
-    raise ImportError(
-        "hydra2 contracts validators require the built bridge extension; "
-        "run `pixi run build-ext` before use"
-    ) from exc
+from typing import NewType
 
 # ---------------------------------------------------------------------------
 # SPEC 3 - Failure model (typed errors). All expected Hydra2 failures derive
@@ -177,78 +170,8 @@ def _require_str(value: str, *, name: str) -> str:
     return value
 
 
-def is_seat(value: object) -> TypeGuard[Seat]:
-    """Narrowing predicate: True iff value is a valid Seat (0..3, bool excluded).
-
-    Thin bridge translator (Wave 4 R2): the gate lives in
-    ``hydra2_replay_rs.contracts.is_seat`` (parity battery covers bool,
-    non-int, negative, huge, and boundary inputs).
-    """
-    return _bridge_contracts.is_seat(value)
-
-
-def is_digest(value: object) -> TypeGuard[DigestText]:
-    """Narrowing predicate: True iff value matches 'sha256:<64 lowercase hex>'.
-
-    Thin bridge translator (Wave 4 R2): the shape gate lives in
-    ``hydra2_replay_rs.contracts.is_digest_text``. The ``str`` guard stays
-    Python-side — the bridge takes ``&str`` (``TypeError`` on non-str)
-    while this predicate is total (``False`` on non-str).
-    """
-    if not isinstance(value, str):
-        return False
-    return _bridge_contracts.is_digest_text(value)
-
-
-def is_tile(value: object) -> TypeGuard[TileId]:
-    """Narrowing predicate: True iff value is a valid TileId (0..135, bool excluded).
-
-    Thin bridge translator (Wave 4 R2): the gate lives in
-    ``hydra2_replay_rs.contracts.is_tile_id`` (parity battery covers bool,
-    non-int, negative, huge, and boundary inputs).
-    """
-    return _bridge_contracts.is_tile_id(value)
-
-
-def make_seat(value: int) -> Seat:
-    """Validated Seat (0..3, bool excluded). Thin bridge translator (Wave 4 R2).
-
-    The gate lives in ``hydra2_replay_rs.contracts.make_seat``; bridge
-    rejections (``ValueError``/``TypeError``) surface as ``ContractError``
-    so the project error contract is unchanged.
-    """
-    try:
-        return Seat(_bridge_contracts.make_seat(value))
-    except (ValueError, TypeError) as exc:
-        raise ContractError(f"seat={value!r} invalid: {exc}") from exc
-
-
 def make_sequence_no(value: int) -> SequenceNo:
     return SequenceNo(_require_int(value, name="sequence_no", minimum=0, maximum=None))
-
-
-def make_action_id(value: int) -> ActionId:
-    """Validated ActionId (nonnegative int, bool excluded). Thin bridge translator.
-
-    The gate lives in ``hydra2_replay_rs.contracts.make_action_id``; bridge
-    rejections surface as ``ContractError`` so the error contract is unchanged.
-    """
-    try:
-        return ActionId(_bridge_contracts.make_action_id(value))
-    except (ValueError, TypeError) as exc:
-        raise ContractError(f"action_id={value!r} invalid: {exc}") from exc
-
-
-def make_tile_id(value: int) -> TileId:
-    """Validated TileId (0..135, bool excluded). Thin bridge translator (Wave 4 R2).
-
-    The gate lives in ``hydra2_replay_rs.contracts.make_tile_id``; bridge
-    rejections surface as ``ContractError`` so the error contract is unchanged.
-    """
-    try:
-        return TileId(_bridge_contracts.make_tile_id(value))
-    except (ValueError, TypeError) as exc:
-        raise ContractError(f"tile_id={value!r} invalid: {exc}") from exc
 
 
 def make_tile_type(value: int) -> TileType:
@@ -278,19 +201,6 @@ def make_run_id(value: str) -> RunId:
     if text == "":
         raise ContractError("run_id must be non-empty")
     return RunId(text)
-
-
-def make_digest_text(value: str) -> DigestText:
-    """Validated digest text (``sha256:<64 lowercase hex>`` verbatim). Thin bridge translator.
-
-    The shape gate lives in ``hydra2_replay_rs.contracts.make_digest_text``;
-    bridge rejections (``ValueError`` on bad shape, ``TypeError`` on non-str)
-    surface as ``ContractError`` so the error contract is unchanged.
-    """
-    try:
-        return DigestText(_bridge_contracts.make_digest_text(value))
-    except (ValueError, TypeError) as exc:
-        raise ContractError(f"digest_text {value!r} invalid: {exc}") from exc
 
 
 def make_utc_timestamp(value: str) -> UtcTimestamp:

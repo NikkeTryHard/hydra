@@ -4,22 +4,33 @@ from __future__ import annotations
 
 from dataclasses import dataclass as dataclass
 from pathlib import Path as Path
-from typing import TYPE_CHECKING as TYPE_CHECKING
-from typing import cast as cast
+from typing import (
+    TYPE_CHECKING as TYPE_CHECKING,
+)
+from typing import (
+    cast as cast,
+)
 
 import riichienv
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 from hydra2_replay_rs import tiles  # pyrefly: ignore[missing-import]
 
 from hydra2.artifacts.digest import of_canonical as of_canonical
-from hydra2.contracts.action import ActionContext as ActionContext
-from hydra2.contracts.action import load_action_table as load_action_table
+from hydra2.contracts.action_artifact import load_action_table as load_action_table
+from hydra2.contracts.action_table import ActionContext as ActionContext
 from hydra2.contracts.common import ContractError as ContractError
-from hydra2.contracts.common import make_seat as make_seat
-from hydra2.contracts.common import make_tile_id as make_tile_id
-from hydra2.data.decode import GameRecord as GameRecord
-from hydra2.data.decode import decode_game_object as decode_game_object
-from hydra2.engines.riichienv._oracle_base import _BAKAZE_TO_WIND as _BAKAZE_TO_WIND
-from hydra2.engines.riichienv._oracle_base import _LIVE_WALL_BASE as _LIVE_WALL_BASE
+from hydra2.data.decode import (
+    GameRecord as GameRecord,
+)
+from hydra2.data.decode import (
+    decode_game_object as decode_game_object,
+)
+from hydra2.engines.riichienv._oracle_base import (
+    _BAKAZE_TO_WIND as _BAKAZE_TO_WIND,
+)
+from hydra2.engines.riichienv._oracle_base import (
+    _LIVE_WALL_BASE as _LIVE_WALL_BASE,
+)
 from hydra2.engines.riichienv._oracle_base import _legal_mjai_type as _legal_mjai_type
 from hydra2.engines.riichienv.actions import legal_view as legal_view
 from hydra2.engines.riichienv.events import make_envelope as make_envelope
@@ -30,10 +41,10 @@ if TYPE_CHECKING:
     from collections.abc import Sequence as Sequence
     from typing import Any as Any
 
-    from hydra2.contracts.action import CanonicalAction as CanonicalAction
-    from hydra2.contracts.observation import ObservationBuilder as ObservationBuilder
-    from hydra2.contracts.observation import VisibleMeld as VisibleMeld
-    from hydra2.contracts.rules import RulesManifest as RulesManifest
+    from hydra2.contracts.action_model import CanonicalAction as CanonicalAction
+    from hydra2.contracts.observation_assembly import ObservationBuilder as ObservationBuilder
+    from hydra2.contracts.observation_types import VisibleMeld as VisibleMeld
+    from hydra2.contracts.rules_manifest import RulesManifest as RulesManifest
     from hydra2.data.parquet import DecisionRow as DecisionRow
 
 
@@ -67,7 +78,7 @@ def _rules() -> RulesManifest:
 
 def _table() -> Any:
     from hydra2.config import repo_root
-    from hydra2.contracts.action import ACTION_TABLE_RELPATH
+    from hydra2.contracts.action_artifact import ACTION_TABLE_RELPATH
 
     return load_action_table(Path(repo_root()) / ACTION_TABLE_RELPATH)
 
@@ -121,10 +132,9 @@ def _sim_game_id(game: GameRecord, *, rules_hash: str) -> str:
         return game.game_id
     if len(game.wall_tiles) != 136:
         raise ContractError(f"wall_tiles must carry 136 tiles, got {len(game.wall_tiles)}")
-    from hydra2.contracts.common import make_tile_id as _tid
     from hydra2.engines.protocol import wall_schedule_digest
 
-    physical = tuple(_tid(t) for t in game.wall_tiles)
+    physical = tuple(_bridge_contracts.make_tile_id(t) for t in game.wall_tiles)
     schedule_id = f"replay-{game.game_id}"
     wall_digest = str(wall_schedule_digest(schedule_id, physical))
     seed_material = of_canonical(
@@ -365,12 +375,12 @@ def _context_for(
         concealed = sorted(set(concealed) | {obs.drawn})
     offered_tile, offered_by = offered
     return ActionContext(
-        actor=make_seat(seat),
+        actor=_bridge_contracts.make_seat(seat),
         action_table_hash=state.table.digest,
         phase=cast("Any", phase),
-        offered_tile=None if offered_tile is None else make_tile_id(offered_tile),
-        offered_by=None if offered_by is None else make_seat(offered_by),
-        own_concealed_tiles=tuple(make_tile_id(t) for t in concealed),
+        offered_tile=None if offered_tile is None else _bridge_contracts.make_tile_id(offered_tile),
+        offered_by=None if offered_by is None else _bridge_contracts.make_seat(offered_by),
+        own_concealed_tiles=tuple(_bridge_contracts.make_tile_id(t) for t in concealed),
         visible_melds=tuple(m for row in state.melds for m in row),
     )
 

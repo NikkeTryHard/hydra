@@ -15,19 +15,28 @@ from __future__ import annotations
 import dataclasses
 from typing import TYPE_CHECKING, Any, cast
 
-from hydra2.contracts.action import CanonicalAction as CanonicalAction
-from hydra2.contracts.action import canonical_action_codec as canonical_action_codec
-from hydra2.contracts.common import ContractError as ContractError
-from hydra2.contracts.common import make_digest_text as make_digest_text
-from hydra2.contracts.common import make_seat as make_seat
-from hydra2.contracts.common import make_sequence_no as make_sequence_no
-from hydra2.contracts.common import make_tile_id as make_tile_id
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
+from hydra2.contracts.action_model import CanonicalAction as CanonicalAction
+from hydra2.contracts.action_table import canonical_action_codec as canonical_action_codec
+from hydra2.contracts.common import (
+    ContractError as ContractError,
+)
+from hydra2.contracts.common import (
+    make_sequence_no as make_sequence_no,
+)
 from hydra2.engines.riichienv import events as events
-from hydra2.engines.riichienv.events import make_delta as make_delta
-from hydra2.engines.riichienv.events import make_envelope as make_envelope
+from hydra2.engines.riichienv.events import (
+    make_delta as make_delta,
+)
+from hydra2.engines.riichienv.events import (
+    make_envelope as make_envelope,
+)
 from hydra2.engines.riichienv.events import meld_delta_value as meld_delta_value
 from hydra2.engines.riichienv.events import reason_kind as reason_kind
-from hydra2.engines.riichienv.state import raw_outcome_from_final as raw_outcome_from_final
+from hydra2.engines.riichienv.state import (
+    raw_outcome_from_final as raw_outcome_from_final,
+)
 from hydra2.engines.riichienv.state import (
     settlement_facts_from_deltas as settlement_facts_from_deltas,
 )
@@ -39,8 +48,8 @@ if TYPE_CHECKING:
     from hydra2.contracts.common import Seat as Seat
     from hydra2.contracts.common import TileId as TileId
     from hydra2.contracts.event_envelope import EventEnvelope as EventEnvelope
-    from hydra2.contracts.observation import ObservationBuilder as ObservationBuilder
-    from hydra2.contracts.rules import RulesManifest as RulesManifest
+    from hydra2.contracts.observation_assembly import ObservationBuilder as ObservationBuilder
+    from hydra2.contracts.rules_manifest import RulesManifest as RulesManifest
     from hydra2.contracts.utility import RawOutcome as RawOutcome
     from hydra2.contracts.utility import SettlementFact as SettlementFact
 
@@ -122,7 +131,7 @@ class AdapterEventsBMixin:
         if action_id is None and not self_draw and len(self._buffered) > 0:
             try:
                 action_id = self._accepted_claim_id(winner)
-            except ContractError:
+            except (ContractError, ValueError):
                 action_id = None
         winners: list[int] = sorted(
             self._inv[int(cast("Any", h["actor"]))] for h in cast("Any", horas)
@@ -151,7 +160,7 @@ class AdapterEventsBMixin:
                 visibility="public",
                 rules_hash=self._rules_hash,
                 schema_hash=self._event_schema_hash,
-                actor=make_seat(winner),
+                actor=_bridge_contracts.make_seat(winner),
                 tile=tile,
                 action_id=None if action_id is None else action_id,
                 public_delta=tuple(public),
@@ -271,7 +280,7 @@ class AdapterEventsBMixin:
             starting_scores=self._starting_scores,
             settlements=self._settlements,
             rules_id=self._rules.rules_id,
-            rules_hash=make_digest_text(self._rules_hash),
+            rules_hash=_bridge_contracts.make_digest_text(self._rules_hash),
         )
         self._terminal = True
         self._refresh_public_snapshot(phase="game_end")
@@ -382,8 +391,8 @@ class AdapterEventsBMixin:
         # under draw_decision so the coarse phase gate cannot reject history.
         action = CanonicalAction(
             kind="discard",
-            actor=make_seat(actor),
-            tile=make_tile_id(tile),
+            actor=_bridge_contracts.make_seat(actor),
+            tile=_bridge_contracts.make_tile_id(tile),
             called_tile=None,
             consumed_tiles=(),
             source_seat=None,
@@ -395,15 +404,15 @@ class AdapterEventsBMixin:
         # itself as the concealed set). Ids stay pure functions of the action.
         context = self._context_for(actor, phase_override="draw_decision")
         if tile not in {int(t) for t in context.own_concealed_tiles}:
-            from hydra2.contracts.action import ActionContext
+            from hydra2.contracts.action_table import ActionContext
 
             context = ActionContext(
-                actor=make_seat(actor),
+                actor=_bridge_contracts.make_seat(actor),
                 action_table_hash=self._table.digest,
                 phase="draw_decision",
                 offered_tile=None,
                 offered_by=None,
-                own_concealed_tiles=(make_tile_id(tile),),
+                own_concealed_tiles=(_bridge_contracts.make_tile_id(tile),),
                 visible_melds=(),
             )
         return int(canonical_action_codec.encode(action, table=self._table, context=context))
@@ -446,7 +455,7 @@ class AdapterEventsBMixin:
                 visibility="public",
                 rules_hash=self._rules_hash,
                 schema_hash=self._event_schema_hash,
-                actor=make_seat(actor),
+                actor=_bridge_contracts.make_seat(actor),
                 tile=added,
                 action_id=action_id,
                 public_delta=(

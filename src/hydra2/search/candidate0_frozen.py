@@ -17,9 +17,10 @@ from pathlib import Path
 from typing import Any, cast
 
 import torch
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
 from hydra2.artifacts.canonical import canonical_bytes
-from hydra2.contracts.common import ContractError, DigestText, make_digest_text
+from hydra2.contracts.common import ContractError, DigestText
 from hydra2.search.common import (
     DEPLOYABLE_DEADLINE_MS,
     HASH63_MOD,
@@ -194,14 +195,14 @@ def _load_default_hashes() -> dict[str, str]:
         out[key] = _file_sha256(p)
     # Try to upgrade to canonical contract digests where modules available
     try:
-        from hydra2.contracts.observation import observation_schema_digest
+        from hydra2.contracts.observation_schema import observation_schema_digest
 
         out["observation_schema_hash"] = str(observation_schema_digest())
     except (ImportError, AttributeError, OSError, ValueError, TypeError) as exc:
         logger.debug("candidate0: observation_schema_digest fallback", exc_info=exc)
         pass
     try:
-        from hydra2.contracts.action import load_action_table
+        from hydra2.contracts.action_artifact import load_action_table
 
         tbl = load_action_table(repo / "configs/contracts/action_table_v1.json")
         out["action_table_hash"] = str(tbl.digest)
@@ -248,7 +249,7 @@ def _model_hash_from_identity(model: Any | None) -> DigestText:
     if model is not None:
         ident: Any = getattr(model, "model_identity", None)
         if ident is not None:
-            return make_digest_text(str(ident))
+            return _bridge_contracts.make_digest_text(str(ident))
         # Fallback: hash of model state dict keys (bridge digest, bit-identical)
         try:
             state: Any = model.state_dict()  # type: ignore[union-attr]
@@ -262,7 +263,7 @@ def _model_hash_from_identity(model: Any | None) -> DigestText:
     from hydra2.models.model import Hydra2BaselineModel
 
     m = Hydra2BaselineModel()
-    return make_digest_text(str(m.model_identity))
+    return _bridge_contracts.make_digest_text(str(m.model_identity))
 
 
 # ---------------------------------------------------------------------------
@@ -323,7 +324,7 @@ def make_candidate0_spec(
             # The file's payload digest is the rules manifest digest in hydra2 sense
             # but the repo stores it as artifact envelope; derive via file sha fallback is acceptable
             # Try to compute via rules module if available
-            from hydra2.contracts.rules import rules_manifest_from_payload
+            from hydra2.contracts.rules_manifest import rules_manifest_from_payload
 
             manifest: Any = rules_manifest_from_payload(payload)  # type: ignore[no-untyped-call]
             manifest_digest: Any = getattr(manifest, "digest", None)

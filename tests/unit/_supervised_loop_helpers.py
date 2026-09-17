@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from hydra2.contracts.observation import make_actor_observation
+from hydra2.contracts.observation_actor import make_actor_observation
 from hydra2.data.parquet import DecisionRow, write_actor_shards
 from hydra2.eval.blocks import WallBlock
 from hydra2.models.schema import BASELINE_ACTION_COUNT

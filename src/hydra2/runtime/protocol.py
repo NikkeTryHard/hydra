@@ -12,8 +12,10 @@ import re
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast, runtime_checkable
 
-from hydra2._canon import sha256_digest_of_json
-from hydra2.contracts.common import ContractError, DigestText, make_digest_text
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
+from hydra2.artifacts.digest import of_canonical
+from hydra2.contracts.common import ContractError, DigestText
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -141,7 +143,7 @@ def runtime_identity(spec: RuntimeSpec) -> DigestText:
         "schema_version": "1.0.0",
         **asdict(spec),
     }
-    return sha256_digest_of_json(payload)
+    return of_canonical(payload)
 
 
 def build_runtime(
@@ -246,4 +248,4 @@ def build_runtime(
 
 
 def normalize_digest(value: str) -> DigestText:
-    return make_digest_text(value)
+    return _bridge_contracts.make_digest_text(value)

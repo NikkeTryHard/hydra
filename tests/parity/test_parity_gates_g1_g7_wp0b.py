@@ -54,7 +54,10 @@ import torch
 from hydra2.artifacts.canonical import canonical_bytes
 from hydra2.artifacts.digest import of_canonical
 from hydra2.contracts.common import ContractError
-from hydra2.contracts.observation import DORA_SENTINEL, DORA_SHAPE
+from hydra2.contracts.observation_types import (
+    DORA_SENTINEL,
+    DORA_SHAPE,
+)
 from hydra2.data import replay_expand as _re
 from hydra2.data.decode import GameRecord, decode_game_object
 from hydra2.data.parquet import ACTOR_FIELDS, _actor_observation_is_privileged_free

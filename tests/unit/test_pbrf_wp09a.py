@@ -9,11 +9,12 @@ import time
 from functools import cache
 
 import pytest
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
 from hydra2.belief.kernel import NaturalPacketKernel
 from hydra2.belief.natural import NaturalBelief
 from hydra2.belief.world import make_full_world, world_actor_observation
-from hydra2.contracts.action import CanonicalAction
+from hydra2.contracts.action_model import CanonicalAction
 from hydra2.contracts.randomness import RandomStream
 from hydra2.search.common import SearchRequest, candidate_spec_hash
 from hydra2.search.pbrf import (
@@ -289,10 +290,12 @@ def test_commit_miss_returns_fresh_rebuild() -> None:
     import hashlib as _hl
 
     from hydra2.artifacts.canonical import canonical_bytes as _cb
-    from hydra2.contracts.common import Seat, make_seat
-    from hydra2.contracts.event import (
+    from hydra2.contracts.common import Seat
+    from hydra2.contracts.event_envelope import (
         EventEnvelope,
         EventPayload,
+    )
+    from hydra2.contracts.event_packet import (
         make_actor_visible_packet,
         public_state_chain_hash,
     )
@@ -301,7 +304,7 @@ def test_commit_miss_returns_fresh_rebuild() -> None:
     sh = "sha256:" + "c" * 64
     payload = EventPayload(
         kind="discard",
-        actor=make_seat(0),
+        actor=_bridge_contracts.make_seat(0),
         tile=0,  # type: ignore[arg-type]
         action_id=0,  # type: ignore[arg-type]
         source_seat=None,
@@ -316,7 +319,7 @@ def test_commit_miss_returns_fresh_rebuild() -> None:
         game_id="game_missing",
         sequence=999,  # type: ignore[arg-type]
         kind="discard",
-        actor=make_seat(0),
+        actor=_bridge_contracts.make_seat(0),
         visibility="public",
         visible_to=(Seat(0), Seat(1), Seat(2), Seat(3)),
         payload=payload,

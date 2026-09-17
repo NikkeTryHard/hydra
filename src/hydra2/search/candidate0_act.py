@@ -20,7 +20,7 @@ from hydra2.search.candidate0_frozen import frozen_choice
 
 if TYPE_CHECKING:
     from hydra2.contracts.common import DigestText
-    from hydra2.contracts.observation import ActorObservation
+    from hydra2.contracts.observation_actor import ActorObservation
 
 __all__ = [
     "FrozenCandidate0",
@@ -34,7 +34,7 @@ __all__ = [
 
 
 def _action_context_from_obs(observation: Any) -> Any:
-    from hydra2.contracts.action import ActionContext
+    from hydra2.contracts.action_table import ActionContext
 
     # Build the full context required by the codec. For frozen candidate0 the
     # legal set is already filtered by observation.legal_mask, so the context

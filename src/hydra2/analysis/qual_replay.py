@@ -15,10 +15,16 @@ from __future__ import annotations
 import hashlib
 from typing import Any, cast
 
-from hydra2.analysis.qual_budget import check_no_privileged_leak as check_no_privileged_leak
-from hydra2.analysis.qual_budget import verify_compute_only as verify_compute_only
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
+from hydra2.analysis.qual_budget import (
+    check_no_privileged_leak as check_no_privileged_leak,
+)
+from hydra2.analysis.qual_budget import (
+    verify_compute_only as verify_compute_only,
+)
 from hydra2.artifacts.digest import of_canonical
-from hydra2.contracts.common import ContractError, DigestText, make_digest_text
+from hydra2.contracts.common import ContractError, DigestText
 
 
 def deterministic_replay_hash(
@@ -39,7 +45,7 @@ def deterministic_replay_hash(
 
     Returns sha256:<hex> digest.
     """
-    _: DigestText = make_digest_text(observation_hash)
+    _: DigestText = _bridge_contracts.make_digest_text(observation_hash)
     if mode not in ("gameplay_5s", "ponder", "analysis"):
         raise ContractError(f"mode must be gameplay_5s/ponder/analysis, got {mode!r}")
 
@@ -102,7 +108,7 @@ def compare_gameplay_analysis(
     obs_hash: str = _obs_hash_raw if isinstance(_obs_hash_raw, str) else "sha256:" + "0" * 64
     # If observation lacks hash, synthesize one from its canonical bytes for test purposes
     try:
-        _obs_digest: DigestText = make_digest_text(obs_hash)
+        _obs_digest: DigestText = _bridge_contracts.make_digest_text(obs_hash)
     except Exception:
         obs_hash = str(of_canonical(str(observation)))
 

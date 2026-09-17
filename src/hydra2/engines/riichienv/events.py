@@ -15,14 +15,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.contracts.common import (
     Seat,
     UnsupportedRuleError,
-    make_action_id,
-    make_digest_text,
-    make_seat,
     make_sequence_no,
-    make_tile_id,
 )
 from hydra2.contracts.event_envelope import (
     EventEnvelope,
@@ -130,19 +128,19 @@ def make_envelope(
     if visibility == "public":
         visible_to: tuple[Seat, ...] = (Seat(0), Seat(1), Seat(2), Seat(3))
     elif visibility == "actor_private" and actor is not None:
-        visible_to = (make_seat(actor),)
+        visible_to = (_bridge_contracts.make_seat(actor),)
     else:
         visible_to = ()
     checked_kind = cast("EventKind", _require_enum(kind, name="kind", allowed=EVENT_KINDS))
     payload = EventPayload(
         kind=checked_kind,
-        actor=None if actor is None else make_seat(actor),
-        tile=None if tile is None else make_tile_id(tile),
-        action_id=None if action_id is None else make_action_id(action_id),
-        source_seat=None if source_seat is None else make_seat(source_seat),
-        consumed_tiles=tuple(make_tile_id(t) for t in consumed_tiles),
-        offered_action_ids=tuple(make_action_id(a) for a in offered_action_ids),
-        accepted_action_ids=tuple(make_action_id(a) for a in accepted_action_ids),
+        actor=None if actor is None else _bridge_contracts.make_seat(actor),
+        tile=None if tile is None else _bridge_contracts.make_tile_id(tile),
+        action_id=None if action_id is None else _bridge_contracts.make_action_id(action_id),
+        source_seat=None if source_seat is None else _bridge_contracts.make_seat(source_seat),
+        consumed_tiles=tuple(_bridge_contracts.make_tile_id(t) for t in consumed_tiles),
+        offered_action_ids=tuple(_bridge_contracts.make_action_id(a) for a in offered_action_ids),
+        accepted_action_ids=tuple(_bridge_contracts.make_action_id(a) for a in accepted_action_ids),
         round_index=round_index,
         scores=None
         if scores is None
@@ -153,11 +151,11 @@ def make_envelope(
         game_id=game_id,
         sequence=make_sequence_no(sequence),
         kind=checked_kind,
-        actor=None if actor is None else make_seat(actor),
+        actor=None if actor is None else _bridge_contracts.make_seat(actor),
         visibility=visibility,
-        visible_to=tuple(make_seat(int(s)) for s in visible_to),
+        visible_to=tuple(_bridge_contracts.make_seat(int(s)) for s in visible_to),
         payload=payload,
         public_delta=tuple(public_delta),
-        rules_hash=make_digest_text(rules_hash),
-        schema_hash=make_digest_text(schema_hash),
+        rules_hash=_bridge_contracts.make_digest_text(rules_hash),
+        schema_hash=_bridge_contracts.make_digest_text(schema_hash),
     )

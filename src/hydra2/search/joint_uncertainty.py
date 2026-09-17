@@ -18,10 +18,16 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.artifacts.canonical import canonical_bytes
 from hydra2.contracts.common import ContractError
-from hydra2.search.joint_types import _MASTER_SEED as _MASTER_SEED
-from hydra2.search.joint_types import DIVERGENCE_DIRECTIONS as DIVERGENCE_DIRECTIONS
+from hydra2.search.joint_types import (
+    _MASTER_SEED as _MASTER_SEED,
+)
+from hydra2.search.joint_types import (
+    DIVERGENCE_DIRECTIONS as DIVERGENCE_DIRECTIONS,
+)
 from hydra2.search.joint_types import RATIONALITY_RULES as RATIONALITY_RULES
 from hydra2.search.joint_types import SUPPORT_CLASSES as SUPPORT_CLASSES
 from hydra2.search.joint_types import THETA_IDS as THETA_IDS
@@ -462,8 +468,6 @@ def make_joint_type_world_candidate_spec(
             # Fallback dataclass with defaults (e.g., gumbel fallback) may accept no args
             budget = ResourceBudget()  # type: ignore[call-arg]
     try:
-        from hydra2.contracts.common import make_digest_text as _mdt
-
         for name, val in [
             ("rules_hash", rules_hash),
             ("utility_manifest_hash", utility_manifest_hash),
@@ -473,7 +477,7 @@ def make_joint_type_world_candidate_spec(
             ("model_hash", model_hash),
             ("case_manifest_hash", case_manifest_hash),
         ]:
-            _ = _mdt(val)
+            _ = _bridge_contracts.make_digest_text(val)
     except Exception as exc:
         if isinstance(exc, ContractError):
             raise

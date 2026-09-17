@@ -14,37 +14,44 @@ import random
 from pathlib import Path
 
 import pytest
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
 from hydra2.artifacts.canonical import canonical_bytes
-from hydra2.contracts.action import (
+from hydra2.contracts.action_artifact import (
+    ACTION_TABLE_ARTIFACT_TYPE,
+    ACTION_TABLE_SCHEMA_VERSION,
+    action_table_envelope,
+    build_action_table,
+    load_action_table,
+)
+from hydra2.contracts.action_kinds import (
     ACTION_KIND_ORDINALS,
     ACTION_KINDS,
     ACTION_PHASES,
-    ACTION_TABLE_ARTIFACT_TYPE,
-    ACTION_TABLE_SCHEMA_VERSION,
     PHASES,
-    ActionContext,
-    CanonicalAction,
-    CanonicalActionTemplate,
     VisibleMeld,
-    action_table_envelope,
-    build_action_table,
-    canonical_json_bytes,
-    generate_action_templates,
-    load_action_table,
-    template_sort_key,
     visible_meld_id,
 )
-from hydra2.contracts.action import (
+from hydra2.contracts.action_model import (
+    CanonicalAction,
+    CanonicalActionTemplate,
+    generate_action_templates,
+    template_sort_key,
+)
+from hydra2.contracts.action_table import (
+    ActionContext,
+)
+from hydra2.contracts.action_table import (
     canonical_action_codec as codec,
+)
+from hydra2.contracts.canonical import (
+    canonical_json_bytes,
 )
 from hydra2.contracts.common import (
     ContractError,
     DigestMismatchError,
     IncompatibleSchemaError,
     InvalidActionError,
-    make_seat,
-    make_tile_id,
 )
 
 pytestmark = pytest.mark.contract_package("WP-02C")
@@ -73,11 +80,16 @@ EXPECTED_COUNTS = {
     "accept_abortive_draw": 1,
 }
 
-S0, S1, S2, S3 = make_seat(0), make_seat(1), make_seat(2), make_seat(3)
+S0, S1, S2, S3 = (
+    _bridge_contracts.make_seat(0),
+    _bridge_contracts.make_seat(1),
+    _bridge_contracts.make_seat(2),
+    _bridge_contracts.make_seat(3),
+)
 
 
 def mk(raw: int):
-    return make_tile_id(raw)
+    return _bridge_contracts.make_tile_id(raw)
 
 
 @pytest.fixture(scope="module")
@@ -473,7 +485,9 @@ def _independent_legal(index: int, table_obj, ctx: ActionContext) -> bool:
         return False
     src = None
     if tpl.source_offset is not None:
-        src = make_seat((ctx.actor + _OFFSET_DELTA_INDEPENDENT[tpl.source_offset]) % 4)
+        src = _bridge_contracts.make_seat(
+            (ctx.actor + _OFFSET_DELTA_INDEPENDENT[tpl.source_offset]) % 4
+        )
     hand = set(ctx.own_concealed_tiles)
     kind = tpl.kind
     if kind in ("chi", "pon", "daiminkan"):
@@ -511,7 +525,7 @@ def _sample_contexts(table_obj) -> list[ActionContext]:
     rng = random.Random(20260822)
     contexts: list[ActionContext] = []
     for _trial in range(24):
-        actor = make_seat(rng.randrange(4))
+        actor = _bridge_contracts.make_seat(rng.randrange(4))
         others = [s for s in (S0, S1, S2, S3) if s != actor]
         size = rng.choice([1, 4, 7, 13])
         hand = set(rng.sample(range(136), size))
@@ -527,15 +541,15 @@ def _sample_contexts(table_obj) -> list[ActionContext]:
                     "pon",
                     actor,
                     others[rng.randrange(3)],
-                    make_tile_id(meld_tiles[-1]),
-                    tuple(make_tile_id(x) for x in meld_tiles),
+                    _bridge_contracts.make_tile_id(meld_tiles[-1]),
+                    tuple(_bridge_contracts.make_tile_id(x) for x in meld_tiles),
                 )
             )
             hand.add(free)
         offered = None
         offered_by = None
         if rng.random() < 0.65:
-            offered = make_tile_id(rng.randrange(136))
+            offered = _bridge_contracts.make_tile_id(rng.randrange(136))
             offered_by = others[rng.randrange(3)]
         phase = rng.choice(["draw_decision", "discard_response", "kan_response"])
         contexts.append(
@@ -545,7 +559,7 @@ def _sample_contexts(table_obj) -> list[ActionContext]:
                 actor=actor,
                 offered=offered,
                 offered_by=offered_by,
-                hand=[make_tile_id(x) for x in sorted(hand)],
+                hand=[_bridge_contracts.make_tile_id(x) for x in sorted(hand)],
                 melds=melds,
             )
         )

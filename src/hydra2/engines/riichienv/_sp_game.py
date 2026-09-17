@@ -20,7 +20,7 @@ parallel implementation:
 - chosen actions: engine ``Action`` objects mapped to canonical form and
   encoded with the canonical codec;
 - observations: assembled with the canonical
-  :class:`~hydra2.contracts.observation.ObservationBuilder` from the same
+  :class:`~hydra2.contracts.observation_assembly.ObservationBuilder` from the same
   envelope constructors (:mod:`hydra2.engines.riichienv.events`) the adapter
   uses, in the same emission order;
 - history: the framed log's MJAI events translated envelope-for-envelope in
@@ -37,22 +37,39 @@ of silently dropping rows.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING as TYPE_CHECKING
-from typing import cast as cast
+from typing import (
+    TYPE_CHECKING as TYPE_CHECKING,
+)
+from typing import (
+    cast as cast,
+)
+
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
 from hydra2.contracts.common import ContractError as ContractError
-from hydra2.contracts.common import make_digest_text as make_digest_text
-from hydra2.contracts.observation import ObservationBuilder as ObservationBuilder
+from hydra2.contracts.observation_assembly import ObservationBuilder as ObservationBuilder
 from hydra2.engines.riichienv._oracle_base import _TRANSPARENT_KINDS as _TRANSPARENT_KINDS
-from hydra2.engines.riichienv._sp_kans import _do_ankan as _do_ankan
-from hydra2.engines.riichienv._sp_kans import _do_dora as _do_dora
+from hydra2.engines.riichienv._sp_kans import (
+    _do_ankan as _do_ankan,
+)
+from hydra2.engines.riichienv._sp_kans import (
+    _do_dora as _do_dora,
+)
 from hydra2.engines.riichienv._sp_kans import _do_kakan as _do_kakan
 from hydra2.engines.riichienv._sp_kans import _do_reach_accepted as _do_reach_accepted
 from hydra2.engines.riichienv._sp_oracle import _peek_window_claim as _peek_window_claim
-from hydra2.engines.riichienv._sp_reach import _do_claim as _do_claim
-from hydra2.engines.riichienv._sp_reach import _do_reach as _do_reach
-from hydra2.engines.riichienv._sp_records import _CLAIM as _CLAIM
-from hydra2.engines.riichienv._sp_records import _END as _END
+from hydra2.engines.riichienv._sp_reach import (
+    _do_claim as _do_claim,
+)
+from hydra2.engines.riichienv._sp_reach import (
+    _do_reach as _do_reach,
+)
+from hydra2.engines.riichienv._sp_records import (
+    _CLAIM as _CLAIM,
+)
+from hydra2.engines.riichienv._sp_records import (
+    _END as _END,
+)
 from hydra2.engines.riichienv._sp_records import _ROW as _ROW
 from hydra2.engines.riichienv._sp_records import _SKIP as _SKIP
 from hydra2.engines.riichienv._sp_records import _START as _START
@@ -65,11 +82,19 @@ from hydra2.engines.riichienv._sp_records import _rules_hash as _rules_hash
 from hydra2.engines.riichienv._sp_records import _sim_game_id as _sim_game_id
 from hydra2.engines.riichienv._sp_records import _table as _table
 from hydra2.engines.riichienv._sp_walk import _do_start_kyoku as _do_start_kyoku
-from hydra2.engines.riichienv._sp_windows import _do_dahai as _do_dahai
-from hydra2.engines.riichienv._sp_windows import _do_tsumo as _do_tsumo
+from hydra2.engines.riichienv._sp_windows import (
+    _do_dahai as _do_dahai,
+)
+from hydra2.engines.riichienv._sp_windows import (
+    _do_tsumo as _do_tsumo,
+)
 from hydra2.engines.riichienv._sp_windows import _require_actor as _require_actor
-from hydra2.engines.riichienv._sp_wins import _do_end_game as _do_end_game
-from hydra2.engines.riichienv._sp_wins import _do_end_kyoku as _do_end_kyoku
+from hydra2.engines.riichienv._sp_wins import (
+    _do_end_game as _do_end_game,
+)
+from hydra2.engines.riichienv._sp_wins import (
+    _do_end_kyoku as _do_end_kyoku,
+)
 from hydra2.engines.riichienv._sp_wins import _do_hora as _do_hora
 from hydra2.engines.riichienv._sp_wins import _do_ryukyoku as _do_ryukyoku
 
@@ -233,11 +258,11 @@ def replay_game(
     builder = ObservationBuilder(
         game_id=sim_game_id,
         rules_id=manifest.rules_id,
-        rules_hash=make_digest_text(rules_hash),
+        rules_hash=_bridge_contracts.make_digest_text(rules_hash),
         action_table_hash=table.digest,
         expected_legal_mask_length=len(table.actions),
-        event_schema_hash=make_digest_text(_event_schema_hash()),
-        packet_boundary_hash=make_digest_text(_packet_boundary_hash()),
+        event_schema_hash=_bridge_contracts.make_digest_text(_event_schema_hash()),
+        packet_boundary_hash=_bridge_contracts.make_digest_text(_packet_boundary_hash()),
     )
     state = _GameState(
         game=record,

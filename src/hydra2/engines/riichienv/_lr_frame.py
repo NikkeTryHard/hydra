@@ -5,22 +5,31 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass as dataclass
 from pathlib import Path as Path
-from typing import TYPE_CHECKING as TYPE_CHECKING
-from typing import cast as cast
+from typing import (
+    TYPE_CHECKING as TYPE_CHECKING,
+)
+from typing import (
+    cast as cast,
+)
 
 import riichienv
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
 from hydra2.artifacts.digest import of_canonical as of_canonical
-from hydra2.contracts.action import load_action_table as load_action_table
+from hydra2.contracts.action_artifact import load_action_table as load_action_table
 from hydra2.contracts.common import ContractError as ContractError
-from hydra2.data.decode import GameRecord as GameRecord
-from hydra2.data.decode import decode_game_object as decode_game_object
+from hydra2.data.decode import (
+    GameRecord as GameRecord,
+)
+from hydra2.data.decode import (
+    decode_game_object as decode_game_object,
+)
 from hydra2.engines.riichienv.identity import ENGINE_IDENTITY as ENGINE_IDENTITY
 
 if TYPE_CHECKING:
     from typing import Any as Any
 
-    from hydra2.contracts.rules import RulesManifest as RulesManifest
+    from hydra2.contracts.rules_manifest import RulesManifest as RulesManifest
 
 
 #: MJAI framing vocabulary: the single shared source is replay_expand's
@@ -51,7 +60,7 @@ _RULES_HASH_CACHE: dict[str, str] = {}
 
 def _table() -> Any:
     from hydra2.config import repo_root
-    from hydra2.contracts.action import ACTION_TABLE_RELPATH
+    from hydra2.contracts.action_artifact import ACTION_TABLE_RELPATH
 
     root = str(repo_root())
     if root not in _TABLE_CACHE:
@@ -126,10 +135,9 @@ def _sim_game_id(game: GameRecord, *, rules_hash: str) -> str:
         return game.game_id
     if len(game.wall_tiles) != 136:
         raise ContractError(f"wall_tiles must carry 136 tiles, got {len(game.wall_tiles)}")
-    from hydra2.contracts.common import make_tile_id as _tid
     from hydra2.engines.protocol import wall_schedule_digest
 
-    physical = tuple(_tid(t) for t in game.wall_tiles)
+    physical = tuple(_bridge_contracts.make_tile_id(t) for t in game.wall_tiles)
     schedule_id = f"replay-{game.game_id}"
     wall_digest = str(wall_schedule_digest(schedule_id, physical))
     seed_material = of_canonical(

@@ -17,28 +17,21 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import torch
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
 from hydra2.artifacts.canonical import canonical_bytes
 from hydra2.artifacts.digest import of_canonical
-from hydra2.contracts.common import ContractError, TileId, make_digest_text
+from hydra2.contracts.common import ContractError, TileId
 from hydra2.eval.baseline_metrics import (
     BASELINE_METRICS_VERSION as BASELINE_METRICS_VERSION,
 )
 from hydra2.eval.baseline_metrics import (
     EAGER_ORACLE_ID as EAGER_ORACLE_ID,
 )
-from hydra2.eval.baseline_metrics import (
-    OVERFIT_NLL_THRESHOLD as OVERFIT_NLL_THRESHOLD,
-)
-from hydra2.eval.baseline_metrics import (
-    OVERFIT_TOP1_THRESHOLD as OVERFIT_TOP1_THRESHOLD,
-)
-from hydra2.eval.baseline_metrics import (
-    _seed_everything as _seed_everything,
-)
-from hydra2.eval.baseline_metrics import (
-    compute_baseline_metrics as compute_baseline_metrics,
-)
+from hydra2.eval.baseline_metrics import OVERFIT_NLL_THRESHOLD as OVERFIT_NLL_THRESHOLD
+from hydra2.eval.baseline_metrics import OVERFIT_TOP1_THRESHOLD as OVERFIT_TOP1_THRESHOLD
+from hydra2.eval.baseline_metrics import _seed_everything as _seed_everything
+from hydra2.eval.baseline_metrics import compute_baseline_metrics as compute_baseline_metrics
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -289,7 +282,7 @@ def evaluate_reference_games(
         import json
 
         from hydra2.config import repo_root
-        from hydra2.contracts.rules import rules_manifest_from_payload
+        from hydra2.contracts.rules_manifest import rules_manifest_from_payload
         from hydra2.engines.protocol import WallSchedule, wall_schedule_digest
         from hydra2.engines.riichienv import RiichiEnvExactSimulator
     except Exception as exc:
@@ -484,9 +477,9 @@ def make_baseline_report(
     """
     if not isinstance(seed, int):
         raise ContractError(f"seed must be int, got {seed!r}")
-    _ = make_digest_text(held_out_split.digest)
-    _ = make_digest_text(metrics.digest)
-    _ = make_digest_text(held_out_metrics.digest)
+    _ = _bridge_contracts.make_digest_text(held_out_split.digest)
+    _ = _bridge_contracts.make_digest_text(metrics.digest)
+    _ = _bridge_contracts.make_digest_text(held_out_metrics.digest)
     # Use a stable UTC timestamp truncated to seconds for determinism in tests;
     # callers that need wall-clock time can supply their own.
     import datetime

@@ -17,18 +17,16 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any, cast
 
-from hydra2._canon import (
-    NonFiniteNumberError,
-    _mkstemp_o_excl,
-    require_digest_match,
-    sha256_digest_of_json,
-)
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
+from hydra2.artifacts.atomic import _mkstemp_o_excl
+from hydra2.artifacts.digest import of_canonical, require_digest_match
 from hydra2.contracts.common import (
+    CanonicalizationError,
     ContractError,
     CorruptArtifactError,
     DigestText,
     SchemaVersion,
-    make_digest_text,
     make_schema_version,
 )
 
@@ -114,7 +112,7 @@ def state_tree(value: Any) -> Any:
         return {"kind": "scalar", "value": value}
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
-            raise NonFiniteNumberError(f"non-finite float in state: {value!r}")
+            raise CanonicalizationError(f"non-finite float in state: {value!r}")
         return {"kind": "scalar", "value": value}
     raise StateTreeError(
         f"unsupported state leaf type {type(value).__name__}; convert to tensor/scalar first"
@@ -123,7 +121,7 @@ def state_tree(value: Any) -> Any:
 
 def hash_state_tree(value: Any) -> DigestText:
     """Bitwise-identity digest of arbitrary training state."""
-    return sha256_digest_of_json(state_tree(value))
+    return of_canonical(state_tree(value))
 
 
 # ---------------------------------------------------------------------------
@@ -162,21 +160,21 @@ def build_manifest(
         )
     manifest = CheckpointManifest(
         checkpoint_version=make_schema_version(CHECKPOINT_SCHEMA_VERSION),
-        run_spec_hash=make_digest_text(run_spec_hash),
-        model_spec_hash=make_digest_text(model_spec_hash),
+        run_spec_hash=_bridge_contracts.make_digest_text(run_spec_hash),
+        model_spec_hash=_bridge_contracts.make_digest_text(model_spec_hash),
         model_state_hash=hash_state_tree(payload["model_state"]),
-        optimizer_spec_hash=make_digest_text(optimizer_spec_hash),
+        optimizer_spec_hash=_bridge_contracts.make_digest_text(optimizer_spec_hash),
         optimizer_state_hash=hash_state_tree(payload["optimizer_state"]),
-        scheduler_spec_hash=make_digest_text(scheduler_spec_hash),
+        scheduler_spec_hash=_bridge_contracts.make_digest_text(scheduler_spec_hash),
         scheduler_state_hash=hash_state_tree(payload["scheduler_state"]),
         training_state_hash=hash_state_tree(payload["training_state"]),
         sampler_state_hash=hash_state_tree(payload["sampler_state"]),
         rng_state_hash=hash_state_tree(payload["rng_state"]),
-        environment_hash=make_digest_text(environment_hash),
-        rules_hash=make_digest_text(rules_hash),
-        utility_manifest_hash=make_digest_text(utility_manifest_hash),
-        action_schema_hash=make_digest_text(action_schema_hash),
-        observation_schema_hash=make_digest_text(observation_schema_hash),
+        environment_hash=_bridge_contracts.make_digest_text(environment_hash),
+        rules_hash=_bridge_contracts.make_digest_text(rules_hash),
+        utility_manifest_hash=_bridge_contracts.make_digest_text(utility_manifest_hash),
+        action_schema_hash=_bridge_contracts.make_digest_text(action_schema_hash),
+        observation_schema_hash=_bridge_contracts.make_digest_text(observation_schema_hash),
         dataset_manifest_hash=_optional_digest("dataset_manifest_hash", dataset_manifest_hash),
         rollout_artifact_hash=_optional_digest("rollout_artifact_hash", rollout_artifact_hash),
         parent_checkpoint_hash=_optional_digest("parent_checkpoint_hash", parent_checkpoint_hash),
@@ -186,7 +184,7 @@ def build_manifest(
 
 
 def _optional_digest(name: str, value: str | None) -> DigestText | None:
-    return None if value is None else make_digest_text(value)
+    return None if value is None else _bridge_contracts.make_digest_text(value)
 
 
 def validate_checkpoint_manifest(manifest: CheckpointManifest) -> None:
@@ -221,35 +219,37 @@ def manifest_from_json(raw: Mapping[str, Any]) -> CheckpointManifest:
     try:
         manifest = CheckpointManifest(
             checkpoint_version=make_schema_version(raw["checkpoint_version"]),
-            run_spec_hash=make_digest_text(raw["run_spec_hash"]),
-            model_spec_hash=make_digest_text(raw["model_spec_hash"]),
-            model_state_hash=make_digest_text(raw["model_state_hash"]),
-            optimizer_spec_hash=make_digest_text(raw["optimizer_spec_hash"]),
-            optimizer_state_hash=make_digest_text(raw["optimizer_state_hash"]),
-            scheduler_spec_hash=make_digest_text(raw["scheduler_spec_hash"]),
-            scheduler_state_hash=make_digest_text(raw["scheduler_state_hash"]),
-            training_state_hash=make_digest_text(raw["training_state_hash"]),
-            sampler_state_hash=make_digest_text(raw["sampler_state_hash"]),
-            rng_state_hash=make_digest_text(raw["rng_state_hash"]),
-            environment_hash=make_digest_text(raw["environment_hash"]),
-            rules_hash=make_digest_text(raw["rules_hash"]),
-            utility_manifest_hash=make_digest_text(raw["utility_manifest_hash"]),
-            action_schema_hash=make_digest_text(raw["action_schema_hash"]),
-            observation_schema_hash=make_digest_text(raw["observation_schema_hash"]),
+            run_spec_hash=_bridge_contracts.make_digest_text(raw["run_spec_hash"]),
+            model_spec_hash=_bridge_contracts.make_digest_text(raw["model_spec_hash"]),
+            model_state_hash=_bridge_contracts.make_digest_text(raw["model_state_hash"]),
+            optimizer_spec_hash=_bridge_contracts.make_digest_text(raw["optimizer_spec_hash"]),
+            optimizer_state_hash=_bridge_contracts.make_digest_text(raw["optimizer_state_hash"]),
+            scheduler_spec_hash=_bridge_contracts.make_digest_text(raw["scheduler_spec_hash"]),
+            scheduler_state_hash=_bridge_contracts.make_digest_text(raw["scheduler_state_hash"]),
+            training_state_hash=_bridge_contracts.make_digest_text(raw["training_state_hash"]),
+            sampler_state_hash=_bridge_contracts.make_digest_text(raw["sampler_state_hash"]),
+            rng_state_hash=_bridge_contracts.make_digest_text(raw["rng_state_hash"]),
+            environment_hash=_bridge_contracts.make_digest_text(raw["environment_hash"]),
+            rules_hash=_bridge_contracts.make_digest_text(raw["rules_hash"]),
+            utility_manifest_hash=_bridge_contracts.make_digest_text(raw["utility_manifest_hash"]),
+            action_schema_hash=_bridge_contracts.make_digest_text(raw["action_schema_hash"]),
+            observation_schema_hash=_bridge_contracts.make_digest_text(
+                raw["observation_schema_hash"]
+            ),
             dataset_manifest_hash=(
                 None
                 if raw["dataset_manifest_hash"] is None
-                else make_digest_text(raw["dataset_manifest_hash"])
+                else _bridge_contracts.make_digest_text(raw["dataset_manifest_hash"])
             ),
             rollout_artifact_hash=(
                 None
                 if raw["rollout_artifact_hash"] is None
-                else make_digest_text(raw["rollout_artifact_hash"])
+                else _bridge_contracts.make_digest_text(raw["rollout_artifact_hash"])
             ),
             parent_checkpoint_hash=(
                 None
                 if raw["parent_checkpoint_hash"] is None
-                else make_digest_text(raw["parent_checkpoint_hash"])
+                else _bridge_contracts.make_digest_text(raw["parent_checkpoint_hash"])
             ),
         )
     except KeyError as exc:

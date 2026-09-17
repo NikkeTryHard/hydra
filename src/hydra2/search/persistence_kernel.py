@@ -22,8 +22,10 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.artifacts.canonical import canonical_bytes
-from hydra2.contracts.common import ContractError, DigestText, make_digest_text
+from hydra2.contracts.common import ContractError, DigestText
 
 try:
     from hydra2.search.common import (
@@ -193,7 +195,7 @@ class FinitePacket:
     delta: tuple[int, ...]  # successor delta placeholder (opaque but deterministic)
 
     def __post_init__(self) -> None:
-        _ = make_digest_text(self.packet_id)
+        _ = _bridge_contracts.make_digest_text(self.packet_id)
         if not 0.0 < self.probability <= 1.0:
             raise ContractError(f"packet probability must be in (0,1], got {self.probability!r}")
         if not math.isfinite(self.probability):
@@ -215,8 +217,8 @@ class BeliefEpochLite:
     root_actor: int
 
     def __post_init__(self) -> None:
-        _ = make_digest_text(self.observation_hash)
-        _ = make_digest_text(self.target_id)
+        _ = _bridge_contracts.make_digest_text(self.observation_hash)
+        _ = _bridge_contracts.make_digest_text(self.target_id)
 
 
 def _obs_hash_from_epoch(epoch: BeliefEpochLite | str) -> str:
@@ -228,7 +230,7 @@ def _obs_hash_from_epoch(epoch: BeliefEpochLite | str) -> str:
 def _action_key(a: Any) -> int:
     """Deterministic integer key for a CanonicalAction without mutating it."""
     try:
-        from hydra2.contracts.action import ACTION_KIND_ORDINALS
+        from hydra2.contracts.action_kinds import ACTION_KIND_ORDINALS
 
         _ord = ACTION_KIND_ORDINALS
     except Exception:

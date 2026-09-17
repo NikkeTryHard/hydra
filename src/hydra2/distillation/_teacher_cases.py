@@ -18,6 +18,7 @@ import random
 from typing import TYPE_CHECKING, Any
 
 import torch
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
 from hydra2.contracts.common import ContractError
 from hydra2.distillation._teacher_gate import _require_sha256 as _require_sha256
@@ -41,7 +42,7 @@ def _require_census_bridge() -> object:
 
 
 if TYPE_CHECKING:
-    from hydra2.contracts.observation import ActorObservation
+    from hydra2.contracts.observation_actor import ActorObservation
     from hydra2.models.model import Hydra2BaselineModel, ModelOutput
     from hydra2.search.common import CandidateSpec
 
@@ -172,15 +173,18 @@ def _case_observation(
     """
     if actor not in (0, 1, 2, 3):
         raise ContractError(f"actor must be 0..3, got {actor}")
-    from hydra2.contracts.common import make_digest_text
     from hydra2.contracts.event_schema import (
         build_event_schema_payload,
         compute_event_schema_digest,
     )
-    from hydra2.contracts.observation import (
-        DORA_SENTINEL,
+    from hydra2.contracts.observation_actor import (
         make_actor_observation,
+    )
+    from hydra2.contracts.observation_schema import (
         observation_schema_digest,
+    )
+    from hydra2.contracts.observation_types import (
+        DORA_SENTINEL,
     )
 
     hand = _case_hand_tiles(case_id=case_id, teacher_id=teacher_id, seed_material=seed_material)
@@ -196,11 +200,11 @@ def _case_observation(
             sequence=0,
             actor=actor,
             rules_id="tenhou_4p_hanchan_v1",
-            rules_hash=make_digest_text(spec.rules_hash),
-            action_table_hash=make_digest_text(spec.action_table_hash),
+            rules_hash=_bridge_contracts.make_digest_text(spec.rules_hash),
+            action_table_hash=_bridge_contracts.make_digest_text(spec.action_table_hash),
             event_schema_hash=compute_event_schema_digest(build_event_schema_payload()),
             observation_schema_hash=observation_schema_digest(),
-            packet_boundary_hash=make_digest_text(spec.packet_boundary_hash),
+            packet_boundary_hash=_bridge_contracts.make_digest_text(spec.packet_boundary_hash),
             round_index=0,
             round_wind=27,
             hand_number=0,

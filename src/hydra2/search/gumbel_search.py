@@ -15,12 +15,24 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
-from hydra2.contracts.common import ContractError as ContractError
-from hydra2.contracts.common import VisibilityViolationError as VisibilityViolationError
-from hydra2.search.gumbel_config import GumbelSearchConfig as GumbelSearchConfig
-from hydra2.search.gumbel_config import _ActionStats as _ActionStats
-from hydra2.search.gumbel_core import _MASTER_SEED as _MASTER_SEED
-from hydra2.search.gumbel_core import _actor_to_move as _actor_to_move
+from hydra2.contracts.common import (
+    ContractError as ContractError,
+)
+from hydra2.contracts.common import (
+    VisibilityViolationError as VisibilityViolationError,
+)
+from hydra2.search.gumbel_config import (
+    GumbelSearchConfig as GumbelSearchConfig,
+)
+from hydra2.search.gumbel_config import (
+    _ActionStats as _ActionStats,
+)
+from hydra2.search.gumbel_core import (
+    _MASTER_SEED as _MASTER_SEED,
+)
+from hydra2.search.gumbel_core import (
+    _actor_to_move as _actor_to_move,
+)
 from hydra2.search.gumbel_core import _is_terminal as _is_terminal
 from hydra2.search.gumbel_core import _legal_ids_for_observation as _legal_ids_for_observation
 from hydra2.search.gumbel_core import _require_belief as _require_belief
@@ -28,11 +40,9 @@ from hydra2.search.gumbel_core import _require_random_stream as _require_random_
 from hydra2.search.gumbel_core import _require_search_bridge as _require_search_bridge
 from hydra2.search.gumbel_core import deterministic_root_gumbels as deterministic_root_gumbels
 from hydra2.search.gumbel_core import exact_transition as exact_transition
-from hydra2.search.gumbel_core import make_full_world as make_full_world
 from hydra2.search.gumbel_core import model_vector_for_world as model_vector_for_world
 from hydra2.search.gumbel_core import scalarize_vector as scalarize_vector
 from hydra2.search.gumbel_core import terminal_vector_for_world as terminal_vector_for_world
-from hydra2.search.gumbel_core import world_actor_observation as world_actor_observation
 
 __all__ = [
     "GumbelSearchPlannerSearchMixin",
@@ -75,7 +85,7 @@ class UniformContinuationPolicy:
     def distribution(self, observation: Any, legal: tuple[int, ...]) -> tuple[float, ...]:
         if observation is not None:
             try:
-                from hydra2.contracts.observation import ActorObservation as _Obs
+                from hydra2.contracts.observation_actor import ActorObservation as _Obs
             except ImportError as exc:
                 raise ImportError(
                     "hydra2.contracts.observation not importable "

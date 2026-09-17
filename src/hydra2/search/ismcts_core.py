@@ -89,8 +89,11 @@ def _require_belief() -> None:
 
 
 try:
-    from hydra2.contracts.action import CanonicalAction
-    from hydra2.contracts.observation import ActorObservation, observation_identity_document
+    from hydra2.contracts.action_model import CanonicalAction
+    from hydra2.contracts.observation_actor import (
+        ActorObservation,
+        observation_identity_document,
+    )
     from hydra2.contracts.utility import UtilityVector
     from hydra2.eval.telemetry import ResourceTelemetry, make_resource_telemetry
 
@@ -204,8 +207,8 @@ def info_key_for_observation(observation: Any) -> str:
         raise ContractError("observation must be ActorObservation")
     _require_telemetry()
     try:
-        from hydra2.contracts.observation import ActorObservation as _Obs
-        from hydra2.contracts.observation import observation_identity_document as _oid
+        from hydra2.contracts.observation_actor import ActorObservation as _Obs
+        from hydra2.contracts.observation_actor import observation_identity_document as _oid
 
         if isinstance(observation, _Obs):
             doc = _oid(observation)
@@ -465,7 +468,7 @@ class UniformContinuationPolicy:
         if observation is not None:
             # ensure observation is ActorObservation, not FullWorld
             try:
-                from hydra2.contracts.observation import ActorObservation as _Obs
+                from hydra2.contracts.observation_actor import ActorObservation as _Obs
             except ImportError as exc:
                 raise ImportError(
                     "hydra2.contracts.observation not importable "

@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 
 import pytest
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
 from hydra2.config import artifact_root
 from hydra2.engines.mahjax.capture import capture_mahjax_tuple
@@ -200,22 +201,25 @@ def test_differential_zero_mismatch_and_token_issued() -> None:
         str(capture.digest) == result.env_tuple_digest
         or payload["environment_fragment"] == capture.to_fragment()
     )
-    from hydra2.contracts.common import make_digest_text
     from hydra2.engines.mahjax.quarantine import fabricate_test_only_token
 
     shell = MahJaxQuarantineShell()
     fresh_token = fabricate_test_only_token(
-        capture, rules_id=make_digest_text(payload["token"]["rules_id"])
+        capture, rules_id=_bridge_contracts.make_digest_text(payload["token"]["rules_id"])
     )
-    digest = shell.qualify(fresh_token, rules_id=make_digest_text(payload["token"]["rules_id"]))
+    digest = shell.qualify(
+        fresh_token, rules_id=_bridge_contracts.make_digest_text(payload["token"]["rules_id"])
+    )
     assert str(digest) == str(fresh_token.identity_digest)
     tampered = fabricate_test_only_token(
-        capture, rules_id=make_digest_text(payload["token"]["rules_id"])
+        capture, rules_id=_bridge_contracts.make_digest_text(payload["token"]["rules_id"])
     )
     object.__setattr__(tampered, "jax_version", "0.0.0-tampered")
     with pytest.raises(Exception):  # noqa: B017  # reason: hard-failure contract asserts any raise never silent skip; pinning subclass would over-constrain
         shell2 = MahJaxQuarantineShell()
-        shell2.qualify(tampered, rules_id=make_digest_text(payload["token"]["rules_id"]))
+        shell2.qualify(
+            tampered, rules_id=_bridge_contracts.make_digest_text(payload["token"]["rules_id"])
+        )
 
 
 @pytest.mark.serial

@@ -16,11 +16,16 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.artifacts.canonical import canonical_bytes
-from hydra2.contracts.common import ContractError, DigestText, make_digest_text
-from hydra2.search.local_shared import _MASTER_SEED as _MASTER_SEED
-from hydra2.search.local_shared import FORBIDDEN_IN_STRATEGY_KEY as FORBIDDEN_IN_STRATEGY_KEY
-from hydra2.search.local_shared import logger as logger
+from hydra2.contracts.common import ContractError, DigestText
+from hydra2.search.local_shared import (
+    _MASTER_SEED as _MASTER_SEED,
+)
+from hydra2.search.local_shared import (
+    FORBIDDEN_IN_STRATEGY_KEY as FORBIDDEN_IN_STRATEGY_KEY,
+)
 
 __all__ = [
     "AbstractMappingError",
@@ -56,7 +61,7 @@ def _h(data: bytes) -> str:
 
 
 def _digest(s: str) -> DigestText:
-    return make_digest_text("sha256:" + _h(s.encode()))
+    return _bridge_contracts.make_digest_text("sha256:" + _h(s.encode()))
 
 
 def _seed_bytes(*parts: str) -> bytes:
@@ -383,7 +388,7 @@ class PublicSubgame:
                 f"leaf_model must be 'model' or 'terminal', got {self.leaf_model!r}"
             )
         try:
-            _ = make_digest_text(self.public_history_hash)
+            _ = _bridge_contracts.make_digest_text(self.public_history_hash)
         except Exception as exc:
             raise ContractError(
                 f"public_history_hash must be sha256 digest, got {self.public_history_hash!r}"
@@ -391,7 +396,7 @@ class PublicSubgame:
         if not isinstance(self.nodes, tuple) or len(self.nodes) == 0:
             raise ContractError("nodes must be non-empty tuple")
         for n in self.nodes:
-            _ = make_digest_text(n)
+            _ = _bridge_contracts.make_digest_text(n)
         if len(set(self.nodes)) != len(self.nodes):
             raise ContractError("nodes must be distinct (no duplicate public hashes)")
         # edges must reference nodes
@@ -400,8 +405,8 @@ class PublicSubgame:
             if not isinstance(e, (list, tuple)) or len(e) != 3:
                 raise ContractError(f"edge must be (from, to, abstract_id), got {e!r}")
             fr, to, aid = e
-            _ = make_digest_text(fr)
-            _ = make_digest_text(to)
+            _ = _bridge_contracts.make_digest_text(fr)
+            _ = _bridge_contracts.make_digest_text(to)
             if fr not in node_set or to not in node_set:
                 raise ContractError(f"edge references unknown node {e!r}")
             if not isinstance(aid, int) or isinstance(aid, bool) or aid < 0:

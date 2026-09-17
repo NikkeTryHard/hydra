@@ -95,7 +95,7 @@ def _belief_target_from_privileged(
 
 def _oracle_utility_manifest() -> UtilityManifest:
     """Canonical day-one utility manifest (same golden as models/model.py)."""
-    from hydra2.contracts.rules import RULES_ID
+    from hydra2.contracts.rules_canonical import RULES_ID
     from hydra2.contracts.utility import (
         UTILITY_OBJECTIVE,
         UTILITY_TIE_POLICY,

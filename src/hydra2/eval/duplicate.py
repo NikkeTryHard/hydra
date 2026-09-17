@@ -23,9 +23,10 @@ from dataclasses import dataclass
 from typing import Any
 
 import torch
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
 from hydra2.artifacts.digest import of_canonical, validate_digest
-from hydra2.contracts.common import ContractError, DigestText, make_digest_text
+from hydra2.contracts.common import ContractError, DigestText
 from hydra2.eval.blocks import (
     BlockAggregateResult,
     BlockTolerance,
@@ -387,7 +388,7 @@ def make_block_manifest(
 
 
 def block_manifest_digest(manifest: BlockManifest) -> DigestText:
-    _ = make_digest_text(manifest.digest)
+    _ = _bridge_contracts.make_digest_text(manifest.digest)
     return manifest.digest
 
 

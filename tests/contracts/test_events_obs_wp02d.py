@@ -13,6 +13,7 @@ exhaustiveness / nonemptiness on a scripted round.
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -20,8 +21,7 @@ from typing import Any
 import pytest
 
 from hydra2.artifacts.digest import sha256_digest
-from hydra2.contracts import event as ev
-from hydra2.contracts.action import load_action_table
+from hydra2.contracts.action_artifact import load_action_table
 from hydra2.contracts.canonical import canonical_json_bytes
 from hydra2.contracts.common import (
     ContractError,
@@ -30,17 +30,35 @@ from hydra2.contracts.common import (
     Seat,
     VisibilityViolationError,
 )
-from hydra2.contracts.observation import (
+from hydra2.contracts.event_envelope import (
+    EventEnvelope,
+    EventPayload,
+    PublicStateDelta,
+    filter_events_for_actor,
+    validate_event_stream,
+)
+from hydra2.contracts.event_packet import (
+    DEFAULT_PACKET_BOUNDARY_SPEC,
+    ActorVisiblePacket,
+    partition_actor_packets,
+    validate_packet_partition,
+)
+from hydra2.contracts.event_schema import build_event_schema_payload, load_event_schema
+from hydra2.contracts.observation_actor import (
+    ActorObservation,
+    compute_observation_hash,
+    make_actor_observation,
+    observation_identity_document,
+)
+from hydra2.contracts.observation_assembly import (
+    VISIBILITY_VALIDATOR,
+    ObservationBuilder,
+)
+from hydra2.contracts.observation_types import (
     DORA_SENTINEL,
     DORA_SHAPE,
     MELD_KINDS,
     PHASES,
-    VISIBILITY_VALIDATOR,
-    ActorObservation,
-    ObservationBuilder,
-    compute_observation_hash,
-    make_actor_observation,
-    observation_identity_document,
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -82,11 +100,11 @@ class Round:
     """Scripted grammar-valid round used across the fixture tests."""
 
     def __init__(self) -> None:
-        self.schema_hash: str = ev.load_event_schema(EVENT_SCHEMA_PATH)["payload"]["digest"]
-        self.events: list[ev.EventEnvelope] = []
+        self.schema_hash: str = load_event_schema(EVENT_SCHEMA_PATH)["payload"]["digest"]
+        self.events: list[EventEnvelope] = []
         self._next = 1
 
-    def add(self, kind: str, **kwargs: Any) -> ev.EventEnvelope:
+    def add(self, kind: str, **kwargs: Any) -> EventEnvelope:
         envelope = self._envelope(self._next, kind, **kwargs)
         self._next += 1
         self.events.append(envelope)
@@ -110,8 +128,8 @@ class Round:
         offered=(),
         accepted=(),
         deltas=(),
-    ) -> ev.EventEnvelope:
-        payload = ev.EventPayload(
+    ) -> EventEnvelope:
+        payload = EventPayload(
             kind=kind,
             actor=actor,
             tile=tile,
@@ -125,9 +143,9 @@ class Round:
             reason=reason,
         )
         deltas = tuple(
-            d if isinstance(d, ev.PublicStateDelta) else ev.PublicStateDelta(*d) for d in deltas
+            d if isinstance(d, PublicStateDelta) else PublicStateDelta(*d) for d in deltas
         )
-        return ev.EventEnvelope(
+        return EventEnvelope(
             game_id="g-wp02d",
             sequence=sequence,
             kind=kind,
@@ -142,7 +160,7 @@ class Round:
             schema_hash=self.schema_hash,
         )
 
-    def build_stream(self) -> list[ev.EventEnvelope]:
+    def build_stream(self) -> list[EventEnvelope]:
         scores = (25000, 25000, 25000, 25000)
         s0, s1, s3 = Seat(0), Seat(1), Seat(3)
         self.add("game_start", ridx=0, scores=scores)
@@ -242,7 +260,7 @@ def _make_builder(mask_length: int) -> ObservationBuilder:
         rules_hash=_RULES_HASH,
         action_table_hash=DigestText("sha256:" + "7b" * 32),
         expected_legal_mask_length=mask_length,
-        event_schema_hash=ev.load_event_schema(EVENT_SCHEMA_PATH)["payload"]["digest"],
+        event_schema_hash=load_event_schema(EVENT_SCHEMA_PATH)["payload"]["digest"],
         packet_boundary_hash=_PACKET_BOUNDARY_HASH,
     )
 
@@ -259,7 +277,7 @@ def action_table():
 
 
 @pytest.fixture(scope="module")
-def stream() -> list[ev.EventEnvelope]:
+def stream() -> list[EventEnvelope]:
     return Round().build_stream()
 
 
@@ -274,14 +292,14 @@ class TestPublishedSchemaArtifacts:
         assert sha256_digest(PACKET_BOUNDARY_PATH.read_bytes()) == GOLDEN_PACKET_BOUNDARY_SHA256
 
     def test_event_schema_matches_compiled_matrix(self):
-        document = ev.load_event_schema(EVENT_SCHEMA_PATH)
-        compiled = ev.build_event_schema_payload()
+        document = load_event_schema(EVENT_SCHEMA_PATH)
+        compiled = build_event_schema_payload()
         stripped = {k: v for k, v in document["payload"].items() if k != "digest"}
         assert stripped == compiled
 
     def test_unknown_payload_field_is_unrepresentable(self):
         with pytest.raises(TypeError):
-            ev.EventPayload(
+            EventPayload(
                 kind="discard",
                 actor=Seat(0),
                 tile=5,
@@ -295,7 +313,7 @@ class TestPublishedSchemaArtifacts:
                 reason=None,
                 wall_remaining=70,  # type: ignore[call-arg]
             )
-        payload = ev.EventPayload(
+        payload = EventPayload(
             kind="discard",
             actor=Seat(0),
             tile=5,
@@ -407,6 +425,42 @@ class TestEnvelopeVisibilityMatrix:
                 accepted=(11, 12),
             )
 
+    def test_huge_action_ids_reject_fail_closed(self):
+        # Bridge make_action_id returns u32: ints >= 2**32 would wrap modulo
+        # 2**32 instead of rejecting. The validators fail closed (ContractError)
+        # to preserve the oracle accept-set; wrapping would alias onto live ids.
+        huge = 2**32 + 5
+        with pytest.raises(ContractError):
+            Round()._envelope(1, "discard", actor=Seat(0), tile=_T_DISCARD_0, action=huge)
+        with pytest.raises(ContractError):
+            Round()._envelope(
+                1,
+                "call_resolved",
+                visibility="server_private",
+                visible_to=(),
+                offered=(11, huge),
+                accepted=(11,),
+            )
+        with pytest.raises(ContractError):
+            Round()._envelope(
+                1,
+                "call_resolved",
+                visibility="server_private",
+                visible_to=(),
+                offered=(11, 12),
+                accepted=(huge,),
+            )
+        # Boundary still accepted at validator level (downstream size checks own the range).
+        boundary = Round()._envelope(
+            1,
+            "call_resolved",
+            visibility="server_private",
+            visible_to=(),
+            offered=(0xFFFF_FFFF,),
+            accepted=(0xFFFF_FFFF,),
+        )
+        assert boundary.payload.accepted_action_ids == (0xFFFF_FFFF,)
+
 
 # ---------------------------------------------------------------------------
 # Sequence monotonicity and stream grammar.
@@ -422,16 +476,16 @@ class TestSequenceMonotonicity:
 
     def test_validate_event_stream_rejects_duplicate_sequences(self, stream):
         with pytest.raises(ContractError):
-            ev.validate_event_stream([stream[0], stream[1], stream[1]])
+            validate_event_stream([stream[0], stream[1], stream[1]])
 
     def test_validate_event_stream_rejects_grammar_violation(self, stream):
         discard = next(e for e in stream if e.kind == "discard")
         ron = Round()._envelope(10_000, "ron", actor=Seat(2), tile=50, action=9, source=Seat(0))
         with pytest.raises(ContractError):
-            ev.validate_event_stream([stream[0], stream[1], discard, ron])
+            validate_event_stream([stream[0], stream[1], discard, ron])
 
     def test_scripted_round_stream_is_valid(self, stream):
-        ev.validate_event_stream(stream)
+        validate_event_stream(stream)
 
 
 # ---------------------------------------------------------------------------
@@ -493,7 +547,7 @@ class TestPublicEventsAllSeats:
 
 
 class TestServerPrivateRejectedAndCanary001:
-    def _server_private(self, sequence: int = 999) -> ev.EventEnvelope:
+    def _server_private(self, sequence: int = 999) -> EventEnvelope:
         return Round()._envelope(
             sequence,
             "call_resolved",
@@ -513,7 +567,7 @@ class TestServerPrivateRejectedAndCanary001:
 
     def test_filter_and_builder_leave_no_trace(self, stream, action_table):
         canary = self._server_private()
-        assert ev.filter_events_for_actor([canary], Seat(0)) == ()
+        assert filter_events_for_actor([canary], Seat(0)) == ()
         builder = _make_builder(len(action_table.actions))
         _feed_round(builder, [*stream, canary])
         for seat in range(4):
@@ -547,9 +601,9 @@ class TestServerPrivateRejectedAndCanary001:
             )
             assert not contains_value(observation.to_json(), _CANARY_TILE)
             assert str(_CANARY_TILE) not in repr(observation)
-            packets = ev.partition_actor_packets(
+            packets = partition_actor_packets(
                 builder._histories[seat],
-                ev.DEFAULT_PACKET_BOUNDARY_SPEC,
+                DEFAULT_PACKET_BOUNDARY_SPEC,
                 actor_view=Seat(seat),
                 observation_hash_of=lambda view, end: _PACKET_BOUNDARY_HASH,
             )
@@ -693,7 +747,7 @@ class TestMaskAlignmentActionTableDigest:
             builder.build(actor=Seat(0), legal_mask=(False,) * len(action_table.actions))
 
     def test_builder_digest_pins_published_action_table_digest(self, action_table):
-        artifact = ev.json.loads(ACTION_TABLE_PATH.read_text(encoding="utf-8"))
+        artifact = json.loads(ACTION_TABLE_PATH.read_text(encoding="utf-8"))
         recorded = artifact["payload"]["digest"]
         assert action_table.digest == recorded
 
@@ -705,12 +759,12 @@ class TestMaskAlignmentActionTableDigest:
 
 class TestCallWindowSingleSuccessorGrouping:
     def test_call_group_discard_through_call_resolved_forms_one_packet(self, stream):
-        spec = ev.DEFAULT_PACKET_BOUNDARY_SPEC
+        spec = DEFAULT_PACKET_BOUNDARY_SPEC
         assert spec.call_group_kinds == ("discard", "call_window", "call_resolved")
         assert spec.claim_priority_order == ("ron", "daiminkan", "pon", "chi")
         for seat in range(4):
-            packets = ev.partition_actor_packets(
-                ev.filter_events_for_actor(stream, Seat(seat)),
+            packets = partition_actor_packets(
+                filter_events_for_actor(stream, Seat(seat)),
                 spec,
                 actor_view=Seat(seat),
                 observation_hash_of=lambda view, end: _PACKET_BOUNDARY_HASH,
@@ -734,9 +788,9 @@ class TestCallWindowSingleSuccessorGrouping:
         )
         round_.add("turn_advance", actor=s1)
         events = round_.events
-        packets = ev.partition_actor_packets(
-            ev.filter_events_for_actor(events, Seat(2)),
-            ev.DEFAULT_PACKET_BOUNDARY_SPEC,
+        packets = partition_actor_packets(
+            filter_events_for_actor(events, Seat(2)),
+            DEFAULT_PACKET_BOUNDARY_SPEC,
             actor_view=Seat(2),
             observation_hash_of=lambda view, end: _PACKET_BOUNDARY_HASH,
         )
@@ -757,17 +811,17 @@ class TestCallWindowSingleSuccessorGrouping:
 
 class TestPacketPartitionScriptedRound:
     def test_partition_is_exclusive_exhaustive_nonempty_for_every_seat(self, stream):
-        spec = ev.DEFAULT_PACKET_BOUNDARY_SPEC
+        spec = DEFAULT_PACKET_BOUNDARY_SPEC
         for seat in range(4):
-            visible = ev.filter_events_for_actor(stream, Seat(seat))
-            packets = ev.partition_actor_packets(
+            visible = filter_events_for_actor(stream, Seat(seat))
+            packets = partition_actor_packets(
                 visible,
                 spec,
                 actor_view=Seat(seat),
                 observation_hash_of=lambda view, end: _PACKET_BOUNDARY_HASH,
             )
             assert packets, seat
-            ev.validate_packet_partition(packets)
+            validate_packet_partition(packets)
             covered: set[int] = set()
             ordered = sorted(packets, key=lambda p: int(p.source_sequence_start))
             previous_end = None
@@ -782,9 +836,9 @@ class TestPacketPartitionScriptedRound:
             assert all(e.visibility != "server_private" for p in packets for e in p.events)
 
     def test_packet_identity_binds_canonical_bytes_minus_packet_id(self, stream):
-        packets = ev.partition_actor_packets(
-            ev.filter_events_for_actor(stream, Seat(0)),
-            ev.DEFAULT_PACKET_BOUNDARY_SPEC,
+        packets = partition_actor_packets(
+            filter_events_for_actor(stream, Seat(0)),
+            DEFAULT_PACKET_BOUNDARY_SPEC,
             actor_view=Seat(0),
             observation_hash_of=lambda view, end: _PACKET_BOUNDARY_HASH,
         )
@@ -794,7 +848,7 @@ class TestPacketPartitionScriptedRound:
         recomputed = hashlib.sha256(canonical_json_bytes(identity)).hexdigest()
         assert recorded == recomputed
         with pytest.raises(DigestMismatchError):
-            ev.ActorVisiblePacket(
+            ActorVisiblePacket(
                 packet_id="0" * 64,
                 actor_view=sample.actor_view,
                 source_sequence_start=sample.source_sequence_start,

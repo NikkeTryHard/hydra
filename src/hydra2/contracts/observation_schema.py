@@ -15,14 +15,15 @@ from collections.abc import Mapping
 from dataclasses import fields
 from pathlib import Path
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.contracts.canonical import canonical_json_bytes
 from hydra2.contracts.common import (
     ContractError,
     DigestMismatchError,
     DigestText,
-    make_digest_text,
 )
-from hydra2.contracts.event import EVENT_SCHEMA_SCHEMA_VERSION
+from hydra2.contracts.event_schema import EVENT_SCHEMA_SCHEMA_VERSION
 from hydra2.contracts.observation_actor import ActorObservation
 from hydra2.contracts.observation_types import (
     _FURIETEN_STATES,
@@ -192,13 +193,11 @@ _FIELD_CONSTRAINTS: dict[str, dict[str, object]] = {
 
 def build_observation_schema_payload() -> dict[str, object]:
     """Deterministic ObservationSchema payload WITHOUT the digest field."""
-    # The drift-guard test patches the constraint table on the stable
-    # ``hydra2.contracts.observation`` path, so resolve it through the shim
-    # instead of this module's globals.
-    import hydra2.contracts.observation as _shim
-
+    # The drift-guard test patches the constraint table on this module's
+    # stable path (``hydra2.contracts.observation_schema``); read the
+    # module global so the patched table is observed.
     names = tuple(field.name for field in fields(ActorObservation))
-    declared = set(_shim._FIELD_CONSTRAINTS)
+    declared = set(_FIELD_CONSTRAINTS)
     if set(names) != declared:
         raise ContractError(
             "observation schema must stay closed over ActorObservation: "
@@ -208,7 +207,7 @@ def build_observation_schema_payload() -> dict[str, object]:
     return {
         "schema_version": OBSERVATION_SCHEMA_SCHEMA_VERSION,
         "field_order": list(names),
-        "fields": {name: _shim._FIELD_CONSTRAINTS[name] for name in names},
+        "fields": {name: _FIELD_CONSTRAINTS[name] for name in names},
         "visible_meld_row": _VISIBLE_MELD_ROW,
         "enums": {
             "phase": list(PHASES),
@@ -317,7 +316,7 @@ def parse_observation_schema(raw_bytes: bytes) -> dict[str, object]:
     expected = compute_observation_schema_digest(
         {k: v for k, v in payload.items() if k != "digest"}  # type: ignore[attr-defined]  # reason: payload Mapping-narrowed above; checker flags .items on bare Mapping
     )
-    recorded = make_digest_text(str(payload["digest"]))  # pyrefly: ignore[unknown-argument-type]  # reason: payload Mapping-narrowed above; str() coerces; Any intentional for raw dict  # type: ignore[index]  # reason: payload Mapping-narrowed above; index on bare Mapping
+    recorded = _bridge_contracts.make_digest_text(str(payload["digest"]))  # pyrefly: ignore[unknown-argument-type]  # reason: payload Mapping-narrowed above; str() coerces; Any intentional for raw dict  # type: ignore[index]  # reason: payload Mapping-narrowed above; index on bare Mapping
     if not hmac.compare_digest(str(recorded), str(expected)):
         raise DigestMismatchError(
             f"observation_schema digest mismatch: recorded {recorded} != recomputed {expected}"

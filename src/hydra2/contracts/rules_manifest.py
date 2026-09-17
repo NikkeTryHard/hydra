@@ -15,13 +15,13 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.contracts.common import (
     ContractError,
     DigestText,
     TileId,
     UtcTimestamp,
-    make_digest_text,
-    make_tile_id,
     make_utc_timestamp,
 )
 from hydra2.contracts.rules_canonical import (
@@ -92,7 +92,9 @@ class SourceAuthority:
         if not url.startswith(("http://", "https://")):
             raise ContractError(f"url must be an http(s) URL, got {url!r}")
         object.__setattr__(self, "retrieved_at_utc", make_utc_timestamp(self.retrieved_at_utc))
-        object.__setattr__(self, "content_sha256", make_digest_text(self.content_sha256))
+        object.__setattr__(
+            self, "content_sha256", _bridge_contracts.make_digest_text(self.content_sha256)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,7 +134,7 @@ class AdapterCompatibility:
             "status",
             _require_enum(self.status, name="status", allowed=ADAPTER_COMPATIBILITY_STATUSES),
         )
-        object.__setattr__(self, "rules_hash", make_digest_text(self.rules_hash))
+        object.__setattr__(self, "rules_hash", _bridge_contracts.make_digest_text(self.rules_hash))
 
 
 def _validated_clock_tuple(clocks: Sequence[ClockRule]) -> tuple[ClockRule, ...]:
@@ -227,7 +229,7 @@ class RulesManifest:
             _require_enum(self.oka_policy, name="oka_policy", allowed=OKA_POLICIES),
         )
         object.__setattr__(self, "kuitan", _require_bool(self.kuitan, name="kuitan"))
-        red_ids = tuple(make_tile_id(item) for item in self.red_tile_ids)
+        red_ids = tuple(_bridge_contracts.make_tile_id(item) for item in self.red_tile_ids)
         if red_ids != RED_TILE_IDS:
             raise ContractError(f"red_tile_ids must be exactly {RED_TILE_IDS}, got {red_ids}")
         object.__setattr__(self, "red_tile_ids", red_ids)

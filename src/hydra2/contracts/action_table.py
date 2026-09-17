@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from bisect import bisect_left
 from dataclasses import dataclass, field
-from typing import cast
+from typing import Any, cast
 
 from hydra2.contracts.action_kinds import (
     ACTION_PHASES,
@@ -32,11 +32,7 @@ from hydra2.contracts.common import (
     SchemaVersion,
     Seat,
     TileId,
-    make_action_id,
-    make_digest_text,
     make_schema_version,
-    make_seat,
-    make_tile_id,
 )
 from hydra2.contracts.observation_types import (
     PHASES as PHASES,
@@ -55,6 +51,17 @@ try:
     from hydra2_replay_rs import contracts as bridge  # pyrefly: ignore[missing-import]
 except ImportError:  # pragma: no cover - import-time signal, same text as call-site
     bridge = None  # type: ignore[assignment]
+
+
+def _require_bridge() -> Any:
+    """Resolve the bridge, fail closed when the extension is not built."""
+    if bridge is None:
+        raise ImportError(
+            "hydra2 codec authority requires the hydra2_replay_rs bridge; "
+            "run `pixi run build-ext` to build the extension before use"
+        )
+    return bridge
+
 
 __all__ = [
     "ActionContext",
@@ -83,7 +90,7 @@ class ActionTable:
             raise ContractError("action templates must be stored in generation order")
         if len(set(keys)) != len(keys):
             raise ContractError("duplicate action templates are rejected")
-        object.__setattr__(self, "digest", make_digest_text(self.digest))
+        object.__setattr__(self, "digest", _require_bridge().make_digest_text(self.digest))
         object.__setattr__(self, "_keys", keys)
 
     def index_of(self, template: CanonicalActionTemplate) -> int | None:
@@ -134,19 +141,34 @@ class ActionContext:
     visible_melds: tuple[VisibleMeld, ...]
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "actor", make_seat(self.actor))
-        object.__setattr__(self, "action_table_hash", make_digest_text(self.action_table_hash))
+        try:
+            actor = Seat(_require_bridge().make_seat(self.actor))
+            table_hash = DigestText(_require_bridge().make_digest_text(self.action_table_hash))
+            offered_tile = (
+                None
+                if self.offered_tile is None
+                else TileId(_require_bridge().make_tile_id(self.offered_tile))
+            )
+            offered_by = (
+                None
+                if self.offered_by is None
+                else Seat(_require_bridge().make_seat(self.offered_by))
+            )
+            concealed = tuple(
+                TileId(_require_bridge().make_tile_id(t)) for t in self.own_concealed_tiles
+            )
+        except (ValueError, TypeError) as exc:
+            raise ContractError(f"ActionContext rejected: {exc}") from exc
+        object.__setattr__(self, "actor", actor)
+        object.__setattr__(self, "action_table_hash", table_hash)
         if self.phase not in PHASES:
             raise ContractError(f"phase must be one of {PHASES}, got {self.phase!r}")
-        offered_tile = None if self.offered_tile is None else make_tile_id(self.offered_tile)
-        offered_by = None if self.offered_by is None else make_seat(self.offered_by)
         if (offered_tile is None) != (offered_by is None):
             raise ContractError("offered_tile and offered_by must both be set or both be None")
-        if offered_by is not None and offered_by == self.actor:
+        if offered_by is not None and offered_by == actor:
             raise ContractError("offered_by must differ from actor; nobody offers to self")
         object.__setattr__(self, "offered_tile", offered_tile)
         object.__setattr__(self, "offered_by", offered_by)
-        concealed = tuple(make_tile_id(t) for t in self.own_concealed_tiles)
         if list(concealed) != sorted(set(concealed)):
             raise ContractError(f"own_concealed_tiles must be unique and ascending: {concealed!r}")
         object.__setattr__(self, "own_concealed_tiles", concealed)
@@ -223,7 +245,7 @@ def _resolve_source(offset: SourceOffset | None, actor: Seat) -> Seat | None:
         raise InvalidActionError(f"source resolve rejected: {exc}") from exc
     if result is None:
         return None
-    return make_seat(int(result))
+    return Seat(_require_bridge().make_seat(int(result)))
 
 
 def _find_kakan_base(context: ActionContext, added_tile: TileId) -> VisibleMeld:
@@ -372,7 +394,7 @@ class CanonicalActionCodec(ActionCodec):
             source_seat=action.source_seat,
             metadata=action.metadata,
         )
-        return make_action_id(index)
+        return ActionId(_require_bridge().make_action_id(index))
 
     def decode(
         self,

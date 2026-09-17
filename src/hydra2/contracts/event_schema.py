@@ -17,8 +17,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.contracts.canonical import canonical_json_bytes
-from hydra2.contracts.common import ContractError, DigestText, make_digest_text
+from hydra2.contracts.common import ContractError, DigestText
 from hydra2.contracts.event_vocab import (
     _ENVELOPE_JSON_FIELDS,
     _PATH_ACTOR_PLACEHOLDER,
@@ -484,7 +486,7 @@ def parse_event_schema(raw_bytes: bytes) -> dict[str, object]:
     if not isinstance(payload, Mapping) or "digest" not in payload:  # type: ignore[attr-defined, operator]  # reason: isinstance-narrowed Mapping; checker flags 'in' on bare Mapping
         raise ContractError("event_schema payload missing digest")
     expected = compute_event_schema_digest({k: v for k, v in payload.items() if k != "digest"})  # type: ignore[attr-defined]  # reason: payload Mapping-narrowed above; checker flags .items on bare Mapping
-    recorded = make_digest_text(str(payload["digest"]))  # pyrefly: ignore[unknown-argument-type]  # reason: payload Mapping-narrowed above; str() coerces; Any intentional for raw dict  # type: ignore[index]  # reason: payload Mapping-narrowed above; index on bare Mapping
+    recorded = _bridge_contracts.make_digest_text(str(payload["digest"]))  # pyrefly: ignore[unknown-argument-type]  # reason: payload Mapping-narrowed above; str() coerces; Any intentional for raw dict  # type: ignore[index]  # reason: payload Mapping-narrowed above; index on bare Mapping
     if not hmac.compare_digest(str(recorded), str(expected)):
         from hydra2.contracts.common import DigestMismatchError
 

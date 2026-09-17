@@ -304,7 +304,7 @@ class TestManifestEnvelope:
     def test_noncanonical_digest_in_envelope_rejected(self):
         raw = manifest_to_json(make_manifest(sample_payload()))
         raw["run_spec_hash"] = "SHA256:" + "b" * 64
-        with pytest.raises(ContractError):
+        with pytest.raises(ValueError):
             manifest_from_json(raw)
 
     def test_missing_payload_sections_rejected(self):

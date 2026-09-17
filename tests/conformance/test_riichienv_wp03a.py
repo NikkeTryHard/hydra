@@ -16,16 +16,17 @@ import random
 from pathlib import Path
 
 import pytest
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
 from hydra2.artifacts.digest import of_canonical
-from hydra2.contracts.action import CanonicalAction
+from hydra2.contracts.action_model import CanonicalAction
 from hydra2.contracts.common import (
     IllegalActionError,
     InvalidActionError,
     UnsupportedRuleError,
 )
-from hydra2.contracts.observation import VISIBILITY_VALIDATOR
-from hydra2.contracts.rules import rules_manifest_from_payload
+from hydra2.contracts.observation_assembly import VISIBILITY_VALIDATOR
+from hydra2.contracts.rules_manifest import rules_manifest_from_payload
 from hydra2.engines.protocol import (
     WallSchedule,
     seat_permutation_literal,
@@ -199,7 +200,7 @@ def test_every_emitted_event_passes_stream_and_visibility_validation() -> None:
         seat_permutation=seat_permutation_literal("shift2"),
     )
     _drive_to_terminal(sim, policy_seed=31337)
-    from hydra2.contracts.event import validate_event_stream
+    from hydra2.contracts.event_envelope import validate_event_stream
 
     validate_event_stream(sim._events)
     for event in sim._events:
@@ -250,7 +251,7 @@ def test_actor_observation_canary_under_rotation() -> None:
 
 def test_legal_mask_ids_round_trip_through_codec() -> None:
     """Every legal action encodes to its masked slot id and decodes back equal."""
-    from hydra2.contracts.action import canonical_action_codec
+    from hydra2.contracts.action_table import canonical_action_codec
 
     sim = RiichiEnvExactSimulator()
     sim.reset(
@@ -280,7 +281,6 @@ def test_legal_mask_ids_round_trip_through_codec() -> None:
 
 def test_invalid_action_rejected_without_engine_effect() -> None:
     """Illegal/unknown canonical actions fail closed; engine state is untouched."""
-    from hydra2.contracts.common import make_seat, make_tile_id
 
     sim = RiichiEnvExactSimulator()
     sim.reset(
@@ -298,8 +298,8 @@ def test_invalid_action_rejected_without_engine_effect() -> None:
     offhand_tile = next(t for t in range(136) if t not in hand)
     stranger = CanonicalAction(
         kind="discard",
-        actor=make_seat(wrong_actor),
-        tile=make_tile_id(hand[0]),
+        actor=_bridge_contracts.make_seat(wrong_actor),
+        tile=_bridge_contracts.make_tile_id(hand[0]),
         called_tile=None,
         consumed_tiles=(),
         source_seat=None,
@@ -310,8 +310,8 @@ def test_invalid_action_rejected_without_engine_effect() -> None:
         sim.apply(stranger)
     phantom = CanonicalAction(
         kind="discard",
-        actor=make_seat(int(actor)),
-        tile=make_tile_id(offhand_tile),
+        actor=_bridge_contracts.make_seat(int(actor)),
+        tile=_bridge_contracts.make_tile_id(offhand_tile),
         called_tile=None,
         consumed_tiles=(),
         source_seat=None,

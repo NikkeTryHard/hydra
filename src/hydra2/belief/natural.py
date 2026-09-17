@@ -10,6 +10,8 @@ import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.artifacts.digest import of_canonical
 from hydra2.contracts.common import (
     BeliefEpochId,
@@ -20,12 +22,10 @@ from hydra2.contracts.common import (
     Seat,
     StaleBeliefError,
     make_belief_epoch_id,
-    make_digest_text,
     make_parent_id,
-    make_seat,
 )
 from hydra2.contracts.event_packet import ActorVisiblePacket
-from hydra2.contracts.observation import ActorObservation
+from hydra2.contracts.observation_actor import ActorObservation
 
 
 def _require_search_bridge() -> Any:
@@ -122,8 +122,10 @@ class ProposalSpec:
     digest: DigestText
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "proposal_id", make_digest_text(self.proposal_id))
-        object.__setattr__(self, "digest", make_digest_text(self.digest))
+        object.__setattr__(
+            self, "proposal_id", _bridge_contracts.make_digest_text(self.proposal_id)
+        )
+        object.__setattr__(self, "digest", _bridge_contracts.make_digest_text(self.digest))
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,16 +257,16 @@ class NaturalBelief:
         event_model_hash: DigestText | None = None,
         proposal_spec_hash: DigestText | None = None,
     ) -> None:
-        self._rules_hash: DigestText = make_digest_text(
+        self._rules_hash: DigestText = _bridge_contracts.make_digest_text(
             rules_hash if rules_hash is not None else ("sha256:" + "a" * 64)
         )
-        self._belief_model_hash: DigestText = make_digest_text(
+        self._belief_model_hash: DigestText = _bridge_contracts.make_digest_text(
             belief_model_hash if belief_model_hash is not None else ("sha256:" + "b" * 64)
         )
-        self._event_model_hash: DigestText = make_digest_text(
+        self._event_model_hash: DigestText = _bridge_contracts.make_digest_text(
             event_model_hash if event_model_hash is not None else ("sha256:" + "c" * 64)
         )
-        self._proposal_spec_hash: DigestText = make_digest_text(
+        self._proposal_spec_hash: DigestText = _bridge_contracts.make_digest_text(
             proposal_spec_hash if proposal_spec_hash is not None else ("sha256:" + "d" * 64)
         )
         self._next_epoch: int = 0
@@ -316,11 +318,15 @@ class NaturalBelief:
         assert observation.observation_hash is not None
         assert observation.rules_hash is not None
         # Use supplied model_id as belief_model_hash if given, else default
-        bh = make_digest_text(model_id) if model_id is not None else self._belief_model_hash
+        bh = (
+            _bridge_contracts.make_digest_text(model_id)
+            if model_id is not None
+            else self._belief_model_hash
+        )
         # Compute target identity
         target_id = _target_id_for(
-            observation_hash=make_digest_text(observation.observation_hash),
-            rules_hash=make_digest_text(observation.rules_hash),
+            observation_hash=_bridge_contracts.make_digest_text(observation.observation_hash),
+            rules_hash=_bridge_contracts.make_digest_text(observation.rules_hash),
             belief_model_hash=bh,
             event_model_hash=self._event_model_hash,
             proposal_spec_hash=self._proposal_spec_hash,
@@ -328,9 +334,9 @@ class NaturalBelief:
         epoch = BeliefEpoch(
             epoch=make_belief_epoch_id(self._next_epoch),
             target_id=target_id,
-            root_actor=make_seat(int(observation.actor)),
-            observation_hash=make_digest_text(observation.observation_hash),
-            rules_hash=make_digest_text(observation.rules_hash),
+            root_actor=_bridge_contracts.make_seat(int(observation.actor)),
+            observation_hash=_bridge_contracts.make_digest_text(observation.observation_hash),
+            rules_hash=_bridge_contracts.make_digest_text(observation.rules_hash),
             belief_model_hash=bh,
             event_model_hash=self._event_model_hash,
             proposal_spec_hash=self._proposal_spec_hash,

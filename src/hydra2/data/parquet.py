@@ -15,7 +15,7 @@ from hydra2.artifacts.atomic import atomic_replace_bytes
 from hydra2.artifacts.canonical import canonical_bytes
 from hydra2.artifacts.digest import sha256_file
 from hydra2.contracts.common import ContractError
-from hydra2.contracts.observation import DORA_SHAPE
+from hydra2.contracts.observation_types import DORA_SHAPE
 
 if TYPE_CHECKING:
     from pathlib import Path

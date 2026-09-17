@@ -14,23 +14,40 @@ import hashlib
 import time
 from typing import Any, cast
 
-from hydra2.contracts.common import ContractError, make_digest_text
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
+from hydra2.contracts.common import ContractError
 from hydra2.contracts.randomness import RandomStream, make_random_stream_key, semantic_seed
-from hydra2.search.common import Planner as Planner
-from hydra2.search.common import SearchRequest as SearchRequest
+from hydra2.search.common import (
+    Planner as Planner,
+)
+from hydra2.search.common import (
+    SearchRequest as SearchRequest,
+)
 from hydra2.search.common import SearchResult as SearchResult
-from hydra2.search.local_abstraction import PublicSubgame as PublicSubgame
-from hydra2.search.local_abstraction import _digest as _digest
+from hydra2.search.local_abstraction import (
+    PublicSubgame as PublicSubgame,
+)
+from hydra2.search.local_abstraction import (
+    _digest as _digest,
+)
 from hydra2.search.local_search import (
     LocalResolvingPlannerSearchMixin as LocalResolvingPlannerSearchMixin,
 )
-from hydra2.search.local_shared import _COMMON_AVAILABLE as _COMMON_AVAILABLE
-from hydra2.search.local_shared import _MASTER_SEED as _MASTER_SEED
+from hydra2.search.local_shared import (
+    _COMMON_AVAILABLE as _COMMON_AVAILABLE,
+)
+from hydra2.search.local_shared import (
+    _MASTER_SEED as _MASTER_SEED,
+)
 from hydra2.search.local_shared import _require_contracts as _require_contracts
 from hydra2.search.local_shared import _require_random_stream as _require_random_stream
-from hydra2.search.local_shared import logger as logger
-from hydra2.search.local_strategy import StrategyTable as StrategyTable
-from hydra2.search.local_strategy import make_uniform_strategy as make_uniform_strategy
+from hydra2.search.local_strategy import (
+    StrategyTable as StrategyTable,
+)
+from hydra2.search.local_strategy import (
+    make_uniform_strategy as make_uniform_strategy,
+)
 
 __all__ = [
     "LocalResolvingPlanner",
@@ -343,10 +360,10 @@ class LocalResolvingPlannerActMixin(LocalResolvingPlannerSearchMixin):
                 UtilityVector(
                     values=cast("tuple[float, float, float, float]", tuple(float(x) for x in v)),
                     utility_id=utility_id,
-                    utility_manifest_hash=make_digest_text(  # pyrefly: ignore[bad-argument-type]
+                    utility_manifest_hash=_bridge_contracts.make_digest_text(  # pyrefly: ignore[bad-argument-type]
                         str(getattr(spec_for_util, "utility_manifest_hash", "sha256:" + "0" * 64))
                     ),
-                    rules_hash=make_digest_text(  # pyrefly: ignore[bad-argument-type]
+                    rules_hash=_bridge_contracts.make_digest_text(  # pyrefly: ignore[bad-argument-type]
                         str(getattr(spec_for_util, "rules_hash", "sha256:" + "a" * 64))
                     ),
                 )

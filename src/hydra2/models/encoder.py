@@ -16,10 +16,16 @@ from typing import Any
 
 import numpy as np
 import torch
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
-from hydra2.contracts.common import ContractError, DigestText, make_digest_text
+from hydra2.contracts.common import ContractError, DigestText
 from hydra2.contracts.event_vocab import EVENT_KINDS
-from hydra2.contracts.observation import PHASES, ActorObservation
+from hydra2.contracts.observation_actor import (
+    ActorObservation,
+)
+from hydra2.contracts.observation_types import (
+    PHASES,
+)
 from hydra2.models.schema import (
     _BASELINE_FIELDS,
     BASELINE_ACTION_COUNT,
@@ -181,7 +187,7 @@ def encode_observations(
             raise ContractError(f"expected ActorObservation, got {type(obs).__name__}")
         if obs.observation_hash is None:
             raise ContractError("observation_hash must be bound")
-        _digest: DigestText = make_digest_text(obs.observation_hash)
+        _digest: DigestText = _bridge_contracts.make_digest_text(obs.observation_hash)
 
     batch_size = len(observations)
 

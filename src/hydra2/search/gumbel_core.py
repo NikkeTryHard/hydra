@@ -26,7 +26,6 @@ from hydra2.contracts.common import (
     ContractError,
     DigestText,
     VisibilityViolationError,
-    make_digest_text,
 )
 from hydra2.search.common import (
     DEPLOYABLE_DEADLINE_MS,
@@ -84,7 +83,10 @@ def _require_belief() -> None:
 
 
 try:
-    from hydra2.contracts.observation import ActorObservation, observation_identity_document
+    from hydra2.contracts.observation_actor import (
+        ActorObservation,
+        observation_identity_document,
+    )
     from hydra2.contracts.utility import UtilityVector
     from hydra2.eval.telemetry import ResourceTelemetry, make_resource_telemetry
 
@@ -294,8 +296,8 @@ def info_key_for_observation(observation: Any) -> str:
         raise ContractError("observation must be ActorObservation")
     _require_telemetry()
     try:
-        from hydra2.contracts.observation import ActorObservation as _Obs
-        from hydra2.contracts.observation import observation_identity_document as _oid
+        from hydra2.contracts.observation_actor import ActorObservation as _Obs
+        from hydra2.contracts.observation_actor import observation_identity_document as _oid
 
         if isinstance(observation, _Obs):
             doc = _oid(observation)
@@ -511,7 +513,7 @@ def cached_full_history_agreement(observation: Any) -> bool:
         _h_raw: Any | None = getattr(observation, "observation_hash", None)
         h: str = _h_raw if isinstance(_h_raw, str) and _h_raw != "" else "sha256:" + "0" * 64
         # Full path: hash of canonical identity doc
-        from hydra2.contracts.observation import observation_identity_document as _oid
+        from hydra2.contracts.observation_actor import observation_identity_document as _oid
 
         doc = _oid(observation)
         full = hashlib.sha256(canonical_bytes(doc)).hexdigest()

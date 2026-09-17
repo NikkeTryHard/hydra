@@ -57,16 +57,28 @@ from typing import TYPE_CHECKING, Any, cast
 import riichienv
 
 from hydra2.config import repo_root as repo_root
-from hydra2.contracts.action import ACTION_TABLE_RELPATH as ACTION_TABLE_RELPATH
-from hydra2.contracts.action import load_action_table as load_action_table
-from hydra2.contracts.common import ContractError as ContractError
-from hydra2.contracts.common import UnsupportedRuleError as UnsupportedRuleError
-from hydra2.contracts.event_schema import EVENT_SCHEMA_RELPATH as EVENT_SCHEMA_RELPATH
-from hydra2.contracts.event_schema import parse_event_schema as parse_event_schema
+from hydra2.contracts.action_artifact import (
+    ACTION_TABLE_RELPATH as ACTION_TABLE_RELPATH,
+)
+from hydra2.contracts.action_artifact import (
+    load_action_table as load_action_table,
+)
+from hydra2.contracts.common import (
+    ContractError as ContractError,
+)
+from hydra2.contracts.common import (
+    UnsupportedRuleError as UnsupportedRuleError,
+)
+from hydra2.contracts.event_schema import (
+    EVENT_SCHEMA_RELPATH as EVENT_SCHEMA_RELPATH,
+)
+from hydra2.contracts.event_schema import (
+    parse_event_schema as parse_event_schema,
+)
 
 if TYPE_CHECKING:
-    from hydra2.contracts.action import ActionTable as ActionTable
-    from hydra2.contracts.rules import RulesManifest as RulesManifest
+    from hydra2.contracts.action_table import ActionTable as ActionTable
+    from hydra2.contracts.rules_manifest import RulesManifest as RulesManifest
 
 __all__ = [
     "_AT",

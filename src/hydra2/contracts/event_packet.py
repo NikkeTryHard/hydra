@@ -23,9 +23,7 @@ from hydra2.contracts.common import (
     PacketId,
     Seat,
     SequenceNo,
-    make_digest_text,
     make_packet_id,
-    make_seat,
     make_sequence_no,
 )
 from hydra2.contracts.event_envelope import (
@@ -35,7 +33,6 @@ from hydra2.contracts.event_envelope import (
 )
 from hydra2.contracts.event_schema import compute_event_schema_digest
 from hydra2.contracts.event_vocab import (
-    _ENVELOPE_JSON_FIELDS,
     EVENT_KINDS,
     _reject_constant,
     _reject_duplicate_keys,
@@ -46,6 +43,17 @@ try:
     from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 except ImportError:  # pragma: no cover - import-time signal, same text as call-site
     _bridge_contracts = None  # type: ignore[assignment]
+
+
+def _require_packet_bridge() -> Any:
+    """Resolve the bridge, fail closed when the extension is not built."""
+    if _bridge_contracts is None:
+        raise ImportError(
+            "hydra2 packet authority requires the hydra2_replay_rs bridge; "
+            "run `pixi run build-ext` to build the extension before use"
+        )
+    return _bridge_contracts
+
 
 __all__ = [
     "DEFAULT_PACKET_BOUNDARY_SPEC",
@@ -105,7 +113,16 @@ class PacketBoundarySpec:
     terminal_boundary_kinds: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "root_actor", make_seat(self.root_actor))
+        if _bridge_contracts is None:
+            raise ImportError(
+                "hydra2 packet authority requires the hydra2_replay_rs bridge; "
+                "run `pixi run build-ext` to build the extension before use"
+            )
+        try:
+            root_actor = Seat(_bridge_contracts.make_seat(self.root_actor))
+        except (ValueError, TypeError) as exc:
+            raise ContractError(f"root_actor rejected: {exc}") from exc
+        object.__setattr__(self, "root_actor", root_actor)
         for name, value in (
             ("start_boundary_kind", self.start_boundary_kind),
             ("decision_boundary_kind", self.decision_boundary_kind),
@@ -194,9 +211,12 @@ def parse_packet_boundary_spec(raw_bytes: bytes) -> PacketBoundarySpec:
         )
     except (UnicodeDecodeError, ValueError) as exc:
         raise ContractError(f"packet_boundary artifact is not valid JSON: {exc}") from exc
-    if not isinstance(document, Mapping) or tuple(sorted(document)) != tuple(
-        sorted(_ENVELOPE_JSON_FIELDS)
-    ):
+    if not isinstance(document, dict) or set(document) != {
+        "artifact_type",
+        "schema_version",
+        "compatibility",
+        "payload",
+    }:
         raise ContractError("packet_boundary artifact must be a SPEC 2.2 envelope")
     if document["artifact_type"] != PACKET_BOUNDARY_ARTIFACT_TYPE:
         raise ContractError(f"artifact_type must be {PACKET_BOUNDARY_ARTIFACT_TYPE!r}")
@@ -204,7 +224,10 @@ def parse_packet_boundary_spec(raw_bytes: bytes) -> PacketBoundarySpec:
     if not isinstance(payload, Mapping):
         raise ContractError("packet_boundary payload must be an object")
     expected = compute_event_schema_digest({k: v for k, v in payload.items() if k != "digest"})
-    recorded = make_digest_text(str(payload.get("digest")))
+    try:
+        recorded = DigestText(_require_packet_bridge().make_digest_text(str(payload.get("digest"))))
+    except (ValueError, TypeError) as exc:
+        raise ContractError(f"packet digest rejected: {exc}") from exc
     if recorded != expected:
         from hydra2.contracts.common import DigestMismatchError
 
@@ -251,7 +274,15 @@ class ActorVisiblePacket:
     observation_hash_after: DigestText
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "actor_view", make_seat(self.actor_view))
+        try:
+            bridge = _require_packet_bridge()
+            actor_view = Seat(bridge.make_seat(self.actor_view))
+            hash_before = DigestText(bridge.make_digest_text(self.public_state_hash_before))
+            hash_after = DigestText(bridge.make_digest_text(self.public_state_hash_after))
+            obs_after = DigestText(bridge.make_digest_text(self.observation_hash_after))
+        except (ValueError, TypeError) as exc:
+            raise ContractError(f"ActorVisiblePacket rejected: {exc}") from exc
+        object.__setattr__(self, "actor_view", actor_view)
         object.__setattr__(
             self, "source_sequence_start", make_sequence_no(self.source_sequence_start)
         )
@@ -268,15 +299,9 @@ class ActorVisiblePacket:
             or int(self.source_sequence_end) != sequences[-1]
         ):
             raise ContractError("packet boundaries must match contained event sequences")
-        object.__setattr__(
-            self, "public_state_hash_before", make_digest_text(self.public_state_hash_before)
-        )
-        object.__setattr__(
-            self, "public_state_hash_after", make_digest_text(self.public_state_hash_after)
-        )
-        object.__setattr__(
-            self, "observation_hash_after", make_digest_text(self.observation_hash_after)
-        )
+        object.__setattr__(self, "public_state_hash_before", hash_before)
+        object.__setattr__(self, "public_state_hash_after", hash_after)
+        object.__setattr__(self, "observation_hash_after", obs_after)
         if self.packet_id is not None:
             object.__setattr__(self, "packet_id", make_packet_id(self.packet_id))
             expected = compute_packet_id(self)
@@ -359,33 +384,25 @@ def make_actor_visible_packet(
     )
 
 
-def _fold_public_hash(prefix: DigestText, event: EventEnvelope) -> DigestText:
-    """One public-state fold step (thin bridge translator).
-
-    The canonical envelope document and its bytes stay Python (canon
-    authority); Rust only hashes ``{"prefix": prefix, "event": doc}``.
-    """
-    event_doc = canonical_json_bytes(envelope_identity_document(event))
-    if _bridge_contracts is None:
-        raise ImportError(
-            "hydra2 packet authority requires the hydra2_replay_rs bridge; "
-            "run `pixi run build-ext` to build the extension before use"
-        )
-    try:
-        return DigestText(_bridge_contracts.fold_public_hash(prefix, bytes(event_doc)))  # type: ignore[attr-defined]
-    except (ValueError, TypeError) as exc:
-        raise ContractError(f"fold_public_hash rejected: {exc}") from exc
-
-
 _EMPTY_CHAIN_DIGEST = DigestText("sha256:" + hashlib.sha256(b"").hexdigest())
 
 
 def public_state_chain_hash(events: Sequence[EventEnvelope]) -> DigestText:
-    """Fold public event identities into a chained state hash (deterministic)."""
+    """Fold public event identities into a chained state hash (deterministic).
+
+    The canonical envelope document and its bytes stay Python (canon
+    authority); Rust only hashes ``{"prefix": prefix, "event": doc}``.
+    """
     digest = _EMPTY_CHAIN_DIGEST
     for event in events:
         if event.visibility == "public":
-            digest = _fold_public_hash(digest, event)
+            event_doc = canonical_json_bytes(envelope_identity_document(event))
+            if _bridge_contracts is None:
+                raise ImportError(
+                    "hydra2 packet authority requires the hydra2_replay_rs bridge; "
+                    "run `pixi run build-ext` to build the extension before use"
+                )
+            digest = DigestText(_bridge_contracts.fold_public_hash(digest, bytes(event_doc)))  # type: ignore[attr-defined]
     return digest
 
 
@@ -445,7 +462,7 @@ def partition_actor_packets(
     packet observation hash; packets remain mutually exclusive, exhaustive,
     and nonempty over the visible stream.
     """
-    view = make_seat(int(actor_view))
+    view = Seat(_require_packet_bridge().make_seat(int(actor_view)))
     visible = filter_events_for_actor(events, view)
     if len(visible) == 0:
         return ()

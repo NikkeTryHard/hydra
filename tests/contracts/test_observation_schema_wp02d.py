@@ -23,15 +23,19 @@ import pytest
 
 from hydra2.contracts.canonical import canonical_json_bytes
 from hydra2.contracts.common import ContractError, DigestMismatchError, DigestText, Seat
-from hydra2.contracts.observation import (
+from hydra2.contracts.observation_actor import (
+    ActorObservation,
+    make_actor_observation,
+)
+from hydra2.contracts.observation_assembly import (
+    ObservationBuilder,
+)
+from hydra2.contracts.observation_schema import (
     OBSERVATION_SCHEMA_ARTIFACT_TYPE,
     OBSERVATION_SCHEMA_SCHEMA_VERSION,
-    ActorObservation,
-    ObservationBuilder,
     build_observation_schema_envelope,
     build_observation_schema_payload,
     compute_observation_schema_digest,
-    make_actor_observation,
     observation_schema_digest,
     parse_observation_schema,
 )
@@ -88,7 +92,7 @@ def wp02d() -> ModuleType:
 
 @pytest.fixture(scope="module")
 def action_table(wp02d: ModuleType):
-    from hydra2.contracts.action import load_action_table
+    from hydra2.contracts.action_artifact import load_action_table
 
     return load_action_table(wp02d.ACTION_TABLE_PATH)
 
@@ -129,7 +133,7 @@ class TestObservationSchemaArtifact:
     def test_field_order_and_constraints_stay_closed_over_the_live_dataclass(
         self, monkeypatch: pytest.MonkeyPatch
     ):
-        import hydra2.contracts.observation as obs_mod
+        import hydra2.contracts.observation_schema as obs_mod
 
         payload = build_observation_schema_payload()
         names = tuple(field.name for field in ActorObservation.__dataclass_fields__.values())  # type: ignore[attr-defined]
@@ -225,7 +229,7 @@ class TestSchemaHashWiringNegative:
     def test_tampered_schema_lineage_breaks_identity_binding(
         self, wp02d: ModuleType, seat0_observation: ActorObservation
     ):
-        from hydra2.contracts.observation import VISIBILITY_VALIDATOR
+        from hydra2.contracts.observation_assembly import VISIBILITY_VALIDATOR
 
         VISIBILITY_VALIDATOR.validate_observation(seat0_observation)
         saved = seat0_observation.observation_schema_hash

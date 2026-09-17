@@ -13,12 +13,14 @@ import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.artifacts.digest import sha256_digest
 from hydra2.belief.world import FullWorld, make_full_world
-from hydra2.contracts.common import DigestText, make_digest_text
 
 if TYPE_CHECKING:
-    from hydra2.contracts.observation import ActorObservation
+    from hydra2.contracts.common import DigestText
+    from hydra2.contracts.observation_actor import ActorObservation
 
 __all__ = [
     "TinyCorpus",
@@ -79,13 +81,13 @@ def build_tiny_corpus(
     in opponent assignments, providing the oracle exact distribution (uniform).
     """
     if observation is not None:
-        obs_hash = make_digest_text(observation.observation_hash)  # type: ignore[arg-type]
-        r_hash = make_digest_text(observation.rules_hash)
+        obs_hash = _bridge_contracts.make_digest_text(observation.observation_hash)  # type: ignore[arg-type]
+        r_hash = _bridge_contracts.make_digest_text(observation.rules_hash)
     else:
         if observation_hash is None or rules_hash is None:
             raise ValueError("must supply observation or hashes")
-        obs_hash = make_digest_text(observation_hash)
-        r_hash = make_digest_text(rules_hash)
+        obs_hash = _bridge_contracts.make_digest_text(observation_hash)
+        r_hash = _bridge_contracts.make_digest_text(rules_hash)
 
     # Fixed tile pool for tiny domain — 0..11 as in natural harness
     base_options = [

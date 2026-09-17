@@ -70,7 +70,10 @@ def test_invented_quad_hand_ankan_alternative_emits_rows() -> None:
     rows = replay_game(game)
     _assert_valid_rows("wp14-invented-quad", rows, [0])
     from hydra2.config import repo_root
-    from hydra2.contracts.action import ACTION_TABLE_RELPATH, load_action_table
+    from hydra2.contracts.action_artifact import (
+        ACTION_TABLE_RELPATH,
+        load_action_table,
+    )
 
     table = load_action_table(repo_root() / ACTION_TABLE_RELPATH)
     assert ("ankan", None, None, ("E", "E", "E", "E")) in _mask_action_kinds(rows[0], table)
@@ -128,7 +131,10 @@ def test_invented_single_step_reach_and_ron_emit_rows() -> None:
     rows = replay_game(game)
     _assert_valid_rows("wp14-invented-reach", rows, [0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 0])
     from hydra2.config import repo_root
-    from hydra2.contracts.action import ACTION_TABLE_RELPATH, load_action_table
+    from hydra2.contracts.action_artifact import (
+        ACTION_TABLE_RELPATH,
+        load_action_table,
+    )
 
     table = load_action_table(repo_root() / ACTION_TABLE_RELPATH)
     kinds = _mask_action_kinds(rows[4], table)

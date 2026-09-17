@@ -97,7 +97,7 @@ def _adapter_ok(record: GameRecord) -> bool:
         return True
     try:
         from hydra2.contracts.common import Seat, TileId
-        from hydra2.contracts.rules import rules_manifest_from_payload
+        from hydra2.contracts.rules_manifest import rules_manifest_from_payload
         from hydra2.engines.protocol import WallSchedule, wall_schedule_digest
         from hydra2.engines.riichienv.adapter import RiichiEnvExactSimulator
 

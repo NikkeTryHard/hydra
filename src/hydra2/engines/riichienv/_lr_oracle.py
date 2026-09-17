@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING as TYPE_CHECKING
-from typing import cast as cast
+from typing import (
+    TYPE_CHECKING as TYPE_CHECKING,
+)
+from typing import (
+    cast as cast,
+)
 
 import riichienv
 from hydra2_replay_rs import tiles  # pyrefly: ignore[missing-import]
@@ -17,7 +21,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence as Sequence
     from typing import Any as Any
 
-    from hydra2.contracts.observation import VisibleMeld as VisibleMeld
+    from hydra2.contracts.observation_types import VisibleMeld as VisibleMeld
     from hydra2.engines.riichienv._lr_frame import _SimStep as _SimStep
 
 

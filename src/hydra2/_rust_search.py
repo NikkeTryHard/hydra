@@ -31,8 +31,10 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.artifacts.digest import require_digest_match
-from hydra2.contracts.common import ContractError, DigestText, make_digest_text
+from hydra2.contracts.common import ContractError, DigestText
 
 __all__ = [
     "ActJudge",
@@ -174,7 +176,7 @@ def act(
     done = bool(completed)
     sims = int(sims_run)
     nodes = int(nodes_visited)
-    digest = make_digest_text(str(decision_digest))
+    digest = _bridge_contracts.make_digest_text(str(decision_digest))
     if sims < 0 or sims > int(max_sims):
         raise ContractError(f"search budget overrun: sims_run {sims} outside [0,{max_sims}]")
     if nodes < 0:

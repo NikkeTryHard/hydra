@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 
 from hydra2.artifacts.canonical import canonical_bytes
-from hydra2.contracts.common import ContractError, VisibilityViolationError, make_digest_text
+from hydra2.contracts.common import ContractError, VisibilityViolationError
 
 try:
     from hydra2.search.common import (
@@ -85,7 +85,10 @@ def _require_belief() -> None:
 
 
 try:
-    from hydra2.contracts.observation import ActorObservation, observation_identity_document
+    from hydra2.contracts.observation_actor import (
+        ActorObservation,
+        observation_identity_document,
+    )
 
     _OBS_IMPORT_ERROR: ImportError | None = None
 except ImportError as exc:  # pragma: no cover
@@ -186,8 +189,8 @@ def info_key_for_observation(observation: Any) -> str:
         raise ContractError("observation must be ActorObservation")
     _require_obs()
     try:
-        from hydra2.contracts.observation import ActorObservation as _Obs
-        from hydra2.contracts.observation import observation_identity_document as _oid
+        from hydra2.contracts.observation_actor import ActorObservation as _Obs
+        from hydra2.contracts.observation_actor import observation_identity_document as _oid
 
         if isinstance(observation, _Obs):
             doc = _oid(observation)

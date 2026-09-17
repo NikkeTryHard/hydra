@@ -3,33 +3,52 @@
 from __future__ import annotations
 
 from dataclasses import replace as replace
-from typing import TYPE_CHECKING as TYPE_CHECKING
-from typing import cast as cast
+from typing import (
+    TYPE_CHECKING as TYPE_CHECKING,
+)
+from typing import (
+    cast as cast,
+)
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 from hydra2_replay_rs import tiles  # pyrefly: ignore[missing-import]
 
-from hydra2.contracts.action import CanonicalAction as CanonicalAction
-from hydra2.contracts.action import canonical_action_codec as canonical_action_codec
+from hydra2.contracts.action_model import CanonicalAction as CanonicalAction
+from hydra2.contracts.action_table import canonical_action_codec as canonical_action_codec
 from hydra2.contracts.common import ContractError as ContractError
-from hydra2.contracts.common import make_seat as make_seat
-from hydra2.contracts.common import make_tile_id as make_tile_id
-from hydra2.contracts.observation import VisibleMeld as VisibleMeld
+from hydra2.contracts.observation_types import VisibleMeld as VisibleMeld
 from hydra2.engines.riichienv._oracle_base import _legal_mjai_type as _legal_mjai_type
-from hydra2.engines.riichienv._sp_capture import _capture_row as _capture_row
-from hydra2.engines.riichienv._sp_capture import _claim_canonical as _claim_canonical
+from hydra2.engines.riichienv._sp_capture import (
+    _capture_row as _capture_row,
+)
+from hydra2.engines.riichienv._sp_capture import (
+    _claim_canonical as _claim_canonical,
+)
 from hydra2.engines.riichienv._sp_capture import _tracked_consumed as _tracked_consumed
-from hydra2.engines.riichienv._sp_records import _emit as _emit
-from hydra2.engines.riichienv._sp_records import _expand_nonclaim_legals as _expand_nonclaim_legals
+from hydra2.engines.riichienv._sp_records import (
+    _emit as _emit,
+)
+from hydra2.engines.riichienv._sp_records import (
+    _expand_nonclaim_legals as _expand_nonclaim_legals,
+)
 from hydra2.engines.riichienv._sp_records import _ippatsu_interrupt as _ippatsu_interrupt
 from hydra2.engines.riichienv._sp_records import _safe_mjai_type as _safe_mjai_type
 from hydra2.engines.riichienv._sp_walk import _strict_row as _strict_row
-from hydra2.engines.riichienv._sp_windows import _check_drawer as _check_drawer
-from hydra2.engines.riichienv._sp_windows import _emit_call_resolved as _emit_call_resolved
+from hydra2.engines.riichienv._sp_windows import (
+    _check_drawer as _check_drawer,
+)
+from hydra2.engines.riichienv._sp_windows import (
+    _emit_call_resolved as _emit_call_resolved,
+)
 from hydra2.engines.riichienv._sp_windows import _live_step as _live_step
 from hydra2.engines.riichienv._sp_windows import _open_window as _open_window
 from hydra2.engines.riichienv._sp_windows import _require_actor as _require_actor
-from hydra2.engines.riichienv.events import make_delta as make_delta
-from hydra2.engines.riichienv.events import meld_delta_value as meld_delta_value
+from hydra2.engines.riichienv.events import (
+    make_delta as make_delta,
+)
+from hydra2.engines.riichienv.events import (
+    meld_delta_value as meld_delta_value,
+)
 
 if TYPE_CHECKING:
     from typing import Any as Any
@@ -91,8 +110,8 @@ def _do_reach(
         raise state.fail(kyoku, "reach", "declaration discard not owned: tile mismatch")
     expected = CanonicalAction(
         kind=cast("Any", "riichi_discard"),
-        actor=make_seat(actor),
-        tile=make_tile_id(declaration_tile),
+        actor=_bridge_contracts.make_seat(actor),
+        tile=_bridge_contracts.make_tile_id(declaration_tile),
         called_tile=None,
         consumed_tiles=(),
         source_seat=None,
@@ -257,10 +276,10 @@ def _do_claim(
         VisibleMeld(
             meld_id=None,
             kind=cast("Any", kind),
-            owner=make_seat(actor),
-            source_seat=make_seat(discarder),
-            called_tile=make_tile_id(called),
-            tiles=tuple(make_tile_id(t) for t in sorted([*consumed, called])),
+            owner=_bridge_contracts.make_seat(actor),
+            source_seat=_bridge_contracts.make_seat(discarder),
+            called_tile=_bridge_contracts.make_tile_id(called),
+            tiles=tuple(_bridge_contracts.make_tile_id(t) for t in sorted([*consumed, called])),
         )
     )
     try:
@@ -293,7 +312,7 @@ def _do_claim(
                 canonical_action_codec.encode(variant, table=state.table, context=context)
             )
             mask[variant_id] = True
-        except ContractError:
+        except (ContractError, ValueError):
             continue
     can_tsumo = any(a.kind == "tsumo" for a in actions)
     can_riichi = any(a.kind == "riichi_discard" for a in actions)

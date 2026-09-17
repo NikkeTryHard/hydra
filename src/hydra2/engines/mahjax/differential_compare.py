@@ -14,6 +14,8 @@ import time
 from pathlib import Path
 from typing import Any, cast
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.artifacts.digest import of_canonical
 from hydra2.conformance.runner import ScriptedDecision, TraceRunnerError
 from hydra2.conformance.walls import type_id
@@ -88,12 +90,13 @@ def _publish_token(artifact_root: Path, rules_id: str) -> tuple[Path, str]:
 
     Returns (path, digest). Caller must ensure zero mismatches.
     """
-    from hydra2.contracts.common import make_digest_text
     from hydra2.engines.mahjax.capture import capture_mahjax_tuple
     from hydra2.engines.mahjax.quarantine import fabricate_test_only_token
 
     capture = capture_mahjax_tuple()
-    digest_text = make_digest_text(rules_id) if isinstance(rules_id, str) else rules_id
+    digest_text = (
+        _bridge_contracts.make_digest_text(rules_id) if isinstance(rules_id, str) else rules_id
+    )
     token = fabricate_test_only_token(capture, rules_id=digest_text)
     fragment = token.to_fragment()
     # verify round-trip via shell

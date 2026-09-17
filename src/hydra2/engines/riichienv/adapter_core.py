@@ -17,50 +17,75 @@ import copy
 from typing import TYPE_CHECKING, Any, cast
 
 import riichienv
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
 from hydra2.artifacts.digest import of_canonical as of_canonical
 from hydra2.config import repo_root as repo_root
-from hydra2.contracts.action import CanonicalAction as CanonicalAction
-from hydra2.contracts.action import canonical_action_codec as canonical_action_codec
-from hydra2.contracts.common import ContractError as ContractError
-from hydra2.contracts.common import IllegalActionError as IllegalActionError
+from hydra2.contracts.action_table import canonical_action_codec as canonical_action_codec
+from hydra2.contracts.common import (
+    ContractError as ContractError,
+)
+from hydra2.contracts.common import (
+    IllegalActionError as IllegalActionError,
+)
 from hydra2.contracts.common import InvalidActionError as InvalidActionError
 from hydra2.contracts.common import Seat as Seat
 from hydra2.contracts.common import TileId as TileId
 from hydra2.contracts.common import UnsupportedRuleError as UnsupportedRuleError
-from hydra2.contracts.common import make_digest_text as make_digest_text
-from hydra2.contracts.common import make_seat as make_seat
 from hydra2.contracts.event_packet import (
     build_packet_boundary_payload as build_packet_boundary_payload,
 )
-from hydra2.contracts.event_packet import (
+from hydra2.contracts.event_schema import (
     compute_event_schema_digest as compute_event_schema_digest,
 )
-from hydra2.contracts.observation import VISIBILITY_VALIDATOR as VISIBILITY_VALIDATOR
-from hydra2.contracts.observation import ObservationBuilder as ObservationBuilder
-from hydra2.contracts.observation import observation_schema_digest as observation_schema_digest
-from hydra2.engines.protocol import SimulatorSnapshot as SimulatorSnapshot
-from hydra2.engines.protocol import TransitionResult as TransitionResult
+from hydra2.contracts.observation_assembly import (
+    VISIBILITY_VALIDATOR as VISIBILITY_VALIDATOR,
+)
+from hydra2.contracts.observation_assembly import (
+    ObservationBuilder as ObservationBuilder,
+)
+from hydra2.contracts.observation_schema import (
+    observation_schema_digest as observation_schema_digest,
+)
+from hydra2.engines.protocol import (
+    SimulatorSnapshot as SimulatorSnapshot,
+)
+from hydra2.engines.protocol import (
+    TransitionResult as TransitionResult,
+)
 from hydra2.engines.protocol import WallSchedule as WallSchedule
 from hydra2.engines.protocol import validate_seat_permutation as validate_seat_permutation
 from hydra2.engines.protocol import wall_schedule_digest as wall_schedule_digest
-from hydra2.engines.riichienv.actions import engine_matches_canonical as engine_matches_canonical
-from hydra2.engines.riichienv.actions import legal_view as legal_view
-from hydra2.engines.riichienv.adapter_identity import _AT as _AT
-from hydra2.engines.riichienv.adapter_identity import _action_table as _action_table
+from hydra2.engines.riichienv.actions import (
+    engine_matches_canonical as engine_matches_canonical,
+)
+from hydra2.engines.riichienv.actions import (
+    legal_view as legal_view,
+)
+from hydra2.engines.riichienv.adapter_identity import (
+    _AT as _AT,
+)
+from hydra2.engines.riichienv.adapter_identity import (
+    _action_table as _action_table,
+)
 from hydra2.engines.riichienv.adapter_identity import _event_schema_hash as _event_schema_hash
 from hydra2.engines.riichienv.adapter_identity import _rules_identity as _rules_identity
 from hydra2.engines.riichienv.adapter_identity import _validate_rules as _validate_rules
 from hydra2.engines.riichienv.adapter_step import AdapterStepMixin as AdapterStepMixin
 from hydra2.engines.riichienv.events import make_envelope as make_envelope
 from hydra2.engines.riichienv.identity import ENGINE_IDENTITY as ENGINE_IDENTITY
-from hydra2.engines.riichienv.state import furiten_of as furiten_of
-from hydra2.engines.riichienv.state import rules_identity_hash as rules_identity_hash
+from hydra2.engines.riichienv.state import (
+    furiten_of as furiten_of,
+)
+from hydra2.engines.riichienv.state import (
+    rules_identity_hash as rules_identity_hash,
+)
 
 if TYPE_CHECKING:
+    from hydra2.contracts.action_model import CanonicalAction as CanonicalAction
     from hydra2.contracts.event_envelope import EventEnvelope as EventEnvelope
-    from hydra2.contracts.observation import ActorObservation as ActorObservation
-    from hydra2.contracts.rules import RulesManifest as RulesManifest
+    from hydra2.contracts.observation_actor import ActorObservation as ActorObservation
+    from hydra2.contracts.rules_manifest import RulesManifest as RulesManifest
     from hydra2.contracts.utility import RawOutcome as RawOutcome
     from hydra2.contracts.utility import SettlementFact as SettlementFact
 
@@ -76,10 +101,10 @@ class RiichiEnvExactSimulator(AdapterStepMixin):  # type: ignore[misc]
         self._rules: RulesManifest | None = None
         self._rules_hash: str = ""
         self._perm: tuple[Seat, ...] = (
-            make_seat(0),
-            make_seat(1),
-            make_seat(2),
-            make_seat(3),
+            _bridge_contracts.make_seat(0),
+            _bridge_contracts.make_seat(1),
+            _bridge_contracts.make_seat(2),
+            _bridge_contracts.make_seat(3),
         )
         self._inv: list[int] = [0, 1, 2, 3]
         self._table = _action_table()
@@ -226,7 +251,7 @@ class RiichiEnvExactSimulator(AdapterStepMixin):  # type: ignore[misc]
         return self._view_for(int(actor))[1]
 
     def actor_observation(self, actor: Seat) -> ActorObservation:
-        seat = int(make_seat(int(actor)))
+        seat = int(_bridge_contracts.make_seat(int(actor)))
         mask = self._last_masks.get(seat)
         if mask is None:
             raise ContractError(f"seat {seat} has no recorded decision to observe")
@@ -238,21 +263,21 @@ class RiichiEnvExactSimulator(AdapterStepMixin):  # type: ignore[misc]
             drawn = self._env.drawn_tile
             if self._mode == "draw" and self._decision_seat == seat and drawn is not None:
                 hand = [t for t in hand if t != drawn]
-            self._builder.set_concealed_hand(make_seat(seat), hand)
+            self._builder.set_concealed_hand(_bridge_contracts.make_seat(seat), hand)
             engine_legals = self._engine_observation(engine_pid).legal_actions()
             expanded = {a.kind for a in self._view_for(seat)[0]}
             self._builder.set_actor_state(
-                make_seat(seat),
+                _bridge_contracts.make_seat(seat),
                 furiten=furiten_of(self._env, engine_pid),
                 can_tsumo="tsumo" in expanded,
                 can_riichi="riichi_discard" in expanded,
             )
             _ = engine_legals
         self._refresh_public_snapshot()
-        observation = self._builder.build(actor=make_seat(seat), legal_mask=mask)
+        observation = self._builder.build(actor=_bridge_contracts.make_seat(seat), legal_mask=mask)
         VISIBILITY_VALIDATOR.validate_observation(observation)
         for event in observation.visible_history:
-            VISIBILITY_VALIDATOR.validate_event_for_actor(event, make_seat(seat))
+            VISIBILITY_VALIDATOR.validate_event_for_actor(event, _bridge_contracts.make_seat(seat))
         return observation
 
     def apply(self, action: CanonicalAction) -> TransitionResult:
@@ -270,7 +295,7 @@ class RiichiEnvExactSimulator(AdapterStepMixin):  # type: ignore[misc]
                     action, table=self._table, context=self._context_for(expected)
                 )
             )
-        except ContractError as exc:
+        except (ContractError, ValueError) as exc:
             raise IllegalActionError(f"action rejected by codec context: {exc}") from exc
         if all(a != action for a in actions):
             raise IllegalActionError(
@@ -396,7 +421,7 @@ class RiichiEnvExactSimulator(AdapterStepMixin):  # type: ignore[misc]
         return SimulatorSnapshot(
             engine_name=ENGINE_IDENTITY.name,
             engine_version=ENGINE_IDENTITY.version,
-            rules_hash=make_digest_text(self._rules_hash),
+            rules_hash=_bridge_contracts.make_digest_text(self._rules_hash),
             game_id=self._game_id,
             seat_permutation=self._perm,
             schedule_id=self._schedule_id,

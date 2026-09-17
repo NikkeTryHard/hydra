@@ -18,10 +18,14 @@ if TYPE_CHECKING:
 
 import pytest
 import torch
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
-from hydra2.contracts.common import ContractError, make_digest_text
-from hydra2.contracts.event import EventEnvelope, EventPayload
-from hydra2.contracts.observation import make_actor_observation
+from hydra2.contracts.common import ContractError
+from hydra2.contracts.event_envelope import (
+    EventEnvelope,
+    EventPayload,
+)
+from hydra2.contracts.observation_actor import make_actor_observation
 from hydra2.data.parquet import DecisionRow, write_actor_shards
 from hydra2.models.model import Hydra2BaselineModel, ModelOutput
 from hydra2.models.schema import BASELINE_ACTION_COUNT
@@ -117,7 +121,7 @@ def _make_observation(
 
 
 def _digest(byte: str) -> Any:
-    return make_digest_text("sha256:" + byte * 64)
+    return _bridge_contracts.make_digest_text("sha256:" + (byte * 64)[:64])
 
 
 def _make_model_output(

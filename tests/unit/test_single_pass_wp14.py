@@ -32,8 +32,12 @@ from hydra2_replay_rs import tiles as _tiles_bridge
 
 from hydra2.contracts.common import ContractError
 from hydra2.data.decode import GameRecord
-from hydra2.engines.riichienv import log_replay as drained
-from hydra2.engines.riichienv import single_pass as live
+from hydra2.engines.riichienv import (
+    log_replay as drained,
+)
+from hydra2.engines.riichienv import (
+    single_pass as live,
+)
 
 mjai_string_of = _tiles_bridge.mjai_string_of
 
@@ -92,7 +96,10 @@ def _mask_kinds(row: Any, table: Any) -> set[tuple[Any, ...]]:
 
 def _table() -> Any:
     from hydra2.config import repo_root
-    from hydra2.contracts.action import ACTION_TABLE_RELPATH, load_action_table
+    from hydra2.contracts.action_artifact import (
+        ACTION_TABLE_RELPATH,
+        load_action_table,
+    )
 
     return load_action_table(repo_root() / ACTION_TABLE_RELPATH)
 
@@ -298,7 +305,7 @@ def test_histories_reset_per_kyoku_both_paths() -> None:
 
 def test_history_cap_pinned_to_model_buckets() -> None:
     """The fail-closed cap equals the model's top history bucket (frozen)."""
-    from hydra2.contracts.observation import HISTORY_EVENT_CAP
+    from hydra2.contracts.observation_assembly import HISTORY_EVENT_CAP
     from hydra2.models.schema import HISTORY_BUCKET_LENGTHS
 
     assert HISTORY_EVENT_CAP == HISTORY_BUCKET_LENGTHS[-1] == 256
@@ -306,7 +313,10 @@ def test_history_cap_pinned_to_model_buckets() -> None:
 
 def test_history_overflow_guard_fails_closed() -> None:
     """A 257-envelope history raises at encode; 256 encodes (never truncated)."""
-    from hydra2.contracts.observation import HISTORY_EVENT_CAP, ObservationBuilder
+    from hydra2.contracts.observation_assembly import (
+        HISTORY_EVENT_CAP,
+        ObservationBuilder,
+    )
     from hydra2.engines.riichienv.events import make_envelope
     from hydra2.engines.riichienv.state import seat_winds_for_dealer
     from hydra2.models.encoder import encode_observations

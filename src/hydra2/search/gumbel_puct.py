@@ -17,25 +17,32 @@ import math
 import time
 from typing import Any, cast
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.contracts.common import ContractError as ContractError
-from hydra2.search.common import Planner as Planner
-from hydra2.search.common import SearchRequest as SearchRequest
+from hydra2.search.common import (
+    Planner as Planner,
+)
+from hydra2.search.common import (
+    SearchRequest as SearchRequest,
+)
 from hydra2.search.common import SearchResult as SearchResult
 from hydra2.search.gumbel_config import PuctConfig as PuctConfig
-from hydra2.search.gumbel_core import _MASTER_SEED as _MASTER_SEED
-from hydra2.search.gumbel_core import _actor_to_move as _actor_to_move
+from hydra2.search.gumbel_core import (
+    _MASTER_SEED as _MASTER_SEED,
+)
+from hydra2.search.gumbel_core import (
+    _actor_to_move as _actor_to_move,
+)
 from hydra2.search.gumbel_core import _is_terminal as _is_terminal
 from hydra2.search.gumbel_core import _legal_ids_for_observation as _legal_ids_for_observation
 from hydra2.search.gumbel_core import _require_belief as _require_belief
 from hydra2.search.gumbel_core import _require_random_stream as _require_random_stream
 from hydra2.search.gumbel_core import _require_search_bridge as _require_search_bridge
 from hydra2.search.gumbel_core import exact_transition as exact_transition
-from hydra2.search.gumbel_core import make_digest_text as make_digest_text
-from hydra2.search.gumbel_core import make_full_world as make_full_world
 from hydra2.search.gumbel_core import model_vector_for_world as model_vector_for_world
 from hydra2.search.gumbel_core import scalarize_vector as scalarize_vector
 from hydra2.search.gumbel_core import terminal_vector_for_world as terminal_vector_for_world
-from hydra2.search.gumbel_core import world_actor_observation as world_actor_observation
 from hydra2.search.gumbel_search import UniformContinuationPolicy as UniformContinuationPolicy
 
 __all__ = [
@@ -406,7 +413,7 @@ class PuctBaselinePlanner(Planner):  # type: ignore[misc]
                                 request.candidate_spec, "utility_id", "expected_final_placement"
                             )
                         ),
-                        utility_manifest_hash=make_digest_text(
+                        utility_manifest_hash=_bridge_contracts.make_digest_text(
                             str(
                                 getattr(
                                     request.candidate_spec,
@@ -415,7 +422,7 @@ class PuctBaselinePlanner(Planner):  # type: ignore[misc]
                                 )
                             )
                         ),
-                        rules_hash=make_digest_text(
+                        rules_hash=_bridge_contracts.make_digest_text(
                             str(getattr(request.candidate_spec, "rules_hash", "sha256:" + "a" * 64))
                         ),
                     )

@@ -64,7 +64,7 @@ def test_writer_shard_name_matches_loader_glob(tmp_path: Path) -> None:
 
 
 def _expected_utility_values(ranks: tuple[int, int, int, int]) -> tuple[float, ...]:
-    from hydra2.contracts.rules import RULES_ID
+    from hydra2.contracts.rules_canonical import RULES_ID
     from hydra2.contracts.utility import (
         UTILITY_OBJECTIVE,
         UTILITY_TIE_POLICY,
@@ -150,7 +150,7 @@ def test_ranks_from_final_scores_golden_matches_utility(tmp_path: Path) -> None:
         _value_from_ranks_via_utility,
         ranks_from_final_scores,
     )
-    from hydra2.contracts.rules import resolve_final_ranks
+    from hydra2.contracts.rules_manifest import resolve_final_ranks
 
     scores = [35000, 25000, 15000, 30000]
     ranks = ranks_from_final_scores(scores)

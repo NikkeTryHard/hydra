@@ -14,12 +14,17 @@ from __future__ import annotations
 import hashlib
 from typing import Any, cast
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.contracts.common import ContractError as ContractError
-from hydra2.search.common import Planner as Planner
-from hydra2.search.common import SearchRequest as SearchRequest
+from hydra2.search.common import (
+    Planner as Planner,
+)
+from hydra2.search.common import (
+    SearchRequest as SearchRequest,
+)
 from hydra2.search.common import SearchResult as SearchResult
 from hydra2.search.gumbel_core import _require_random_stream as _require_random_stream
-from hydra2.search.gumbel_core import make_digest_text as make_digest_text
 from hydra2.search.gumbel_search import (
     GumbelSearchPlannerSearchMixin as GumbelSearchPlannerSearchMixin,
 )
@@ -211,7 +216,7 @@ class GumbelSearchPlannerActMixin(GumbelSearchPlannerSearchMixin):
                                 request.candidate_spec, "utility_id", "expected_final_placement"
                             )
                         ),
-                        utility_manifest_hash=make_digest_text(
+                        utility_manifest_hash=_bridge_contracts.make_digest_text(
                             str(
                                 getattr(
                                     request.candidate_spec,
@@ -220,7 +225,7 @@ class GumbelSearchPlannerActMixin(GumbelSearchPlannerSearchMixin):
                                 )
                             )
                         ),
-                        rules_hash=make_digest_text(
+                        rules_hash=_bridge_contracts.make_digest_text(
                             str(getattr(request.candidate_spec, "rules_hash", "sha256:" + "a" * 64))
                         ),
                     )

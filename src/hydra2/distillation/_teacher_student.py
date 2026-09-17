@@ -23,14 +23,18 @@ import torch.nn.functional as F  # noqa: N812
 
 from hydra2.contracts.common import ContractError
 from hydra2.distillation._teacher_cases import _case_observation as _case_observation
-from hydra2.distillation._teacher_gate import _NUM_ACTIONS as _NUM_ACTIONS
-from hydra2.distillation._teacher_gate import _REAL_FEATURE_DIM as _REAL_FEATURE_DIM
+from hydra2.distillation._teacher_gate import (
+    _NUM_ACTIONS as _NUM_ACTIONS,
+)
+from hydra2.distillation._teacher_gate import (
+    _REAL_FEATURE_DIM as _REAL_FEATURE_DIM,
+)
 from hydra2.distillation._teacher_gate import _real_candidate_spec as _real_candidate_spec
 from hydra2.distillation._teacher_gate import _spec_digest_of as _spec_digest_of
 from hydra2.distillation._teacher_records import TrajectoryRecord
 
 if TYPE_CHECKING:
-    from hydra2.contracts.observation import ActorObservation
+    from hydra2.contracts.observation_actor import ActorObservation
     from hydra2.distillation._teacher_gate import TeacherJustification
 # ---------------------------------------------------------------------------
 # Distillation — student model, loss, BC anchors, legal mask

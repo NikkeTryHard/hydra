@@ -2,25 +2,40 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING as TYPE_CHECKING
-from typing import cast as cast
+from typing import (
+    TYPE_CHECKING as TYPE_CHECKING,
+)
+from typing import (
+    cast as cast,
+)
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 from hydra2_replay_rs import tiles  # pyrefly: ignore[missing-import]
 
-from hydra2.contracts.action import CanonicalAction as CanonicalAction
+from hydra2.contracts.action_model import CanonicalAction as CanonicalAction
 from hydra2.contracts.common import ContractError as ContractError
-from hydra2.contracts.common import make_seat as make_seat
-from hydra2.contracts.common import make_tile_id as make_tile_id
 from hydra2.engines.riichienv._lr_frame import _SimStep as _SimStep
-from hydra2.engines.riichienv._lr_rows import _emit as _emit
-from hydra2.engines.riichienv._lr_rows import _ippatsu_interrupt as _ippatsu_interrupt
-from hydra2.engines.riichienv._lr_walk import _drop_orphans as _drop_orphans
-from hydra2.engines.riichienv._lr_walk import _peek as _peek
+from hydra2.engines.riichienv._lr_rows import (
+    _emit as _emit,
+)
+from hydra2.engines.riichienv._lr_rows import (
+    _ippatsu_interrupt as _ippatsu_interrupt,
+)
+from hydra2.engines.riichienv._lr_walk import (
+    _drop_orphans as _drop_orphans,
+)
+from hydra2.engines.riichienv._lr_walk import (
+    _peek as _peek,
+)
 from hydra2.engines.riichienv._lr_walk import _pop as _pop
 from hydra2.engines.riichienv._lr_walk import _pop_window_heads as _pop_window_heads
 from hydra2.engines.riichienv._lr_walk import _strict_row as _strict_row
-from hydra2.engines.riichienv._oracle_base import _BAKAZE_TO_WIND as _BAKAZE_TO_WIND
-from hydra2.engines.riichienv._oracle_base import _TRANSPARENT_KINDS as _TRANSPARENT_KINDS
+from hydra2.engines.riichienv._oracle_base import (
+    _BAKAZE_TO_WIND as _BAKAZE_TO_WIND,
+)
+from hydra2.engines.riichienv._oracle_base import (
+    _TRANSPARENT_KINDS as _TRANSPARENT_KINDS,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence as Sequence
@@ -287,8 +302,8 @@ def _do_forced_dahai(
     )
     expected = CanonicalAction(
         kind=cast("Any", "tsumogiri"),
-        actor=make_seat(actor),
-        tile=make_tile_id(pos.drawn),
+        actor=_bridge_contracts.make_seat(actor),
+        tile=_bridge_contracts.make_tile_id(pos.drawn),
         called_tile=None,
         consumed_tiles=(),
         source_seat=None,
@@ -377,8 +392,8 @@ def _do_dahai(
     kind = "tsumogiri" if tsumogiri else "discard"
     expected = CanonicalAction(
         kind=cast("Any", kind),
-        actor=make_seat(actor),
-        tile=make_tile_id(step.tile),
+        actor=_bridge_contracts.make_seat(actor),
+        tile=_bridge_contracts.make_tile_id(step.tile),
         called_tile=None,
         consumed_tiles=(),
         source_seat=None,

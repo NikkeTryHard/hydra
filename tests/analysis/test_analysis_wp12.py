@@ -39,8 +39,9 @@ from hydra2.analysis.qualification import (
     verify_compute_only,
 )
 from hydra2.artifacts.canonical import canonical_bytes
-from hydra2.contracts.common import ContractError, VisibilityViolationError, make_digest_text
+from hydra2.contracts.common import ContractError, VisibilityViolationError
 from hydra2.search.common import CandidateSpec, ResourceBudget
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
 pytestmark = pytest.mark.contract_package("WP-12")
 
@@ -57,7 +58,7 @@ def _make_gameplay_spec(candidate_id: str) -> CandidateSpec:
 
 def _obs_and_legal(candidate_id: str):
     from hydra2.analysis.qualification import _make_gameplay_spec_for
-    from hydra2.contracts.action import CanonicalAction
+    from hydra2.contracts.action_model import CanonicalAction
 
     spec = _make_gameplay_spec_for(candidate_id)
     # Try to build actor observation via belief world
@@ -98,7 +99,7 @@ def _obs_and_legal(candidate_id: str):
         )
         return obs, legal, spec
     except Exception:
-        from hydra2.contracts.action import CanonicalAction
+        from hydra2.contracts.action_model import CanonicalAction
 
         class _Stub:
             observation_hash = (
@@ -487,9 +488,9 @@ def test_compare_actions_values_fallback() -> None:
         # Fallback margins ok
         assert comp["fallback_margin_ok"] is True
         # Digests valid
-        make_digest_text(comp["gameplay_spec_hash"])
-        make_digest_text(comp["analysis_spec_hash"])
-        make_digest_text(comp["observation_hash"])
+        _bridge_contracts.make_digest_text(comp["gameplay_spec_hash"])
+        _bridge_contracts.make_digest_text(comp["analysis_spec_hash"])
+        _bridge_contracts.make_digest_text(comp["observation_hash"])
 
 
 def test_fallback_behavior_identical_across_modes() -> None:
@@ -728,7 +729,7 @@ def test_generate_hashed_analysis_report(tmp_path: Path) -> None:
     art = tmp_path / "artifacts"
     path, digest = generate_hashed_analysis_report(artifact_root=art)
     assert path.is_file()
-    make_digest_text(digest)
+    _bridge_contracts.make_digest_text(digest)
     doc = json.loads(path.read_text(encoding="utf-8"))
     assert doc["kind"] == "hydra2.analysis_gate_report"
     assert doc["schema_version"] == "1.0.0"
@@ -742,9 +743,9 @@ def test_generate_hashed_analysis_report(tmp_path: Path) -> None:
     assert len(doc["gates"]) == len(ANALYSIS_CANDIDATE_IDS)
     for gate in doc["gates"]:
         assert gate["candidate_id"] in ANALYSIS_CANDIDATE_IDS
-        make_digest_text(gate["gameplay_spec_hash"])
-        make_digest_text(gate["analysis_spec_hash"])
-        make_digest_text(gate["digest"])
+        _bridge_contracts.make_digest_text(gate["gameplay_spec_hash"])
+        _bridge_contracts.make_digest_text(gate["analysis_spec_hash"])
+        _bridge_contracts.make_digest_text(gate["digest"])
         assert isinstance(gate["compute_only"], bool)
         assert isinstance(gate["deterministic_replay_ok"], bool)
         assert isinstance(gate["eligible"], bool)
@@ -753,8 +754,8 @@ def test_generate_hashed_analysis_report(tmp_path: Path) -> None:
         # Comparison must be present
         assert isinstance(gate["comparison"], dict)
         assert "gameplay_replay_hash" in gate["comparison"]
-        make_digest_text(gate["comparison"]["gameplay_replay_hash"])
-        make_digest_text(gate["comparison"]["analysis_replay_hash"])
+        _bridge_contracts.make_digest_text(gate["comparison"]["gameplay_replay_hash"])
+        _bridge_contracts.make_digest_text(gate["comparison"]["analysis_replay_hash"])
     # Summary must match gates
     assert doc["summary"]["total"] == len(ANALYSIS_CANDIDATE_IDS)
     assert doc["summary"]["eligible"] + doc["summary"]["ineligible"] == len(ANALYSIS_CANDIDATE_IDS)
@@ -819,8 +820,8 @@ def test_each_teacher_eligible_has_hashed_record_or_ineligible() -> None:
             assert gate["compute_only"] is True
             assert gate["deterministic_replay_ok"] is True
             assert gate["privileged_leak"] is False
-            make_digest_text(gate["digest"])
-            make_digest_text(gate["analysis_spec_hash"])
+            _bridge_contracts.make_digest_text(gate["digest"])
+            _bridge_contracts.make_digest_text(gate["analysis_spec_hash"])
         else:
             assert isinstance(gate["reason"], str) and gate["reason"]
 
@@ -858,5 +859,5 @@ def test_analysis_report_canonical_json_identity() -> None:
 
     file_hash = str(sha256_file(path))
     # file_hash is sha256 over raw bytes; digest is over canonical payload without digest field — different but both valid digests
-    make_digest_text(file_hash)
-    make_digest_text(digest)
+    _bridge_contracts.make_digest_text(file_hash)
+    _bridge_contracts.make_digest_text(digest)

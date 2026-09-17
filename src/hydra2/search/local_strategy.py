@@ -16,14 +16,23 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, cast
 
-from hydra2.contracts.common import ContractError, make_digest_text
-from hydra2.search.local_abstraction import LocalResolvingAbstraction as LocalResolvingAbstraction
-from hydra2.search.local_abstraction import _actor_to_key as _actor_to_key
-from hydra2.search.local_abstraction import _digest as _digest
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
+from hydra2.contracts.common import ContractError
+from hydra2.search.local_abstraction import (
+    LocalResolvingAbstraction as LocalResolvingAbstraction,
+)
+from hydra2.search.local_abstraction import (
+    _actor_to_key as _actor_to_key,
+)
 from hydra2.search.local_abstraction import model_vector_for_world as model_vector_for_world
 from hydra2.search.local_abstraction import terminal_vector_for_world as terminal_vector_for_world
-from hydra2.search.local_shared import FORBIDDEN_IN_STRATEGY_KEY as FORBIDDEN_IN_STRATEGY_KEY
-from hydra2.search.local_shared import logger as logger
+from hydra2.search.local_shared import (
+    FORBIDDEN_IN_STRATEGY_KEY as FORBIDDEN_IN_STRATEGY_KEY,
+)
+from hydra2.search.local_shared import (
+    logger as logger,
+)
 
 __all__ = [
     "StrategyTable",
@@ -56,12 +65,12 @@ class StrategyTable:
 
     def get(self, actor: int, info_hash: str) -> tuple[float, ...] | None:
         _ = _actor_to_key(actor)
-        _ = make_digest_text(info_hash)
+        _ = _bridge_contracts.make_digest_text(info_hash)
         return self.table.get((actor, info_hash))
 
     def set(self, actor: int, info_hash: str, distribution: tuple[float, ...]) -> None:
         _ = _actor_to_key(actor)
-        _ = make_digest_text(info_hash)
+        _ = _bridge_contracts.make_digest_text(info_hash)
         if not isinstance(distribution, (list, tuple)):
             raise ContractError("distribution must be tuple")
         if len(distribution) != len(self.abstraction.abstract_ids):

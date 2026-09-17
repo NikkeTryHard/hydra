@@ -16,10 +16,16 @@ from pathlib import Path
 from typing import Any
 
 import pyarrow.parquet as pq
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
-from hydra2.contracts.common import ContractError, CorruptArtifactError, make_digest_text
+from hydra2.contracts.common import ContractError, CorruptArtifactError
 from hydra2.contracts.event_envelope import EventEnvelope, EventPayload, PublicStateDelta
-from hydra2.contracts.observation import ActorObservation, VisibleMeld
+from hydra2.contracts.observation_actor import (
+    ActorObservation,
+)
+from hydra2.contracts.observation_types import (
+    VisibleMeld,
+)
 from hydra2.data.parquet import ACTOR_FIELDS, FORBIDDEN_IN_ACTOR, verify_no_privileged_leakage
 
 __all__ = [
@@ -119,8 +125,8 @@ def _envelope_from_json(raw: Any, *, where: str) -> EventEnvelope:
             visible_to=tuple(raw.get("visible_to", ())),  # type: ignore[arg-type]
             payload=payload,
             public_delta=deltas,
-            rules_hash=make_digest_text(str(raw.get("rules_hash"))),
-            schema_hash=make_digest_text(str(raw.get("schema_hash"))),
+            rules_hash=_bridge_contracts.make_digest_text(str(raw.get("rules_hash"))),
+            schema_hash=_bridge_contracts.make_digest_text(str(raw.get("schema_hash"))),
         )
     except Exception as exc:
         raise ContractError(f"unparseable history event for {where!r}: {exc}") from exc

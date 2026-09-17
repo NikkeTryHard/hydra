@@ -21,17 +21,21 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.artifacts.canonical import canonical_bytes
 from hydra2.contracts.common import (
     ContractError,
     DigestText,
     PacketPartitionError,
     StaleBeliefError,
-    make_digest_text,
-    make_tile_id,
 )
-from hydra2.search.pbrf_partition import ChildEntry as ChildEntry
-from hydra2.search.pbrf_partition import NaturalPacketKernel as NaturalPacketKernel
+from hydra2.search.pbrf_partition import (
+    ChildEntry as ChildEntry,
+)
+from hydra2.search.pbrf_partition import (
+    NaturalPacketKernel as NaturalPacketKernel,
+)
 from hydra2.search.pbrf_partition import PbrfConfig as PbrfConfig
 from hydra2.search.pbrf_partition import PolicySet as PolicySet
 from hydra2.search.pbrf_partition import RandomStream as RandomStream
@@ -104,7 +108,7 @@ def _tile_for_successor(succ: Any) -> int | None:
         raw_obj: object = getattr(payload_obj, "tile", None)
         if isinstance(raw_obj, bool) or not isinstance(raw_obj, int):
             return None
-        return int(make_tile_id(raw_obj))
+        return int(_bridge_contracts.make_tile_id(raw_obj))
     except Exception:
         return None
 
@@ -214,7 +218,8 @@ def _is_target_compatible(
             if (
                 obs_after is not None
                 and auth_obs is not None
-                and make_digest_text(obs_after) != make_digest_text(auth_obs)
+                and _bridge_contracts.make_digest_text(obs_after)
+                != _bridge_contracts.make_digest_text(auth_obs)
             ):
                 return False
             # Target binding: the authoritative target must re-derive from the
@@ -230,13 +235,15 @@ def _is_target_compatible(
                 proposal_raw: object = getattr(epoch, "proposal_spec_hash", "")
                 target_raw: object = getattr(epoch, "target_id", "")
                 expected: DigestText = _recompute_target(
-                    observation_hash=make_digest_text(obs_after),
-                    rules_hash=make_digest_text(str(rules_raw)),
-                    belief_model_hash=make_digest_text(str(belief_raw)),
-                    event_model_hash=make_digest_text(str(event_raw)),
-                    proposal_spec_hash=make_digest_text(str(proposal_raw)),
+                    observation_hash=_bridge_contracts.make_digest_text(obs_after),
+                    rules_hash=_bridge_contracts.make_digest_text(str(rules_raw)),
+                    belief_model_hash=_bridge_contracts.make_digest_text(str(belief_raw)),
+                    event_model_hash=_bridge_contracts.make_digest_text(str(event_raw)),
+                    proposal_spec_hash=_bridge_contracts.make_digest_text(str(proposal_raw)),
                 )
-                if make_digest_text(expected) != make_digest_text(str(target_raw)):
+                if _bridge_contracts.make_digest_text(
+                    expected
+                ) != _bridge_contracts.make_digest_text(str(target_raw)):
                     return False
         except Exception:
             pass

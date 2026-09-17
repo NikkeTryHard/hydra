@@ -3,24 +3,31 @@
 from __future__ import annotations
 
 from dataclasses import dataclass as dataclass
-from typing import TYPE_CHECKING as TYPE_CHECKING
-from typing import cast as cast
+from typing import (
+    TYPE_CHECKING as TYPE_CHECKING,
+)
+from typing import (
+    cast as cast,
+)
 
 import riichienv
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 from hydra2_replay_rs import tiles  # pyrefly: ignore[missing-import]
 
 from hydra2.artifacts.digest import of_canonical as of_canonical
-from hydra2.contracts.action import ActionContext as ActionContext
-from hydra2.contracts.action import CanonicalAction as CanonicalAction
+from hydra2.contracts.action_model import CanonicalAction as CanonicalAction
+from hydra2.contracts.action_table import ActionContext as ActionContext
 from hydra2.contracts.common import ContractError as ContractError
-from hydra2.contracts.common import make_seat as make_seat
-from hydra2.contracts.common import make_tile_id as make_tile_id
-from hydra2.contracts.observation import HISTORY_EVENT_CAP as HISTORY_EVENT_CAP
+from hydra2.contracts.observation_assembly import HISTORY_EVENT_CAP as HISTORY_EVENT_CAP
 from hydra2.data.parquet import DecisionRow as DecisionRow
 from hydra2.data.stream import verify_no_privileged_leakage as verify_no_privileged_leakage
 from hydra2.engines.riichienv._lr_frame import _event_schema_hash as _event_schema_hash
-from hydra2.engines.riichienv._oracle_base import _BAKAZE_TO_WIND as _BAKAZE_TO_WIND
-from hydra2.engines.riichienv._oracle_base import _LIVE_WALL_BASE as _LIVE_WALL_BASE
+from hydra2.engines.riichienv._oracle_base import (
+    _BAKAZE_TO_WIND as _BAKAZE_TO_WIND,
+)
+from hydra2.engines.riichienv._oracle_base import (
+    _LIVE_WALL_BASE as _LIVE_WALL_BASE,
+)
 from hydra2.engines.riichienv._oracle_base import _adapter_hash as _adapter_hash
 from hydra2.engines.riichienv._oracle_base import _legal_mjai_type as _legal_mjai_type
 from hydra2.engines.riichienv.actions import legal_view as legal_view
@@ -31,8 +38,8 @@ if TYPE_CHECKING:
     from collections.abc import Sequence as Sequence
     from typing import Any as Any
 
-    from hydra2.contracts.observation import ObservationBuilder as ObservationBuilder
-    from hydra2.contracts.observation import VisibleMeld as VisibleMeld
+    from hydra2.contracts.observation_assembly import ObservationBuilder as ObservationBuilder
+    from hydra2.contracts.observation_types import VisibleMeld as VisibleMeld
     from hydra2.data.decode import GameRecord as GameRecord
     from hydra2.engines.riichienv._lr_frame import _SimStep as _SimStep
 
@@ -209,12 +216,12 @@ def _context_for(
         concealed = sorted(set(concealed) | {obs.drawn})
     offered_tile, offered_by = offered
     return ActionContext(
-        actor=make_seat(seat),
+        actor=_bridge_contracts.make_seat(seat),
         action_table_hash=state.table.digest,
         phase=cast("Any", phase),
-        offered_tile=None if offered_tile is None else make_tile_id(offered_tile),
-        offered_by=None if offered_by is None else make_seat(offered_by),
-        own_concealed_tiles=tuple(make_tile_id(t) for t in concealed),
+        offered_tile=None if offered_tile is None else _bridge_contracts.make_tile_id(offered_tile),
+        offered_by=None if offered_by is None else _bridge_contracts.make_seat(offered_by),
+        own_concealed_tiles=tuple(_bridge_contracts.make_tile_id(t) for t in concealed),
         visible_melds=tuple(m for row in state.melds for m in row),
     )
 
@@ -377,11 +384,11 @@ def _claim_canonical(
 ) -> CanonicalAction:
     return CanonicalAction(
         kind=cast("Any", kind),
-        actor=make_seat(seat),
+        actor=_bridge_contracts.make_seat(seat),
         tile=None,
-        called_tile=make_tile_id(called),
-        consumed_tiles=tuple(make_tile_id(t) for t in consumed),
-        source_seat=make_seat(source),
+        called_tile=_bridge_contracts.make_tile_id(called),
+        consumed_tiles=tuple(_bridge_contracts.make_tile_id(t) for t in consumed),
+        source_seat=_bridge_contracts.make_seat(source),
         declares_riichi=False,
         metadata=(),
     )
@@ -429,15 +436,20 @@ def _capture_row(
     if state.seat_filter is not None and seat != state.seat_filter:
         return
     _snapshot_at_row(state, phase=phase, turn_actor=turn_actor, obs=step)
-    state.builder.set_concealed_hand(make_seat(seat), _concealed_for_build(step))
+    state.builder.set_concealed_hand(_bridge_contracts.make_seat(seat), _concealed_for_build(step))
     state.builder.set_actor_state(
-        make_seat(seat), furiten=furiten, can_tsumo=can_tsumo, can_riichi=can_riichi
+        _bridge_contracts.make_seat(seat),
+        furiten=furiten,
+        can_tsumo=can_tsumo,
+        can_riichi=can_riichi,
     )
     try:
-        observation = state.builder.build(actor=make_seat(seat), legal_mask=tuple(mask))
-    except ContractError as exc:
+        observation = state.builder.build(
+            actor=_bridge_contracts.make_seat(seat), legal_mask=tuple(mask)
+        )
+    except (ContractError, ValueError) as exc:
         raise state.fail(kyoku, f"seat {seat} row", f"observation build failed: {exc}") from exc
-    from hydra2.contracts.observation import VISIBILITY_VALIDATOR as _VV
+    from hydra2.contracts.observation_assembly import VISIBILITY_VALIDATOR as _VV
 
     try:
         _VV.validate_observation(observation)

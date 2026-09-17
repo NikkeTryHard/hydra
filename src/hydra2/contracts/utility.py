@@ -31,6 +31,8 @@ from hashlib import sha256 as _sha256
 from types import MappingProxyType
 from typing import Any
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.contracts.common import (
     ContractError,
     DigestMismatchError,
@@ -38,11 +40,9 @@ from hydra2.contracts.common import (
     RulesMismatchError,
     SchemaVersion,
     Seat,
-    make_digest_text,
     make_schema_version,
-    make_seat,
 )
-from hydra2.contracts.rules import canonical_contract_json_bytes
+from hydra2.contracts.rules_canonical import canonical_contract_json_bytes
 
 __all__ = [
     "UTILITY_OBJECTIVE",
@@ -289,12 +289,16 @@ class SettlementFact:
         object.__setattr__(self, "kind", _require_nonempty_str(self.kind, name="settlement kind"))
         payer = self.from_seat
         if payer is not None:
-            payer = make_seat(_require_int(payer, name="from_seat", minimum=0, maximum=3))
+            payer = _bridge_contracts.make_seat(
+                _require_int(payer, name="from_seat", minimum=0, maximum=3)
+            )
         payees = self.to_seats
         if not isinstance(payees, (tuple, list)) or len(payees) == 0:
             raise ContractError("to_seats must be a non-empty tuple of seats")
         validated_payees = tuple(
-            make_seat(_require_int(seat, name=f"to_seats[{i}]", minimum=0, maximum=3))
+            _bridge_contracts.make_seat(
+                _require_int(seat, name=f"to_seats[{i}]", minimum=0, maximum=3)
+            )
             for i, seat in enumerate(payees)
         )
         if len(set(validated_payees)) != len(validated_payees):
@@ -361,7 +365,7 @@ class RawOutcome:
                 )
         object.__setattr__(self, "settlements", tuple(settlements))
         object.__setattr__(self, "rules_id", _require_nonempty_str(self.rules_id, name="rules_id"))
-        object.__setattr__(self, "rules_hash", make_digest_text(self.rules_hash))
+        object.__setattr__(self, "rules_hash", _bridge_contracts.make_digest_text(self.rules_hash))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -390,7 +394,7 @@ class UtilityManifest:
         )
         object.__setattr__(self, "schema_version", make_schema_version(self.schema_version))
         object.__setattr__(self, "rules_id", _require_nonempty_str(self.rules_id, name="rules_id"))
-        object.__setattr__(self, "rules_hash", make_digest_text(self.rules_hash))
+        object.__setattr__(self, "rules_hash", _bridge_contracts.make_digest_text(self.rules_hash))
         if self.objective != UTILITY_OBJECTIVE:
             raise ContractError(f"objective must be {UTILITY_OBJECTIVE!r}, got {self.objective!r}")
         raw_values = self.rank_values
@@ -424,13 +428,15 @@ class UtilityManifest:
                 "zero_sum=true requires the rank_values total to be exactly zero; "
                 "zero-sum is never assumed"
             )
-        computed = make_digest_text(
+        computed = _bridge_contracts.make_digest_text(
             "sha256:"
             + _sha256(
                 canonical_contract_json_bytes(utility_manifest_digest_document(self))
             ).hexdigest()
         )
-        if not hmac.compare_digest(str(make_digest_text(self.digest)), str(computed)):
+        if not hmac.compare_digest(
+            str(_bridge_contracts.make_digest_text(self.digest)), str(computed)
+        ):
             raise DigestMismatchError(
                 f"utility manifest digest mismatch: recorded {self.digest} != recomputed {computed}"
             )
@@ -497,7 +503,7 @@ def make_utility_manifest(**fields: Any) -> UtilityManifest:
     extras = sorted(set(fields) - set(_MANIFEST_FIELD_NAMES))
     if len(extras) > 0:
         raise ContractError(f"make_utility_manifest got undeclared fields {extras}")
-    computed = make_digest_text(
+    computed = _bridge_contracts.make_digest_text(
         "sha256:"
         + _sha256(
             canonical_contract_json_bytes(utility_manifest_digest_document(fields))
@@ -527,9 +533,11 @@ class UtilityVector:
             self, "utility_id", _require_nonempty_str(self.utility_id, name="utility_id")
         )
         object.__setattr__(
-            self, "utility_manifest_hash", make_digest_text(self.utility_manifest_hash)
+            self,
+            "utility_manifest_hash",
+            _bridge_contracts.make_digest_text(self.utility_manifest_hash),
         )
-        object.__setattr__(self, "rules_hash", make_digest_text(self.rules_hash))
+        object.__setattr__(self, "rules_hash", _bridge_contracts.make_digest_text(self.rules_hash))
 
 
 def utility(outcome: RawOutcome, manifest: UtilityManifest) -> UtilityVector:
@@ -596,7 +604,7 @@ def root_scalar(value: UtilityVector, seat: Seat) -> float:
     """
     if not isinstance(value, UtilityVector):
         raise ContractError("value must be a UtilityVector")
-    seat_index = make_seat(_require_int(seat, name="seat", minimum=0, maximum=3))
+    seat_index = _bridge_contracts.make_seat(_require_int(seat, name="seat", minimum=0, maximum=3))
     for i, item in enumerate(value.values):
         if not math.isfinite(item):
             raise ContractError(f"utility values[{i}] is non-finite")

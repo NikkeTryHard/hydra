@@ -25,9 +25,11 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.artifacts.canonical import canonical_bytes as _seal_bytes
 from hydra2.artifacts.digest import sha256_digest
-from hydra2.contracts.common import ContractError, DigestText, make_digest_text, make_utc_timestamp
+from hydra2.contracts.common import ContractError, DigestText, make_utc_timestamp
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -45,7 +47,7 @@ __all__ = [
 
 def _require_digest(text: str, *, name: str) -> DigestText:
     try:
-        return make_digest_text(text)
+        return _bridge_contracts.make_digest_text(text)
     except Exception as exc:  # why-broad: any digest-shape failure is one
         # ContractError with the offending name and value.
         raise ContractError(f"{name} must be sha256:<64 hex>, got {text!r}") from exc

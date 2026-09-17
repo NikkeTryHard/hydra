@@ -131,7 +131,7 @@ def test_exact_and_near_duplicate_detection() -> None:
 def test_exact_duplicate_rejection_contract() -> None:
     with pytest.raises(ContractError):
         find_exact_duplicates({"": "sha256:" + "aa" * 32})  # empty wall id
-    with pytest.raises(ContractError):
+    with pytest.raises(ValueError):
         find_exact_duplicates({"w1": "not-a-digest"})
     # Near duplicate rejects malformed tiles
     with pytest.raises(ContractError):

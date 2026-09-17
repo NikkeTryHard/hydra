@@ -71,6 +71,9 @@ Layered DAG, dependencies flow one way: `contracts` (stdlib-only Tenhou vocab) <
 - Threads: conftest clamps torch/OMP per xdist worker. You MUST NEVER call `set_num_threads` in tests, or loosen the clamp to fit one test — mark that test `serial` instead.
 - JAX hot loops: hoist `jax.jit(step-fn)` above the loop on one stable function object (NEVER re-jit per step, NEVER eager-step hot loops); persistent cache dir is version-keyed in conftest. Same kernels = decisions identical; anything changing compute needs requalification.
 - Shared writers (reports, tokens): controller-only under xdist, unique-per-run paths. Designed producer→consumer chains MUST share one lane mark (order is only guaranteed inside it) — NEVER rely on unmarked cross-test order.
+- Perf parity on ports: every bridge/accelerator port MUST prove bridge-vs-oracle TIMING on its hottest caller path alongside value parity — value-green tests hid a 532x slowdown (per-call census regen). Gate: replay benchmark of the hottest call shape, bit-identical outputs AND faster-or-equal wall time, or the port does not land.
+- Frozen-once bridge state: pyfns MUST NEVER regenerate/rebuild tables per call — freeze process-once state (`OnceLock`/`LazyLock`) and expose batch variants for hot loops. Per-call FFI on hot paths needs the timing gate above.
+- Lane speed budget: no single test past ~60s wall in the CPU lane — split mega-rollups per case-group into loadscope-spreadable files (consume results, never re-execute engine sims; coverage assertion stays); one shared import-only session fixture (NEVER per-module cargo builds or cdylib copies); serial-lane file order stays cheap→heavy with init-heavy files last.
 - Be humble and honest: NEVER overstate what works in commits, PRs, or messages. Second related branch-condition finding -> stop, re-read the requirement, narrow the contract instead of adding machinery.
 
 ## Allowed / ask-first / never

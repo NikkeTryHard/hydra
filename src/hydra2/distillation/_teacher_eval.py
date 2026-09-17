@@ -23,23 +23,33 @@ import torch.nn.functional as F  # noqa: N812
 
 from hydra2.artifacts.canonical import canonical_bytes
 from hydra2.contracts.common import ContractError
-from hydra2.distillation._teacher_cases import _case_observation as _case_observation
-from hydra2.distillation._teacher_cases import _masked_softmax as _masked_softmax
+from hydra2.distillation._teacher_cases import (
+    _case_observation as _case_observation,
+)
+from hydra2.distillation._teacher_cases import (
+    _masked_softmax as _masked_softmax,
+)
 from hydra2.distillation._teacher_cases import (
     _teacher_policy_and_value as _teacher_policy_and_value,
 )
-from hydra2.distillation._teacher_gate import TeacherJustification
-from hydra2.distillation._teacher_gate import _action_table as _action_table
+from hydra2.distillation._teacher_gate import (
+    TeacherJustification,
+)
+from hydra2.distillation._teacher_gate import (
+    _action_table as _action_table,
+)
 from hydra2.distillation._teacher_gate import _real_candidate_spec as _real_candidate_spec
 from hydra2.distillation._teacher_gate import _spec_digest_of as _spec_digest_of
-from hydra2.distillation._teacher_student import StudentModel
+from hydra2.distillation._teacher_student import (
+    StudentModel,
+)
 from hydra2.distillation._teacher_student import (
     _features_from_actor_observation as _features_from_actor_observation,
 )
 from hydra2.distillation._teacher_student import features_for_record as features_for_record
 
 if TYPE_CHECKING:
-    from hydra2.contracts.observation import ActorObservation
+    from hydra2.contracts.observation_actor import ActorObservation
     from hydra2.distillation._teacher_records import TrajectoryRecord
     from hydra2.eval.blocks import WallBlock
 

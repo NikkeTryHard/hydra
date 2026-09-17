@@ -9,8 +9,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.artifacts.digest import sha256_digest
-from hydra2.contracts.common import ContractError, DigestText, make_digest_text
+from hydra2.contracts.common import ContractError, DigestText
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -37,7 +39,9 @@ class ConfirmationCase:
             raise ContractError("case_id must be non-empty")
         if self.world_id == "":
             raise ContractError("world_id must be non-empty")
-        object.__setattr__(self, "observation_hash", make_digest_text(self.observation_hash))
+        object.__setattr__(
+            self, "observation_hash", _bridge_contracts.make_digest_text(self.observation_hash)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,7 +53,9 @@ class ConfirmationResult:
     rng_digest: str  # hash of rng seed for provenance
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "observation_hash", make_digest_text(self.observation_hash))
+        object.__setattr__(
+            self, "observation_hash", _bridge_contracts.make_digest_text(self.observation_hash)
+        )
 
 
 class NaturalConfirmationRunner:

@@ -13,7 +13,13 @@ from hydra2.contracts.common import (
     DigestMismatchError,
     RulesMismatchError,
 )
-from hydra2.contracts.rules import RULES_ID, SOURCE_EVIDENCE_KEY, rules_manifest_from_payload
+from hydra2.contracts.rules_canonical import (
+    RULES_ID,
+    SOURCE_EVIDENCE_KEY,
+)
+from hydra2.contracts.rules_manifest import (
+    rules_manifest_from_payload,
+)
 from hydra2.contracts.utility import (
     UTILITY_OBJECTIVE,
     UTILITY_TIE_POLICY,
@@ -111,7 +117,7 @@ class TestRawUtilityIdentityRoundTrip:
 
     def test_contract_canonical_writer_matches_artifacts_authority(self, umanifest):
         from hydra2.artifacts.canonical import canonical_bytes as authority_bytes
-        from hydra2.contracts.rules import canonical_contract_json_bytes
+        from hydra2.contracts.rules_canonical import canonical_contract_json_bytes
 
         document = utility_manifest_digest_document(umanifest)
         assert canonical_contract_json_bytes(document) == authority_bytes(document)

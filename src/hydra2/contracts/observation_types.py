@@ -17,7 +17,6 @@ from hydra2.contracts.common import (
     Seat,
     TileId,
     TileType,
-    make_tile_id,
 )
 
 try:
@@ -118,7 +117,15 @@ def _require_enum(value: object, *, name: str, allowed: tuple[str, ...]) -> str:
 def _tile_tuple(values: Sequence[int], *, name: str) -> tuple[TileId, ...]:
     if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
         raise ContractError(f"{name} must be a sequence of tile ids")
-    return tuple(make_tile_id(v) for v in values)
+    if _bridge_contracts is None:
+        raise ImportError(
+            "hydra2 tile authority requires the hydra2_replay_rs bridge; "
+            "run `pixi run build-ext` to build the extension before use"
+        )
+    try:
+        return tuple(TileId(_bridge_contracts.make_tile_id(v)) for v in values)
+    except (ValueError, TypeError) as exc:
+        raise ContractError(f"{name} rejected: {exc}") from exc
 
 
 def _quad(values: object, *, name: str, validator) -> tuple:

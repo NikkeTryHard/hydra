@@ -11,7 +11,7 @@ import math
 
 from hydra2.belief.natural import NaturalBelief
 from hydra2.belief.world import make_full_world, world_actor_observation
-from hydra2.contracts.action import CanonicalAction
+from hydra2.contracts.action_model import CanonicalAction
 from hydra2.contracts.randomness import RandomStream, make_random_stream_key, semantic_seed
 from hydra2.search.gumbel import (
     GumbelSearchPlanner,
@@ -23,12 +23,8 @@ from hydra2.search.gumbel import (
 from hydra2.search.gumbel import (
     model_vector_for_world as gumbel_model_vector,
 )
-from hydra2.search.gumbel import (
-    scalarize_vector as gumbel_scalarize,
-)
-from hydra2.search.gumbel import (
-    terminal_vector_for_world as gumbel_terminal_vector,
-)
+from hydra2.search.gumbel import scalarize_vector as gumbel_scalarize
+from hydra2.search.gumbel import terminal_vector_for_world as gumbel_terminal_vector
 from hydra2.search.ismcts_core import (
     InformationSetNode,
     NaturalISMCTSConfig,
@@ -39,15 +35,9 @@ from hydra2.search.ismcts_core import (
 from hydra2.search.ismcts_core import (
     info_key_for_observation as ismcts_info_key,
 )
-from hydra2.search.ismcts_core import (
-    model_vector_for_world as ismcts_model_vector,
-)
-from hydra2.search.ismcts_core import (
-    scalarize_vector as ismcts_scalarize,
-)
-from hydra2.search.ismcts_core import (
-    terminal_vector_for_world as ismcts_terminal_vector,
-)
+from hydra2.search.ismcts_core import model_vector_for_world as ismcts_model_vector
+from hydra2.search.ismcts_core import scalarize_vector as ismcts_scalarize
+from hydra2.search.ismcts_core import terminal_vector_for_world as ismcts_terminal_vector
 from hydra2.search.ismcts_natural import NaturalISMCTSPlanner
 
 _MASTER = b"wave2_search_parity_v1"

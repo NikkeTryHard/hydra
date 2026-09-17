@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.artifacts.canonical import canonical_bytes
 from hydra2.belief.natural import BeliefEpoch, Particle, PolicySet
 from hydra2.contracts.common import (
@@ -23,8 +25,6 @@ from hydra2.contracts.common import (
     DigestText,
     Seat,
     StaleBeliefError,
-    make_digest_text,
-    make_seat,
 )
 from hydra2.contracts.event_envelope import EventEnvelope, EventPayload
 from hydra2.contracts.event_packet import (
@@ -72,7 +72,7 @@ class PacketSuccessor:
 
 
 def _valid_digest(s: str) -> DigestText:
-    return make_digest_text(s)
+    return _bridge_contracts.make_digest_text(s)
 
 
 def _dummy_hashes() -> tuple[DigestText, DigestText, DigestText, DigestText]:
@@ -95,7 +95,7 @@ def _make_public_discard_event(
 ) -> EventEnvelope:
     payload = EventPayload(
         kind="discard",
-        actor=make_seat(actor),
+        actor=_bridge_contracts.make_seat(actor),
         tile=tile,  # type: ignore[arg-type]
         action_id=0,  # type: ignore[arg-type]
         source_seat=None,
@@ -110,7 +110,7 @@ def _make_public_discard_event(
         game_id=game_id,
         sequence=sequence,  # type: ignore[arg-type]
         kind="discard",
-        actor=make_seat(actor),
+        actor=_bridge_contracts.make_seat(actor),
         visibility="public",
         visible_to=(Seat(0), Seat(1), Seat(2), Seat(3)),
         payload=payload,

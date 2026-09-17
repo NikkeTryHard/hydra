@@ -57,6 +57,8 @@ import hashlib
 from dataclasses import dataclass, fields
 from typing import Literal
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.contracts.canonical import canonical_json_bytes
 from hydra2.contracts.common import (
     BeliefEpochId,
@@ -66,11 +68,9 @@ from hydra2.contracts.common import (
     PacketId,
     ParentId,
     Seat,
-    make_action_id,
     make_belief_epoch_id,
     make_packet_id,
     make_parent_id,
-    make_seat,
 )
 
 __all__ = [
@@ -287,11 +287,11 @@ def _validate_field_value(name: str, value: object) -> None:
     if value is None:
         return
     if name == "root_seat":
-        make_seat(value)  # type: ignore[arg-type]  # reason: value statically object; None filtered above, validated inside make_seat
+        _bridge_contracts.make_seat(value)  # type: ignore[arg-type]  # reason: value statically object; None filtered above, validated inside make_seat
     elif name == "belief_epoch":
         make_belief_epoch_id(value)  # type: ignore[arg-type]  # reason: value statically object; None filtered above, validated inside make_belief_epoch_id
     elif name == "action_id":
-        make_action_id(value)  # type: ignore[arg-type]  # reason: value statically object; None filtered above, validated inside make_action_id
+        _bridge_contracts.make_action_id(value)  # type: ignore[arg-type]  # reason: value statically object; None filtered above, validated inside make_action_id
     elif name in ("parent_id", "packet_id", "case_id", "candidate_id", "wall_id"):
         if not isinstance(value, str) or value == "":
             raise ContractError(f"{name} must be a nonempty str")

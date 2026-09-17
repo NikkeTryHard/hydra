@@ -319,7 +319,10 @@ def test_engine_sim_agreement_semantic() -> None:
     content, copy-folded masks, history kinds, and envelope counters.
     """
     from hydra2.config import repo_root
-    from hydra2.contracts.action import ACTION_TABLE_RELPATH, load_action_table
+    from hydra2.contracts.action_artifact import (
+        ACTION_TABLE_RELPATH,
+        load_action_table,
+    )
 
     events = _agree_events()
     wall = _arranged_wall(events)

@@ -13,14 +13,13 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Literal
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.contracts.common import (
     ActionId,
     ContractError,
     Seat,
     TileId,
-    make_action_id,
-    make_seat,
-    make_tile_id,
 )
 
 __all__ = [
@@ -90,6 +89,12 @@ DeltaOperation = Literal["set", "append", "increment"]
 DELTA_OPERATIONS: tuple[DeltaOperation, ...] = ("set", "append", "increment")
 
 _PUBLIC_VISIBLE_TO = (0, 1, 2, 3)
+#: Ceiling of the bridge action-id domain (``make_action_id`` returns u32).
+#: Python ints above this would wrap modulo 2**32 inside the bridge instead of
+#: rejecting, so the validators below fail closed here and preserve the oracle
+#: accept-set (the oracle accepted arbitrary-precision ints and rejected the
+#: huge ones downstream; wrapping would silently alias them onto live ids).
+_ACTION_ID_MAX = 0xFFFF_FFFF
 
 #: Scalar payload fields besides ``kind``/``actor`` (closed inventory).
 PAYLOAD_SCALAR_FIELDS: tuple[str, ...] = (
@@ -140,7 +145,7 @@ def _optional_seat(value: object, *, name: str) -> Seat | None:
         return None
     if isinstance(value, bool) or not isinstance(value, int):
         raise ContractError(f"{name} must be a seat int 0..3, got {type(value).__name__}")
-    return make_seat(value)
+    return _bridge_contracts.make_seat(value)
 
 
 def _optional_tile(value: object, *, name: str) -> TileId | None:
@@ -148,7 +153,7 @@ def _optional_tile(value: object, *, name: str) -> TileId | None:
         return None
     if isinstance(value, bool) or not isinstance(value, int):
         raise ContractError(f"{name} must be a tile id int 0..135, got {type(value).__name__}")
-    return make_tile_id(value)
+    return _bridge_contracts.make_tile_id(value)
 
 
 def _optional_action(value: object, *, name: str) -> ActionId | None:
@@ -158,19 +163,24 @@ def _optional_action(value: object, *, name: str) -> ActionId | None:
         raise ContractError(
             f"{name} must be an action id nonnegative int, got {type(value).__name__}"
         )
-    return make_action_id(value)
+    if value > _ACTION_ID_MAX:
+        raise ContractError(f"{name}={value} exceeds u32 action id domain")
+    return _bridge_contracts.make_action_id(value)
 
 
 def _tile_tuple(values: Sequence[int], *, name: str) -> tuple[TileId, ...]:
     if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
         raise ContractError(f"{name} must be a sequence of tile ids")
-    return tuple(make_tile_id(v) for v in values)
+    return tuple(_bridge_contracts.make_tile_id(v) for v in values)
 
 
 def _action_tuple(values: Sequence[int], *, name: str) -> tuple[ActionId, ...]:
     if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
         raise ContractError(f"{name} must be a sequence of action ids")
-    return tuple(make_action_id(v) for v in values)
+    for element in values:
+        if isinstance(element, int) and not isinstance(element, bool) and element > _ACTION_ID_MAX:
+            raise ContractError(f"{name} element {element!r} exceeds u32 action id domain")
+    return tuple(_bridge_contracts.make_action_id(v) for v in values)
 
 
 def _score_quad(values: object, *, name: str) -> tuple[int, int, int, int]:
@@ -288,7 +298,7 @@ def _validate_delta_value(path: tuple[str | int, ...], operation: str, value: ob
 
     def _tile_value(candidate: object) -> None:
         _plain_int(candidate, "dora_indicators.append")
-        make_tile_id(candidate)  # type: ignore[arg-type]  # reason: _plain_int bool-checks candidate above; range validated inside make_tile_id
+        _bridge_contracts.make_tile_id(candidate)  # type: ignore[arg-type]  # reason: _plain_int bool-checks candidate above; range validated inside make_tile_id
 
     if root == "scores":
         if seated_second is None:
@@ -326,11 +336,11 @@ def _validate_delta_value(path: tuple[str | int, ...], operation: str, value: ob
             name="meld.kind",
             allowed=("chi", "pon", "daiminkan", "ankan", "kakan"),
         )
-        make_seat(value["owner"])  # type: ignore[arg-type]  # reason: meld field statically object; validated inside make_seat
+        _bridge_contracts.make_seat(value["owner"])  # type: ignore[arg-type]  # reason: meld field statically object; validated inside make_seat
         if value["source_seat"] is not None:
-            make_seat(value["source_seat"])  # type: ignore[arg-type]  # reason: meld field statically object; validated inside make_seat
+            _bridge_contracts.make_seat(value["source_seat"])  # type: ignore[arg-type]  # reason: meld field statically object; validated inside make_seat
         if value["called_tile"] is not None:
-            make_tile_id(value["called_tile"])  # type: ignore[arg-type]  # reason: meld field statically object; validated inside make_tile_id
+            _bridge_contracts.make_tile_id(value["called_tile"])  # type: ignore[arg-type]  # reason: meld field statically object; validated inside make_tile_id
         _ = _tile_tuple(value["tiles"], name="meld.tiles")  # pyrefly: ignore[unknown-argument-type]  # reason: Mapping shape-checked above; field validators narrow each field
         return
     if root == "riichi_states":

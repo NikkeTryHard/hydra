@@ -3,20 +3,31 @@
 from __future__ import annotations
 
 from dataclasses import replace as replace
-from typing import TYPE_CHECKING as TYPE_CHECKING
-from typing import cast as cast
+from typing import (
+    TYPE_CHECKING as TYPE_CHECKING,
+)
+from typing import (
+    cast as cast,
+)
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 from hydra2_replay_rs import tiles  # pyrefly: ignore[missing-import]
 
-from hydra2.contracts.action import CanonicalAction as CanonicalAction
+from hydra2.contracts.action_model import CanonicalAction as CanonicalAction
 from hydra2.contracts.common import ContractError as ContractError
-from hydra2.contracts.common import make_seat as make_seat
-from hydra2.contracts.common import make_tile_id as make_tile_id
-from hydra2.engines.riichienv._oracle_base import _BAKAZE_TO_WIND as _BAKAZE_TO_WIND
-from hydra2.engines.riichienv._oracle_base import _legal_mjai_type as _legal_mjai_type
+from hydra2.engines.riichienv._oracle_base import (
+    _BAKAZE_TO_WIND as _BAKAZE_TO_WIND,
+)
+from hydra2.engines.riichienv._oracle_base import (
+    _legal_mjai_type as _legal_mjai_type,
+)
 from hydra2.engines.riichienv._sp_capture import _distinct_copies as _distinct_copies
-from hydra2.engines.riichienv._sp_records import _emit as _emit
-from hydra2.engines.riichienv._sp_records import _ippatsu_interrupt as _ippatsu_interrupt
+from hydra2.engines.riichienv._sp_records import (
+    _emit as _emit,
+)
+from hydra2.engines.riichienv._sp_records import (
+    _ippatsu_interrupt as _ippatsu_interrupt,
+)
 from hydra2.engines.riichienv._sp_records import _safe_mjai_type as _safe_mjai_type
 from hydra2.engines.riichienv._sp_records import _SimStep as _SimStep
 from hydra2.engines.riichienv._sp_walk import _strict_row as _strict_row
@@ -317,8 +328,8 @@ def _do_dahai(
         kind = "tsumogiri" if tsumogiri else "discard"
     expected = CanonicalAction(
         kind=cast("Any", kind),
-        actor=make_seat(actor),
-        tile=make_tile_id(tile_raw),
+        actor=_bridge_contracts.make_seat(actor),
+        tile=_bridge_contracts.make_tile_id(tile_raw),
         called_tile=None,
         consumed_tiles=(),
         source_seat=None,

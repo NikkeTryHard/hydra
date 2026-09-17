@@ -18,22 +18,29 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
-from hydra2.analysis.qual_budget import ANALYSIS_CANDIDATE_IDS as ANALYSIS_CANDIDATE_IDS
-from hydra2.analysis.qual_budget import GAMEPLAY_BUDGETS as GAMEPLAY_BUDGETS
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
+from hydra2.analysis.qual_budget import (
+    ANALYSIS_CANDIDATE_IDS as ANALYSIS_CANDIDATE_IDS,
+)
+from hydra2.analysis.qual_budget import (
+    GAMEPLAY_BUDGETS as GAMEPLAY_BUDGETS,
+)
 from hydra2.analysis.qual_budget import analysis_budget_for as analysis_budget_for
 from hydra2.analysis.qual_budget import make_analysis_spec as make_analysis_spec
 from hydra2.analysis.qual_budget import verify_compute_only as verify_compute_only
-from hydra2.analysis.qual_replay import _spec_hash as _spec_hash
-from hydra2.analysis.qual_replay import compare_gameplay_analysis as compare_gameplay_analysis
+from hydra2.analysis.qual_replay import (
+    _spec_hash as _spec_hash,
+)
+from hydra2.analysis.qual_replay import (
+    compare_gameplay_analysis as compare_gameplay_analysis,
+)
 from hydra2.artifacts.canonical import canonical_bytes
 from hydra2.artifacts.digest import of_canonical, sha256_digest
 from hydra2.contracts.common import (
     ContractError,
     DigestText,
     VisibilityViolationError,
-    make_digest_text,
-    make_seat,
-    make_tile_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -67,8 +74,8 @@ class AnalysisGateRecord:
     digest: str = field(default="")
 
     def __post_init__(self) -> None:
-        _: DigestText = make_digest_text(self.gameplay_spec_hash)
-        _: DigestText = make_digest_text(self.analysis_spec_hash)
+        _: DigestText = _bridge_contracts.make_digest_text(self.gameplay_spec_hash)
+        _: DigestText = _bridge_contracts.make_digest_text(self.analysis_spec_hash)
         if not isinstance(self.candidate_id, str) or self.candidate_id == "":
             raise ContractError("candidate_id must be non-empty str")
         if not isinstance(self.comparison, Mapping):
@@ -142,8 +149,10 @@ def _load_default_hashes_for_spec() -> dict[str, str]:
         from hydra2.models.model import Hydra2BaselineModel
 
         probe = Hydra2BaselineModel()
-        defaults["utility_manifest_hash"] = str(make_digest_text(str(probe.utility_manifest_hash)))
-        defaults["model_hash"] = str(make_digest_text(str(probe.model_identity)))
+        defaults["utility_manifest_hash"] = str(
+            _bridge_contracts.make_digest_text(str(probe.utility_manifest_hash))
+        )
+        defaults["model_hash"] = str(_bridge_contracts.make_digest_text(str(probe.model_identity)))
     except (ImportError, AttributeError, ValueError, TypeError, OSError, ContractError) as exc:
         logger.debug("qualification: model-derived hash fallback", exc_info=exc)
         raise ContractError("qualification: cannot derive utility/model hashes from model") from exc
@@ -273,7 +282,7 @@ def build_gate_record(
     legal_actions: tuple[Any, ...] | None = None,
 ) -> AnalysisGateRecord:
     """Build a single candidate's analysis gate record, synthesizing fixtures if needed."""
-    from hydra2.contracts.action import CanonicalAction
+    from hydra2.contracts.action_model import CanonicalAction
 
     gp_spec: Any = (
         gameplay_spec if gameplay_spec is not None else _make_gameplay_spec_for(candidate_id)
@@ -293,11 +302,11 @@ def build_gate_record(
                 rules_hash=cast(str, gp_spec.rules_hash),
                 observation_hash=str(of_canonical({"case": candidate_id})),
             )
-            obs = world_actor_observation(w, actor=make_seat(0))
+            obs = world_actor_observation(w, actor=_bridge_contracts.make_seat(0))
             legal = (
                 CanonicalAction(
                     kind="pass",
-                    actor=make_seat(0),
+                    actor=_bridge_contracts.make_seat(0),
                     tile=None,
                     called_tile=None,
                     consumed_tiles=(),
@@ -307,8 +316,8 @@ def build_gate_record(
                 ),
                 CanonicalAction(
                     kind="discard",
-                    actor=make_seat(0),
-                    tile=make_tile_id(0),
+                    actor=_bridge_contracts.make_seat(0),
+                    tile=_bridge_contracts.make_tile_id(0),
                     called_tile=None,
                     consumed_tiles=(),
                     source_seat=None,
@@ -329,7 +338,7 @@ def build_gate_record(
             legal_actions = (
                 CanonicalAction(
                     kind="pass",
-                    actor=make_seat(0),
+                    actor=_bridge_contracts.make_seat(0),
                     tile=None,
                     called_tile=None,
                     consumed_tiles=(),

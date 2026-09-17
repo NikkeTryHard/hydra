@@ -18,10 +18,16 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, cast
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.artifacts.canonical import canonical_bytes
-from hydra2.contracts.common import ContractError, make_digest_text
-from hydra2.search.joint_types import _MASTER_SEED as _MASTER_SEED
-from hydra2.search.joint_types import CandidateSpec as CandidateSpec
+from hydra2.contracts.common import ContractError
+from hydra2.search.joint_types import (
+    _MASTER_SEED as _MASTER_SEED,
+)
+from hydra2.search.joint_types import (
+    CandidateSpec as CandidateSpec,
+)
 from hydra2.search.joint_types import JointParticle as JointParticle
 from hydra2.search.joint_types import JointPosterior as JointPosterior
 from hydra2.search.joint_types import OpponentTypePolicy as OpponentTypePolicy
@@ -31,9 +37,12 @@ from hydra2.search.joint_types import SearchResult as SearchResult
 from hydra2.search.joint_types import _require_belief as _require_belief
 from hydra2.search.joint_types import deterministic_joint_gumbel as deterministic_joint_gumbel
 from hydra2.search.joint_types import info_key_for_observation as info_key_for_observation
-from hydra2.search.joint_types import world_actor_observation as world_actor_observation
-from hydra2.search.joint_uncertainty import JointTypeWorldConfig as JointTypeWorldConfig
-from hydra2.search.joint_uncertainty import UncertaintySet as UncertaintySet
+from hydra2.search.joint_uncertainty import (
+    JointTypeWorldConfig as JointTypeWorldConfig,
+)
+from hydra2.search.joint_uncertainty import (
+    UncertaintySet as UncertaintySet,
+)
 from hydra2.search.joint_uncertainty import (
     exact_joint_posterior_oracle as exact_joint_posterior_oracle,
 )
@@ -307,14 +316,14 @@ class JointTypeWorldPlanner(Planner):  # type: ignore[misc]
                     utility_id=str(
                         getattr(self.candidate_spec, "utility_id", "expected_final_placement")
                     ),
-                    utility_manifest_hash=make_digest_text(
+                    utility_manifest_hash=_bridge_contracts.make_digest_text(
                         str(
                             getattr(
                                 self.candidate_spec, "utility_manifest_hash", "sha256:" + "b" * 64
                             )
                         )
                     ),
-                    rules_hash=make_digest_text(
+                    rules_hash=_bridge_contracts.make_digest_text(
                         str(getattr(self.candidate_spec, "rules_hash", "sha256:" + "a" * 64))
                     ),
                 )

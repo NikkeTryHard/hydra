@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import torch
 
 from hydra2.artifacts.atomic import atomic_replace_bytes as atomic_replace_bytes
+from hydra2.artifacts.digest import sha256_digest as sha256_digest
 from hydra2.contracts.common import ContractError as ContractError
 from hydra2.data.stream import StreamCursor as DataStreamCursor
 from hydra2.training.loop import TrainingState as TrainingState
@@ -411,14 +412,15 @@ def _prime_cache_path(
     base_raw = os.environ.get("HYDRA2_SCAN_CACHE_DIR") or os.path.join(
         os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "hydra2", "scan"
     )
-    files = hashlib.sha256()
+    stamps: list[bytes] = []
     for entry in manifest.files:
         try:
             fingerprint_stat = entry.path.stat()
             stamp = f"{fingerprint_stat.st_size}:{fingerprint_stat.st_mtime_ns}"
         except OSError:
             stamp = "missing"
-        files.update(f"{entry.path.as_posix()}:{stamp}\n".encode())
+        stamps.append(f"{entry.path.as_posix()}:{stamp}\n".encode())
+    files_hex = str(sha256_digest(b"".join(stamps))).removeprefix("sha256:")
     fingerprint = repr(
         (
             "reservoir-v1",
@@ -430,7 +432,7 @@ def _prime_cache_path(
             buffer_size,
         )
     )
-    key = hashlib.sha256((fingerprint + files.hexdigest()).encode()).hexdigest()[:32]
+    key = str(sha256_digest((fingerprint + files_hex).encode())).removeprefix("sha256:")[:32]
     return Path(base_raw) / f"reservoir-{key}.json"
 
 
@@ -478,7 +480,7 @@ def _load_prime_snapshot(*, path: Path, stream_digest: str) -> dict[str, Any] | 
         data = blob.read_bytes()
     except OSError:
         return None
-    if "sha256:" + hashlib.sha256(data).hexdigest() != blob_sha:
+    if str(sha256_digest(data)) != blob_sha:
         return None
     cursor_raw = raw.get("stream_cursor")
     prefix_raw = raw.get("prefix_hashes")
@@ -568,7 +570,7 @@ def _load_resume_envelope(
         blob = resume.checkpoint.read_bytes()
     except OSError as exc:
         raise ContractError(f"checkpoint unreadable: {resume.checkpoint} ({exc})") from exc
-    if sidecar.get("payload_sha256") != "sha256:" + hashlib.sha256(blob).hexdigest():
+    if sidecar.get("payload_sha256") != str(sha256_digest(blob)):
         raise ContractError(f"checkpoint payload hash mismatch: {resume.checkpoint}")
     # Seek-state presence: sidecars carry ``dataset_buffer`` (whole-game tail
     # index + counters + row hash). Absent → pre-simplification sidecar →

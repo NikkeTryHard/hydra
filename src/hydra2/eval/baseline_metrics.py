@@ -16,9 +16,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 import torch
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
 from hydra2.artifacts.digest import of_canonical
-from hydra2.contracts.common import ContractError, DigestText, make_digest_text
+from hydra2.contracts.common import ContractError, DigestText
 
 __all__ = [
     "BASELINE_METRICS_VERSION",
@@ -262,7 +263,7 @@ class BaselineMetrics:
             raise ContractError(
                 f"compile_mode {self.compile_mode!r} not in {COMPILE_ORDER} nor {EAGER_ORACLE_ID!r}"
             )
-        _ = make_digest_text(self.digest)
+        _ = _bridge_contracts.make_digest_text(self.digest)
 
 
 def compute_baseline_metrics(
@@ -325,7 +326,7 @@ class HeldOutSplit:
             raise ContractError(f"held_out_ratio must be in (0,1), got {self.held_out_ratio!r}")
         if len(self.train_ids) == 0 or len(self.held_out_ids) == 0:
             raise ContractError("both splits must be non-empty")
-        _ = make_digest_text(self.digest)
+        _ = _bridge_contracts.make_digest_text(self.digest)
         verify_held_out_disjoint(self)
 
 

@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.contracts.action_kinds import (
     _SOURCE_OFFSETS_CLAIM,
     ACTION_KIND_ORDINALS,
@@ -27,8 +29,6 @@ from hydra2.contracts.common import (
     InvalidActionError,
     Seat,
     TileId,
-    make_seat,
-    make_tile_id,
 )
 
 __all__ = [
@@ -59,11 +59,13 @@ class CanonicalAction:
     def __post_init__(self) -> None:
         if self.kind not in ACTION_KIND_ORDINALS:
             raise ContractError(f"unknown action kind {self.kind!r}")
-        object.__setattr__(self, "actor", make_seat(self.actor))
-        tile = None if self.tile is None else make_tile_id(self.tile)
-        called = None if self.called_tile is None else make_tile_id(self.called_tile)
-        source = None if self.source_seat is None else make_seat(self.source_seat)
-        consumed = tuple(make_tile_id(t) for t in self.consumed_tiles)
+        object.__setattr__(self, "actor", _bridge_contracts.make_seat(self.actor))
+        tile = None if self.tile is None else _bridge_contracts.make_tile_id(self.tile)
+        called = (
+            None if self.called_tile is None else _bridge_contracts.make_tile_id(self.called_tile)
+        )
+        source = None if self.source_seat is None else _bridge_contracts.make_seat(self.source_seat)
+        consumed = tuple(_bridge_contracts.make_tile_id(t) for t in self.consumed_tiles)
         if list(consumed) != sorted(set(consumed)):
             raise ContractError(
                 f"{self.kind}: consumed_tiles must be unique and ascending: {consumed!r}"
@@ -173,9 +175,11 @@ class CanonicalActionTemplate:
     def __post_init__(self) -> None:
         if self.kind not in ACTION_KIND_ORDINALS:
             raise ContractError(f"unknown action kind {self.kind!r}")
-        tile = None if self.tile is None else make_tile_id(self.tile)
-        called = None if self.called_tile is None else make_tile_id(self.called_tile)
-        consumed = tuple(make_tile_id(t) for t in self.consumed_tiles)
+        tile = None if self.tile is None else _bridge_contracts.make_tile_id(self.tile)
+        called = (
+            None if self.called_tile is None else _bridge_contracts.make_tile_id(self.called_tile)
+        )
+        consumed = tuple(_bridge_contracts.make_tile_id(t) for t in self.consumed_tiles)
         if list(consumed) != sorted(set(consumed)):
             raise ContractError(f"template consumed_tiles must be unique ascending: {consumed!r}")
         offset = self.source_offset
