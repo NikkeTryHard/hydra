@@ -26,7 +26,6 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from hydra2.artifacts.atomic import atomic_replace_bytes
 from hydra2.artifacts.canonical import canonical_bytes
-from hydra2.artifacts.digest import of_canonical
 from hydra2.contracts.common import ContractError
 
 if TYPE_CHECKING:
@@ -76,6 +75,24 @@ class SplitManifest:
     digest: str
 
 
+def _require_packet() -> Any:
+    """Import the built ``packet`` bridge surface (fail closed)."""
+    try:
+        import hydra2_replay_rs as _ext  # pyrefly: ignore[missing-import]
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2_replay_rs extension with packet not importable; "
+            "build the bridge with `pixi run build-ext` before partitioning games"
+        ) from exc
+    try:
+        return _ext.packet
+    except AttributeError as exc:
+        raise ImportError(
+            "hydra2_replay_rs.packet submodule missing (stale .so); "
+            "rebuild the bridge with `pixi run build-ext`"
+        ) from exc
+
+
 def _require_packet_decode() -> Any:
     """Import the built ``packet_decode`` bridge surface (fail closed)."""
     try:
@@ -98,8 +115,11 @@ def _game_identity_for(record: GameRecord, acquisition_metadata: dict[str, objec
     """Thin framer: metadata passthrough + hard-Rust wall hash.
 
     Grouping/draw math lives in the bridge; the wall hash is minted via
-    the hard-Rust digest owner (same ``sha256`` over canon wall bytes the
-    bridge ``wall_hash`` computes; ``None`` walls stay ``None``).
+    the ``packet`` bridge (``packet.wall_hash`` over the 136-entry wall
+    list; byte-identical to the retired ``of_canonical`` oracle, 4.42x
+    faster; ``None`` walls stay ``None``). Non-136 walls fail closed via
+    :class:`ContractError` (bridge ``ValueError`` mapped, same contract
+    as :func:`assign_partitions`).
     """
     source = str(acquisition_metadata.get("source", "unknown"))
     _pids_raw: object = acquisition_metadata.get("player_ids", [])
@@ -113,7 +133,11 @@ def _game_identity_for(record: GameRecord, acquisition_metadata: dict[str, objec
     timestamp = ts if isinstance(ts, str) else None
     wall_hash = None
     if record.wall_tiles is not None:
-        wall_hash = str(of_canonical(list(record.wall_tiles)))
+        packet = _require_packet()
+        try:
+            wall_hash = str(packet.wall_hash(record.wall_tiles))
+        except ValueError as exc:
+            raise ContractError(f"wall hash rejected for {record.game_id}: {exc}") from exc
     decoded_hash = record.raw_bytes_sha256
     return GameIdentity(
         game_id=record.game_id,

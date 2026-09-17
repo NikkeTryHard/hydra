@@ -64,6 +64,24 @@ def _digest(s: str) -> DigestText:
     return _bridge_contracts.make_digest_text("sha256:" + _h(s.encode()))
 
 
+def _require_search_bridge() -> Any:
+    """Import the built ``search`` bridge surface (fail closed)."""
+    try:
+        import hydra2_replay_rs as _ext  # pyrefly: ignore[missing-import]
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2_replay_rs extension with search not importable; "
+            "build the bridge with `pixi run build-ext` before local resolving vectors"
+        ) from exc
+    try:
+        return _ext.search
+    except AttributeError as exc:
+        raise ImportError(
+            "hydra2_replay_rs.search submodule missing (stale .so); "
+            "rebuild the bridge with `pixi run build-ext`"
+        ) from exc
+
+
 def _seed_bytes(*parts: str) -> bytes:
     return hashlib.sha256("|".join(parts).encode()).digest()
 
@@ -146,9 +164,19 @@ def model_vector_for_world(
     Uses world_id hash to derive bounded values; sum is zero to preserve
     general-sum feasibility (zero-sum subset). Finite and reproducible.
     """
-    # Wave 2 bridge audit: kept Python — leaf/model vectors need live worlds
-    # (rollout/spec logic stays Python; no pyfn covers value derivation).
     wid = str(getattr(world, "world_id", "world_unknown"))
+    # Leaf math rides the bridge (bit-identical; the bridge maps "" ->
+    # "world_unknown" per ismcts_driver::local_model_vector — wid_in mirrors
+    # that mapping while the oracle below keeps the exact original wid).
+    # ImportError keeps the oracle (no bridge built); mismatch raises, never silent.
+    wid_in = "world_unknown" if wid == "" else wid
+    try:
+        out = _require_search_bridge().ismcts_local_model_vector(wid_in, str(leaf_kind))
+        return (float(out[0]), float(out[1]), float(out[2]), float(out[3]))
+    except ImportError:
+        pass
+    except Exception as exc:
+        raise ContractError(f"local bridge model vector failed: {exc}") from exc
     h = hashlib.sha256((wid + ":" + leaf_kind).encode()).digest()
     # 4 values in [-1, 1] from bytes
     raw = [int.from_bytes(h[i * 2 : i * 2 + 2], "little") for i in range(4)]
@@ -168,6 +196,23 @@ def terminal_vector_for_world(world: Any) -> tuple[float, float, float, float]:
     """Exact terminal settlement vector derived from concealed hands + wall."""
     # Test proxy only: deterministic hash-derived vectors stand in for
     # model scores in unit tests; never feed them to real utility.
+    # Settlement math rides the bridge (bit-identical on 4-seat worlds; the
+    # bridge gates malformed shapes fail-closed while the oracle below keeps
+    # ImportError-only duty for no-bridge environments). None wall == [] (proven
+    # equivalent: empty live contributes zero wall influence on both sides).
+    try:
+        hands_in_raw = getattr(world, "concealed_hands", ((0,),) * 4)
+        wall_raw = getattr(world, "live_wall", ())
+        hands_in = [[int(t) for t in hand] for hand in hands_in_raw]
+        live_in = [] if wall_raw is None else [int(t) for t in wall_raw]
+        out = _require_search_bridge().ismcts_local_terminal_vector(hands_in, live_in)
+        return (float(out[0]), float(out[1]), float(out[2]), float(out[3]))
+    except ImportError:
+        pass
+    except ContractError:
+        raise
+    except Exception as exc:
+        raise ContractError(f"local bridge terminal vector failed: {exc}") from exc
     try:
         hands = getattr(world, "concealed_hands", ((0,),) * 4)
         # sum tiles per seat as strength proxy

@@ -280,6 +280,18 @@ def model_vector_for_world(
             wid = str(_wid_ref)  # pyrefly: ignore[explicit-any]
         else:
             wid = str(world)  # pyrefly: ignore[explicit-any]
+    # Hash math rides the bridge for digest worlds (bit-identical; pinned
+    # (0.2, 0.51, 0.06, 0.22) in test_search_parity_wave2). Non-digest fallbacks
+    # (world_ref/str(world) shapes, e.g. synthetic particles) keep the oracle:
+    # the bridge gates on sha256: digests and must never see them.
+    if wid.startswith("sha256:"):
+        try:
+            out = _require_search_bridge().ismcts_model_vector(wid, str(candidate_id))
+            return (float(out[0]), float(out[1]), float(out[2]), float(out[3]))
+        except ImportError:
+            pass
+        except Exception as exc:
+            raise ContractError(f"ismcts bridge model vector failed: {exc}") from exc
     h = hashlib.sha256(f"{wid}:{candidate_id}:leaf".encode()).digest()
     vals = tuple((b % 100) / 100.0 for b in h[:4])
     # Keep vectors in [0,1] and preserve raw settlement shape (no utility-schema mangling)
@@ -294,6 +306,16 @@ def terminal_vector_for_world(world: Any) -> tuple[float, float, float, float]:
         wid: str = str(_wid_val2)  # pyrefly: ignore[explicit-any]
     else:
         wid = str(world)  # pyrefly: ignore[explicit-any]
+    # Settlement math rides the bridge for digest worlds (bit-identical);
+    # non-digest shapes keep the oracle (bridge digest gate must never see them).
+    if wid.startswith("sha256:"):
+        try:
+            out = _require_search_bridge().ismcts_terminal_vector(wid)
+            return (float(out[0]), float(out[1]), float(out[2]), float(out[3]))
+        except ImportError:
+            pass
+        except Exception as exc:
+            raise ContractError(f"ismcts bridge terminal vector failed: {exc}") from exc
     # Hash to settlement: first seat gets higher when hand sum larger
     h = hashlib.sha256(f"{wid}:terminal".encode()).digest()
     # Produce bounded scores then convert to placement-like values
