@@ -77,6 +77,7 @@ use hydra_search::arena::{act_batch as arena_act_batch, Budget};
 use hydra_search::belief as belief_mod;
 use hydra_search::gumbel as gumbel_mod;
 use hydra_search::ismcts::{ActionStats, IsNode, IsmctsParams, TieBreak};
+use hydra_search::ismcts_driver as driver_mod;
 use hydra_search::SearchError;
 #[cfg(test)]
 use hydra_search::arena::ActOut;
@@ -590,6 +591,283 @@ fn act_batch(
         out.decision_digest,
     ))
 }
+/// One batch-descent outcome crossing the boundary (selection + means +
+/// digest + counters + debug tree JSON; world blobs never cross back).
+#[pyclass(name = "IsmctsDescentOut", frozen, skip_from_py_object)]
+#[derive(Debug, Clone)]
+pub struct PyIsmctsDescentOut {
+    /// Selected action id (max scalarized mean, `1e-12` eps + tie arm).
+    #[pyo3(get)]
+    pub selected_id: u32,
+    /// Candidate ids in sorted order.
+    #[pyo3(get)]
+    pub candidate_ids: Vec<u32>,
+    /// Mean 4-vectors per candidate (row-major, 4 entries each).
+    #[pyo3(get)]
+    pub value_vectors: Vec<Vec<f64>>,
+    /// Visits per candidate.
+    #[pyo3(get)]
+    pub visits: Vec<u64>,
+    /// Canon digest over the sorted tree dump.
+    #[pyo3(get)]
+    pub tree_digest: String,
+    /// Completed simulations.
+    #[pyo3(get)]
+    pub sims_run: u64,
+    /// Completed transitions.
+    #[pyo3(get)]
+    pub transitions: u64,
+    /// Model leaf calls (terminal fallbacks excluded).
+    #[pyo3(get)]
+    pub model_calls: u64,
+    /// Tree node count.
+    #[pyo3(get)]
+    pub tree_nodes: u64,
+    /// CTR floats consumed.
+    #[pyo3(get)]
+    pub floats_used: u64,
+    /// Debug tree dump as JSON (`[{key, visits, arms}]`, key-ordered).
+    #[pyo3(get)]
+    pub tree_json: String,
+}
+
+/// Deduped ISMCTS model vector (`ismcts_core.py:264-286` via
+/// `ismcts_driver::model_vector`): `sha256(f"{wid}:{candidate}:leaf")`,
+/// first 4 bytes `(b % 100) / 100.0`. The salt stays explicit, so
+/// `candidate1` and `candidate6` never collide. Compute runs detached.
+#[pyfunction]
+#[pyo3(signature = (world_id, candidate_id))]
+fn ismcts_model_vector(
+    py: Python<'_>,
+    world_id: String,
+    candidate_id: String,
+) -> PyResult<(f64, f64, f64, f64)> {
+    if world_id.is_empty() {
+        return Err(PyValueError::new_err("search model world_id must be non-empty"));
+    }
+    if candidate_id.is_empty() {
+        return Err(PyValueError::new_err("search model candidate_id must be non-empty"));
+    }
+    let out = py.detach(|| driver_mod::model_vector(&world_id, &candidate_id));
+    out.map(|vector| (vector[0], vector[1], vector[2], vector[3])).map_err(search_err)
+}
+
+/// Deduped ISMCTS terminal vector (`ismcts_core.py:289-308` via
+/// `ismcts_driver::terminal_vector`): `sha256(f"{wid}:terminal")`, scores
+/// `(b % 50) - 25`, then `/ 50.0 + 0.5`. Compute runs detached.
+#[pyfunction]
+#[pyo3(signature = (world_id,))]
+fn ismcts_terminal_vector(py: Python<'_>, world_id: String) -> PyResult<(f64, f64, f64, f64)> {
+    if world_id.is_empty() {
+        return Err(PyValueError::new_err("search terminal world_id must be non-empty"));
+    }
+    let out = py.detach(|| driver_mod::terminal_vector(&world_id));
+    out.map(|vector| (vector[0], vector[1], vector[2], vector[3])).map_err(search_err)
+}
+/// Deduped local model vector (`local_abstraction.py:141-164` via
+/// `ismcts_driver::local_model_vector`): `sha256(wid:leaf_kind)`, four `u16`
+/// words to `[-1,1]`, zero-sum centered. Salt stays explicit (`leaf_kind`).
+/// Compute runs detached.
+#[pyfunction]
+#[pyo3(signature = (world_id, leaf_kind))]
+fn ismcts_local_model_vector(
+    py: Python<'_>,
+    world_id: String,
+    leaf_kind: String,
+) -> PyResult<(f64, f64, f64, f64)> {
+    if leaf_kind.is_empty() {
+        return Err(PyValueError::new_err("search local leaf_kind must be non-empty"));
+    }
+    let out = py.detach(|| driver_mod::local_model_vector(&world_id, &leaf_kind));
+    out.map(|vector| (vector[0], vector[1], vector[2], vector[3])).map_err(search_err)
+}
+
+/// Deduped local terminal vector (`local_abstraction.py:167-204` via
+/// `ismcts_driver::local_terminal_vector`): exact settlement from hands +
+/// wall (no hash). Hands cross as 4 rows; tiles `0..135`. Compute detached.
+#[pyfunction]
+#[pyo3(signature = (hands, live))]
+fn ismcts_local_terminal_vector(
+    py: Python<'_>,
+    hands: Vec<Vec<u32>>,
+    live: Vec<u32>,
+) -> PyResult<(f64, f64, f64, f64)> {
+    if hands.len() != 4 {
+        return Err(PyValueError::new_err("search local hands must hold 4 seats"));
+    }
+    let out = py.detach(|| driver_mod::local_terminal_vector(&hands, &live));
+    out.map(|vector| (vector[0], vector[1], vector[2], vector[3])).map_err(search_err)
+}
+
+/// Unified exact transition (`ismcts_search.py:95-136` + `gumbel_core.py:371-411`
+/// via `ismcts_driver::exact_transition`): pops one live tile, rotates turn,
+/// bumps step, links `snapshot = f"{domain}:{wid}:{action}:{step}"`, and
+/// re-hashes the world id via the single canon site. `domain` keeps the
+/// salts (`ismcts` vs `gumbel`); hands cross as 4 rows x 2 tiles, missing
+/// latent keys as `None`. Compute runs detached; only owned scalars cross.
+#[pyfunction]
+#[pyo3(signature = (world_id, hands, live, dead, step, turn, corpus_idx, rules_hash, observation_hash, snapshot, actor, action_id, domain))]
+fn ismcts_transition(
+    py: Python<'_>,
+    world_id: String,
+    hands: Vec<Vec<u32>>,
+    live: Vec<u32>,
+    dead: Vec<u32>,
+    step: Option<u32>,
+    turn: Option<u32>,
+    corpus_idx: Option<u32>,
+    rules_hash: String,
+    observation_hash: String,
+    snapshot: String,
+    actor: u32,
+    action_id: u32,
+    domain: String,
+) -> PyResult<(String, Vec<u32>, u32, u32, String)> {
+    if world_id.is_empty() {
+        return Err(PyValueError::new_err("search transition world_id must be non-empty"));
+    }
+    if hands.len() != 4 {
+        return Err(PyValueError::new_err("search transition hands must hold 4 seats"));
+    }
+    if actor >= 4 {
+        return Err(PyValueError::new_err("seat must be 0..3"));
+    }
+    if domain != "ismcts" && domain != "gumbel" {
+        return Err(PyValueError::new_err("search transition domain must be ismcts|gumbel"));
+    }
+    let out = py.detach(|| {
+        if hands.len() != 4 {
+            return Err(SearchError::InvalidArg { detail: "hands must hold 4 seats" });
+        }
+        let mut seats = [[0u32; 2]; 4];
+        let mut s = 0;
+        while s < 4 {
+            let row = match hands.get(s) {
+                Some(row) => row,
+                None => {
+                    return Err(SearchError::InvalidArg { detail: "hands seat missing" });
+                }
+            };
+            if row.len() != 2 {
+                return Err(SearchError::InvalidArg {
+                    detail: "each hand must hold 2 tiles",
+                });
+            }
+            seats[s][0] = row[0];
+            seats[s][1] = row[1];
+            s += 1;
+        }
+        let parent = driver_mod::TinyWorld {
+            world_id,
+            hands: seats,
+            live,
+            dead,
+            step,
+            turn,
+            last_action: None,
+            corpus_idx,
+            rules_hash,
+            observation_hash,
+            snapshot,
+        };
+        let child = driver_mod::exact_transition(&parent, actor, action_id, &domain)?;
+        let step_out = child.step.unwrap_or(0);
+        let turn_out = child.turn.unwrap_or(0);
+        Ok((child.world_id, child.live, step_out, turn_out, child.snapshot))
+    });
+    out.map_err(search_err)
+}
+
+/// Info key from a full observation JSON doc (`ismcts_core.py:197-242` via
+/// `ismcts_driver::info_key_from_doc`): drops `legal_mask` +
+/// `observation_hash`, rejects the 17 forbidden fields, canons via the
+/// single feed site, hashes. `FullWorld` fields fail closed (ActorObservation
+/// docs only). Compute runs detached.
+#[pyfunction]
+#[pyo3(signature = (obs_doc_json,))]
+fn ismcts_info_key(py: Python<'_>, obs_doc_json: Vec<u8>) -> PyResult<String> {
+    if obs_doc_json.is_empty() {
+        return Err(PyValueError::new_err("search info obs doc must be non-empty"));
+    }
+    let out = py.detach(|| driver_mod::info_key_from_doc(&obs_doc_json));
+    out.map_err(search_err)
+}
+
+/// Run one batch ISMCTS descent: precomputed worlds, per-step info keys,
+/// per-step policy directions, and CTR floats cross ONCE as a JSON envelope;
+/// the arena replays UCT descent, unified transitions, deduped leaf vectors,
+/// and backup with the GIL released, then returns selection + means +
+/// digest + counters. Leaf overrides (read-only torch vectors keyed by
+/// world id) ride the same envelope; absent entries compute the stub.
+/// Returns `IsmctsDescentOut` (never a partial selection as complete).
+///
+/// Envelope layout contract (bit-parity depends on it): `step_keys[sim][d]`
+/// carries the info key at ROOT steps only (`""` elsewhere, unread);
+/// `policy_dirs[sim][d]` carries the `0|1` tilt at NON-ROOT steps only (`0`
+/// at root steps, unread); `rng_floats` carries POLICY draws only, in
+/// `(sim, step)` consumption order — one float per non-root step, NO
+/// placeholders for root steps or belief draws (a 4-per-sim layout with
+/// root dummies misaligns every read after the first root step). The parent
+/// world snapshot is never re-hashed (successor ids derive from the kept
+/// parent `world_id`); `tree_json` sums print shortest-round-trip (`{:?}`),
+/// never fixed-decimals (which lose the last ulp near `0.02`).
+#[pyfunction]
+#[pyo3(signature = (batch_json,))]
+fn ismcts_descent(py: Python<'_>, batch_json: Vec<u8>) -> PyResult<PyIsmctsDescentOut> {
+    if batch_json.is_empty() {
+        return Err(PyValueError::new_err("search descent batch must be non-empty"));
+    }
+    // Compute DETACHED: parse + validate + full descent with zero Python
+    // API inside; only the owned JSON bytes cross the boundary.
+    let out = py.detach(|| driver_mod::ismcts_search_batch(&batch_json));
+    let out = out.map_err(search_err)?;
+    // Attached-only: shape-check the digest, then freeze into the pyclass.
+    check_digest_shape(&out.tree_digest).map_err(PyValueError::new_err)?;
+    let mut value_vectors: Vec<Vec<f64>> = Vec::with_capacity(out.value_vectors.len());
+    let mut i = 0;
+    while i < out.value_vectors.len() {
+        let vector = out.value_vectors[i];
+        value_vectors.push(vec![vector[0], vector[1], vector[2], vector[3]]);
+        i += 1;
+    }
+    let mut arms_json = String::from("[");
+    let mut t = 0;
+    while t < out.tree.len() {
+        let (key, visits, arms) = &out.tree[t];
+        if t > 0 {
+            arms_json.push(',');
+        }
+        arms_json.push_str(&format!("{{\"key\":{key:?},\"visits\":{visits},\"arms\":["));
+        let mut a = 0;
+        while a < arms.len() {
+            let (action, n, sum) = arms[a];
+            if a > 0 {
+                arms_json.push(',');
+            }
+            arms_json.push_str(&format!(
+                "{{\"action\":{action},\"visits\":{n},\"sum\":[{:?},{:?},{:?},{:?}]}}",
+                sum[0], sum[1], sum[2], sum[3]
+            ));
+            a += 1;
+        }
+        arms_json.push_str("]}");
+        t += 1;
+    }
+    arms_json.push(']');
+    Ok(PyIsmctsDescentOut {
+        selected_id: out.selected_id,
+        candidate_ids: out.candidate_ids,
+        value_vectors,
+        visits: out.visits,
+        tree_digest: out.tree_digest,
+        sims_run: out.sims_run,
+        transitions: out.transitions,
+        model_calls: out.model_calls,
+        tree_nodes: out.tree_nodes,
+        floats_used: out.floats_used,
+        tree_json: arms_json,
+    })
+}
 
 /// Judge observability: `(acts, completed)` (never identity/selection).
 #[pyfunction]
@@ -626,6 +904,14 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     sub.add_function(wrap_pyfunction!(gumbel_roots, &sub)?)?;
     sub.add_function(wrap_pyfunction!(halving_cut, &sub)?)?;
     sub.add_function(wrap_pyfunction!(gumbel_select, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(ismcts_model_vector, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(ismcts_terminal_vector, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(ismcts_local_model_vector, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(ismcts_local_terminal_vector, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(ismcts_transition, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(ismcts_info_key, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(ismcts_descent, &sub)?)?;
+    sub.add_class::<PyIsmctsDescentOut>()?;
     sub.add_function(wrap_pyfunction!(uct_select, &sub)?)?;
     sub.add_function(wrap_pyfunction!(puct_select, &sub)?)?;
     sub.add_function(wrap_pyfunction!(natural_indices, &sub)?)?;

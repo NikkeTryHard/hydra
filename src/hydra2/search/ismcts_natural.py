@@ -2,9 +2,9 @@
 
 Re-export facade over the split modules: :mod:`hydra2.search.ismcts_core`
 (firewall vocabulary, frozen config, tree nodes, continuation policy, UCT
-selection), :mod:`hydra2.search.ismcts_search` (tiny transitions,
-construction, particle materialization, simulation, budgeted search
-driver), and :mod:`hydra2.search.ismcts_act` (Planner protocol adapter
+selection), :mod:`hydra2.search.ismcts_search` (trajectory predicates,
+construction, particle materialization, Rust-batch search driver), and
+:mod:`hydra2.search.ismcts_act` (Planner protocol adapter
 plus the double-weighting oracle). Import from this path; it preserves
 every public name and ``__all__``.
 """
@@ -110,7 +110,6 @@ from hydra2.search.ismcts_core import observation_identity_document as observati
 from hydra2.search.ismcts_core import semantic_seed as semantic_seed
 from hydra2.search.ismcts_core import world_actor_observation as world_actor_observation
 from hydra2.search.ismcts_search import _actor_to_move as _actor_to_move
-from hydra2.search.ismcts_search import _apply_action as _apply_action
 from hydra2.search.ismcts_search import _is_terminal as _is_terminal
 from hydra2.search.ismcts_search import (
     _legal_ids_for_observation as _legal_ids_for_observation,

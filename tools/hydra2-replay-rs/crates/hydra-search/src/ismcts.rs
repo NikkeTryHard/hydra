@@ -17,6 +17,7 @@ pub const UCT_EPS: f64 = 1e-12;
 
 /// Default frozen hyper-parameters (`NaturalISMCTSConfig`: `uct_c ~ sqrt2`,
 /// depth 6, 48 sims).
+#[allow(clippy::approx_constant)]
 pub const DEFAULT_UCT_C: f64 = 1.414_213_562_37;
 /// Frozen default: 48 simulations per search.
 pub const DEFAULT_MAX_SIMS: u32 = 48;

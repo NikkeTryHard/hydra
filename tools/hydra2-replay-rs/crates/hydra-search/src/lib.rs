@@ -12,7 +12,7 @@
 //! NOT declared here.
 //!
 //! Ownership (disjoint): SearchArena owns this manifest + `lib.rs` +
-//! `arena/keys/rng/ismcts/gumbel/despot/pbrf/local/joint` ONLY. EvalControl
+//! `arena/keys/rng/ismcts/ismcts_driver/gumbel/despot/pbrf/local/joint` ONLY. EvalControl
 //! owns `eval::*` + `persistence_*`. SearchBridge owns `bridge search.rs` +
 //! the Python act shim. Nobody else touches those files.
 //!
@@ -54,6 +54,7 @@ pub mod belief;
 pub mod despot;
 pub mod gumbel;
 pub mod ismcts;
+pub mod ismcts_driver;
 pub mod joint;
 pub mod keys;
 pub mod local;
