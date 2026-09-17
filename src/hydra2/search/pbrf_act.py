@@ -270,39 +270,6 @@ class PbrfPlannerSearchMixin:
         except (AttributeError, ValueError, TypeError, OSError) as exc:
             raise ContractError(f"pbrf: telemetry build failed: {exc}") from exc
 
-    def _candidates_from_parents(self, parents: tuple[Any, ...]) -> tuple[Any, ...]:
-        from hydra2.contracts.action_model import CanonicalAction  # local
-
-        try:
-            a0 = CanonicalAction(
-                kind="pass",
-                actor=_bridge_contracts.make_seat(0),
-                tile=None,
-                called_tile=None,
-                consumed_tiles=(),
-                source_seat=None,
-                declares_riichi=False,
-                metadata=(),
-            )
-            a1 = CanonicalAction(
-                kind="discard",
-                actor=_bridge_contracts.make_seat(0),
-                tile=_bridge_contracts.make_tile_id(0),
-                called_tile=None,
-                consumed_tiles=(),
-                source_seat=None,
-                declares_riichi=False,
-                metadata=(),
-            )
-            return (a0, a1)
-        except Exception:
-
-            class _A:
-                def __init__(self, aid: int):
-                    self.action_id = aid
-
-            return (_A(0), _A(1))
-
     def _value_for_child(
         self, *, action: Any, packet_id: str, forest: ImmutableForest
     ) -> tuple[float, float, float, float]:

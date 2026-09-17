@@ -95,7 +95,6 @@ __all__ = [
     "ModelInputSchema",
     "ModelSpec",
     "TensorFieldSpec",
-    "build_model_input_schema_envelope",
     "build_model_input_schema_payload",
     "compute_model_input_schema_digest",
     "compute_model_spec_digest",
@@ -565,71 +564,9 @@ def model_input_schema_digest() -> DigestText:
     return compute_model_input_schema_digest(build_model_input_schema_payload_without_digest())
 
 
-def build_model_input_schema_envelope() -> dict[str, Any]:
-    payload = build_model_input_schema_payload()
-    return {
-        "artifact_type": MODEL_INPUT_ARTIFACT_TYPE,
-        "compatibility": "exact",
-        "payload": payload,
-        "schema_version": MODEL_INPUT_SCHEMA_VERSION,
-    }
-
-
 # ---------------------------------------------------------------------------
 # ModelSpec helpers
 # ---------------------------------------------------------------------------
-
-
-def _default_head_specs() -> tuple[ModelHeadSpec, ...]:
-    heads = (
-        ModelHeadSpec(
-            head_id="belief_next",
-            output_key="belief_logits",
-            target_id="next_event_kind",
-            loss_id="cross_entropy",
-            parameters={"num_classes": 20, "mask_field": None},
-        ),
-        ModelHeadSpec(
-            head_id="event_next",
-            output_key="event_logits",
-            target_id="next_event_kind",
-            loss_id="cross_entropy",
-            parameters={"num_classes": 20, "mask_field": None},
-        ),
-        ModelHeadSpec(
-            head_id="placement",
-            output_key="placement_logits",
-            target_id="final_placement",
-            loss_id="cross_entropy_4x4",
-            # Per-seat placement-credit semantics (day-one trainable):
-            # logits [B,4,4] where dim-1 = seat 0..3, dim-2 = rank-logits
-            # for ranks 1..4; target [B,4] per-seat rank indices; loss is
-            # per-seat cross-entropy then mean over seats. Field table
-            # untouched — input digest unchanged; model_spec digest churns.
-            parameters={
-                "logits_shape": [4, 4],
-                "ranks": 4,
-                "seats": 4,
-                "semantics": "per_seat_rank_logits",
-                "target_shape": [4],
-            },
-        ),
-        ModelHeadSpec(
-            head_id="policy",
-            output_key="policy_logits",
-            target_id="selected_action",
-            loss_id="masked_cross_entropy",
-            parameters={"mask_field": "legal_mask"},
-        ),
-        ModelHeadSpec(
-            head_id="value",
-            output_key="value_vector",
-            target_id="utility_vector",
-            loss_id="mse",
-            parameters={"seats": 4},
-        ),
-    )
-    return tuple(sorted(heads, key=lambda h: h.head_id))
 
 
 def model_spec_digest_document(spec: ModelSpec | Mapping[str, Any]) -> dict[str, Any]:

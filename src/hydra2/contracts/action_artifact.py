@@ -157,21 +157,6 @@ def load_action_table(path: Path) -> ActionTable:
     return _table_from_document(document, origin=str(path))
 
 
-def parse_action_table(raw_bytes: bytes) -> ActionTable:
-    """Verify action-table artifact bytes (same checks as :func:`load_action_table`)."""
-    try:
-        document = json.loads(
-            raw_bytes,
-            object_pairs_hook=_reject_duplicate_keys,
-            parse_constant=_reject_constant,
-        )
-    except json.JSONDecodeError as exc:
-        raise ContractError(f"not valid JSON: {exc}") from exc
-    except ContractError:
-        raise
-    return _table_from_document(document, origin="<bytes>")
-
-
 def _table_from_document(document: object, *, origin: str) -> ActionTable:
     if not isinstance(document, Mapping):
         raise ContractError(f"{origin}: artifact must be a JSON object")

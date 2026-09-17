@@ -169,31 +169,6 @@ class NaturalDespotPlannerSearchMixin:
 
     # -- lower policy value (feasible, not bound) --------------------------
 
-    def _feasible_action_for(
-        self, legal_actions: tuple[Any, ...], *, scenario_seed: bytes, candidate_id: str
-    ) -> Any:
-        """Blueprint feasible policy: deterministic, actor-visible, never optimal."""
-        if self._blueprint is not None:
-            try:
-                return self._blueprint(legal_actions, scenario_seed)
-            except (AttributeError, TypeError, ValueError, OSError) as exc:
-                logger.debug("despot: blueprint fallback to deterministic min", exc_info=exc)
-                pass
-        if len(legal_actions) == 0:
-            raise ContractError("legal_actions must be non-empty")
-
-        def aid(a: Any) -> int:
-            v = getattr(a, "action_id", None)
-            if isinstance(v, int) and not isinstance(v, bool):
-                return v
-            if isinstance(a, int) and not isinstance(a, bool):
-                return a
-            return hash(str(a)) & 0xFFFF
-
-        if self._config.tie_break == "stable_hash":
-            return _hash_tie_break(legal_actions, candidate_id)
-        return min(legal_actions, key=aid)
-
     def _lower_value_for_action(
         self,
         *,

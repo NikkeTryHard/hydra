@@ -21,7 +21,6 @@ from hydra2.artifacts.atomic import atomic_replace_bytes
 from hydra2.artifacts.digest import of_bytes, of_canonical
 from hydra2.config import artifact_root, repo_root
 from hydra2.contracts.common import Seat, TileId
-from hydra2.contracts.rules_manifest import resolve_final_ranks
 from hydra2.engines.protocol import WallSchedule, wall_schedule_digest
 from hydra2.engines.riichienv import RiichiEnvExactSimulator
 
@@ -37,9 +36,7 @@ __all__ = [
     "ScriptedDecision",
     "TraceExpectation",
     "TraceRunnerError",
-    "expect_event_kinds",
     "expect_predicate",
-    "expect_terminal_scores",
     "wall_schedule_for",
 ]
 
@@ -262,48 +259,10 @@ class ExpectationStep:
     predicate: Callable[[RiichiEnvExactSimulator], str | None]
 
 
-def expect_event_kinds(kinds: tuple[str, ...]) -> ExpectationStep:
-    """The emitted stream contains at least these kinds, in this order."""
-
-    def check(sim: RiichiEnvExactSimulator) -> str | None:
-        events = sim._events
-        cursor = 0
-        for envelope in events:
-            if cursor < len(kinds) and envelope.kind == kinds[cursor]:
-                cursor += 1
-        if cursor != len(kinds):
-            return f"expected ordered kinds {list(kinds)}; stream shows {[e.kind for e in events]}"
-        return None
-
-    return ExpectationStep(label="ordered event kinds", predicate=check)
-
-
 def expect_predicate(
     label: str, check: Callable[[RiichiEnvExactSimulator], str | None]
 ) -> ExpectationStep:
     return ExpectationStep(label=label, predicate=check)
-
-
-def expect_terminal_scores(expected_scores: tuple[int, int, int, int]) -> ExpectationStep:
-    """Final canonical scores equal manifest-derived settlement arithmetic."""
-
-    def check(sim: RiichiEnvExactSimulator) -> str | None:
-        outcome = sim._raw_outcome
-        if outcome is None:
-            return "no RawOutcome at terminal"
-        if outcome.final_scores != expected_scores:
-            return (
-                f"final scores {outcome.final_scores} != expected {expected_scores} "
-                "(derived from rules-manifest settlement rules)"
-            )
-        expected_ranks = resolve_final_ranks(expected_scores)
-        if outcome.ranks != expected_ranks:
-            return f"ranks {outcome.ranks} != resolved {expected_ranks}"
-        if outcome.point_deltas != tuple(outcome.final_scores[i] - 25000 for i in range(4)):
-            return f"point_deltas {outcome.point_deltas} != final - starting"
-        return None
-
-    return ExpectationStep(label="terminal outcome", predicate=check)
 
 
 @dataclass(slots=True)

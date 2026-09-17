@@ -67,8 +67,6 @@ ORACLE_INPUTS = (
     "src/hydra2/engines/riichienv/_lr_frame.py",
     "src/hydra2/engines/riichienv/_lr_oracle.py",
     "src/hydra2/engines/riichienv/_lr_rows.py",
-    "src/hydra2/engines/riichienv/_lr_track.py",
-    "src/hydra2/engines/riichienv/_lr_tracker.py",
     "src/hydra2/engines/riichienv/_lr_walk.py",
     "src/hydra2/engines/riichienv/_sp_capture.py",
     "src/hydra2/engines/riichienv/_sp_game.py",

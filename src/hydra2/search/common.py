@@ -32,18 +32,10 @@ __all__ = [
     "DEPLOYABLE_DEADLINE_MS",
     "HASH63_MOD",
     "MISSING_HASH",
-    "PLACEHOLDER_1",
-    "PLACEHOLDER_2",
     "PLACEHOLDER_A",
     "PLACEHOLDER_B",
-    "PLACEHOLDER_C",
-    "PLACEHOLDER_D",
-    "PLACEHOLDER_E",
-    "PLACEHOLDER_F",
     "REPO_ROOT",
-    "U32_MAX",
     "U64_DENOM",
-    "U64_MOD",
     "CandidateSpec",
     "Planner",
     "ResourceBudget",
@@ -56,9 +48,6 @@ __all__ = [
 
 VALID_MODES: tuple[str, ...] = ("gameplay_5s", "ponder", "analysis")
 VALID_FALLBACK: tuple[str, ...] = ("candidate0",)
-VALID_TIE_BREAKS: frozenset[str] = frozenset(
-    ("greedy", "temperature_0.5", "temperature_1.0", "value_break")
-)
 
 # Portable repo root via marker walk (pyproject.toml/.git) — not hardcoded
 # parents[3] depth. Centralizes via hydra2.config.repo_root (cached walk).
@@ -72,15 +61,7 @@ DEPLOYABLE_DEADLINE_MS: int = 5000
 MISSING_HASH: str = "0" * 64
 PLACEHOLDER_A: str = "a" * 64
 PLACEHOLDER_B: str = "b" * 64
-PLACEHOLDER_C: str = "c" * 64
-PLACEHOLDER_D: str = "d" * 64
-PLACEHOLDER_E: str = "e" * 64
-PLACEHOLDER_F: str = "f" * 64
-PLACEHOLDER_1: str = "1" * 64
-PLACEHOLDER_2: str = "2" * 64
 HASH63_MOD: int = 2**63 - 1
-U32_MAX: int = 0xFFFFFFFF
-U64_MOD: int = 2**64
 U64_DENOM: float = 18446744073709551616.0
 
 

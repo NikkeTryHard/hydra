@@ -38,8 +38,6 @@ __all__ = [
 #: Red tile physical IDs per SPEC 4.1 / tenhou_4p_hanchan_v1 (aka-dora: ids
 #: 16/52/88 are the red fives). Kept as data (no bridge replacement).
 RED_TILE_IDS = (16, 52, 88)
-#: Logical tile types. Kept as data (no bridge replacement).
-LOGICAL_TYPES = range(34)
 
 
 @dataclass(frozen=True, slots=True)

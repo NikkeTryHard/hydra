@@ -21,11 +21,9 @@ actions and no transitions — only the starting world per sim.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from typing import Any
 
-from hydra2.artifacts.canonical import canonical_bytes
 from hydra2.contracts.common import ContractError
 from hydra2.contracts.observation_actor import observation_identity_document
 from hydra2.search.ismcts_core import _MASTER_SEED as _MASTER_SEED
@@ -128,16 +126,6 @@ def _require_driver_bridge() -> Any:
             "rebuild the bridge with `pixi run build-ext`"
         )
     return mod
-
-
-def _observation_hash_for_doc(doc: dict[str, Any]) -> str:
-    """Actor-observation hash for an identity doc (mirrors the policy input)."""
-    return "sha256:" + hashlib.sha256(canonical_bytes(doc)).hexdigest()
-
-
-def _policy_direction_for_hash(obs_hash: str) -> int:
-    """Continuation tilt direction (mirrors UniformContinuationPolicy)."""
-    return hashlib.sha256(obs_hash.encode()).digest()[0] & 1
 
 
 class NaturalISMCTSPlannerSearchMixin:
@@ -569,44 +557,3 @@ class NaturalISMCTSPlannerSearchMixin:
             "completed": completed and not budget_exhausted,
             "budget_exhausted": budget_exhausted,
         }
-
-
-def _doc_for_step(
-    template: dict[str, Any],
-    hands: tuple[tuple[int, ...], ...],
-    live_len: int,
-    actor: int,
-) -> dict[str, Any]:
-    """Action-independent observation identity doc for one descent step."""
-    doc = dict(template)
-    hand = hands[actor]
-    doc["concealed_hand"] = sorted(hand)
-    doc["live_wall_tiles_remaining"] = live_len
-    doc["actor"] = actor
-    doc["turn_actor"] = actor
-    doc["decision_id"] = f"dec_hand_{'_'.join(str(t) for t in hand)}_{actor}"
-    return doc
-
-
-def _policy_dir_for_step(
-    template: dict[str, Any],
-    hands: tuple[tuple[int, ...], ...],
-    live_len: int,
-    actor: int,
-) -> int:
-    """Continuation tilt direction for one step (mirrors the policy)."""
-    doc = _doc_for_step(template, hands, live_len, actor)
-    obs_hash = _observation_hash_for_doc(doc)
-    return _policy_direction_for_hash(obs_hash)
-
-
-def _info_key_for_step(
-    template: dict[str, Any],
-    hands: tuple[tuple[int, ...], ...],
-    live_len: int,
-    actor: int,
-) -> str:
-    """Information-set key for one step (mirrors info_key_for_observation)."""
-    doc = _doc_for_step(template, hands, live_len, actor)
-    payload = canonical_bytes({k: v for k, v in doc.items() if k != "legal_mask"})
-    return "sha256:" + hashlib.sha256(payload).hexdigest()

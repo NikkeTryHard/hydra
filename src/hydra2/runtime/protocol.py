@@ -12,8 +12,6 @@ import re
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast, runtime_checkable
 
-from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
-
 from hydra2.artifacts.digest import of_canonical
 from hydra2.contracts.common import ContractError, DigestText
 
@@ -245,7 +243,3 @@ def build_runtime(
             return adapter.setup(model=model, optimizer=optimizer, spec=spec)
     model = compile_once(model)
     return adapter.setup(model=model, optimizer=optimizer, spec=spec)
-
-
-def normalize_digest(value: str) -> DigestText:
-    return _bridge_contracts.make_digest_text(value)

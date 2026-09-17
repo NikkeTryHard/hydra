@@ -152,7 +152,6 @@ RATIONALITY_RULES: frozenset[str] = frozenset({"quantal_softmax", "epsilon_greed
 
 _MASTER_SEED = b"wp13_joint_type_world_v1"
 _JOINT_GUMBEL_DOMAIN = b"joint_type_world_gumbel_v1"
-_INFO_KEY_DOMAIN = b"joint_type_world_info_v1"
 
 
 # ---------------------------------------------------------------------------

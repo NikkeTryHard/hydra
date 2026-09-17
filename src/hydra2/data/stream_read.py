@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import hashlib
 import random  # noqa: TC003  # reason: TC003 random.Random builds RNGs at runtime in _ShuffleState
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -42,7 +41,6 @@ __all__ = [
 _START_TYPES = frozenset({"start_game", "startGame", "game_start", "start"})
 _END_TYPES = frozenset({"end_game", "endGame", "game_end", "end"})
 _CHUNK_SIZE = 65536
-_DIGIT_RUN = re.compile(r"[0-9]+")
 
 #: Framing authority: the live path frames via the ``packet`` bridge
 #: (``packet.frame_games``/``packet.fetch_game_at`` over ``(compressed,

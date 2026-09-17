@@ -45,7 +45,6 @@ from hydra2.search.pbrf_partition import _freeze_candidates as _freeze_candidate
 from hydra2.search.pbrf_partition import _normalized_weights as _normalized_weights
 from hydra2.search.pbrf_partition import _require_kernel as _require_kernel
 from hydra2.search.pbrf_partition import _require_partition as _require_partition
-from hydra2.search.pbrf_partition import _z_hat_for_key as _z_hat_for_key
 from hydra2.search.pbrf_partition import fixed_allocate as fixed_allocate
 
 __all__ = [
@@ -351,12 +350,6 @@ class ImmutableForest:
         if entries is None:
             return None
         return _ess_for_key(entries)
-
-    def z_hat(self, action: Any, packet_id: str) -> float | None:
-        entries = self.child(action, packet_id)
-        if entries is None:
-            return None
-        return _z_hat_for_key(entries)
 
 
 # ---------------------------------------------------------------------------

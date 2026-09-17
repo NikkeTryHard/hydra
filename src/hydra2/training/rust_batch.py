@@ -44,7 +44,6 @@ __all__ = [
     "assemble_training_batch",
     "expand_game_batch",
     "replay_game_planes",
-    "replay_game_planes_raw",
 ]
 
 
@@ -368,30 +367,6 @@ def assemble_slim_batch(
     return batch
 
 
-def replay_game_planes_raw(
-    events: bytes, game_idx: int, wall: list[int] | None
-) -> tuple[dict[str, bytes], int, int, bool, str, int]:
-    """Frame + gate + walk one game in Rust with an overriding wall.
-
-    Bridge-plane consume (already wired — no new surfaces this slice):
-    ``replay_game_planes_wall`` serves the staged planes the file fill
-    commits (feed 172 green); only argument/host failures raise.
-
-    ``events`` is the raw framed game bytes (no Python re-serialization);
-    ``wall`` (136 ints) replaces the first event's wall in Rust when given,
-    ``None`` walks the embedded content verbatim. Returns the same
-    ``(planes, rows, t_len, quarantined, reason, event_idx)`` shape as
-    :func:`replay_game_planes`.
-    """
-    ext = _load_extension()
-    try:
-        out = ext.replay_game_planes_wall(events, game_idx, wall)
-    except Exception as exc:
-        raise ContractError(f"rust game walk failed: {exc}") from exc
-    planes, rows, t_len, quarantined, reason, event_idx = out
-    return (dict(planes), int(rows), int(t_len), bool(quarantined), str(reason), int(event_idx))
-
-
 def replay_game_planes(
     events: bytes, game_idx: int
 ) -> tuple[dict[str, bytes], int, int, bool, str, int]:
@@ -428,7 +403,7 @@ def expand_game_batch(
     (``wall`` splices an override in Rust, ``None`` walks embedded
     content). Returns one ``(planes, rows, t_len, quarantined, reason,
     event_idx)`` tuple per input game, in order, with the exact shapes
-    :func:`replay_game_planes_raw` serves. One FFI crossing and one GIL
+    :func:`replay_game_planes` serves. One FFI crossing and one GIL
     release stage the whole batch; per-item stage failures ride as
     quarantine data (same text the serial path raises), never as a
     call-level error.

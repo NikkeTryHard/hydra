@@ -231,8 +231,6 @@ RULES_MANIFEST_PAYLOAD_FIELDS: tuple[str, ...] = (
 )
 SOURCE_EVIDENCE_KEY = "source_evidence"
 
-_TENHOU_MAN_URL = "https://tenhou.net/man/"
-
 
 # ---------------------------------------------------------------------------
 # Canonical JSON — thin delegate to hydra2.artifacts.canonical (single authority).

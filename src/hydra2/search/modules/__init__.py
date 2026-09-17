@@ -27,7 +27,7 @@ from __future__ import annotations
 import hashlib
 import math
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any
 
 import torch
 
@@ -175,22 +175,6 @@ class PbrfContext:
             raise ContractError("budget_calls must be non-negative int")
         if not isinstance(self.budget_transitions, int) or self.budget_transitions < 0:
             raise ContractError("budget_transitions must be non-negative int")
-
-
-# ---------------------------------------------------------------------------
-# PbrfModule protocol
-# ---------------------------------------------------------------------------
-
-
-class PbrfModule(Protocol):
-    @property
-    def module_id(self) -> str: ...
-
-    def validate_spec(self, spec: Any) -> None: ...
-
-    def transform(self, context: PbrfContext) -> PbrfContext: ...
-
-    def evidence(self) -> tuple[str, ...]: ...
 
 
 # ---------------------------------------------------------------------------
@@ -704,35 +688,6 @@ class PersistentForestModule(_BaseModule):
 # ---------------------------------------------------------------------------
 # VOC routing
 # ---------------------------------------------------------------------------
-
-
-def _largest_remainder(scores: tuple[float, ...], units: int) -> list[int]:
-    """Largest-remainder shares of units proportional to scores (deterministic).
-
-    Canonical cell-ID (lowest-index) order breaks remainder ties. Zero-total
-    scores split evenly. Returns per-cell ints summing exactly to units.
-    """
-    count = len(scores)
-    if count == 0 or units <= 0:
-        return [0] * count
-    total = math.fsum(scores)
-    if not math.isfinite(total) or total <= 0:
-        base, leftover = divmod(units, count)
-        shares = [base] * count
-        for idx in range(leftover):
-            shares[idx] += 1
-        return shares
-    exact = [value / total * units for value in scores]
-    shares = [math.floor(part) for part in exact]
-    leftover = units - sum(shares)
-
-    def _remainder_key(idx: int) -> tuple[float, int]:
-        return (exact[idx] - shares[idx], -idx)
-
-    order = sorted(range(count), key=_remainder_key, reverse=True)
-    for rank in range(leftover):
-        shares[order[rank % count]] += 1
-    return shares
 
 
 class VOCRoutingModule(_BaseModule):

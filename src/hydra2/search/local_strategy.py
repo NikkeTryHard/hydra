@@ -94,15 +94,6 @@ class StrategyTable:
                 raise ContractError(f"distribution entry {p!r} must be in [0,1]")
         self.table[actor, info_hash] = tuple(distribution)
 
-    def ensure_uniform(self, actor: int, info_hash: str) -> tuple[float, ...]:
-        key = (actor, info_hash)
-        if key not in self.table:
-            n = len(self.abstraction.abstract_ids)
-            uni = tuple(1.0 / n for _ in range(n))
-            self.table[key] = uni
-            self.visit_counts[key] = 0
-        return self.table[key]
-
     def keys(self) -> list[tuple[int, str]]:
         return list(self.table.keys())
 

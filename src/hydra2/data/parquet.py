@@ -48,14 +48,6 @@ ACTOR_FIELDS = (
     "chosen_action_id",
 )
 
-PRIVILEGED_FIELDS = (
-    "decision_id",
-    "privileged_label",
-    "full_world",
-    "hidden_tiles",
-    "wall_remaining",
-)
-
 # Forbidden leakage: privileged keys must never appear in actor rows
 FORBIDDEN_IN_ACTOR = {
     "hidden_tiles",

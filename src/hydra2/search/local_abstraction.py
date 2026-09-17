@@ -82,10 +82,6 @@ def _require_search_bridge() -> Any:
         ) from exc
 
 
-def _seed_bytes(*parts: str) -> bytes:
-    return hashlib.sha256("|".join(parts).encode()).digest()
-
-
 # ---------------------------------------------------------------------------
 # Information-set key — per actor, never world_id
 # ---------------------------------------------------------------------------
@@ -405,12 +401,6 @@ class PublicSubgame:
                 raise ContractError(f"edge abstract_id must be nonnegative int, got {aid!r}")
             if aid not in self.abstraction.abstract_ids:
                 raise AbstractMappingError(f"edge abstract_id {aid} not in abstraction")
-
-    def node_count(self) -> int:
-        return len(self.nodes)
-
-    def edge_count(self) -> int:
-        return len(self.edges)
 
 
 def build_public_subgame(

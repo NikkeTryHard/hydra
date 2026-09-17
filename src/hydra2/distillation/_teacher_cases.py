@@ -51,15 +51,6 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-def _hash_bytes(*parts: bytes) -> bytes:
-    """Combine domains as sha256(p1|p2|...)."""
-    h = hashlib.sha256()
-    for p in parts:
-        h.update(p)
-        h.update(b"|")
-    return h.digest()
-
-
 def _hash_to_uniform(key: bytes, index: int) -> float:
     """Map key+index to a top-32-bits uniform in [0, 1] for deterministic draws."""
     b = hashlib.sha256(key + index.to_bytes(4, "big")).digest()

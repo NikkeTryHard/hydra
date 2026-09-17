@@ -26,7 +26,7 @@
   "thresholds": null
  },
  "created_utc": "2026-09-11T16:30:00+00:00",
- "description": "Wave-G1 single re-pin at Wave-F close: every entry recomputed (cutover code + F10 decision-primary corpus); every local entry pinned by sha256; external probe entries resolved+hashed at bench time. The manifest_digest binds every entry and threshold: ANY byte change voids thresholds. 8a2f baseline stays frozen. WP-14 telemetry re-pin: stream_train.py (mlflow/sampler/profiler hooks) + run_config.py (telemetry section); thresholds stay blank-null. Desync re-pin: rust_observations.py entry removed (module deleted, plane feed supersedes); stream_train.py (device-gate validators, hot scalars, chunked workers, YAML feed knobs) + run_config.py (decode_prefetch/expand_batch_games/fetch_prefetch_depth); thresholds stay blank-null. Slice-E re-pin 2026-09-12: stream_train.py (homogeneous-buckets grouping, entry pins, ring depth 3, lint/format) + run_config.py (homogeneous_buckets flag, lint/format); thresholds stay blank-null. Shrink re-pin: tests/unit/test_rust_stream_wp14.py + tests/unit/test_replay_backend_wp14.py entries refreshed for the fixture sys.modules-pop fix (hard-delegate cutover, no fallback); thresholds stay blank-null. Wave 3 re-pin: training/stream_train.py entry refreshed for the loop-counting bridge cutover (counting oracle tails deleted, bridge-direct fail-closed); thresholds stay blank-null. Speed-wave re-pin: tests/unit/test_rust_stream_wp14.py + tests/unit/test_replay_backend_wp14.py entries refreshed for the shared import-only rust_extension fixture cutover (module-duplicate fixtures deleted); thresholds stay blank-null. Deletion-wave re-pin: models/schema.py + models/encoder.py entries refreshed for translator deletion (make_digest_text -> bridge-direct, byte-identical); parity gates file entry refreshed for the observation facade -> observation_types import migration; thresholds stay blank-null. Harden re-pin: training shell facades deleted (loop/replay/objectives/dataset/run_config/distill + distillation/teacher + analysis/qualification -> split modules), import retargets only; run_config entry dropped; thresholds untouched.",
+ "description": "Wave-G1 single re-pin at Wave-F close: every entry recomputed (cutover code + F10 decision-primary corpus); every local entry pinned by sha256; external probe entries resolved+hashed at bench time. The manifest_digest binds every entry and threshold: ANY byte change voids thresholds. 8a2f baseline stays frozen. WP-14 telemetry re-pin: stream_train.py (mlflow/sampler/profiler hooks) + run_config.py (telemetry section); thresholds stay blank-null. Desync re-pin: rust_observations.py entry removed (module deleted, plane feed supersedes); stream_train.py (device-gate validators, hot scalars, chunked workers, YAML feed knobs) + run_config.py (decode_prefetch/expand_batch_games/fetch_prefetch_depth); thresholds stay blank-null. Slice-E re-pin 2026-09-12: stream_train.py (homogeneous-buckets grouping, entry pins, ring depth 3, lint/format) + run_config.py (homogeneous_buckets flag, lint/format); thresholds stay blank-null. Shrink re-pin: tests/unit/test_rust_stream_wp14.py + tests/unit/test_replay_backend_wp14.py entries refreshed for the fixture sys.modules-pop fix (hard-delegate cutover, no fallback); thresholds stay blank-null. Wave 3 re-pin: training/stream_train.py entry refreshed for the loop-counting bridge cutover (counting oracle tails deleted, bridge-direct fail-closed); thresholds stay blank-null. Speed-wave re-pin: tests/unit/test_rust_stream_wp14.py + tests/unit/test_replay_backend_wp14.py entries refreshed for the shared import-only rust_extension fixture cutover (module-duplicate fixtures deleted); thresholds stay blank-null. Deletion-wave re-pin: models/schema.py + models/encoder.py entries refreshed for translator deletion (make_digest_text -> bridge-direct, byte-identical); parity gates file entry refreshed for the observation facade -> observation_types import migration; thresholds stay blank-null. Harden re-pin: training shell facades deleted (loop/replay/objectives/dataset/run_config/distill + distillation/teacher + analysis/qualification -> split modules), import retargets only; run_config entry dropped; thresholds untouched. Dead-code re-pin: models/schema dead envelope helpers removed; thresholds untouched.",
  "entries": [
   {
    "fixtures": [
@@ -248,7 +248,7 @@
    ],
    "kind": "plane-geometry",
    "relpath": "src/hydra2/models/schema.py",
-   "sha256": "sha256:aa29302ab272515e98c4fd2c10312a64a5b82200715a4367e232efec0987840a"
+   "sha256": "sha256:cb11bf548aa22e75d82d4bb6905292e2311d3521a3ce3607df10ec70aa6b3d79"
   },
   {
    "fixtures": [
@@ -1929,6 +1929,6 @@
    "module": "tests.parity.test_parity_gates_g1_g7_wp0b"
   }
  ],
- "manifest_digest": "sha256:3e63d4dfab657b13db77d83db072e8fcadb4b5bc347b50ced0167d2d7edba4d6",
+ "manifest_digest": "sha256:011183425c5f1bec739942790aa5e07c6039d4db530334110dba0f49c6c33039",
  "manifest_version": "2"
 }

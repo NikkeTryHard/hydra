@@ -67,7 +67,6 @@ __all__ = [
     "TILE_W",
     "build_wall",
     "copies",
-    "first_copy_of_type",
     "haipai_index",
     "type_id",
 ]
@@ -100,11 +99,6 @@ def type_id(physical: int) -> int:
 def copies(tile_type: int):
     """The four physical ids of ``tile_type`` in ascending order."""
     return tuple(4 * tile_type + offset for offset in range(4))
-
-
-def first_copy_of_type(tile_type: int) -> int:
-    """First physical id of tile_type (copy 0)."""
-    return 4 * tile_type
 
 
 def haipai_index(seat: int, position: int) -> int:
