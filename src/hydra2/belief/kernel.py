@@ -19,7 +19,14 @@ from typing import Any
 from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
 from hydra2.artifacts.canonical import canonical_bytes
-from hydra2.belief.natural import BeliefEpoch, Particle, PolicySet
+from hydra2.belief.natural import (
+    BeliefEpoch,
+    Particle,
+    PolicySet,
+)
+from hydra2.belief.natural import (
+    _require_search_bridge as _require_search_bridge,
+)
 from hydra2.contracts.common import (
     ContractError,
     DigestText,
@@ -32,31 +39,6 @@ from hydra2.contracts.event_packet import (
     make_actor_visible_packet,
     public_state_chain_hash,
 )
-
-
-def _require_search_bridge() -> Any:
-    """Import the built ``search`` bridge surface (fail closed)."""
-    try:
-        import hydra2_replay_rs as _ext  # pyrefly: ignore[missing-import]
-    except ImportError as exc:
-        raise ImportError(
-            "hydra2_replay_rs extension with search not importable; "
-            "build the bridge with `pixi run build-ext` before enumerating packets"
-        ) from exc
-    try:
-        mod = _ext.search
-    except AttributeError as exc:
-        raise ImportError(
-            "hydra2_replay_rs.search submodule missing (stale .so); "
-            "rebuild the bridge with `pixi run build-ext`"
-        ) from exc
-    if not hasattr(mod, "packet_successors"):
-        raise ImportError(
-            "hydra2_replay_rs.search.packet_successors missing (stale .so); "
-            "rebuild the bridge with `pixi run build-ext`"
-        )
-    return mod
-
 
 __all__ = ["NaturalPacketKernel", "PacketSuccessor"]
 
@@ -221,7 +203,7 @@ class NaturalPacketKernel:
         if isinstance(aid, bool) or not isinstance(aid, int) or aid < 0 or aid > 0xFFFF_FFFF:
             raise ContractError(f"action_id must be u32, got {aid!r}")
         rules_hash_str = str(rh)
-        search_mod = _require_search_bridge()
+        search_mod = _require_search_bridge(need="packet_successors", purpose="enumerating packets")
         try:
             bridge_rows = search_mod.packet_successors(
                 particle.world_ref, aid, root_seat, rules_hash_str

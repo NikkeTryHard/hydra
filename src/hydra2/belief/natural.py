@@ -28,14 +28,19 @@ from hydra2.contracts.event_packet import ActorVisiblePacket
 from hydra2.contracts.observation_actor import ActorObservation
 
 
-def _require_search_bridge() -> Any:
-    """Import the built ``search`` bridge surface (fail closed)."""
+def _require_search_bridge(*, need: str, purpose: str) -> Any:
+    """Import the built ``search`` bridge surface with the ``need`` pyfn (fail closed).
+
+    Single home for the belief search-bridge importer: the packet kernel and
+    the sampled mode import this; per-mode ``need``/``purpose`` keep every
+    fail-closed message byte-identical to the retired per-module copies.
+    """
     try:
         import hydra2_replay_rs as _ext  # pyrefly: ignore[missing-import]
     except ImportError as exc:
         raise ImportError(
             "hydra2_replay_rs extension with search not importable; "
-            "build the bridge with `pixi run build-ext` before sampling belief"
+            f"build the bridge with `pixi run build-ext` before {purpose}"
         ) from exc
     try:
         mod = _ext.search
@@ -44,9 +49,9 @@ def _require_search_bridge() -> Any:
             "hydra2_replay_rs.search submodule missing (stale .so); "
             "rebuild the bridge with `pixi run build-ext`"
         ) from exc
-    if not hasattr(mod, "natural_indices"):
+    if not hasattr(mod, need):
         raise ImportError(
-            "hydra2_replay_rs.search.natural_indices missing (stale .so); "
+            f"hydra2_replay_rs.search.{need} missing (stale .so); "
             "rebuild the bridge with `pixi run build-ext`"
         )
     return mod
@@ -363,7 +368,7 @@ class NaturalBelief:
         # rng jumped so the stream continues exactly (checkpoint/jump_to
         # shape). ImportError with build-ext hint, no oracle fallback.
         seed, cursor = _ctr_seed_cursor(rng)
-        search_mod = _require_search_bridge()
+        search_mod = _require_search_bridge(need="natural_indices", purpose="sampling belief")
         try:
             indices, end_cursor = search_mod.natural_indices(K, count, seed, cursor)
         except ImportError:
@@ -507,7 +512,7 @@ class NaturalBelief:
         # Draws via the search bridge (CTR-exact, K==1 no-consume). Cursor
         # replay keeps the stream exact; ImportError with build-ext hint.
         seed, cursor = _ctr_seed_cursor(rng)
-        search_mod = _require_search_bridge()
+        search_mod = _require_search_bridge(need="natural_indices", purpose="sampling belief")
         try:
             indices, end_cursor = search_mod.natural_indices(K, count, seed, cursor)
         except ImportError:

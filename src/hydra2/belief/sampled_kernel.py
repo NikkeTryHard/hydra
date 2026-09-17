@@ -19,52 +19,13 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from hydra2.belief.kernel import NaturalPacketKernel
+from hydra2.belief.natural import (
+    _ctr_seed_cursor as _ctr_seed_cursor,
+)
+from hydra2.belief.natural import (
+    _require_search_bridge as _require_search_bridge,
+)
 from hydra2.contracts.common import ContractError, StaleBeliefError
-
-
-def _require_search_bridge() -> Any:
-    """Import the built ``search`` bridge surface (fail closed)."""
-    try:
-        import hydra2_replay_rs as _ext  # pyrefly: ignore[missing-import]
-    except ImportError as exc:
-        raise ImportError(
-            "hydra2_replay_rs extension with search not importable; "
-            "build the bridge with `pixi run build-ext` before sampling traces"
-        ) from exc
-    try:
-        mod = _ext.search
-    except AttributeError as exc:
-        raise ImportError(
-            "hydra2_replay_rs.search submodule missing (stale .so); "
-            "rebuild the bridge with `pixi run build-ext`"
-        ) from exc
-    if not hasattr(mod, "sampled_draws"):
-        raise ImportError(
-            "hydra2_replay_rs.search.sampled_draws missing (stale .so); "
-            "rebuild the bridge with `pixi run build-ext`"
-        )
-    return mod
-
-
-def _ctr_seed_cursor(rng: Any) -> tuple[bytes, int]:
-    """Extract CTR (seed, cursor) for bridge replay (fail closed, no fallback)."""
-    try:
-        cp = rng.checkpoint()
-        seed_hex = cp.seed_hex
-        cursor = int(cp.cursor)
-        seed = bytes.fromhex(str(seed_hex))
-    except AttributeError as exc:
-        raise ContractError(
-            "rng must expose checkpoint() with seed_hex/cursor for bridge replay"
-        ) from exc
-    except (ValueError, TypeError) as exc:
-        raise ContractError(f"rng checkpoint malformed: {exc}") from exc
-    if len(seed) == 0:
-        raise ContractError("rng seed must be non-empty bytes")
-    if cursor < 0 or cursor > 0xFFFF_FFFF_FFFF_FFFF:
-        raise ContractError(f"rng cursor out of u64 range: {cursor!r}")
-    return seed, cursor
-
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -184,7 +145,7 @@ def enumerate_sampled(
     # continues exactly. raw_weight = P(chosen)/draws comes from the bridge
     # (proven equal below). ImportError with build-ext hint, no fallback.
     seed, cursor = _ctr_seed_cursor(rng)
-    search_mod = _require_search_bridge()
+    search_mod = _require_search_bridge(need="sampled_draws", purpose="sampling traces")
     try:
         chosen_idx, raw_weights, end_cursor = search_mod.sampled_draws(probs, draws, seed, cursor)
     except ImportError:

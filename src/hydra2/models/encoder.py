@@ -119,6 +119,41 @@ def _ring_native() -> Any | None:
     return _RING_MOD
 
 
+_ENCODER_MOD: Any = None
+_ENCODER_PROBED: bool = False
+
+#: Injectable encoder native backend (tests monkeypatch this; production
+#: leaves None so `_encoder_native()` imports the compiled extension).
+_ENCODER_NATIVE_OVERRIDE: Any = None
+
+
+def _encoder_native() -> Any | None:
+    """Import the built `encoder` submodule once; None → oracle fallback.
+
+    ImportError-only oracle: ``None`` means the extension (or its ``encoder``
+    surface) is not importable — CPU/test lanes stay byte-identical via the
+    twins below. Any other import-time failure raises (fail-closed).
+    """
+    global _ENCODER_MOD, _ENCODER_PROBED
+    if _ENCODER_NATIVE_OVERRIDE is not None:
+        return _ENCODER_NATIVE_OVERRIDE
+    if _ENCODER_MOD is not None:
+        return _ENCODER_MOD
+    late = sys.modules.get("hydra2_replay_rs")
+    if late is not None:
+        mod = getattr(late, "encoder", None)
+        if mod is not None:
+            _ENCODER_MOD = mod
+            return _ENCODER_MOD
+    if not _ENCODER_PROBED:
+        _ENCODER_PROBED = True
+        try:
+            _ENCODER_MOD = importlib.import_module("hydra2_replay_rs").encoder
+        except (ImportError, AttributeError):
+            _ENCODER_MOD = None
+    return _ENCODER_MOD
+
+
 def _bucket_length(actual: int, buckets: tuple[int, ...] = HISTORY_BUCKET_LENGTHS) -> int:
     """Ceil ``actual`` to the next bucket; over-cap callers fail closed."""
     for bucket in buckets:
@@ -597,6 +632,139 @@ def _stage_pinned_batch(
     except Exception as exc:
         raise ContractError(f"ring ring_fill_batch failed: {type(exc).__name__}: {exc}") from exc
     return dict(zip(names, slots, strict=True))
+
+
+def _wrap_encoder_bytes(
+    planes: dict[str, Any],
+    *,
+    batch_size: int,
+    bucket_t: int,
+) -> dict[str, torch.Tensor]:
+    """Zero-copy wrap Rust LE bytes via ``torch.frombuffer`` (no copy).
+
+    Precedent: ``training/rust_batch._slice_game_planes`` (``torch.frombuffer``
+    over bridge ``bytearray`` planes, then reshape). Torch owns the tensors;
+    Rust only staged bytes (no GPU math). ``torch.frombuffer`` keeps the
+    exporter alive, so the input dict may drop after wrapping.
+    """
+
+    def _w(name: str, dtype: Any, shape: tuple[int, ...]) -> torch.Tensor:
+        buf = planes[name]
+        return torch.frombuffer(buf, dtype=dtype).reshape(shape)
+
+    b = int(batch_size)
+    t = int(bucket_t)
+    a = int(BASELINE_ACTION_COUNT)
+    return {
+        "actor": _w("actor", torch.int64, (b,)),
+        "actor_can_riichi": _w("actor_can_riichi", torch.bool, (b,)),
+        "actor_can_tsumo": _w("actor_can_tsumo", torch.bool, (b,)),
+        "actor_furiten": _w("actor_furiten", torch.int64, (b,)),
+        "actor_seats": _w("actor_seats", torch.int64, (b,)),
+        "concealed_hand_counts": _w("concealed_hand_counts", torch.int32, (b, 34)),
+        "dealer": _w("dealer", torch.int64, (b,)),
+        "dora_indicators": _w("dora_indicators", torch.int32, (b, 5)),
+        "hand_number": _w("hand_number", torch.int32, (b,)),
+        "history_event_kind": _w("history_event_kind", torch.int64, (b, t)),
+        "history_mask": _w("history_mask", torch.bool, (b, t)),
+        "honba": _w("honba", torch.int32, (b,)),
+        "ippatsu_active": _w("ippatsu_active", torch.bool, (b, 4)),
+        "kan_count": _w("kan_count", torch.int32, (b,)),
+        "legal_mask": _w("legal_mask", torch.bool, (b, a)),
+        "live_wall_tiles_remaining": _w("live_wall_tiles_remaining", torch.int32, (b,)),
+        "own_drawn_tile": _w("own_drawn_tile", torch.int32, (b,)),
+        "phase": _w("phase", torch.int64, (b,)),
+        "riichi_states": _w("riichi_states", torch.int64, (b, 4)),
+        "riichi_sticks": _w("riichi_sticks", torch.int32, (b,)),
+        "round_index": _w("round_index", torch.int32, (b,)),
+        "round_wind": _w("round_wind", torch.int64, (b,)),
+        "scores": _w("scores", torch.int32, (b, 4)),
+        "seat_winds": _w("seat_winds", torch.int64, (b, 4)),
+        "turn_actor": _w("turn_actor", torch.int64, (b,)),
+        "visible_discards_counts": _w("visible_discards_counts", torch.int32, (b, 34)),
+    }
+
+
+def _encode_via_rust(
+    observations: list[ActorObservation],
+    *,
+    buckets: tuple[int, ...],
+    pin_memory: bool,
+) -> ActorTensorBatch:
+    """Rust-staged encode: one FFI stages all rows, torch wraps zero-copy.
+
+    Validation (empty / isinstance / hash-bound) mirrors ``encode_observations``
+    exactly before crossing; Rust owns tile//4 counts, bucket ceil, history
+    mapping, and LE byte fill detached. Torch owns wrap/pin/H2D (math stays).
+    Fail-closed: bridge-absent raises (no oracle fallback); bridge-present
+    errors raise ``ContractError`` (``ValueError`` text 1:1).
+    """
+    if len(observations) == 0:
+        raise ContractError("encode_observations requires at least one observation")
+    for obs in observations:
+        if not isinstance(obs, ActorObservation):
+            raise ContractError(f"expected ActorObservation, got {type(obs).__name__}")
+        if obs.observation_hash is None:
+            raise ContractError("observation_hash must be bound")
+        _digest: DigestText = _bridge_contracts.make_digest_text(obs.observation_hash)
+    enc = _encoder_native()
+    if enc is None:
+        raise ContractError(
+            "encoder stage requires the built hydra2_replay_rs.encoder bridge; "
+            "run `pixi run build-ext` to build the extension before use"
+        )
+    try:
+        planes, bucket_t, max_len, hashes = enc.stage_encoder_batch(observations, list(buckets))
+    except ContractError:
+        raise
+    except (ImportError, AttributeError) as exc:
+        raise ContractError(f"encoder stage missing surface: {exc}") from exc
+    except (ValueError, BufferError) as exc:
+        raise ContractError(str(exc)) from exc
+    except Exception as exc:
+        raise ContractError(f"encoder stage failed: {type(exc).__name__}: {exc}") from exc
+    batch_size = len(observations)
+    bucket_len = int(bucket_t)
+    max_history = int(max_len)
+    features = _wrap_encoder_bytes(planes, batch_size=batch_size, bucket_t=bucket_len)
+    history_mask = features["history_mask"]
+    legal_mask = features["legal_mask"]
+    actor_seats = features["actor_seats"]
+    if pin_memory and torch.cuda.is_available():
+        try:
+            features = (
+                _stage_pinned_batch(
+                    features,
+                    batch_size=batch_size,
+                    max_history_len=max_history,
+                    bucket_t=bucket_len,
+                )
+                if tuple(buckets) == tuple(HISTORY_BUCKET_LENGTHS)
+                else {
+                    name: tensor.pin_memory()  # type: ignore[attr-defined]
+                    for name, tensor in features.items()
+                }
+            )
+            history_mask = features["history_mask"]
+            legal_mask = features["legal_mask"]
+            actor_seats = features["actor_seats"]
+        except ContractError:
+            raise
+        except Exception as exc:  # why-broad: any pin failure falls back to pageable
+            logger.warning("encoder pin_memory failed, using pageable fallback: %s", exc)
+    expected = {f.name for f in _BASELINE_FIELDS}
+    produced = set(features.keys())
+    if expected != produced:
+        missing = sorted(expected - produced)
+        extra = sorted(produced - expected)
+        raise ContractError(f"feature mismatch missing={missing} extra={extra}")
+    return ActorTensorBatch(
+        features=features,
+        history_mask=history_mask,
+        legal_mask=legal_mask,
+        observation_hashes=tuple(DigestText(str(h)) for h in hashes),
+        actor_seats=actor_seats,
+    )
 
 
 def validate_batch_against_schema(batch: ActorTensorBatch) -> None:
