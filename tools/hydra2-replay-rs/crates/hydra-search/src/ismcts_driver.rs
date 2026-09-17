@@ -72,7 +72,7 @@ pub const DOMAIN_ISMCTS: &str = "ismcts";
 pub const DOMAIN_GUMBEL: &str = "gumbel";
 
 /// Validate `sha256:<64 lowercase hex>` shape (world ids, tree keys, hashes).
-fn check_digest_shape(text: &str) -> Result<(), SearchError> {
+pub(crate) fn check_digest_shape(text: &str) -> Result<(), SearchError> {
     const PREFIX: &str = "sha256:";
     let hex = match text.strip_prefix(PREFIX) {
         Some(hex) => hex,
@@ -500,7 +500,7 @@ impl TinyWorld {
 /// World-id bytes for a (possibly successor) world: the `make_full_world`
 /// identity doc (`belief/world.py:111-148`) canonicalized via the single
 /// feed site. Only `Some` latent keys enter the map, so absent stays absent.
-fn world_id_for(
+pub(crate) fn world_id_for(
     hands: &[[u32; 2]; 4],
     live: &[u32],
     dead: &[u32],
@@ -662,35 +662,35 @@ pub fn continuation_sample(
 
 /// One batch world in the descent JSON envelope.
 #[derive(Debug, Clone, Deserialize)]
-struct BatchWorldJson {
+pub(crate) struct BatchWorldJson {
     /// `sha256:` world id.
-    world_id: String,
+    pub(crate) world_id: String,
     /// Four seats x two tiles in seat order.
-    hands: Vec<Vec<u32>>,
+    pub(crate) hands: Vec<Vec<u32>>,
     /// Live wall tile ids.
-    live: Vec<u32>,
+    pub(crate) live: Vec<u32>,
     /// Dead wall tile ids (usually empty).
-    dead: Vec<u32>,
+    pub(crate) dead: Vec<u32>,
     /// `latent_state.step` (`None` when absent).
-    step: Option<u32>,
+    pub(crate) step: Option<u32>,
     /// `latent_state.turn` (`None` when absent).
-    turn: Option<u32>,
+    pub(crate) turn: Option<u32>,
     /// `latent_state.corpus_idx` (`None` when absent).
-    corpus_idx: Option<u32>,
+    pub(crate) corpus_idx: Option<u32>,
     /// True simulator snapshot (chain link, e.g. `tiny:{target}:{idx}`).
     /// Carried verbatim for fidelity (never re-hashed into the kept
     /// `world_id`); the successor snapshot derives from the parent
     /// `world_id`, never from this string.
-    snapshot: String,
+    pub(crate) snapshot: String,
 }
 
 /// One leaf override (read-only torch vector in batch, keyed by world id).
 #[derive(Debug, Clone, Deserialize)]
-struct LeafOverrideJson {
+pub(crate) struct LeafOverrideJson {
     /// `sha256:` world id needing the override.
-    world_id: String,
+    pub(crate) world_id: String,
     /// Four-seat override vector (finite).
-    vector: Vec<f64>,
+    pub(crate) vector: Vec<f64>,
 }
 
 /// Full descent batch envelope: precomputed worlds, per-step keys/dirs,
@@ -766,7 +766,7 @@ pub struct DescentOut {
 
 impl BatchWorldJson {
     /// Materialize one validated arena world (hands `4 x 2`, tiles `< 136`).
-    fn materialize(&self) -> Result<TinyWorld, SearchError> {
+    pub(crate) fn materialize(&self) -> Result<TinyWorld, SearchError> {
         check_digest_shape(&self.world_id)?;
         if self.hands.len() != 4 {
             return Err(SearchError::InvalidArg { detail: "hands must hold 4 seats" });

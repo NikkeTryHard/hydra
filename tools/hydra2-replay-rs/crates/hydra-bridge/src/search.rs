@@ -78,6 +78,8 @@ use hydra_search::belief as belief_mod;
 use hydra_search::gumbel as gumbel_mod;
 use hydra_search::ismcts::{ActionStats, IsNode, IsmctsParams, TieBreak};
 use hydra_search::ismcts_driver as driver_mod;
+use hydra_search::gumbel_driver as gumbel_driver_mod;
+use hydra_search::local_driver as local_driver_mod;
 use hydra_search::SearchError;
 #[cfg(test)]
 use hydra_search::arena::ActOut;
@@ -460,6 +462,7 @@ fn sampled_draws(
     let out = py.detach(|| belief_mod::sampled_draws(&probs, draws, &seed, cursor));
     out.map_err(search_err)
 }
+
 
 /// One enumerated packet successor crossing the boundary (digest/text shapes
 /// only — info-keys, never world blobs).
@@ -869,6 +872,138 @@ fn ismcts_descent(py: Python<'_>, batch_json: Vec<u8>) -> PyResult<PyIsmctsDesce
     })
 }
 
+/// One batch-halving outcome crossing the boundary (selection + means +
+/// survivors + digest + counters; world blobs never cross back).
+#[pyclass(name = "GumbelHalvingOut", frozen, skip_from_py_object)]
+#[derive(Debug, Clone)]
+pub struct PyGumbelHalvingOut {
+    /// Selected action id (max `g + q`, `1e-12` eps + tie arm).
+    #[pyo3(get)]
+    pub selected_id: u32,
+    /// Candidate ids in sorted order.
+    #[pyo3(get)]
+    pub candidate_ids: Vec<u32>,
+    /// Mean 4-vectors per candidate (row-major, 4 entries each).
+    #[pyo3(get)]
+    pub value_vectors: Vec<Vec<f64>>,
+    /// Visits per candidate.
+    #[pyo3(get)]
+    pub visits: Vec<u64>,
+    /// Final survivors in cut (ranked) order.
+    #[pyo3(get)]
+    pub survivors: Vec<u32>,
+    /// Canon digest over the per-arm stats dump.
+    #[pyo3(get)]
+    pub stats_digest: String,
+    /// Completed rollouts.
+    #[pyo3(get)]
+    pub sims_run: u64,
+    /// Completed transitions.
+    #[pyo3(get)]
+    pub transitions: u64,
+    /// Model leaf calls (terminal fallbacks excluded).
+    #[pyo3(get)]
+    pub model_calls: u64,
+    /// CTR floats consumed.
+    #[pyo3(get)]
+    pub floats_used: u64,
+}
+
+/// Run one batch Gumbel halving search: precomputed worlds, per-rollout
+/// policy directions, CTR floats, and root Gumbels cross ONCE as a JSON
+/// envelope; the arena replays forced-root rollouts, continuation-tilt
+/// sampling, unified `gumbel` transitions, deduped leaf vectors, and vector
+/// backup with the GIL released, then runs the sequential-halving cuts and
+/// Gumbel selection. Leaf overrides (read-only torch vectors keyed by
+/// world id) ride the same envelope; absent entries compute the stub.
+/// Returns `GumbelHalvingOut` (never a partial selection as complete).
+///
+/// Envelope layout contract (bit-parity depends on it): `worlds` rides
+/// round-major, slot-minor, visit-minor in oracle visit order (budget
+/// breaks truncate the tail only); `policy_dirs[rollout][j]` carries the
+/// `0|1` tilt for the `j`-th continuation step of that rollout;
+/// `rng_floats` carries POLICY draws only, in consumption order — one float
+/// per sampled continuation step, NO placeholders for forced-root steps or
+/// belief draws; `gumbels` covers exactly `root_legal` (`[[aid, g], ...]`).
+#[pyfunction]
+#[pyo3(signature = (batch_json,))]
+fn gumbel_halving(py: Python<'_>, batch_json: Vec<u8>) -> PyResult<PyGumbelHalvingOut> {
+    if batch_json.is_empty() {
+        return Err(PyValueError::new_err("search halving batch must be non-empty"));
+    }
+    // Compute DETACHED: parse + validate + full halving replay with zero
+    // Python API inside; only the owned JSON bytes cross the boundary.
+    let out = py.detach(|| gumbel_driver_mod::gumbel_halving_batch(&batch_json));
+    let out = out.map_err(search_err)?;
+    // Attached-only: shape-check the digest, then freeze into the pyclass.
+    check_digest_shape(&out.stats_digest).map_err(PyValueError::new_err)?;
+    let mut value_vectors: Vec<Vec<f64>> = Vec::with_capacity(out.value_vectors.len());
+    let mut i = 0;
+    while i < out.value_vectors.len() {
+        let vector = out.value_vectors[i];
+        value_vectors.push(vec![vector[0], vector[1], vector[2], vector[3]]);
+        i += 1;
+    }
+    Ok(PyGumbelHalvingOut {
+        selected_id: out.selected_id,
+        candidate_ids: out.candidate_ids,
+        value_vectors,
+        visits: out.visits,
+        survivors: out.survivors,
+        stats_digest: out.stats_digest,
+        sims_run: out.sims_run,
+        transitions: out.transitions,
+        model_calls: out.model_calls,
+        floats_used: out.floats_used,
+    })
+}
+
+/// One batch-resolving outcome crossing the boundary (current + averaged
+/// table dumps as JSON; world blobs never cross back).
+#[pyclass(name = "LocalResolvingOut", frozen, skip_from_py_object)]
+#[derive(Debug, Clone)]
+pub struct PyLocalResolvingOut {
+    /// Current strategy table rows JSON: `[[actor, info, [p...], visits]...]`.
+    #[pyo3(get)]
+    pub table_json: String,
+    /// Averaged table rows JSON (visits `null` where the oracle leaves it unset).
+    #[pyo3(get)]
+    pub avg_json: String,
+}
+
+/// Run one batch local-resolving search: precomputed per-iteration worlds
+/// (identity, validated leaf floats, memoized base info keys), seeded
+/// init-table entries, and per-step sampling floats cross ONCE as a JSON
+/// envelope; the driver replays the resolving loop (actor traversal,
+/// regret/hedge/fictitious-play updates, averaging, path sampling) with the
+/// GIL released, then dumps the current + averaged tables. Tie-break
+/// selection stays caller-side (once per search over the root average).
+/// Returns `LocalResolvingOut` (never a partial table as complete).
+///
+/// Envelope layout contract (bit-parity depends on it): `iters` rides in
+/// oracle iteration order (one world per iteration); `base` carries the four
+/// per-actor base info keys in seat order; `sampling` carries one float per
+/// step in iteration-major order; `init` carries the seeded `(actor, info,
+/// dist)` entries with visits starting at 0.
+#[pyfunction]
+#[pyo3(signature = (batch_json,))]
+fn local_resolving_batch(py: Python<'_>, batch_json: Vec<u8>) -> PyResult<PyLocalResolvingOut> {
+    if batch_json.is_empty() {
+        return Err(PyValueError::new_err("search local batch must be non-empty"));
+    }
+    // Compute DETACHED: parse + validate + full resolving replay + dump
+    // serialization with zero Python API inside; only the owned JSON bytes
+    // cross the boundary (dumps serialize driver-side, same convention as
+    // the ISMCTS `tree_json` dump).
+    let out = py.detach(|| local_driver_mod::local_resolving_batch_json(&batch_json));
+    let (table_json, avg_json) = out.map_err(search_err)?;
+    // Attached-only: freeze into the pyclass (fail-closed, never a default).
+    Ok(PyLocalResolvingOut {
+        table_json,
+        avg_json,
+    })
+}
+
 /// Judge observability: `(acts, completed)` (never identity/selection).
 #[pyfunction]
 fn act_stats(py: Python<'_>) -> PyResult<(u64, u64)> {
@@ -912,6 +1047,10 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     sub.add_function(wrap_pyfunction!(ismcts_info_key, &sub)?)?;
     sub.add_function(wrap_pyfunction!(ismcts_descent, &sub)?)?;
     sub.add_class::<PyIsmctsDescentOut>()?;
+    sub.add_function(wrap_pyfunction!(gumbel_halving, &sub)?)?;
+    sub.add_class::<PyGumbelHalvingOut>()?;
+    sub.add_function(wrap_pyfunction!(local_resolving_batch, &sub)?)?;
+    sub.add_class::<PyLocalResolvingOut>()?;
     sub.add_function(wrap_pyfunction!(uct_select, &sub)?)?;
     sub.add_function(wrap_pyfunction!(puct_select, &sub)?)?;
     sub.add_function(wrap_pyfunction!(natural_indices, &sub)?)?;

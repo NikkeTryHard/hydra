@@ -36,6 +36,7 @@ pub mod partition;
 pub mod quarantine;
 pub mod rng;
 pub mod rows;
+pub mod stream_driver;
 pub mod tiles;
 pub mod validate;
 pub mod walk;

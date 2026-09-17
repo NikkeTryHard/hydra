@@ -27,6 +27,7 @@ pub mod ring;
 pub mod search;
 pub mod sink;
 pub mod stream;
+pub mod stream_driver;
 pub mod tiles;
 use pyo3::prelude::*;
 
@@ -37,6 +38,7 @@ pub fn hydra2_replay_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<stream::PyFill>()?;
     m.add_class::<stream::PyStats>()?;
     m.add_class::<stream::PyQuar>()?;
+    stream_driver::register(m)?;
     replay::register(m)?;
     canon_rng::register(m)?;
     resume::register(m)?;

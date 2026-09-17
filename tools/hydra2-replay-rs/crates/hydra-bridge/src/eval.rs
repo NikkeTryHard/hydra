@@ -54,6 +54,7 @@
 
 use hydra_search::SearchError;
 use hydra_search::eval::blocks::{WallBlock, aggregate_wall_block as aggregate_owner};
+use hydra_search::eval::statistics::hedged_cs_path as hedged_owner;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyModule};
@@ -97,6 +98,28 @@ fn aggregate_wall_block(py: Python<'_>, block: Bound<'_, PyAny>) -> PyResult<f64
     let owned = WallBlock::new(wall_id, game_ids, contrasts).map_err(search_err)?;
     py.detach(|| aggregate_owner(&owned)).map_err(search_err)
 }
+/// Time-uniform hedged-CS intervals (`statistics.py:280-329` via
+/// `hydra_search::eval::statistics::hedged_cs_path`): draw-free deterministic
+/// capital math. `values` are the raw block contrasts (scaling to `[0,1]`
+/// under `(low, high)` runs owner-side); `peek_times=None` means the single
+/// final peek. Caller-side type gates (bool rejection, int checks) stay in
+/// the Python facade — `bool` has no `f64` analogue — the owner re-validates
+/// finiteness, grid range, and peek windows and fails closed. Compute runs
+/// detached; empty survivors yield `(inf, -inf)` exactly like the oracle.
+#[pyfunction]
+#[pyo3(signature = (values, alpha=0.05, low=0.0, high=1.0, grid_size=48, peek_times=None))]
+fn hedged_cs_path(
+    py: Python<'_>,
+    values: Vec<f64>,
+    alpha: f64,
+    low: f64,
+    high: f64,
+    grid_size: usize,
+    peek_times: Option<Vec<usize>>,
+) -> PyResult<Vec<(f64, f64)>> {
+    let out = py.detach(|| hedged_owner(&values, alpha, (low, high), grid_size, peek_times.as_deref()));
+    out.map_err(search_err)
+}
 
 /// Register the `eval` submodule (mirrors `search::register`): compute
 /// detached, wrap attached; single cdylib, no new entry point.
@@ -104,6 +127,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = m.py();
     let sub = PyModule::new(py, "eval")?;
     sub.add_function(wrap_pyfunction!(aggregate_wall_block, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(hedged_cs_path, &sub)?)?;
     m.add_submodule(&sub)?;
     Ok(())
 }

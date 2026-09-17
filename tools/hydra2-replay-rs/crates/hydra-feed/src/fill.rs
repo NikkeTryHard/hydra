@@ -709,7 +709,8 @@ impl Scratch {
     }
 
     /// Remove the committed prefix in place (capacities kept for reuse).
-    fn drain_prefix(&mut self, commit_rows: usize, commit_games: usize, hist_entries: usize) {
+    /// Driver compact path: whole consumed games only, boundaries stay aligned.
+    pub(crate) fn drain_prefix(&mut self, commit_rows: usize, commit_games: usize, hist_entries: usize) {
         let mut i = 0usize;
         while i < N_PLANES {
             let consumed = if i == PLANE_HIST_KIND {

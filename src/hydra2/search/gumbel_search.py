@@ -1,11 +1,16 @@
-# ruff: noqa: SIM102, B905  # reason: legacy blanket kept, not narrowed — narrowing surfaces unrelated mid-flight noise outside the owned error set (F401 optional-dep fallback imports; SIM102 nested contract guards; B905 intentionally non-strict action/legal zips; N814 upstream belief symbol casing). Evidence: https://docs.astral.sh/ruff/rules/
+# ruff: noqa: B905  # reason: legacy blanket kept, not narrowed — narrowing surfaces unrelated mid-flight noise outside the owned error set (F401 optional-dep fallback imports; B905 intentionally non-strict action/legal zips; N814 upstream belief symbol casing). Evidence: https://docs.astral.sh/ruff/rules/
 """Candidate 6 Gumbel search loop — continuation policy and sequential halving.
 
 Owns the frozen ``UniformContinuationPolicy`` actor-view sampler beside
-its only callers, and the construction plus sequential-halving search
-half of :class:`GumbelSearchPlanner`: particle-to-world materialization,
-single-rollout exact descent with vector backup, and the budgeted search
-driver returning the structured result dict. The Planner protocol adapter
+its only callers, and the construction plus Rust-batch search half of
+:class:`GumbelSearchPlanner`: particle-to-world materialization and the
+one-bridge-call halving driver returning the structured result dict. The
+halving rounds/aids/visits loops, rollout descent, vector backup, cuts,
+and final selection live in ``hydra-search:gumbel_halving_batch`` (GIL
+released); Python builds ONE batch per search (sampled worlds in oracle
+visit order, per-rollout policy directions, CTR policy floats, root
+Gumbels) and makes ONE bridge call. There is no Python sim loop, no
+per-step crossing, and no Python backup. The Planner protocol adapter
 arrives via the act-mixin subclass in :mod:`hydra2.search.gumbel_act` so
 each file stays inside the review-size ceiling.
 """
@@ -13,6 +18,9 @@ each file stays inside the review-size ceiling.
 from __future__ import annotations
 
 import hashlib
+import json
+import math
+import types
 from typing import Any
 
 from hydra2.contracts.common import (
@@ -30,19 +38,11 @@ from hydra2.search.gumbel_config import (
 from hydra2.search.gumbel_core import (
     _MASTER_SEED as _MASTER_SEED,
 )
-from hydra2.search.gumbel_core import (
-    _actor_to_move as _actor_to_move,
-)
-from hydra2.search.gumbel_core import _is_terminal as _is_terminal
 from hydra2.search.gumbel_core import _legal_ids_for_observation as _legal_ids_for_observation
 from hydra2.search.gumbel_core import _require_belief as _require_belief
 from hydra2.search.gumbel_core import _require_random_stream as _require_random_stream
 from hydra2.search.gumbel_core import _require_search_bridge as _require_search_bridge
 from hydra2.search.gumbel_core import deterministic_root_gumbels as deterministic_root_gumbels
-from hydra2.search.gumbel_core import exact_transition as exact_transition
-from hydra2.search.gumbel_core import model_vector_for_world as model_vector_for_world
-from hydra2.search.gumbel_core import scalarize_vector as scalarize_vector
-from hydra2.search.gumbel_core import terminal_vector_for_world as terminal_vector_for_world
 
 __all__ = [
     "GumbelSearchPlannerSearchMixin",
@@ -122,6 +122,124 @@ class UniformContinuationPolicy:
 
 
 # ---------------------------------------------------------------------------
+# Rust-batch precompute helpers — envelope contract
+# (tools/hydra2-replay-rs/crates/hydra-search/src/gumbel_driver.rs)
+# ---------------------------------------------------------------------------
+
+
+def _require_driver_bridge() -> Any:
+    """Import the built ``search`` bridge surface with ``gumbel_halving`` (fail closed)."""
+    try:
+        mod = _require_search_bridge()
+    except ImportError:
+        raise
+    if not hasattr(mod, "gumbel_halving"):
+        raise ImportError(
+            "hydra2_replay_rs.search.gumbel_halving missing (stale .so); "
+            "rebuild the bridge with `pixi run build-ext`"
+        )
+    return mod
+
+
+def _halving_slots(num_candidates: int, halving_rounds: int) -> list[int]:
+    """Deterministic slot counts per round (mirrors Rust: M, ceil(M/2), ...)."""
+    slots: list[int] = []
+    width = num_candidates
+    for _ in range(halving_rounds):
+        slots.append(width)
+        width = (width + 1) // 2
+    return slots
+
+
+def _dry_float_need(
+    worlds_live_lens: list[int],
+    slots: list[int],
+    visits_per_round: tuple[int, ...],
+    max_depth: int,
+    max_transitions: int | None,
+) -> int:
+    """Replicate the Rust dry-run float demand (``gumbel_driver.rs:589-639``).
+
+    The dry run counts ``live = start.live.len()`` (pre-forced-pop) while the
+    replay consumes post-forced-pop, so it overcounts by one per rollout when
+    ``max_depth`` exceeds remaining live. The envelope tolerates trailing
+    surplus (no fail on extra floats; ``floats_used`` reports real
+    consumption), so Python pads trailing ``0.5`` dummies to reach this need.
+    Dummies ride the tail unused, preserving RNG alignment (belief draws +
+    real policy floats stay in oracle order) and bit-parity. Counters below
+    ride the bridge ``sims_run``/``transitions``/``model_calls`` (never
+    ``len(draws)``), so the padded tail never leaks into telemetry.
+
+    Follow-up (tools/** owner): fix the Rust dry run to count post-forced-pop
+    live like the replay, then drop the padding here (``need`` becomes the
+    true demand and the ``len(draws) < need`` pad turns into dead code).
+    """
+    need = 0
+    walked = 0
+    ord_ = 0
+    dr = 0
+    dry_done = False
+    rounds = len(slots)
+    while dr < rounds and not dry_done:
+        if slots[dr] <= 1:
+            break
+        visits = visits_per_round[dr]
+        ds = 0
+        while ds < slots[dr] and not dry_done:
+            dv = 0
+            while dv < visits:
+                if max_transitions is not None and walked >= max_transitions:
+                    dry_done = True
+                    break
+                # Worlds ride the executed prefix; schedule exhaustion fails closed in Rust.
+                ord_ += 1
+                walked += 1
+                step = 1
+                live = worlds_live_lens[ord_ - 1]
+                while step < max_depth and live > 0:
+                    need += 1
+                    if max_transitions is not None and walked >= max_transitions:
+                        break
+                    live -= 1
+                    step += 1
+                    walked += 1
+                    if max_transitions is not None and walked >= max_transitions:
+                        break
+                dv += 1
+            ds += 1
+        dr += 1
+    return need
+
+
+def _exact_sum_for_mean(mean: float, visits: int) -> float:
+    """Sum ``s`` with ``s / visits == mean`` exactly (IEEE-754 bit-identical).
+
+    The bridge returns per-arm means, but ``res["stats"]`` carries
+    ``_ActionStats`` whose ``mean_vector()`` divides ``value_sum`` by
+    ``visits``. The naive ``mean * visits`` round-trip drifts one ulp in ~7%
+    of cases for non-power-of-2 visit counts, so walk from ``mean * visits``
+    by single ulps (``math.nextafter``) toward the preimage — ``mean`` itself
+    is ``fl(sum / visits)`` for the true Rust sum, so a preimage always
+    exists within a handful of ulps. Bounded at 64 steps (then keep the last
+    candidate — still finite); keeps ``stats[].mean_vector()`` bit-exact for
+    every schedule, not just the frozen power-of-2 ones.
+    """
+    cand = mean * visits
+    if cand / visits == mean:
+        return cand
+    lo = math.nextafter(cand, math.inf)
+    hi = math.nextafter(cand, -math.inf)
+    for _ in range(64):
+        if lo / visits == mean:
+            return lo
+        if hi / visits == mean:
+            return hi
+        lo = math.nextafter(lo, math.inf)
+        hi = math.nextafter(hi, -math.inf)
+    return lo
+
+
+# ---------------------------------------------------------------------------
 # Gumbel Search Planner
 # ---------------------------------------------------------------------------
 
@@ -129,9 +247,9 @@ class UniformContinuationPolicy:
 class GumbelSearchPlannerSearchMixin:
     """Search half of :class:`GumbelSearchPlanner`.
 
-    Split host for construction and the sequential-halving search driver;
-    the Planner protocol surface arrives via the act-mixin subclass, which
-    adds no overrides. Attribute access is duck-typed through the subclass.
+    Split host for construction and the Rust-batch search driver; the Planner
+    protocol surface arrives via the act-mixin subclass, which adds no
+    overrides. Attribute access is duck-typed through the subclass.
     """
 
     _config: GumbelSearchConfig
@@ -270,61 +388,6 @@ class GumbelSearchPlannerSearchMixin:
             simulator_snapshot=f"gumbel_synth:{ref}",
         )
 
-    def _rollout(
-        self,
-        *,
-        start_world: Any,
-        root_action_id: int,
-        root_seat: int,
-        rng: Any,
-    ) -> tuple[Any, tuple[float, float, float, float]]:
-        """Exact rollout starting with forced root action, then continuation policies."""
-        _require_belief()
-        try:
-            from hydra2.belief.world import world_actor_observation as _wao
-        except ImportError as exc:
-            raise ImportError(
-                "hydra2.belief.world not importable "
-                f"({exc}); build the bridge with `pixi run build-ext` before Gumbel search"
-            ) from exc
-        cur = exact_transition(start_world, root_seat, root_action_id)
-        self._transitions += 1
-        step = 1
-        while step < self._config.max_depth and not _is_terminal(cur, self._config.max_depth, step):
-            actor = _actor_to_move(cur)
-            _require_belief()
-            obs = _wao(cur, actor=actor)
-            legal_ids = _legal_ids_for_observation(obs)
-            if len(legal_ids) == 0:
-                break
-            policy = self._continuations.get(actor, UniformContinuationPolicy())
-            aid = policy.sample(obs, legal_ids, rng)
-            if (
-                self._config.max_transitions is not None
-                and self._transitions >= self._config.max_transitions
-            ):
-                break
-            cur = exact_transition(cur, actor, aid)
-            self._transitions += 1
-            step += 1
-            if (
-                self._config.max_transitions is not None
-                and self._transitions >= self._config.max_transitions
-            ):
-                break
-        if _is_terminal(cur, self._config.max_depth, step):
-            vec = terminal_vector_for_world(cur)
-        else:
-            if (
-                self._config.max_model_calls is not None
-                and self._model_calls >= self._config.max_model_calls
-            ):
-                vec = terminal_vector_for_world(cur)
-            else:
-                vec = model_vector_for_world(cur, candidate_id=self._config.candidate_id)
-                self._model_calls += 1
-        return cur, vec
-
     def _action_id_for(self, action: Any) -> int:
         aid = getattr(action, "action_id", None)
         if isinstance(aid, int) and not isinstance(aid, bool):
@@ -354,7 +417,15 @@ class GumbelSearchPlannerSearchMixin:
         rng: Any,
         case_id: str | None = None,
     ) -> dict[str, Any]:
-        """Run Gumbel sequential-halving search and return structured result."""
+        """Run Gumbel sequential-halving search and return structured result.
+
+        Rust-batch driver: Python builds ONE batch per search (sampled worlds
+        in oracle visit order, per-rollout policy directions, CTR policy
+        floats, root Gumbels) and makes ONE ``search.gumbel_halving`` call
+        with the GIL released. Rounds/aids/visits loops, rollout descent,
+        vector backup, cuts, and final selection live in Rust bit-identically
+        (parity file frozen goldens).
+        """
         if epoch is None:
             raise ContractError("epoch must be BeliefEpoch")
         if root_observation is None or legal_actions is None:
@@ -412,44 +483,56 @@ class GumbelSearchPlannerSearchMixin:
             case_id=cid, root_seat=root_seat, candidate_id=candidate_id, legal_action_ids=sorted_ids
         )
 
-        # Per-action vector stats (four-seat)
-        stats: dict[int, _ActionStats] = {aid: _ActionStats() for aid in sorted_ids}
-        survivors: tuple[int, ...] = sorted_ids
+        # Rust covers only the frozen 0.2 tilt (``CONTINUATION_BIAS``); custom
+        # tilts have no pyfn — fail closed with a named reason instead of
+        # forking a Python fallback (no dual implementations at rest).
+        for seat, pol in self._continuations.items():
+            bias = getattr(pol, "_bias", 0.2)
+            if not isinstance(bias, float) or abs(bias - 0.2) > 1e-15:
+                raise ContractError(
+                    f"gumbel: continuation bias {bias!r} for seat {seat!r} has no "
+                    "gumbel_halving envelope (Rust covers 0.2 only); fail closed"
+                )
 
-        # Sequential halving rounds
-        for round_idx in range(self._config.halving_rounds):
-            if len(survivors) <= 1:
+        # Real belief required; synthetic worlds removed (fail closed).
+        _require_belief()
+        if self._belief is None or epoch is None:
+            raise ContractError("gumbel: belief and epoch required; synthetic worlds removed")
+        try:
+            from hydra2.belief.world import world_actor_observation as _wao
+        except ImportError as exc:
+            raise ImportError(
+                "hydra2.belief.world not importable "
+                f"({exc}); build the bridge with `pixi run build-ext` before Gumbel search"
+            ) from exc
+
+        cfg = self._config
+        max_depth = cfg.max_depth
+        max_trans = cfg.max_transitions
+        slots = _halving_slots(len(sorted_ids), cfg.halving_rounds)
+
+        worlds_json: list[dict[str, Any]] = []
+        dirs_rows: list[list[int]] = []
+        draws: list[float] = []
+        worlds_live_lens: list[int] = []
+        first_cont_legal: tuple[int, ...] | None = None
+        transitions_sim = 0
+
+        # Precompute walk in oracle visit order (round-major, slot-minor,
+        # visit-minor); budget truncation stops the tail only. Belief draws +
+        # policy floats interleave on the caller's stream exactly as the
+        # oracle consumed them, so later belief samples pick identical corpus
+        # indices. Continuation observations are action-independent (hands
+        # never move, one live tile pops per transition, turn rotates), so
+        # directions need no transitions — only hands/live/actor.
+        for round_idx in range(cfg.halving_rounds):
+            if slots[round_idx] <= 1:
                 break
-            visits = self._config.visits_per_round[round_idx]
-            # Real belief required; synthetic worlds removed (fail closed).
-            _require_belief()
-            if self._belief is None or epoch is None:
-                raise ContractError("gumbel: belief and epoch required; synthetic worlds removed")
-            # For each survivor, allocate visits rollouts
-            for aid in survivors:
-                for _ in range(visits):
-                    # Budget checks before rollout
-                    if (
-                        self._config.max_transitions is not None
-                        and self._transitions >= self._config.max_transitions
-                    ):
+            visits = cfg.visits_per_round[round_idx]
+            for _slot in range(slots[round_idx]):
+                for _visit in range(visits):
+                    if max_trans is not None and transitions_sim >= max_trans:
                         break
-                    if (
-                        self._config.max_model_calls is not None
-                        and self._model_calls >= self._config.max_model_calls
-                    ):
-                        # Need model call for non-terminal leaf; if terminal heavy, could still continue
-                        # But we enforce hard budget for determinism
-                        # Allow terminal rollouts that avoid model calls
-                        # So we only break if we would definitely need model call and already exhausted
-                        # For simplicity, break when both budgets exhausted
-                        if self._transitions >= (
-                            self._config.max_transitions
-                            if self._config.max_transitions is not None
-                            else 10**9
-                        ):
-                            break
-                    # Sample natural world — real belief required; no synthetic fallback.
                     try:
                         particles: Any = self._belief.sample_natural(epoch, count=1, rng=rng)  # type: ignore[union-attr]
                         particle: Any = particles[0]  # type: ignore[explicit-any]
@@ -462,161 +545,180 @@ class GumbelSearchPlannerSearchMixin:
                         raise
                     except Exception as exc:
                         raise ContractError(f"gumbel: belief sampling failed: {exc}") from exc
-                    _, vec = self._rollout(
-                        start_world=cur_world, root_action_id=aid, root_seat=root_seat, rng=rng
-                    )
-                    # Vector backup — accumulate four-seat sum
-                    st = stats[aid]
-                    st.visits += 1
-                    st.value_sum = tuple(v + dv for v, dv in zip(st.value_sum, vec))  # type: ignore[assignment]
-                    self._simulations += 1
-                    # Enforce per-round budget
-                    if (
-                        self._config.max_transitions is not None
-                        and self._transitions >= self._config.max_transitions
-                    ):
-                        break
-                if (
-                    self._config.max_transitions is not None
-                    and self._transitions >= self._config.max_transitions
-                ):
-                    break
-            # Score survivors by gumbel + scalarized mean (vector backup -> scalarize at root only).
-            # The cut rides the bridge when every survivor was visited (finite
-            # means); budget-exhausted -inf means stay on the oracle path the
-            # bridge rejects as non-finite.
-            cut_means: dict[int, float] = {}
-            cut_complete = True
-            for aid in survivors:
-                mv = stats[aid].mean_vector()
-                if mv is None:
-                    cut_complete = False
-                    break
-                cut_means[aid] = scalarize_vector(mv, root_seat)
-            if cut_complete:
-                try:
-                    survivors = tuple(
-                        _require_search_bridge().halving_cut(
-                            list(survivors),
-                            [(aid, cut_means[aid]) for aid in survivors],
-                            [(aid, gumbels[aid]) for aid in survivors],
-                            str(self._config.tie_break),
+                    try:
+                        hands = tuple(tuple(int(t) for t in h) for h in cur_world.concealed_hands)
+                        live_start = tuple(int(t) for t in cur_world.live_wall)
+                        dead = tuple(int(t) for t in cur_world.dead_wall)
+                        _lat: Any = getattr(cur_world, "latent_state", {}) or {}
+                        _step0: Any = _lat.get("step", None) if isinstance(_lat, dict) else None
+                        _turn0: Any = _lat.get("turn", None) if isinstance(_lat, dict) else None
+                        _corp0: Any = (
+                            _lat.get("corpus_idx", None) if isinstance(_lat, dict) else None
                         )
+                    except Exception as exc:
+                        raise ContractError(f"gumbel: sampled world malformed: {exc}") from exc
+                    worlds_json.append(
+                        {
+                            "world_id": str(cur_world.world_id),
+                            "hands": [list(h) for h in hands],
+                            "live": list(live_start),
+                            "dead": list(dead),
+                            "step": (None if _step0 is None else int(_step0)),
+                            "turn": (None if _turn0 is None else int(_turn0)),
+                            "corpus_idx": (None if _corp0 is None else int(_corp0)),
+                            "snapshot": str(cur_world.simulator_snapshot),
+                        }
                     )
-                except ImportError:
-                    raise
-                except Exception as exc:
-                    raise ContractError(f"gumbel bridge halving cut failed: {exc}") from exc
-            else:
-                scored: list[tuple[float, int]] = []
-                for aid in survivors:
-                    st = stats[aid]
-                    mv = st.mean_vector()
-                    q = scalarize_vector(mv, root_seat) if mv is not None else float("-inf")
-                    g = gumbels[aid]
-                    # Gumbel score rule: g + q (MuZero style uses g + logits + sigma(q); we use g+q)
-                    score = g + q
-                    scored.append((score, aid))
-                # Sort descending by score, tie_break deterministic
-                scored.sort(
-                    key=lambda x: (
-                        -x[0],
-                        x[1]
-                        if self._config.tie_break == "lowest_action_id"
-                        else hashlib.sha256(f"{x[1]}".encode()).hexdigest(),
-                    )
-                )
-                # Keep ceil(n/2) survivors (sequential halving)
-                keep = (len(survivors) + 1) // 2
-                if keep < 1:
-                    keep = 1
-                # If all scores are -inf (no visits), keep original order
-                survivors = tuple(aid for _, aid in scored[:keep])
-            # Budget exhausted -> break early
-            if (
-                self._config.max_transitions is not None
-                and self._transitions >= self._config.max_transitions
-            ):
+                    worlds_live_lens.append(len(live_start))
+                    # Forced root transition (unconditional once entered).
+                    transitions_sim += 1
+                    step = 1
+                    live_len = len(live_start) - 1 if len(live_start) > 0 else 0
+                    actor = (root_seat + 1) % 4
+                    row_dirs = [0] * max_depth
+                    cstep = 0
+                    while step < max_depth and live_len > 0:
+                        fake = types.SimpleNamespace(
+                            concealed_hands=hands,
+                            live_wall=tuple([0] * live_len),
+                            rules_hash=str(cur_world.rules_hash),
+                        )
+                        try:
+                            obs = _wao(fake, actor=actor)  # pyrefly: ignore[bad-argument-type]
+                        except ImportError:
+                            raise
+                        except Exception as exc:
+                            raise ContractError(
+                                f"gumbel: continuation observation failed: {exc}"
+                            ) from exc
+                        legal_next = _legal_ids_for_observation(obs)
+                        if len(legal_next) == 0:
+                            break
+                        if first_cont_legal is None:
+                            first_cont_legal = legal_next
+                        elif legal_next != first_cont_legal:
+                            raise ContractError(
+                                "gumbel: varying continuation legal has no batch envelope; fail closed"
+                            )
+                        try:
+                            _h: Any | None = getattr(obs, "observation_hash", None)
+                            hs: str = _h if isinstance(_h, str) and _h != "" else ""
+                            direction = hashlib.sha256(hs.encode()).digest()[0] & 1
+                        except Exception as exc:
+                            raise ContractError(
+                                f"gumbel: continuation direction failed: {exc}"
+                            ) from exc
+                        row_dirs[cstep] = direction
+                        try:
+                            draws.append(float(rng.random_float()))
+                        except ImportError:
+                            raise
+                        except Exception as exc:
+                            raise ContractError(f"gumbel: rng random_float failed: {exc}") from exc
+                        # Sample-then-gate: the float above counts even when the cap breaks here.
+                        if max_trans is not None and transitions_sim >= max_trans:
+                            break
+                        transitions_sim += 1
+                        step += 1
+                        cstep += 1
+                        live_len -= 1
+                        actor = (actor + 1) % 4
+                        if max_trans is not None and transitions_sim >= max_trans:
+                            break
+                    dirs_rows.append(row_dirs)
+                    if max_trans is not None and transitions_sim >= max_trans:
+                        break
+                if max_trans is not None and transitions_sim >= max_trans:
+                    break
+            if max_trans is not None and transitions_sim >= max_trans:
                 break
-            if (
-                self._config.max_model_calls is not None
-                and self._model_calls >= self._config.max_model_calls
-            ):
-                # Budget-exhausted rounds fall through to terminal fallback
-                # vectors; the return rule below picks the max-Gumbel survivor.
-                pass
 
-        # Final selection: survivor with max gumbel score. The pick rides the
-        # bridge when every survivor was visited; the no-visit fallback stays
-        # on the oracle path (bridge rejects non-finite means).
-        final_means: dict[int, float] = {}
-        final_complete = len(survivors) > 0
-        for aid in survivors:
-            mv = stats[aid].mean_vector()
-            if mv is None:
-                final_complete = False
-                break
-            final_means[aid] = scalarize_vector(mv, root_seat)
-        best_id: int | None = None
-        if final_complete:
-            try:
-                best_id = int(
-                    _require_search_bridge().gumbel_select(
-                        list(survivors),
-                        [(aid, final_means[aid]) for aid in survivors],
-                        [(aid, gumbels[aid]) for aid in survivors],
-                        str(self._config.tie_break),
-                    )
-                )
-            except ImportError:
-                raise
-            except Exception as exc:
-                raise ContractError(f"gumbel bridge select failed: {exc}") from exc
-        else:
-            best_score = float("-inf")
-            for aid in survivors:
-                st = stats[aid]
-                mv = st.mean_vector()
-                q = scalarize_vector(mv, root_seat) if mv is not None else float("-inf")
-                score = gumbels[aid] + q
-                if score > best_score + 1e-12:
-                    best_score = score
-                    best_id = aid
-                elif best_id is not None and abs(score - best_score) <= 1e-12:
-                    if self._config.tie_break == "lowest_action_id" and aid < best_id:
-                        best_id = aid
-                    elif self._config.tie_break in ("stable_hash", "lexicographic"):
-                        ha = hashlib.sha256(f"{aid}".encode()).hexdigest()
-                        hb = hashlib.sha256(f"{best_id}".encode()).hexdigest()
-                        if ha < hb:
-                            best_id = aid
-            if best_id is None:
-                # Fallback: highest gumbel alone (no visits)
-                best_id = (
-                    max(survivors, key=lambda aid: gumbels[aid])  # type: ignore[unknown-argument-type,explicit-any]
-                    if len(survivors) > 0
-                    else sorted_ids[0]
-                )
+        # Pad trailing dummies to the Rust dry-run demand (see helper doc).
+        # Real policy floats stay first in consumption order; the tail rides
+        # unused (``floats_used`` reports real consumption).
+        need = _dry_float_need(worlds_live_lens, slots, cfg.visits_per_round, max_depth, max_trans)
+        if len(draws) < need:
+            draws = draws + [0.5] * (need - len(draws))
+        continuation_legal = [0, 2] if first_cont_legal is None else sorted(first_cont_legal)
 
-        # Value vectors for each legal action (mean vectors, or placeholder for unvisited)
-        vecs: list[tuple[float, float, float, float]] = []
+        batch = {
+            "worlds": worlds_json,
+            "rules_hash": str(getattr(epoch, "rules_hash", "")),
+            "observation_hash": str(getattr(epoch, "observation_hash", "")),
+            "root_legal": sorted(sorted_ids),
+            "root_seat": root_seat,
+            "gumbels": [[int(a), float(gumbels[int(a)])] for a in sorted(sorted_ids)],
+            "halving_rounds": int(cfg.halving_rounds),
+            "visits_per_round": [int(v) for v in cfg.visits_per_round],
+            "continuation_legal": [int(x) for x in continuation_legal],
+            "policy_dirs": dirs_rows,
+            "rng_floats": draws,
+            "max_depth": int(max_depth),
+            "max_transitions": (None if cfg.max_transitions is None else int(cfg.max_transitions)),
+            "max_model_calls": (None if cfg.max_model_calls is None else int(cfg.max_model_calls)),
+            "candidate_id": str(cfg.candidate_id),
+            "domain": "gumbel",
+            "tie_break": str(cfg.tie_break),
+            "leaf_overrides": [],
+        }
+        bridge = _require_driver_bridge()
+        try:
+            out = bridge.gumbel_halving(json.dumps(batch).encode())
+        except ImportError:
+            raise
+        except Exception as exc:
+            raise ContractError(f"gumbel bridge halving failed: {exc}") from exc
+
+        try:
+            rust_cands = [int(a) for a in out.candidate_ids]
+            rust_visits = [int(v) for v in out.visits]
+            rust_vecs: list[tuple[float, float, float, float]] = []
+            for vec in out.value_vectors:
+                quad = tuple(float(v) for v in vec)
+                if len(quad) != 4:
+                    raise ContractError("gumbel: halving value vector must hold 4 entries")
+                for v in quad:
+                    if not isinstance(v, float) or v != v or v in (float("inf"), float("-inf")):
+                        raise ContractError("gumbel: halving vector must be finite")
+                rust_vecs.append((quad[0], quad[1], quad[2], quad[3]))
+            rust_survivors = tuple(int(a) for a in out.survivors)
+            selected_id = int(out.selected_id)
+        except ContractError:
+            raise
+        except Exception as exc:
+            raise ContractError(f"gumbel: halving outcome malformed: {exc}") from exc
+        if rust_cands != sorted(sorted_ids):
+            raise ContractError("gumbel: halving candidates mismatch sorted legal")
+        if len(rust_cands) != len(rust_vecs) or len(rust_cands) != len(rust_visits):
+            raise ContractError("gumbel: halving vectors length mismatch")
+        if selected_id not in rust_cands:
+            raise ContractError("gumbel: halving selection not a candidate")
+
+        self._simulations = int(out.sims_run)
+        self._transitions = int(out.transitions)
+        self._model_calls = int(out.model_calls)
+
+        # Per-action stats: visits ride Rust; sums reconstruct via
+        # _exact_sum_for_mean so stats[].mean_vector() returns the Rust mean
+        # bit-exactly for every schedule (value_vectors below carry the same
+        # Rust means directly).
+        vec_by_aid = dict(zip(rust_cands, rust_vecs))
+        visit_by_aid = dict(zip(rust_cands, rust_visits))
+        stats: dict[int, _ActionStats] = {}
         for aid in sorted_ids:
-            mv = stats[aid].mean_vector()
-            if mv is not None:
-                vecs.append(mv)
-            else:
-                vecs.append(
-                    model_vector_for_world(
-                        self._world_for_particle(
-                            type("P", (), {"world_ref": f"unvisited:{aid}"})()
-                        ),
-                        candidate_id=candidate_id,
-                    )
+            n = int(visit_by_aid.get(aid, 0))
+            if n > 0:
+                mv = vec_by_aid[aid]
+                stats[aid] = _ActionStats(
+                    visits=n,
+                    value_sum=tuple(_exact_sum_for_mean(m, n) for m in mv),  # type: ignore[assignment]
                 )
-        value_vectors = tuple(vecs)
+            else:
+                stats[aid] = _ActionStats(visits=0, value_sum=(0.0, 0.0, 0.0, 0.0))
+        value_vectors = tuple(vec_by_aid[aid] for aid in sorted_ids)
 
         # Resolve selected action object
-        selected_action: Any = id_to_action.get(best_id, legal_actions[0])  # type: ignore[unknown-argument-type]
+        selected_action: Any = id_to_action.get(selected_id, legal_actions[0])  # type: ignore[unknown-argument-type]
 
         telemetry = {
             "simulations": self._simulations,
@@ -638,17 +740,17 @@ class GumbelSearchPlannerSearchMixin:
             "resource_view": self._config.resource_view,
             "root_seat": root_seat,
             "gumbels": gumbels,
-            "survivors": survivors,
+            "survivors": rust_survivors,
         }
 
         return {
             "selected_action": selected_action,
-            "selected_action_id": best_id,
+            "selected_action_id": selected_id,
             "candidate_actions": legal_actions,
             "value_vectors": value_vectors,
             "stats": stats,
             "gumbels": gumbels,
-            "survivors": survivors,
+            "survivors": rust_survivors,
             "telemetry": telemetry,
             "completed": True,
         }

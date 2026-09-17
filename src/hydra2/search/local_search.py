@@ -1,23 +1,31 @@
 # reason: legacy blanket kept, not narrowed — narrowing surfaces unrelated mid-flight noise outside the owned error set (F401 optional-dependency fallback shims + re-exported spec symbols). Evidence: https://docs.astral.sh/ruff/rules/
-"""Candidate 5 local resolving — search: resolving loop over the declared subgame.
+"""Candidate 5 local resolving — search: Rust-batch resolving driver.
 
-Owns the empirical resolving loop: construction and table seeding, deterministic
-counter-based RNG, per-iteration world sampling with horizon traversal, frozen
-update-rule application, averaging accumulation, and root-marginal selection.
-Planner construction and act live in :mod:`hydra2.search.local_act`; the spec
-factory lives in :mod:`hydra2.search.local_spec`.
+Owns the construction plus Rust-batch search half of
+:class:`LocalResolvingPlanner`: belief-world materialization and the
+one-bridge-call resolving driver returning the structured result dict. The
+per-iteration/per-depth traversal, regret/hedge/fictitious-play updates,
+averaging accumulation, path sampling, and next-node mixing live in
+``hydra-search:local_resolving_batch`` (GIL released); Python builds ONE
+batch per search (sampled worlds in oracle iteration order, memoized
+per-(world, actor) base info keys, validated leaf vectors, seeded init-table
+entries, per-step sampling floats) and makes ONE bridge call. Tie-break
+selection, concrete mapping, counters, and telemetry stay Python (once per
+search, zero hotspot). Planner construction and act live in
+:mod:`hydra2.search.local_act`; the spec factory lives in
+:mod:`hydra2.search.local_spec`.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import time
 from typing import Any, cast
 
 from hydra2.contracts.common import ContractError
 from hydra2.search.local_abstraction import PublicSubgame as PublicSubgame
-from hydra2.search.local_abstraction import _digest as _digest
 from hydra2.search.local_abstraction import build_public_subgame as build_public_subgame
 from hydra2.search.local_abstraction import (
     info_key_for_actor_observation as info_key_for_actor_observation,
@@ -29,16 +37,35 @@ from hydra2.search.local_spec import (
     _build_abstraction_from_config as _build_abstraction_from_config,
 )
 from hydra2.search.local_strategy import StrategyTable as StrategyTable
-from hydra2.search.local_strategy import _fictitious_play_update as _fictitious_play_update
-from hydra2.search.local_strategy import _hedge_update as _hedge_update
-from hydra2.search.local_strategy import _regret_matching_update as _regret_matching_update
-from hydra2.search.local_strategy import averaging_weights as averaging_weights
 from hydra2.search.local_strategy import leaf_vector_replay as leaf_vector_replay
 from hydra2.search.local_strategy import make_uniform_strategy as make_uniform_strategy
 
 __all__ = [
     "LocalResolvingPlannerSearchMixin",
 ]
+
+
+def _require_driver_bridge() -> Any:
+    """Import the built ``search`` bridge surface with ``local_resolving_batch`` (fail closed)."""
+    try:
+        import hydra2_replay_rs as _ext  # pyrefly: ignore[missing-import]
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2_replay_rs extension not importable "
+            f"({exc}); rebuild the bridge with `pixi run build-ext` before local resolving search"
+        ) from exc
+    try:
+        mod = _ext.search
+    except AttributeError as exc:
+        raise ImportError(
+            f"hydra2_replay_rs.search missing ({exc}); rebuild the bridge with `pixi run build-ext`"
+        ) from exc
+    if not hasattr(mod, "local_resolving_batch"):
+        raise ImportError(
+            "hydra2_replay_rs.search.local_resolving_batch missing (stale .so); "
+            "rebuild the bridge with `pixi run build-ext`"
+        )
+    return mod
 
 
 class LocalResolvingPlannerSearchMixin:
@@ -157,14 +184,6 @@ class LocalResolvingPlannerSearchMixin:
             rng = self._deterministic_rng(case_id, seat)
         # Strategy tables
         table = self._init_tables(subgame, root_observation, legal_ids_t)
-        # Averaging accumulator: sum of strategies weighted
-        avg_accum: dict[tuple[int, str], list[float]] = {}
-        avg_weights: dict[tuple[int, str], float] = {}
-        # Regret tables for regret_matching
-        regrets: dict[tuple[int, str], list[float]] = {}
-        q_vals: dict[tuple[int, str], list[float]] = {}
-        # For fictitious_play need visit counts
-        visit_counts: dict[tuple[int, str], int] = dict(table.visit_counts)
 
         # Need worlds for leaf evaluation — real belief required (fail closed, no synthetic).
         _require_belief()
@@ -209,168 +228,150 @@ class LocalResolvingPlannerSearchMixin:
         self._model_calls += len(worlds)
         # Map abstract ids to indices for distribution ordering
         ab_order = tuple(sorted(ab.abstract_ids))
-        # Initialize regrets/q for each key
-        for key in list(table.table.keys()):
-            n = len(ab_order)
-            regrets[key] = [0.0] * n
-            q_vals[key] = [0.0] * n
-            avg_accum[key] = [0.0] * n
-            avg_weights[key] = 0.0
-
-        # Iterative traversal
+        # Iterative traversal runs in Rust (single bridge call below); the
+        # retired oracle state dicts (regrets/q/avg accumulators/visit copies)
+        # live driver-side now. Only the seeded init entries cross — the root
+        # entry is ensured driver-side without a visit-count entry, exactly
+        # like the retired seeding below used to do table-only.
         root_actor = int(getattr(root_observation, "actor", 0))
         root_info = info_key_for_actor_observation(root_observation)
-        # Ensure root entry exists
-        if (root_actor, root_info) not in table.table:
-            table.table[(root_actor, root_info)] = make_uniform_strategy(ab)
-            regrets[(root_actor, root_info)] = [0.0] * len(ab_order)
-            q_vals[(root_actor, root_info)] = [0.0] * len(ab_order)
-            avg_accum[(root_actor, root_info)] = [0.0] * len(ab_order)
-            avg_weights[(root_actor, root_info)] = 0.0
-            visit_counts[(root_actor, root_info)] = 0
 
-        # Wave 2 bridge audit: kept Python — descent loop + node tables need live worlds
-        # and model leaf vectors (no pyfn covers traversal; regret/hedge/FP updates stay Python).
-        for it in range(1, self.config.iterations + 1):
-            # Select world cyclically
-            world = worlds[(it - 1) % len(worlds)]
-            leaf_vec = leaf_vector_replay(world, self.config.leaf_model)
-            if not preserves_vector_returns(leaf_vec):
-                raise ContractError(f"leaf vector invalid {leaf_vec!r}")
-            self._model_calls += 1
-            self._transitions += self.config.horizon
-            # Sample public history path: deterministic via rng or via hash
-            # For each depth, pick abstract action by sampling from current strategy at that info node
-            # Simplify: traverse one path per iteration, depth = horizon
-            path_nodes: list[str] = [subgame.public_history_hash]
-            # We'll simulate per-actor updates: at each depth, actor = (root_actor + depth) % 4
-            for depth in range(subgame.horizon):
-                actor = (root_actor + depth) % 4
-                # info hash for this actor at this public node
-                # Derive from world actor observation at that actor + node hash
-                try:
-                    from hydra2.belief.world import world_actor_observation
+        # Batch precompute (ONE envelope per search): sampled worlds in oracle
+        # iteration order with memoized per-(world, actor) base info keys and
+        # validated leaf vectors, seeded init-table entries, and per-step
+        # sampling floats. Only actor-visible strings/floats cross (firewall:
+        # ActorObservation construction stays Python, info-keys-only cross).
+        horizon = self.config.horizon
+        iterations = self.config.iterations
+        leaf_memo: dict[str, tuple[float, ...]] = {}
+        base_memo: dict[str, list[str | None]] = {}
+        iters_json: list[dict[str, Any]] = []
+        for w in worlds:
+            wid = str(w.world_id)
+            leaf = leaf_memo.get(wid)
+            if leaf is None:
+                leaf = leaf_vector_replay(w, self.config.leaf_model)
+                if not preserves_vector_returns(leaf):
+                    raise ContractError(f"leaf vector invalid {leaf!r}")
+                leaf_memo[wid] = leaf
+            bases: list[str | None] | None = base_memo.get(wid)
+            if bases is None:
+                fresh: list[str | None] = []
+                for actor_idx in range(4):
+                    try:
+                        from hydra2.belief.world import world_actor_observation as _wao
 
-                    obs = world_actor_observation(world, actor=actor)
-                    base_key = info_key_for_actor_observation(obs)
-                    # Mix with public node to get distinct per depth but still per actor info
-                    info_hash = _digest(f"{base_key}:{path_nodes[-1]}")
-                except Exception:
-                    info_hash = _digest(f"{path_nodes[-1]}:actor{actor}")
-                # Ensure table entry
-                if (actor, info_hash) not in table.table:
-                    table.table[(actor, info_hash)] = make_uniform_strategy(ab)
-                    regrets[(actor, info_hash)] = [0.0] * len(ab_order)
-                    q_vals[(actor, info_hash)] = [0.0] * len(ab_order)
-                    avg_accum[(actor, info_hash)] = [0.0] * len(ab_order)
-                    avg_weights[(actor, info_hash)] = 0.0
-                    visit_counts[(actor, info_hash)] = 0
-                # Current strategy
-                strat = table.table[(actor, info_hash)]
-                # Generate regrets/q based on leaf_vec projection for that actor
-                # Simplified: utility for actor is leaf_vec[actor]; create action utilities by adding small per-action offset
-                # Offset deterministic from abstract id and world
-                utilities: list[float] = []
-                for aid in ab_order:
-                    # deterministic offset per action
-                    off = (
-                        int(
-                            hashlib.sha256(f"{world.world_id}:{aid}:{depth}".encode()).hexdigest()[
-                                :4
-                            ],
-                            16,
-                        )
-                        % 100
-                    ) / 1000.0 - 0.05
-                    utilities.append(leaf_vec[actor] + off)
-                # Compute expected value under current strat
-                ev = sum(p * u for p, u in zip(strat, utilities, strict=True))
-                # Regrets = utility - ev
-                cur_reg = tuple(u - ev for u in utilities)
-                # Update regrets/q
-                if self.config.update_rule == "regret_matching":
-                    # accumulate positive regrets
-                    for i, r in enumerate(cur_reg):
-                        regrets[(actor, info_hash)][i] += r
-                    new_strat = _regret_matching_update(strat, tuple(regrets[(actor, info_hash)]))
-                elif self.config.update_rule == "hedge":
-                    for i, u in enumerate(utilities):
-                        q_vals[(actor, info_hash)][i] += u
-                    new_strat = _hedge_update(strat, tuple(q_vals[(actor, info_hash)]))
-                else:  # fictitious_play
-                    # best response is max utility
-                    br_idx: int = 0
-                    best_val: float = utilities[0] if len(utilities) > 0 else 0.0
-                    for idx_br, val_br in enumerate(utilities):
-                        if val_br > best_val:
-                            best_val = val_br
-                            br_idx = idx_br
-                    cnt = visit_counts[(actor, info_hash)]
-                    new_strat = _fictitious_play_update(strat, br_idx, cnt)
-                    visit_counts[(actor, info_hash)] = cnt + 1
-                table.table[(actor, info_hash)] = new_strat
-                # Averaging accumulator
-                w = averaging_weights(it, self.config.iterations, self.config.averaging)
-                for i, p in enumerate(new_strat):
-                    avg_accum[(actor, info_hash)][i] += p * w
-                avg_weights[(actor, info_hash)] += w
-                table.visit_counts[(actor, info_hash)] = (
-                    table.visit_counts.get((actor, info_hash), 0) + 1
-                )
-                # Move to next public node via sampled abstract action
-                # Sample action from new_strat deterministically via rng
-                # Use rng.random() to pick
-                try:
-                    r = float(rng.random()) if hasattr(rng, "random") else 0.5  # type: ignore[attr-defined]
-                except Exception:
-                    r = ((it * 997 + depth * 13) % 100) / 100.0
-                cum = 0.0
-                chosen_idx = len(ab_order) - 1
-                for i, p in enumerate(new_strat):
-                    cum += p
-                    if r < cum:
-                        chosen_idx = i
-                        break
-                chosen_aid = ab_order[chosen_idx]
-                # Next node hash via edge
-                nxt = _digest(f"{path_nodes[-1]}:{depth}:{chosen_aid}")
-                # Ensure nxt is in subgame nodes or synthesize
-                if nxt not in subgame.nodes:
-                    # For exhaustive gate, we may be off subgame graph; still continue but count transition
-                    pass
-                path_nodes.append(nxt)
-            # End depth loop
-            # Also update root averaging if not already via loop (root actor at depth 0 already updated)
-            # Ensure root accumulators weighted
-            rkey = (root_actor, root_info)
-            if rkey in avg_accum and avg_weights[rkey] == 0:
-                # root was updated already above at depth 0 when actor==root_actor
-                pass
+                        obs = _wao(w, actor=actor_idx)  # pyrefly: ignore[bad-argument-type]
+                        fresh.append(info_key_for_actor_observation(obs))
+                    except Exception:
+                        fresh.append(None)
+                base_memo[wid] = fresh
+                bases = fresh
+            iters_json.append({"world_id": wid, "leaf": list(leaf), "base": bases})
+        # Per-step sampling floats in iteration-major order (mirrors the
+        # retired duck-type exactly; RandomStream has no `random`, so the
+        # common path consumes nothing from the stream).
+        sampling: list[float] = []
+        if hasattr(rng, "random"):
+            for it in range(1, iterations + 1):
+                for depth in range(horizon):
+                    try:
+                        r = float(rng.random())  # type: ignore[attr-defined]
+                    except Exception:
+                        r = ((it * 997 + depth * 13) % 100) / 100.0
+                    sampling.append(r)
+        else:
+            sampling = [0.5] * (iterations * horizon)
+        init_json = [
+            {"actor": actor, "info": info, "dist": list(dist)}
+            for (actor, info), dist in table.table.items()
+        ]
+        batch = {
+            "ab_order": list(ab_order),
+            "horizon": horizon,
+            "iterations": iterations,
+            "update_rule": self.config.update_rule,
+            "averaging": self.config.averaging,
+            "root_actor": root_actor,
+            "root_info": root_info,
+            "iters": iters_json,
+            "init": init_json,
+            "sampling": sampling,
+            "public_history_hash": subgame.public_history_hash,
+        }
+        bridge = _require_driver_bridge()
+        try:
+            out = bridge.local_resolving_batch(json.dumps(batch).encode())
+        except ImportError:
+            raise
+        # Loop counters match the retired loop exactly (one model call and
+        # `horizon` transitions per iteration, plus the bulk sampling charge
+        # already applied above).
+        self._model_calls += iterations
+        self._transitions += iterations * horizon
+        # Rebuild the strategy tables from the Rust dumps. Shapes fail
+        # closed; values ride through unchecked exactly as the retired loop
+        # assigned them (no `.set` validation anywhere on this path).
+        n_actions = len(ab_order)
 
-        # Build averaged tables
+        def _take_dist(raw: Any) -> tuple[float, ...]:
+            if not isinstance(raw, (list, tuple)) or len(raw) != n_actions:
+                raise ContractError("local: resolving dump dist malformed")
+            vals: list[float] = []
+            for v in raw:
+                if isinstance(v, bool) or not isinstance(v, (int, float)):
+                    raise ContractError("local: resolving dump dist malformed")
+                vals.append(float(v))
+            return tuple(vals)
+
+        def _take_key(raw: Any) -> tuple[int, str]:
+            if not isinstance(raw, (list, tuple)) or len(raw) != 4:
+                raise ContractError("local: resolving dump row malformed")
+            actor_r, info_r, _dist_ignored, _visits_ignored = raw
+            if isinstance(actor_r, bool) or not isinstance(actor_r, int) or not 0 <= actor_r <= 3:
+                raise ContractError("local: resolving dump actor malformed")
+            if not isinstance(info_r, str) or info_r == "":
+                raise ContractError("local: resolving dump info malformed")
+            return actor_r, info_r
+
+        try:
+            table_rows = json.loads(out.table_json)
+            avg_rows = json.loads(out.avg_json)
+        except Exception as exc:
+            raise ContractError(f"local: resolving dump malformed: {exc}") from exc
+        if not isinstance(table_rows, list) or not isinstance(avg_rows, list):
+            raise ContractError("local: resolving dump malformed")
+        table = StrategyTable(abstraction=ab)
+        for row in table_rows:
+            actor_r, info_r = _take_key(row)
+            _dist_r: Any = row[2]
+            _visits_r: Any = row[3]
+            if isinstance(_visits_r, bool) or (
+                _visits_r is not None and (not isinstance(_visits_r, int) or _visits_r < 0)
+            ):
+                raise ContractError("local: resolving dump visits malformed")
+            table.table[(actor_r, info_r)] = _take_dist(_dist_r)
+            if _visits_r is not None:
+                table.visit_counts[(actor_r, info_r)] = _visits_r
         avg_table = StrategyTable(abstraction=ab)
-        for key, acc in avg_accum.items():
-            w = avg_weights[key]
-            if w > 0:
-                avg = tuple(v / w for v in acc)
-                # renormalize
-                s = sum(avg)
-                avg = tuple(v / s for v in avg) if s > 0 else make_uniform_strategy(ab)
-                avg_table.table[key] = avg
-                avg_table.visit_counts[key] = table.visit_counts.get(key, 0)
-            else:
-                # no visits — uniform
-                avg_table.table[key] = table.table.get(key, make_uniform_strategy(ab))
-
+        for row in avg_rows:
+            actor_r, info_r = _take_key(row)
+            _dist_r = row[2]
+            _visits_r = row[3]
+            avg_table.table[(actor_r, info_r)] = _take_dist(_dist_r)
+            if _visits_r is not None:
+                if isinstance(_visits_r, bool) or not isinstance(_visits_r, int) or _visits_r < 0:
+                    raise ContractError("local: resolving dump visits malformed")
+                avg_table.visit_counts[(actor_r, info_r)] = _visits_r
         self._last_table = table
         self._last_avg_table = avg_table
         # Select root action from averaged marginal for root info
         root_avg = avg_table.table.get((root_actor, root_info))
         if root_avg is None:
             root_avg = table.table.get((root_actor, root_info), make_uniform_strategy(ab))
-        # Tie break handling
-        # Wave 2 bridge audit: kept Python — greedy/temperature/value_break tie-breaks
-        # are not bridge selection cuts (no halving/gumbel/UCT/PUCT pyfn covers them).
+        # Tie break handling (once per search over the returned root
+        # average — zero hotspot; the temperature softmax `exp` stays in
+        # Python libm so it cannot fork 1 ulp across implementations).
         selected_abstract_idx: int
         if self.config.tie_break == "greedy":
             max_p = max(root_avg)

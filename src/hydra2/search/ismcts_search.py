@@ -1,4 +1,4 @@
-# ruff: noqa: B905, SIM102  # reason: legacy blanket kept, not narrowed — narrowing surfaces unrelated mid-flight noise outside the owned error set (B905 intentionally non-strict zips; SIM102 nested contract guards). Evidence: https://docs.astral.sh/ruff/rules/
+# ruff: noqa: B905  # reason: legacy blanket kept, not narrowed — narrowing surfaces unrelated mid-flight noise outside the owned error set (B905 intentionally non-strict zips; SIM102 nested contract guards). Evidence: https://docs.astral.sh/ruff/rules/
 """Candidate 1 ISMCTS search driver — Rust-batch descent (inversion vertical).
 
 The Rust ``ismcts_descent`` driver owns UCT descent, exact tiny-domain

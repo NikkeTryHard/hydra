@@ -36,7 +36,7 @@ from hydra2.analysis.qual_replay import (
     compare_gameplay_analysis as compare_gameplay_analysis,
 )
 from hydra2.artifacts.canonical import canonical_bytes
-from hydra2.artifacts.digest import of_canonical, sha256_digest
+from hydra2.artifacts.digest import of_canonical, sha256_digest, validate_digest
 from hydra2.contracts.common import (
     ContractError,
     DigestText,
@@ -74,8 +74,8 @@ class AnalysisGateRecord:
     digest: str = field(default="")
 
     def __post_init__(self) -> None:
-        _: DigestText = _bridge_contracts.make_digest_text(self.gameplay_spec_hash)
-        _: DigestText = _bridge_contracts.make_digest_text(self.analysis_spec_hash)
+        _: DigestText = validate_digest(self.gameplay_spec_hash)
+        _: DigestText = validate_digest(self.analysis_spec_hash)
         if not isinstance(self.candidate_id, str) or self.candidate_id == "":
             raise ContractError("candidate_id must be non-empty str")
         if not isinstance(self.comparison, Mapping):
@@ -149,10 +149,8 @@ def _load_default_hashes_for_spec() -> dict[str, str]:
         from hydra2.models.model import Hydra2BaselineModel
 
         probe = Hydra2BaselineModel()
-        defaults["utility_manifest_hash"] = str(
-            _bridge_contracts.make_digest_text(str(probe.utility_manifest_hash))
-        )
-        defaults["model_hash"] = str(_bridge_contracts.make_digest_text(str(probe.model_identity)))
+        defaults["utility_manifest_hash"] = str(validate_digest(str(probe.utility_manifest_hash)))
+        defaults["model_hash"] = str(validate_digest(str(probe.model_identity)))
     except (ImportError, AttributeError, ValueError, TypeError, OSError, ContractError) as exc:
         logger.debug("qualification: model-derived hash fallback", exc_info=exc)
         raise ContractError("qualification: cannot derive utility/model hashes from model") from exc
