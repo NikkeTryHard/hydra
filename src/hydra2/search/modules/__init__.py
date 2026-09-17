@@ -868,7 +868,7 @@ class VOCRoutingModule(_BaseModule):
                 "budget": meta_in.get("voc_budget", 12),
                 "scores": None
                 if meta_in.get("voc_scores", None) is None
-                else [float(v) for v in meta_in["voc_scores"] if isinstance(v, (int, float)) and not isinstance(v, bool)],
+                else list(meta_in["voc_scores"]),
             },
         )
         if hit is not None:

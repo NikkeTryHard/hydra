@@ -327,7 +327,6 @@ class PbrfPlannerSearchMixin:
             return (float(out[0]), float(out[1]), float(out[2]), float(out[3]))
         except ImportError:
             pass
-        _total = 0.0
         z = sum(e.raw_weight for e in entries)
         if z <= 0:
             return (0.0, 0.0, 0.0, 0.0)
@@ -469,7 +468,6 @@ class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
         self._model_calls = 0
         self._transitions = 0
         completed = True
-        _fallback_used = False
 
         # -- candidate generator (frozen before enumeration) -----------------
         # Freeze candidates before any packet enumeration evidence: we capture legal as frozen_candidates
@@ -514,7 +512,6 @@ class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
             # Check budget exhaustion after forest build
             if exhausted():
                 completed = False
-                _fallback_used = True
         except (PacketPartitionError, StaleBeliefError, ContractError):
             raise
         except Exception as exc:
