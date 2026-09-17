@@ -8,7 +8,6 @@ import riichienv
 from hydra2_replay_rs import tiles  # pyrefly: ignore[missing-import]
 
 from hydra2.contracts.common import ContractError as ContractError
-from hydra2.engines.riichienv._lr_rows import _copies_of_string as _copies_of_string
 
 if TYPE_CHECKING:
     from collections.abc import Sequence as Sequence
@@ -62,7 +61,7 @@ def _take_next(walk: _KyokuWalk, pai: str, state: _GameState, kyoku: int, *, whe
     0..3, then live draws in log order, then rinshan draws), so tracked
     physical copies agree with the engine tile-for-tile, aka included.
     """
-    pool = _copies_of_string(pai)
+    pool = tiles.copies_of_string(pai)
     taken = walk.take_taken.get(pai, 0)
     if taken >= len(pool):
         raise state.fail(kyoku, where, f"tile string {pai!r} overused (tile conservation)")
@@ -74,7 +73,7 @@ def _wall_filler_ids(walk: _KyokuWalk) -> list[int]:
     """Deterministic filler ids: numeric complement of every taken copy."""
     used: set[int] = set()
     for pai, count in walk.take_taken.items():
-        used.update(_copies_of_string(pai)[:count])
+        used.update(tiles.copies_of_string(pai)[:count])
     return sorted(set(range(136)) - used)
 
 
@@ -193,14 +192,14 @@ def _responder_eval(
     """Per-responder window facts (normalized): ``(shape, win, r2clean)``."""
     concealed = walk.hands[seat]
     melds = _eval_melds(state, walk, seat)
-    win_tile = _copies_of_string(tile)[0]
+    win_tile = tiles.copies_of_string(tile)[0]
     if not _shape_is_win(concealed, melds, win_tile):
         return (False, False, False)
     river = {_norm_pai(tiles.mjai_string_of(t)) for t in walk.rivers[seat]}
     if _norm_pai(tile) in river:
         return (True, False, False)
     for kind in river:
-        if _shape_is_win(concealed, melds, _copies_of_string(kind)[0]):
+        if _shape_is_win(concealed, melds, tiles.copies_of_string(kind)[0]):
             return (True, False, False)
     win = _win_is_win(
         concealed,

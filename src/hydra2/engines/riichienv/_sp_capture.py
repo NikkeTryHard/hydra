@@ -22,9 +22,6 @@ from hydra2.engines.riichienv._oracle_base import _adapter_hash as _adapter_hash
 from hydra2.engines.riichienv._sp_records import (
     SIM_DERIVATION_MARK as SIM_DERIVATION_MARK,
 )
-from hydra2.engines.riichienv._sp_records import (
-    _copies_of_string as _copies_of_string,
-)
 from hydra2.engines.riichienv._sp_records import _snapshot_at_row as _snapshot_at_row
 
 if TYPE_CHECKING:
@@ -38,25 +35,6 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Deterministic claim variants.
 # ---------------------------------------------------------------------------
-
-
-def _distinct_copies(ids: tuple[int, ...]) -> tuple[int, ...]:
-    """Fold ids to per-string occurrence pools (the oracle's rendering rule).
-
-    Ordering copies per string preserves the exact string multiset, so
-    string-level agreement is untouched and ownership sees tile-valid ids.
-    Red fives keep their string (``5mr``/``5m`` pools stay disjoint).
-    Overused strings keep the verbatim id and fail closed downstream.
-    """
-    counts: dict[str, int] = {}
-    out: list[int] = []
-    for tile in ids:
-        pai = tiles.mjai_string_of(tile)
-        pool = _copies_of_string(pai)
-        seen = counts.get(pai, 0)
-        out.append(pool[seen] if seen < len(pool) else tile)
-        counts[pai] = seen + 1
-    return tuple(out)
 
 
 def _tracked_consumed(
@@ -91,7 +69,7 @@ def _tracked_consumed(
             if tile == called:
                 pai = tiles.mjai_string_of(tile)
                 used = set(picked) | {called}
-                for candidate in _copies_of_string(pai):
+                for candidate in tiles.copies_of_string(pai):
                     if candidate not in used:
                         picked[pos] = candidate
                         used.add(candidate)

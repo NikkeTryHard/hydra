@@ -23,9 +23,6 @@ from hydra2.contracts.observation_types import (
 )
 from hydra2.engines.riichienv._sp_capture import _tracked_consumed as _tracked_consumed
 from hydra2.engines.riichienv._sp_records import (
-    _copies_of_string as _copies_of_string,
-)
-from hydra2.engines.riichienv._sp_records import (
     _emit as _emit,
 )
 from hydra2.engines.riichienv._sp_records import _ippatsu_interrupt as _ippatsu_interrupt
@@ -188,7 +185,7 @@ def _do_kakan(
     # prior pon triple (deterministic, contract-valid, and exact on
     # min-rule-disciplined logs); meld tiles are folded, so the trick lands
     # on the same copy as the drained pipeline.
-    pool = _copies_of_string(pai)
+    pool = tiles.copies_of_string(pai)
     if pai[0] == "5" and len(pai) == 2:
         base = (int(tiles.physical_of(pai)) // 4) * 4
         pool = [base, base + 1, base + 2, base + 3]

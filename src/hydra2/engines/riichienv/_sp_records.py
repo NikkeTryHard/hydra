@@ -208,28 +208,6 @@ def _coerce_game(game: GameRecord | bytes | str | Path) -> GameRecord:
 
 
 # ---------------------------------------------------------------------------
-# Tile-copy helpers (string-canonical ids + deterministic meld rebuild).
-# ---------------------------------------------------------------------------
-
-
-def _copies_of_string(pai: str) -> list[int]:
-    """Ordered physical copies for one MJAI string (red-aware)."""
-
-    first = int(tiles.physical_of(pai))
-    if pai in ("5mr", "0m"):
-        return [16]
-    if pai in ("5pr", "0p"):
-        return [52]
-    if pai in ("5sr", "0s"):
-        return [88]
-    base = (first // 4) * 4
-    if first == base + 1 and pai[0] == "5":
-        # Plain five: the red copy (base) belongs to the "5xr" string.
-        return [base + 1, base + 2, base + 3]
-    return [base, base + 1, base + 2, base + 3]
-
-
-# ---------------------------------------------------------------------------
 # Per-game replay state.
 # ---------------------------------------------------------------------------
 

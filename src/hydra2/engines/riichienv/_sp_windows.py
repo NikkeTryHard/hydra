@@ -21,7 +21,6 @@ from hydra2.engines.riichienv._oracle_base import (
 from hydra2.engines.riichienv._oracle_base import (
     _legal_mjai_type as _legal_mjai_type,
 )
-from hydra2.engines.riichienv._sp_capture import _distinct_copies as _distinct_copies
 from hydra2.engines.riichienv._sp_records import (
     _emit as _emit,
 )
@@ -121,7 +120,7 @@ def _fold_offer(raw: Any) -> Any:
             if tile_raw is None
             else int(tiles.physical_of(tiles.mjai_string_of(int(tile_raw))))
         )
-        folded_consume = _distinct_copies(tuple(int(t) for t in raw.consume_tiles))
+        folded_consume = tuple(tiles.distinct_copies([int(t) for t in raw.consume_tiles]))
     except Exception:  # why-broad: folding never invents ids; use-site fails closed
         return raw
     return SimpleNamespace(
@@ -157,7 +156,7 @@ def _live_step(
     except ContractError as exc:
         raise state.fail(kyoku, f"seat {seat} step", f"position query failed: {exc}") from exc
     if fold:
-        hand = _distinct_copies(pos.hand)
+        hand = tuple(tiles.distinct_copies(list(pos.hand)))
         drawn: int | None = None
         if pos.drawn is not None:
             drawn = tiles.physical_of(tiles.mjai_string_of(pos.drawn))

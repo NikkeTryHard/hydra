@@ -1,4 +1,4 @@
-//! tiles: thin MJAI physical-id codec boundary over `hydra-shard::tile`.
+//! tiles: thin MJAI physical-id codec + copy-pool boundary over `hydra-shard::tile`.
 //!
 //! DAG: this module depends on the shard tile codec + pyo3 ONLY — arg-check
 //! + detach + scalar return. The codec math (Tenhou order, red-five FIRST
@@ -24,6 +24,10 @@
 //!   quoting involved and matches for ints.)
 //! - No byte-identity trap touched: per-tile pure maps, no accumulation, no
 //!   windows, no sorts, no manifest keys.
+//! - Copy-pool leaves compose the codec primitives one call at a time:
+//!   `copies_of_string` mirrors `_copies_of_string`, `distinct_copies` mirrors
+//!   `_distinct_copies` (both byte-identical LR/SP twins). Pure functions of
+//!   their inputs, no shared state, no sorts, no manifest keys.
 //!
 //! Concurrency pattern (matches `packet.rs` + `canon_rng.rs`): validate
 //! attached, `py.detach(|| ...)` around the codec call, frozen surface only
@@ -67,6 +71,55 @@ fn mjai_string_of(py: Python<'_>, tile: i64) -> PyResult<String> {
         .map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
+/// Ordered physical copies for one MJAI string (red-aware).
+///
+/// Mirrors `_copies_of_string` (byte-identical in `.._lr_rows.py` and
+/// `.._sp_records.py`): red aliases collapse to the single aka copy, a
+/// plain five excludes the red copy, every other string spans its full
+/// four-copy block. Rejects fail closed (`ValueError`, shard-worded).
+#[pyfunction]
+fn copies_of_string(py: Python<'_>, mjai_tile: String) -> PyResult<Vec<i32>> {
+    py.detach(|| {
+        hydra_shard::tile::copies_of_string(&mjai_tile)
+            .map(|pool| pool.into_iter().map(i32::from).collect())
+    })
+    .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+/// Fold ids to per-string occurrence pools (the oracle's rendering rule).
+///
+/// Mirrors `_distinct_copies` (byte-identical in `.._lr_rows.py` and
+/// `.._sp_capture.py`): ordering copies per string preserves the exact
+/// string multiset, red fives keep their string (`5mr`/`5m` pools stay
+/// disjoint), overused strings keep the verbatim id and fail closed
+/// downstream. Out-of-range ids fail closed with the exact
+/// `mjai_string_of` text (`physical tile out of range: {tile}`).
+#[pyfunction]
+fn distinct_copies(py: Python<'_>, ids: Vec<i64>) -> PyResult<Vec<i32>> {
+    py.detach(|| -> Result<Vec<i32>, String> {
+        let mut counts: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        let mut out: Vec<i32> = Vec::with_capacity(ids.len());
+        for tile in ids {
+            if !(0..=135).contains(&tile) {
+                return Err(format!("physical tile out of range: {tile}"));
+            }
+            let id = tile as u8;
+            let pai = hydra_shard::tile::mjai_string_of(id).map_err(|e| e.to_string())?;
+            let pool = hydra_shard::tile::copies_of_string(&pai).map_err(|e| e.to_string())?;
+            let seen = counts.get(&pai).copied().unwrap_or(0);
+            out.push(if seen < pool.len() {
+                i32::from(pool[seen])
+            } else {
+                tile as i32
+            });
+            counts.insert(pai, seen + 1);
+        }
+        Ok(out)
+    })
+    .map_err(PyValueError::new_err)
+}
+
 /// Register the `tiles` submodule (mirrors `packet::register`): compute
 /// detached, wrap attached; single cdylib, no new entry point.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -74,6 +127,8 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let sub = PyModule::new(py, "tiles")?;
     sub.add_function(wrap_pyfunction!(physical_of, &sub)?)?;
     sub.add_function(wrap_pyfunction!(mjai_string_of, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(copies_of_string, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(distinct_copies, &sub)?)?;
     m.add_submodule(&sub)?;
     Ok(())
 }
@@ -148,6 +203,77 @@ mod tests {
             assert_eq!(physical_of(py, "5m".to_string()).unwrap(), 17);
             assert_eq!(mjai_string_of(py, 1).unwrap(), "1m");
             assert_eq!(physical_of(py, "1m".to_string()).unwrap(), 0);
+        });
+    }
+
+    #[test]
+    fn copies_matrix_matches_oracle() {
+        Python::attach(|py| {
+            // Red aliases collapse to the single aka copy.
+            assert_eq!(copies_of_string(py, "5mr".to_string()).unwrap(), vec![16]);
+            assert_eq!(copies_of_string(py, "0m".to_string()).unwrap(), vec![16]);
+            assert_eq!(copies_of_string(py, "5pr".to_string()).unwrap(), vec![52]);
+            assert_eq!(copies_of_string(py, "0p".to_string()).unwrap(), vec![52]);
+            assert_eq!(copies_of_string(py, "5sr".to_string()).unwrap(), vec![88]);
+            assert_eq!(copies_of_string(py, "0s".to_string()).unwrap(), vec![88]);
+            // Plain fives exclude the aka copy.
+            assert_eq!(
+                copies_of_string(py, "5m".to_string()).unwrap(),
+                vec![17, 18, 19]
+            );
+            assert_eq!(
+                copies_of_string(py, "5p".to_string()).unwrap(),
+                vec![53, 54, 55]
+            );
+            assert_eq!(
+                copies_of_string(py, "5s".to_string()).unwrap(),
+                vec![89, 90, 91]
+            );
+            // Every other string spans its full four-copy block.
+            assert_eq!(
+                copies_of_string(py, "1m".to_string()).unwrap(),
+                vec![0, 1, 2, 3]
+            );
+            assert_eq!(
+                copies_of_string(py, "E".to_string()).unwrap(),
+                vec![108, 109, 110, 111]
+            );
+            assert_eq!(
+                copies_of_string(py, "C".to_string()).unwrap(),
+                vec![132, 133, 134, 135]
+            );
+            // Unknown strings fail closed instead of inventing a pool.
+            assert!(copies_of_string(py, "5x".to_string()).is_err());
+            assert!(copies_of_string(py, "bogus".to_string()).is_err());
+        });
+    }
+
+    #[test]
+    fn distinct_copies_matches_oracle_rendering() {
+        Python::attach(|py| {
+            // Collapsed oracle ids expand per string: four `2p` at base 40.
+            assert_eq!(
+                distinct_copies(py, vec![40, 40, 40, 40]).unwrap(),
+                vec![40, 41, 42, 43]
+            );
+            // Red fives keep their string: `5mr`/`5m` pools stay disjoint.
+            assert_eq!(
+                distinct_copies(py, vec![16, 17, 17]).unwrap(),
+                vec![16, 17, 18]
+            );
+            // Overused strings keep the verbatim id (fifth `1m` stays 0).
+            assert_eq!(
+                distinct_copies(py, vec![0, 0, 0, 0, 0]).unwrap(),
+                vec![0, 1, 2, 3, 0]
+            );
+            // Empty in, empty out.
+            assert!(distinct_copies(py, Vec::<i64>::new()).unwrap().is_empty());
+            // Out-of-range fails closed with the `mjai_string_of` text.
+            let err = distinct_copies(py, vec![136]).unwrap_err();
+            assert!(
+                err.to_string().contains("physical tile out of range: 136"),
+                "unexpected error text: {err}"
+            );
         });
     }
 }

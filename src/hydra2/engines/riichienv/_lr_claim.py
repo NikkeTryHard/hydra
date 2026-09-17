@@ -36,7 +36,6 @@ from hydra2.engines.riichienv._lr_rows import (
 from hydra2.engines.riichienv._lr_rows import (
     _claim_canonical as _claim_canonical,
 )
-from hydra2.engines.riichienv._lr_rows import _copies_of_string as _copies_of_string
 from hydra2.engines.riichienv._lr_rows import _emit as _emit
 from hydra2.engines.riichienv._lr_rows import _expand_nonclaim_legals as _expand_nonclaim_legals
 from hydra2.engines.riichienv._lr_rows import _ippatsu_interrupt as _ippatsu_interrupt
@@ -479,7 +478,7 @@ def _do_kakan(
     # The yielded tile id is string-collapsed; the true added copy is the one
     # pool copy of this type absent from the prior pon triple (deterministic,
     # contract-valid, and exact on min-rule-disciplined logs).
-    pool = _copies_of_string(pai)
+    pool = tiles.copies_of_string(pai)
     if pai[0] == "5" and len(pai) == 2:
         base = (int(tiles.physical_of(pai)) // 4) * 4
         pool = [base, base + 1, base + 2, base + 3]

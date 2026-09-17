@@ -50,28 +50,6 @@ SIM_DERIVATION_MARK = "sim-replay-wall-less-v1"
 
 
 # ---------------------------------------------------------------------------
-# Tile-copy helpers (string-canonical ids + deterministic meld rebuild).
-# ---------------------------------------------------------------------------
-
-
-def _copies_of_string(pai: str) -> list[int]:
-    """Ordered physical copies for one MJAI string (red-aware)."""
-
-    first = int(tiles.physical_of(pai))
-    if pai in ("5mr", "0m"):
-        return [16]
-    if pai in ("5pr", "0p"):
-        return [52]
-    if pai in ("5sr", "0s"):
-        return [88]
-    base = (first // 4) * 4
-    if first == base + 1 and pai[0] == "5":
-        # Plain five: the red copy (base) belongs to the "5xr" string.
-        return [base + 1, base + 2, base + 3]
-    return [base, base + 1, base + 2, base + 3]
-
-
-# ---------------------------------------------------------------------------
 # Per-game replay state.
 # ---------------------------------------------------------------------------
 
@@ -296,28 +274,6 @@ def _expand_nonclaim_legals(
 # ---------------------------------------------------------------------------
 
 
-def _distinct_copies(ids: tuple[int, ...]) -> tuple[int, ...]:
-    """Expand copy-collapsed oracle ids to distinct physical copies.
-
-    ``MjaiReplay`` renders every occurrence of one tile string with the same
-    base physical id (four ``2p`` read as ``[40, 40, 40, 40]``), while the
-    contract space tracks distinct copies (``[40, 41, 42, 43]``). Ordering
-    copies per string preserves the exact string multiset, so string-level
-    agreement is untouched and ownership sees tile-valid ids. Red fives keep
-    their string (``5mr``/``5m`` pools stay disjoint). Overused strings keep
-    the verbatim id and fail closed downstream.
-    """
-    counts: dict[str, int] = {}
-    out: list[int] = []
-    for tile in ids:
-        pai = tiles.mjai_string_of(tile)
-        pool = _copies_of_string(pai)
-        seen = counts.get(pai, 0)
-        out.append(pool[seen] if seen < len(pool) else tile)
-        counts[pai] = seen + 1
-    return tuple(out)
-
-
 def _tracked_consumed(
     hand: Sequence[int],
     consumed_strings: Sequence[str],
@@ -350,7 +306,7 @@ def _tracked_consumed(
             if tile == called:
                 pai = tiles.mjai_string_of(tile)
                 used = set(picked) | {called}
-                for candidate in _copies_of_string(pai):
+                for candidate in tiles.copies_of_string(pai):
                     if candidate not in used:
                         picked[pos] = candidate
                         used.add(candidate)

@@ -14,6 +14,7 @@ from typing import (
 
 import riichienv
 from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+from hydra2_replay_rs import tiles  # pyrefly: ignore[missing-import]
 
 from hydra2.artifacts.digest import of_canonical as of_canonical
 from hydra2.contracts.action_artifact import load_action_table as load_action_table
@@ -290,11 +291,7 @@ def _extract_step(seat: int, obs: Any, act: Any, *, game_id: str) -> _SimStep:
     tile_raw: Any = act.tile
     tile = None if tile_raw is None else int(tile_raw)
     consume = tuple(sorted(int(t) for t in act.consume_tiles))
-    from hydra2.engines.riichienv._lr_rows import (
-        _distinct_copies as _distinct_copies,
-    )  # deferred: rows imports frame hashes
-
-    hand = _distinct_copies(tuple(int(t) for t in obs.hand))
+    hand = tuple(tiles.distinct_copies([int(t) for t in obs.hand]))
     drawn_raw: Any = obs.drawn_tile
     drawn = None if drawn_raw is None else int(drawn_raw)
     dora = tuple(int(t) for t in obs.dora_indicators)
