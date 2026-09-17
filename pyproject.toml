@@ -37,7 +37,6 @@ msgspec = ">=0.21.1,<0.22"
 [tool.pixi.pypi-dependencies]
 clearml = "==2.1.12"
 torch = "==2.14.0"
-lightning-fabric = "==2.6.5"
 riichienv = "==0.4.10"
 mahjax = { git = "https://github.com/nissymori/mahjax.git", rev = "cff90d1e68cf21464071864672a9618bb20f2551" }
 pyyaml = "==6.0.3"

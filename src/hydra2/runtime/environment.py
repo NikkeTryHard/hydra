@@ -29,7 +29,6 @@ ENV_MANIFEST_SCHEMA_VERSION = "1.0.0"
 IMPORTABLE_RUNTIME_MODULES = (
     "hydra2",
     "torch",
-    "lightning_fabric",
     "riichienv",
     "mahjax",
     "jax",
@@ -140,7 +139,6 @@ def capture_environment_manifest() -> tuple[dict[str, Any], str]:
             "gpus": _nvidia_smi_gpus(),
         },
         "extensions": {
-            "lightning-fabric": dist_version("lightning-fabric"),
             "riichienv": dist_version("riichienv"),
             "mahjax": dist_version("mahjax"),
             "mahjax_git_url": MAHJAX_GIT_URL,

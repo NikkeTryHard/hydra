@@ -38,7 +38,6 @@ class TestEnvironmentManifest:
         assert gpus and gpus[0]["name"].startswith("NVIDIA")
         assert gpus[0]["compute_capability"].startswith("12.")
         extensions = manifest["extensions"]
-        assert extensions["lightning-fabric"] == "2.6.5"
         assert extensions["riichienv"] == "0.4.10"
         assert extensions["mahjax_pin_sha"] == MAHJAX_PIN_SHA
 

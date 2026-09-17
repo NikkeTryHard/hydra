@@ -3,7 +3,7 @@ the declared dependency contract.
 
 Checks (all hard failures on mismatch):
 - torch == 2.13.0 exactly, with CUDA build and sm_120 kernels present
-- lightning-fabric == 2.6.5 standalone; Trainer packages absent
+- Trainer packages absent; lightning-fabric must NOT be installed (M3 kill)
 - riichienv == 0.4.10, mahjax at the pinned git SHA, jax importable
 - ruff / pyrefly / pytest installed versions match the pyproject pins
 - parity tolerance constants are sane
@@ -62,7 +62,7 @@ def main() -> int:
 
     import importlib.metadata as md
 
-    for dist_name in ("torch", "lightning-fabric", "riichienv", "ruff", "pyrefly"):
+    for dist_name in ("torch", "riichienv", "ruff", "pyrefly"):
         declared = pins.get(dist_name)
         installed = md.version(dist_name)
         ok = declared is not None and installed == declared
