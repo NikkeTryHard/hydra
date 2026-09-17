@@ -101,7 +101,7 @@ runtime-probe = { cmd = "python -m hydra2.probe" }
 # Until that migration the _native outputs never materialize, so the task
 # rebuilds (always-fresh beats a stale .so measured as fresh); the no-touch
 # skip subcase (T-stale) goes green with the migration.
-build-ext = { cmd = "maturin develop --manifest-path \"$PIXI_PROJECT_ROOT/tools/hydra2-replay-rs/crates/hydra-bridge/Cargo.toml\"", inputs = ["tools/hydra2-replay-rs/Cargo.toml", "tools/hydra2-replay-rs/Cargo.lock", "tools/hydra2-replay-rs/crates/**/*.rs", "tools/hydra2-replay-rs/crates/**/Cargo.toml", "tools/hydra2-replay-rs/python/**/*.py", "pyproject.toml", "pixi.lock"], outputs = ["$PIXI_PROJECT_ROOT/.pixi/envs/default/lib/python3.12/site-packages/hydra_bridge/_native*.so"] }
+build-ext = { cmd = "maturin develop --release --manifest-path \"$PIXI_PROJECT_ROOT/tools/hydra2-replay-rs/crates/hydra-bridge/Cargo.toml\"", inputs = ["tools/hydra2-replay-rs/Cargo.toml", "tools/hydra2-replay-rs/Cargo.lock", "tools/hydra2-replay-rs/crates/**/*.rs", "tools/hydra2-replay-rs/crates/**/Cargo.toml", "tools/hydra2-replay-rs/python/**/*.py", "pyproject.toml", "pixi.lock"], outputs = ["$PIXI_PROJECT_ROOT/.pixi/envs/default/lib/python3.12/site-packages/hydra_bridge/_native*.so"] }
 # Conformance area runs single-process with no -m filter: it mixes CPU,
 # serial, and GPU-soak gates that only run outside xdist workers.
 test-conformance = { cmd = "pytest tests/conformance tests/engines tests/parity -n 0 --durations=15 --durations-min=1.0" }
