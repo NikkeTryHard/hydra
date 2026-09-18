@@ -154,7 +154,6 @@ struct PackagedFullDoc<'a> {
     packager_config_hash: &'a str,
     created_at_utc: &'a str,
 }
-
 impl PackagedObjectRow {
     /// Canonical JSON bytes of this row (RFC 8785 JCS via `serde_jcs`
     /// 0.2.0 exact — the single seal printer). With `include_id = false`
