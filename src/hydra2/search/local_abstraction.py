@@ -18,7 +18,7 @@ from typing import Any
 
 from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
-from hydra2.artifacts.canonical import canonical_bytes
+from hydra2.artifacts.canonical import canonical_bytes, canonical_bytes_batch
 from hydra2.contracts.common import ContractError, DigestText
 from hydra2.search.local_shared import (
     _MASTER_SEED as _MASTER_SEED,
@@ -36,6 +36,7 @@ __all__ = [
     "build_public_subgame",
     "detect_cycle",
     "info_key_for_actor_observation",
+    "info_keys_for_actor_observations",
     "model_vector_for_world",
     "preserves_vector_returns",
     "terminal_vector_for_world",
@@ -87,13 +88,8 @@ def _require_search_bridge() -> Any:
 # ---------------------------------------------------------------------------
 
 
-def info_key_for_actor_observation(observation: Any) -> str:
-    """Canonical per-actor information-set hash (actor-visible only).
-
-    For the tiny domain we hash a payload of:
-      actor, concealed_hand, public visible fields (discards, riichi flags, scores)
-    Excludes legal_mask redundancy, world_id, hidden hands of others.
-    """
+def _info_key_payload(observation: Any) -> dict[str, Any]:
+    """Actor-visible payload hashed by the per-actor information-set key."""
     try:
         actor = int(getattr(observation, "actor", 0))
     except Exception:
@@ -125,6 +121,17 @@ def info_key_for_actor_observation(observation: Any) -> str:
         "sequence": seq,
         "observation_hash": obs_hash,
     }
+    return payload
+
+
+def info_key_for_actor_observation(observation: Any) -> str:
+    """Canonical per-actor information-set hash (actor-visible only).
+
+    For the tiny domain we hash a payload of:
+      actor, concealed_hand, public visible fields (discards, riichi flags, scores)
+    Excludes legal_mask redundancy, world_id, hidden hands of others.
+    """
+    payload = _info_key_payload(observation)
     # Hash via canonical_bytes when available else json
     try:
         blob = canonical_bytes(payload)
@@ -139,6 +146,26 @@ def info_key_for_actor_observation(observation: Any) -> str:
         if bad in key:
             raise ContractError(f"strategy key contains forbidden substring {bad!r}")
     return key
+
+
+def info_keys_for_actor_observations(observations: list[Any]) -> list[str]:
+    """Batch per-actor information-set keys via ONE ``canonical_bytes_batch`` FFI.
+
+    Byte-identical to ``[info_key_for_actor_observation(o) for o in observations]``
+    on canonical-domain payloads (the only shape this module builds): same
+    payloads, same bytes, same digests. Fail-closed: bridge errors raise —
+    callers that tolerate per-slot failure must catch and fall back to the
+    single-key authority loop.
+    """
+    blobs = canonical_bytes_batch([_info_key_payload(o) for o in observations])
+    keys: list[str] = []
+    for blob in blobs:
+        key = "sha256:" + hashlib.sha256(blob).hexdigest()
+        for bad in FORBIDDEN_IN_STRATEGY_KEY:
+            if bad in key:
+                raise ContractError(f"strategy key contains forbidden substring {bad!r}")
+        keys.append(key)
+    return keys
 
 
 def _actor_to_key(actor: int) -> int:

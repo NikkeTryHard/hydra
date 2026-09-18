@@ -30,6 +30,9 @@ from hydra2.search.local_abstraction import build_public_subgame as build_public
 from hydra2.search.local_abstraction import (
     info_key_for_actor_observation as info_key_for_actor_observation,
 )
+from hydra2.search.local_abstraction import (
+    info_keys_for_actor_observations as info_keys_for_actor_observations,
+)
 from hydra2.search.local_abstraction import preserves_vector_returns as preserves_vector_returns
 from hydra2.search.local_shared import _require_belief as _require_belief
 from hydra2.search.local_spec import LocalResolvingConfig as LocalResolvingConfig
@@ -234,18 +237,21 @@ class LocalResolvingPlannerSearchMixin:
         # entry is ensured driver-side without a visit-count entry, exactly
         # like the retired seeding below used to do table-only.
         root_actor = int(getattr(root_observation, "actor", 0))
-        root_info = info_key_for_actor_observation(root_observation)
 
         # Batch precompute (ONE envelope per search): sampled worlds in oracle
         # iteration order with memoized per-(world, actor) base info keys and
         # validated leaf vectors, seeded init-table entries, and per-step
         # sampling floats. Only actor-visible strings/floats cross (firewall:
         # ActorObservation construction stays Python, info-keys-only cross).
+        # The root payload plus every base payload cross in ONE
+        # canonical_bytes_batch FFI (byte-identical blobs); a batch failure
+        # falls back to the exact single-key authority loop below.
         horizon = self.config.horizon
         iterations = self.config.iterations
         leaf_memo: dict[str, tuple[float, ...]] = {}
         base_memo: dict[str, list[str | None]] = {}
         iters_json: list[dict[str, Any]] = []
+        # Phase 1: leaf vectors in oracle iteration order (unchanged).
         for w in worlds:
             wid = str(w.world_id)
             leaf = leaf_memo.get(wid)
@@ -254,8 +260,37 @@ class LocalResolvingPlannerSearchMixin:
                 if not preserves_vector_returns(leaf):
                     raise ContractError(f"leaf vector invalid {leaf!r}")
                 leaf_memo[wid] = leaf
-            bases: list[str | None] | None = base_memo.get(wid)
-            if bases is None:
+        # Phase 2: base observations per unique world (first-seen order);
+        # per-slot _wao failures stay None exactly like the retired loop.
+        base_order: list[str] = []
+        world_by_id: dict[str, Any] = {}
+        for w in worlds:
+            wid = str(w.world_id)
+            if wid not in world_by_id:
+                world_by_id[wid] = w
+                base_order.append(wid)
+        batch_obs: list[Any] = [root_observation]
+        slot_has_obs: dict[tuple[str, int], bool] = {}
+        for wid in base_order:
+            w = world_by_id[wid]
+            for actor_idx in range(4):
+                try:
+                    from hydra2.belief.world import world_actor_observation as _wao
+
+                    obs = _wao(w, actor=actor_idx)  # pyrefly: ignore[bad-argument-type]
+                except Exception:
+                    slot_has_obs[(wid, actor_idx)] = False
+                    continue
+                slot_has_obs[(wid, actor_idx)] = True
+                batch_obs.append(obs)
+        try:
+            all_keys = info_keys_for_actor_observations(batch_obs)
+        except Exception:
+            # Exact oracle fallback: root keeps its raising single-key
+            # semantics; bases keep the per-slot None mapping.
+            root_info = info_key_for_actor_observation(root_observation)
+            for wid in base_order:
+                w = world_by_id[wid]
                 fresh: list[str | None] = []
                 for actor_idx in range(4):
                     try:
@@ -266,8 +301,23 @@ class LocalResolvingPlannerSearchMixin:
                     except Exception:
                         fresh.append(None)
                 base_memo[wid] = fresh
-                bases = fresh
-            iters_json.append({"world_id": wid, "leaf": list(leaf), "base": bases})
+        else:
+            root_info = all_keys[0]
+            key_iter = iter(all_keys[1:])
+            for wid in base_order:
+                fresh2: list[str | None] = []
+                for actor_idx in range(4):
+                    if slot_has_obs[(wid, actor_idx)]:
+                        fresh2.append(next(key_iter))
+                    else:
+                        fresh2.append(None)
+                base_memo[wid] = fresh2
+        # Phase 3: iteration rows in oracle order (unchanged shape).
+        for w in worlds:
+            wid = str(w.world_id)
+            iters_json.append(
+                {"world_id": wid, "leaf": list(leaf_memo[wid]), "base": base_memo[wid]}
+            )
         # Per-step sampling floats in iteration-major order (mirrors the
         # retired duck-type exactly; RandomStream has no `random`, so the
         # common path consumes nothing from the stream).

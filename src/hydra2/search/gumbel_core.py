@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 
-from hydra2.artifacts.canonical import canonical_bytes
+from hydra2.artifacts.canonical import canonical_bytes_batch
 from hydra2.contracts.common import (
     ContractError,
     DigestText,
@@ -338,7 +338,8 @@ def info_key_for_observation(observation: Any) -> str:
             raise VisibilityViolationError(
                 f"forbidden field {bad!r} in tree key document [PBRF_VIS_TREE_KEY]"
             )
-    payload = canonical_bytes(doc)
+    # ONE batch FFI for the single info-key doc (byte-identical blob).
+    payload = canonical_bytes_batch([doc])[0]
     return "sha256:" + hashlib.sha256(payload).hexdigest()
 
 
@@ -537,10 +538,11 @@ def cached_full_history_agreement(observation: Any) -> bool:
         from hydra2.contracts.observation_actor import observation_identity_document as _oid
 
         doc = _oid(observation)
-        full = hashlib.sha256(canonical_bytes(doc)).hexdigest()
-        # Cached path: same doc via cached helper (should be identical)
-        # For stub, we just recompute via same bytes
-        cached = hashlib.sha256(canonical_bytes(doc)).hexdigest()
+        # ONE batch FFI for the single doc; both paths hash the same bytes,
+        # so the agreement check stays bit-identical with one serialization.
+        blob = canonical_bytes_batch([doc])[0]
+        full = hashlib.sha256(blob).hexdigest()
+        cached = hashlib.sha256(blob).hexdigest()
         return full == cached and isinstance(h, str) and h.startswith("sha256:")
     except Exception:
         # Fallback for synthetic observations without full contract

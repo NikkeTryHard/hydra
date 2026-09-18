@@ -16,8 +16,13 @@ from typing import Any
 
 from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
-from hydra2.artifacts.canonical import canonical_bytes
-from hydra2.contracts.common import ContractError, PacketPartitionError, StaleBeliefError
+from hydra2.artifacts.canonical import canonical_bytes_batch
+from hydra2.contracts.common import (
+    CanonicalizationError,
+    ContractError,
+    PacketPartitionError,
+    StaleBeliefError,
+)
 from hydra2.search.common import (
     Planner as Planner,
 )
@@ -89,7 +94,7 @@ def _rust_act_probe(
     except ImportError:
         return None
     from hydra2 import _rust_search as _rust_search_mod
-    from hydra2.artifacts.canonical import canonical_bytes as _canonical_bytes
+    from hydra2.artifacts.canonical import canonical_bytes_batch as _canonical_bytes_batch
 
     try:
         count = max(int(legal_count), 1)
@@ -108,12 +113,24 @@ def _rust_act_probe(
         clean = []
     if len(clean) != count:
         clean = list(range(1, count + 1))
-    spec_params = _canonical_bytes(
-        {"candidate_id": str(candidate_id), "probe": "act-judge-v1", "subject": str(subject)}
-    )
-    root_obs_doc = _canonical_bytes(
-        {"case_id": str(case_id), "legal_count": len(clean), "probe": "act-judge-v1"}
-    )
+    # ONE batch FFI for the probe's two canonical docs (byte-identical blobs).
+    try:
+        spec_params, root_obs_doc = _canonical_bytes_batch(
+            [
+                {
+                    "candidate_id": str(candidate_id),
+                    "probe": "act-judge-v1",
+                    "subject": str(subject),
+                },
+                {
+                    "case_id": str(case_id),
+                    "legal_count": len(clean),
+                    "probe": "act-judge-v1",
+                },
+            ]
+        )
+    except ImportError:
+        return None
     try:
         out = _rust_search_mod.act(
             spec_params=spec_params,
@@ -215,7 +232,14 @@ class PbrfPlannerSearchMixin:
         try:
             return str(candidate_spec_hash(self._spec))
         except Exception:
-            return "sha256:" + hashlib.sha256(canonical_bytes(str(self._spec).encode())).hexdigest()
+            # ONE batch FFI for the single fallback doc (byte-identical blob).
+            # The authority serializer rejects bytes input; the batch rejects
+            # it too — translate to the ContractError family this path raised.
+            try:
+                blob = canonical_bytes_batch([str(self._spec).encode()])[0]
+            except ValueError as exc:
+                raise CanonicalizationError(f"pbrf spec hash: {exc}") from exc
+            return "sha256:" + hashlib.sha256(blob).hexdigest()
 
     def _make_telemetry(
         self,

@@ -16,7 +16,7 @@ import math
 import time
 from typing import Any, Literal, cast
 
-from hydra2.artifacts.canonical import canonical_bytes
+from hydra2.artifacts.canonical import canonical_bytes_batch
 from hydra2.contracts.common import ContractError
 from hydra2.search.common import SearchResult as SearchResult
 from hydra2.search.despot_core import _MASTER_SEED as _MASTER_SEED
@@ -363,8 +363,9 @@ class NaturalDespotPlannerResultMixin(NaturalDespotPlannerSearchMixin):
             raise ContractError(
                 "despot: telemetry must be ResourceTelemetry; dict fallback removed"
             )
+        # ONE batch FFI for the single evidence doc (byte-identical blob).
         evidence = (
-            f"sha256:{hashlib.sha256(canonical_bytes({'lower_by_action': {str(getattr(k, 'action_id', k)): v for k, v in lower_by_action.items()}})).hexdigest()}",
+            f"sha256:{hashlib.sha256(canonical_bytes_batch([{'lower_by_action': {str(getattr(k, 'action_id', k)): v for k, v in lower_by_action.items()}}])[0]).hexdigest()}",
         )
         return SearchResult(
             selected_action=selected,

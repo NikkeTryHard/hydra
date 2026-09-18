@@ -18,7 +18,7 @@ from typing import Any
 
 from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
-from hydra2.artifacts.canonical import canonical_bytes
+from hydra2.artifacts.canonical import canonical_bytes_batch
 from hydra2.belief.natural import (
     BeliefEpoch,
     Particle,
@@ -32,11 +32,12 @@ from hydra2.contracts.common import (
     DigestText,
     Seat,
     StaleBeliefError,
+    make_sequence_no,
 )
-from hydra2.contracts.event_envelope import EventEnvelope, EventPayload
+from hydra2.contracts.event_envelope import EventEnvelope, EventPayload, envelope_identity_document
 from hydra2.contracts.event_packet import (
     ActorVisiblePacket,
-    make_actor_visible_packet,
+    make_actor_visible_packets,
     public_state_chain_hash,
 )
 
@@ -112,30 +113,6 @@ def _cached_successor_refs(particle_world_ref: str, tile: int, aid: int) -> tupl
         "delta:" + hashlib.sha256(f"delta:{particle_world_ref}:{tile}".encode()).hexdigest()[:16]
     )
     return succ, delta
-
-
-@lru_cache(maxsize=4096)
-def _cached_observation_hash(tile: int, seq: int) -> DigestText:
-    """Cache observation_hash_after per (tile,seq) — packet contents deterministic.
-
-    Evidence: jax jit/vmap composable batching caches compiled kernels per
-    input shape (https://github.com/jax-ml/jax/blob/main/docs/automatic-vectorization.md);
-    same principle applies to deterministic packet hash reuse.
-    """
-    return DigestText(
-        "sha256:" + hashlib.sha256(canonical_bytes({"packet_seq": seq, "tile": tile})).hexdigest()
-    )
-
-
-@lru_cache(maxsize=2048)
-def _cached_packet_chain_hashes() -> tuple[DigestText, DigestText]:
-    """Cache empty/after chain hashes — same for all packets with same event set size.
-
-    Evidence: zero-copy arrow take reuses buffers (https://arrow.apache.org/docs/python/index.html).
-    """
-    # This is trivial but kept for completeness; actual per-event chain hash varies,
-    # but empty before is constant. We keep lru for symmetry.
-    return (public_state_chain_hash([]), public_state_chain_hash([]))
 
 
 class NaturalPacketKernel:
@@ -223,6 +200,10 @@ class NaturalPacketKernel:
         # Physical probabilities: uniform 0.5 each
         # Policy probabilities: uniform 1.0 (deterministic opponent)
         # Combined prob = 0.5 * 1.0 = 0.5
+        # Pass 1: validate bridge layout and build both events (all checks kept).
+        tiles: list[int] = []
+        seqs: list[int] = []
+        events: list[EventEnvelope] = []
         for idx, brow in enumerate(rows):
             tile = int(brow.tile)
             seq = int(brow.seq)
@@ -237,34 +218,65 @@ class NaturalPacketKernel:
                 )
             # Ensure actor_opponent != root_actor to make packet actor-visible?
             # Use opponent as actor of discard
-            event = _make_public_discard_event(
-                sequence=seq,
-                actor=actor_opponent,
-                tile=tile,
-                rules_hash=rh,
-                schema_hash=sh,
+            events.append(
+                _make_public_discard_event(
+                    sequence=seq,
+                    actor=actor_opponent,
+                    tile=tile,
+                    rules_hash=rh,
+                    schema_hash=sh,
+                )
             )
-            # Build packet: single event per successor for minimal disjointness
-            # Need public_state hashes and observation_hash_after
-            before, _ = _cached_packet_chain_hashes()
-            after = public_state_chain_hash([event])
-            # observation_hash_after: derive from packet contents deterministically
-            obs_hash = _cached_observation_hash(tile, seq)
-            # Byte/hash equality: bridge hashes must equal the oracle hashes.
-            if str(obs_hash) != str(brow.observation_hash):
-                raise ContractError(f"observation hash mismatch idx={idx} (bridge!=oracle)")
-            if str(after) != str(brow.chain_after):
-                raise ContractError(f"chain_after mismatch idx={idx} (bridge!=oracle)")
-            packet = make_actor_visible_packet(
+            tiles.append(tile)
+            seqs.append(seq)
+        # Batch form: observation + chain-fold docs for both successors serialize
+        # in ONE bridge FFI (byte-identical blobs to the retired per-successor
+        # Python serializes + lru-cached digests); digests hash with hashlib
+        # exactly like the single paths. The empty-before digest is constant.
+        # Fold shape {"prefix", "event"} mirrors event_packet._fold_chain_digest;
+        # any divergence fails the chain_after bridge equality below (fail closed).
+        before = public_state_chain_hash([])
+        obs_docs: list[dict[str, object]] = [
+            {"packet_seq": seq, "tile": tile} for seq, tile in zip(seqs, tiles, strict=True)
+        ]
+        fold_docs: list[dict[str, object]] = [
+            {"prefix": str(before), "event": envelope_identity_document(event)} for event in events
+        ]
+        blobs = canonical_bytes_batch(obs_docs + fold_docs)
+        obs_hashes = [
+            DigestText("sha256:" + hashlib.sha256(blob).hexdigest()) for blob in blobs[:2]
+        ]
+        afters = [DigestText("sha256:" + hashlib.sha256(blob).hexdigest()) for blob in blobs[2:]]
+        # Stage both packets (mirrors make_actor_visible_packet staging); ids bind
+        # via ONE batch FFI with the constructor re-verify kept (fail closed).
+        staged = [
+            ActorVisiblePacket(
+                packet_id=None,
                 actor_view=epoch.root_actor,
+                source_sequence_start=make_sequence_no(int(event.sequence)),
+                source_sequence_end=make_sequence_no(int(event.sequence)),
                 events=(event,),
                 public_state_hash_before=before,
                 public_state_hash_after=after,
                 observation_hash_after=obs_hash,
             )
+            for event, after, obs_hash in zip(events, afters, obs_hashes, strict=True)
+        ]
+        packets = make_actor_visible_packets(staged)
+        # Pass 2: bridge-oracle equality + likelihood checks (all checks kept).
+        for idx, brow in enumerate(rows):
+            obs_hash = obs_hashes[idx]
+            after = afters[idx]
+            packet = packets[idx]
+            # Byte/hash equality: bridge hashes must equal the oracle hashes.
+            if str(obs_hash) != str(brow.observation_hash):
+                raise ContractError(f"observation hash mismatch idx={idx} (bridge!=oracle)")
+            if str(after) != str(brow.chain_after):
+                raise ContractError(f"chain_after mismatch idx={idx} (bridge!=oracle)")
             if str(packet.packet_id) != str(brow.packet_id):
                 raise ContractError(f"packet_id mismatch idx={idx} (bridge!=oracle)")
             # Successor world: deterministic new world id derived from particle+tile
+            tile = tiles[idx]
             exp_succ, exp_delta = _cached_successor_refs(particle.world_ref, tile, aid)
             if exp_succ != str(brow.successor_world_ref):
                 raise ContractError(f"successor ref mismatch idx={idx} (bridge!=oracle)")

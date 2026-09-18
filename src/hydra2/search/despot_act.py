@@ -77,7 +77,7 @@ def _rust_act_probe(
     except ImportError:
         return None
     from hydra2 import _rust_search as _rust_search_mod
-    from hydra2.artifacts.canonical import canonical_bytes as _canonical_bytes
+    from hydra2.artifacts.canonical import canonical_bytes_batch as _canonical_bytes_batch
 
     try:
         count = max(int(legal_count), 1)
@@ -96,12 +96,24 @@ def _rust_act_probe(
         clean = []
     if len(clean) != count:
         clean = list(range(1, count + 1))
-    spec_params = _canonical_bytes(
-        {"candidate_id": str(candidate_id), "probe": "act-judge-v1", "subject": str(subject)}
-    )
-    root_obs_doc = _canonical_bytes(
-        {"case_id": str(case_id), "legal_count": len(clean), "probe": "act-judge-v1"}
-    )
+    # ONE batch FFI for the probe's two canonical docs (byte-identical blobs).
+    try:
+        spec_params, root_obs_doc = _canonical_bytes_batch(
+            [
+                {
+                    "candidate_id": str(candidate_id),
+                    "probe": "act-judge-v1",
+                    "subject": str(subject),
+                },
+                {
+                    "case_id": str(case_id),
+                    "legal_count": len(clean),
+                    "probe": "act-judge-v1",
+                },
+            ]
+        )
+    except ImportError:
+        return None
     try:
         out = _rust_search_mod.act(
             spec_params=spec_params,

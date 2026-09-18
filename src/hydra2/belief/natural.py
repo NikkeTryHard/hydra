@@ -6,12 +6,14 @@ Implements SPEC 14.2 Target and proposal, and Belief protocol for natural worlds
 
 from __future__ import annotations
 
+import hashlib
 import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
+from hydra2.artifacts.canonical import canonical_bytes_batch
 from hydra2.artifacts.digest import of_canonical
 from hydra2.contracts.common import (
     BeliefEpochId,
@@ -160,17 +162,52 @@ def _target_id_for(
     event_model_hash: DigestText,
     proposal_spec_hash: DigestText,
 ) -> DigestText:
-    doc = {
+    doc = _target_doc_for(
+        observation_hash=observation_hash,
+        rules_hash=rules_hash,
+        belief_model_hash=belief_model_hash,
+        event_model_hash=event_model_hash,
+        proposal_spec_hash=proposal_spec_hash,
+    )
+    # Digest line via the canon bridge (byte-identical to the retired
+    # hashlib-over-canonical_bytes loop; ImportError with build-ext hint,
+    # no oracle fallback). Math/doc shape untouched.
+    return of_canonical(doc)
+
+
+def _target_ids_for(
+    docs: list[dict[str, DigestText]],
+) -> list[DigestText]:
+    """Target digests for pre-built identity docs via ONE bridge FFI.
+
+    Byte-identical to ``[_target_id_for(**kw) for ...]`` built from the same
+    field values: the docs serialize in one :func:`canonical_bytes_batch`
+    call, then hash with ``hashlib`` exactly like the single ``of_canonical``
+    line (Python-framed + bridge-hashed). Empty input returns ``[]`` without
+    touching the bridge. Bridge rejects raise, never silent.
+    """
+    if len(docs) == 0:
+        return []
+    blobs = canonical_bytes_batch([dict(doc) for doc in docs])
+    return [DigestText("sha256:" + hashlib.sha256(blob).hexdigest()) for blob in blobs]
+
+
+def _target_doc_for(
+    *,
+    observation_hash: DigestText,
+    rules_hash: DigestText,
+    belief_model_hash: DigestText,
+    event_model_hash: DigestText,
+    proposal_spec_hash: DigestText,
+) -> dict[str, DigestText]:
+    """Target identity doc (shared by the single and batch digest paths)."""
+    return {
         "observation_hash": observation_hash,
         "rules_hash": rules_hash,
         "belief_model_hash": belief_model_hash,
         "event_model_hash": event_model_hash,
         "proposal_spec_hash": proposal_spec_hash,
     }
-    # Digest line via the canon bridge (byte-identical to the retired
-    # hashlib-over-canonical_bytes loop; ImportError with build-ext hint,
-    # no oracle fallback). Math/doc shape untouched.
-    return of_canonical(doc)
 
 
 def _validate_finite(value: float, *, name: str) -> float:

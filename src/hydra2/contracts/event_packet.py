@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+from hydra2.artifacts.canonical import canonical_bytes_batch
 from hydra2.contracts.canonical import canonical_json_bytes
 from hydra2.contracts.common import (
     ContractError,
@@ -65,12 +66,15 @@ __all__ = [
     "build_packet_boundary_envelope",
     "build_packet_boundary_payload",
     "compute_packet_id",
+    "compute_packet_ids",
     "load_packet_boundary_spec",
     "make_actor_visible_packet",
+    "make_actor_visible_packets",
     "packet_identity_document",
     "parse_packet_boundary_spec",
     "partition_actor_packets",
     "public_state_chain_hash",
+    "public_state_chain_hash_prefixes",
     "validate_packet_partition",
 ]
 
@@ -338,6 +342,21 @@ def compute_packet_id(packet: ActorVisiblePacket) -> PacketId:
     return PacketId(hashlib.sha256(doc_bytes).hexdigest())
 
 
+def compute_packet_ids(packets: Sequence[ActorVisiblePacket]) -> list[PacketId]:
+    """sha256 over canonical bytes for each packet via ONE bridge FFI (SPEC 7.2).
+
+    Byte-identical to ``[compute_packet_id(p) for p in packets]``: the packet
+    identity docs serialize in one :func:`canonical_bytes_batch` call, then
+    hash with ``hashlib`` exactly like the single path. Empty input returns
+    ``[]`` without touching the bridge. Bridge rejects raise, never silent.
+    """
+    items = list(packets)
+    if len(items) == 0:
+        return []
+    blobs = canonical_bytes_batch([packet_identity_document(p) for p in items])
+    return [PacketId(hashlib.sha256(blob).hexdigest()) for blob in blobs]
+
+
 def make_actor_visible_packet(
     *,
     actor_view: Seat,
@@ -370,7 +389,45 @@ def make_actor_visible_packet(
     )
 
 
+def make_actor_visible_packets(
+    staged: Sequence[ActorVisiblePacket],
+) -> tuple[ActorVisiblePacket, ...]:
+    """Bind packet_ids for pre-staged (``packet_id=None``) packets via ONE batch FFI.
+
+    Byte-identical to ``tuple(make_actor_visible_packet(...) for ...)`` built
+    from the same staged packets: ids come from :func:`compute_packet_ids`,
+    and each final packet still re-verifies its id through the
+    :class:`ActorVisiblePacket` constructor (fail closed, same as the single
+    path). Non-staged input (``packet_id`` already set) is rejected.
+    """
+    items = list(staged)
+    for item in items:
+        if item.packet_id is not None:
+            raise ContractError("make_actor_visible_packets requires packet_id=None staged packets")
+    packet_ids = compute_packet_ids(items)
+    return tuple(
+        ActorVisiblePacket(
+            packet_id=packet_id,
+            actor_view=item.actor_view,
+            source_sequence_start=item.source_sequence_start,
+            source_sequence_end=item.source_sequence_end,
+            events=item.events,
+            public_state_hash_before=item.public_state_hash_before,
+            public_state_hash_after=item.public_state_hash_after,
+            observation_hash_after=item.observation_hash_after,
+        )
+        for item, packet_id in zip(items, packet_ids, strict=True)
+    )
+
+
 _EMPTY_CHAIN_DIGEST = DigestText("sha256:" + hashlib.sha256(b"").hexdigest())
+
+
+def _fold_chain_digest(prefix: DigestText, event: EventEnvelope) -> DigestText:
+    """One public fold step (shared by the single and prefix-batch chain paths)."""
+    fold_doc = {"prefix": str(prefix), "event": envelope_identity_document(event)}
+    fold_bytes = canonical_json_bytes(fold_doc)
+    return DigestText("sha256:" + hashlib.sha256(fold_bytes).hexdigest())
 
 
 def public_state_chain_hash(events: Sequence[EventEnvelope]) -> DigestText:
@@ -378,10 +435,27 @@ def public_state_chain_hash(events: Sequence[EventEnvelope]) -> DigestText:
     digest = _EMPTY_CHAIN_DIGEST
     for event in events:
         if event.visibility == "public":
-            fold_doc = {"prefix": str(digest), "event": envelope_identity_document(event)}
-            fold_bytes = canonical_json_bytes(fold_doc)
-            digest = DigestText("sha256:" + hashlib.sha256(fold_bytes).hexdigest())
+            digest = _fold_chain_digest(digest, event)
     return digest
+
+
+def public_state_chain_hash_prefixes(
+    events: Sequence[EventEnvelope],
+) -> tuple[DigestText, ...]:
+    """Chain digest after each prefix: ``out[k] == public_state_chain_hash(events[:k])``.
+
+    Incremental single pass over the stream (same fold bytes as the single
+    path, hashed with ``hashlib``): replaces the per-segment full re-walk in
+    :func:`partition_actor_packets` (O(segments*events) serializations) with
+    O(events). Non-public events carry the running digest forward unchanged.
+    """
+    out: list[DigestText] = [_EMPTY_CHAIN_DIGEST]
+    digest = _EMPTY_CHAIN_DIGEST
+    for event in events:
+        if event.visibility == "public":
+            digest = _fold_chain_digest(digest, event)
+        out.append(digest)
+    return tuple(out)
 
 
 def validate_packet_partition(packets: Sequence[ActorVisiblePacket]) -> None:
@@ -488,23 +562,41 @@ def partition_actor_packets(
             _close()
     _close()
 
-    packets: list[ActorVisiblePacket] = []
+    # Batch form: segments partition `visible` contiguously in order (single
+    # split pass above appends each visible event exactly once), so segment
+    # boundaries are visible indices — verified by identity below, fail closed.
+    # One incremental chain pass replaces the per-segment full re-walk
+    # (O(segments*events) serializations -> O(events)); one batch FFI binds
+    # every packet id. Bytes/hashes identical to the retired per-segment loop.
+    ranges: list[tuple[int, int]] = []
+    pos = 0
     for segment in segments:
-        prefix_sequences = [e for e in visible if int(e.sequence) < int(segment[0].sequence)]
-        before = public_state_chain_hash(prefix_sequences)
-        after = public_state_chain_hash(prefix_sequences + list(segment))
-        packets.append(
-            make_actor_visible_packet(
+        for event in segment:
+            if event is not visible[pos]:
+                raise ContractError("packet segmentation is not contiguous over the visible stream")
+            pos += 1
+        ranges.append((pos - len(segment), pos))
+    if pos != len(visible):
+        raise ContractError("packet segmentation is not exhaustive over the visible stream")
+    prefixes = public_state_chain_hash_prefixes(visible)
+    staged: list[ActorVisiblePacket] = []
+    for (start, end), segment in zip(ranges, segments, strict=True):
+        staged.append(
+            ActorVisiblePacket(
+                packet_id=None,
                 actor_view=view,
+                source_sequence_start=make_sequence_no(int(segment[0].sequence)),
+                source_sequence_end=make_sequence_no(int(segment[-1].sequence)),
                 events=tuple(segment),
-                public_state_hash_before=before,
-                public_state_hash_after=after,
+                public_state_hash_before=prefixes[start],
+                public_state_hash_after=prefixes[end],
                 observation_hash_after=cast(  # pyrefly: ignore[explicit-any]  # reason: deliberate Any passthrough; digest produced by observation_hash_of
                     "Any",
                     observation_hash_of(view, int(segment[-1].sequence)),  # pyrefly: ignore[unknown-argument-type]  # reason: segments hold validated envelopes; int() coerces the sequence
                 ),
             )
         )
+    packets = list(make_actor_visible_packets(staged))
     covered = {int(e.sequence) for p in packets for e in p.events}
     expected = {int(e.sequence) for e in visible}
     if covered != expected:
