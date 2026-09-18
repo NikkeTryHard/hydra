@@ -9,7 +9,6 @@ shared across the two splits fails closed before training state exists.
 
 from __future__ import annotations
 
-import hashlib
 import os
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
@@ -17,24 +16,25 @@ from multiprocessing import get_context as _mp_get_context
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from hydra2.artifacts.digest import sha256_digest as sha256_digest
 from hydra2.contracts.common import ContractError as ContractError
 from hydra2.contracts.common import CorruptArtifactError as CorruptArtifactError
 from hydra2.data.decode import decode_game_object as decode_game_object
-from hydra2.data.stream import GameStream as GameStream
-from hydra2.data.stream import ZstdLineStream as ZstdLineStream
-from hydra2.data.stream import assign_split as assign_split
-from hydra2.data.stream import compute_wall_hash as compute_wall_hash
-from hydra2.data.stream import group_key_for_path as group_key_for_path
-from hydra2.data.stream import load_scan_cache as load_scan_cache
-from hydra2.data.stream import save_scan_cache as save_scan_cache
-from hydra2.data.stream import scan_cache_path as scan_cache_path
-from hydra2.data.stream import stem_of as stem_of
+from hydra2.data.stream_iter import GameStream as GameStream
+from hydra2.data.stream_manifest import load_scan_cache as load_scan_cache
+from hydra2.data.stream_manifest import save_scan_cache as save_scan_cache
+from hydra2.data.stream_manifest import scan_cache_path as scan_cache_path
+from hydra2.data.stream_read import ZstdLineStream as ZstdLineStream
+from hydra2.data.stream_read import assign_split as assign_split
+from hydra2.data.stream_read import compute_wall_hash as compute_wall_hash
+from hydra2.data.stream_read import group_key_for_path as group_key_for_path
+from hydra2.data.stream_read import stem_of as stem_of
 from hydra2.data.validate import validate_game as validate_game
 from hydra2.training.stream_expand import _pool_worker_init as _pool_worker_init
 
 if TYPE_CHECKING:
-    from hydra2.data.stream import StreamManifest as StreamManifest
-    from hydra2.training.run_config import RunConfig as RunConfig
+    from hydra2.data.stream_manifest import StreamManifest as StreamManifest
+    from hydra2.training._rc_sections import RunConfig as RunConfig
 
 __all__ = [
     "_ScanReport",
@@ -277,23 +277,27 @@ def _shared_scan_cache_path(
     misses to a full scan (same staleness semantics as ``make``). Override
     the directory with ``HYDRA2_SCAN_CACHE_DIR`` (never inside a data root).
     """
-    from hydra2.data.stream import SCAN_CACHE_VERSION
+    from hydra2.data.stream_manifest import SCAN_CACHE_VERSION
 
     base_raw = os.environ.get("HYDRA2_SCAN_CACHE_DIR") or os.path.join(
         os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "hydra2", "scan"
     )
-    files = hashlib.sha256()
+    stamps: list[bytes] = []
     for entry in manifest.files:
         try:
             fingerprint_stat = entry.path.stat()
             stamp = f"{fingerprint_stat.st_size}:{fingerprint_stat.st_mtime_ns}"
         except OSError:
             stamp = "missing"
-        files.update(f"{entry.path.as_posix()}:{stamp}\n".encode())
+        stamps.append(f"{entry.path.as_posix()}:{stamp}\n".encode())
+    # Same bytes the retired incremental ``hashlib.sha256`` covered; the
+    # digest is minted by the hard-Rust digest owner (fail closed with a
+    # ``build-ext`` hint when the extension is not built).
+    files_hex = str(sha256_digest(b"".join(stamps))).removeprefix("sha256:")
     fingerprint = repr(
         (SCAN_CACHE_VERSION, stream_digest, seed, sorted(ratios.items()), train_split, val_split)
     )
-    key = hashlib.sha256((fingerprint + files.hexdigest()).encode()).hexdigest()[:32]
+    key = str(sha256_digest((fingerprint + files_hex).encode())).removeprefix("sha256:")[:32]
     return Path(base_raw) / f"scan-{key}.json"
 
 

@@ -8,13 +8,13 @@ the join module).
 
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 from typing import Any
 
 import pyarrow.parquet as pq
 
+from hydra2.artifacts.digest import sha256_digest
 from hydra2.belief.oracle_guard import (
     AUTHORIZED_TRAIN_SPLIT as AUTHORIZED_TRAIN_SPLIT,
 )
@@ -149,7 +149,11 @@ class PrivilegedOracleLoader:
             allow_synthetic=allow_synthetic,
         )
         b_logits, v_logits = _teacher_logits_from_targets(belief, value)
-        event_target = int(hashlib.sha256(decision_id.encode()).hexdigest()[:2], 16) % 20
+        # Digest line via the canon bridge (byte-identical to the retired
+        # hashlib hexdigest slice; ImportError with build-ext hint).
+        event_target = (
+            int(str(sha256_digest(decision_id.encode())).removeprefix("sha256:")[:2], 16) % 20
+        )
         _wid_a: Any | None = raw.get("wall_id")
         _wid_b: Any | None = raw.get("game_id")
         _wid_tmp: Any | None = _wid_a if _wid_a is not None else _wid_b
@@ -194,19 +198,21 @@ class PrivilegedOracleLoader:
                 "(fail closed; synthetic opt-in via allow_synthetic=True)"
             )
         # Synthetic target (deterministic fallback; byte-identical to pre-flag)
+        # Digest lines via the canon bridge; math/gate untouched.
         belief = _belief_target_from_privileged(None, decision_id, allow_synthetic=True)
         value = _value_target_from_privileged(None, decision_id, allow_synthetic=True)
         b_logits, v_logits = _teacher_logits_from_targets(belief, value)
+        _syn_hex = str(sha256_digest(decision_id.encode())).removeprefix("sha256:")
         return OracleTarget(
             decision_id=decision_id,
             wall_id=f"wall-{decision_id}",
             belief_target=belief,
             value_target=value,
-            event_target=int(hashlib.sha256(decision_id.encode()).hexdigest()[:2], 16) % 20,
+            event_target=int(_syn_hex[:2], 16) % 20,
             teacher_belief_logits=b_logits,
             teacher_value_logits=v_logits,
             split=AUTHORIZED_TRAIN_SPLIT,
-            observation_hash="sha256:" + hashlib.sha256(decision_id.encode()).hexdigest(),
+            observation_hash="sha256:" + _syn_hex,
         )
 
     def iter_targets(self, *, allow_synthetic: bool | None = None) -> list[OracleTarget]:

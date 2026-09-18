@@ -15,13 +15,13 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.contracts.common import (
     ContractError,
     DigestText,
     TileId,
     UtcTimestamp,
-    make_digest_text,
-    make_tile_id,
     make_utc_timestamp,
 )
 from hydra2.contracts.rules_canonical import (
@@ -92,7 +92,9 @@ class SourceAuthority:
         if not url.startswith(("http://", "https://")):
             raise ContractError(f"url must be an http(s) URL, got {url!r}")
         object.__setattr__(self, "retrieved_at_utc", make_utc_timestamp(self.retrieved_at_utc))
-        object.__setattr__(self, "content_sha256", make_digest_text(self.content_sha256))
+        object.__setattr__(
+            self, "content_sha256", _bridge_contracts.make_digest_text(self.content_sha256)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,7 +134,7 @@ class AdapterCompatibility:
             "status",
             _require_enum(self.status, name="status", allowed=ADAPTER_COMPATIBILITY_STATUSES),
         )
-        object.__setattr__(self, "rules_hash", make_digest_text(self.rules_hash))
+        object.__setattr__(self, "rules_hash", _bridge_contracts.make_digest_text(self.rules_hash))
 
 
 def _validated_clock_tuple(clocks: Sequence[ClockRule]) -> tuple[ClockRule, ...]:
@@ -227,7 +229,7 @@ class RulesManifest:
             _require_enum(self.oka_policy, name="oka_policy", allowed=OKA_POLICIES),
         )
         object.__setattr__(self, "kuitan", _require_bool(self.kuitan, name="kuitan"))
-        red_ids = tuple(make_tile_id(item) for item in self.red_tile_ids)
+        red_ids = tuple(_bridge_contracts.make_tile_id(item) for item in self.red_tile_ids)
         if red_ids != RED_TILE_IDS:
             raise ContractError(f"red_tile_ids must be exactly {RED_TILE_IDS}, got {red_ids}")
         object.__setattr__(self, "red_tile_ids", red_ids)
@@ -401,14 +403,21 @@ def resolve_final_ranks(final_scores: Sequence[int]) -> tuple[int, int, int, int
     seat wind order of East-1 (man.html L1025 「終了時に同点の場合は東1局の風順で順位を決定」).
     Seats 0..3 align with East/South/West/North winds (SPEC §8), so the lower
     seat index takes the better rank on ties.
+    Thin bridge delegate: ``hydra2_replay_rs.contracts.resolve_final_ranks``
+    decides (same tie-break, same +/-1e12 domain, bool excluded). Evidence:
+    value parity on strict/tie/edge quads, 1.06-1.16x faster. Bridge rejects
+    surface as ContractError (fail-closed); a missing bridge raises
+    ImportError with a build-ext hint.
     """
-    scores = _require_quad_ints(
-        final_scores, name="final_scores", minimum=-(10**12), maximum=10**12
-    )
-    order = sorted(range(4), key=lambda seat: (-scores[seat], seat))  # pyrefly: ignore[unknown-argument-type]  # reason: scores quad-validated above; key indexes validated ints
-    ranks = [0, 0, 0, 0]
-    for position, seat in enumerate(order):
-        ranks[seat] = position + 1
+    try:
+        ranks = _bridge_contracts.resolve_final_ranks(tuple(final_scores))
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2_replay_rs extension with contracts not importable; "
+            "rebuild the bridge with `pixi run build-ext` before resolving ranks"
+        ) from exc
+    except Exception as exc:
+        raise ContractError(f"final_scores rejected: {exc}") from exc
     return (ranks[0], ranks[1], ranks[2], ranks[3])
 
 

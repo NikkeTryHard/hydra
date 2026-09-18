@@ -244,77 +244,28 @@ pub struct RowProvenance {
     pub action_table_hash: String,
 }
 
-/// RFC 8785-shaped canonical bytes: object keys sorted, no whitespace.
+/// RFC 8785 canonical bytes via the single owner (`hydra-feed::canon`,
+/// `serde_jcs 0.2.0` ONLY-exact): object keys UTF-16BE-sorted inside the
+/// serializer, ES6 numbers via ryu-js, no whitespace.
 ///
 /// Byte-identical to `hydra2.artifacts.canonical.canonical_bytes` for the
-/// values row docs carry (null/bool/int/string/array/object; keys compared
-/// by UTF-16BE code units per RFC 8785 section 3.2.3
-/// (https://www.rfc-editor.org/rfc/rfc8785.html#section-3.2.3), which is byte
-/// order for the ASCII keys used here; string escapes match `_SHORT_ESCAPES`
-/// plus `\u00XX` for other controls, `\\`/`\"`, raw UTF-8 otherwise).
-/// Floats never occur in row docs; they render as JSON numbers.
+/// values row docs carry (null/bool/int/string/array/object). `serde_json`
+/// NEVER emits identity bytes: the former hand-rolled printer
+/// (`Number::to_string`, caller-side UTF-16 sort) is deleted — callers get
+/// JCS bytes, so astral-vs-BMP order and float formatting cannot fork.
+/// Floats never occur in row docs; they render as JSON numbers. `Value`
+/// inputs cannot hit the feed `Err` arm (no NaN/dup/int-keys in `Value`);
+/// the `Err` fallback emits greppable sentinel
+/// `{"__parity_canon_error__":1}` (never empty bytes, never a silent seal)
+/// so a fork is attributable, not confused with the empty-input hash.
 pub fn canonical_json_bytes(value: &serde_json::Value) -> Vec<u8> {
-    let mut out = String::new();
-    write_canonical(&mut out, value);
-    out.into_bytes()
-}
-
-fn write_canonical(out: &mut String, value: &serde_json::Value) {
-    match value {
-        serde_json::Value::Null => out.push_str("null"),
-        serde_json::Value::Bool(true) => out.push_str("true"),
-        serde_json::Value::Bool(false) => out.push_str("false"),
-        serde_json::Value::Number(n) => out.push_str(&n.to_string()),
-        serde_json::Value::String(s) => push_canonical_string(out, s),
-        serde_json::Value::Array(items) => {
-            out.push('[');
-            for (i, item) in items.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                write_canonical(out, item);
-            }
-            out.push(']');
-        }
-        serde_json::Value::Object(map) => {
-            let mut keys: Vec<&String> = map.keys().collect();
-            keys.sort_by(|a, b| {
-                let (au, bu): (Vec<u16>, Vec<u16>) =
-                    (a.encode_utf16().collect(), b.encode_utf16().collect());
-                au.cmp(&bu)
-            });
-            out.push('{');
-            for (i, key) in keys.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                push_canonical_string(out, key);
-                out.push(':');
-                write_canonical(out, &map[*key]);
-            }
-            out.push('}');
+    match hydra_feed::canon::canonical_bytes(value, "parity:canonical_json_bytes") {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            debug_assert!(false, "parity canonical domain: {e:?}");
+            br#"{"__parity_canon_error__":1}"#.to_vec()
         }
     }
-}
-
-fn push_canonical_string(out: &mut String, text: &str) {
-    out.push('"');
-    for c in text.chars() {
-        match c {
-            '\u{08}' => out.push_str("\\b"),
-            '\u{09}' => out.push_str("\\t"),
-            '\u{0A}' => out.push_str("\\n"),
-            '\u{0C}' => out.push_str("\\f"),
-            '\u{0D}' => out.push_str("\\r"),
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            c if (c as u32) < 0x20 => {
-                out.push_str(&format!("\\u{:04x}", c as u32));
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
 }
 
 pub(crate) fn digest_text(bytes: &[u8]) -> String {

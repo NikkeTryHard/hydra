@@ -8,7 +8,8 @@ from pathlib import Path
 import pyarrow.parquet as pq
 import pytest
 
-from hydra2.belief.oracle_loader import PrivilegedOracleLoader, join_oracle_targets
+from hydra2.belief.oracle_join import join_oracle_targets
+from hydra2.belief.oracle_store import PrivilegedOracleLoader
 from hydra2.contracts.common import ContractError
 from hydra2.data.parquet import (
     validate_privileged_ranks,
@@ -64,7 +65,7 @@ def test_writer_shard_name_matches_loader_glob(tmp_path: Path) -> None:
 
 
 def _expected_utility_values(ranks: tuple[int, int, int, int]) -> tuple[float, ...]:
-    from hydra2.contracts.rules import RULES_ID
+    from hydra2.contracts.rules_canonical import RULES_ID
     from hydra2.contracts.utility import (
         UTILITY_OBJECTIVE,
         UTILITY_TIE_POLICY,
@@ -146,11 +147,9 @@ def test_legacy_write_privileged_shards_also_glob_visible(tmp_path: Path) -> Non
 
 
 def test_ranks_from_final_scores_golden_matches_utility(tmp_path: Path) -> None:
-    from hydra2.belief.oracle_loader import (
-        _value_from_ranks_via_utility,
-        ranks_from_final_scores,
-    )
-    from hydra2.contracts.rules import resolve_final_ranks
+    from hydra2.belief.oracle_join import ranks_from_final_scores
+    from hydra2.belief.oracle_targets import _value_from_ranks_via_utility
+    from hydra2.contracts.rules_manifest import resolve_final_ranks
 
     scores = [35000, 25000, 15000, 30000]
     ranks = ranks_from_final_scores(scores)
@@ -188,7 +187,7 @@ def test_ranks_from_final_scores_golden_matches_utility(tmp_path: Path) -> None:
     ],
 )
 def test_ranks_from_final_scores_strict(bad_scores: object) -> None:
-    from hydra2.belief.oracle_loader import ranks_from_final_scores
+    from hydra2.belief.oracle_join import ranks_from_final_scores
 
     with pytest.raises(ContractError):
         ranks_from_final_scores(bad_scores)
@@ -252,7 +251,8 @@ def test_loop_maybe_join_forwards_evaluation_walls() -> None:
     wall overlap fails closed on the scoring path; default stays unchecked."""
     import inspect
 
-    from hydra2.training.loop import SupervisedLoop, TrainingLoopConfig
+    from hydra2.training.loop_state import TrainingLoopConfig
+    from hydra2.training.loop_train import SupervisedLoop
 
     sig = inspect.signature(SupervisedLoop._maybe_join_oracle_targets)
     assert "evaluation_wall_ids" in sig.parameters

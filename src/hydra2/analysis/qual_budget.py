@@ -15,11 +15,11 @@ from __future__ import annotations
 
 from typing import Any, cast
 
+from hydra2.artifacts.digest import validate_digest
 from hydra2.contracts.common import (
     ContractError,
     DigestText,
     VisibilityViolationError,
-    make_digest_text,
 )
 
 # Teacher-eligible Candidate 0-6 outcome registry — one entry per candidate.
@@ -433,7 +433,7 @@ def check_no_privileged_leak(spec: Any, observation: Any) -> None:
 
     Raises VisibilityViolationError or ContractError on leak.
     """
-    from hydra2.contracts.observation import ActorObservation
+    from hydra2.contracts.observation_actor import ActorObservation
 
     # Dict path: reject privileged keys
     if isinstance(observation, dict):
@@ -451,7 +451,7 @@ def check_no_privileged_leak(spec: Any, observation: Any) -> None:
         # Require observation_hash for dict as well
         oh: Any = observation.get("observation_hash")
         if oh is not None:
-            _: DigestText = make_digest_text(cast(str, oh))
+            _: DigestText = validate_digest(cast(str, oh))
         return
 
     # ActorObservation or synthetic stub with observation_hash
@@ -487,4 +487,4 @@ def check_no_privileged_leak(spec: Any, observation: Any) -> None:
                 continue
 
     # Ensure spec's observation schema matches (no altered rules)
-    _: DigestText = make_digest_text(cast(str, spec.observation_schema_hash))
+    _: DigestText = validate_digest(cast(str, spec.observation_schema_hash))

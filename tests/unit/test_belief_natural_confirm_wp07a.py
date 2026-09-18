@@ -18,13 +18,15 @@ from hydra2.belief.corpus import build_tiny_corpus
 from hydra2.belief.kernel import NaturalPacketKernel
 from hydra2.belief.natural import ProposalSpec
 from hydra2.belief.world import make_full_world, world_actor_observation
-from hydra2.contracts.event import (
+from hydra2.contracts.event_envelope import (
     EventEnvelope,
     EventPayload,
+)
+from hydra2.contracts.event_packet import (
     make_actor_visible_packet,
     public_state_chain_hash,
 )
-from hydra2.contracts.observation import make_actor_observation
+from hydra2.contracts.observation_actor import make_actor_observation
 from tests.unit.test_belief_natural_wp07a import (
     _make_belief,
     _make_world_and_obs,
@@ -87,7 +89,7 @@ def test_no_duplicate_missing_packet() -> None:
     assert len(pids) == len(set(pids))
     # Exhaustive: we claim 2 is exhaustive; test ensures no missing by checking mass one already
     # Also validate via validate_packet_partition if we had multiple packets for same actor
-    from hydra2.contracts.event import validate_packet_partition
+    from hydra2.contracts.event_packet import validate_packet_partition
 
     packets = [s.packet for s in succs]
     validate_packet_partition(packets)

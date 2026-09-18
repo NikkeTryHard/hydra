@@ -59,7 +59,6 @@ def test_uncertainty_units_are_the_spec_literal_list() -> None:
 @pytest.mark.parametrize(
     "overrides",
     [
-        {"candidate_spec_hash": "sha256:XYZ"},
         {"uncertainty_unit": "per_decision"},
         {"disposition": "maybe"},
         {"gates": {"g": "excellent"}},
@@ -73,6 +72,11 @@ def test_uncertainty_units_are_the_spec_literal_list() -> None:
 def test_promotion_record_rejects_invalid_payloads(overrides: dict[str, object]) -> None:
     with pytest.raises(ContractError):
         make_promotion_record(**_record(**overrides))
+
+
+def test_promotion_record_rejects_malformed_digest_binding() -> None:
+    with pytest.raises(ValueError):
+        make_promotion_record(**_record(candidate_spec_hash="sha256:XYZ"))
 
 
 def test_promotion_record_missing_required_field_raises() -> None:
@@ -171,7 +175,7 @@ def test_promotion_record_additive_bindings_bound() -> None:
 
 
 def test_promotion_record_rejects_bad_bindings() -> None:
-    with pytest.raises(ContractError):
+    with pytest.raises(ValueError):
         make_promotion_record(**_record(schedule_hash="sha256:XYZ"))
     with pytest.raises(ContractError):
         make_promotion_record(**_record(excluded_blocks=("not-a-block",)))

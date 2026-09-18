@@ -16,8 +16,9 @@ from typing import TYPE_CHECKING, Any, cast
 import torch
 import torch.nn as nn
 import torch.nn.functional as F  # noqa: N812  # reason: canonical PyTorch alias; upstream docs use F. Evidence: https://docs.pytorch.org/docs/stable/nn.functional.html
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
-from hydra2.contracts.common import ContractError, DigestText, make_digest_text
+from hydra2.contracts.common import ContractError, DigestText
 from hydra2.contracts.event_vocab import EVENT_KINDS
 from hydra2.models.schema import (
     BASELINE_ACTION_COUNT,
@@ -71,7 +72,7 @@ def validate_actor_batch(batch: ActorTensorBatch, action_count: int | None = Non
 def _fail_closed_actor_rows(legal_mask: torch.Tensor) -> None:
     """Legal-rows gate: device assert on CUDA, exact raise elsewhere.
 
-    Twin of ``hydra2.training.objectives._fail_closed_gate`` (kept separate:
+    Twin of ``hydra2.training.objectives_loss._fail_closed_gate`` (kept separate:
     models must not import training — layer direction).
     """
     pred = legal_mask.any(dim=1).all()
@@ -336,7 +337,7 @@ class Hydra2BaselineModel(nn.Module):
         self.utility_id = utility_id
         if utility_manifest_hash is None:
             # Synthetic utility manifest identical to WP-02B test fixture (zero-sum).
-            from hydra2.contracts.rules import RULES_ID
+            from hydra2.contracts.rules_canonical import RULES_ID
             from hydra2.contracts.utility import (
                 UTILITY_OBJECTIVE,
                 UTILITY_TIE_POLICY,
@@ -360,7 +361,7 @@ class Hydra2BaselineModel(nn.Module):
                 zero_sum=True,
             )
             utility_manifest_hash = manifest.digest
-        self.utility_manifest_hash = make_digest_text(utility_manifest_hash)
+        self.utility_manifest_hash = _bridge_contracts.make_digest_text(utility_manifest_hash)
 
         # Embeddings
         self.history_embedding = nn.Embedding(_NUM_EVENT_KINDS, d_model)
@@ -687,8 +688,8 @@ class Hydra2BaselineModel(nn.Module):
         """Build a ModelSpec-like document for this instance (for hashing)."""
         import pathlib
 
-        from hydra2.contracts.action import load_action_table
-        from hydra2.contracts.observation import observation_schema_digest
+        from hydra2.contracts.action_artifact import load_action_table
+        from hydra2.contracts.observation_schema import observation_schema_digest
 
         action_table_hash = load_action_table(
             pathlib.Path("configs/contracts/action_table_v1.json")

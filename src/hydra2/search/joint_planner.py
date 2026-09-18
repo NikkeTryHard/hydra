@@ -1,4 +1,4 @@
-# ruff: noqa: F401, F841, B904, N814  # reason: legacy blanket kept, not narrowed — narrowing surfaces unrelated mid-flight noise outside the owned error set (F401 optional-dep fallback imports; F841 intentional scratch locals; B904 ContractError preconditions; N814 upstream casing). Evidence: https://docs.astral.sh/ruff/rules/
+# ruff: noqa: F841, B904, N814  # reason: legacy blanket kept, not narrowed — narrowing surfaces unrelated mid-flight noise outside the owned error set (F401 optional-dep fallback imports; F841 intentional scratch locals; B904 ContractError preconditions; N814 upstream casing). Evidence: https://docs.astral.sh/ruff/rules/
 """Candidate 8 joint type/world — planner adapter (prior, act, observe, ponder).
 
 Owns the Planner protocol surface of :class:`JointTypeWorldPlanner`: the uniform
@@ -18,22 +18,31 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, cast
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.artifacts.canonical import canonical_bytes
-from hydra2.contracts.common import ContractError, make_digest_text
-from hydra2.search.joint_types import _HAS_BELIEF as _HAS_BELIEF
-from hydra2.search.joint_types import _MASTER_SEED as _MASTER_SEED
-from hydra2.search.joint_types import CandidateSpec as CandidateSpec
+from hydra2.contracts.common import ContractError
+from hydra2.search.joint_types import (
+    _MASTER_SEED as _MASTER_SEED,
+)
+from hydra2.search.joint_types import (
+    CandidateSpec as CandidateSpec,
+)
 from hydra2.search.joint_types import JointParticle as JointParticle
 from hydra2.search.joint_types import JointPosterior as JointPosterior
 from hydra2.search.joint_types import OpponentTypePolicy as OpponentTypePolicy
 from hydra2.search.joint_types import Planner as Planner
 from hydra2.search.joint_types import SearchRequest as SearchRequest
 from hydra2.search.joint_types import SearchResult as SearchResult
+from hydra2.search.joint_types import _require_belief as _require_belief
 from hydra2.search.joint_types import deterministic_joint_gumbel as deterministic_joint_gumbel
 from hydra2.search.joint_types import info_key_for_observation as info_key_for_observation
-from hydra2.search.joint_types import world_actor_observation as world_actor_observation
-from hydra2.search.joint_uncertainty import JointTypeWorldConfig as JointTypeWorldConfig
-from hydra2.search.joint_uncertainty import UncertaintySet as UncertaintySet
+from hydra2.search.joint_uncertainty import (
+    JointTypeWorldConfig as JointTypeWorldConfig,
+)
+from hydra2.search.joint_uncertainty import (
+    UncertaintySet as UncertaintySet,
+)
 from hydra2.search.joint_uncertainty import (
     exact_joint_posterior_oracle as exact_joint_posterior_oracle,
 )
@@ -125,79 +134,35 @@ class JointTypeWorldPlanner(Planner):  # type: ignore[misc]
                     return self._joint_posterior
             except Exception:
                 pass
-        # Build belief epoch and tiny corpus — initialize belief to avoid unbound
-        belief: Any = None
-        if _HAS_BELIEF:
+        # Build belief epoch and tiny corpus — real belief required; no synthetic fallback (fail closed).
+        _require_belief()
+        try:
             from hydra2.belief.natural import NaturalBelief as _NB
+        except ImportError as exc:
+            raise ImportError(
+                "hydra2.belief.natural not importable "
+                f"({exc}); build the bridge with `pixi run build-ext` before joint search"
+            ) from exc
 
-            belief = _NB()
-            epoch = belief.begin(observation)
-            # Use belief's tiny corpus builder via side-effect of sample_natural count
-            # Instead we directly use private _build_tiny_corpus_for_epoch
-            try:
-                from hydra2.belief.natural import (
-                    _build_tiny_corpus_for_epoch,
-                )
-
-                worlds = _build_tiny_corpus_for_epoch(epoch, registry={})
-            except Exception:
-                # Fallback: generate 2 tiny worlds with fixed tiles
-                from hydra2.belief.world import make_full_world as _mfw
-
-                worlds = [
-                    _mfw(
-                        concealed_hands=((0, 1), (2, 3), (4, 5), (6, 7)),
-                        live_wall=tuple(range(8, 40)),
-                        dead_wall=(),
-                        rules_hash="sha256:" + "a" * 64,
-                        observation_hash=getattr(
-                            observation, "observation_hash", "sha256:" + "0" * 64
-                        ),
-                    ),
-                    _mfw(
-                        concealed_hands=((0, 1), (4, 5), (2, 3), (6, 7)),
-                        live_wall=tuple(range(8, 40)),
-                        dead_wall=(),
-                        rules_hash="sha256:" + "a" * 64,
-                        observation_hash=getattr(
-                            observation, "observation_hash", "sha256:" + "0" * 64
-                        ),
-                    ),
-                ]
-        else:
-            # Minimal fallback without belief module
-            from hydra2.belief.world import (
-                make_full_world as _mfw,
+        belief: Any = _NB()
+        epoch = belief.begin(observation)
+        # Use belief's tiny corpus builder via side-effect of sample_natural count
+        # Instead we directly use private _build_tiny_corpus_for_epoch
+        try:
+            from hydra2.belief.natural import (
+                _build_tiny_corpus_for_epoch,
             )
 
-            worlds = [
-                _mfw(
-                    concealed_hands=((0, 1), (2, 3), (4, 5), (6, 7)),
-                    live_wall=tuple(range(8, 40)),
-                    dead_wall=(),
-                    rules_hash="sha256:" + "a" * 64,
-                    observation_hash=getattr(observation, "observation_hash", "sha256:" + "0" * 64),
-                ),
-                _mfw(
-                    concealed_hands=((0, 1), (4, 5), (2, 3), (6, 7)),
-                    live_wall=tuple(range(8, 40)),
-                    dead_wall=(),
-                    rules_hash="sha256:" + "a" * 64,
-                    observation_hash=getattr(observation, "observation_hash", "sha256:" + "0" * 64),
-                ),
-            ]
-            epoch = None
+            worlds = _build_tiny_corpus_for_epoch(epoch, registry={})
+        except Exception as exc:
+            raise ContractError(f"joint: belief corpus build failed: {exc}") from exc
         # Limit to max_particles // num_theta worlds
         max_worlds = max(1, self.config.max_particles // max(1, len(self.config.theta_ids)))
         worlds = worlds[:max_worlds]
         self._worlds_by_ref = {w.world_id: w for w in worlds}
-        # Need target_id for particles
-        if epoch is not None:
-            target_id = str(getattr(epoch, "target_id", "sha256:" + "f" * 64))
-            epoch_id = int(getattr(epoch, "epoch", 0))
-        else:
-            target_id = "sha256:" + "f" * 64
-            epoch_id = 0
+        # Need target_id for particles (real epoch required)
+        target_id = str(getattr(epoch, "target_id", "sha256:" + "f" * 64))
+        epoch_id = int(getattr(epoch, "epoch", 0))
         num_theta = len(self.config.theta_ids)
         num_world = len(worlds)
         total = num_theta * num_world
@@ -221,7 +186,7 @@ class JointTypeWorldPlanner(Planner):  # type: ignore[misc]
             theta_ids=tuple(self.config.theta_ids),
             normalized=True,
         )
-        self._belief = belief if _HAS_BELIEF else None
+        self._belief = belief
         self._epoch = epoch
         self._joint_posterior = posterior
         return posterior
@@ -305,6 +270,8 @@ class JointTypeWorldPlanner(Planner):  # type: ignore[misc]
                 leaf_val = (int.from_bytes(h[:4], "big") / 4294967296.0) * 2.0 - 1.0  # in [-1,1)
                 score += p.weight * leaf_val
             # Add deterministic joint gumbel perturbation for robust tie-breaking (same for determinism proof)
+            # Wave 2 bridge audit: kept Python — joint (theta, action) Gumbel domain
+            # differs from bridge gumbel_for_action (no theta lane); no pyfn covers it.
             g_sum = 0.0
             for theta in self.config.theta_ids:
                 g = deterministic_joint_gumbel(
@@ -338,26 +305,32 @@ class JointTypeWorldPlanner(Planner):  # type: ignore[misc]
                 from hydra2.contracts.utility import (
                     UtilityVector as _UV,
                 )
-
+            except ImportError as exc:
+                raise ImportError(
+                    "hydra2.contracts.utility not importable "
+                    f"({exc}); build the bridge with `pixi run build-ext` before joint search"
+                ) from exc
+            try:
                 uv = _UV(
                     values=raw_vals,
                     utility_id=str(
                         getattr(self.candidate_spec, "utility_id", "expected_final_placement")
                     ),
-                    utility_manifest_hash=make_digest_text(
+                    utility_manifest_hash=_bridge_contracts.make_digest_text(
                         str(
                             getattr(
                                 self.candidate_spec, "utility_manifest_hash", "sha256:" + "b" * 64
                             )
                         )
                     ),
-                    rules_hash=make_digest_text(
+                    rules_hash=_bridge_contracts.make_digest_text(
                         str(getattr(self.candidate_spec, "rules_hash", "sha256:" + "a" * 64))
                     ),
                 )
-            except Exception:
-                # Fallback to raw tuple if utility contract unavailable (test fallback path)
-                uv = raw_vals
+            except ImportError:
+                raise
+            except (AttributeError, ValueError, TypeError, OSError) as exc:
+                raise ContractError(f"joint: UtilityVector build failed: {exc}") from exc
             value_vectors.append(uv)
 
         if best_id is None:
@@ -380,31 +353,25 @@ class JointTypeWorldPlanner(Planner):  # type: ignore[misc]
                 # Fallback to candidate0 would be invoked by runner; here we claim incomplete but still return
                 pass
 
-        # Build telemetry — must be ResourceTelemetry per SPEC 18.2 and SearchResult validation
+        # Build telemetry — must be ResourceTelemetry per SPEC 18.2 and SearchResult validation (fail closed).
         try:
             from hydra2.eval.telemetry import (
                 make_resource_telemetry as _mrt,
             )
             from hydra2.search.common import candidate_spec_hash as _csh2
-
-            spec_hash = _csh2(self.candidate_spec)  # type: ignore[arg-type]
-        except Exception:
-            spec_hash = (
-                "sha256:"
-                + hashlib.sha256(
-                    canonical_bytes(
-                        str(self.candidate_spec).encode()
-                        if isinstance(self.candidate_spec, str)
-                        else b"candidate8"
-                    )
-                ).hexdigest()
-            )
+        except ImportError as exc:
+            raise ImportError(
+                "hydra2.eval.telemetry/search.common not importable "
+                f"({exc}); build the bridge with `pixi run build-ext` before joint search"
+            ) from exc
         try:
-            from hydra2.eval.telemetry import (
-                make_resource_telemetry as _mrt2,
-            )
-
-            telemetry = _mrt2(
+            spec_hash = _csh2(self.candidate_spec)  # type: ignore[arg-type]
+        except ImportError:
+            raise
+        except (AttributeError, ValueError, TypeError, OSError) as exc:
+            raise ContractError(f"joint: candidate_spec_hash failed: {exc}") from exc
+        try:
+            telemetry = _mrt(
                 mode=str(getattr(self.candidate_spec.resource_budget, "mode", "gameplay_5s")),
                 wall_id=None,
                 case_id=self._case_id if isinstance(self._case_id, str) else None,
@@ -427,55 +394,11 @@ class JointTypeWorldPlanner(Planner):  # type: ignore[misc]
                 recompiles=None,
                 invalid_reason=None,
             )
-        except Exception:
-            # Fallback: minimal ResourceTelemetry with required fields if helper signature differs
-            try:
-                from hydra2.eval.telemetry import (
-                    ResourceTelemetry as _RT,
-                )
-
-                telemetry = _RT(
-                    mode="gameplay_5s",
-                    wall_id=None,
-                    case_id=self._case_id if isinstance(self._case_id, str) else None,
-                    candidate_spec_hash=spec_hash,
-                    hardware_hash="sha256:" + "8" * 64,
-                    environment_hash="sha256:" + "7" * 64,
-                    cold_start=False,
-                    synchronized_elapsed_ms=(time.monotonic_ns() - start_ns) / 1_000_000,
-                    model_calls=self._model_calls,
-                    exact_transitions=self._transitions,
-                    particles=len(joint.particles),
-                    fallback_used=False,
-                    timeout=False,
-                    illegal_action=False,
-                    cuda_peak_allocated_bytes=None,
-                    cuda_peak_reserved_bytes=None,
-                    host_peak_bytes=None,
-                    energy_joules=self._model_calls * 0.5 + self._transitions * 0.2,
-                    graph_breaks=None,
-                    recompiles=None,
-                    invalid_reason=None,
-                )
-            except Exception as exc2:
-                raise ContractError(f"telemetry construction failed: {exc2}") from exc2
-        # Candidate spec hash
-        try:
-            from hydra2.search.common import candidate_spec_hash as _csh2
-
-            spec_hash = _csh2(self.candidate_spec)  # type: ignore[arg-type]
-        except Exception:
-            # Fallback hash: canonical_bytes returns bytes so hash directly; no .hexdigest() on bytes
-            spec_hash = (
-                "sha256:"
-                + hashlib.sha256(
-                    canonical_bytes(
-                        str(self.candidate_spec).encode()
-                        if isinstance(self.candidate_spec, str)
-                        else b"candidate8"
-                    )
-                ).hexdigest()
-            )
+        except ImportError:
+            raise
+        except (AttributeError, ValueError, TypeError, OSError) as exc:
+            raise ContractError(f"joint: telemetry build failed: {exc}") from exc
+        # spec_hash already computed fail-closed above; reuse for SearchResult binding.
 
         return SearchResult(
             selected_action=selected_action,

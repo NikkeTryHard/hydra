@@ -9,24 +9,31 @@ parses rows through :mod:`hydra2.training.dataset_parse`, encodes them
 with the actor-visible encoder, and validates the legal mask and the
 chosen label. Any unparseable row raises :class:`ContractError` — the
 synthetic stand-in is a separate explicit entry, never a fallback.
+
+Hardening (fail-closed): the pinned bulk stage below routes through
+:func:`hydra2.models.encoder._stage_pinned_batch` (bridge ``ring`` first,
+ImportError-only oracle inside; ``ContractError`` propagates — mismatch
+raises, never a silent pass). Torch owns the fold math and the pageable
+fallback (warn, byte-identical either way); held-out ``torch.randperm``
+splits stay the torch oracle by Wave5 B2 (never Philox).
 """
 
 from __future__ import annotations
 
-import hashlib
 import logging
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 import torch
 
+from hydra2.artifacts.digest import sha256_digest
 from hydra2.contracts.common import ContractError
-from hydra2.models.encoder import encode_observations
+from hydra2.models.encoder import _stage_pinned_batch, encode_observations
 from hydra2.models.schema import BASELINE_ACTION_COUNT
 from hydra2.training.dataset_parse import _resolve_live_or_parse
 
 if TYPE_CHECKING:
-    from hydra2.contracts.observation import ActorObservation
+    from hydra2.contracts.observation_actor import ActorObservation
 
 __all__ = [
     "_REAL_COUNT_KEYS",
@@ -41,7 +48,10 @@ logger = logging.getLogger(__name__)
 
 
 def _lexicographic_hash(s: str) -> int:
-    return int(hashlib.sha256(s.encode()).hexdigest()[:8], 16)
+    # Bridge digest owner (canon_rng.sha256_hex via the thin artifacts.digest
+    # delegate — same SHA-256, byte-identical int). ImportError fails closed
+    # with a build-ext hint — no oracle fallback.
+    return int(str(sha256_digest(s.encode()))[7:15], 16)
 
 
 def _require_action_width(num_actions: int, *, allow_narrow: bool, where: str) -> None:
@@ -84,7 +94,7 @@ def tensorize_actor_row(
     decision_id: str = str(row["decision_id"])
     chosen_raw: int = int(row["chosen_action_id"])
     # Deterministic features from decision_id hash
-    h = hashlib.sha256(f"{decision_id}:{seed}".encode()).digest()
+    h = bytes.fromhex(str(sha256_digest(f"{decision_id}:{seed}".encode()))[7:])
     # Expand to feature_dim floats via hash bytes
     vals: list[float] = []
     for i in range(feature_dim):
@@ -280,9 +290,27 @@ def encode_observation_rows(
     chosen_action_id = torch.tensor(chosen_ids, dtype=torch.long)
     if pin_memory and torch.cuda.is_available():
         try:
-            features = features.pin_memory()
-            legal_mask = legal_mask.pin_memory()
-            chosen_action_id = chosen_action_id.pin_memory()
+            # Bridge-ring bulk stage (buffer+ring over per-tensor pin
+            # copies; the torch from_numpy views above stay untouched):
+            # geometry is the encoding batch's own — batch rows, pure-Python
+            # history lens (no extra sync), encoder bucket width.
+            # Fail-closed: ContractError (bridge mismatch) propagates; only a
+            # pin-resource failure warns down to the pageable fallback below.
+            staged = _stage_pinned_batch(
+                {
+                    "chosen_action_id": chosen_action_id,
+                    "features": features,
+                    "legal_mask": legal_mask,
+                },
+                batch_size=len(row_list),
+                max_history_len=max(len(o.visible_history) for o in observations),
+                bucket_t=int(encoded.history_mask.shape[1]),
+            )
+            features = staged["features"]
+            legal_mask = staged["legal_mask"]
+            chosen_action_id = staged["chosen_action_id"]
+        except ContractError:
+            raise
         except Exception as exc:
             logger.warning("dataset pin_memory failed, using pageable fallback: %s", exc)
     result = {

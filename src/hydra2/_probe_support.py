@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 
 def check_trainer_absence() -> tuple[bool, str]:
-    """The dependency tree must prove Trainer packages absent."""
+    """The dependency tree must prove Trainer packages absent (M3: lightning-fabric removed too)."""
     import importlib.metadata as md
 
     installed = {
@@ -27,10 +27,10 @@ def check_trainer_absence() -> tuple[bool, str]:
     present = sorted(name for name in TRAINER_FORBIDDEN_PACKAGES if name in installed)
     if len(present) != 0:
         return False, f"forbidden Trainer packages installed: {present}"
-    fabric_ok = "lightning-fabric" in installed
+    fabric_gone = "lightning-fabric" not in installed
     return (
-        fabric_ok,
-        f"lightning-fabric present={fabric_ok}; "
+        fabric_gone,
+        f"lightning-fabric absent={fabric_gone}; "
         f"forbidden absent={list(TRAINER_FORBIDDEN_PACKAGES)}",
     )
 

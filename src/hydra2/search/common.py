@@ -18,12 +18,13 @@ from dataclasses import dataclass
 from pathlib import Path  # noqa: TC003 — runtime needed for REPO_ROOT = repo_root()
 from typing import Any, Protocol
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.artifacts.canonical import canonical_bytes
 from hydra2.config import repo_root
 from hydra2.contracts.common import (
     ContractError,
     DigestText,
-    make_digest_text,
     make_schema_version,
 )
 
@@ -31,18 +32,10 @@ __all__ = [
     "DEPLOYABLE_DEADLINE_MS",
     "HASH63_MOD",
     "MISSING_HASH",
-    "PLACEHOLDER_1",
-    "PLACEHOLDER_2",
     "PLACEHOLDER_A",
     "PLACEHOLDER_B",
-    "PLACEHOLDER_C",
-    "PLACEHOLDER_D",
-    "PLACEHOLDER_E",
-    "PLACEHOLDER_F",
     "REPO_ROOT",
-    "U32_MAX",
     "U64_DENOM",
-    "U64_MOD",
     "CandidateSpec",
     "Planner",
     "ResourceBudget",
@@ -55,9 +48,6 @@ __all__ = [
 
 VALID_MODES: tuple[str, ...] = ("gameplay_5s", "ponder", "analysis")
 VALID_FALLBACK: tuple[str, ...] = ("candidate0",)
-VALID_TIE_BREAKS: frozenset[str] = frozenset(
-    ("greedy", "temperature_0.5", "temperature_1.0", "value_break")
-)
 
 # Portable repo root via marker walk (pyproject.toml/.git) — not hardcoded
 # parents[3] depth. Centralizes via hydra2.config.repo_root (cached walk).
@@ -71,15 +61,7 @@ DEPLOYABLE_DEADLINE_MS: int = 5000
 MISSING_HASH: str = "0" * 64
 PLACEHOLDER_A: str = "a" * 64
 PLACEHOLDER_B: str = "b" * 64
-PLACEHOLDER_C: str = "c" * 64
-PLACEHOLDER_D: str = "d" * 64
-PLACEHOLDER_E: str = "e" * 64
-PLACEHOLDER_F: str = "f" * 64
-PLACEHOLDER_1: str = "1" * 64
-PLACEHOLDER_2: str = "2" * 64
 HASH63_MOD: int = 2**63 - 1
-U32_MAX: int = 0xFFFFFFFF
-U64_MOD: int = 2**64
 U64_DENOM: float = 18446744073709551616.0
 
 
@@ -152,7 +134,7 @@ def _require_opt_nonneg_int(name: str, value: object) -> int | None:
 def _require_digest(name: str, value: object) -> DigestText:
     if not isinstance(value, str):
         raise ContractError(f"{name} must be sha256 digest, got {type(value).__name__}")
-    return make_digest_text(value)
+    return _bridge_contracts.make_digest_text(value)
 
 
 def _require_opt_digest(name: str, value: object) -> DigestText | None:
@@ -392,7 +374,7 @@ class SearchRequest:
     belief_epoch: Any | None  # BeliefEpoch | None
 
     def __post_init__(self) -> None:
-        from hydra2.contracts.observation import ActorObservation
+        from hydra2.contracts.observation_actor import ActorObservation
 
         if not isinstance(self.observation, ActorObservation):
             raise ContractError(
@@ -401,7 +383,7 @@ class SearchRequest:
         if not isinstance(self.legal_actions, tuple) or len(self.legal_actions) == 0:
             raise ContractError("legal_actions must be non-empty tuple")
         for act in self.legal_actions:
-            from hydra2.contracts.action import CanonicalAction
+            from hydra2.contracts.action_model import CanonicalAction
 
             if not isinstance(act, CanonicalAction):
                 raise ContractError(
@@ -436,7 +418,7 @@ class SearchResult:
     completed: bool
 
     def __post_init__(self) -> None:
-        from hydra2.contracts.action import CanonicalAction
+        from hydra2.contracts.action_model import CanonicalAction
         from hydra2.contracts.utility import UtilityVector
         from hydra2.eval.telemetry import ResourceTelemetry
 
@@ -454,7 +436,7 @@ class SearchResult:
         for vec in self.value_vectors:
             if not isinstance(vec, UtilityVector):
                 raise ContractError("value_vectors entries must be UtilityVector")
-        _ = make_digest_text(self.candidate_spec_hash)
+        _ = _bridge_contracts.make_digest_text(self.candidate_spec_hash)
         if not isinstance(self.telemetry, ResourceTelemetry):
             raise ContractError(
                 f"telemetry must be ResourceTelemetry, got {type(self.telemetry).__name__}"
@@ -462,7 +444,7 @@ class SearchResult:
         if not isinstance(self.evidence_refs, tuple):
             raise ContractError("evidence_refs must be tuple")
         for ref in self.evidence_refs:
-            _ = make_digest_text(ref)
+            _ = _bridge_contracts.make_digest_text(ref)
         if not isinstance(self.completed, bool):
             raise ContractError("completed must be bool")
 

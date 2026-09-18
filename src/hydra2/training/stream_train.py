@@ -57,22 +57,21 @@ from typing import TYPE_CHECKING, Any, cast
 import torch
 
 from hydra2.contracts.common import ContractError
-from hydra2.data.stream import (
-    GameStream,
-    PrefetchGameStream,
-    build_manifest,
-    manifest_digest,
-)
-from hydra2.data.stream import (
-    StreamCursor as DataStreamCursor,
-)
-from hydra2.training.loop import (
-    SupervisedLoop,
-    TrainingLoopConfig,
+from hydra2.data.stream_decode import PrefetchGameStream
+from hydra2.data.stream_iter import GameStream
+from hydra2.data.stream_manifest import build_manifest, manifest_digest
+from hydra2.data.stream_read import StreamCursor as DataStreamCursor
+from hydra2.training._rc_digest import create_run_layout, run_config_digest
+from hydra2.training.loop_batch import (
     summarize_telemetry,
     summarize_update_telemetry,
 )
-from hydra2.training.run_config import create_run_layout, run_config_digest
+from hydra2.training.loop_state import (
+    TrainingLoopConfig,
+)
+from hydra2.training.loop_train import (
+    SupervisedLoop,
+)
 from hydra2.training.stream_build import _NO_DECAY_NAME_TAGS as _NO_DECAY_NAME_TAGS
 from hydra2.training.stream_build import _POLICY_HEAD_PREFIX as _POLICY_HEAD_PREFIX
 from hydra2.training.stream_build import _build_model as _build_model
@@ -88,6 +87,7 @@ from hydra2.training.stream_build import _sidecar_cursor as _sidecar_cursor
 from hydra2.training.stream_build import _verify_rng_anchors as _verify_rng_anchors
 from hydra2.training.stream_checkpoint import _append_new_history as _append_new_history
 from hydra2.training.stream_checkpoint import _ckpt_names as _ckpt_names
+from hydra2.training.stream_checkpoint import _epoch_seed as _epoch_seed
 from hydra2.training.stream_checkpoint import _prune_checkpoints as _prune_checkpoints
 from hydra2.training.stream_checkpoint import _run_holdout_eval as _run_holdout_eval
 from hydra2.training.stream_checkpoint import (
@@ -150,7 +150,7 @@ from hydra2.training.stream_scan import _shared_scan_cache_path as _shared_scan_
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from hydra2.training.run_config import ResumePlan, RunConfig
+    from hydra2.training._rc_sections import ResumePlan, RunConfig
 
 __all__ = ["SPLIT_RATIOS", "run_stream_training"]
 
@@ -413,7 +413,9 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
             raise ContractError(f"checkpoint microbatch count mismatch: {resume.checkpoint}")
         shuffle_raw = envelope.sidecar.get("shuffle")
         assert isinstance(shuffle_raw, dict)
-        if int(shuffle_raw.get("epoch_seed", -1)) != config.seeds.data_seed + dataset.epoch:
+        if int(shuffle_raw.get("epoch_seed", -1)) != _epoch_seed(
+            data_seed=config.seeds.data_seed, epoch=dataset.epoch
+        ):
             raise ContractError(f"checkpoint shuffle epoch_seed mismatch: {resume.checkpoint}")
         if int(shuffle_raw.get("buffer_size", -1)) != config.data.shuffle_buffer_size:
             raise ContractError(f"checkpoint shuffle buffer_size mismatch: {resume.checkpoint}")
@@ -467,10 +469,6 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
     require_device_available(config.runtime.device)
     if config.runtime.adapter_id == "plain_pytorch":
         adapter: Any = PlainPytorchAdapter()
-    elif config.runtime.adapter_id == "fabric_2.6.5":
-        from hydra2.runtime.fabric import FabricRuntimeAdapter
-
-        adapter = FabricRuntimeAdapter()
     else:
         raise ContractError(f"unknown runtime adapter_id {config.runtime.adapter_id!r}")
     # Compiled non-fp32 needs the functorch backward shim (see

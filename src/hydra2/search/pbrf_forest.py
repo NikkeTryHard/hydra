@@ -21,18 +21,21 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.artifacts.canonical import canonical_bytes
 from hydra2.contracts.common import (
     ContractError,
     DigestText,
     PacketPartitionError,
     StaleBeliefError,
-    make_digest_text,
-    make_tile_id,
 )
-from hydra2.search.pbrf_partition import _HAS_KERNEL as _HAS_KERNEL
-from hydra2.search.pbrf_partition import ChildEntry as ChildEntry
-from hydra2.search.pbrf_partition import NaturalPacketKernel as NaturalPacketKernel
+from hydra2.search.pbrf_partition import (
+    ChildEntry as ChildEntry,
+)
+from hydra2.search.pbrf_partition import (
+    NaturalPacketKernel as NaturalPacketKernel,
+)
 from hydra2.search.pbrf_partition import PbrfConfig as PbrfConfig
 from hydra2.search.pbrf_partition import PolicySet as PolicySet
 from hydra2.search.pbrf_partition import RandomStream as RandomStream
@@ -40,8 +43,8 @@ from hydra2.search.pbrf_partition import _action_id as _action_id
 from hydra2.search.pbrf_partition import _ess_for_key as _ess_for_key
 from hydra2.search.pbrf_partition import _freeze_candidates as _freeze_candidates
 from hydra2.search.pbrf_partition import _normalized_weights as _normalized_weights
+from hydra2.search.pbrf_partition import _require_kernel as _require_kernel
 from hydra2.search.pbrf_partition import _require_partition as _require_partition
-from hydra2.search.pbrf_partition import _z_hat_for_key as _z_hat_for_key
 from hydra2.search.pbrf_partition import fixed_allocate as fixed_allocate
 
 __all__ = [
@@ -104,7 +107,7 @@ def _tile_for_successor(succ: Any) -> int | None:
         raw_obj: object = getattr(payload_obj, "tile", None)
         if isinstance(raw_obj, bool) or not isinstance(raw_obj, int):
             return None
-        return int(make_tile_id(raw_obj))
+        return int(_bridge_contracts.make_tile_id(raw_obj))
     except Exception:
         return None
 
@@ -214,7 +217,8 @@ def _is_target_compatible(
             if (
                 obs_after is not None
                 and auth_obs is not None
-                and make_digest_text(obs_after) != make_digest_text(auth_obs)
+                and _bridge_contracts.make_digest_text(obs_after)
+                != _bridge_contracts.make_digest_text(auth_obs)
             ):
                 return False
             # Target binding: the authoritative target must re-derive from the
@@ -230,13 +234,15 @@ def _is_target_compatible(
                 proposal_raw: object = getattr(epoch, "proposal_spec_hash", "")
                 target_raw: object = getattr(epoch, "target_id", "")
                 expected: DigestText = _recompute_target(
-                    observation_hash=make_digest_text(obs_after),
-                    rules_hash=make_digest_text(str(rules_raw)),
-                    belief_model_hash=make_digest_text(str(belief_raw)),
-                    event_model_hash=make_digest_text(str(event_raw)),
-                    proposal_spec_hash=make_digest_text(str(proposal_raw)),
+                    observation_hash=_bridge_contracts.make_digest_text(obs_after),
+                    rules_hash=_bridge_contracts.make_digest_text(str(rules_raw)),
+                    belief_model_hash=_bridge_contracts.make_digest_text(str(belief_raw)),
+                    event_model_hash=_bridge_contracts.make_digest_text(str(event_raw)),
+                    proposal_spec_hash=_bridge_contracts.make_digest_text(str(proposal_raw)),
                 )
-                if make_digest_text(expected) != make_digest_text(str(target_raw)):
+                if _bridge_contracts.make_digest_text(
+                    expected
+                ) != _bridge_contracts.make_digest_text(str(target_raw)):
                     return False
         except Exception:
             pass
@@ -345,12 +351,6 @@ class ImmutableForest:
             return None
         return _ess_for_key(entries)
 
-    def z_hat(self, action: Any, packet_id: str) -> float | None:
-        entries = self.child(action, packet_id)
-        if entries is None:
-            return None
-        return _z_hat_for_key(entries)
-
 
 # ---------------------------------------------------------------------------
 # Core builder
@@ -395,15 +395,15 @@ def build_pbrf(
     if not isinstance(n, int) or isinstance(n, bool) or n <= 0:
         raise ContractError("parent_count must be positive int")
 
-    # Resolve kernel / policy_set defaults
+    # Resolve kernel / policy_set defaults (fail closed, no silent None).
     if kernel is None:
-        if _HAS_KERNEL:
-            try:
-                kernel = NaturalPacketKernel(kernel_tolerance=cfg.kernel_tolerance)  # type: ignore[call-arg]
-            except Exception as exc:
-                raise ContractError(f"kernel required: {exc}") from exc
-        else:
-            raise ContractError("kernel is required for build_pbrf")
+        _require_kernel()
+        try:
+            kernel = NaturalPacketKernel(kernel_tolerance=cfg.kernel_tolerance)  # type: ignore[call-arg]
+        except ImportError:
+            raise
+        except Exception as exc:
+            raise ContractError(f"kernel required: {exc}") from exc
     if policy_set is None:
         try:
             policy_set = PolicySet()  # type: ignore[call-arg]
@@ -421,7 +421,8 @@ def build_pbrf(
         except Exception:
             raise ContractError("rng is required")
 
-    # Validate rng has required interface (random_below for belief sampling)
+    # Wave 2 bridge audit: kept Python — needs Particle objects from the belief
+    # corpus (bridge natural_indices returns indices only; corpus/worlds live in belief).
     parents = belief.sample_natural(epoch, count=n, rng=rng)  # type: ignore[union-attr]
     if not isinstance(parents, (list, tuple)) or len(parents) != n:
         raise ContractError(f"belief.sample_natural must return {n} particles")
@@ -450,6 +451,8 @@ def build_pbrf(
                 raise StaleBeliefError("stale particle epoch for kernel [PBRF_STALE_EPOCH]")
             if getattr(parent, "target_id", epoch.target_id) != epoch.target_id:  # type: ignore[attr-defined]
                 raise StaleBeliefError("stale particle target for kernel [PBRF_STALE_TARGET]")
+            # Wave 2 bridge audit: kept Python — needs full ActorVisiblePacket objects
+            # (bridge packet_successors returns digest-only PacketSuccessor; PBRF keys on packet.packet_id + actor_view).
             successors = kernel.enumerate_next(
                 epoch=epoch, particle=parent, action=action, policy_set=policy_set
             )

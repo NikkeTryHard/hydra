@@ -14,11 +14,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.artifacts.canonical import canonical_bytes
 from hydra2.contracts.common import (
     ContractError,
     DigestText,
-    make_digest_text,
 )
 
 MODEL_INPUT_SCHEMA_VERSION = "1.0.0"
@@ -94,7 +95,6 @@ __all__ = [
     "ModelInputSchema",
     "ModelSpec",
     "TensorFieldSpec",
-    "build_model_input_schema_envelope",
     "build_model_input_schema_payload",
     "compute_model_input_schema_digest",
     "compute_model_spec_digest",
@@ -146,7 +146,7 @@ class ModelInputSchema:
     digest: DigestText
 
     def __post_init__(self) -> None:
-        _digest: DigestText = make_digest_text(self.digest)
+        _digest: DigestText = _bridge_contracts.make_digest_text(self.digest)
         if len(self.history_bucket_lengths) == 0:
             raise ContractError("history_bucket_lengths must be non-empty")
         if sorted(self.history_bucket_lengths) != list(self.history_bucket_lengths):
@@ -171,7 +171,7 @@ class ModelInputSchema:
         computed = compute_model_input_schema_digest(
             build_model_input_schema_payload_without_digest(self)
         )
-        if make_digest_text(self.digest) != computed:
+        if _bridge_contracts.make_digest_text(self.digest) != computed:
             raise ContractError(f"ModelInputSchema digest mismatch {self.digest} != {computed}")
 
 
@@ -214,12 +214,12 @@ class ModelSpec:
     digest: DigestText
 
     def __post_init__(self) -> None:
-        _sha1: DigestText = make_digest_text(self.input_schema_hash)
-        _sha2: DigestText = make_digest_text(self.feature_derivation_hash)
-        _sha3: DigestText = make_digest_text(self.action_table_hash)
-        _sha4: DigestText = make_digest_text(self.observation_schema_hash)
-        _sha5: DigestText = make_digest_text(self.utility_manifest_hash)
-        _sha6: DigestText = make_digest_text(self.digest)
+        _sha1: DigestText = _bridge_contracts.make_digest_text(self.input_schema_hash)
+        _sha2: DigestText = _bridge_contracts.make_digest_text(self.feature_derivation_hash)
+        _sha3: DigestText = _bridge_contracts.make_digest_text(self.action_table_hash)
+        _sha4: DigestText = _bridge_contracts.make_digest_text(self.observation_schema_hash)
+        _sha5: DigestText = _bridge_contracts.make_digest_text(self.utility_manifest_hash)
+        _sha6: DigestText = _bridge_contracts.make_digest_text(self.digest)
         if self.architecture_id not in KNOWN_ARCHITECTURES:
             raise ContractError(f"unknown architecture_id {self.architecture_id!r}")
         # Head specs sorted by head_id.
@@ -230,7 +230,7 @@ class ModelSpec:
             raise ContractError("head_ids must be unique")
         _validate_json_value(dict(self.architecture_parameters), where="architecture_parameters")
         computed = compute_model_spec_digest(model_spec_digest_document(self))
-        if make_digest_text(self.digest) != computed:
+        if _bridge_contracts.make_digest_text(self.digest) != computed:
             raise ContractError(f"ModelSpec digest mismatch {self.digest} != {computed}")
 
 
@@ -564,71 +564,9 @@ def model_input_schema_digest() -> DigestText:
     return compute_model_input_schema_digest(build_model_input_schema_payload_without_digest())
 
 
-def build_model_input_schema_envelope() -> dict[str, Any]:
-    payload = build_model_input_schema_payload()
-    return {
-        "artifact_type": MODEL_INPUT_ARTIFACT_TYPE,
-        "compatibility": "exact",
-        "payload": payload,
-        "schema_version": MODEL_INPUT_SCHEMA_VERSION,
-    }
-
-
 # ---------------------------------------------------------------------------
 # ModelSpec helpers
 # ---------------------------------------------------------------------------
-
-
-def _default_head_specs() -> tuple[ModelHeadSpec, ...]:
-    heads = (
-        ModelHeadSpec(
-            head_id="belief_next",
-            output_key="belief_logits",
-            target_id="next_event_kind",
-            loss_id="cross_entropy",
-            parameters={"num_classes": 20, "mask_field": None},
-        ),
-        ModelHeadSpec(
-            head_id="event_next",
-            output_key="event_logits",
-            target_id="next_event_kind",
-            loss_id="cross_entropy",
-            parameters={"num_classes": 20, "mask_field": None},
-        ),
-        ModelHeadSpec(
-            head_id="placement",
-            output_key="placement_logits",
-            target_id="final_placement",
-            loss_id="cross_entropy_4x4",
-            # Per-seat placement-credit semantics (day-one trainable):
-            # logits [B,4,4] where dim-1 = seat 0..3, dim-2 = rank-logits
-            # for ranks 1..4; target [B,4] per-seat rank indices; loss is
-            # per-seat cross-entropy then mean over seats. Field table
-            # untouched — input digest unchanged; model_spec digest churns.
-            parameters={
-                "logits_shape": [4, 4],
-                "ranks": 4,
-                "seats": 4,
-                "semantics": "per_seat_rank_logits",
-                "target_shape": [4],
-            },
-        ),
-        ModelHeadSpec(
-            head_id="policy",
-            output_key="policy_logits",
-            target_id="selected_action",
-            loss_id="masked_cross_entropy",
-            parameters={"mask_field": "legal_mask"},
-        ),
-        ModelHeadSpec(
-            head_id="value",
-            output_key="value_vector",
-            target_id="utility_vector",
-            loss_id="mse",
-            parameters={"seats": 4},
-        ),
-    )
-    return tuple(sorted(heads, key=lambda h: h.head_id))
 
 
 def model_spec_digest_document(spec: ModelSpec | Mapping[str, Any]) -> dict[str, Any]:

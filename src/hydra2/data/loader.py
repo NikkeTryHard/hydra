@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import subprocess
 import sys
@@ -82,27 +81,19 @@ def _load_manifest(manifest_path: Path) -> DatasetManifest:
 
 
 def _hash_file_stream(path: Path) -> str:
-    """Stream hash via 1 MiB chunks — helper alias for spec.
+    """Shard digest via the hard-Rust digest owner (bridge judge).
 
-    Evidence: https://docs.python.org/3/library/hashlib.html chunked update
-    pattern avoids loading entire shard via read_bytes().
+    Thin delegate over :func:`hydra2.artifacts.digest.sha256_file`
+    (``canon_rng.sha256_file`` detached batch path, native 1 MiB chunks —
+    same digest, byte-identical). ``ImportError`` (extension not built)
+    raises with a ``build-ext`` hint — NO oracle fallback, never silent.
+    Missing/unreadable shards raise ``OSError`` (bridge ``PyOSError``),
+    which the caller maps to :class:`CorruptArtifactError` — the same
+    contract the ``hashlib`` oracle had.
     """
-    hasher = hashlib.sha256()
-    # 1 MiB chunks: iter(lambda: f.read(1<<20), b"") keeps peak ~1 MiB.
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            hasher.update(chunk)
-    return "sha256:" + hasher.hexdigest()
+    from hydra2.artifacts.digest import sha256_file as _bridge_sha256_file
 
-
-def _sha256_file_chunked(path: Path) -> str:
-    """Stream hash via 1 MiB chunks.
-
-    Evidence: https://docs.python.org/3/library/hashlib.html chunked update
-    pattern avoids loading entire shard via read_bytes().
-    Backward-compat alias for _hash_file_stream.
-    """
-    return _hash_file_stream(path)
+    return str(_bridge_sha256_file(path))
 
 
 def verify_and_load_batch(
@@ -123,16 +114,22 @@ def verify_and_load_batch(
     corrupt shard ignored (must raise).
 
     Perf:
-    - Shard hashes via 1 MiB chunked streaming + per-path cache avoids
+    - Shard hashes via the bridge digest judge (``artifacts.digest``
+      ``sha256_file``, native 1 MiB chunks) + per-path cache avoids
       rehashing same actor_parquet when fallback missing.
-      Evidence https://docs.python.org/3/library/hashlib.html
-    - Zero-copy: pq.read_table(..., memory_map=True, pre_buffer=True,
-      use_threads=True) + table.slice(0, batch_size) + to_pydict/to_batches.
-      Parse actor_observation JSON once per row and reuse for dora/legal/phase.
+    - Zero-copy IPC-mmap-first: pq.read_table(..., memory_map=True,
+      pre_buffer=True, use_threads=True) + table.slice(0, batch_size) +
+      to_batches column pull (record batches over the mmap); to_pydict is
+      the fallback only, never first. Parse actor_observation JSON once per
+      row and reuse for dora/legal/phase.
       Evidence https://arrow.apache.org/docs/python/generated/pyarrow.parquet.read_table.html
       (memory_map, pre_buffer) + https://github.com/apache/arrow/issues/50326
       (to_pylist 2.5-10x slower than batched) + https://arrow.apache.org/docs/python/index.html
       (to_numpy zero-copy for primitives, to_pydict batched for strings).
+    Writer note (Probe-C gate pending — next, not here): the parquet WRITER
+    stays Python primary (``data/parquet.py`` 5-exact); the Rust writer is
+    parallel-shadow only until Probe-C, so this read path never assumes
+    Rust-written bytes beyond the shared schema/hash contract.
     """
     if not actor_parquet.is_file():
         raise CorruptArtifactError(f"actor shard missing: {actor_parquet}")
@@ -191,26 +188,25 @@ def verify_and_load_batch(
     # Verify legal masks and dora shape per row; also check no privileged leakage
     rows: list[dict[str, object]] = []
     # Slice to batch_size to avoid materializing full table's Python objects.
-    # Evidence: pq.read_table memory_map + slice + to_pydict avoids per-cell as_py.
+    # Evidence: pq.read_table memory_map + slice + to_batches avoids per-cell as_py.
     n_rows = min(batch_size, table.num_rows)
     if n_rows == 0:
         raise CorruptArtifactError("loader produced empty batch: corrupt or empty shard")
     batch_table = table.slice(0, n_rows)
-    # to_pydict is batched and faster than per-cell table.column(col)[idx].as_py()
-    # (see arrow issue 50326: to_pylist 2.5-10x slower when done per row). For
-    # primitive columns, to_numpy(zero_copy_only=False) would be zero-copy; for
-    # string columns we bound Python object creation to batch size via pydict.
+    # IPC-mmap-first: record batches stream zero-copy slices over the mmap
+    # (bounded to the batch width) instead of per-cell as_py pulls; the
+    # batched pydict is the fallback only, never first (arrow issue 50326:
+    # to_pylist 2.5-10x slower per row — both produce the same cols mapping).
+    cols: dict[str, list[object]] = {}
     try:
-        cols = batch_table.to_pydict()
-    except Exception:  # why-broad: to_pydict fallback to to_batches;
-        # both produce the same cols mapping.
-        # Fallback to to_batches if to_pydict unavailable (should not happen)
-        cols = {}
         for batch in batch_table.to_batches(max_chunksize=n_rows):
             for col_name in batch.schema.names:
                 idx = batch.schema.get_field_index(col_name)
                 col_vals = batch.column(idx).to_pylist()
                 cols.setdefault(col_name, []).extend(col_vals)
+    except Exception:
+        # Broad fallback only: identical mapping via one batched pydict pull.
+        cols = batch_table.to_pydict()
     # Expect columns: decision_id, legal_mask? In actor schema, legal_mask
     # is embedded in observation? For now, check actor_observation contains it.
     for idx in range(n_rows):

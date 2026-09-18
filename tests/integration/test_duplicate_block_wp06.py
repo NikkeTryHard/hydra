@@ -8,9 +8,10 @@ import textwrap
 from pathlib import Path
 
 import pytest
+from hydra2_replay_rs import eval as _bridge_eval
 
 from hydra2.contracts.common import ContractError
-from hydra2.eval.blocks import BlockTolerance, WallBlock, aggregate_blocks, aggregate_wall_block
+from hydra2.eval.blocks import BlockTolerance, WallBlock, aggregate_blocks
 from hydra2.eval.duplicate import (
     balance_audit,
     build_wall_blocks,
@@ -130,7 +131,7 @@ def test_exact_and_near_duplicate_detection() -> None:
 def test_exact_duplicate_rejection_contract() -> None:
     with pytest.raises(ContractError):
         find_exact_duplicates({"": "sha256:" + "aa" * 32})  # empty wall id
-    with pytest.raises(ContractError):
+    with pytest.raises(ValueError):
         find_exact_duplicates({"w1": "not-a-digest"})
     # Near duplicate rejects malformed tiles
     with pytest.raises(ContractError):
@@ -253,7 +254,7 @@ def test_whole_block_aggregation() -> None:
     assert result.valid[0] == ("w-1", pytest.approx(2.0))
     assert result.valid[1] == ("w-2", pytest.approx(10.0))
     # Direct helper matches tuple mean
-    assert aggregate_wall_block(blocks[0]) == pytest.approx(2.0)
+    assert _bridge_eval.aggregate_wall_block(blocks[0]) == pytest.approx(2.0)
     # Per-game bootstrap would give different variance — we assert blocks are atomic:
     # Two games in one wall produce one number, not two.
     assert len(result.valid) == 2  # not 4

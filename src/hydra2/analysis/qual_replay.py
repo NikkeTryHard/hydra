@@ -15,10 +15,14 @@ from __future__ import annotations
 import hashlib
 from typing import Any, cast
 
-from hydra2.analysis.qual_budget import check_no_privileged_leak as check_no_privileged_leak
-from hydra2.analysis.qual_budget import verify_compute_only as verify_compute_only
-from hydra2.artifacts.canonical import canonical_bytes
-from hydra2.contracts.common import ContractError, DigestText, make_digest_text
+from hydra2.analysis.qual_budget import (
+    check_no_privileged_leak as check_no_privileged_leak,
+)
+from hydra2.analysis.qual_budget import (
+    verify_compute_only as verify_compute_only,
+)
+from hydra2.artifacts.digest import of_canonical, validate_digest
+from hydra2.contracts.common import ContractError
 
 
 def deterministic_replay_hash(
@@ -39,7 +43,7 @@ def deterministic_replay_hash(
 
     Returns sha256:<hex> digest.
     """
-    _: DigestText = make_digest_text(observation_hash)
+    _ = validate_digest(observation_hash)
     if mode not in ("gameplay_5s", "ponder", "analysis"):
         raise ContractError(f"mode must be gameplay_5s/ponder/analysis, got {mode!r}")
 
@@ -62,7 +66,7 @@ def deterministic_replay_hash(
         "legal_action_ids": aids,
         "seed_extra": seed_extra,
     }
-    return "sha256:" + hashlib.sha256(canonical_bytes(payload)).hexdigest()
+    return str(of_canonical(payload))
 
 
 def compare_gameplay_analysis(
@@ -102,9 +106,9 @@ def compare_gameplay_analysis(
     obs_hash: str = _obs_hash_raw if isinstance(_obs_hash_raw, str) else "sha256:" + "0" * 64
     # If observation lacks hash, synthesize one from its canonical bytes for test purposes
     try:
-        _obs_digest: DigestText = make_digest_text(obs_hash)
+        _ = validate_digest(obs_hash)
     except Exception:
-        obs_hash = "sha256:" + hashlib.sha256(canonical_bytes(str(observation))).hexdigest()
+        obs_hash = str(of_canonical(str(observation)))
 
     gp_hash = deterministic_replay_hash(
         candidate_id=cast(str, gameplay_spec.candidate_id),

@@ -52,3 +52,22 @@ pub fn replay_game_text_with_version(
         detail: reject.detail,
     })
 }
+
+/// Sim-capture column builders (Phase 3 expand side): per-decision sim
+/// outputs -> one actor `RecordBatch`.
+///
+/// Declared here (not at the crate root) because `lib.rs` is owned by the
+/// shard-manifest sibling: `hydra_shard::replay::expand` is the canonical
+/// path, and no crate-root re-export exists or is wanted.
+#[path = "expand.rs"]
+pub mod expand;
+
+/// Batch sim-capture entry: caller-ordered sim inputs -> one actor batch.
+///
+/// Thin entry over [`expand::expand_batch`]; the sim itself stays Python this
+/// phase (the engine-input boundary is documented on [`expand`]).
+pub fn expand_batch_games(
+    games: &[expand::SimGameInput<'_>],
+) -> Result<expand::ExpandedBatch, expand::ExpandError> {
+    expand::expand_batch(games)
+}

@@ -146,7 +146,7 @@ def _expand_shard_game(
             actor_rows = expand_game(game, split=split)
             sim_path = False
         else:
-            from hydra2.engines.riichienv.log_replay import replay_game as _replay_sim_game
+            from hydra2.engines.riichienv._lr_end import replay_game as _replay_sim_game
 
             actor_rows = _replay_sim_game(game, split=split)
             sim_path = True
@@ -413,7 +413,7 @@ def build_shards(
 
     Returns the manifest dict (also written to ``manifest.json``).
     """
-    from hydra2.training.dataset import encode_observation_rows
+    from hydra2.training.dataset_encode import encode_observation_rows
 
     if not isinstance(games, (list, tuple)) or len(games) == 0:
         detail = str(len(games)) if isinstance(games, (list, tuple)) else type(games).__name__

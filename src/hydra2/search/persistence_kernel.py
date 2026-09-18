@@ -20,109 +20,54 @@ from __future__ import annotations
 import hashlib
 import math
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Literal
+
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
 from hydra2.artifacts.canonical import canonical_bytes
-from hydra2.contracts.common import ContractError, DigestText, make_digest_text
-
-if TYPE_CHECKING:
-    from hydra2.eval.telemetry import ResourceTelemetry
+from hydra2.contracts.common import ContractError, DigestText
 
 try:
     from hydra2.search.common import (
         DEPLOYABLE_DEADLINE_MS,
-        MISSING_HASH,
-        PLACEHOLDER_1,
-        PLACEHOLDER_2,
-        PLACEHOLDER_A,
-        PLACEHOLDER_B,
-        PLACEHOLDER_C,
-        PLACEHOLDER_D,
-        PLACEHOLDER_E,
-        PLACEHOLDER_F,
-        REPO_ROOT,
         CandidateSpec,
-        ResourceBudget,
-        SearchRequest,
-        SearchResult,
     )
 
     _COMMON_AVAILABLE = True
-except ImportError:
-    _COMMON_AVAILABLE = False
+except ImportError as exc:
+    raise ImportError(
+        "hydra2.search.common is required for persistence_kernel; "
+        "the minimal-contract fallback was removed (single authority is search.common)"
+    ) from exc
 
-    DEPLOYABLE_DEADLINE_MS = 5000  # type: ignore[no-redef]
-    MISSING_HASH = "0" * 64  # type: ignore[no-redef]
-    PLACEHOLDER_A = "a" * 64  # type: ignore[no-redef]
-    PLACEHOLDER_B = "b" * 64  # type: ignore[no-redef]
-    PLACEHOLDER_C = "c" * 64  # type: ignore[no-redef]
-    PLACEHOLDER_D = "d" * 64  # type: ignore[no-redef]
-    PLACEHOLDER_E = "e" * 64  # type: ignore[no-redef]
-    PLACEHOLDER_F = "f" * 64  # type: ignore[no-redef]
-    PLACEHOLDER_1 = "1" * 64  # type: ignore[no-redef]
-    PLACEHOLDER_2 = "2" * 64  # type: ignore[no-redef]
-    # Portable repo root via marker walk (pyproject.toml/.git), not parents[3] brittle depth.
-    # Evidence: https://docs.python.org/3/library/pathlib.html#pathlib.Path.resolve
-    # Evidence: https://github.com/fsspec/universal_pathlib + https://github.com/tox-dev/platformdirs
-    # Evidence: https://docs.python.org/3/library/importlib.resources.html
-    # Legacy: previously __import__("pathlib").Path(__file__).resolve().parents[3].
-    from pathlib import Path  # noqa: TC003, I001 — runtime Path for REPO_ROOT
-    from hydra2.config import repo_root  # portable marker walk, cached
+_BRIDGE_FNS = (
+    "persistence_packets_for",
+    "persistence_rebuild_epoch",
+    "persistence_commit_equals_rebuild",
+    "persistence_distribute_quota",
+)
 
-    REPO_ROOT: Path = repo_root()  # type: ignore[no-redef]
 
-    @dataclass(frozen=True, slots=True)
-    class ResourceBudget:
-        mode: str = "gameplay_5s"
-        deadline_ms: int = DEPLOYABLE_DEADLINE_MS
-        fallback_margin_ms: int = 500
-        max_model_calls: int | None = 32
-        max_transitions: int | None = 128
-        max_particles: int | None = 32
-        max_memory_bytes: int | None = None
+def _require_search_bridge() -> Any:
+    """Import the built ``search`` bridge surface (fail closed).
 
-    @dataclass(frozen=True, slots=True)
-    class CandidateSpec:
-        candidate_id: str = "persistence-B"
-        algorithm: str = "persistence_factorial"
-        algorithm_version: str = "1.0.0"
-        # dummy-until-real: pilot default, replaced by _canonical_hashes/caller before commit.
-        rules_hash: str = "sha256:" + PLACEHOLDER_A
-        utility_id: str = "expected_final_placement"
-        utility_manifest_hash: str = "sha256:" + PLACEHOLDER_B
-        action_table_hash: str = "sha256:" + PLACEHOLDER_C
-        observation_schema_hash: str = "sha256:" + PLACEHOLDER_D
-        packet_boundary_hash: str = "sha256:" + PLACEHOLDER_E
-        model_hash: str = "sha256:" + PLACEHOLDER_F
-        belief_model_hash: str | None = None
-        event_model_hash: str | None = None
-        continuation_policy_hashes: tuple[str, ...] = ()
-        proposal_spec_hash: str | None = None
-        case_manifest_hash: str = "sha256:" + MISSING_HASH
-        resource_budget: ResourceBudget = field(default_factory=ResourceBudget)
-        fallback_candidate_id: str = "candidate0"
-        tie_break: str = "greedy"
-        rng_protocol_hash: str = "sha256:" + PLACEHOLDER_1
-        random_stream_schema_hash: str = "sha256:" + PLACEHOLDER_2
-        parameters: dict[str, Any] = field(default_factory=dict)
-
-    @dataclass(frozen=True, slots=True)
-    class SearchRequest:
-        observation: Any
-        legal_actions: tuple[Any, ...]
-        candidate_spec: CandidateSpec
-        deadline_monotonic_ns: int
-        belief_epoch: Any | None = None
-
-    @dataclass(frozen=True, slots=True)
-    class SearchResult:
-        selected_action: Any
-        candidate_actions: tuple[Any, ...]
-        value_vectors: tuple[Any, ...]
-        candidate_spec_hash: str
-        telemetry: ResourceTelemetry
-        evidence_refs: tuple[str, ...]
-        completed: bool
+    ``ImportError`` (extension not built or stale ``.so`` without the
+    persistence pyfns) carries the ``build-ext`` hint — the ONLY oracle
+    fallback trigger. Any other bridge error raises, never silent.
+    """
+    try:
+        from hydra2_replay_rs import search as bridge  # pyrefly: ignore[missing-import]
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2_replay_rs.search missing; rebuild the bridge with `pixi run build-ext`"
+        ) from exc
+    for fn in _BRIDGE_FNS:
+        if not hasattr(bridge, fn):
+            raise ImportError(
+                f"hydra2_replay_rs.search.{fn} missing (stale .so); "
+                "rebuild the bridge with `pixi run build-ext`"
+            )
+    return bridge
 
 
 __all__ = [
@@ -279,7 +224,7 @@ class FinitePacket:
     delta: tuple[int, ...]  # successor delta placeholder (opaque but deterministic)
 
     def __post_init__(self) -> None:
-        _ = make_digest_text(self.packet_id)
+        _ = _bridge_contracts.make_digest_text(self.packet_id)
         if not 0.0 < self.probability <= 1.0:
             raise ContractError(f"packet probability must be in (0,1], got {self.probability!r}")
         if not math.isfinite(self.probability):
@@ -301,8 +246,8 @@ class BeliefEpochLite:
     root_actor: int
 
     def __post_init__(self) -> None:
-        _ = make_digest_text(self.observation_hash)
-        _ = make_digest_text(self.target_id)
+        _ = _bridge_contracts.make_digest_text(self.observation_hash)
+        _ = _bridge_contracts.make_digest_text(self.target_id)
 
 
 def _obs_hash_from_epoch(epoch: BeliefEpochLite | str) -> str:
@@ -314,7 +259,7 @@ def _obs_hash_from_epoch(epoch: BeliefEpochLite | str) -> str:
 def _action_key(a: Any) -> int:
     """Deterministic integer key for a CanonicalAction without mutating it."""
     try:
-        from hydra2.contracts.action import ACTION_KIND_ORDINALS
+        from hydra2.contracts.action_kinds import ACTION_KIND_ORDINALS
 
         _ord = ACTION_KIND_ORDINALS
     except Exception:
@@ -342,42 +287,37 @@ def enumerate_packets_for(
     Deterministic via semantic seeds: (epoch, action_id). Probabilities are
     fixed by branch index to keep fixtures reproducible; they sum to one and
     are pairwise disjoint by packet_id.
+
+    Bridge is the single implementation (``search.persistence_packets_for``);
+    missing extension raises ``ImportError``, bridge rejects raise as
+    :class:`ContractError` (fail closed, never silent).
     """
-    if num_branches <= 0:
+    if isinstance(num_branches, bool):
+        num_branches = int(num_branches)
+    if not isinstance(num_branches, int) or num_branches <= 0:
         raise ContractError("num_branches must be positive")
+    if isinstance(action_id, bool) or not isinstance(action_id, int) or action_id < 0:
+        raise ContractError(f"action_id must be a non-negative plain int, got {action_id!r}")
+    try:
+        bridge = _require_search_bridge()
+    except ImportError:
+        raise
+    try:
+        rows = bridge.persistence_packets_for(epoch, action_id, num_branches=num_branches)
+    except (ValueError, TypeError) as exc:
+        raise ContractError(f"persistence packets rejected: {exc}") from exc
     epoch_id = epoch.epoch if isinstance(epoch, BeliefEpochLite) else epoch
-    packets: list[FinitePacket] = []
-    # Use simple Dirichlet-like split: uniform for tests unless branch 0 is dominant
-    # For determinism, branch 0 gets 0.7, remaining share 0.3
-    if num_branches == 1:
-        probs = [1.0]
-    elif num_branches == 2:
-        probs = [0.7, 0.3]
-    else:
-        rem = 1.0 / num_branches
-        probs = [rem] * num_branches
-    for b in range(num_branches):
-        pid = compute_packet_id(epoch_before=epoch_id, action_id=action_id, branch=b)
-        # epoch_after is hash of predecessor plus packet
-        after_raw = canonical_bytes({"epoch_before": epoch_id, "packet_id": pid})
-        epoch_after = "epoch:" + hashlib.sha256(after_raw).hexdigest()[:16]
-        pkt = FinitePacket(
-            packet_id=pid,
+    return tuple(
+        FinitePacket(
+            packet_id=packet_id,
             action_id=action_id,
             epoch_before=epoch_id,
             epoch_after=epoch_after,
-            probability=probs[b],
-            delta=(action_id, b),
+            probability=probability,
+            delta=(action_id, branch),
         )
-        packets.append(pkt)
-    # Validate partition
-    total = sum(p.probability for p in packets)
-    if not math.isclose(total, 1.0, abs_tol=1e-9):
-        raise ContractError(f"packet mass {total} != 1")
-    pids = [p.packet_id for p in packets]
-    if len(pids) != len(set(pids)):
-        raise ContractError("packet ids must be disjoint")
-    return tuple(packets)
+        for packet_id, epoch_after, probability, branch in rows
+    )
 
 
 def fresh_rebuild_epoch(
@@ -389,13 +329,18 @@ def fresh_rebuild_epoch(
 
     Must digest-equal the successor stored in packet.epoch_after when the packet
     is the REALIZED one (mass-one partition guarantee).
+
+    Bridge is the single implementation (``search.persistence_rebuild_epoch``);
+    missing extension raises ``ImportError`` (fail closed).
     """
-    epoch_id = epoch_before.epoch if isinstance(epoch_before, BeliefEpochLite) else epoch_before
-    if packet.epoch_before != epoch_id:
-        raise ContractError(f"packet epoch_before {packet.epoch_before!r} != epoch {epoch_id!r}")
-    raw = canonical_bytes({"epoch_before": epoch_id, "packet_id": packet.packet_id})
-    rebuilt = "epoch:" + hashlib.sha256(raw).hexdigest()[:16]
-    return rebuilt
+    try:
+        bridge = _require_search_bridge()
+    except ImportError:
+        raise
+    try:
+        return str(bridge.persistence_rebuild_epoch(epoch_before, packet))
+    except (ValueError, TypeError) as exc:
+        raise ContractError(f"persistence rebuild rejected: {exc}") from exc
 
 
 def commit_equals_rebuild(
@@ -403,9 +348,19 @@ def commit_equals_rebuild(
     epoch_before: BeliefEpochLite | str,
     packet: FinitePacket,
 ) -> bool:
-    """Check commit/rebuild equality fixture."""
-    rebuilt = fresh_rebuild_epoch(epoch_before=epoch_before, packet=packet)
-    return rebuilt == packet.epoch_after
+    """Check commit/rebuild equality fixture.
+
+    Bridge is the single implementation (``search.persistence_commit_equals_rebuild``);
+    missing extension raises ``ImportError`` (fail closed).
+    """
+    try:
+        bridge = _require_search_bridge()
+    except ImportError:
+        raise
+    try:
+        return bool(bridge.persistence_commit_equals_rebuild(epoch_before, packet))
+    except (ValueError, TypeError) as exc:
+        raise ContractError(f"persistence commit check rejected: {exc}") from exc
 
 
 def _distribute_quota(sorted_pids: list[str], quota: int) -> dict[str, int]:
@@ -414,16 +369,24 @@ def _distribute_quota(sorted_pids: list[str], quota: int) -> dict[str, int]:
     Round-robin one unit per pid until quota exhausts. Pure function of its
     inputs; the returned per-pid units sum to min(quota, distributed). Callers
     charge every counter from the returned mapping so stats stay coherent.
+
+    Bridge is the single implementation (``search.persistence_distribute_quota``);
+    missing extension raises ``ImportError`` (fail closed).
     """
-    dist: dict[str, int] = dict.fromkeys(sorted_pids, 0)
-    remaining = quota
-    while remaining > 0 and len(dist) > 0:
-        for pid in sorted_pids:
-            if remaining <= 0:
-                break
-            dist[pid] += 1
-            remaining -= 1
-    return dist
+    if isinstance(quota, bool):
+        quota = int(quota)
+    if not isinstance(quota, int) or quota <= 0:
+        if not isinstance(quota, int):
+            raise ContractError(f"quota must be a plain int, got {quota!r}")
+        return dict.fromkeys(sorted_pids, 0)
+    try:
+        bridge = _require_search_bridge()
+    except ImportError:
+        raise
+    try:
+        return dict(bridge.persistence_distribute_quota(list(sorted_pids), quota))
+    except (ValueError, TypeError) as exc:
+        raise ContractError(f"persistence quota rejected: {exc}") from exc
 
 
 @dataclass(slots=True)

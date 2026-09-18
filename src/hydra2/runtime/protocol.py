@@ -12,8 +12,8 @@ import re
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast, runtime_checkable
 
-from hydra2._canon import sha256_digest_of_json
-from hydra2.contracts.common import ContractError, DigestText, make_digest_text
+from hydra2.artifacts.digest import of_canonical
+from hydra2.contracts.common import ContractError, DigestText
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -28,14 +28,14 @@ COMPILE_MODES: tuple[CompileMode, ...] = (
     "max-autotune-no-cudagraphs",
     "max-autotune",
 )
-SUPPORTED_ADAPTER_IDS: tuple[str, ...] = ("plain_pytorch", "fabric_2.6.5")
+SUPPORTED_ADAPTER_IDS: tuple[str, ...] = ("plain_pytorch",)
 
 _CUDA_DEVICE_RE = re.compile(r"^cuda(:([0-9]+))?$")
 
 
 @dataclass(frozen=True, slots=True)
 class RuntimeSpec:
-    adapter_id: Literal["plain_pytorch", "fabric_2.6.5"]
+    adapter_id: Literal["plain_pytorch"]
     device: str
     precision: PrecisionId
     compile_mode: CompileMode
@@ -141,7 +141,7 @@ def runtime_identity(spec: RuntimeSpec) -> DigestText:
         "schema_version": "1.0.0",
         **asdict(spec),
     }
-    return sha256_digest_of_json(payload)
+    return of_canonical(payload)
 
 
 def build_runtime(
@@ -243,7 +243,3 @@ def build_runtime(
             return adapter.setup(model=model, optimizer=optimizer, spec=spec)
     model = compile_once(model)
     return adapter.setup(model=model, optimizer=optimizer, spec=spec)
-
-
-def normalize_digest(value: str) -> DigestText:
-    return make_digest_text(value)

@@ -15,16 +15,24 @@ import json
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.artifacts.canonical import canonical_bytes
-from hydra2.contracts.common import ContractError, make_digest_text
+from hydra2.contracts.common import ContractError
 from hydra2.search.common import DEPLOYABLE_DEADLINE_MS, CandidateSpec, ResourceBudget
-from hydra2.search.local_abstraction import LocalResolvingAbstraction as LocalResolvingAbstraction
+from hydra2.search.local_abstraction import (
+    LocalResolvingAbstraction as LocalResolvingAbstraction,
+)
 from hydra2.search.local_abstraction import (
     validate_abstraction_mapping as validate_abstraction_mapping,
 )
 from hydra2.search.local_shared import logger as logger
-from hydra2.search.local_strategy import _VALID_AVERAGING as _VALID_AVERAGING
-from hydra2.search.local_strategy import _VALID_UPDATE_RULES as _VALID_UPDATE_RULES
+from hydra2.search.local_strategy import (
+    _VALID_AVERAGING as _VALID_AVERAGING,
+)
+from hydra2.search.local_strategy import (
+    _VALID_UPDATE_RULES as _VALID_UPDATE_RULES,
+)
 
 __all__ = [
     "LocalResolvingConfig",
@@ -172,7 +180,7 @@ def _load_default_hashes() -> dict[str, str]:
     from pathlib import Path
 
     from hydra2.config import repo_root
-    from hydra2.search.common import MISSING_HASH, _require_real_file
+    from hydra2.search.common import _require_real_file
 
     repo = repo_root()
     out: dict[str, str] = {}
@@ -184,7 +192,7 @@ def _load_default_hashes() -> dict[str, str]:
             doc: dict[str, Any] = json.loads(real.read_text())
             payload: Any = doc.get("payload", {})
             try:
-                from hydra2.contracts.rules import rules_manifest_from_payload
+                from hydra2.contracts.rules_manifest import rules_manifest_from_payload
 
                 manifest = rules_manifest_from_payload(payload)  # type: ignore[no-untyped-call]
                 # RulesManifest has no digest attr — use file hash (avoids missing-attribute)
@@ -194,10 +202,11 @@ def _load_default_hashes() -> dict[str, str]:
                 logger.debug("local_resolving: rules manifest fallback", exc_info=exc)
                 out["rules_hash"] = _file_sha256(p)
         else:
-            out["rules_hash"] = "sha256:" + MISSING_HASH
-    except (OSError, ValueError, TypeError, ContractError, json.JSONDecodeError) as exc:
-        logger.debug("local_resolving: rules_hash fallback", exc_info=exc)
-        out["rules_hash"] = "sha256:" + MISSING_HASH
+            raise ContractError("local_resolving: required rules config missing")
+    except ContractError:
+        raise
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise ContractError(f"local_resolving: rules_hash required: {exc}") from exc
     for key, rel in [
         ("action_table_hash", "configs/contracts/action_table_v1.json"),
         ("observation_schema_hash", "configs/contracts/observation_schema_v1.json"),
@@ -206,8 +215,7 @@ def _load_default_hashes() -> dict[str, str]:
         try:
             out[key] = _file_sha256(repo / rel)
         except (OSError, ValueError, TypeError, ContractError) as exc:
-            logger.debug("local_resolving: %s fallback", key, exc_info=exc)
-            out[key] = "sha256:" + MISSING_HASH
+            raise ContractError(f"local_resolving: {key} required: {exc}") from exc
     return out
 
 
@@ -222,10 +230,10 @@ def _model_hash_from_identity(model: Any | None) -> str:
     if model is not None:
         ident: Any = getattr(model, "model_identity", None)
         if ident is not None:
-            return str(make_digest_text(str(ident)))
+            return str(_bridge_contracts.make_digest_text(str(ident)))
     from hydra2.models.model import Hydra2BaselineModel
 
-    return str(make_digest_text(str(Hydra2BaselineModel().model_identity)))
+    return str(_bridge_contracts.make_digest_text(str(Hydra2BaselineModel().model_identity)))
 
 
 def _derive_utility_manifest_hash(model: Any | None) -> str:
@@ -235,7 +243,7 @@ def _derive_utility_manifest_hash(model: Any | None) -> str:
 
         probe: Any = Hydra2BaselineModel() if model is None else model
         manifest_raw: object = probe.utility_manifest_hash
-        return str(make_digest_text(str(manifest_raw)))
+        return str(_bridge_contracts.make_digest_text(str(manifest_raw)))
     except (ImportError, AttributeError, ValueError, TypeError, OSError) as exc:
         logger.debug("local_resolving: utility_manifest_hash derivation failed", exc_info=exc)
         raise ContractError(
@@ -333,7 +341,7 @@ def make_candidate5_spec(
                 real = _require_real_file(p, repo_root())
                 doc: dict[str, Any] = json.loads(real.read_text())
                 payload: Any = doc.get("payload", {})
-                from hydra2.contracts.rules import rules_manifest_from_payload
+                from hydra2.contracts.rules_manifest import rules_manifest_from_payload
 
                 manifest = rules_manifest_from_payload(payload)  # type: ignore[no-untyped-call]
                 # RulesManifest has no digest attr; synthesize via file hash (avoids missing-attribute)

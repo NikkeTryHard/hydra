@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 
 from hydra2.artifacts.canonical import canonical_bytes
-from hydra2.contracts.common import ContractError, VisibilityViolationError, make_digest_text
+from hydra2.contracts.common import ContractError, VisibilityViolationError
 
 try:
     from hydra2.search.common import (
@@ -33,113 +33,80 @@ try:
     )
 
     _COMMON_AVAILABLE = True
-except ImportError:  # fallback minimal contracts compatible with SPEC 15
-    _COMMON_AVAILABLE = False
-
-    @dataclass(frozen=True, slots=True)
-    class ResourceBudget:
-        mode: Literal["gameplay_5s", "ponder", "analysis"] = "gameplay_5s"
-        deadline_ms: int = 5000
-        fallback_margin_ms: int = 200
-        max_model_calls: int | None = 32
-        max_transitions: int | None = 256
-        max_particles: int | None = 64
-        max_memory_bytes: int | None = None
-
-        def __post_init__(self) -> None:
-            if self.deadline_ms <= 0:
-                raise ValueError("deadline_ms must be positive")
-            if self.fallback_margin_ms < 0 or self.fallback_margin_ms >= self.deadline_ms:
-                raise ValueError("fallback_margin_ms must be in [0, deadline_ms)")
-            for name in ("max_model_calls", "max_transitions", "max_particles"):
-                v = getattr(self, name)
-                if v is not None and (not isinstance(v, int) or isinstance(v, bool) or v <= 0):
-                    raise ValueError(f"{name} must be positive int or None")
-
-    @dataclass(frozen=True, slots=True)
-    class CandidateSpec:
-        candidate_id: str = "candidate8"
-        algorithm: str = "joint_type_world"
-        algorithm_version: str = "1.0.0"
-        rules_hash: str = "sha256:" + "a" * 64
-        utility_id: str = "expected_final_placement"
-        utility_manifest_hash: str = "sha256:" + "b" * 64
-        action_table_hash: str = "sha256:" + "c" * 64
-        # dummy-until-real: pilot default, replaced by _canonical_hashes/caller before commit.
-        observation_schema_hash: str = "sha256:" + "d" * 64
-        packet_boundary_hash: str = "sha256:" + "e" * 64
-        model_hash: str = "sha256:" + "f" * 64
-        belief_model_hash: str | None = None
-        event_model_hash: str | None = None
-        continuation_policy_hashes: tuple[str, ...] = ()
-        proposal_spec_hash: str | None = None
-        case_manifest_hash: str = "sha256:" + "0" * 64
-        resource_budget: ResourceBudget = field(default_factory=ResourceBudget)
-        fallback_candidate_id: Literal["candidate0"] = "candidate0"
-        tie_break: str = "greedy"
-        rng_protocol_hash: str = "sha256:" + "1" * 64
-        random_stream_schema_hash: str = "sha256:" + "2" * 64
-        parameters: dict[str, Any] = field(default_factory=dict)
-
-    @dataclass(frozen=True, slots=True)
-    class SearchRequest:
-        observation: Any
-        legal_actions: tuple[Any, ...]
-        candidate_spec: CandidateSpec
-        deadline_monotonic_ns: int | None = None
-        belief_epoch: Any | None = None
-        case_id: str | None = None
-        root_seat: int | None = None
-
-    @dataclass(frozen=True, slots=True)
-    class SearchResult:
-        selected_action: Any
-        candidate_actions: tuple[Any, ...]
-        value_vectors: tuple[Any, ...]
-        candidate_spec_hash: str
-        telemetry: Any
-        evidence_refs: tuple[str, ...] = ()
-        completed: bool = True
-
-    class Planner:
-        def act(self, request: SearchRequest) -> SearchResult:  # pragma: no cover
-            raise NotImplementedError
-
-        def observe(self, packet: Any) -> None:  # pragma: no cover
-            pass
-
-        def ponder(self, *, deadline_monotonic_ns: int) -> None:  # pragma: no cover
-            pass
+except ImportError as exc:
+    raise ImportError(
+        "hydra2.search.common is required for joint_types; "
+        "the minimal-contract fallback was removed (single authority is search.common)"
+    ) from exc
 
 
 try:
     from hydra2.contracts.randomness import RandomStream
 
-    _HAS_RANDOM = True
-except ImportError:  # pragma: no cover
-    _HAS_RANDOM = False
-    RandomStream = Any
+    _RANDOM_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    RandomStream = Any  # placeholder; _require_random_stream() raises on use
+    _RANDOM_IMPORT_ERROR = exc
+
+
+def _require_random_stream() -> Any:
+    """Fail-closed RNG access (lazy ImportError with build-ext hint)."""
+    if _RANDOM_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.contracts.randomness not importable "
+            f"({_RANDOM_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before joint search"
+        ) from _RANDOM_IMPORT_ERROR
+    return RandomStream
+
 
 try:
     from hydra2.belief.natural import BeliefEpoch, NaturalBelief
     from hydra2.belief.world import FullWorld, make_full_world, world_actor_observation
 
-    _HAS_BELIEF = True
-except ImportError:  # pragma: no cover
-    _HAS_BELIEF = False
-    NaturalBelief = Any
+    _BELIEF_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    NaturalBelief = Any  # placeholder; _require_belief() raises on use
     BeliefEpoch = Any
     FullWorld = Any
     make_full_world = Any
     world_actor_observation = Any
+    _BELIEF_IMPORT_ERROR = exc
+
+
+def _require_belief() -> None:
+    """Fail-closed belief access (lazy ImportError with build-ext hint)."""
+    if _BELIEF_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.belief natural/world not importable "
+            f"({_BELIEF_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before joint search"
+        ) from _BELIEF_IMPORT_ERROR
+
 
 try:
-    from hydra2.contracts.observation import ActorObservation, observation_identity_document
+    from hydra2.contracts.observation_actor import (
+        ActorObservation,
+        observation_identity_document,
+    )
 
-    _HAS_OBS = True
-except ImportError:  # pragma: no cover
-    _HAS_OBS = False
-    ActorObservation = Any
+    _OBS_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    ActorObservation = Any  # placeholder; _require_obs() raises on use
+    observation_identity_document = Any
+    _OBS_IMPORT_ERROR = exc
+
+
+def _require_obs() -> Any:
+    """Fail-closed observation access (lazy ImportError with build-ext hint)."""
+    if _OBS_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.contracts.observation not importable "
+            f"({_OBS_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before joint search"
+        ) from _OBS_IMPORT_ERROR
+    return ActorObservation
+
 
 __all__ = [
     "FORBIDDEN_IN_TREE_KEY",
@@ -185,7 +152,6 @@ RATIONALITY_RULES: frozenset[str] = frozenset({"quantal_softmax", "epsilon_greed
 
 _MASTER_SEED = b"wp13_joint_type_world_v1"
 _JOINT_GUMBEL_DOMAIN = b"joint_type_world_gumbel_v1"
-_INFO_KEY_DOMAIN = b"joint_type_world_info_v1"
 
 
 # ---------------------------------------------------------------------------
@@ -220,13 +186,17 @@ def info_key_for_observation(observation: Any) -> str:
     """Canonical information-set key for actor observation — excludes legal_mask & forbidden."""
     if observation is None:
         raise ContractError("observation must be ActorObservation")
+    _require_obs()
     try:
-        from hydra2.contracts.observation import ActorObservation as _Obs
+        from hydra2.contracts.observation_actor import ActorObservation as _Obs
+        from hydra2.contracts.observation_actor import observation_identity_document as _oid
 
         if isinstance(observation, _Obs):
-            doc = observation_identity_document(observation)
+            doc = _oid(observation)
         else:
             raise ContractError("observation must be ActorObservation")
+    except ImportError:
+        raise
     except Exception as exc:
         if isinstance(exc, ContractError):
             raise

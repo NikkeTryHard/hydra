@@ -212,7 +212,7 @@ class TestLookupRejections:
     def test_noncanonical_digest_argument_rejected(self, tmp_path):
         registry = ArtifactRegistry(tmp_path)
         for bad in ("SHA256:" + "a" * 64, "deadbeef", "sha256:" + "A" * 64, "md5:abc"):
-            with pytest.raises((ContractError, LineageError)):
+            with pytest.raises((ContractError, LineageError, ValueError)):
                 registry.lookup(
                     artifact_type="hydra2.test",
                     schema_version="1.0.0",

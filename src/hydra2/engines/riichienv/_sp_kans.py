@@ -3,31 +3,47 @@
 from __future__ import annotations
 
 from dataclasses import replace as replace
-from typing import TYPE_CHECKING as TYPE_CHECKING
-from typing import cast as cast
+from typing import (
+    TYPE_CHECKING as TYPE_CHECKING,
+)
+from typing import (
+    cast as cast,
+)
 
-from hydra2.contracts.action import CanonicalAction as CanonicalAction
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+from hydra2_replay_rs import tiles  # pyrefly: ignore[missing-import]
+
+from hydra2.contracts.action_model import CanonicalAction as CanonicalAction
 from hydra2.contracts.common import ContractError as ContractError
-from hydra2.contracts.common import make_seat as make_seat
-from hydra2.contracts.common import make_tile_id as make_tile_id
-from hydra2.contracts.observation import VisibleMeld as VisibleMeld
-from hydra2.contracts.observation import visible_meld_id as visible_meld_id
+from hydra2.contracts.observation_types import (
+    VisibleMeld as VisibleMeld,
+)
+from hydra2.contracts.observation_types import (
+    visible_meld_id as visible_meld_id,
+)
 from hydra2.engines.riichienv._sp_capture import _tracked_consumed as _tracked_consumed
-from hydra2.engines.riichienv._sp_records import _copies_of_string as _copies_of_string
-from hydra2.engines.riichienv._sp_records import _emit as _emit
+from hydra2.engines.riichienv._sp_records import (
+    _emit as _emit,
+)
 from hydra2.engines.riichienv._sp_records import _ippatsu_interrupt as _ippatsu_interrupt
 from hydra2.engines.riichienv._sp_records import _ippatsu_open as _ippatsu_open
 from hydra2.engines.riichienv._sp_records import _safe_mjai_type as _safe_mjai_type
 from hydra2.engines.riichienv._sp_walk import _strict_row as _strict_row
-from hydra2.engines.riichienv._sp_windows import _check_drawer as _check_drawer
-from hydra2.engines.riichienv._sp_windows import _live_step as _live_step
+from hydra2.engines.riichienv._sp_windows import (
+    _check_drawer as _check_drawer,
+)
+from hydra2.engines.riichienv._sp_windows import (
+    _live_step as _live_step,
+)
 from hydra2.engines.riichienv._sp_windows import _open_window as _open_window
 from hydra2.engines.riichienv._sp_windows import _require_actor as _require_actor
 from hydra2.engines.riichienv._sp_windows import _resolve_dora as _resolve_dora
-from hydra2.engines.riichienv.events import make_delta as make_delta
-from hydra2.engines.riichienv.events import meld_delta_value as meld_delta_value
-from hydra2.engines.riichienv.tiles import mjai_string_of as mjai_string_of
-from hydra2.engines.riichienv.tiles import physical_of as physical_of
+from hydra2.engines.riichienv.events import (
+    make_delta as make_delta,
+)
+from hydra2.engines.riichienv.events import (
+    meld_delta_value as meld_delta_value,
+)
 
 if TYPE_CHECKING:
     from typing import Any as Any
@@ -73,10 +89,10 @@ def _do_ankan(state: _GameState, walk: _KyokuWalk, kyoku: int, event: dict[str, 
         raise state.fail(kyoku, "ankan", f"ankan tiles {block!r} are not one block")
     expected = CanonicalAction(
         kind=cast("Any", "ankan"),
-        actor=make_seat(actor),
+        actor=_bridge_contracts.make_seat(actor),
         tile=None,
         called_tile=None,
-        consumed_tiles=tuple(make_tile_id(t) for t in block),
+        consumed_tiles=tuple(_bridge_contracts.make_tile_id(t) for t in block),
         source_seat=None,
         declares_riichi=False,
         metadata=(),
@@ -127,8 +143,8 @@ def _do_ankan(state: _GameState, walk: _KyokuWalk, kyoku: int, event: dict[str, 
         VisibleMeld(
             meld_id=None,
             kind=cast("Any", "ankan"),
-            owner=make_seat(actor),
-            tiles=tuple(make_tile_id(t) for t in block),
+            owner=_bridge_contracts.make_seat(actor),
+            tiles=tuple(_bridge_contracts.make_tile_id(t) for t in block),
         )
     )
     walk.drawer = actor
@@ -161,7 +177,7 @@ def _do_kakan(
     if not any(
         _safe_mjai_type(raw) == "kakan"
         and raw.tile is not None
-        and mjai_string_of(int(raw.tile)) == pai
+        and tiles.mjai_string_of(int(raw.tile)) == pai
         for raw in step.raw_legals
     ):
         raise state.fail(kyoku, "kakan", "kakan names a different tile than the oracle")
@@ -169,9 +185,9 @@ def _do_kakan(
     # prior pon triple (deterministic, contract-valid, and exact on
     # min-rule-disciplined logs); meld tiles are folded, so the trick lands
     # on the same copy as the drained pipeline.
-    pool = _copies_of_string(pai)
+    pool = tiles.copies_of_string(pai)
     if pai[0] == "5" and len(pai) == 2:
-        base = (int(physical_of(pai)) // 4) * 4
+        base = (int(tiles.physical_of(pai)) // 4) * 4
         pool = [base, base + 1, base + 2, base + 3]
     try:
         prior = _find_prior_pon(state, actor, pool[0])
@@ -184,8 +200,8 @@ def _do_kakan(
     step = replace(step, mjai_type="kakan", tile=added)
     expected = CanonicalAction(
         kind=cast("Any", "kakan"),
-        actor=make_seat(actor),
-        tile=make_tile_id(added),
+        actor=_bridge_contracts.make_seat(actor),
+        tile=_bridge_contracts.make_tile_id(added),
         called_tile=None,
         consumed_tiles=(),
         source_seat=None,
@@ -260,7 +276,7 @@ def _do_dora(state: _GameState, walk: _KyokuWalk, kyoku: int, event: dict[str, o
     # Kan-dora indicators are log-faithful first-copies per marker (census:
     # the drain binds the first physical copy of every marker string); the
     # engine's filler dead wall can never name them. Track reveals in Python.
-    indicator = int(physical_of(marker))
+    indicator = int(tiles.physical_of(marker))
     walk.dora_revealed.append(indicator)
     walk.last_oracle_dora = tuple(walk.dora_revealed)
     tile = _resolve_dora(state, walk, kyoku, marker)

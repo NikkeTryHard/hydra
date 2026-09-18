@@ -1,30 +1,23 @@
 """Canonical identity bytes for contract artifacts — shared leaf module.
 
-Contracts modules import stdlib and sibling contract modules only (SPEC 1), so
-the RFC 8785 recipe used by every contract artifact lives here as a
-dependency-free leaf. ``canonical_json_bytes`` is defined once here (owner
-decision D-WP02D-8; action.py re-exports it so existing importers are
-unaffected). Byte
-equality with the ``hydra2.artifacts.canonical.canonical_bytes`` authority
-stays pinned by tests; contracts themselves never import ``hydra2.artifacts``.
+Cutover (shrink end-state): the RFC 8785 recipe is owned by the
+``hydra2.artifacts.canonical.canonical_bytes`` authority (Python serializer
+as canon authority — no bytes-returning ``canon_rng`` pyfn exists — with a
+hard bridge judge; ``ImportError`` raises with a ``build-ext`` hint, NO
+oracle fallback). This module keeps its name and signature as a thin
+delegate with no logic; the import stays lazy so contract import time still
+pulls stdlib only (SPEC 1 import-time property preserved). Evidence: canon
+arrays ~2.8-3.8x / flats ~1.4x Rust-faster (linear); digest parity on every
+doc.
 """
 
 from __future__ import annotations
-
-import json
 
 __all__ = ["canonical_json_bytes"]
 
 
 def canonical_json_bytes(document: object) -> bytes:
-    """RFC 8785 bytes restricted to this artifact's JSON domain.
+    """RFC 8785 bytes (thin delegate of the flipped artifacts authority; no logic)."""
+    from hydra2.artifacts.canonical import canonical_bytes
 
-    Contract payloads contain only nonnegative ints below 2**53,
-    lowercase-hex digests, ASCII enum strings, booleans, null, arrays and
-    string-keyed objects; for that domain ``json.dumps`` with sorted keys and
-    tight separators reproduces RFC 8785 exactly (no float forms occur).
-    """
-    text = json.dumps(
-        document, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")
-    )
-    return text.encode("utf-8")
+    return canonical_bytes(document)

@@ -45,19 +45,19 @@ import argparse
 import hashlib
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# Every Python oracle input the wall-less rows depend on (relpath -> pinned).
+# Every oracle input the wall-less rows depend on (relpath -> pinned).
+# The tile codec moved to Rust in Wave 3 (tiles.py deleted); its owner
+# files are pinned here like any other oracle input.
 ORACLE_INPUTS = (
-    "src/hydra2/engines/riichienv/log_replay.py",
-    "src/hydra2/engines/riichienv/single_pass.py",
-    "src/hydra2/engines/riichienv/adapter.py",
     "src/hydra2/engines/riichienv/actions.py",
     "src/hydra2/engines/riichienv/events.py",
-    "src/hydra2/engines/riichienv/tiles.py",
+    "tools/hydra2-replay-rs/crates/hydra-shard/src/tile.rs",
+    "tools/hydra2-replay-rs/crates/hydra-bridge/src/tiles.rs",
     "src/hydra2/engines/riichienv/state.py",
     "src/hydra2/engines/riichienv/identity.py",
     "src/hydra2/engines/riichienv/_oracle_base.py",
@@ -67,8 +67,6 @@ ORACLE_INPUTS = (
     "src/hydra2/engines/riichienv/_lr_frame.py",
     "src/hydra2/engines/riichienv/_lr_oracle.py",
     "src/hydra2/engines/riichienv/_lr_rows.py",
-    "src/hydra2/engines/riichienv/_lr_track.py",
-    "src/hydra2/engines/riichienv/_lr_tracker.py",
     "src/hydra2/engines/riichienv/_lr_walk.py",
     "src/hydra2/engines/riichienv/_sp_capture.py",
     "src/hydra2/engines/riichienv/_sp_game.py",
@@ -121,9 +119,9 @@ def oracle_pins(repo_root: Path = REPO_ROOT) -> dict[str, str]:
 
 
 def _mjai_string_of(tile_id: int):  # lazy import: needs the pixi env
-    from hydra2.engines.riichienv.tiles import mjai_string_of
+    from hydra2_replay_rs import tiles
 
-    return mjai_string_of(tile_id)
+    return tiles.mjai_string_of(tile_id)
 
 
 def _norm_tile_str(value: object) -> str | None:
@@ -209,11 +207,11 @@ def _drop_paths(doc: dict, names: tuple[str, ...]) -> dict:
 
 def row_hash(doc: dict, allow: tuple[str, ...], repo_root: Path = REPO_ROOT) -> str:
     """sha256 digest-text over RFC 8785 canonical bytes of the projection."""
-    from hydra2.artifacts.canonical import canonical_bytes
+    from hydra2.artifacts.digest import of_canonical
 
     for name in allow:
         doc = _drop_paths(doc, ALLOW_DROP[name])
-    return "sha256:" + hashlib.sha256(canonical_bytes(doc)).hexdigest()
+    return str(of_canonical(doc))
 
 
 def _parse_allow(values: list[str]) -> tuple[str, ...]:
@@ -230,9 +228,7 @@ def _parse_allow(values: list[str]) -> tuple[str, ...]:
     return tuple(flat)
 
 
-def freeze_rows(
-    rows_path: Path, allow: tuple[str, ...], repo_root: Path = REPO_ROOT
-) -> dict:
+def freeze_rows(rows_path: Path, allow: tuple[str, ...], repo_root: Path = REPO_ROOT) -> dict:
     hashes: dict[str, str] = {}
     mode: str | None = None
     with open(rows_path) as handle:
@@ -256,7 +252,7 @@ def freeze_rows(
             "source_rows": str(rows_path),
             "source_rows_sha256": _sha256_file(rows_path),
             "oracle_pins": oracle_pins(repo_root),
-            "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "created_utc": datetime.now(UTC).isoformat(timespec="seconds"),
         },
         "hashes": hashes,
     }
@@ -325,7 +321,9 @@ def main(argv: list[str] | None = None) -> int:
         fixture = freeze_rows(args.rows, allow, args.repo_root)
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(json.dumps(fixture, indent=1, sort_keys=True) + "\n")
-        print(f"froze {fixture['metadata']['row_count']} hashes ({fixture['metadata']['mode']}) -> {args.out}")
+        print(
+            f"froze {fixture['metadata']['row_count']} hashes ({fixture['metadata']['mode']}) -> {args.out}"
+        )
         return 0
 
     with open(args.frozen) as handle:

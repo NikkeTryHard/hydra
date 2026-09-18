@@ -20,7 +20,7 @@ from hydra2.search.candidate0_frozen import frozen_choice
 
 if TYPE_CHECKING:
     from hydra2.contracts.common import DigestText
-    from hydra2.contracts.observation import ActorObservation
+    from hydra2.contracts.observation_actor import ActorObservation
 
 __all__ = [
     "FrozenCandidate0",
@@ -34,7 +34,7 @@ __all__ = [
 
 
 def _action_context_from_obs(observation: Any) -> Any:
-    from hydra2.contracts.action import ActionContext
+    from hydra2.contracts.action_table import ActionContext
 
     # Build the full context required by the codec. For frozen candidate0 the
     # legal set is already filtered by observation.legal_mask, so the context
@@ -356,6 +356,15 @@ class FrozenCandidate0:
         return self._spec
 
     def act(self, request: Any) -> Any:
+        """Planner act — torch path stays, Rust only judges the boundary.
+
+        The candidate0 torch path (encode + evaluate + masked policy +
+        frozen choice + decode) is a HARD torch island and stays Python per
+        the invariants — no act_batch probe crosses here (NO Rust GPU math,
+        Burn/Candle out). The telemetry/spec-hash bindings below are
+        unchanged; the plan's bridge-act flip covers the search act entries
+        only.
+        """
         # Validate request spec matches owned spec (identity)
         from hydra2.search.common import candidate_spec_hash
 

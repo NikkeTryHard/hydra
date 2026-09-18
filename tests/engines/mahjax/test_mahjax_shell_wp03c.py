@@ -17,14 +17,15 @@ import sys
 from typing import Any
 
 import pytest
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
-from hydra2._canon import canonical_json_bytes, sha256_digest_of_json
+from hydra2.artifacts.canonical import canonical_bytes as canonical_json_bytes
+from hydra2.artifacts.digest import of_canonical as sha256_digest_of_json
 from hydra2.artifacts.digest import sha256_file
 from hydra2.config import MAHJAX_PIN_SHA, repo_root
 from hydra2.contracts.common import (
     DigestText,
     QualificationRequiredError,
-    make_digest_text,
 )
 from hydra2.engines.mahjax import (
     FRAGMENT_ARTIFACT_NAME,
@@ -40,7 +41,7 @@ from hydra2.engines.mahjax import (
 pytestmark = [pytest.mark.contract_package("WP-03C"), pytest.mark.serial]
 
 #: Stand-in rules-manifest identity (real binding is issued by WP-04C).
-RULES_ID = make_digest_text("sha256:" + "3a" * 32)
+RULES_ID = _bridge_contracts.make_digest_text("sha256:" + "3a" * 32)
 
 
 def _fresh_shell() -> MahJaxQuarantineShell:
@@ -225,7 +226,7 @@ def test_fabricated_token_rejects_every_tampered_dimension() -> None:
     rejects(dataclasses.replace(base_token, python_version="3.0.0"))
     rejects(dataclasses.replace(base_token, observation_mode="legacy_v0"))
     rejects(dataclasses.replace(base_token, adapter_version="9.9.9"))
-    rejects(base_token, rules_id=make_digest_text("sha256:" + "bb" * 32))
+    rejects(base_token, rules_id=_bridge_contracts.make_digest_text("sha256:" + "bb" * 32))
     with pytest.raises(QualificationRequiredError):
         _fresh_shell().qualify("not-a-token", rules_id=RULES_ID)  # type: ignore[arg-type]
 

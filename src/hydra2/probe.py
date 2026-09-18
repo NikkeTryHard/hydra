@@ -91,15 +91,15 @@ def probe_gpu_suite() -> tuple[bool, str]:
 
 
 def probe_environment_manifest_round_trip() -> tuple[bool, str]:
-    from hydra2._canon import canonical_json_bytes
+    from hydra2.artifacts.canonical import canonical_bytes
     from hydra2.runtime.environment import capture_environment_manifest
 
     manifest_a, digest_a = capture_environment_manifest()
     manifest_b, digest_b = capture_environment_manifest()
     stable = digest_a == digest_b
     recanonicalized = (
-        sha_of(canonical_json_bytes(manifest_a)) == digest_a
-        and sha_of(canonical_json_bytes(manifest_b)) == digest_b
+        sha_of(canonical_bytes(manifest_a)) == digest_a
+        and sha_of(canonical_bytes(manifest_b)) == digest_b
     )
     return stable and recanonicalized, (
         f"digest_stable={stable} canonical_roundtrip={recanonicalized} sha256={digest_a}"

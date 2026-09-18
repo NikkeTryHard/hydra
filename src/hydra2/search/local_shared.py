@@ -1,11 +1,11 @@
 # ruff: noqa: F401  # reason: legacy blanket kept, not narrowed — narrowing surfaces unrelated mid-flight noise outside the owned error set (F401 optional-dependency fallback shims + re-exported spec symbols). Evidence: https://docs.astral.sh/ruff/rules/
-"""Candidate 5 local resolving — shared: seeds, feature flags, guarded fallbacks.
+"""Candidate 5 local resolving — shared: seeds, fail-closed guards.
 
 Single home for the deterministic master seed, the strategy-key firewall set, the
-module logger, and the optional-dependency fallbacks (contracts, randomness, belief,
+module logger, and the fail-closed dependency guards (contracts, randomness, belief,
 observation) shared by the ``local_*`` split. The common search contract stays
-authoritative in :mod:`hydra2.search.common`; the fallbacks below only keep unit
-import paths working where the full stack is absent.
+authoritative in :mod:`hydra2.search.common`; missing dependencies raise ImportError
+with a build-ext hint on use (never silent degrade).
 """
 
 from __future__ import annotations
@@ -31,48 +31,87 @@ _COMMON_AVAILABLE = True  # common.py is the single authority, imported directly
 
 try:
     from hydra2.artifacts.canonical import canonical_bytes
-    from hydra2.contracts.common import ContractError, DigestText, make_digest_text
+    from hydra2.contracts.common import ContractError, DigestText
 
-    _HAS_CONTRACTS = True
-except ImportError:  # pragma: no cover
-    _HAS_CONTRACTS = False
-    ContractError = RuntimeError  # type: ignore[no-redef]
-    DigestText = str  # type: ignore[no-redef]
+    _CONTRACTS_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    canonical_bytes = Any  # type: ignore[no-redef]  # placeholder; _require_contracts() raises on use
+    ContractError = Any  # type: ignore[no-redef]
+    DigestText = Any  # type: ignore[no-redef]
+    _CONTRACTS_IMPORT_ERROR = exc
 
-    def make_digest_text(v: str) -> str:  # type: ignore[no-redef]
-        if not isinstance(v, str) or not v.startswith("sha256:") or len(v) != 71:
-            raise RuntimeError(f"bad digest {v!r}")
-        return v
 
-    def canonical_bytes(v: Any) -> bytes:  # type: ignore[no-redef]
-        import json as _json
-
-        return _json.dumps(v, sort_keys=True, separators=(",", ":")).encode()
+def _require_contracts() -> None:
+    """Fail-closed contracts access (lazy ImportError with build-ext hint)."""
+    if _CONTRACTS_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.contracts.common/artifacts not importable "
+            f"({_CONTRACTS_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before local resolving search"
+        ) from _CONTRACTS_IMPORT_ERROR
 
 
 try:
     from hydra2.contracts.randomness import RandomStream, make_random_stream_key, semantic_seed
 
-    _HAS_RANDOM = True
-except ImportError:  # pragma: no cover
-    _HAS_RANDOM = False
-    RandomStream = Any  # type: ignore[no-redef]
+    _RANDOM_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    RandomStream = Any  # type: ignore[no-redef]  # placeholder; _require_random_stream() raises on use
+    make_random_stream_key = Any
+    semantic_seed = Any
+    _RANDOM_IMPORT_ERROR = exc
+
+
+def _require_random_stream() -> Any:
+    """Fail-closed RNG access (lazy ImportError with build-ext hint)."""
+    if _RANDOM_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.contracts.randomness not importable "
+            f"({_RANDOM_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before local resolving search"
+        ) from _RANDOM_IMPORT_ERROR
+    return RandomStream
+
 
 try:
     from hydra2.belief.natural import BeliefEpoch, NaturalBelief
 
-    _HAS_BELIEF = True
-except ImportError:  # pragma: no cover
-    _HAS_BELIEF = False
-    BeliefEpoch = Any  # type: ignore[no-redef]
+    _BELIEF_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    BeliefEpoch = Any  # type: ignore[no-redef]  # placeholder; _require_belief() raises on use
     NaturalBelief = Any  # type: ignore[no-redef]
+    _BELIEF_IMPORT_ERROR = exc
+
+
+def _require_belief() -> None:
+    """Fail-closed belief access (lazy ImportError with build-ext hint)."""
+    if _BELIEF_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.belief.natural not importable "
+            f"({_BELIEF_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before local resolving search"
+        ) from _BELIEF_IMPORT_ERROR
+
 
 try:
-    from hydra2.contracts.observation import make_actor_observation
+    from hydra2.contracts.observation_actor import make_actor_observation
 
-    _HAS_OBS = True
-except ImportError:
-    _HAS_OBS = False
+    _OBS_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:
+    make_actor_observation = Any  # placeholder; _require_obs() raises on use
+    _OBS_IMPORT_ERROR = exc
+
+
+def _require_obs() -> Any:
+    """Fail-closed observation access (lazy ImportError with build-ext hint)."""
+    if _OBS_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.contracts.observation not importable "
+            f"({_OBS_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before local resolving search"
+        ) from _OBS_IMPORT_ERROR
+    return make_actor_observation
+
 
 logger = logging.getLogger(__name__)
 
@@ -82,10 +121,6 @@ FORBIDDEN_IN_STRATEGY_KEY: frozenset[str] = frozenset({"world_id", "full_hidden"
 __all__ = [
     "FORBIDDEN_IN_STRATEGY_KEY",
     "_COMMON_AVAILABLE",
-    "_HAS_BELIEF",
-    "_HAS_CONTRACTS",
-    "_HAS_OBS",
-    "_HAS_RANDOM",
     "_MASTER_SEED",
     "logger",
 ]

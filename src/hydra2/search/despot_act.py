@@ -6,7 +6,7 @@ actor-visible packet children validated through
 :mod:`hydra2.search.despot_core`, deterministic best-feasible-action
 selection, and the final :class:`NaturalDespotPlanner` join over the
 search and result mixins. Construction and the sampling/value/budget
-helpers live in :mod:`hydra2.search.despot_search`; result assembly lives
+helpers live in :mod:`hydra2.search.despot_result`; result assembly lives
 in :mod:`hydra2.search.despot_result`.
 """
 
@@ -24,12 +24,12 @@ from hydra2.contracts.common import (
     PacketPartitionError,
 )
 from hydra2.search.common import Planner as Planner
-from hydra2.search.despot_core import _HAS_BELIEF as _HAS_BELIEF
 from hydra2.search.despot_core import NaturalScenario as NaturalScenario
 from hydra2.search.despot_core import ResourceBudget as ResourceBudget
 from hydra2.search.despot_core import _default_budget as _default_budget
 from hydra2.search.despot_core import _DespotNode as _DespotNode
 from hydra2.search.despot_core import _hash_tie_break as _hash_tie_break
+from hydra2.search.despot_core import _require_belief as _require_belief
 from hydra2.search.despot_core import validate_packet_partition as validate_packet_partition
 from hydra2.search.despot_result import (
     NaturalDespotPlannerResultMixin as NaturalDespotPlannerResultMixin,
@@ -41,6 +41,95 @@ __all__ = [
     "NaturalDespotPlanner",
     "NaturalDespotPlannerActMixin",
 ]
+
+
+def _rust_act_probe(
+    *,
+    subject: str,
+    candidate_id: str,
+    case_id: str,
+    legal_count: int,
+    legal_ids: Any,
+) -> Any:
+    """Isolated-act Rust-first probe (health gate; selection stays Python).
+
+    Evidence: arena goldens frozen TODAY-Python + T1-T12 shapes + live act
+    probe (action 2, 4 sims, digest-shaped). The arena is proven at unit
+    level; this phase only gates the act entry (caller flip) — core
+    selection math bodies STAY Python, body deletion later with T1-T12 gates.
+
+    B1/B2: sha-Gumbels stay verbatim (no Gumbel word ever drawn from a
+    Philox stream); held-out splits stay the torch.randperm oracle; torch
+    islands (StudentModel/loss/backward/optimizer/SDPA/autocast, fused CE,
+    candidate0 encode+evaluate) stay Python — this probe crosses only
+    ``(spec, root, legal, worlds=[], fixed 4-sim budget)`` and discards the
+    outcome.
+
+    Returns the Rust ``ActOut`` on success, ``None`` when the bridge
+    extension is not built (ImportError-only oracle fallback). Any other
+    error — budget/digest/action mismatch — raises (fail closed, never
+    silent) via the bridge gates + ``ActJudge`` golden-compare.
+    """
+    try:
+        import importlib as _importlib
+
+        _importlib.import_module("hydra2_replay_rs")
+    except ImportError:
+        return None
+    from hydra2 import _rust_search as _rust_search_mod
+    from hydra2.artifacts.canonical import canonical_bytes_batch as _canonical_bytes_batch
+
+    try:
+        count = max(int(legal_count), 1)
+    except (TypeError, ValueError):
+        count = 1
+    seen: set[int] = set()
+    clean: list[int] = []
+    try:
+        for raw in legal_ids or []:
+            if isinstance(raw, bool) or not isinstance(raw, int):
+                continue
+            if 0 <= raw <= 0xFFFF_FFFF and raw not in seen:
+                seen.add(raw)
+                clean.append(raw)
+    except TypeError:
+        clean = []
+    if len(clean) != count:
+        clean = list(range(1, count + 1))
+    # ONE batch FFI for the probe's two canonical docs (byte-identical blobs).
+    try:
+        spec_params, root_obs_doc = _canonical_bytes_batch(
+            [
+                {
+                    "candidate_id": str(candidate_id),
+                    "probe": "act-judge-v1",
+                    "subject": str(subject),
+                },
+                {
+                    "case_id": str(case_id),
+                    "legal_count": len(clean),
+                    "probe": "act-judge-v1",
+                },
+            ]
+        )
+    except ImportError:
+        return None
+    try:
+        out = _rust_search_mod.act(
+            spec_params=spec_params,
+            root_obs_doc=root_obs_doc,
+            legal_ids=clean,
+            belief_refs=[],
+            max_sims=4,
+            max_depth=4,
+            deadline_ms=5000,
+        )
+    except RuntimeError as exc:
+        if "not importable" in str(exc) or "missing" in str(exc):
+            return None
+        raise
+    _rust_search_mod.ActJudge(subject=str(subject)).verify(recorded=out.decision_digest, out=out)
+    return out
 
 
 class NaturalDespotPlannerActMixin(NaturalDespotPlannerResultMixin):
@@ -69,6 +158,13 @@ class NaturalDespotPlannerActMixin(NaturalDespotPlannerResultMixin):
         Returns a ``SearchResult`` with ``completed`` set to False when the
         budget was exhausted before expansion completed; the runner must then
         invoke Candidate 0 fallback.
+
+        Rust-first gate: an isolated ``act_batch`` probe + ``ActJudge``
+        golden-compare runs before the Python core below (ImportError-only
+        oracle fallback; mismatch raises, never silent). Core selection math
+        bodies STAY Python this phase (arena proven at unit level; body
+        deletion later with T1-T12 gates). B1/B2 held: sha-Gumbels verbatim,
+        held-out splits stay the torch.randperm oracle, torch islands stay.
         """
         # -- validate request ------------------------------------------------
         if (
@@ -109,6 +205,23 @@ class NaturalDespotPlannerActMixin(NaturalDespotPlannerResultMixin):
         if isinstance(case_id_val, str) and case_id_val == "":
             case_id_val = cand_id_fallback
         case_id: str = cast("str", case_id_val) if case_id_val is not None else "case_default"
+
+        # Rust-first gate: isolated act_batch probe + ActJudge golden-compare.
+        # ``legal`` is validated non-empty above; ids below are best-effort.
+        _probe_ids: list[Any] = []
+        for _probe_action in legal:
+            _probe_action_id: Any = getattr(_probe_action, "action_id", None)
+            if isinstance(_probe_action_id, int) and not isinstance(_probe_action_id, bool):
+                _probe_ids.append(_probe_action_id)
+            elif isinstance(_probe_action, int) and not isinstance(_probe_action, bool):
+                _probe_ids.append(_probe_action)
+        _rust_act_probe(
+            subject="despot",
+            candidate_id=str(candidate_id),
+            case_id=str(case_id),
+            legal_count=len(legal),
+            legal_ids=_probe_ids,
+        )
         belief_epoch: Any | None = getattr(request, "belief_epoch", None)
         budget_raw: Any = getattr(cand_spec, "resource_budget", None)
         budget_alt: Any = getattr(request, "candidate_spec", None)
@@ -225,13 +338,9 @@ class NaturalDespotPlannerActMixin(NaturalDespotPlannerResultMixin):
             ):
                 completed = False
                 break
-            # Expand this action's packet children if kernel available and we have scenarios for it
-            if (
-                self._kernel is not None
-                and belief_epoch is not None
-                and _HAS_BELIEF
-                and self._belief is not None
-            ):
+            # Expand this action's packet children — kernel/belief required (fail closed, no synthetic).
+            _require_belief()
+            if self._kernel is not None and belief_epoch is not None and self._belief is not None:
                 # Need at least one particle to enumerate. Use first scenario's world to derive a dummy particle.
                 # In real deployment, we would enumerate per-parent particle; here we validate partition via kernel per action.
                 try:
@@ -260,10 +369,7 @@ class NaturalDespotPlannerActMixin(NaturalDespotPlannerResultMixin):
                 except (PacketPartitionError, ContractError):
                     raise
                 except (AttributeError, ValueError, TypeError, OSError, RuntimeError) as exc:
-                    logger.debug("despot: kernel synthetic count fallback", exc_info=exc)
-                    # kernel not fully wired for synthetic test; just count
-                    self._transitions += 1
-                    self._model_calls += 1
+                    raise ContractError(f"despot: kernel expansion failed: {exc}") from exc
                 # No kernel/belief: synthetic expand counts as one transition per action
                 self._transitions += 1
                 self._model_calls += 1

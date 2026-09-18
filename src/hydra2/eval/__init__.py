@@ -15,7 +15,6 @@ from hydra2.eval.blocks import (
     ExcludedBlock,
     WallBlock,
     aggregate_blocks,
-    aggregate_wall_block,
 )
 from hydra2.eval.case import (
     PRIMARY_METRIC,
@@ -61,7 +60,6 @@ __all__ = [
     "TelemetryTolerance",
     "WallBlock",
     "aggregate_blocks",
-    "aggregate_wall_block",
     "bootstrap_blocks",
     "build_match_schedule",
     "case_manifest_hash",

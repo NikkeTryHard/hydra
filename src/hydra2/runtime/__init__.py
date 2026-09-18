@@ -15,7 +15,6 @@ from hydra2.runtime.checkpoint import (
     save_checkpoint,
 )
 from hydra2.runtime.environment import capture_environment_manifest
-from hydra2.runtime.fabric import FabricRuntimeAdapter
 from hydra2.runtime.plain import PlainPytorchAdapter
 from hydra2.runtime.protocol import (
     COMPILE_MODES,
@@ -36,7 +35,6 @@ __all__ = [
     "SUPPORTED_ADAPTER_IDS",
     "CheckpointManifest",
     "CompileMode",
-    "FabricRuntimeAdapter",
     "PlainPytorchAdapter",
     "PrecisionId",
     "RuntimeAdapter",

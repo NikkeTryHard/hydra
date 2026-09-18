@@ -18,8 +18,10 @@ import hashlib
 import logging
 from typing import Any, Literal, cast
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.artifacts.canonical import canonical_bytes
-from hydra2.contracts.common import ContractError, DigestText, make_digest_text
+from hydra2.contracts.common import ContractError, DigestText
 from hydra2.search.common import ResourceBudget
 from hydra2.search.pbrf_partition import PbrfConfig as PbrfConfig
 
@@ -44,10 +46,11 @@ def _file_sha256(path: Any) -> DigestText:
     from pathlib import Path
 
     p = Path(path)
-    # dummy-until-real: file content hash wins when the config is present.
     if not p.exists():
-        return make_digest_text("sha256:" + "0" * 64)
-    return make_digest_text("sha256:" + hashlib.sha256(p.read_bytes()).hexdigest())
+        raise ContractError(f"pbrf: required config missing: {p}")
+    return _bridge_contracts.make_digest_text(
+        "sha256:" + hashlib.sha256(p.read_bytes()).hexdigest()
+    )
 
 
 def _load_default_hashes() -> dict[str, str]:
@@ -58,7 +61,6 @@ def _load_default_hashes() -> dict[str, str]:
     never constant hashes here. Portable repo root via marker walk.
     """
     from hydra2.config import repo_root
-    from hydra2.search.common import MISSING_HASH
 
     repo = repo_root()
     defaults: dict[str, str] = {}
@@ -70,14 +72,13 @@ def _load_default_hashes() -> dict[str, str]:
     ]:
         try:
             p = repo / rel
-            # dummy-until-real: file content hash wins when the config is present.
-            if p.exists():
-                defaults[key] = str(_file_sha256(p))
-            else:
-                defaults[key] = "sha256:" + MISSING_HASH
-        except (OSError, ValueError, TypeError, ContractError) as exc:
-            logger.debug("pbrf: default hash fallback for %s", key, exc_info=exc)
-            defaults[key] = "sha256:" + MISSING_HASH
+            if not p.exists():
+                raise ContractError(f"pbrf: required config missing: {p}")
+            defaults[key] = str(_file_sha256(p))
+        except ContractError:
+            raise
+        except (OSError, ValueError, TypeError) as exc:
+            raise ContractError(f"pbrf: default hash required for {key}: {exc}") from exc
     # also try observation schema contract path (upgrade when present)
     try:
         p = repo / "configs/contracts/observation_schema_v1.json"
@@ -100,10 +101,10 @@ def _model_hash_from_identity(model: Any | None) -> str:
     if model is not None:
         ident: Any = getattr(model, "model_identity", None)
         if ident is not None:
-            return str(make_digest_text(str(ident)))
+            return str(_bridge_contracts.make_digest_text(str(ident)))
     from hydra2.models.model import Hydra2BaselineModel
 
-    return str(make_digest_text(str(Hydra2BaselineModel().model_identity)))
+    return str(_bridge_contracts.make_digest_text(str(Hydra2BaselineModel().model_identity)))
 
 
 def _derive_utility_manifest_hash(model: Any | None) -> str:
@@ -113,7 +114,7 @@ def _derive_utility_manifest_hash(model: Any | None) -> str:
 
         probe: Any = Hydra2BaselineModel() if model is None else model
         manifest_raw: object = probe.utility_manifest_hash
-        return str(make_digest_text(str(manifest_raw)))
+        return str(_bridge_contracts.make_digest_text(str(manifest_raw)))
     except (ImportError, AttributeError, ValueError, TypeError, OSError) as exc:
         logger.debug("pbrf: utility_manifest_hash derivation failed", exc_info=exc)
         raise ContractError("pbrf: cannot derive utility_manifest_hash from model") from exc
@@ -164,33 +165,33 @@ def make_pbrf_candidate_spec(
     """
     defaults = _load_default_hashes()
     canonical = _canonical_hashes()
-    rh: DigestText = make_digest_text(
+    rh: DigestText = _bridge_contracts.make_digest_text(
         rules_hash if rules_hash is not None and rules_hash != "" else defaults["rules_hash"]
     )
-    ah: DigestText = make_digest_text(defaults["action_table_hash"])
-    oh: DigestText = make_digest_text(defaults["observation_schema_hash"])
-    ph: DigestText = make_digest_text(defaults["packet_boundary_hash"])
-    mh: DigestText = make_digest_text(
+    ah: DigestText = _bridge_contracts.make_digest_text(defaults["action_table_hash"])
+    oh: DigestText = _bridge_contracts.make_digest_text(defaults["observation_schema_hash"])
+    ph: DigestText = _bridge_contracts.make_digest_text(defaults["packet_boundary_hash"])
+    mh: DigestText = _bridge_contracts.make_digest_text(
         model_hash
         if model_hash is not None and model_hash != ""
         else _model_hash_from_identity(model)
     )
-    uh: DigestText = make_digest_text(
+    uh: DigestText = _bridge_contracts.make_digest_text(
         utility_manifest_hash
         if utility_manifest_hash is not None and utility_manifest_hash != ""
         else _derive_utility_manifest_hash(model)
     )
-    ch: DigestText = make_digest_text(
+    ch: DigestText = _bridge_contracts.make_digest_text(
         case_manifest_hash
         if case_manifest_hash is not None and case_manifest_hash != ""
         else canonical["case_manifest_hash"]
     )
-    rngh: DigestText = make_digest_text(
+    rngh: DigestText = _bridge_contracts.make_digest_text(
         rng_protocol_hash
         if rng_protocol_hash is not None and rng_protocol_hash != ""
         else canonical["rng_protocol_hash"]
     )
-    strh: DigestText = make_digest_text(
+    strh: DigestText = _bridge_contracts.make_digest_text(
         random_stream_schema_hash
         if random_stream_schema_hash is not None and random_stream_schema_hash != ""
         else canonical["random_stream_schema_hash"]

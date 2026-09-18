@@ -21,7 +21,7 @@ import pytest
 
 from hydra2.belief.natural import NaturalBelief
 from hydra2.belief.world import make_full_world, world_actor_observation
-from hydra2.contracts.action import CanonicalAction
+from hydra2.contracts.action_model import CanonicalAction
 from hydra2.contracts.common import PacketPartitionError
 from hydra2.contracts.randomness import RandomStream
 from hydra2.search.common import SearchRequest, candidate_spec_hash

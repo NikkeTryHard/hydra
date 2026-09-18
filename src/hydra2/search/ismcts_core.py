@@ -35,116 +35,89 @@ try:
     )
 
     _COMMON_AVAILABLE = True
-except ImportError:  # fallback minimal contracts compatible with SPEC 15
-    _COMMON_AVAILABLE = False
-
-    @dataclass(frozen=True, slots=True)
-    class ResourceBudget:
-        mode: Literal["gameplay_5s", "ponder", "analysis"] = "gameplay_5s"
-        deadline_ms: int = 5000
-        fallback_margin_ms: int = 200
-        max_model_calls: int | None = 32
-        max_transitions: int | None = 256
-        max_particles: int | None = 64
-        max_memory_bytes: int | None = None
-
-        def __post_init__(self) -> None:
-            if self.deadline_ms <= 0:
-                raise ValueError("deadline_ms must be positive")
-            if self.fallback_margin_ms < 0 or self.fallback_margin_ms >= self.deadline_ms:
-                raise ValueError("fallback_margin_ms must be in [0, deadline_ms)")
-            for name in ("max_model_calls", "max_transitions", "max_particles"):
-                v = getattr(self, name)
-                if v is not None and (not isinstance(v, int) or isinstance(v, bool) or v <= 0):
-                    raise ValueError(f"{name} must be positive int or None")
-
-    @dataclass(frozen=True, slots=True)
-    class CandidateSpec:
-        candidate_id: str = "candidate1"
-        algorithm: str = "ismcts_natural"
-        algorithm_version: str = "1.0.0"
-        rules_hash: str = "sha256:" + "a" * 64
-        utility_id: str = "expected_final_placement"
-        utility_manifest_hash: str = "sha256:" + "b" * 64
-        # dummy-until-real: pilot default, replaced by _canonical_hashes/caller before commit.
-        action_table_hash: str = "sha256:" + "c" * 64
-        observation_schema_hash: str = "sha256:" + "d" * 64
-        packet_boundary_hash: str = "sha256:" + "e" * 64
-        model_hash: str = "sha256:" + "f" * 64
-        belief_model_hash: str | None = None
-        event_model_hash: str | None = None
-        continuation_policy_hashes: tuple[str, ...] = ()
-        proposal_spec_hash: str | None = None
-        case_manifest_hash: str = "sha256:" + "0" * 64
-        resource_budget: ResourceBudget = field(default_factory=ResourceBudget)
-        fallback_candidate_id: Literal["candidate0"] = "candidate0"
-        tie_break: str = "lexicographic"
-        rng_protocol_hash: str = "sha256:" + "1" * 64
-        random_stream_schema_hash: str = "sha256:" + "2" * 64
-        parameters: dict[str, Any] = field(default_factory=dict)
-
-    @dataclass(frozen=True, slots=True)
-    class SearchRequest:
-        observation: Any
-        legal_actions: tuple[Any, ...]
-        candidate_spec: CandidateSpec
-        deadline_monotonic_ns: int | None = None
-        belief_epoch: Any | None = None
-        case_id: str | None = None
-        root_seat: int | None = None
-
-    @dataclass(frozen=True, slots=True)
-    class SearchResult:
-        selected_action: Any
-        candidate_actions: tuple[Any, ...]
-        value_vectors: tuple[Any, ...]
-        candidate_spec_hash: str
-        telemetry: Any
-        evidence_refs: tuple[str, ...]
-        completed: bool
-
-    class Planner:
-        def act(self, request: SearchRequest) -> SearchResult:  # pragma: no cover
-            raise NotImplementedError
-
-        def observe(self, packet: Any) -> None:  # pragma: no cover
-            pass
-
-        def ponder(self, *, deadline_monotonic_ns: int) -> None:  # pragma: no cover
-            pass
+except ImportError as exc:
+    raise ImportError(
+        "hydra2.search.common is required for ismcts_core; "
+        "the minimal-contract fallback was removed (single authority is search.common)"
+    ) from exc
 
 
 try:
     from hydra2.contracts.randomness import RandomStream, make_random_stream_key, semantic_seed
 
-    _HAS_RANDOM = True
-except ImportError:  # pragma: no cover
-    _HAS_RANDOM = False
-    RandomStream = Any
+    _RANDOM_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    RandomStream = Any  # placeholder; _require_random_stream() raises on use
+    make_random_stream_key = Any
+    semantic_seed = Any
+    _RANDOM_IMPORT_ERROR = exc
+
+
+def _require_random_stream() -> Any:
+    """Fail-closed RNG access (lazy ImportError with build-ext hint)."""
+    if _RANDOM_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.contracts.randomness not importable "
+            f"({_RANDOM_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before ISMCTS search"
+        ) from _RANDOM_IMPORT_ERROR
+    return RandomStream
+
 
 try:
     from hydra2.belief.natural import BeliefEpoch, NaturalBelief
     from hydra2.belief.world import FullWorld, make_full_world, world_actor_observation
 
-    _HAS_BELIEF = True
-except ImportError:  # pragma: no cover
-    _HAS_BELIEF = False
-    NaturalBelief = Any
+    _BELIEF_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    NaturalBelief = Any  # placeholder; _require_belief() raises on use
     BeliefEpoch = Any
     FullWorld = Any
     make_full_world = Any
     world_actor_observation = Any
+    _BELIEF_IMPORT_ERROR = exc
+
+
+def _require_belief() -> None:
+    """Fail-closed belief access (lazy ImportError with build-ext hint)."""
+    if _BELIEF_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.belief natural/world not importable "
+            f"({_BELIEF_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before ISMCTS search"
+        ) from _BELIEF_IMPORT_ERROR
+
 
 try:
-    from hydra2.contracts.action import CanonicalAction
-    from hydra2.contracts.observation import ActorObservation, observation_identity_document
+    from hydra2.contracts.action_model import CanonicalAction
+    from hydra2.contracts.observation_actor import (
+        ActorObservation,
+        observation_identity_document,
+    )
     from hydra2.contracts.utility import UtilityVector
     from hydra2.eval.telemetry import ResourceTelemetry, make_resource_telemetry
 
-    _HAS_TELEMETRY = True
-except ImportError:  # pragma: no cover
-    _HAS_TELEMETRY = False
+    _TELEMETRY_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    CanonicalAction = Any  # placeholder; _require_telemetry() raises on use
+    ActorObservation = Any
+    observation_identity_document = Any
+    UtilityVector = Any
     ResourceTelemetry = Any
+    make_resource_telemetry = Any
+    _TELEMETRY_IMPORT_ERROR = exc
+
+
+def _require_telemetry() -> Any:
+    """Fail-closed telemetry access (lazy ImportError with build-ext hint)."""
+    if _TELEMETRY_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.eval.telemetry/contracts not importable "
+            f"({_TELEMETRY_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before ISMCTS search"
+        ) from _TELEMETRY_IMPORT_ERROR
+    return make_resource_telemetry
+
 
 __all__ = [
     "FORBIDDEN_IN_TREE_KEY",
@@ -184,6 +157,24 @@ FORBIDDEN_IN_TREE_KEY: frozenset[str] = frozenset(
 _MASTER_SEED = b"wp08b_ismcts_natural_v1"
 
 
+def _require_search_bridge() -> Any:
+    """Import the built ``search`` bridge surface (fail closed)."""
+    try:
+        import hydra2_replay_rs as _ext  # pyrefly: ignore[missing-import]
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2_replay_rs extension with search not importable; "
+            "build the bridge with `pixi run build-ext` before ISMCTS selection"
+        ) from exc
+    try:
+        return _ext.search
+    except AttributeError as exc:
+        raise ImportError(
+            "hydra2_replay_rs.search submodule missing (stale .so); "
+            "rebuild the bridge with `pixi run build-ext`"
+        ) from exc
+
+
 def is_redeterminization_enabled() -> bool:
     """Re-determinization is disabled until a named conditional-law proof exists.
 
@@ -214,13 +205,19 @@ def info_key_for_observation(observation: Any) -> str:
     """
     if observation is None:
         raise ContractError("observation must be ActorObservation")
+    _require_telemetry()
     try:
-        from hydra2.contracts.observation import ActorObservation as _Obs
+        from hydra2.contracts.observation_actor import ActorObservation as _Obs
+        from hydra2.contracts.observation_actor import observation_identity_document as _oid
 
         if isinstance(observation, _Obs):
-            doc = observation_identity_document(observation)
+            doc = _oid(observation)
         else:
-            raise ContractError("observation must be ActorObservation")
+            raise ContractError(
+                f"continuation policy input must be ActorObservation, got {type(observation).__name__}"
+            )
+    except ImportError:
+        raise
     except Exception as exc:  # pragma: no cover
         if isinstance(exc, ContractError):
             raise
@@ -283,6 +280,18 @@ def model_vector_for_world(
             wid = str(_wid_ref)  # pyrefly: ignore[explicit-any]
         else:
             wid = str(world)  # pyrefly: ignore[explicit-any]
+    # Digest worlds ride the bridge as the single implementation (fail closed;
+    # pinned (0.2, 0.51, 0.06, 0.22) in test_search_parity_wave2). Non-digest
+    # shapes keep the hash below as their sole implementation (bridge gate
+    # never sees them).
+    if wid.startswith("sha256:"):
+        try:
+            out = _require_search_bridge().ismcts_model_vector(wid, str(candidate_id))
+            return (float(out[0]), float(out[1]), float(out[2]), float(out[3]))
+        except ImportError:
+            raise
+        except Exception as exc:
+            raise ContractError(f"ismcts bridge model vector failed: {exc}") from exc
     h = hashlib.sha256(f"{wid}:{candidate_id}:leaf".encode()).digest()
     vals = tuple((b % 100) / 100.0 for b in h[:4])
     # Keep vectors in [0,1] and preserve raw settlement shape (no utility-schema mangling)
@@ -297,6 +306,16 @@ def terminal_vector_for_world(world: Any) -> tuple[float, float, float, float]:
         wid: str = str(_wid_val2)  # pyrefly: ignore[explicit-any]
     else:
         wid = str(world)  # pyrefly: ignore[explicit-any]
+    # Digest worlds ride the bridge as the single implementation (fail closed);
+    # non-digest shapes keep the hash below as their sole implementation.
+    if wid.startswith("sha256:"):
+        try:
+            out = _require_search_bridge().ismcts_terminal_vector(wid)
+            return (float(out[0]), float(out[1]), float(out[2]), float(out[3]))
+        except ImportError:
+            raise
+        except Exception as exc:
+            raise ContractError(f"ismcts bridge terminal vector failed: {exc}") from exc
     # Hash to settlement: first seat gets higher when hand sum larger
     h = hashlib.sha256(f"{wid}:terminal".encode()).digest()
     # Produce bounded scores then convert to placement-like values
@@ -467,18 +486,20 @@ class UniformContinuationPolicy:
         return tuple(w for _ in legal)
 
     def distribution(self, observation: Any, legal: tuple[int, ...]) -> tuple[float, ...]:
-        # Validate no privileged field in observation (lightweight)
+        # Validate no privileged field in observation (lightweight) — fail closed.
         if observation is not None:
             # ensure observation is ActorObservation, not FullWorld
             try:
-                from hydra2.contracts.observation import ActorObservation as _Obs
-
-                if not isinstance(observation, _Obs):
-                    raise ContractError(
-                        f"continuation policy input must be ActorObservation, got {type(observation).__name__}"
-                    )
-            except ImportError:
-                pass
+                from hydra2.contracts.observation_actor import ActorObservation as _Obs
+            except ImportError as exc:
+                raise ImportError(
+                    "hydra2.contracts.observation not importable "
+                    f"({exc}); build the bridge with `pixi run build-ext` before ISMCTS search"
+                ) from exc
+            if not isinstance(observation, _Obs):
+                raise ContractError(
+                    f"continuation policy input must be ActorObservation, got {type(observation).__name__}"
+                )
             # forbid world_id field leak
             if hasattr(observation, "world_id"):
                 raise VisibilityViolationError(
@@ -494,21 +515,12 @@ class UniformContinuationPolicy:
         if not isinstance(legal, tuple) or len(legal) == 0:
             raise ContractError("legal must be non-empty tuple")
         dist = self.distribution(observation, legal)
-        # sample categorical via rng
-        if _HAS_RANDOM and hasattr(rng, "random_float"):
-            _rng_raw: Any = rng.random_float()  # pyrefly: ignore[explicit-any]
-            r: float = float(_rng_raw)  # pyrefly: ignore[explicit-any]
-        else:
-            # fallback deterministic using hash of observation+legal if rng missing
-            r = (
-                int(
-                    hashlib.sha256(
-                        str(getattr(observation, "observation_hash", "")).encode()
-                    ).hexdigest()[:8],
-                    16,
-                )
-                % 1000
-            ) / 1000.0
+        # sample categorical via rng — fail closed, no hash%1000 fallback.
+        _require_random_stream()
+        if not hasattr(rng, "random_float"):
+            raise ContractError("ismcts: rng must expose random_float; hash%1000 fallback removed")
+        _rng_raw: Any = rng.random_float()  # pyrefly: ignore[explicit-any]
+        r: float = float(_rng_raw)  # pyrefly: ignore[explicit-any]
         cum = 0.0
         for idx, p in enumerate(dist):
             cum += p
@@ -520,36 +532,45 @@ class UniformContinuationPolicy:
 def _uct_select(
     node: InformationSetNode, legal: tuple[int, ...], root_seat: int, uct_c: float, tie_break: str
 ) -> int:
-    # Prefer unvisited actions in deterministic order
-    for a in sorted(legal):
-        st = node.action_stats.get(a)
-        if st is None or st.visits == 0:
-            return a
-    total = node.visits
-    best: int | None = None
-    best_val = float("-inf")
-    for a in sorted(legal):
-        mv = node.mean_vector(a)
-        if mv is None:
+    # UCT pick rides the bridge (unvisited-first + q+u with 1e-12 eps + tie
+    # arm, bit-identical to the oracle below); node tables stay Python —
+    # only visited-arm scalars cross, never hidden worlds (info-keys only).
+    try:
+        stat_ids = sorted(node.action_stats.keys())
+    except Exception as exc:
+        raise ContractError(f"uct node stats unreadable: {exc}") from exc
+    actions: list[int] = []
+    visits: list[int] = []
+    sums_flat: list[float] = []
+    for aid in stat_ids:
+        st = node.action_stats.get(aid)
+        if st is None:
             continue
-        q = scalarize_vector(mv, root_seat)
-        st = node.action_stats[a]
-        u = uct_c * math.sqrt(math.log(total + 1) / st.visits)
-        val = q + u
-        if val > best_val + 1e-12:
-            best_val = val
-            best = a
-        elif abs(val - best_val) <= 1e-12 and best is not None:
-            # tie break
-            if tie_break == "lowest_action_id":
-                if a < best:
-                    best = a
-            elif tie_break in ("stable_hash", "lexicographic"):
-                # deterministic hash tie
-                h_a = hashlib.sha256(f"{a}".encode()).hexdigest()
-                h_best = hashlib.sha256(f"{best}".encode()).hexdigest()
-                if h_a < h_best:
-                    best = a
-    if best is None:
-        return sorted(legal)[0]
-    return best
+        try:
+            n = int(st.visits)  # type: ignore[arg-type]
+            quad = tuple(float(v) for v in st.value_sum)
+        except Exception as exc:
+            raise ContractError(f"uct node stats malformed for {aid!r}: {exc}") from exc
+        if len(quad) != 4:
+            raise ContractError(f"uct node value_sum must hold 4 entries for {aid!r}")
+        actions.append(int(aid))
+        visits.append(n)
+        sums_flat.extend(quad)
+    try:
+        total = int(node.visits)  # type: ignore[arg-type]
+        return int(
+            _require_search_bridge().uct_select(
+                actions,
+                visits,
+                sums_flat,
+                [int(a) for a in legal],
+                int(root_seat),
+                total,
+                float(uct_c),
+                str(tie_break),
+            )
+        )
+    except ImportError:
+        raise
+    except Exception as exc:
+        raise ContractError(f"ismcts bridge uct failed: {exc}") from exc

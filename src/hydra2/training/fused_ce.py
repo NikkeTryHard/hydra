@@ -1,7 +1,7 @@
 # ruff: noqa: N803,N806  # reason: Triton convention — uppercase constexpr grid params (BLOCK, A) and reduction temps (S, Q, L); renaming fights every Triton reference.
 """Fused masked cross-entropy (exact math, Triton, opt-in fast path).
 
-Implements :func:`hydra2.training.objectives.masked_cross_entropy`'s exact
+Implements :func:`hydra2.training.objectives_loss.masked_cross_entropy`'s exact
 formula — legal-only label smoothing over ``[B,A]`` logits — as two fused
 Triton kernels wrapped in a ``torch.library.custom_op`` (opaque to inductor,
 fake impl for shapes, registered autograd formula):

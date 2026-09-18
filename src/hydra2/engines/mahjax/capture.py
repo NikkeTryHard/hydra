@@ -20,12 +20,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
-from hydra2._canon import atomic_write_bytes, canonical_json_bytes, sha256_digest_of_json
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
+from hydra2.artifacts.atomic import atomic_replace_bytes
+from hydra2.artifacts.canonical import canonical_bytes
+from hydra2.artifacts.digest import of_canonical
 from hydra2.config import MAHJAX_GIT_URL, MAHJAX_PIN_SHA
 from hydra2.contracts.common import (
     DigestText,
     QualificationRequiredError,
-    make_digest_text,
 )
 
 _HEX40_RE = re.compile(r"[0-9a-f]{40}")
@@ -143,7 +146,7 @@ def _lock_sha256() -> DigestText:
     # helpers are consumed, never mutated, by this shell).
     from hydra2.runtime.environment import _pixi_lock_hash
 
-    return make_digest_text(_pixi_lock_hash())
+    return _bridge_contracts.make_digest_text(_pixi_lock_hash())
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,7 +226,7 @@ class MahJaxEnvironmentTuple:
     @property
     def digest(self) -> DigestText:
         """sha256 over the canonical bytes of :meth:`to_fragment`."""
-        return sha256_digest_of_json(self.to_fragment())
+        return of_canonical(self.to_fragment())
 
 
 def capture_mahjax_tuple() -> MahJaxEnvironmentTuple:
@@ -245,5 +248,5 @@ def write_mahjax_environment_fragment(
         destination_dir = artifact_root() / "environment"
     tuple_ = capture_mahjax_tuple()
     destination = destination_dir / FRAGMENT_ARTIFACT_NAME
-    atomic_write_bytes(destination, canonical_json_bytes(tuple_.to_fragment()))
+    atomic_replace_bytes(destination, canonical_bytes(tuple_.to_fragment()))
     return destination, tuple_.digest

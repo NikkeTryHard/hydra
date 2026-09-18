@@ -14,18 +14,27 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
 
-from hydra2.contracts.common import ContractError as ContractError
-from hydra2.contracts.common import TileId as TileId
-from hydra2.contracts.common import make_seat as make_seat
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
+from hydra2.contracts.common import (
+    ContractError as ContractError,
+)
+from hydra2.contracts.common import (
+    TileId as TileId,
+)
 from hydra2.engines.riichienv.adapter_identity import _BAKAZE_TO_TILE_TYPE as _BAKAZE_TO_TILE_TYPE
-from hydra2.engines.riichienv.events import make_delta as make_delta
-from hydra2.engines.riichienv.events import make_envelope as make_envelope
+from hydra2.engines.riichienv.events import (
+    make_delta as make_delta,
+)
+from hydra2.engines.riichienv.events import (
+    make_envelope as make_envelope,
+)
 from hydra2.engines.riichienv.events import meld_delta_value as meld_delta_value
 
 if TYPE_CHECKING:
     import riichienv as riichienv
 
-    from hydra2.contracts.observation import ObservationBuilder as ObservationBuilder
+    from hydra2.contracts.observation_assembly import ObservationBuilder as ObservationBuilder
 
 __all__ = [
     "AdapterEventsAMixin",
@@ -175,7 +184,7 @@ class AdapterEventsAMixin:
                 visibility="public",
                 rules_hash=self._rules_hash,
                 schema_hash=self._event_schema_hash,
-                actor=make_seat(dealer),
+                actor=_bridge_contracts.make_seat(dealer),
                 round_index=self._hand_index,
                 scores=scores,
                 public_delta=(
@@ -208,7 +217,7 @@ class AdapterEventsAMixin:
                 visibility="public",
                 rules_hash=self._rules_hash,
                 schema_hash=self._event_schema_hash,
-                actor=make_seat(actor),
+                actor=_bridge_contracts.make_seat(actor),
             )
         )
         self._emit(
@@ -219,7 +228,7 @@ class AdapterEventsAMixin:
                 visibility="actor_private",
                 rules_hash=self._rules_hash,
                 schema_hash=self._event_schema_hash,
-                actor=make_seat(actor),
+                actor=_bridge_contracts.make_seat(actor),
                 tile=tile,
             )
         )
@@ -243,7 +252,7 @@ class AdapterEventsAMixin:
                 visibility="public",
                 rules_hash=self._rules_hash,
                 schema_hash=self._event_schema_hash,
-                actor=make_seat(actor),
+                actor=_bridge_contracts.make_seat(actor),
                 tile=tile,
                 action_id=action_id,
             )
@@ -273,7 +282,7 @@ class AdapterEventsAMixin:
                 visibility="public",
                 rules_hash=self._rules_hash,
                 schema_hash=self._event_schema_hash,
-                actor=make_seat(actor),
+                actor=_bridge_contracts.make_seat(actor),
                 tile=tile,
                 action_id=action_id,
                 public_delta=(make_delta(("riichi_states", actor), "set", "declared"),),
@@ -290,7 +299,7 @@ class AdapterEventsAMixin:
                 visibility="public",
                 rules_hash=self._rules_hash,
                 schema_hash=self._event_schema_hash,
-                actor=make_seat(actor),
+                actor=_bridge_contracts.make_seat(actor),
                 public_delta=(
                     make_delta(("riichi_states", actor), "set", "accepted"),
                     make_delta(("riichi_sticks",), "increment", 1),
@@ -338,10 +347,10 @@ class AdapterEventsAMixin:
                 visibility="public",
                 rules_hash=self._rules_hash,
                 schema_hash=self._event_schema_hash,
-                actor=make_seat(actor),
+                actor=_bridge_contracts.make_seat(actor),
                 tile=called,
                 action_id=action_id,
-                source_seat=None if source is None else make_seat(source),
+                source_seat=None if source is None else _bridge_contracts.make_seat(source),
                 consumed_tiles=consumed,
                 public_delta=tuple(deltas),
             )
@@ -364,7 +373,7 @@ class AdapterEventsAMixin:
                 visibility="public",
                 rules_hash=self._rules_hash,
                 schema_hash=self._event_schema_hash,
-                actor=make_seat(actor),
+                actor=_bridge_contracts.make_seat(actor),
                 action_id=action_id,
                 consumed_tiles=consumed,
                 public_delta=(

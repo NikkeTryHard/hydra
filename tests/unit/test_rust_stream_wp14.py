@@ -23,29 +23,25 @@ plane slots out. Proves the K1 acceptance set:
   wait with recycle timing samples (quantitative ``sync < h2d`` proof
   lives on the F2 primary bench, not this serial lane).
 
-The ``rust_extension`` fixture builds the extension once per session
-(``cargo build`` is incremental after the first compile) and maps the
-cdylib onto ``sys.path`` under its import name; every test takes the
-fixture so the import path is live while the stream opens.
+The shared ``rust_extension`` session fixture (``tests/unit/conftest.py``)
+imports the lane-built extension (``pixi run build-ext`` first; zero cargo
+here); every test takes the fixture so the import path is live while the
+stream opens.
 """
 
 from __future__ import annotations
 
 import ctypes
-import importlib
-import importlib.machinery
 import json
-import os
-import shutil
-import subprocess
-import sys
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import torch
 
 import hydra2.training.rust_stream as rust_stream
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 pytestmark = [pytest.mark.contract_package("WP-14"), pytest.mark.serial]
 
@@ -282,32 +278,6 @@ def _write_inputs(root: Path) -> Path:
     (inputs / "gB-good.jsonl").write_text(_tsumo_win_game(4))
     (inputs / "gC-double-ron.jsonl").write_text(_double_ron_game())
     return inputs
-
-
-@pytest.fixture(scope="session")
-def rust_extension(tmp_path_factory: pytest.TempPathFactory) -> Any:
-    """Build the extension once and expose ``import hydra2_replay_rs``."""
-    root = Path(__file__).resolve().parents[2]
-    crate = root / "tools" / "hydra2-replay-rs"
-    env = {**os.environ, "PYO3_PYTHON": sys.executable}
-    proc = subprocess.run(
-        ["cargo", "build", "--offline", "-p", "hydra2-replay-rs"],
-        cwd=crate,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-    assert proc.returncode == 0, f"cargo build failed:\n{proc.stderr[-4000:]}"
-    built = crate / "target" / "debug" / "libhydra2_replay_rs.so"
-    assert built.is_file(), f"expected cdylib at {built}"
-    ext_dir = tmp_path_factory.mktemp("hydra2_replay_rs")
-    suffix = importlib.machinery.EXTENSION_SUFFIXES[0]
-    shutil.copy(built, ext_dir / f"hydra2_replay_rs{suffix}")
-    sys.path.insert(0, str(ext_dir))
-    try:
-        yield importlib.import_module("hydra2_replay_rs")
-    finally:
-        sys.path.remove(str(ext_dir))
 
 
 @pytest.fixture()

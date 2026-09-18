@@ -189,9 +189,58 @@ def _latency_draw(master_seed: bytes, key: RandomStreamKey) -> int:
     return int.from_bytes(seed[:8], "big") % len(LATENCY_CLASSES)
 
 
+def _rust_canonical_digest(value: object, oracle: DigestText, *, subject: str) -> DigestText:
+    """Rust-first digest via feed::canon+digest (bridge ``canon_rng``).
+
+    Recomputes ``of_canonical(value)`` through the Rust bridge
+    (``hydra2_replay_rs.canon_rng.of_canonical_json``: feed I-JSON parse +
+    JCS canon + sha256, B3 canon-wins single site) and fail-closes on
+    mismatch (``ContractError``). Missing bridge raises ``ImportError``
+    naming the ``canon_rng`` submodule with a `pixi run build-ext` hint
+    (never silently returns the Python ``oracle``). B2/M3 untouched —
+    pure digest identity, no draws.
+    """
+    try:
+        import importlib as _importlib
+
+        _importlib.import_module("hydra2_replay_rs")
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2_replay_rs extension with canon_rng not importable; "
+            "build the bridge with `pixi run build-ext` before hashing "
+            f"{subject}"
+        ) from exc
+    try:
+        from hydra2 import _rust_bridge as _rust_bridge_mod
+        from hydra2.artifacts.canonical import canonical_bytes as _canonical_bytes
+
+        rust_digest = _rust_bridge_mod.of_canonical(_canonical_bytes(value))
+    except RuntimeError as exc:
+        if "not importable" in str(exc) or "missing" in str(exc):
+            raise ImportError(
+                "hydra2_replay_rs.canon_rng submodule missing (stale .so); "
+                "rebuild the bridge with `pixi run build-ext` before hashing "
+                f"{subject}"
+            ) from exc
+        raise
+    if rust_digest != oracle:
+        raise ContractError(f"{subject}: Rust digest {rust_digest} != Python oracle {oracle}")
+    return rust_digest
+
+
 def schedule_commitment_hash(schedule: MatchSchedule) -> DigestText:
-    """Single pre-results commitment binding every schedule facet."""
-    return of_canonical(schedule.to_json())
+    """Single pre-results commitment binding every schedule facet.
+
+    Rust-first via :func:`_rust_canonical_digest` (feed::canon+digest, B3
+    canon-wins; T2 pins the COMMIT golden; mismatch raises ContractError,
+    missing bridge raises ImportError). B2/M3 untouched — no split or latency
+    draws here
+    (``_latency_draw`` stays ``%3`` verbatim, splits stay torch.randperm).
+    """
+    payload = schedule.to_json()
+    return _rust_canonical_digest(
+        payload, of_canonical(payload), subject="schedule_commitment_hash"
+    )
 
 
 def seat_pair_placements_exact(schedule: MatchSchedule) -> None:

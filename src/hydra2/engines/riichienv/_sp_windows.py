@@ -3,23 +3,33 @@
 from __future__ import annotations
 
 from dataclasses import replace as replace
-from typing import TYPE_CHECKING as TYPE_CHECKING
-from typing import cast as cast
+from typing import (
+    TYPE_CHECKING as TYPE_CHECKING,
+)
+from typing import (
+    cast as cast,
+)
 
-from hydra2.contracts.action import CanonicalAction as CanonicalAction
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+from hydra2_replay_rs import tiles  # pyrefly: ignore[missing-import]
+
+from hydra2.contracts.action_model import CanonicalAction as CanonicalAction
 from hydra2.contracts.common import ContractError as ContractError
-from hydra2.contracts.common import make_seat as make_seat
-from hydra2.contracts.common import make_tile_id as make_tile_id
-from hydra2.engines.riichienv._oracle_base import _BAKAZE_TO_WIND as _BAKAZE_TO_WIND
-from hydra2.engines.riichienv._oracle_base import _legal_mjai_type as _legal_mjai_type
-from hydra2.engines.riichienv._sp_capture import _distinct_copies as _distinct_copies
-from hydra2.engines.riichienv._sp_records import _emit as _emit
-from hydra2.engines.riichienv._sp_records import _ippatsu_interrupt as _ippatsu_interrupt
+from hydra2.engines.riichienv._oracle_base import (
+    _BAKAZE_TO_WIND as _BAKAZE_TO_WIND,
+)
+from hydra2.engines.riichienv._oracle_base import (
+    _legal_mjai_type as _legal_mjai_type,
+)
+from hydra2.engines.riichienv._sp_records import (
+    _emit as _emit,
+)
+from hydra2.engines.riichienv._sp_records import (
+    _ippatsu_interrupt as _ippatsu_interrupt,
+)
 from hydra2.engines.riichienv._sp_records import _safe_mjai_type as _safe_mjai_type
 from hydra2.engines.riichienv._sp_records import _SimStep as _SimStep
 from hydra2.engines.riichienv._sp_walk import _strict_row as _strict_row
-from hydra2.engines.riichienv.tiles import mjai_string_of as mjai_string_of
-from hydra2.engines.riichienv.tiles import physical_of as physical_of
 
 if TYPE_CHECKING:
     from collections.abc import Sequence as Sequence
@@ -68,8 +78,8 @@ def _resolve_dora(state: _GameState, walk: _KyokuWalk, kyoku: int, marker: str) 
     reused: int | None = None
     for tile in walk.last_oracle_dora:
         try:
-            rendered = mjai_string_of(tile)
-        except ContractError:
+            rendered = tiles.mjai_string_of(tile)
+        except ValueError:
             continue
         if rendered != marker:
             continue
@@ -105,8 +115,12 @@ def _fold_offer(raw: Any) -> Any:
     try:
         _ = _legal_mjai_type(raw)  # validate MJAI mapping; type string unneeded
         tile_raw: Any = raw.tile
-        folded_tile = None if tile_raw is None else int(physical_of(mjai_string_of(int(tile_raw))))
-        folded_consume = _distinct_copies(tuple(int(t) for t in raw.consume_tiles))
+        folded_tile = (
+            None
+            if tile_raw is None
+            else int(tiles.physical_of(tiles.mjai_string_of(int(tile_raw))))
+        )
+        folded_consume = tuple(tiles.distinct_copies([int(t) for t in raw.consume_tiles]))
     except Exception:  # why-broad: folding never invents ids; use-site fails closed
         return raw
     return SimpleNamespace(
@@ -142,10 +156,10 @@ def _live_step(
     except ContractError as exc:
         raise state.fail(kyoku, f"seat {seat} step", f"position query failed: {exc}") from exc
     if fold:
-        hand = _distinct_copies(pos.hand)
+        hand = tuple(tiles.distinct_copies(list(pos.hand)))
         drawn: int | None = None
         if pos.drawn is not None:
-            drawn = physical_of(mjai_string_of(pos.drawn))
+            drawn = tiles.physical_of(tiles.mjai_string_of(pos.drawn))
         legals = tuple(_fold_offer(raw) for raw in pos.legals)
     else:
         hand = tuple(t for t in pos.hand)
@@ -267,7 +281,7 @@ def _do_tsumo(
         kind="draw_tile",
         visibility="actor_private",
         actor=actor,
-        tile=int(physical_of(pai)),
+        tile=int(tiles.physical_of(pai)),
     )
 
 
@@ -291,7 +305,7 @@ def _do_dahai(
         # raw take-ordered ids, tsumogiri by rule. A non-drawn discard here
         # has no oracle step either and fails closed like the empty queue.
         step = _live_step(state, walk, kyoku, actor, mjai_type="dahai", fold=False)
-        if step.drawn is None or mjai_string_of(step.drawn) != pai:
+        if step.drawn is None or tiles.mjai_string_of(step.drawn) != pai:
             raise state.fail(kyoku, "dahai", f"seat {actor} pop: oracle queue empty (dahai)")
         tile_raw = step.drawn
         step = replace(step, mjai_type="dahai", tile=tile_raw, consume=())
@@ -302,19 +316,19 @@ def _do_dahai(
         if not any(
             _safe_mjai_type(raw) == "dahai"
             and raw.tile is not None
-            and mjai_string_of(int(raw.tile)) == pai
+            and tiles.mjai_string_of(int(raw.tile)) == pai
             for raw in step.raw_legals
         ):
             raise state.fail(kyoku, "dahai", f"seat {actor} oracle discards a different tile")
         # Tile identity is the string base (the oracle renders every normal
         # discard at its string's first copy).
-        tile_raw = int(physical_of(pai))
+        tile_raw = int(tiles.physical_of(pai))
         step = replace(step, mjai_type="dahai", tile=tile_raw, consume=())
         kind = "tsumogiri" if tsumogiri else "discard"
     expected = CanonicalAction(
         kind=cast("Any", kind),
-        actor=make_seat(actor),
-        tile=make_tile_id(tile_raw),
+        actor=_bridge_contracts.make_seat(actor),
+        tile=_bridge_contracts.make_tile_id(tile_raw),
         called_tile=None,
         consumed_tiles=(),
         source_seat=None,

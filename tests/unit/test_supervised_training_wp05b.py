@@ -20,13 +20,16 @@ import torch
 from hydra2.contracts.common import ContractError
 from hydra2.models.schema import BASELINE_ACTION_COUNT
 from hydra2.runtime.checkpoint import hash_state_tree
-from hydra2.training.dataset import (
-    AuthoritativeParquetDataset,
+from hydra2.training.dataset_encode import (
     encode_observation_rows,
     tensorize_actor_row,
 )
-from hydra2.training.loop import SupervisedLoop, TrainingLoopConfig
-from hydra2.training.objectives import compute_supervised_loss, masked_cross_entropy
+from hydra2.training.dataset_store import (
+    AuthoritativeParquetDataset,
+)
+from hydra2.training.loop_state import TrainingLoopConfig
+from hydra2.training.loop_train import SupervisedLoop
+from hydra2.training.objectives_loss import compute_supervised_loss, masked_cross_entropy
 from tests.unit._manifest_helpers import make_test_manifest_hashes
 from tests.unit._supervised_loop_helpers import (
     StubModelPerSeat,
@@ -113,7 +116,7 @@ def test_fused_hot_scalars_matches_eager(monkeypatch: pytest.MonkeyPatch) -> Non
     fused_ce = pytest.importorskip("hydra2.training.fused_ce")
     if not fused_ce.TRITON_AVAILABLE:
         pytest.skip("needs triton")
-    from hydra2.training.objectives import compute_hot_scalars
+    from hydra2.training.objectives_metrics import compute_hot_scalars
 
     gen = torch.Generator(device="cpu").manual_seed(20260913)
     b, a = 64, 1536
@@ -522,9 +525,11 @@ def test_encode_pin_flag_byte_identical_skips_page_lock(
 
     The pinned-ring feed stages H2D from its own pinned slots, so
     encode-side pin_memory() calls are pure overhead there. Both arms are
-    hermetic (no CUDA needed): the True arm forces the fallback path by
-    making pin_memory() raise, proving the warning fires; the False arm
-    makes pin_memory() boom-if-called, proving the gate never attempts it.
+    hermetic (no CUDA needed): the True arm forces the oracle fallback path
+    (bridge bulk stage bypasses Tensor.pin_memory via torch.empty +
+    ring_fill_batch, so the ring lookup is nulled first) by making
+    pin_memory() raise, proving the warning fires; the False arm makes
+    pin_memory() boom-if-called, proving the gate never attempts it.
     """
     hand = (0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48)
     obs = _make_real_observation(decision_id="pin-dec", concealed_hand=hand)
@@ -535,6 +540,11 @@ def test_encode_pin_flag_byte_identical_skips_page_lock(
         raise RuntimeError("boom: page lock must not be attempted")
 
     # True arm: forced fallback — warning fires, tensors stay pageable.
+    # Null the ring lookup first: with the bridge installed the bulk stage
+    # pins via torch.empty(pin_memory=True) + ring_fill_batch and never
+    # calls Tensor.pin_memory, so the boom below would never fire. The
+    # warning owns the ImportError-only oracle path exercised here.
+    monkeypatch.setattr("hydra2.models.encoder._ring_native", lambda: None)
     monkeypatch.setattr(torch.Tensor, "pin_memory", _boom)
     with caplog.at_level(logging.WARNING):
         pinned = encode_observation_rows(
@@ -662,7 +672,7 @@ def test_real_mode_bad_row_raises_contract_error(tmp_path: Path) -> None:
 
 def test_supervised_loop_wall_ledger_overlap_raises(tmp_path: Path, actor_parquet_factory) -> None:
     """Loop ledger mirrors replay: ranks-written corpus overlapping eval walls raises from the join."""
-    from hydra2.belief.oracle_loader import PrivilegedOracleLoader
+    from hydra2.belief.oracle_store import PrivilegedOracleLoader
     from hydra2.data.parquet import write_privileged_ranks
 
     parquet_dir = actor_parquet_factory(num_rows=8)

@@ -10,18 +10,18 @@ byte-identical across checkpoints and scan caches lives here.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import struct
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import zstandard as zstd
 
 from hydra2.artifacts.canonical import canonical_bytes
-from hydra2.contracts.common import ContractError, CorruptArtifactError
+from hydra2.artifacts.digest import sha256_digest, sha256_file
+from hydra2.contracts.common import ContractError
 
 if TYPE_CHECKING:
     import random
@@ -45,6 +45,43 @@ __all__ = [
     "serialize_shuffle_rng",
     "write_reservoir_blob",
 ]
+
+
+def _require_canon_rng() -> Any:
+    """Import the built ``canon_rng`` bridge surface (fail closed)."""
+    try:
+        import hydra2_replay_rs as _ext  # pyrefly: ignore[missing-import]
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2_replay_rs extension with canon_rng not importable; "
+            "build the bridge with `pixi run build-ext` before ordering a stream manifest"
+        ) from exc
+    try:
+        return _ext.canon_rng
+    except AttributeError as exc:
+        raise ImportError(
+            "hydra2_replay_rs.canon_rng submodule missing (stale .so); "
+            "rebuild the bridge with `pixi run build-ext`"
+        ) from exc
+
+
+def _require_resume() -> Any:
+    """Import the built ``resume`` bridge surface (fail closed)."""
+    try:
+        import hydra2_replay_rs as _ext  # pyrefly: ignore[missing-import]
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2_replay_rs extension with resume not importable; "
+            "build the bridge with `pixi run build-ext` before reading reservoir blobs"
+        ) from exc
+    try:
+        return _ext.resume
+    except AttributeError as exc:
+        raise ImportError(
+            "hydra2_replay_rs.resume submodule missing (stale .so); "
+            "rebuild the bridge with `pixi run build-ext`"
+        ) from exc
+
 
 #: Partition names in :mod:`partition.py` cumulative-threshold order.
 PARTITION_ORDER: tuple[str, ...] = ("train", "validation", "test", "decision_eval", "block_eval")
@@ -84,18 +121,28 @@ def build_manifest(root: Path | str, pattern: str = "*.mjai.json.zst") -> Stream
     """Collect files under ``root`` in sha256-hex relative-path order.
 
     The hash orders (never splits): split assignment uses
-    :func:`assign_split` exclusively.
+    :func:`assign_split` exclusively. Order keys are minted in one
+    ``canon_rng.batch_sha256`` call over the relative-POSIX path bytes
+    (``ImportError`` with a ``build-ext`` hint when the extension is not
+    built — NO oracle fallback); key bytes are identical to the retired
+    ``hashlib.sha256`` per-path loop, so the order is unchanged.
     """
     base = Path(root)
     if not base.is_dir():
         raise ContractError(f"stream root not a directory: {base}")
     found = [path for path in base.rglob(pattern) if path.is_file()]
-
-    def _order_key(path: Path) -> str:
-        return hashlib.sha256(path.relative_to(base).as_posix().encode()).hexdigest()
-
-    found.sort(key=_order_key)
-    entries = tuple(FileEntry(path=path, bytes=path.stat().st_size) for path in found)
+    canon_rng = _require_canon_rng()
+    try:
+        keys = [
+            str(text).removeprefix("sha256:")
+            for text in canon_rng.batch_sha256(
+                [path.relative_to(base).as_posix().encode() for path in found]
+            )
+        ]
+    except ValueError as exc:
+        raise ContractError(f"manifest ordering failed for {base}: {exc}") from exc
+    keyed = sorted(zip(keys, found, strict=True), key=lambda kv: kv[0])
+    entries = tuple(FileEntry(path=path, bytes=path.stat().st_size) for _, path in keyed)
     return StreamManifest(files=entries, root=base)
 
 
@@ -107,10 +154,19 @@ def manifest_digest(manifest: StreamManifest) -> str:
     + comma-joined elements + ``]``; element key order is ``bytes`` <
     ``path`` by UTF-16BE). Fast path assembles the same bytes directly
     when every path is escape-free ASCII (single C-speed scan proves it);
-    anything else takes the element-wise canonical path. Any divergence
-    breaks scan-cache keys loudly (miss → full scan), never silently.
-    """
+    anything else takes the element-wise canonical path. The hash itself
+    is minted by the hard-Rust digest owner (``sha256_digest`` over the
+    assembled bytes — ``ImportError`` with a ``build-ext`` hint when the
+    extension is not built, NO oracle fallback), so digests are unchanged.
+    Any divergence breaks scan-cache keys loudly (miss → full scan),
+    never silently.
 
+    Stays on the assembled-bytes primitive (not
+    ``packet_decode.manifest_digest``): the bridge digest binds relative
+    POSIX paths and rejects absolute ones, while this digest binds the
+    stored ``entry.path.as_posix()`` strings verbatim — rerouting the
+    file list would change every absolute-root digest.
+    """
     files = manifest.files
     paths = [entry.path.as_posix() for entry in files]
     if paths and re.search(r"[^\x20\x21\x23-\x5b\x5d-\x7e]", "".join(paths)) is None:
@@ -118,26 +174,24 @@ def manifest_digest(manifest: StreamManifest) -> str:
         # interpolation equals the canonical string encoding on every path
         # (only `"`/`\` are escaped in ASCII; controls/non-ASCII take the
         # element-wise path below).
-        h = hashlib.sha256()
-        h.update(b"[")
+        chunks: list[bytes] = [b"["]
         for i, entry in enumerate(files):
             if i:
-                h.update(b",")
-            h.update(b'{"bytes":')
-            h.update(str(entry.bytes).encode("ascii"))
-            h.update(b',"path":"')
-            h.update(paths[i].encode("ascii"))
-            h.update(b'"}')
-        h.update(b"]")
-        return "sha256:" + h.hexdigest()
-    h = hashlib.sha256()
-    h.update(b"[")
+                chunks.append(b",")
+            chunks.append(b'{"bytes":')
+            chunks.append(str(entry.bytes).encode("ascii"))
+            chunks.append(b',"path":"')
+            chunks.append(paths[i].encode("ascii"))
+            chunks.append(b'"}')
+        chunks.append(b"]")
+        return str(sha256_digest(b"".join(chunks)))
+    buf: list[bytes] = [b"["]
     for i, entry in enumerate(files):
         if i:
-            h.update(b",")
-        h.update(canonical_bytes({"bytes": entry.bytes, "path": entry.path.as_posix()}))
-    h.update(b"]")
-    return "sha256:" + h.hexdigest()
+            buf.append(b",")
+        buf.append(canonical_bytes({"bytes": entry.bytes, "path": entry.path.as_posix()}))
+    buf.append(b"]")
+    return str(sha256_digest(b"".join(buf)))
 
 
 #: Reservoir-blob layout version (bump on format change; mismatch → miss).
@@ -154,27 +208,31 @@ def write_reservoir_blob(
     ``[u32le frame-len][frame]`` in buffer order. Returns the index record
     ``{version, count, uncompressed_bytes, blob_sha256}``. Corrupt/truncated
     blobs fail closed in :func:`read_reservoir_blob` (miss, never partial).
+
+    Framing stays the v1 Python writer (byte-identical frames); the blob
+    digest is minted by the hard-Rust digest owner (``sha256_file`` over
+    the emitted file — ``ImportError`` with a ``build-ext`` hint when the
+    extension is not built, NO oracle fallback). Stays off
+    ``resume.encode_reservoir``: the bridge writer emits generation v2
+    with different zstd frames, which would change blob bytes, the index
+    ``blob_sha256``, and the ``reservoir-v1`` sidecar contract.
     """
     out_path = Path(path)
     cctx = zstd.ZstdCompressor(level=level)
-    h = hashlib.sha256()
     uncompressed = 0
     with open(out_path, "wb") as fh:
         header = _RESERVOIR_MAGIC + struct.pack("<II", RESERVOIR_BLOB_VERSION, len(raws))
         fh.write(header)
-        h.update(header)
         for raw in raws:
             frame = cctx.compress(raw)
             fh.write(struct.pack("<I", len(frame)))
             fh.write(frame)
-            h.update(struct.pack("<I", len(frame)))
-            h.update(frame)
             uncompressed += len(raw)
     return {
         "version": RESERVOIR_BLOB_VERSION,
         "count": len(raws),
         "uncompressed_bytes": uncompressed,
-        "blob_sha256": "sha256:" + h.hexdigest(),
+        "blob_sha256": str(sha256_file(out_path)),
     }
 
 
@@ -184,39 +242,24 @@ def read_reservoir_blob(path: Path | str) -> list[bytes]:
     Raises :class:`ContractError` on any corruption (callers treat as a
     snapshot miss and fall back to the normal fill). Transient peak is the
     decompressed buffer (~600MB for a full 10k prime); freed after decode.
+
+    Decode runs through ``resume.decode_reservoir`` (``ImportError`` with
+    a ``build-ext`` hint when the extension is not built, NO oracle
+    fallback); bridge rejects (``ValueError`` → :class:`ContractError`
+    here) on bad magic, unknown version, truncated frames, and trailing
+    bytes. The bridge dual-reads v1+v2 generations while this module
+    still writes v1 only.
     """
     try:
         data = Path(path).read_bytes()
     except OSError as exc:
         raise ContractError(f"reservoir blob unreadable: {path} ({exc})") from exc
+    resume = _require_resume()
     try:
-        dctx = zstd.ZstdDecompressor()
-        off = 0
-        if data[off : off + 8] != _RESERVOIR_MAGIC:
-            raise ContractError(f"reservoir blob bad magic: {path}")
-        off += 8
-        (version, count) = struct.unpack_from("<II", data, off)
-        off += 8
-        if version != RESERVOIR_BLOB_VERSION:
-            raise ContractError(
-                f"reservoir blob version {version} != {RESERVOIR_BLOB_VERSION}: {path}"
-            )
-        raws: list[bytes] = []
-        for _ in range(count):
-            (flen,) = struct.unpack_from("<I", data, off)
-            off += 4
-            frame = data[off : off + flen]
-            if len(frame) != flen:
-                raise ContractError(f"reservoir blob truncated: {path}")
-            raws.append(dctx.decompress(frame))
-            off += flen
-        if off != len(data):
-            raise ContractError(f"reservoir blob trailing bytes: {path}")
-    except (ContractError, CorruptArtifactError):
-        raise
-    except Exception as exc:
+        raws = resume.decode_reservoir(bytes(data))
+    except ValueError as exc:
         raise ContractError(f"reservoir blob corrupt: {path} ({exc})") from exc
-    return raws
+    return [bytes(raw) for raw in raws]
 
 
 #: Scan-cache envelope version (bump on schema change; mismatch → miss).

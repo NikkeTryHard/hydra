@@ -8,7 +8,8 @@ import json
 
 import pytest
 
-from hydra2._canon import canonical_json_bytes, sha256_digest_of_json
+from hydra2.artifacts.canonical import canonical_bytes as canonical_json_bytes
+from hydra2.artifacts.digest import of_canonical as sha256_digest_of_json
 from hydra2.config import MAHJAX_PIN_SHA, PARITY_ABS_TOL, PARITY_REL_TOL
 from hydra2.runtime.environment import (
     ENV_MANIFEST_ARTIFACT_TYPE,
@@ -37,7 +38,6 @@ class TestEnvironmentManifest:
         assert gpus and gpus[0]["name"].startswith("NVIDIA")
         assert gpus[0]["compute_capability"].startswith("12.")
         extensions = manifest["extensions"]
-        assert extensions["lightning-fabric"] == "2.6.5"
         assert extensions["riichienv"] == "0.4.10"
         assert extensions["mahjax_pin_sha"] == MAHJAX_PIN_SHA
 

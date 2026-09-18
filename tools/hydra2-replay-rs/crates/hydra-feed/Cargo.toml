@@ -2,11 +2,16 @@
 name = "hydra-feed"
 version = "0.1.0"
 edition = "2024"
-
 [dependencies]
 memchr = "2"
+simd-json = "=0.18.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_jcs = "=0.2.0"
+sha2 = "=0.11"
+digest = "=0.11"
+rand = "=0.10"
+rand_philox = "=0.1"
 zstd = "0.14"
 flate2 = "1.1"
 rayon = "1.12"

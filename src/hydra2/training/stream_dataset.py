@@ -5,6 +5,14 @@ pulls, the bounded parallel-expansion pool, microbatch fills); the
 buffered-window half (grouped takes, sampler state, snapshots, verbatim
 restore) rides :class:`_StreamDatasetBufferMixin`. Single-pass with the
 epoch pinned at 0: exhaustion while rows are still demanded fails closed.
+
+Fill path: the bounded spawn pool (:meth:`_fill_parallel`) plus the serial
+pull/batch-expansion tails (:meth:`_pull_game` / :meth:`_pull_game_batch`);
+the H2D staging is the caller-owned ``PinnedRing``/``_GatedOverlapFeed`` —
+never a ``DataLoader``. :meth:`_StreamDatasetCore._fill` runs the verbatim
+Python pool path below (counted in ``feed_fallbacks``). Orchestration —
+order, counters, privileged joins, quarantine classes, buffer index — is
+untouched.
 """
 
 from __future__ import annotations
@@ -17,7 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 from hydra2.contracts.common import ContractError as ContractError
 from hydra2.data.replay_expand import expand_privileged_rows as expand_privileged_rows
-from hydra2.data.stream import StreamCursor as DataStreamCursor
+from hydra2.data.stream_read import StreamCursor as DataStreamCursor
 from hydra2.training.stream_expand import (
     _PARALLEL_EXPAND_MAX_WORKERS as _PARALLEL_EXPAND_MAX_WORKERS,
 )
@@ -36,8 +44,8 @@ from hydra2.training.stream_expand import _slim_row_dicts as _slim_row_dicts
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
-    from hydra2.data.stream import GameStream as GameStream
-    from hydra2.data.stream import StreamGame as StreamGame
+    from hydra2.data.stream_iter import GameStream as GameStream
+    from hydra2.data.stream_read import StreamGame as StreamGame
 
 __all__ = [
     "_StreamDatasetCore",
@@ -116,6 +124,8 @@ class _StreamDatasetCore:
         self.pin_memory = pin_memory
         self._homogeneous_buckets = homogeneous_buckets
         self._buffered_entries: list[dict[str, Any]] = []
+        # Python pool fill count (telemetry only).
+        self.feed_fallbacks = 0
 
     @property
     def epoch(self) -> int:
@@ -126,11 +136,6 @@ class _StreamDatasetCore:
     def rows_consumed_in_epoch(self) -> int:
         """Rows consumed (plus tail-dropped) in the live epoch."""
         return self._offset
-
-    @property
-    def microbatches_in_epoch(self) -> int:
-        """Microbatches consumed in the live epoch (resume-drain count)."""
-        return self._microbatches_in_epoch
 
     def stream_cursor(self) -> DataStreamCursor:
         """Pulled-game frontier of the live stream (resume anchor)."""
@@ -542,6 +547,7 @@ class _StreamDatasetCore:
 
     def _fill(self, need: int) -> None:
         """Buffer at least ``need`` consumable rows (single-pass: exhaustion is terminal)."""
+        self.feed_fallbacks += 1
         if self._expand_workers > 0:
             self._fill_parallel(need)
             return

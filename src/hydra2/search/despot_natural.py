@@ -2,7 +2,7 @@
 
 Re-export facade over the split modules: :mod:`hydra2.search.despot_core`
 (scenarios, packet guards, seeding, spec factory),
-:mod:`hydra2.search.despot_search` (search policy),
+:mod:`hydra2.search.despot_result` (search policy + result assembly),
 :mod:`hydra2.search.despot_act` (expansion loop plus
 :class:`NaturalDespotPlanner`), and
 :mod:`hydra2.search.despot_result` (result assembly). Import from this path;
@@ -36,12 +36,17 @@ __all__ = [
 # Names importable from this path before the split that live in the
 # submodules now (kept so the search package, lazy candidate factories,
 # and type-checking imports resolve without touching the new paths).
+import time as time
+
+from hydra2.search.common import Planner as Planner
+from hydra2.search.common import SearchRequest as SearchRequest
+from hydra2.search.common import SearchResult as SearchResult
 from hydra2.search.despot_act import NaturalDespotPlannerActMixin as NaturalDespotPlannerActMixin
+from hydra2.search.despot_core import _BELIEF_IMPORT_ERROR as _BELIEF_IMPORT_ERROR
 from hydra2.search.despot_core import _COMMON_AVAILABLE as _COMMON_AVAILABLE
-from hydra2.search.despot_core import _HAS_BELIEF as _HAS_BELIEF
-from hydra2.search.despot_core import _HAS_RANDOM as _HAS_RANDOM
-from hydra2.search.despot_core import _HAS_TELEMETRY as _HAS_TELEMETRY
-from hydra2.search.despot_core import _HAS_UTILITY as _HAS_UTILITY
+from hydra2.search.despot_core import _RANDOM_IMPORT_ERROR as _RANDOM_IMPORT_ERROR
+from hydra2.search.despot_core import _TELEMETRY_IMPORT_ERROR as _TELEMETRY_IMPORT_ERROR
+from hydra2.search.despot_core import _UTILITY_IMPORT_ERROR as _UTILITY_IMPORT_ERROR
 from hydra2.search.despot_core import Any as Any
 from hydra2.search.despot_core import BeliefEpoch as BeliefEpoch
 from hydra2.search.despot_core import CandidateSpec as CandidateSpec
@@ -50,12 +55,9 @@ from hydra2.search.despot_core import Literal as Literal
 from hydra2.search.despot_core import NaturalBelief as NaturalBelief
 from hydra2.search.despot_core import NaturalPacketKernel as NaturalPacketKernel
 from hydra2.search.despot_core import PacketPartitionError as PacketPartitionError
-from hydra2.search.despot_core import Planner as Planner
 from hydra2.search.despot_core import RandomStream as RandomStream
 from hydra2.search.despot_core import ResourceBudget as ResourceBudget
 from hydra2.search.despot_core import ResourceTelemetry as ResourceTelemetry
-from hydra2.search.despot_core import SearchRequest as SearchRequest
-from hydra2.search.despot_core import SearchResult as SearchResult
 from hydra2.search.despot_core import UtilityVector as UtilityVector
 from hydra2.search.despot_core import _default_budget as _default_budget
 from hydra2.search.despot_core import canonical_bytes as canonical_bytes
@@ -70,7 +72,6 @@ from hydra2.search.despot_core import math as math
 from hydra2.search.despot_result import (
     NaturalDespotPlannerResultMixin as NaturalDespotPlannerResultMixin,
 )
-from hydra2.search.despot_search import (
+from hydra2.search.despot_result import (
     NaturalDespotPlannerSearchMixin as NaturalDespotPlannerSearchMixin,
 )
-from hydra2.search.despot_search import time as time

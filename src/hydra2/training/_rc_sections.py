@@ -97,7 +97,7 @@ _TENHOU_SCOPE = "tenhou-4p-hanchan"
 
 _OPTIMIZER_IDS: tuple[str, ...] = ("adamw", "adam", "sgd")
 _SCHEDULER_IDS: tuple[str, ...] = ("cosine", "constant", "linear")
-_ADAPTER_IDS: tuple[str, ...] = ("plain_pytorch", "fabric_2.6.5")
+_ADAPTER_IDS: tuple[str, ...] = ("plain_pytorch",)
 _RUNTIME_PRECISIONS: tuple[str, ...] = ("fp32", "bf16_mixed")
 _COMPILE_MODES: tuple[str, ...] = (
     "eager",

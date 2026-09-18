@@ -17,24 +17,32 @@ import math
 import time
 from typing import Any, cast
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.contracts.common import ContractError as ContractError
-from hydra2.search.common import Planner as Planner
-from hydra2.search.common import SearchRequest as SearchRequest
+from hydra2.search.common import (
+    Planner as Planner,
+)
+from hydra2.search.common import (
+    SearchRequest as SearchRequest,
+)
 from hydra2.search.common import SearchResult as SearchResult
 from hydra2.search.gumbel_config import PuctConfig as PuctConfig
-from hydra2.search.gumbel_core import _HAS_BELIEF as _HAS_BELIEF
-from hydra2.search.gumbel_core import _HAS_RANDOM as _HAS_RANDOM
-from hydra2.search.gumbel_core import _MASTER_SEED as _MASTER_SEED
-from hydra2.search.gumbel_core import _actor_to_move as _actor_to_move
+from hydra2.search.gumbel_core import (
+    _MASTER_SEED as _MASTER_SEED,
+)
+from hydra2.search.gumbel_core import (
+    _actor_to_move as _actor_to_move,
+)
 from hydra2.search.gumbel_core import _is_terminal as _is_terminal
 from hydra2.search.gumbel_core import _legal_ids_for_observation as _legal_ids_for_observation
+from hydra2.search.gumbel_core import _require_belief as _require_belief
+from hydra2.search.gumbel_core import _require_random_stream as _require_random_stream
+from hydra2.search.gumbel_core import _require_search_bridge as _require_search_bridge
 from hydra2.search.gumbel_core import exact_transition as exact_transition
-from hydra2.search.gumbel_core import make_digest_text as make_digest_text
-from hydra2.search.gumbel_core import make_full_world as make_full_world
 from hydra2.search.gumbel_core import model_vector_for_world as model_vector_for_world
 from hydra2.search.gumbel_core import scalarize_vector as scalarize_vector
 from hydra2.search.gumbel_core import terminal_vector_for_world as terminal_vector_for_world
-from hydra2.search.gumbel_core import world_actor_observation as world_actor_observation
 from hydra2.search.gumbel_search import UniformContinuationPolicy as UniformContinuationPolicy
 
 __all__ = [
@@ -107,6 +115,14 @@ class PuctBaselinePlanner(Planner):  # type: ignore[misc]
         self._simulations = 0
 
     def _world_for_particle(self, particle: Any) -> Any:
+        _require_belief()
+        try:
+            from hydra2.belief.world import make_full_world as _mfw
+        except ImportError as exc:
+            raise ImportError(
+                "hydra2.belief.world not importable "
+                f"({exc}); build the bridge with `pixi run build-ext` before PUCT search"
+            ) from exc
         if self._belief is not None and hasattr(self._belief, "_worlds"):
             try:
                 return self._belief._worlds[particle.world_ref]
@@ -142,7 +158,8 @@ class PuctBaselinePlanner(Planner):  # type: ignore[misc]
             if self._belief_epoch is not None
             else "sha256:" + "b" * 64
         )
-        return make_full_world(
+        _require_belief()
+        return _mfw(
             concealed_hands=tuple(hands),
             live_wall=live,
             dead_wall=(),
@@ -210,20 +227,31 @@ class PuctBaselinePlanner(Planner):  # type: ignore[misc]
         value_sum: dict[int, tuple[float, float, float, float]] = dict.fromkeys(
             legal_ids, (0.0, 0.0, 0.0, 0.0)
         )
-        # Derive RNG deterministically per case — use local import to avoid Any fallback type
-        if _HAS_RANDOM:
-            try:
-                from hydra2.contracts.randomness import RandomStream as _RS
-
-                rng = _RS(
-                    hashlib.sha256(f"puct:{case_id}:{self._config.candidate_id}".encode()).digest()
-                )
-            except Exception:
-                from hydra2.contracts.randomness import RandomStream as _RS2
-
-                rng = _RS2(hashlib.sha256(case_id.encode()).digest())  # type: ignore[call-arg]
-        else:
-            rng = None
+        # Derive RNG deterministically per case — fail closed, no None fallback.
+        _require_random_stream()
+        try:
+            from hydra2.contracts.randomness import RandomStream as _RS
+        except ImportError as exc:
+            raise ImportError(
+                "hydra2.contracts.randomness not importable "
+                f"({exc}); build the bridge with `pixi run build-ext` before PUCT search"
+            ) from exc
+        try:
+            rng = _RS(
+                hashlib.sha256(f"puct:{case_id}:{self._config.candidate_id}".encode()).digest()
+            )
+        except ImportError:
+            raise
+        except Exception as exc:
+            raise ContractError(f"puct: deterministic RNG required: {exc}") from exc
+        _require_belief()
+        try:
+            from hydra2.belief.world import world_actor_observation as _wao
+        except ImportError as exc:
+            raise ImportError(
+                "hydra2.belief.world not importable "
+                f"({exc}); build the bridge with `pixi run build-ext` before PUCT search"
+            ) from exc
 
         total_needed = self._config.num_simulations
         for _ in range(total_needed):
@@ -237,40 +265,63 @@ class PuctBaselinePlanner(Planner):  # type: ignore[misc]
                 and self._transitions >= self._config.max_transitions
             ):
                 break
-            # PUCT selection
-            best_aid = None
-            best_score = float("-inf")
-            total_visits = sum(visits.values())
-            for aid in legal_ids:
-                n = visits[aid]
-                if n == 0:
-                    score = float("inf")  # prioritize unvisited
-                else:
-                    mv = tuple(v / n for v in value_sum[aid])
-                    q = scalarize_vector(mv, root_seat)
-                    u = self._config.puct_c * priors[aid] * math.sqrt(total_visits) / (1 + n)
-                    score = q + u
-                if score > best_score + 1e-12:
-                    best_score = score
-                    best_aid = aid
-                elif best_aid is not None and abs(score - best_score) <= 1e-12:
-                    if self._config.tie_break == "lowest_action_id" and aid < best_aid:
-                        best_aid = aid
-            if best_aid is None:
-                best_aid = legal_ids[0]
-            # Sample world and rollout
-            if self._belief is not None and _HAS_BELIEF:
+            # PUCT selection — unvisited arms win in legal order first (oracle
+            # rule the bridge does not replicate: it scores unvisited as q=0).
+            # Fully-visited lowest-arm scoring rides the bridge (uniform
+            # priors, 1e-12 eps + tie arm); any other shape stays on the
+            # oracle path below. Rollout interleaving stays Python.
+            if all(visits[aid] > 0 for aid in legal_ids) and self._config.tie_break == (
+                "lowest_action_id"
+            ):
                 try:
-                    particles_p: Any = self._belief.sample_natural(belief_epoch, count=1, rng=rng)  # type: ignore[union-attr]
-                    cur_world = self._world_for_particle(particles_p[0])  # type: ignore[unknown-argument-type]
-                except Exception:
-                    cur_world = self._world_for_particle(
-                        type("P", (), {"world_ref": f"synth:{best_aid}"})()
+                    _puct_acts = [int(a) for a in legal_ids]
+                    best_aid = int(
+                        _require_search_bridge().puct_select(
+                            _puct_acts,
+                            [int(visits[a]) for a in legal_ids],
+                            [float(v) for a in legal_ids for v in value_sum[a]],
+                            _puct_acts,
+                            int(root_seat),
+                            float(self._config.puct_c),
+                            str(self._config.tie_break),
+                        )
                     )
+                except ImportError:
+                    raise
+                except Exception as exc:
+                    raise ContractError(f"puct bridge select failed: {exc}") from exc
             else:
-                cur_world = self._world_for_particle(
-                    type("P", (), {"world_ref": f"synth:{best_aid}"})()
-                )
+                best_aid = None
+                best_score = float("-inf")
+                total_visits = sum(visits.values())
+                for aid in legal_ids:
+                    n = visits[aid]
+                    if n == 0:
+                        score = float("inf")  # prioritize unvisited
+                    else:
+                        mv = tuple(v / n for v in value_sum[aid])
+                        q = scalarize_vector(mv, root_seat)
+                        u = self._config.puct_c * priors[aid] * math.sqrt(total_visits) / (1 + n)
+                        score = q + u
+                    if score > best_score + 1e-12:
+                        best_score = score
+                        best_aid = aid
+                    elif best_aid is not None and abs(score - best_score) <= 1e-12:
+                        if self._config.tie_break == "lowest_action_id" and aid < best_aid:
+                            best_aid = aid
+                if best_aid is None:
+                    best_aid = legal_ids[0]
+            # Sample world and rollout — real belief required; no synthetic fallback.
+            _require_belief()
+            if self._belief is None or belief_epoch is None:
+                raise ContractError("puct: belief and epoch required; synthetic worlds removed")
+            try:
+                particles_p: Any = self._belief.sample_natural(belief_epoch, count=1, rng=rng)  # type: ignore[union-attr]
+                cur_world = self._world_for_particle(particles_p[0])  # type: ignore[unknown-argument-type]
+            except ContractError:
+                raise
+            except Exception as exc:
+                raise ContractError(f"puct: belief sampling failed: {exc}") from exc
             # Exact rollout
             cur = exact_transition(cur_world, root_seat, best_aid)
             self._transitions += 1
@@ -279,7 +330,8 @@ class PuctBaselinePlanner(Planner):  # type: ignore[misc]
                 cur, self._config.max_depth, step
             ):
                 actor = _actor_to_move(cur)
-                obs = world_actor_observation(cur, actor=actor)
+                _require_belief()
+                obs = _wao(cur, actor=actor)
                 legal_next = _legal_ids_for_observation(obs)
                 if len(legal_next) == 0:
                     break
@@ -361,7 +413,7 @@ class PuctBaselinePlanner(Planner):  # type: ignore[misc]
                                 request.candidate_spec, "utility_id", "expected_final_placement"
                             )
                         ),
-                        utility_manifest_hash=make_digest_text(
+                        utility_manifest_hash=_bridge_contracts.make_digest_text(
                             str(
                                 getattr(
                                     request.candidate_spec,
@@ -370,7 +422,7 @@ class PuctBaselinePlanner(Planner):  # type: ignore[misc]
                                 )
                             )
                         ),
-                        rules_hash=make_digest_text(
+                        rules_hash=_bridge_contracts.make_digest_text(
                             str(getattr(request.candidate_spec, "rules_hash", "sha256:" + "a" * 64))
                         ),
                     )

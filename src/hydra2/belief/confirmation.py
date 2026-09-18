@@ -6,15 +6,15 @@ Runs decision cases under the exact tiny simulator using semantic confirmation s
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from hydra2.contracts.common import ContractError, DigestText, make_digest_text
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
+from hydra2.artifacts.digest import sha256_digest
+from hydra2.contracts.common import ContractError, DigestText
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from hydra2.belief.corpus import TinyCorpus
     from hydra2.contracts.randomness import RandomStream
 
@@ -37,7 +37,9 @@ class ConfirmationCase:
             raise ContractError("case_id must be non-empty")
         if self.world_id == "":
             raise ContractError("world_id must be non-empty")
-        object.__setattr__(self, "observation_hash", make_digest_text(self.observation_hash))
+        object.__setattr__(
+            self, "observation_hash", _bridge_contracts.make_digest_text(self.observation_hash)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,7 +51,9 @@ class ConfirmationResult:
     rng_digest: str  # hash of rng seed for provenance
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "observation_hash", make_digest_text(self.observation_hash))
+        object.__setattr__(
+            self, "observation_hash", _bridge_contracts.make_digest_text(self.observation_hash)
+        )
 
 
 class NaturalConfirmationRunner:
@@ -80,10 +84,12 @@ class NaturalConfirmationRunner:
             act = rng.random_below(2)
             # Value derived from hash of world_id + observation_hash + rng seed (deterministic)
             seed_hex = rng.checkpoint().seed_hex if hasattr(rng, "checkpoint") else "noseed"
+            # Digest line via the canon bridge (byte-identical to the retired
+            # hashlib hexdigest slice; ImportError with build-ext hint).
             val_raw = int(
-                hashlib.sha256(
-                    f"{case.world_id}:{case.observation_hash}:{seed_hex}".encode()
-                ).hexdigest()[:8],
+                str(
+                    sha256_digest(f"{case.world_id}:{case.observation_hash}:{seed_hex}".encode())
+                ).removeprefix("sha256:")[:8],
                 16,
             )
             value = (val_raw % 1000) / 1000.0  # 0..0.999
@@ -99,16 +105,3 @@ class NaturalConfirmationRunner:
                 )
             )
         return tuple(out)
-
-    def replay_is_deterministic(
-        self,
-        cases: tuple[ConfirmationCase, ...],
-        *,
-        make_rng: Callable[[], RandomStream],
-    ) -> bool:
-        """Helper for test: same make_rng() must produce identical results."""
-        rng1: RandomStream = make_rng()
-        rng2: RandomStream = make_rng()
-        r1 = self.confirm(cases, rng=rng1)
-        r2 = self.confirm(cases, rng=rng2)
-        return r1 == r2

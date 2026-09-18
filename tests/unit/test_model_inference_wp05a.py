@@ -17,8 +17,14 @@ import pytest
 import torch
 
 from hydra2.contracts.common import ContractError
-from hydra2.contracts.event import EVENT_KINDS, EventEnvelope, EventPayload
-from hydra2.contracts.observation import make_actor_observation
+from hydra2.contracts.event_envelope import (
+    EventEnvelope,
+    EventPayload,
+)
+from hydra2.contracts.event_vocab import (
+    EVENT_KINDS,
+)
+from hydra2.contracts.observation_actor import make_actor_observation
 from hydra2.models.encoder import (
     ActorTensorBatch,
     bucket_for_length,
@@ -160,7 +166,7 @@ def test_actor_visible_tensor_encoder_no_privileged_fields() -> None:
     # Encoder isolation: the live import-graph proof passes (behavioral —
     # observes the loaded module graph, not source text). The batch asserts
     # below pin the observable side (actor-typed, schema-valid construction).
-    from hydra2.belief.oracle_loader import (
+    from hydra2.belief.oracle_join import (
         assert_privileged_loader_isolated_from_encoder as _assert_encoder_isolated,
     )
 

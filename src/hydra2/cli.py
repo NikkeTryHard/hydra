@@ -124,13 +124,9 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"blocked: {blocker}", file=sys.stderr)
         return code
     if args.command == "train":
-        from hydra2.training.run_config import (
-            create_run_layout,
-            format_plan,
-            load_run_config,
-            resolve_resume_plan,
-            run_dir_for,
-        )
+        from hydra2.training._rc_digest import create_run_layout, run_dir_for
+        from hydra2.training._rc_resume import format_plan, resolve_resume_plan
+        from hydra2.training._rc_root import load_run_config
 
         try:
             config = load_run_config(Path(args.config))

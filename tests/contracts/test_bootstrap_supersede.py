@@ -7,10 +7,30 @@ import json
 
 import pytest
 
-from hydra2 import _canon
 from hydra2.artifacts.atomic import atomic_replace_bytes
 from hydra2.artifacts.canonical import canonical_bytes
 from hydra2.artifacts.digest import of_canonical
+
+
+class _CanonCompat:
+    """Historical WP-01 names, now direct artifacts aliases (facade deleted)."""
+
+    @staticmethod
+    def canonical_json_bytes(value):
+        return canonical_bytes(value)
+
+    @staticmethod
+    def sha256_digest_of_json(value):
+        return of_canonical(value)
+
+    @staticmethod
+    def atomic_write_bytes(destination, data):
+        from pathlib import Path
+
+        return atomic_replace_bytes(Path(destination), data)
+
+
+_canon = _CanonCompat()
 
 pytestmark = pytest.mark.contract_package("WP-02A")
 
@@ -37,7 +57,7 @@ class TestShimDelegation:
         assert target.read_bytes() == b"three"
 
     def test_legacy_names_still_importable_for_wp01_callers(self):
-        from hydra2._canon import (  # noqa: F401
+        from hydra2.artifacts.digest import (  # noqa: F401
             require_digest_match,
             sha256_digest,
             sha256_file,

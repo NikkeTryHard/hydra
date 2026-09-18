@@ -17,6 +17,15 @@
 #   - Pin first (taskset) or pass a --pin bench config; unpinned perf numbers
 #     are not comparable and MUST be discarded, never averaged with pinned.
 #   - Record the perfed config slug + manifest digest alongside the output.
+# m7 (literal record block): paste THIS block alongside the perf stdout —
+# the taskset pin, the config slug, and the manifest digest travel with the
+# numbers, never averaged, never detached:
+#   taskset -c 0-7 bench/perf_wrap.sh \
+#     "pixi run python bench/feed_rate.py run-once --leg stream --corpus f10 --chunk 32 --pin --ring"
+#   config-slug: <leg/corpus/chunk/zstd/B/T/depth/pin/ring/seed>
+#   manifest_digest: sha256:<hex>
+#   perf stdout: <paste>
+# Unpinned-vs-pinned perf comparisons are discarded, never averaged.
 #   - `perf` needs perf_event_paranoid <= 1 for unprivileged counters; see your
 #     distro docs. No sudo is embedded here by design.
 set -u

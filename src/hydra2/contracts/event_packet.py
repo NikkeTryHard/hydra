@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+from hydra2.artifacts.canonical import canonical_bytes_batch
 from hydra2.contracts.canonical import canonical_json_bytes
 from hydra2.contracts.common import (
     ContractError,
@@ -23,9 +24,7 @@ from hydra2.contracts.common import (
     PacketId,
     Seat,
     SequenceNo,
-    make_digest_text,
     make_packet_id,
-    make_seat,
     make_sequence_no,
 )
 from hydra2.contracts.event_envelope import (
@@ -35,12 +34,27 @@ from hydra2.contracts.event_envelope import (
 )
 from hydra2.contracts.event_schema import compute_event_schema_digest
 from hydra2.contracts.event_vocab import (
-    _ENVELOPE_JSON_FIELDS,
     EVENT_KINDS,
     _reject_constant,
     _reject_duplicate_keys,
     _require_enum,
 )
+
+try:
+    from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+except ImportError:  # pragma: no cover - import-time signal, same text as call-site
+    _bridge_contracts = None  # type: ignore[assignment]
+
+
+def _require_packet_bridge() -> Any:
+    """Resolve the bridge, fail closed when the extension is not built."""
+    if _bridge_contracts is None:
+        raise ImportError(
+            "hydra2 packet authority requires the hydra2_replay_rs bridge; "
+            "run `pixi run build-ext` to build the extension before use"
+        )
+    return _bridge_contracts
+
 
 __all__ = [
     "DEFAULT_PACKET_BOUNDARY_SPEC",
@@ -52,12 +66,15 @@ __all__ = [
     "build_packet_boundary_envelope",
     "build_packet_boundary_payload",
     "compute_packet_id",
+    "compute_packet_ids",
     "load_packet_boundary_spec",
     "make_actor_visible_packet",
+    "make_actor_visible_packets",
     "packet_identity_document",
     "parse_packet_boundary_spec",
     "partition_actor_packets",
     "public_state_chain_hash",
+    "public_state_chain_hash_prefixes",
     "validate_packet_partition",
 ]
 
@@ -100,7 +117,16 @@ class PacketBoundarySpec:
     terminal_boundary_kinds: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "root_actor", make_seat(self.root_actor))
+        if _bridge_contracts is None:
+            raise ImportError(
+                "hydra2 packet authority requires the hydra2_replay_rs bridge; "
+                "run `pixi run build-ext` to build the extension before use"
+            )
+        try:
+            root_actor = Seat(_bridge_contracts.make_seat(self.root_actor))
+        except (ValueError, TypeError) as exc:
+            raise ContractError(f"root_actor rejected: {exc}") from exc
+        object.__setattr__(self, "root_actor", root_actor)
         for name, value in (
             ("start_boundary_kind", self.start_boundary_kind),
             ("decision_boundary_kind", self.decision_boundary_kind),
@@ -189,9 +215,12 @@ def parse_packet_boundary_spec(raw_bytes: bytes) -> PacketBoundarySpec:
         )
     except (UnicodeDecodeError, ValueError) as exc:
         raise ContractError(f"packet_boundary artifact is not valid JSON: {exc}") from exc
-    if not isinstance(document, Mapping) or tuple(sorted(document)) != tuple(
-        sorted(_ENVELOPE_JSON_FIELDS)
-    ):
+    if not isinstance(document, dict) or set(document) != {
+        "artifact_type",
+        "schema_version",
+        "compatibility",
+        "payload",
+    }:
         raise ContractError("packet_boundary artifact must be a SPEC 2.2 envelope")
     if document["artifact_type"] != PACKET_BOUNDARY_ARTIFACT_TYPE:
         raise ContractError(f"artifact_type must be {PACKET_BOUNDARY_ARTIFACT_TYPE!r}")
@@ -199,7 +228,10 @@ def parse_packet_boundary_spec(raw_bytes: bytes) -> PacketBoundarySpec:
     if not isinstance(payload, Mapping):
         raise ContractError("packet_boundary payload must be an object")
     expected = compute_event_schema_digest({k: v for k, v in payload.items() if k != "digest"})
-    recorded = make_digest_text(str(payload.get("digest")))
+    try:
+        recorded = DigestText(_require_packet_bridge().make_digest_text(str(payload.get("digest"))))
+    except (ValueError, TypeError) as exc:
+        raise ContractError(f"packet digest rejected: {exc}") from exc
     if recorded != expected:
         from hydra2.contracts.common import DigestMismatchError
 
@@ -246,7 +278,15 @@ class ActorVisiblePacket:
     observation_hash_after: DigestText
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "actor_view", make_seat(self.actor_view))
+        try:
+            bridge = _require_packet_bridge()
+            actor_view = Seat(bridge.make_seat(self.actor_view))
+            hash_before = DigestText(bridge.make_digest_text(self.public_state_hash_before))
+            hash_after = DigestText(bridge.make_digest_text(self.public_state_hash_after))
+            obs_after = DigestText(bridge.make_digest_text(self.observation_hash_after))
+        except (ValueError, TypeError) as exc:
+            raise ContractError(f"ActorVisiblePacket rejected: {exc}") from exc
+        object.__setattr__(self, "actor_view", actor_view)
         object.__setattr__(
             self, "source_sequence_start", make_sequence_no(self.source_sequence_start)
         )
@@ -263,15 +303,9 @@ class ActorVisiblePacket:
             or int(self.source_sequence_end) != sequences[-1]
         ):
             raise ContractError("packet boundaries must match contained event sequences")
-        object.__setattr__(
-            self, "public_state_hash_before", make_digest_text(self.public_state_hash_before)
-        )
-        object.__setattr__(
-            self, "public_state_hash_after", make_digest_text(self.public_state_hash_after)
-        )
-        object.__setattr__(
-            self, "observation_hash_after", make_digest_text(self.observation_hash_after)
-        )
+        object.__setattr__(self, "public_state_hash_before", hash_before)
+        object.__setattr__(self, "public_state_hash_after", hash_after)
+        object.__setattr__(self, "observation_hash_after", obs_after)
         if self.packet_id is not None:
             object.__setattr__(self, "packet_id", make_packet_id(self.packet_id))
             expected = compute_packet_id(self)
@@ -304,8 +338,23 @@ def packet_identity_document(packet: ActorVisiblePacket) -> dict[str, object]:
 
 def compute_packet_id(packet: ActorVisiblePacket) -> PacketId:
     """sha256 over canonical bytes excluding packet_id (SPEC 7.2)."""
-    identity = canonical_json_bytes(packet_identity_document(packet))
-    return PacketId(hashlib.sha256(identity).hexdigest())
+    doc_bytes = canonical_json_bytes(packet_identity_document(packet))
+    return PacketId(hashlib.sha256(doc_bytes).hexdigest())
+
+
+def compute_packet_ids(packets: Sequence[ActorVisiblePacket]) -> list[PacketId]:
+    """sha256 over canonical bytes for each packet via ONE bridge FFI (SPEC 7.2).
+
+    Byte-identical to ``[compute_packet_id(p) for p in packets]``: the packet
+    identity docs serialize in one :func:`canonical_bytes_batch` call, then
+    hash with ``hashlib`` exactly like the single path. Empty input returns
+    ``[]`` without touching the bridge. Bridge rejects raise, never silent.
+    """
+    items = list(packets)
+    if len(items) == 0:
+        return []
+    blobs = canonical_bytes_batch([packet_identity_document(p) for p in items])
+    return [PacketId(hashlib.sha256(blob).hexdigest()) for blob in blobs]
 
 
 def make_actor_visible_packet(
@@ -340,12 +389,45 @@ def make_actor_visible_packet(
     )
 
 
-def _fold_public_hash(prefix: DigestText, event: EventEnvelope) -> DigestText:
-    identity = canonical_json_bytes({"prefix": prefix, "event": envelope_identity_document(event)})
-    return DigestText("sha256:" + hashlib.sha256(identity).hexdigest())
+def make_actor_visible_packets(
+    staged: Sequence[ActorVisiblePacket],
+) -> tuple[ActorVisiblePacket, ...]:
+    """Bind packet_ids for pre-staged (``packet_id=None``) packets via ONE batch FFI.
+
+    Byte-identical to ``tuple(make_actor_visible_packet(...) for ...)`` built
+    from the same staged packets: ids come from :func:`compute_packet_ids`,
+    and each final packet still re-verifies its id through the
+    :class:`ActorVisiblePacket` constructor (fail closed, same as the single
+    path). Non-staged input (``packet_id`` already set) is rejected.
+    """
+    items = list(staged)
+    for item in items:
+        if item.packet_id is not None:
+            raise ContractError("make_actor_visible_packets requires packet_id=None staged packets")
+    packet_ids = compute_packet_ids(items)
+    return tuple(
+        ActorVisiblePacket(
+            packet_id=packet_id,
+            actor_view=item.actor_view,
+            source_sequence_start=item.source_sequence_start,
+            source_sequence_end=item.source_sequence_end,
+            events=item.events,
+            public_state_hash_before=item.public_state_hash_before,
+            public_state_hash_after=item.public_state_hash_after,
+            observation_hash_after=item.observation_hash_after,
+        )
+        for item, packet_id in zip(items, packet_ids, strict=True)
+    )
 
 
 _EMPTY_CHAIN_DIGEST = DigestText("sha256:" + hashlib.sha256(b"").hexdigest())
+
+
+def _fold_chain_digest(prefix: DigestText, event: EventEnvelope) -> DigestText:
+    """One public fold step (shared by the single and prefix-batch chain paths)."""
+    fold_doc = {"prefix": str(prefix), "event": envelope_identity_document(event)}
+    fold_bytes = canonical_json_bytes(fold_doc)
+    return DigestText("sha256:" + hashlib.sha256(fold_bytes).hexdigest())
 
 
 def public_state_chain_hash(events: Sequence[EventEnvelope]) -> DigestText:
@@ -353,8 +435,27 @@ def public_state_chain_hash(events: Sequence[EventEnvelope]) -> DigestText:
     digest = _EMPTY_CHAIN_DIGEST
     for event in events:
         if event.visibility == "public":
-            digest = _fold_public_hash(digest, event)
+            digest = _fold_chain_digest(digest, event)
     return digest
+
+
+def public_state_chain_hash_prefixes(
+    events: Sequence[EventEnvelope],
+) -> tuple[DigestText, ...]:
+    """Chain digest after each prefix: ``out[k] == public_state_chain_hash(events[:k])``.
+
+    Incremental single pass over the stream (same fold bytes as the single
+    path, hashed with ``hashlib``): replaces the per-segment full re-walk in
+    :func:`partition_actor_packets` (O(segments*events) serializations) with
+    O(events). Non-public events carry the running digest forward unchanged.
+    """
+    out: list[DigestText] = [_EMPTY_CHAIN_DIGEST]
+    digest = _EMPTY_CHAIN_DIGEST
+    for event in events:
+        if event.visibility == "public":
+            digest = _fold_chain_digest(digest, event)
+        out.append(digest)
+    return tuple(out)
 
 
 def validate_packet_partition(packets: Sequence[ActorVisiblePacket]) -> None:
@@ -364,6 +465,11 @@ def validate_packet_partition(packets: Sequence[ActorVisiblePacket]) -> None:
     and other seats' private events), so numeric range adjacency is NOT
     required between consecutive packets. Exhaustiveness against a concrete
     stream is enforced by :func:`partition_actor_packets`.
+
+    Thin bridge translator: event-level exclusivity (sequence sets across
+    packets) stays Python as it needs envelope objects; the span half
+    (actor_view/start/end ordered, mutually exclusive) delegates via scalar
+    triples, never live objects. Bridge rejections surface as ContractError.
     """
     if len(packets) == 0:
         return
@@ -371,7 +477,6 @@ def validate_packet_partition(packets: Sequence[ActorVisiblePacket]) -> None:
     for view in views:
         view_packets = [p for p in packets if int(p.actor_view) == view]
         view_packets.sort(key=lambda p: int(cast("Any", p.source_sequence_start)))  # pyrefly: ignore[explicit-any]  # reason: deliberate Any for packet sequence field; int() coerces at runtime
-        previous_end: int | None = None
         seen_sequences: set[int] = set()
         for packet in view_packets:
             for event in packet.events:
@@ -381,9 +486,19 @@ def validate_packet_partition(packets: Sequence[ActorVisiblePacket]) -> None:
                         f"sequence {sequence} appears in two packets (mutual exclusivity violated)"
                     )
                 seen_sequences.add(sequence)
-            if previous_end is not None and int(packet.source_sequence_start) <= previous_end:
-                raise ContractError("packets overlap (mutual exclusivity violated)")
-            previous_end = int(packet.source_sequence_end)
+    if _bridge_contracts is None:
+        raise ImportError(
+            "hydra2 packet authority requires the hydra2_replay_rs bridge; "
+            "run `pixi run build-ext` to build the extension before use"
+        )
+    spans = [
+        (int(p.actor_view), int(p.source_sequence_start), int(p.source_sequence_end))
+        for p in packets
+    ]
+    try:
+        _bridge_contracts.validate_packet_spans(spans)  # type: ignore[attr-defined]
+    except (ValueError, TypeError) as exc:
+        raise ContractError(f"packet partition rejected: {exc}") from exc
 
 
 def partition_actor_packets(
@@ -399,7 +514,7 @@ def partition_actor_packets(
     packet observation hash; packets remain mutually exclusive, exhaustive,
     and nonempty over the visible stream.
     """
-    view = make_seat(int(actor_view))
+    view = Seat(_require_packet_bridge().make_seat(int(actor_view)))
     visible = filter_events_for_actor(events, view)
     if len(visible) == 0:
         return ()
@@ -447,23 +562,41 @@ def partition_actor_packets(
             _close()
     _close()
 
-    packets: list[ActorVisiblePacket] = []
+    # Batch form: segments partition `visible` contiguously in order (single
+    # split pass above appends each visible event exactly once), so segment
+    # boundaries are visible indices — verified by identity below, fail closed.
+    # One incremental chain pass replaces the per-segment full re-walk
+    # (O(segments*events) serializations -> O(events)); one batch FFI binds
+    # every packet id. Bytes/hashes identical to the retired per-segment loop.
+    ranges: list[tuple[int, int]] = []
+    pos = 0
     for segment in segments:
-        prefix_sequences = [e for e in visible if int(e.sequence) < int(segment[0].sequence)]
-        before = public_state_chain_hash(prefix_sequences)
-        after = public_state_chain_hash(prefix_sequences + list(segment))
-        packets.append(
-            make_actor_visible_packet(
+        for event in segment:
+            if event is not visible[pos]:
+                raise ContractError("packet segmentation is not contiguous over the visible stream")
+            pos += 1
+        ranges.append((pos - len(segment), pos))
+    if pos != len(visible):
+        raise ContractError("packet segmentation is not exhaustive over the visible stream")
+    prefixes = public_state_chain_hash_prefixes(visible)
+    staged: list[ActorVisiblePacket] = []
+    for (start, end), segment in zip(ranges, segments, strict=True):
+        staged.append(
+            ActorVisiblePacket(
+                packet_id=None,
                 actor_view=view,
+                source_sequence_start=make_sequence_no(int(segment[0].sequence)),
+                source_sequence_end=make_sequence_no(int(segment[-1].sequence)),
                 events=tuple(segment),
-                public_state_hash_before=before,
-                public_state_hash_after=after,
+                public_state_hash_before=prefixes[start],
+                public_state_hash_after=prefixes[end],
                 observation_hash_after=cast(  # pyrefly: ignore[explicit-any]  # reason: deliberate Any passthrough; digest produced by observation_hash_of
                     "Any",
                     observation_hash_of(view, int(segment[-1].sequence)),  # pyrefly: ignore[unknown-argument-type]  # reason: segments hold validated envelopes; int() coerces the sequence
                 ),
             )
         )
+    packets = list(make_actor_visible_packets(staged))
     covered = {int(e.sequence) for p in packets for e in p.events}
     expected = {int(e.sequence) for e in visible}
     if covered != expected:

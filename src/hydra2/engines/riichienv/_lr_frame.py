@@ -5,23 +5,32 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass as dataclass
 from pathlib import Path as Path
-from typing import TYPE_CHECKING as TYPE_CHECKING
-from typing import cast as cast
+from typing import (
+    TYPE_CHECKING as TYPE_CHECKING,
+)
+from typing import (
+    cast as cast,
+)
 
 import riichienv
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+from hydra2_replay_rs import tiles  # pyrefly: ignore[missing-import]
 
 from hydra2.artifacts.digest import of_canonical as of_canonical
-from hydra2.contracts.action import load_action_table as load_action_table
+from hydra2.contracts.action_artifact import load_action_table as load_action_table
 from hydra2.contracts.common import ContractError as ContractError
-from hydra2.data.decode import GameRecord as GameRecord
-from hydra2.data.decode import decode_game_object as decode_game_object
+from hydra2.data.decode import (
+    GameRecord as GameRecord,
+)
+from hydra2.data.decode import (
+    decode_game_object as decode_game_object,
+)
 from hydra2.engines.riichienv.identity import ENGINE_IDENTITY as ENGINE_IDENTITY
-from hydra2.engines.riichienv.tiles import mjai_string_of as mjai_string_of
 
 if TYPE_CHECKING:
     from typing import Any as Any
 
-    from hydra2.contracts.rules import RulesManifest as RulesManifest
+    from hydra2.contracts.rules_manifest import RulesManifest as RulesManifest
 
 
 #: MJAI framing vocabulary: the single shared source is replay_expand's
@@ -52,7 +61,7 @@ _RULES_HASH_CACHE: dict[str, str] = {}
 
 def _table() -> Any:
     from hydra2.config import repo_root
-    from hydra2.contracts.action import ACTION_TABLE_RELPATH
+    from hydra2.contracts.action_artifact import ACTION_TABLE_RELPATH
 
     root = str(repo_root())
     if root not in _TABLE_CACHE:
@@ -127,10 +136,9 @@ def _sim_game_id(game: GameRecord, *, rules_hash: str) -> str:
         return game.game_id
     if len(game.wall_tiles) != 136:
         raise ContractError(f"wall_tiles must carry 136 tiles, got {len(game.wall_tiles)}")
-    from hydra2.contracts.common import make_tile_id as _tid
     from hydra2.engines.protocol import wall_schedule_digest
 
-    physical = tuple(_tid(t) for t in game.wall_tiles)
+    physical = tuple(_bridge_contracts.make_tile_id(t) for t in game.wall_tiles)
     schedule_id = f"replay-{game.game_id}"
     wall_digest = str(wall_schedule_digest(schedule_id, physical))
     seed_material = of_canonical(
@@ -283,11 +291,7 @@ def _extract_step(seat: int, obs: Any, act: Any, *, game_id: str) -> _SimStep:
     tile_raw: Any = act.tile
     tile = None if tile_raw is None else int(tile_raw)
     consume = tuple(sorted(int(t) for t in act.consume_tiles))
-    from hydra2.engines.riichienv._lr_rows import (
-        _distinct_copies as _distinct_copies,
-    )  # deferred: rows imports frame hashes
-
-    hand = _distinct_copies(tuple(int(t) for t in obs.hand))
+    hand = tuple(tiles.distinct_copies([int(t) for t in obs.hand]))
     drawn_raw: Any = obs.drawn_tile
     drawn = None if drawn_raw is None else int(drawn_raw)
     dora = tuple(int(t) for t in obs.dora_indicators)

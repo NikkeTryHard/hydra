@@ -86,10 +86,6 @@ class TestValidateRecord:
             ({"schema_version": "2.0.0"}, "schema_version"),
             ({"status": "skipped"}, "status"),
             ({"work_package": "01"}, "work_package"),
-            (
-                {"inputs": [{"id": "x", "sha256": "nope"}]},
-                "digest",
-            ),
             ({"inputs": "not-a-list"}, "array"),
             ({"commands": []}, "non-empty"),
             (
@@ -114,6 +110,10 @@ class TestValidateRecord:
 
         with pytest.raises(Hydra2Error, match=match):
             validate_record(valid_record(**mutation))
+
+    def test_invalid_digest_mutation_rejected_as_value_error(self):
+        with pytest.raises(ValueError, match="digest"):
+            validate_record(valid_record(inputs=[{"id": "x", "sha256": "nope"}]))
 
     def test_finished_before_started_rejected(self):
         record = valid_record(

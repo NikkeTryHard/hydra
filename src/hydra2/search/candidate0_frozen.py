@@ -17,14 +17,13 @@ from pathlib import Path
 from typing import Any, cast
 
 import torch
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
 from hydra2.artifacts.canonical import canonical_bytes
-from hydra2.contracts.common import ContractError, DigestText, make_digest_text
+from hydra2.contracts.common import ContractError, DigestText
 from hydra2.search.common import (
     DEPLOYABLE_DEADLINE_MS,
     HASH63_MOD,
-    MISSING_HASH,
-    PLACEHOLDER_1,
     REPO_ROOT,
 )
 
@@ -133,11 +132,49 @@ def frozen_choice(
 # ---------------------------------------------------------------------------
 
 
+def _bridge_sha256_file(path: Path) -> str:
+    """Chunked file digest via the bridge (bit-identical to the retired hashlib loop)."""
+    try:
+        from hydra2_replay_rs import canon_rng as bridge  # pyrefly: ignore[missing-import]
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2 digest authority requires the hydra2_replay_rs bridge; "
+            "run `pixi run build-ext` to build the extension before use"
+        ) from exc
+    try:
+        text = bridge.sha256_file(str(path))  # type: ignore[attr-defined]
+    except AttributeError as exc:
+        raise ImportError(
+            "hydra2_replay_rs.canon_rng.sha256_file missing (stale .so); "
+            "rebuild the bridge (`pixi run build-ext`)"
+        ) from exc
+    return str(text)
+
+
+def _bridge_sha256_hex(data: bytes) -> str:
+    """In-memory digest via the bridge (bit-identical to hashlib.sha256 hexdigest)."""
+    try:
+        from hydra2_replay_rs import canon_rng as bridge  # pyrefly: ignore[missing-import]
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2 digest authority requires the hydra2_replay_rs bridge; "
+            "run `pixi run build-ext` to build the extension before use"
+        ) from exc
+    try:
+        text = bridge.sha256_hex(bytes(data))  # type: ignore[attr-defined]
+    except AttributeError as exc:
+        raise ImportError(
+            "hydra2_replay_rs.canon_rng.sha256_hex missing (stale .so); "
+            "rebuild the bridge (`pixi run build-ext`)"
+        ) from exc
+    return str(text)
+
+
 def _file_sha256(path: Path) -> DigestText:
     from hydra2.search.common import _require_real_file
 
     real = _require_real_file(Path(path), REPO_ROOT)
-    return DigestText("sha256:" + hashlib.sha256(real.read_bytes()).hexdigest())
+    return DigestText(_bridge_sha256_file(real))
 
 
 def _load_default_hashes() -> dict[str, str]:
@@ -153,18 +190,19 @@ def _load_default_hashes() -> dict[str, str]:
         ("model_input_hash", "configs/models/model_input_v1.json"),
     ):
         p = repo / rel
-        # dummy-until-real: file hash wins when the config is present.
-        out[key] = _file_sha256(p) if p.exists() else "sha256:" + MISSING_HASH
+        if not p.exists():
+            raise ContractError(f"candidate0: required config missing: {p}")
+        out[key] = _file_sha256(p)
     # Try to upgrade to canonical contract digests where modules available
     try:
-        from hydra2.contracts.observation import observation_schema_digest
+        from hydra2.contracts.observation_schema import observation_schema_digest
 
         out["observation_schema_hash"] = str(observation_schema_digest())
     except (ImportError, AttributeError, OSError, ValueError, TypeError) as exc:
         logger.debug("candidate0: observation_schema_digest fallback", exc_info=exc)
         pass
     try:
-        from hydra2.contracts.action import load_action_table
+        from hydra2.contracts.action_artifact import load_action_table
 
         tbl = load_action_table(repo / "configs/contracts/action_table_v1.json")
         out["action_table_hash"] = str(tbl.digest)
@@ -211,21 +249,21 @@ def _model_hash_from_identity(model: Any | None) -> DigestText:
     if model is not None:
         ident: Any = getattr(model, "model_identity", None)
         if ident is not None:
-            return make_digest_text(str(ident))
-        # Fallback: hash of model state dict keys
+            return _bridge_contracts.make_digest_text(str(ident))
+        # Fallback: hash of model state dict keys (bridge digest, bit-identical)
         try:
             state: Any = model.state_dict()  # type: ignore[union-attr]
             keys_raw: Any = state.keys()
             keys_sorted: list[str] = sorted(keys_raw)
             payload: dict[str, list[str]] = {"keys": keys_sorted}
-            return DigestText("sha256:" + hashlib.sha256(canonical_bytes(payload)).hexdigest())
+            return DigestText(_bridge_sha256_hex(canonical_bytes(payload)))
         except (AttributeError, TypeError, ValueError, OSError) as exc:
             logger.debug("candidate0: model state_dict fallback", exc_info=exc)
             pass
     from hydra2.models.model import Hydra2BaselineModel
 
     m = Hydra2BaselineModel()
-    return make_digest_text(str(m.model_identity))
+    return _bridge_contracts.make_digest_text(str(m.model_identity))
 
 
 # ---------------------------------------------------------------------------
@@ -260,19 +298,20 @@ def make_candidate0_spec(
     from hydra2.search.common import CandidateSpec, ResourceBudget
 
     defaults = _load_default_hashes()
-    # Utility manifest: derive from Synthetic golden manifest identical to model init
+    # Utility manifest: live model digest required; no placeholder fallback.
     if utility_manifest_hash is None:
         try:
             from hydra2.models.model import Hydra2BaselineModel
 
             probe: Any = Hydra2BaselineModel() if model is None else model
-            # dummy-until-real: live model digest wins when available.
-            probe_hash_raw: Any = getattr(probe, "utility_manifest_hash", "sha256:" + MISSING_HASH)
+            probe_hash_raw: Any = getattr(probe, "utility_manifest_hash", None)
+            if probe_hash_raw is None or str(probe_hash_raw) == "":
+                raise ContractError("candidate0: utility_manifest_hash missing from model")
             utility_manifest_hash = str(probe_hash_raw)
+        except ContractError:
+            raise
         except (ImportError, AttributeError, ValueError, TypeError, OSError) as exc:
-            logger.debug("candidate0: utility_manifest_hash fallback", exc_info=exc)
-            # dummy-until-real: live model digest wins when available.
-            utility_manifest_hash = "sha256:" + PLACEHOLDER_1
+            raise ContractError(f"candidate0: utility_manifest_hash required: {exc}") from exc
         rules_hash = defaults["rules_hash"]
         # Prefer verified manifest digest when file contains envelope
         try:
@@ -285,7 +324,7 @@ def make_candidate0_spec(
             # The file's payload digest is the rules manifest digest in hydra2 sense
             # but the repo stores it as artifact envelope; derive via file sha fallback is acceptable
             # Try to compute via rules module if available
-            from hydra2.contracts.rules import rules_manifest_from_payload
+            from hydra2.contracts.rules_manifest import rules_manifest_from_payload
 
             manifest: Any = rules_manifest_from_payload(payload)  # type: ignore[no-untyped-call]
             manifest_digest: Any = getattr(manifest, "digest", None)
@@ -328,23 +367,18 @@ def make_candidate0_spec(
             packet_boundary_hash = defaults["packet_boundary_hash"]
         model_hash = str(_model_hash_from_identity(model))
     # RNG / stream schema placeholders — canonical JSON hashes of fixed descriptors
+    # (bridge digests, bit-identical to the retired hashlib lines).
     if rng_protocol_hash is None:
-        rng_protocol_hash = (
-            "sha256:"
-            + hashlib.sha256(
-                canonical_bytes({"protocol": "counter_based_v1", "version": "1.0.0"})
-            ).hexdigest()
+        rng_protocol_hash = _bridge_sha256_hex(
+            canonical_bytes({"protocol": "counter_based_v1", "version": "1.0.0"})
         )
     if random_stream_schema_hash is None:
-        random_stream_schema_hash = (
-            "sha256:"
-            + hashlib.sha256(
-                canonical_bytes({"schema": "random_stream_v1", "purposes": ["candidate0_tie"]})
-            ).hexdigest()
+        random_stream_schema_hash = _bridge_sha256_hex(
+            canonical_bytes({"schema": "random_stream_v1", "purposes": ["candidate0_tie"]})
         )
     if case_manifest_hash is None:
         # Empty manifest hash (frozen before cases would be set externally)
-        case_manifest_hash = "sha256:" + hashlib.sha256(canonical_bytes([])).hexdigest()
+        case_manifest_hash = _bridge_sha256_hex(canonical_bytes([]))
     # Unconditional narrowing: rules/action/model hashes are only defaulted inside
     # the utility/packet branches above, so callers passing those manifests but
     # omitting these hashes would otherwise flow str|None into CandidateSpec.

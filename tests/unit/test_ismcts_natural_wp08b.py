@@ -11,7 +11,7 @@ import pytest
 from hydra2.belief.natural import NaturalBelief
 from hydra2.belief.world import make_full_world, world_actor_observation
 from hydra2.contracts.common import ContractError, VisibilityViolationError
-from hydra2.contracts.observation import make_actor_observation
+from hydra2.contracts.observation_actor import make_actor_observation
 from hydra2.contracts.randomness import RandomStream
 from hydra2.search.ismcts_natural import (
     FORBIDDEN_IN_TREE_KEY,

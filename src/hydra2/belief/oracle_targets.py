@@ -7,11 +7,11 @@ through the canonical utility manifest, and teacher-logit inversion.
 
 from __future__ import annotations
 
-import hashlib
 import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from hydra2.artifacts.digest import sha256_digest
 from hydra2.contracts.common import ContractError
 
 if TYPE_CHECKING:
@@ -80,7 +80,10 @@ def _belief_target_from_privileged(
             f"belief target: missing privileged hidden tiles for {decision_id!r} "
             "(fail closed; synthetic opt-in via allow_synthetic=True)"
         )
-    h = hashlib.sha256(decision_id.encode()).digest()
+    # Digest line via the canon bridge (byte-identical to the retired hashlib
+    # digest; ImportError with build-ext hint). Pure math below untouched;
+    # allow_synthetic gate preserved (tests-only, fail-closed default).
+    h = bytes.fromhex(str(sha256_digest(decision_id.encode())).removeprefix("sha256:"))
     raw = (
         [float(b) + 1.0 for b in h[:34]]
         if len(h) >= 34
@@ -92,7 +95,7 @@ def _belief_target_from_privileged(
 
 def _oracle_utility_manifest() -> UtilityManifest:
     """Canonical day-one utility manifest (same golden as models/model.py)."""
-    from hydra2.contracts.rules import RULES_ID
+    from hydra2.contracts.rules_canonical import RULES_ID
     from hydra2.contracts.utility import (
         UTILITY_OBJECTIVE,
         UTILITY_TIE_POLICY,
@@ -121,6 +124,12 @@ def _value_from_ranks_via_utility(ranks_in: Any) -> tuple[float, ...] | None:
     are consistent with the ranks (rank 1 -> 40000, 2 -> 30000, 3 -> 20000,
     4 -> 10000) so utility()'s ranks -> rank_values -> values mapping is
     exact; utility() itself remains the fixed point (never duplicated).
+
+    Single owner: the bridge is owned by contracts.utility (Rust-judged
+    ``validate_ranks`` gate + ``utility_for_ranks_fixed`` indexing;
+    ranks/indexing agree both sides, m8 exact-total True both sides, pyfn
+    probes live) — this call site calls flipped ``utility()`` and never
+    imports the bridge directly.
     """
     if not isinstance(ranks_in, (list, tuple)) or len(ranks_in) != 4:
         return None
@@ -248,8 +257,11 @@ def _value_target_from_privileged(
     # Hash-fallback synthetic target — synthetic-only opt-in (allow_synthetic=True),
     # byte-identical to the pre-flag behavior; never mixed with real utility()
     # targets except under explicit opt-in.
-    # Deterministic pseudo value from hash
-    h = int(hashlib.sha256((decision_id + "_value").encode()).hexdigest()[:8], 16)
+    # Deterministic pseudo value from hash (digest via canon bridge, math untouched).
+    h = int(
+        str(sha256_digest((decision_id + "_value").encode())).removeprefix("sha256:")[:8],
+        16,
+    )
     # 4-seat softmax-like values
     scores = [((h >> (i * 4)) & 0xF) / 15.0 for i in range(4)]
     _score_sum: float = float(sum(scores))

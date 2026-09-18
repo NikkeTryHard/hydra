@@ -12,7 +12,9 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Sequence
 from dataclasses import dataclass, fields
-from typing import Literal
+from typing import Any, Literal
+
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
 from hydra2.contracts.canonical import canonical_json_bytes
 from hydra2.contracts.common import (
@@ -24,13 +26,13 @@ from hydra2.contracts.common import (
     TileId,
     TileType,
     VisibilityViolationError,
-    make_digest_text,
-    make_seat,
     make_sequence_no,
-    make_tile_id,
     make_tile_type,
 )
-from hydra2.contracts.event import EventEnvelope, visible_to_actor
+from hydra2.contracts.event_envelope import (
+    EventEnvelope,
+    visible_to_actor,
+)
 from hydra2.contracts.observation_types import (
     _FURIETEN_STATES,
     _RIICHI_STATES,
@@ -49,6 +51,17 @@ from hydra2.contracts.observation_types import (
     _validate_score,
     _validate_wind_type,
 )
+
+
+def _require_actor_bridge() -> Any:
+    """Resolve the bridge, fail closed when the extension is not built."""
+    if _bridge_contracts is None:
+        raise ImportError(
+            "hydra2 observation authority requires the hydra2_replay_rs bridge; "
+            "run `pixi run build-ext` to build the extension before use"
+        )
+    return _bridge_contracts
+
 
 __all__ = [
     "_OBSERVATION_FIELDS",
@@ -119,7 +132,7 @@ class ActorObservation:
         if self.decision_id == "":
             raise ContractError("decision_id must be non-empty")
         object.__setattr__(self, "sequence", make_sequence_no(self.sequence))
-        object.__setattr__(self, "actor", make_seat(self.actor))
+        object.__setattr__(self, "actor", _require_actor_bridge().make_seat(self.actor))
         object.__setattr__(self, "rules_id", _require_str(self.rules_id, name="rules_id"))
         if self.rules_id == "":
             raise ContractError("rules_id must be non-empty")
@@ -130,7 +143,9 @@ class ActorObservation:
             "observation_schema_hash",
             "packet_boundary_hash",
         ):
-            object.__setattr__(self, name, make_digest_text(getattr(self, name)))
+            object.__setattr__(
+                self, name, _require_actor_bridge().make_digest_text(getattr(self, name))
+            )
         object.__setattr__(
             self,
             "round_index",
@@ -158,7 +173,7 @@ class ActorObservation:
             "riichi_sticks",
             _require_plain_int(self.riichi_sticks, name="riichi_sticks", minimum=0, maximum=None),
         )
-        object.__setattr__(self, "dealer", make_seat(self.dealer))
+        object.__setattr__(self, "dealer", _require_actor_bridge().make_seat(self.dealer))
         object.__setattr__(
             self,
             "scores",
@@ -168,7 +183,7 @@ class ActorObservation:
                 validator=_validate_score,
             ),
         )
-        object.__setattr__(self, "turn_actor", make_seat(self.turn_actor))
+        object.__setattr__(self, "turn_actor", _require_actor_bridge().make_seat(self.turn_actor))
         object.__setattr__(self, "phase", _require_enum(self.phase, name="phase", allowed=PHASES))
         object.__setattr__(
             self,
@@ -205,7 +220,7 @@ class ActorObservation:
             object.__setattr__(
                 self,
                 "pending_declaration_discard",
-                make_tile_id(self.pending_declaration_discard),
+                _require_actor_bridge().make_tile_id(self.pending_declaration_discard),
             )
         hand = _tile_tuple(self.concealed_hand, name="concealed_hand")
         if list(hand) != sorted(hand):
@@ -215,7 +230,9 @@ class ActorObservation:
             )
         object.__setattr__(self, "concealed_hand", hand)
         if self.own_drawn_tile is not None:
-            object.__setattr__(self, "own_drawn_tile", make_tile_id(self.own_drawn_tile))
+            object.__setattr__(
+                self, "own_drawn_tile", _require_actor_bridge().make_tile_id(self.own_drawn_tile)
+            )
         if (
             isinstance(self.visible_discards, (str, bytes))
             or not isinstance(self.visible_discards, Sequence)
@@ -269,7 +286,12 @@ class ActorObservation:
             if isinstance(value, bool) or not isinstance(value, int):
                 raise ContractError(f"dora_indicators[{index}] must be an int")
             if value != DORA_SENTINEL:
-                _ = make_tile_id(value)
+                try:
+                    _ = _require_actor_bridge().make_tile_id(value)
+                except (ValueError, TypeError) as exc:
+                    raise ContractError(
+                        f"dora_indicators[{index}] invalid tile {value!r}: {exc}"
+                    ) from exc
             checked.append(value)
         revealed = [v for v in checked if v != DORA_SENTINEL]
         if checked[: len(revealed)] != revealed or DORA_SENTINEL in revealed:
@@ -302,7 +324,11 @@ class ActorObservation:
             raise ContractError("legal_mask must contain at least one True at a decision")
         object.__setattr__(self, "legal_mask", tuple(mask))
         if self.observation_hash is not None:
-            object.__setattr__(self, "observation_hash", make_digest_text(self.observation_hash))
+            object.__setattr__(
+                self,
+                "observation_hash",
+                _require_actor_bridge().make_digest_text(self.observation_hash),
+            )
             recomputed = compute_observation_hash(self)
             if self.observation_hash != recomputed:
                 raise DigestMismatchError(

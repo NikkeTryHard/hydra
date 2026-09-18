@@ -3,30 +3,44 @@
 Owns atomic publication of ``ckpt-<update>.pt`` plus its ResumeExactPlan
 sidecar (payload hash, RNG anchors, shuffle and buffer snapshots),
 checkpoint pruning, resume-safe metrics append, and the observer-only
-held-out eval (failures log, never abort training).
+held-out eval (failures log, never abort training). The shuffle epoch-seed
+entry is bridge-direct via the ``resume`` judge (``_epoch_seed``; missing
+bridge raises ContractError with a build-ext hint, never an oracle);
+torch owns the RNG capture and the payload tensors (no Rust GPU math,
+Burn/Candle out).
 """
 
 from __future__ import annotations
 
 import contextlib
-import hashlib
+import importlib
 import io
 import json
+import sys
 import time
 from typing import TYPE_CHECKING, Any
 
 import torch
 
 from hydra2.artifacts.atomic import atomic_replace_bytes as atomic_replace_bytes
+from hydra2.artifacts.digest import sha256_digest as sha256_digest
 from hydra2.contracts.common import ContractError as ContractError
-from hydra2.data.stream import GameStream as GameStream
+from hydra2.data.stream_iter import GameStream as GameStream
 from hydra2.runtime.checkpoint import capture_rng_state as capture_rng_state
-from hydra2.training.dataset import encode_observation_rows as encode_observation_rows
-from hydra2.training.stream_build import _prefix_hashes_name as _prefix_hashes_name
-from hydra2.training.stream_build import _rng_anchors as _rng_anchors
+from hydra2.training.dataset_encode import encode_observation_rows as encode_observation_rows
+from hydra2.training.stream_build import (
+    _prefix_hashes_name as _prefix_hashes_name,
+)
+from hydra2.training.stream_build import (
+    _rng_anchors as _rng_anchors,
+)
 from hydra2.training.stream_build import _sidecar_cursor as _sidecar_cursor
-from hydra2.training.stream_expand import _FEATURE_FOLD_DIM as _FEATURE_FOLD_DIM
-from hydra2.training.stream_expand import _SINGLETON_RANK as _SINGLETON_RANK
+from hydra2.training.stream_expand import (
+    _FEATURE_FOLD_DIM as _FEATURE_FOLD_DIM,
+)
+from hydra2.training.stream_expand import (
+    _SINGLETON_RANK as _SINGLETON_RANK,
+)
 from hydra2.training.stream_expand import _expand_game_planes as _expand_game_planes
 from hydra2.training.stream_expand import _expand_game_rows as _expand_game_rows
 from hydra2.training.stream_expand import _row_to_dict as _row_to_dict
@@ -34,18 +48,106 @@ from hydra2.training.stream_expand import _row_to_dict as _row_to_dict
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from hydra2.data.stream import StreamManifest as StreamManifest
-    from hydra2.training.loop import SupervisedLoop as SupervisedLoop
-    from hydra2.training.run_config import RunConfig as RunConfig
+    from hydra2.data.stream_manifest import StreamManifest as StreamManifest
+    from hydra2.training._rc_sections import RunConfig as RunConfig
+    from hydra2.training.loop_train import SupervisedLoop as SupervisedLoop
     from hydra2.training.stream_dataset_buffer import _StreamDataset as _StreamDataset
 
 __all__ = [
     "_append_new_history",
     "_ckpt_names",
+    "_epoch_seed",
     "_prune_checkpoints",
     "_run_holdout_eval",
     "_write_streaming_checkpoint",
 ]
+
+# ---------------------------------------------------------------------------
+# Bridge-resume glue (resume/RNG-restore entries only; torch owns GPU/RNG).
+# ---------------------------------------------------------------------------
+# The bridge (`hydra2_replay_rs.resume`, Rust) owns the shuffle epoch-seed
+# judge used on the checkpoint write path: `epoch_seed` (wrapping
+# `data_seed + epoch`, mirroring the sidecar `epoch_seed`). Torch CPU/CUDA
+# RNG capture/restore stays Python (`capture_rng_state` /
+# `_restore_rng_state` — no Rust GPU math, Burn/Candle out); the RNG-anchor
+# compare (`_verify_rng_anchors`) stays Python per `resume.rs`. The helper
+# below is bridge-direct (no oracle body: bridge==oracle proven by the
+# throwaway parity script — wrapping `+` identical for all reachable seeds;
+# missing bridge or any bridge error raises ContractError with a build-ext
+# hint — mismatch=raise, never a silent pass).
+_RESUME_MOD: Any = None
+_RESUME_PROBED: bool = False
+
+#: Injectable native backend (tests monkeypatch this; production leaves None
+#: so `_resume_native()` imports the compiled extension).
+_RESUME_NATIVE_OVERRIDE: Any = None
+
+
+def _resume_native() -> Any | None:
+    """Import the built `resume` submodule once; None → fail-closed for counting.
+
+    ``None`` means the extension (or its ``resume`` surface) is not
+    importable; `_epoch_seed` raises ContractError with a build-ext hint on
+    ``None`` (no oracle). Any other import-time failure raises ContractError
+    (mismatch=raise, never a silent pass).
+    """
+    global _RESUME_MOD, _RESUME_PROBED
+    if _RESUME_NATIVE_OVERRIDE is not None:
+        return _RESUME_NATIVE_OVERRIDE
+    if _RESUME_MOD is not None:
+        return _RESUME_MOD
+    late = sys.modules.get("hydra2_replay_rs")
+    if late is not None:
+        mod = getattr(late, "resume", None)
+        if mod is not None:
+            _RESUME_MOD = mod
+            return _RESUME_MOD
+    if not _RESUME_PROBED:
+        _RESUME_PROBED = True
+        try:
+            _RESUME_MOD = importlib.import_module("hydra2_replay_rs").resume
+        except (ImportError, AttributeError):
+            _RESUME_MOD = None
+        except ContractError:
+            raise
+        except Exception as exc:
+            raise ContractError(f"resume bridge unusable: {type(exc).__name__}: {exc}") from exc
+    return _RESUME_MOD
+
+
+def _epoch_seed(*, data_seed: int, epoch: int) -> int:
+    """Shuffle epoch seed: bridge-direct `resume.epoch_seed`.
+
+    `epoch_seed = data_seed + epoch` (wrapping add u64 bridge-side; the
+    stream builder owns the draw, the sidecar only pins it). Inputs are
+    validated (bool/non-int/negative → ContractError, mirroring the sidecar
+    `epoch_seed >= 0` gate — the gate stays Python because the u64 FFI
+    accepts bool-as-int). Missing bridge or any bridge error raises
+    ContractError with a build-ext hint (mismatch=raise, never an oracle).
+    """
+    if isinstance(data_seed, bool) or not isinstance(data_seed, int) or data_seed < 0:
+        raise ContractError(f"epoch_seed data_seed must be a non-negative int, got {data_seed!r}")
+    if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0:
+        raise ContractError(f"epoch_seed epoch must be a non-negative int, got {epoch!r}")
+    resume = _resume_native()
+    if resume is None:
+        raise ContractError(
+            "resume bridge unavailable; run `pixi run build-ext` to build "
+            "hydra2_replay_rs before deriving an epoch seed"
+        )
+    try:
+        return int(resume.epoch_seed(int(data_seed), int(epoch)))
+    except ContractError:
+        raise
+    except (ImportError, AttributeError) as exc:
+        raise ContractError(
+            "resume epoch_seed bridge surface missing; rebuild the bridge "
+            f"(`pixi run build-ext`): {type(exc).__name__}: {exc}"
+        ) from exc
+    except ValueError as exc:
+        raise ContractError(str(exc)) from exc
+    except Exception as exc:
+        raise ContractError(f"resume epoch_seed failed: {type(exc).__name__}: {exc}") from exc
 
 
 def _write_streaming_checkpoint(
@@ -59,7 +161,13 @@ def _write_streaming_checkpoint(
     dataset: _StreamDataset,
     batch_size: int,
 ) -> Path:
-    """Atomically publish ``ckpt-<update>.pt`` + ResumeExactPlan sidecar."""
+    """Atomically publish ``ckpt-<update>.pt`` + ResumeExactPlan sidecar.
+
+    Resume/RNG-restore entries are bridge-direct: ``epoch_seed`` crosses the
+    bridge ``resume`` judge (wrapping ``data_seed + epoch``; missing bridge
+    raises — mismatch=raise, never an oracle), while ``rng_state`` capture
+    and the ``_rng_anchors()`` bundle stay torch/Python (no Rust GPU math).
+    """
     checkpoint_dir = run_dir / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     scheduler_state: Any = {}
@@ -86,7 +194,7 @@ def _write_streaming_checkpoint(
     prefix_record = {
         "file": prefix_name,
         "count": len(prefix_hashes),
-        "sha256": "sha256:" + hashlib.sha256(prefix_blob).hexdigest(),
+        "sha256": str(sha256_digest(prefix_blob)),
     }
     payload: dict[str, Any] = {
         "model_state": loop.model.state_dict(),
@@ -104,7 +212,7 @@ def _write_streaming_checkpoint(
             "buffer_keys": shuffle_keys,
             "buffer_entries": shuffle_entries,
             "buffer_rng_state": shuffle_rng,
-            "epoch_seed": config.seeds.data_seed + dataset.epoch,
+            "epoch_seed": _epoch_seed(data_seed=config.seeds.data_seed, epoch=dataset.epoch),
             "buffer_size": config.data.shuffle_buffer_size,
             "prefix_hashes": prefix_record,
         },
@@ -112,7 +220,7 @@ def _write_streaming_checkpoint(
     buffer = io.BytesIO()
     torch.save(payload, buffer)
     blob = buffer.getvalue()
-    payload_digest = "sha256:" + hashlib.sha256(blob).hexdigest()
+    payload_digest = str(sha256_digest(blob))
     ckpt_path = checkpoint_dir / f"ckpt-{update:06d}.pt"
     atomic_replace_bytes(ckpt_path, blob)
 
@@ -128,7 +236,7 @@ def _write_streaming_checkpoint(
         "rng_state": _rng_anchors(),
         "shuffle": {
             "buffer_keys": shuffle_keys,
-            "epoch_seed": config.seeds.data_seed + dataset.epoch,
+            "epoch_seed": _epoch_seed(data_seed=config.seeds.data_seed, epoch=dataset.epoch),
             "buffer_size": config.data.shuffle_buffer_size,
             "buffer_rng_state": shuffle_rng,
             "buffer_entries": shuffle_entries,

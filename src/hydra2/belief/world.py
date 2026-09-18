@@ -11,17 +11,16 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.artifacts.canonical import canonical_bytes
 from hydra2.contracts.common import (
     ContractError,
     DigestMismatchError,
     DigestText,
     TileId,
-    make_digest_text,
-    make_seat,
-    make_tile_id,
 )
-from hydra2.contracts.observation import make_actor_observation
+from hydra2.contracts.observation_actor import make_actor_observation
 
 __all__ = [
     "FullWorld",
@@ -47,7 +46,7 @@ class FullWorld:
     def __post_init__(self) -> None:
         # world_id validated if present
         if self.world_id is not None:
-            object.__setattr__(self, "world_id", make_digest_text(self.world_id))
+            object.__setattr__(self, "world_id", _bridge_contracts.make_digest_text(self.world_id))
             expected = compute_world_id(self)
             if self.world_id != expected:
                 raise DigestMismatchError(
@@ -61,20 +60,26 @@ class FullWorld:
         for seat, hand in enumerate(self.concealed_hands):
             if not isinstance(hand, tuple):
                 raise ContractError(f"concealed_hands[{seat}] must be tuple")
-            t = tuple(make_tile_id(v) for v in hand)
+            t = tuple(_bridge_contracts.make_tile_id(v) for v in hand)
             if list(t) != sorted(t):
                 raise ContractError(f"concealed_hands[{seat}] must be sorted ascending")
             hands.append(t)
         object.__setattr__(self, "concealed_hands", tuple(hands))
         # live/dead wall
-        object.__setattr__(self, "live_wall", tuple(make_tile_id(v) for v in self.live_wall))
-        object.__setattr__(self, "dead_wall", tuple(make_tile_id(v) for v in self.dead_wall))
+        object.__setattr__(
+            self, "live_wall", tuple(_bridge_contracts.make_tile_id(v) for v in self.live_wall)
+        )
+        object.__setattr__(
+            self, "dead_wall", tuple(_bridge_contracts.make_tile_id(v) for v in self.dead_wall)
+        )
         # latent_state must be mapping with json-serializable values (checked lightly)
         if not isinstance(self.latent_state, Mapping):
             raise ContractError("latent_state must be mapping")
         # hashes
-        object.__setattr__(self, "rules_hash", make_digest_text(self.rules_hash))
-        object.__setattr__(self, "observation_hash", make_digest_text(self.observation_hash))
+        object.__setattr__(self, "rules_hash", _bridge_contracts.make_digest_text(self.rules_hash))
+        object.__setattr__(
+            self, "observation_hash", _bridge_contracts.make_digest_text(self.observation_hash)
+        )
         # simulator_snapshot is opaque string
         if not isinstance(self.simulator_snapshot, str):
             raise ContractError("simulator_snapshot must be str")
@@ -160,9 +165,9 @@ def world_actor_observation(
     Only actor's concealed hand and public histories are exposed; hidden tiles
     of other seats remain unobservable, giving hidden-permutation invariance.
     """
-    from hydra2.contracts.observation import DORA_SENTINEL
+    from hydra2.contracts.observation_types import DORA_SENTINEL
 
-    a = int(make_seat(actor))
+    a = int(_bridge_contracts.make_seat(actor))
     hand = world.concealed_hands[a]
     did = (
         decision_id

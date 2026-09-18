@@ -18,12 +18,9 @@ import warnings
 from pathlib import Path
 from typing import Any
 
-from hydra2._canon import (
-    atomic_write_bytes,
-    canonical_json_bytes,
-    sha256_digest_of_json,
-    sha256_file,
-)
+from hydra2.artifacts.atomic import atomic_replace_bytes
+from hydra2.artifacts.canonical import canonical_bytes
+from hydra2.artifacts.digest import of_canonical, sha256_file
 from hydra2.config import MAHJAX_GIT_URL, MAHJAX_PIN_SHA, repo_root
 
 ENV_MANIFEST_ARTIFACT_TYPE = "hydra2.environment"
@@ -32,7 +29,6 @@ ENV_MANIFEST_SCHEMA_VERSION = "1.0.0"
 IMPORTABLE_RUNTIME_MODULES = (
     "hydra2",
     "torch",
-    "lightning_fabric",
     "riichienv",
     "mahjax",
     "jax",
@@ -143,7 +139,6 @@ def capture_environment_manifest() -> tuple[dict[str, Any], str]:
             "gpus": _nvidia_smi_gpus(),
         },
         "extensions": {
-            "lightning-fabric": dist_version("lightning-fabric"),
             "riichienv": dist_version("riichienv"),
             "mahjax": dist_version("mahjax"),
             "mahjax_git_url": MAHJAX_GIT_URL,
@@ -151,13 +146,13 @@ def capture_environment_manifest() -> tuple[dict[str, Any], str]:
             "jax": dist_version("jax"),
         },
     }
-    return manifest, sha256_digest_of_json(manifest)
+    return manifest, of_canonical(manifest)
 
 
 def write_environment_manifest(destination: Path) -> tuple[Path, str]:
     """Capture and atomically publish the manifest; returns (path, sha256)."""
     manifest, digest = capture_environment_manifest()
-    atomic_write_bytes(Path(destination), canonical_json_bytes(manifest))
+    atomic_replace_bytes(Path(destination), canonical_bytes(manifest))
     return Path(destination), digest
 
 

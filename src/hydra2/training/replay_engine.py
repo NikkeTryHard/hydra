@@ -18,11 +18,13 @@ import torch
 import torch.nn as nn
 
 from hydra2.contracts.common import ContractError, CorruptArtifactError
-from hydra2.training.dataset import AuthoritativeParquetDataset
-from hydra2.training.objectives import (
-    compute_metrics,
+from hydra2.training.dataset_store import AuthoritativeParquetDataset
+from hydra2.training.objectives_loss import (
     compute_supervised_loss,
     global_grad_norm_is_finite,
+)
+from hydra2.training.objectives_metrics import (
+    compute_metrics,
 )
 from hydra2.training.replay_checkpoint import ActorLearnerReplayCheckpointMixin
 from hydra2.training.replay_state import (
@@ -296,7 +298,7 @@ class ActorLearnerReplay(ActorLearnerReplayCheckpointMixin):
         if not isinstance(decision_ids_any, (list, tuple)) or len(decision_ids_any) == 0:
             return batch
         decision_ids: list[str] = [str(x) for x in list(decision_ids_any)]
-        from hydra2.belief.oracle_loader import join_oracle_targets
+        from hydra2.belief.oracle_join import join_oracle_targets
 
         joined = join_oracle_targets(
             decision_ids, self.privileged_store, evaluation_wall_ids=self.evaluation_wall_ids

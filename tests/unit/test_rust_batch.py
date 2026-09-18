@@ -10,13 +10,7 @@ silent training-label drift.
 
 from __future__ import annotations
 
-import importlib
-import importlib.machinery
 import json
-import os
-import shutil
-import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
@@ -24,33 +18,7 @@ import pytest
 import torch
 import zstandard as zstd
 
-ROOT = Path(__file__).resolve().parents[2]
-CRATE = ROOT / "tools" / "hydra2-replay-rs"
-
 pytestmark = pytest.mark.serial
-
-
-@pytest.fixture(scope="session")
-def rust_extension(tmp_path_factory: pytest.TempPathFactory) -> object:
-    """Build the cdylib once and expose ``import hydra2_replay_rs``."""
-    env = dict(os.environ, PYO3_PYTHON=sys.executable)
-    proc = subprocess.run(
-        ["cargo", "build", "--offline", "-p", "hydra2-replay-rs"],
-        cwd=CRATE,
-        env=env,
-        capture_output=True,
-    )
-    assert proc.returncode == 0, f"cargo build failed:\n{proc.stderr[-4000:]}"
-    built = CRATE / "target" / "debug" / "libhydra2_replay_rs.so"
-    assert built.is_file(), f"expected cdylib at {built}"
-    ext_dir = tmp_path_factory.mktemp("hydra2_replay_rs")
-    suffix = importlib.machinery.EXTENSION_SUFFIXES[0]
-    shutil.copy(built, ext_dir / f"hydra2_replay_rs{suffix}")
-    sys.path.insert(0, str(ext_dir))
-    try:
-        yield importlib.import_module("hydra2_replay_rs")
-    finally:
-        sys.path.remove(str(ext_dir))
 
 
 def _golden_tmpdir(*, walled: bool) -> Path:
@@ -75,10 +43,11 @@ def _golden_tmpdir(*, walled: bool) -> Path:
 
 def _both_batches(*, walled: bool) -> tuple[dict, dict]:
     """Python training input vs Rust-assembled input on the golden rows."""
-    from hydra2.data.stream import GameStream, build_manifest
+    from hydra2.data.stream_iter import GameStream
+    from hydra2.data.stream_manifest import build_manifest
     from hydra2.models.schema import BASELINE_ACTION_COUNT
     from hydra2.training import rust_stream
-    from hydra2.training.dataset import encode_observation_rows
+    from hydra2.training.dataset_encode import encode_observation_rows
     from hydra2.training.rust_batch import assemble_training_batch
     from hydra2.training.stream_train import _row_to_dict
 
@@ -90,7 +59,7 @@ def _both_batches(*, walled: bool) -> tuple[dict, dict]:
 
         rows = expand_game(game, split="train")
     else:
-        from hydra2.engines.riichienv.log_replay import replay_game
+        from hydra2.engines.riichienv._lr_end import replay_game
 
         rows = replay_game(game, split="train")
     assert len(rows) == 5
@@ -147,7 +116,7 @@ def test_assembled_batch_forward_loss_bitwise(rust_extension: object, walled: bo
     py, got = _both_batches(walled=walled)
     from hydra2.models.model import Hydra2BaselineModel
     from hydra2.training.adapters import model_output_to_loss_dict
-    from hydra2.training.objectives import compute_supervised_loss
+    from hydra2.training.objectives_loss import compute_supervised_loss
 
     model = Hydra2BaselineModel().eval()
     weights = {"w_policy": 1.0}
@@ -163,7 +132,8 @@ def test_assembled_batch_forward_loss_bitwise(rust_extension: object, walled: bo
 
 def _game_pull_vs_python(*, walled: bool) -> tuple[list[dict], list[dict]]:
     """Game-pull slim rows vs python oracle rows on the golden 5-row game."""
-    from hydra2.data.stream import GameStream, build_manifest
+    from hydra2.data.stream_iter import GameStream
+    from hydra2.data.stream_manifest import build_manifest
     from hydra2.training.stream_train import _expand_game_planes, _expand_game_rows, _row_to_dict
 
     corpus = _golden_tmpdir(walled=walled)
@@ -204,7 +174,7 @@ def test_game_pull_rows_match_python(rust_extension: object, walled: bool) -> No
 def test_game_pull_batch_matches_python(rust_extension: object, walled: bool) -> None:
     _ = rust_extension
     from hydra2.models.schema import BASELINE_ACTION_COUNT
-    from hydra2.training.dataset import encode_observation_rows
+    from hydra2.training.dataset_encode import encode_observation_rows
     from hydra2.training.rust_batch import assemble_slim_batch
 
     rust, py = _game_pull_vs_python(walled=walled)
@@ -220,7 +190,8 @@ def test_game_pull_batch_matches_python(rust_extension: object, walled: bool) ->
 
 def test_dataset_game_pull_sequence_restore_parity(rust_extension: object) -> None:
     _ = rust_extension
-    from hydra2.data.stream import GameStream, build_manifest
+    from hydra2.data.stream_iter import GameStream
+    from hydra2.data.stream_manifest import build_manifest
     from hydra2.models.schema import BASELINE_ACTION_COUNT
     from hydra2.training import stream_train as driver
 
@@ -277,7 +248,8 @@ def test_expand_raw_matches_rebuilt(rust_extension: object, tmp_path: Path, wall
     wall-less and walled games.
     """
     _ = rust_extension
-    from hydra2.data.stream import GameStream, build_manifest
+    from hydra2.data.stream_iter import GameStream
+    from hydra2.data.stream_manifest import build_manifest
     from hydra2.training import stream_train as driver
     from tests.unit.test_parallel_expand_wp14 import _good_events, _write_events
 
@@ -305,7 +277,8 @@ def test_expand_raw_quarantine_matches_rebuilt(
     """Quarantine behavior is identical on raw and rebuilt bytes."""
     _ = rust_extension
     from hydra2.contracts.common import ContractError
-    from hydra2.data.stream import GameStream, build_manifest
+    from hydra2.data.stream_iter import GameStream
+    from hydra2.data.stream_manifest import build_manifest
     from hydra2.training import stream_train as driver
     from tests.unit.test_parallel_expand_wp14 import _quarantine_events, _write_events
 
@@ -328,7 +301,8 @@ def test_batch_pull_matches_serial_pull(rust_extension: object, tmp_path: Path) 
     wall-less, and quarantine-bearing games.
     """
     _ = rust_extension
-    from hydra2.data.stream import GameStream, build_manifest
+    from hydra2.data.stream_iter import GameStream
+    from hydra2.data.stream_manifest import build_manifest
     from hydra2.models.schema import BASELINE_ACTION_COUNT
     from hydra2.training import stream_train as driver
     from tests.unit.test_parallel_expand_wp14 import (
@@ -436,9 +410,10 @@ def test_multi_group_gather_matches_python(rust_extension: object) -> None:
     assertion here is byte equality with the python encoder path.
     """
     _ = rust_extension
-    from hydra2.data.stream import GameStream, build_manifest
+    from hydra2.data.stream_iter import GameStream
+    from hydra2.data.stream_manifest import build_manifest
     from hydra2.models.schema import BASELINE_ACTION_COUNT
-    from hydra2.training.dataset import encode_observation_rows
+    from hydra2.training.dataset_encode import encode_observation_rows
     from hydra2.training.rust_batch import assemble_slim_batch
     from hydra2.training.stream_train import _expand_game_planes, _expand_game_rows, _row_to_dict
 

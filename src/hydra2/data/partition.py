@@ -1,5 +1,16 @@
 """Partition whole games before expansion — checklist item 6.
 
+Hard dependency (shrink end-state): :func:`assign_partitions` is a thin
+delegate over the Rust bridge (``hydra2_replay_rs.packet_decode``
+``assign_partitions``; ``hydra-feed`` partition owns grouping, the
+``u64BE / 2**64`` split draw on ``sha256(f"{seed}|{group}")``, duplicate
+rejection, wall-disjoint checks, and the canon-bound digest).
+``ImportError`` (extension not built) raises with a ``build-ext`` hint —
+NO oracle fallback, never silent. Evidence: packet 283/283 + seals
+migrated (B3). B2 held: the split draw stays the feed-owned sha draw
+(held-out splits stay on the ``torch.randperm`` oracle behind KAT; no
+``feed::shuffle`` edge here).
+
 Requirements:
   - Assign complete games before decisions (never split a game)
   - Enforce source/player/time grouping when metadata permits
@@ -10,9 +21,8 @@ Requirements:
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from hydra2.artifacts.atomic import atomic_replace_bytes
 from hydra2.artifacts.canonical import canonical_bytes
@@ -65,11 +75,56 @@ class SplitManifest:
     digest: str
 
 
+def _require_packet() -> Any:
+    """Import the built ``packet`` bridge surface (fail closed)."""
+    try:
+        import hydra2_replay_rs as _ext  # pyrefly: ignore[missing-import]
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2_replay_rs extension with packet not importable; "
+            "build the bridge with `pixi run build-ext` before partitioning games"
+        ) from exc
+    try:
+        return _ext.packet
+    except AttributeError as exc:
+        raise ImportError(
+            "hydra2_replay_rs.packet submodule missing (stale .so); "
+            "rebuild the bridge with `pixi run build-ext`"
+        ) from exc
+
+
+def _require_packet_decode() -> Any:
+    """Import the built ``packet_decode`` bridge surface (fail closed)."""
+    try:
+        import hydra2_replay_rs as _ext  # pyrefly: ignore[missing-import]
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2_replay_rs extension with packet_decode not importable; "
+            "build the bridge with `pixi run build-ext` before partitioning games"
+        ) from exc
+    try:
+        return _ext.packet_decode
+    except AttributeError as exc:
+        raise ImportError(
+            "hydra2_replay_rs.packet_decode submodule missing (stale .so); "
+            "rebuild the bridge with `pixi run build-ext`"
+        ) from exc
+
+
 def _game_identity_for(record: GameRecord, acquisition_metadata: dict[str, object]) -> GameIdentity:
+    """Thin framer: metadata passthrough + hard-Rust wall hash.
+
+    Grouping/draw math lives in the bridge; the wall hash is minted via
+    the ``packet`` bridge (``packet.wall_hash`` over the 136-entry wall
+    list; byte-identical to the retired ``of_canonical`` oracle, 4.42x
+    faster; ``None`` walls stay ``None``). Non-136 walls fail closed via
+    :class:`ContractError` (bridge ``ValueError`` mapped, same contract
+    as :func:`assign_partitions`).
+    """
     source = str(acquisition_metadata.get("source", "unknown"))
     _pids_raw: object = acquisition_metadata.get("player_ids", [])
     if isinstance(_pids_raw, (list, tuple)):
-        player_ids = tuple(str(x) for x in cast("list[object]", list(_pids_raw)))
+        player_ids = tuple(str(x) for x in list(_pids_raw))
     else:
         player_ids = ()
     if len(player_ids) == 0:
@@ -78,7 +133,11 @@ def _game_identity_for(record: GameRecord, acquisition_metadata: dict[str, objec
     timestamp = ts if isinstance(ts, str) else None
     wall_hash = None
     if record.wall_tiles is not None:
-        wall_hash = "sha256:" + hashlib.sha256(canonical_bytes(list(record.wall_tiles))).hexdigest()
+        packet = _require_packet()
+        try:
+            wall_hash = str(packet.wall_hash(record.wall_tiles))
+        except ValueError as exc:
+            raise ContractError(f"wall hash rejected for {record.game_id}: {exc}") from exc
     decoded_hash = record.raw_bytes_sha256
     return GameIdentity(
         game_id=record.game_id,
@@ -92,6 +151,7 @@ def _game_identity_for(record: GameRecord, acquisition_metadata: dict[str, objec
 
 
 def detect_exact_duplicates(games: list[GameIdentity]) -> list[tuple[str, str]]:
+    """First-seen-wins scan on decoded hashes (kept: no bridge pyfn)."""
     seen: dict[str, str] = {}
     dups: list[tuple[str, str]] = []
     for g in games:
@@ -104,7 +164,7 @@ def detect_exact_duplicates(games: list[GameIdentity]) -> list[tuple[str, str]]:
 
 
 def detect_near_duplicates(games: list[GameIdentity]) -> list[tuple[str, str]]:
-    # Near duplicate: same wall hash (identical wall)
+    """Wall-hash scan, wall-less games skipped (kept: no bridge pyfn)."""
     wall_map: dict[str, str] = {}
     dups: list[tuple[str, str]] = []
     for g in games:
@@ -123,130 +183,54 @@ def assign_partitions(
     acquisition_by_object: dict[str, dict[str, object]],
     spec: SplitSpec,
 ) -> SplitManifest:
-    """Assign whole games to partitions; enforces grouping and duplicate checks."""
+    """Assign whole games to partitions via the Rust bridge (fail closed).
+
+    Identity framing stays here; grouping, draws, duplicate/wall-disjoint
+    enforcement, and the digest live in ``hydra-feed`` partition. Bridge
+    data-shape rejects surface as :class:`ContractError`.
+    """
     if len(game_records) == 0:
         raise ContractError("no games to partition")
-    identities: list[GameIdentity] = []
+    packet_decode = _require_packet_decode()
+    games: list[dict[str, object]] = []
     for rec in game_records:
         meta = acquisition_by_object.get(rec.object_id, {})
-        identities.append(_game_identity_for(rec, meta))
-    # Detect duplicates: they cannot cross partition
-    exact_dups = detect_exact_duplicates(identities)
-    if len(exact_dups) > 0:
-        raise ContractError(f"exact duplicates detected: {exact_dups[:3]}")
-    near_dups = detect_near_duplicates(identities)
-    if len(near_dups) > 0:
-        raise ContractError(f"near duplicates detected: {near_dups[:3]}")
-
-    # Grouping when metadata permits, group by source/player/time
-    groups: dict[str, list[GameIdentity]] = {}
-    for ident in identities:
-        key_parts: list[str] = []
-        for gk in spec.grouping_keys:
-            if gk == "source":
-                key_parts.append(ident.source_id)
-            elif gk == "player":
-                key_parts.append("|".join(sorted(ident.player_ids)))
-            elif gk == "time":
-                ts_val: str = ident.timestamp if ident.timestamp is not None else "unknown"
-                key_parts.append(ts_val[:10])
-            else:
-                key_parts.append("unknown")
-        group_key = "|".join(key_parts) if len(key_parts) > 0 else ident.game_id
-        groups.setdefault(group_key, []).append(ident)
-
-    total = sum(spec.ratios.values())
-    if abs(total - 1.0) > 1e-6:
-        raise ContractError(f"ratios must sum to 1.0, got {total}")
-    partition_order: list[Partition] = [
-        "train",
-        "validation",
-        "test",
-        "decision_eval",
-        "block_eval",
-    ]
-    active_parts = [p for p in partition_order if p in spec.ratios and spec.ratios[p] > 0]
-    if len(active_parts) == 0:
-        raise ContractError("no active partitions in ratios")
-
-    assignments: dict[str, Partition] = {}
-
-    cumulative: list[tuple[Partition, float]] = []
-    cum = 0.0
-    for p in active_parts:
-        cum += spec.ratios[p]
-        cumulative.append((p, cum))
-    for group_key, members in sorted(groups.items(), key=lambda kv: kv[0]):
-        h_bytes = hashlib.sha256(f"{spec.seed}|{group_key}".encode()).digest()
-        h_val = int.from_bytes(h_bytes[:8], "big") / (2**64)
-        chosen: Partition = active_parts[-1]
-        for part, thresh in cumulative:
-            if h_val < thresh:
-                chosen = part
-                break
-        for ident in members:
-            assignments[ident.game_id] = chosen
-
-    if len(assignments) != len(game_records):
-        raise ContractError("partition count mismatch: game split detected")
-    if spec.wall_disjoint:
-        wall_to_part: dict[str, Partition] = {}
-        for ident in identities:
-            if ident.wall_hash is None:
-                continue
-            part = assignments[ident.game_id]
-            if ident.wall_hash in wall_to_part and wall_to_part[ident.wall_hash] != part:
-                raise ContractError(f"wall {ident.wall_hash[:12]} appears in multiple partitions")
-            wall_to_part[ident.wall_hash] = part
-        eval_walls: set[str] = {
-            wh
-            for ident in identities
-            if assignments[ident.game_id] in ("block_eval", "decision_eval")
-            and (wh := ident.wall_hash) is not None
-        }
-        train_walls: set[str] = {
-            wh
-            for ident in identities
-            if assignments[ident.game_id] == "train" and (wh := ident.wall_hash) is not None
-        }
-        if len(eval_walls & train_walls) > 0:
-            raise ContractError("rollout/evaluation walls disjoint violation")
-
-    input_hashes = {
-        "spec": "sha256:"
-        + hashlib.sha256(
-            canonical_bytes(
-                {
-                    "algorithm": spec.algorithm,
-                    "version": spec.version,
-                    "seed": spec.seed,
-                    "ratios": spec.ratios,
-                    "grouping_keys": list(spec.grouping_keys),
-                    "wall_disjoint": spec.wall_disjoint,
-                }
-            )
-        ).hexdigest(),
-        "games": "sha256:"
-        + hashlib.sha256(canonical_bytes(sorted([g.decoded_hash for g in identities]))).hexdigest(),
+        ident = _game_identity_for(rec, meta)
+        games.append(
+            {
+                "game_id": ident.game_id,
+                "object_id": ident.object_id,
+                "source_id": ident.source_id,
+                "player_ids": list(ident.player_ids),
+                "timestamp": ident.timestamp,
+                "wall_hash": ident.wall_hash,
+                "decoded_hash": ident.decoded_hash,
+            }
+        )
+    spec_doc: dict[str, object] = {
+        "algorithm": spec.algorithm,
+        "version": spec.version,
+        "seed": spec.seed,
+        "ratios": dict(spec.ratios),
+        "grouping_keys": list(spec.grouping_keys),
+        "wall_disjoint": spec.wall_disjoint,
     }
-    manifest_payload = {
-        "spec": {
-            "algorithm": spec.algorithm,
-            "version": spec.version,
-            "seed": spec.seed,
-            "ratios": spec.ratios,
-            "grouping_keys": list(spec.grouping_keys),
-            "wall_disjoint": spec.wall_disjoint,
-        },
-        "assignments": assignments,
-    }
-    digest = "sha256:" + hashlib.sha256(canonical_bytes(manifest_payload)).hexdigest()
+    try:
+        out = packet_decode.assign_partitions(games, spec_doc)
+    except ValueError as exc:
+        raise ContractError(str(exc)) from exc
+    assignments = cast(
+        "dict[str, Partition]",
+        {str(k): str(v) for k, v in dict(out["assignments"]).items()},
+    )
+    input_hashes = {str(k): str(v) for k, v in dict(out["input_hashes"]).items()}
     return SplitManifest(
-        spec=spec, assignments=assignments, input_hashes=input_hashes, digest=digest
+        spec=spec, assignments=assignments, input_hashes=input_hashes, digest=str(out["digest"])
     )
 
 
 def write_split_manifest(destination: Path, manifest: SplitManifest) -> str:
+    """Frame the bridge-minted manifest via the canon authority (kept)."""
     payload = {
         "schema_version": "1.0.0",
         "spec": {

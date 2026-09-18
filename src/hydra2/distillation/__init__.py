@@ -5,19 +5,25 @@ Owned: distillation/teacher (BUILD §13 / SPEC 16.8).
 
 from __future__ import annotations
 
-from hydra2.distillation.teacher import (
-    DistillationConfig,
-    TeacherJustification,
-    TrajectoryRecord,
+from hydra2.distillation._teacher_eval import (
     audit_leakage,
-    build_student_model,
     check_teacher_replacement_invalidates,
-    compute_distillation_loss,
     evaluate_five_arms,
-    generate_trajectories,
+)
+from hydra2.distillation._teacher_gate import (
+    TeacherJustification,
     load_analysis_gate,
     select_teacher,
+)
+from hydra2.distillation._teacher_records import (
+    TrajectoryRecord,
+    generate_trajectories,
     validate_trajectory_record,
+)
+from hydra2.distillation._teacher_student import (
+    DistillationConfig,
+    build_student_model,
+    compute_distillation_loss,
 )
 
 __all__ = [

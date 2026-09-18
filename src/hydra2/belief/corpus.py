@@ -9,16 +9,18 @@ domain but preserve the required invariants for testing.
 
 from __future__ import annotations
 
-import hashlib
 import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
+from hydra2.artifacts.digest import sha256_digest
 from hydra2.belief.world import FullWorld, make_full_world
-from hydra2.contracts.common import DigestText, make_digest_text
 
 if TYPE_CHECKING:
-    from hydra2.contracts.observation import ActorObservation
+    from hydra2.contracts.common import DigestText
+    from hydra2.contracts.observation_actor import ActorObservation
 
 __all__ = [
     "TinyCorpus",
@@ -57,12 +59,6 @@ class TinyCorpus:
                 return math.log(p) if p > 0 else float("-inf")
         return float("-inf")
 
-    def prob(self, world_id: str) -> float:
-        for w, p in zip(self.worlds, self.probabilities, strict=False):
-            if w.world_id == world_id:
-                return p
-        return 0.0
-
 
 def build_tiny_corpus(
     *,
@@ -79,13 +75,13 @@ def build_tiny_corpus(
     in opponent assignments, providing the oracle exact distribution (uniform).
     """
     if observation is not None:
-        obs_hash = make_digest_text(observation.observation_hash)  # type: ignore[arg-type]
-        r_hash = make_digest_text(observation.rules_hash)
+        obs_hash = _bridge_contracts.make_digest_text(observation.observation_hash)  # type: ignore[arg-type]
+        r_hash = _bridge_contracts.make_digest_text(observation.rules_hash)
     else:
         if observation_hash is None or rules_hash is None:
             raise ValueError("must supply observation or hashes")
-        obs_hash = make_digest_text(observation_hash)
-        r_hash = make_digest_text(rules_hash)
+        obs_hash = _bridge_contracts.make_digest_text(observation_hash)
+        r_hash = _bridge_contracts.make_digest_text(rules_hash)
 
     # Fixed tile pool for tiny domain — 0..11 as in natural harness
     base_options = [
@@ -117,7 +113,10 @@ def build_tiny_corpus(
             dead_wall=(),
             latent_state={
                 "corpus_idx": idx,
-                "tag": hashlib.sha256(f"{obs_hash}:{idx}".encode()).hexdigest()[:8],
+                # Digest line via the canon bridge (byte-identical to the
+                # retired hashlib hexdigest slice; ImportError with build-ext
+                # hint, no fallback). Corpus order (sorted world_id) untouched.
+                "tag": str(sha256_digest(f"{obs_hash}:{idx}".encode())).removeprefix("sha256:")[:8],
             },
             rules_hash=r_hash,
             observation_hash=obs_hash,

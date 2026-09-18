@@ -442,9 +442,6 @@ class AuthoritativeParquetDataset:
         self._cursor = offset
         self._epoch = epoch
 
-    def sampler_cursor_for_checkpoint(self) -> dict[str, Any]:
-        return self.get_sampler_state()
-
     def __len__(self) -> int:
         return self._total
 
@@ -540,17 +537,6 @@ class AuthoritativeParquetDataset:
         if self._cursor == self._total:
             # Do not auto-wrap here; allow caller to observe epoch boundary via next call
             pass
-        return batch
-
-    def peek_batch(self, batch_size: int, cursor: int | None = None) -> dict[str, Any]:
-        """Non-advancing peek — useful for tests without mutating cursor."""
-        cur = self._cursor if cursor is None else cursor
-        end = min(cur + batch_size, self._total)
-        order_slice = self._order[cur:end]
-        rows = [self._rows[i] for i in order_slice]
-        batch = self._tensorize_rows(rows)
-        if self._kinds is not None:
-            batch["_action_kinds"] = [self._kinds[i] for i in order_slice]
         return batch
 
     def iter_batches(self, batch_size: int, max_batches: int | None = None):

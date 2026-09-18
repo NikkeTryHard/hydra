@@ -19,13 +19,15 @@ import torch
 import torch.nn as nn
 
 from hydra2.contracts.common import ContractError, IllegalActionError
-from hydra2.training.loop import TrainingLoopConfig
-from hydra2.training.objectives import (
-    compute_hot_scalars,
+from hydra2.training.loop_state import TrainingLoopConfig
+from hydra2.training.objectives_loss import (
     compute_supervised_loss,
     masked_cross_entropy,
     supervised_loss_kernel,
     validate_supervised_inputs,
+)
+from hydra2.training.objectives_metrics import (
+    compute_hot_scalars,
 )
 
 if TYPE_CHECKING:
@@ -367,7 +369,7 @@ def test_model_forward_converts_model_output_dataclass() -> None:
     """Real-model ModelOutput maps onto the loss dict; dict path is identical."""
     from hydra2.models.model import ModelOutput
     from hydra2.models.schema import BASELINE_ACTION_COUNT as _FULL_ACTIONS
-    from hydra2.training.loop import _model_forward
+    from hydra2.training.loop_batch import _model_forward
 
     torch.manual_seed(0)
     batch_size = 2
@@ -405,7 +407,7 @@ def test_model_forward_converts_model_output_dataclass() -> None:
 def test_model_forward_rejects_all_false_legal_before_forward() -> None:
     """Pre-forward gate: all-false legal mask raises before any model call."""
     from hydra2.models.encoder import ActorTensorBatch
-    from hydra2.training.loop import _model_forward
+    from hydra2.training.loop_batch import _model_forward
 
     class _NoCallModel(nn.Module):
         action_count = 6792
@@ -534,7 +536,7 @@ def test_device_assert_trips_live_on_cuda() -> None:
         "import os;",
         "os.environ.pop('HYDRA2_DISABLE_DEVICE_ASSERTS', None);",
         "import torch;",
-        "from hydra2.training.objectives import _check_legal_rows;",
+        "from hydra2.training.objectives_loss import _check_legal_rows;",
         "mask = torch.zeros(2, 4, dtype=torch.bool, device='cuda');",
         "_check_legal_rows(mask);",
         "torch.cuda.synchronize();",
@@ -564,7 +566,7 @@ def test_aux_losses_fp32_output() -> None:
     """
     import torch.nn.functional as functional
 
-    from hydra2.training.objectives import _generic_ce_loss, _generic_mse_loss
+    from hydra2.training.objectives_loss import _generic_ce_loss, _generic_mse_loss
 
     torch.manual_seed(21)
     # Unmasked CE helper: fp32 dtype + finite + exact vs same-input fp32 math.

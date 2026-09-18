@@ -18,14 +18,21 @@ from __future__ import annotations
 import hashlib
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 import torch
 
 from hydra2.artifacts.canonical import canonical_bytes
-from hydra2.contracts.action import ActionContext, canonical_action_codec, load_action_table
+from hydra2.contracts.action_artifact import (
+    load_action_table,
+)
+from hydra2.contracts.action_table import (
+    ActionContext,
+    canonical_action_codec,
+)
 from hydra2.contracts.common import ContractError
-from hydra2.contracts.observation import make_actor_observation
+from hydra2.contracts.observation_actor import make_actor_observation
 from hydra2.models.model import Hydra2BaselineModel
 from hydra2.search.candidate0 import (
     FrozenCandidate0,
@@ -34,6 +41,9 @@ from hydra2.search.candidate0 import (
     make_candidate0_spec,
 )
 from hydra2.search.common import SearchRequest, candidate_spec_hash
+
+if TYPE_CHECKING:
+    from hydra2.contracts.action_model import CanonicalAction
 
 pytestmark = pytest.mark.contract_package("WP-08A")
 
@@ -136,7 +146,7 @@ def _event_schema_hash_placeholder(spec: object) -> str:
     # The spec doesn't store event_schema_hash; observation needs it. Use the
     # spec's packet_boundary_hash derivation: fallback to file hash.
     try:
-        from hydra2.contracts.event import load_event_schema
+        from hydra2.contracts.event_schema import load_event_schema
 
         evt = load_event_schema()
         digest = getattr(evt, "digest", None)
@@ -212,7 +222,6 @@ def _fresh_model(seed: int = 0) -> Hydra2BaselineModel:
 
 
 def _request_for_obs(obs: object, spec: object, deadline_ns: int | None = None) -> SearchRequest:
-    from hydra2.contracts.action import CanonicalAction
 
     # legal_actions: decode each True index to CanonicalAction for request completeness
     # Build context as candidate0 does for decoding, then collect

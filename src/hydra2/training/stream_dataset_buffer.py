@@ -15,7 +15,7 @@ import torch
 
 from hydra2.contracts.common import ContractError as ContractError
 from hydra2.data.replay_expand import expand_privileged_rows as expand_privileged_rows
-from hydra2.training.dataset import encode_observation_rows as encode_observation_rows
+from hydra2.training.dataset_encode import encode_observation_rows as encode_observation_rows
 from hydra2.training.stream_dataset import _StreamDatasetCore as _StreamDatasetCore
 from hydra2.training.stream_expand import _expand_game_planes as _expand_game_planes
 from hydra2.training.stream_expand import _expand_game_rows as _expand_game_rows
@@ -179,7 +179,16 @@ class _StreamDatasetBufferMixin(_StreamDatasetCore):
         return _sidecar_window_hash(self._buffered_entries, self._rows)
 
     def buffer_snapshot(self) -> dict[str, Any]:
-        """Fast-resume snapshot: whole-game entries + counters + row hash."""
+        """Fast-resume snapshot: whole-game entries + counters + row hash.
+
+        Bridge-compat shape (checked by ``hydra_bridge`` ``resume``):
+        ``entries`` carry exactly ``{key, path, offset, split, rows}``
+        (``check_buffer_entries``); the RNG triple ``{key, block, pos}``
+        (``feed::rng::StreamSnapshot``) rides the shuffle snapshot
+        (``buffer_rng_state``), not these entries. Snapshot envelope
+        versioning is bridge-owned (writes v2, dual-reads v1 drain-only
+        for one release).
+        """
         total = sum(int(entry["rows"]) for entry in self._buffered_entries)
         if total != len(self._rows):
             raise ContractError(
@@ -218,7 +227,7 @@ class _StreamDatasetBufferMixin(_StreamDatasetCore):
         counters. Only the buffered tail is re-expanded (``O(buffer)``), never
         the epoch.
         """
-        from hydra2.data.stream import fetch_game_at as _fetch
+        from hydra2.data.stream_read import fetch_game_at as _fetch
 
         if not isinstance(snapshot, dict):
             raise ContractError("dataset buffer snapshot must be a mapping")

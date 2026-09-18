@@ -383,6 +383,3 @@ SCENARIO_REGISTRY: tuple[Scenario, ...] = (
     _SCENARIO_03,
     _SCENARIO_04,
 )
-
-# Map for quick lookup
-_SCENARIO_BY_ID: dict[str, Scenario] = {s.case_id: s for s in SCENARIO_REGISTRY}

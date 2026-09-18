@@ -3,16 +3,33 @@
 PackagedObjectRow is transport-only (WP-00B authority). RawObjectRow joins one
 immutable packaged row with exactly one attestation; the transport row is never
 mutated. ObjectId hashes the join (SPEC 12.1: "Its object_id hashes that join").
+
+Hard dependency (shrink end-state): seal math is DELETED here — the B3
+single printer (``hydra-feed`` rows via ``feed::canon`` serde_jcs 0.2.0
+exact + ``feed::digest`` SHA-256 ONLY) is reached through the artifacts
+authority (``canonical_bytes`` frames the seal doc, ``sha256_digest``
+mints the id; both raise with a ``build-ext`` hint when the extension is
+not built). NO oracle fallback, never silent. Evidence: packet 283/283 +
+raw sha every game; seals migrated (B3 JCS re-mint + seal-replay green).
+
+Kept thin types: :class:`PackagedObjectRow` / :class:`RawObjectRow`
+(field framing + contract validation), :func:`_parse_packaged_row`
+(exact 16-key set, bare-hex norm, container/member rule),
+:func:`load_packaged_manifest` (JSONL framing + seal verify + dedup),
+:func:`make_raw_object_row` (join framing; id via the hard digest owner).
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
-from hydra2.contracts.common import ContractError, DigestText, make_digest_text, make_utc_timestamp
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
+from hydra2.artifacts.canonical import canonical_bytes as _seal_bytes
+from hydra2.artifacts.digest import sha256_digest
+from hydra2.contracts.common import ContractError, DigestText, make_utc_timestamp
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -28,33 +45,12 @@ __all__ = [
 ]
 
 
-def _sha_hex(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
 def _require_digest(text: str, *, name: str) -> DigestText:
     try:
-        return make_digest_text(text)
+        return _bridge_contracts.make_digest_text(text)
     except Exception as exc:  # why-broad: any digest-shape failure is one
         # ContractError with the offending name and value.
         raise ContractError(f"{name} must be sha256:<64 hex>, got {text!r}") from exc
-
-
-def _canonical_row_bytes(fields: list[tuple[str, object]], *, include_id: bool) -> bytes:
-    # Mirrors integrity.rs canonical_bytes: field order is normative, compact
-    # separators, json-encoded keys/values. Top-level object ordered as passed.
-    parts: list[bytes] = [b"{"]
-    first = True
-    for key, value in fields:
-        # skip packaged_object_id when include_id is False is handled by caller
-        if not first:
-            parts.append(b",")
-        first = False
-        parts.append(json.dumps(key, separators=(",", ":"), ensure_ascii=False).encode())
-        parts.append(b":")
-        parts.append(json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode())
-    parts.append(b"}")
-    return b"".join(parts)
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,44 +107,52 @@ class PackagedObjectRow:
                 raise ContractError(f"{self.source_kind} must have no container/member")
 
     def canonical_bytes(self, *, include_id: bool = True) -> bytes:
+        """Seal bytes via the single-printer artifacts authority (B3).
+
+        Field order below is normative for readability (JCS sorts keys on
+        the wire); digests hash in bare-hex form. ``include_id`` stays for
+        call-site compat; seal bytes exclude the id (caller omits it).
+        """
+
         def strip(v: object) -> object:
             if isinstance(v, str) and v.startswith("sha256:"):
                 return v.removeprefix("sha256:")
             return v
 
-        fields: list[tuple[str, object]] = []
+        doc: dict[str, object] = {}
         if include_id:
-            fields.append(("packaged_object_id", strip(self.packaged_object_id)))
-        fields.extend(
-            [
-                ("source_kind", self.source_kind),
-                ("source_container_sha256", strip(self.source_container_sha256)),
-                ("source_member_path", self.source_member_path),
-                ("source_bytes_sha256", strip(self.source_bytes_sha256)),
-                ("source_bytes_length", self.source_bytes_length),
-                ("compressed_path", self.compressed_path),
-                ("compressed_bytes_sha256", strip(self.compressed_bytes_sha256)),
-                ("compressed_bytes_length", self.compressed_bytes_length),
-                ("decoded_bytes_sha256", strip(self.decoded_bytes_sha256)),
-                ("decoded_bytes_length", self.decoded_bytes_length),
-                ("record_count", self.record_count),
-                ("canonical_jsonl", self.canonical_jsonl),
-                ("packager_identity", strip(self.packager_identity)),
-                ("packager_config_hash", strip(self.packager_config_hash)),
-                ("created_at_utc", self.created_at_utc),
-            ]
+            doc["packaged_object_id"] = strip(self.packaged_object_id)
+        doc.update(
+            {
+                "source_kind": self.source_kind,
+                "source_container_sha256": strip(self.source_container_sha256),
+                "source_member_path": self.source_member_path,
+                "source_bytes_sha256": strip(self.source_bytes_sha256),
+                "source_bytes_length": self.source_bytes_length,
+                "compressed_path": self.compressed_path,
+                "compressed_bytes_sha256": strip(self.compressed_bytes_sha256),
+                "compressed_bytes_length": self.compressed_bytes_length,
+                "decoded_bytes_sha256": strip(self.decoded_bytes_sha256),
+                "decoded_bytes_length": self.decoded_bytes_length,
+                "record_count": self.record_count,
+                "canonical_jsonl": self.canonical_jsonl,
+                "packager_identity": strip(self.packager_identity),
+                "packager_config_hash": strip(self.packager_config_hash),
+                "created_at_utc": self.created_at_utc,
+            }
         )
-        return _canonical_row_bytes(fields, include_id=True)
+        return _seal_bytes(doc)
 
     def verify_seal(self) -> None:
-        expected = _sha_hex(self.canonical_bytes(include_id=False))
-        # Transport ids carry the sha256: prefix; bare-hex inputs normalize
-        # at parse (pre-WP-01 compat); both forms compare equal after norm().
+        """Self-hash check over id-excluded seal bytes (hard digest owner)."""
+        expected_hex = str(sha256_digest(self.canonical_bytes(include_id=False))).removeprefix(
+            "sha256:"
+        )
         stored_hex = self.packaged_object_id.removeprefix("sha256:")
-        if stored_hex != expected:
+        if stored_hex != expected_hex:
             raise ContractError(
                 f"transport row failed self-hash for {self.compressed_path}: "
-                f"expected {expected} got {stored_hex}"
+                f"expected {expected_hex} got {stored_hex}"
             )
 
 
@@ -240,6 +244,7 @@ def _parse_packaged_row(raw: object) -> PackagedObjectRow:
 
 
 def load_packaged_manifest(path: Path) -> list[PackagedObjectRow]:
+    """Load + seal-verify one JSONL manifest (framing kept; seals are hard)."""
     if not path.is_file():
         raise FileNotFoundError(f"manifest not found: {path}")
     rows: list[PackagedObjectRow] = []
@@ -311,21 +316,23 @@ class RawObjectRow:
         _ = make_utc_timestamp(self.created_at_utc)
 
     def canonical_bytes_without_id(self) -> bytes:
-        fields: list[tuple[str, object]] = [
-            ("packaged_object_id", self.packaged_object_id),
-            ("confidential_source_id", self.confidential_source_id),
-            ("authorization_attestation_id", self.authorization_attestation_id),
-            ("permitted_purpose", list(self.permitted_purpose)),
-            ("disclosure_class", self.disclosure_class),
-            ("acquisition_metadata", self.acquisition_metadata),
-            ("semantic_state", self.semantic_state),
-            ("semantic_validation_hash", self.semantic_validation_hash),
-            ("first_error_class", self.first_error_class),
-            ("first_error_event_index", self.first_error_event_index),
-            ("parent_ids", list(self.parent_ids)),
-            ("created_at_utc", self.created_at_utc),
-        ]
-        return _canonical_row_bytes(fields, include_id=True)
+        """Join seal bytes via the single-printer authority (verbatim digests)."""
+        return _seal_bytes(
+            {
+                "packaged_object_id": self.packaged_object_id,
+                "confidential_source_id": self.confidential_source_id,
+                "authorization_attestation_id": self.authorization_attestation_id,
+                "permitted_purpose": list(self.permitted_purpose),
+                "disclosure_class": self.disclosure_class,
+                "acquisition_metadata": self.acquisition_metadata,
+                "semantic_state": self.semantic_state,
+                "semantic_validation_hash": self.semantic_validation_hash,
+                "first_error_class": self.first_error_class,
+                "first_error_event_index": self.first_error_event_index,
+                "parent_ids": list(self.parent_ids),
+                "created_at_utc": self.created_at_utc,
+            }
+        )
 
 
 def _raw_object_id_for(
@@ -343,6 +350,7 @@ def _raw_object_id_for(
     parent_ids: tuple[str, ...],
     created_at_utc: str,
 ) -> str:
+    """Join id via the hard-Rust digest owner (seal math deleted)."""
     tmp = RawObjectRow(
         object_id="sha256:" + "0" * 64,
         packaged_object_id=packaged_object_id,
@@ -358,8 +366,7 @@ def _raw_object_id_for(
         parent_ids=parent_ids,
         created_at_utc=created_at_utc,
     )
-    raw = tmp.canonical_bytes_without_id()
-    return "sha256:" + _sha_hex(raw)
+    return str(sha256_digest(tmp.canonical_bytes_without_id()))
 
 
 def make_raw_object_row(

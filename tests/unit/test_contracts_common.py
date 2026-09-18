@@ -3,21 +3,18 @@
 from __future__ import annotations
 
 import pytest
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
 from hydra2.contracts.common import (
     ContractError,
     DigestMismatchError,
     Hydra2Error,
     IncompatibleSchemaError,
-    make_action_id,
     make_belief_epoch_id,
-    make_digest_text,
     make_parent_id,
     make_run_id,
     make_schema_version,
-    make_seat,
     make_sequence_no,
-    make_tile_id,
     make_tile_type,
     make_utc_timestamp,
 )
@@ -69,12 +66,12 @@ class TestErrorHierarchy:
 class TestRangeConstructors:
     @pytest.mark.parametrize("value", [0, 1, 2, 3])
     def test_seat_accepts_0_to_3(self, value):
-        assert make_seat(value) == value
+        assert _bridge_contracts.make_seat(value) == value
 
     @pytest.mark.parametrize("value", [-1, 4, 100])
     def test_seat_rejects_out_of_range(self, value):
-        with pytest.raises(ContractError):
-            make_seat(value)
+        with pytest.raises(ValueError):
+            _bridge_contracts.make_seat(value)
 
     def test_sequence_no_nonnegative(self):
         assert make_sequence_no(0) == 0
@@ -82,17 +79,17 @@ class TestRangeConstructors:
             make_sequence_no(-1)
 
     def test_action_id_nonnegative(self):
-        assert make_action_id(86) == 86
-        with pytest.raises(ContractError):
-            make_action_id(-1)
+        assert _bridge_contracts.make_action_id(86) == 86
+        with pytest.raises(ValueError):
+            _bridge_contracts.make_action_id(-1)
 
     def test_tile_id_bounds(self):
-        assert make_tile_id(0) == 0
-        assert make_tile_id(135) == 135
-        with pytest.raises(ContractError):
-            make_tile_id(136)
-        with pytest.raises(ContractError):
-            make_tile_id(-1)
+        assert _bridge_contracts.make_tile_id(0) == 0
+        assert _bridge_contracts.make_tile_id(135) == 135
+        with pytest.raises(ValueError):
+            _bridge_contracts.make_tile_id(136)
+        with pytest.raises(ValueError):
+            _bridge_contracts.make_tile_id(-1)
 
 
 def test_tile_type_bounds():
@@ -111,15 +108,26 @@ class TestBoolDoesNotPassIntegerValidation:
     @pytest.mark.parametrize(
         "ctor",
         [
-            make_seat,
+            _bridge_contracts.make_seat,
+            _bridge_contracts.make_action_id,
+            _bridge_contracts.make_tile_id,
+        ],
+    )
+    def test_bool_rejected_by_bridge(self, ctor):
+        with pytest.raises(ValueError):
+            ctor(True)
+        with pytest.raises(ValueError):
+            ctor(False)
+
+    @pytest.mark.parametrize(
+        "ctor",
+        [
             make_sequence_no,
-            make_action_id,
-            make_tile_id,
             make_tile_type,
             make_belief_epoch_id,
         ],
     )
-    def test_bool_rejected(self, ctor):
+    def test_bool_rejected_by_python_makers(self, ctor):
         with pytest.raises(ContractError):
             ctor(True)
         with pytest.raises(ContractError):
@@ -129,7 +137,7 @@ class TestBoolDoesNotPassIntegerValidation:
 class TestStringConstructors:
     def test_digest_text_exact_format(self):
         good = "sha256:" + "a" * 64
-        assert make_digest_text(good) == good
+        assert _bridge_contracts.make_digest_text(good) == good
 
     @pytest.mark.parametrize(
         "bad",
@@ -144,8 +152,8 @@ class TestStringConstructors:
         ],
     )
     def test_digest_text_rejects_noncanonical(self, bad):
-        with pytest.raises(ContractError):
-            make_digest_text(bad)
+        with pytest.raises(ValueError):
+            _bridge_contracts.make_digest_text(bad)
 
     def test_utc_timestamp_formats(self):
         assert make_utc_timestamp("2026-08-22T12:00:00Z") == "2026-08-22T12:00:00Z"

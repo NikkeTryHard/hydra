@@ -11,17 +11,14 @@ from __future__ import annotations
 
 import hashlib
 import random  # noqa: TC003  # reason: TC003 random.Random builds RNGs at runtime in _ShuffleState
-import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import zstandard as zstd
 
-from hydra2.artifacts.canonical import canonical_bytes
 from hydra2.contracts.common import ContractError, CorruptArtifactError
 from hydra2.data.decode import decode_json_line
-from hydra2.data.stream_manifest import PARTITION_ORDER
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -44,7 +41,57 @@ __all__ = [
 _START_TYPES = frozenset({"start_game", "startGame", "game_start", "start"})
 _END_TYPES = frozenset({"end_game", "endGame", "game_end", "end"})
 _CHUNK_SIZE = 65536
-_DIGIT_RUN = re.compile(r"[0-9]+")
+
+#: Framing authority: the live path frames via the ``packet`` bridge
+#: (``packet.frame_games``/``packet.fetch_game_at`` over ``(compressed,
+#: file_idx, base)`` with ``base=0``; per-file raw offsets, resume filtering
+#: stays Python). Byte-exact with the :class:`ZstdLineStream` oracle below
+#: (packet 283/283 games + raw sha every game); the oracle is the test
+#: comparator, never a runtime fallback.
+
+
+def _require_packet() -> Any:
+    """Import the built ``packet`` bridge surface (fail closed)."""
+    try:
+        import hydra2_replay_rs as _ext  # pyrefly: ignore[missing-import]
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2_replay_rs extension with packet not importable; "
+            "build the bridge with `pixi run build-ext` before framing games"
+        ) from exc
+    try:
+        return _ext.packet
+    except AttributeError as exc:
+        raise ImportError(
+            "hydra2_replay_rs.packet submodule missing (stale .so); "
+            "rebuild the bridge with `pixi run build-ext`"
+        ) from exc
+
+
+#: Largest decompressed-byte offset the bridge ``u64`` takes; larger seeks
+#: cannot be on a game boundary (fail closed before the ABI cast overflows).
+_U64_MAX = 2**64 - 1
+
+
+def _frame_file(path: Path, file_idx: int) -> list[tuple[int, int, bytes]]:
+    """Frame one corpus file via the bridge (fail closed, no oracle fallback).
+
+    Reads ``path`` verbatim and returns ``(offset, end, game_bytes)`` in file
+    order with per-file raw decompressed-byte offsets (``base=0``; resume
+    filtering stays with the caller). ``ValueError`` is always a
+    ``FramerError::Decode`` here (no offset is passed), so it maps to
+    :class:`CorruptArtifactError` exactly like the oracle's zstd failure.
+    """
+    try:
+        compressed = path.read_bytes()
+    except OSError as exc:
+        raise CorruptArtifactError(f"cannot open stream file {path}: {exc}") from exc
+    packet = _require_packet()
+    try:
+        triples = packet.frame_games(compressed, file_idx, 0)
+    except ValueError as exc:
+        raise CorruptArtifactError(f"zstd decode failed for {path}: {exc}") from exc
+    return [(int(offset), int(end), bytes(payload)) for offset, end, payload in triples]
 
 
 def fetch_game_at(
@@ -56,8 +103,12 @@ def fetch_game_at(
     expected_sha: str | None = None,
 ) -> StreamGame:
     """Fetch one game by decompressed-byte ``game_offset`` (fail-closed).
-    Verifies ``expected_sha`` (raw_bytes_sha256) when given; split assignment
-    uses ``seed``/``ratios`` identically to the live stream.
+
+    Framing rides the ``packet`` bridge (``packet.fetch_game_at`` over the
+    verbatim file bytes with ``base=0``; byte-exact with the
+    :class:`ZstdLineStream` oracle). Verifies ``expected_sha``
+    (raw_bytes_sha256) when given; split assignment uses ``seed``/``ratios``
+    identically to the live stream.
     """
     from hydra2.data.decode import decode_game_object as _decode
     from hydra2.data.validate import validate_game as _validate
@@ -65,15 +116,23 @@ def fetch_game_at(
     fpath = Path(path)
     if type(game_offset) is not int or game_offset < 0:
         raise ContractError(f"game offset must be a non-negative int, got {game_offset!r}")
-    found: bytes | None = None
-    for offset, game_bytes in ZstdLineStream(fpath).iter_games():
-        if offset == game_offset:
-            found = game_bytes
-            break
-        if offset > game_offset:
-            break
-    if found is None:
+    if game_offset > _U64_MAX:
         raise ContractError(f"game offset {game_offset} not on a game boundary: {fpath}")
+    try:
+        compressed = fpath.read_bytes()
+    except OSError as exc:
+        raise CorruptArtifactError(f"cannot open stream file {fpath}: {exc}") from exc
+    packet = _require_packet()
+    try:
+        _, _, found = packet.fetch_game_at(compressed, 0, 0, game_offset)
+    except ValueError as exc:
+        # FramerError::Decode (corrupt payload) vs FramerError::Offset (miss):
+        # the Display prefixes are the discriminator (no offset passed here
+        # can be below base, so every Offset is a boundary miss).
+        if str(exc).startswith("framer decode:"):
+            raise CorruptArtifactError(f"zstd decode failed for {fpath}: {exc}") from exc
+        raise ContractError(f"game offset {game_offset} not on a game boundary: {fpath}") from exc
+    found = bytes(found)
     try:
         game = _decode(
             object_id=stem_of(fpath),
@@ -102,78 +161,78 @@ def fetch_game_at(
 
 
 def stem_of(path: Path) -> str:
-    """Game identity stem: ``<stem>.mjai.json.zst`` -> ``<stem>``."""
-    name = path.name
-    for suffix in (".mjai.json.zst", ".mjai.json", ".zst"):
-        if name.endswith(suffix):
-            return name[: -len(suffix)]
-    return path.stem
+    """Game identity stem: ``<stem>.mjai.json.zst`` -> ``<stem>``.
+
+    Thin delegate over the ``packet`` bridge (``packet.stem_of`` over the
+    file name; suffixes strip longest-first, anything else keeps
+    ``Path.stem`` behavior — byte-identical to the retired Python loop).
+    ``ImportError`` fails closed with a ``build-ext`` hint.
+    """
+    packet = _require_packet()
+    return str(packet.stem_of(path.name))
 
 
 def group_key_for(*, source: str, time: str) -> str:
-    """Group key identical to partition ``(source, time)`` grouping join."""
-    return f"{source}|{time}"
+    """Group key identical to partition ``(source, time)`` grouping join.
+
+    Thin delegate over the ``packet`` bridge (``packet.group_key_for``; the
+    single ``source|time`` join string lives in ``hydra-feed``).
+    ``ImportError`` fails closed with a ``build-ext`` hint.
+    """
+    packet = _require_packet()
+    return str(packet.group_key_for(str(source), str(time)))
 
 
 def group_key_for_path(path: Path) -> str:
     """Derive the ``(source, time)`` group from a corpus path.
 
-    Source is the parent directory name (mount-independent); time is the
-    leading digit run of the filename stem (Tenhou ``YYYYMMDDHH...``),
-    else ``"unknown"``.
+    Thin delegate over the ``packet`` bridge
+    (``packet.group_key_for_path`` over the parent directory name and file
+    name; source is mount-independent, empty/``.`` maps to ``"unknown"``,
+    time is the leading digit run of the stem else ``"unknown"`` —
+    byte-identical to the retired Python derivation). ``ImportError`` fails
+    closed with a ``build-ext`` hint.
     """
-    source = path.parent.name if path.parent.name not in ("", ".") else "unknown"
-    match = _DIGIT_RUN.match(stem_of(path))
-    time = match.group(0) if match is not None else "unknown"
-    return group_key_for(source=source, time=time)
+    packet = _require_packet()
+    return str(packet.group_key_for_path(path.parent.name, path.name))
 
 
 def compute_wall_hash(game: GameRecord) -> str | None:
     """Wall hash identical to partition identity; ``None`` when no wall.
 
-    Real MJAI has no 136-list wall field, so this is null corpus-wide.
+    Thin delegate over the ``packet`` bridge (``packet.wall_hash`` over the
+    136-entry wall list; byte-identical to the retired ``hashlib`` oracle,
+    2.98x faster). Real MJAI has no 136-list wall field, so this is null
+    corpus-wide. Non-136 walls fail closed via :class:`ContractError`
+    (bridge ``ValueError`` mapped, same contract as the other delegates).
     """
     if game.wall_tiles is None:
         return None
-    return "sha256:" + hashlib.sha256(canonical_bytes(list(game.wall_tiles))).hexdigest()
+    packet = _require_packet()
+    try:
+        return str(packet.wall_hash(game.wall_tiles))
+    except ValueError as exc:
+        raise ContractError(f"wall hash rejected: {exc}") from exc
 
 
 def assign_split(*, group_key: str, seed: int, ratios: Mapping[str, float]) -> str:
     """Assign a group to a partition; math identical to ``assign_partitions``.
 
-    Cumulative thresholds over :data:`PARTITION_ORDER` on
-    ``sha256(f"{seed}|{group_key}")`` scaled to ``[0, 1)``.
+    Thin delegate over the ``packet`` bridge (``packet.assign_one`` over
+    ``(group_key, seed, ratios)``; cumulative thresholds over
+    ``PARTITION_ORDER`` on ``sha256(f"{seed}|{group_key}")`` scaled to
+    ``[0, 1)`` — byte-identical to the retired Python loop, 294-case
+    differential clean). ``ImportError`` fails closed with a ``build-ext``
+    hint; bridge rejects (bad ratios, non-u64 seed) surface as
+    :class:`ContractError`.
     """
-    if len(ratios) == 0:
-        raise ContractError("split ratios must not be empty")
-    weights: dict[str, float] = {}
-    for name, value in ratios.items():
-        # reason: type arg-type on ratios mapping value; float() guarded
-        # below, ContractError on non-numeric.
-        try:
-            weight = float(value)  # type: ignore[arg-type]
-        except (TypeError, ValueError) as exc:
-            raise ContractError(f"split ratio for {name!r} not numeric: {value!r}") from exc
-        if weight < 0.0:
-            raise ContractError(f"split ratio for {name!r} negative: {weight}")
-        weights[name] = weight
-    total = sum(weights.values())
-    if abs(total - 1.0) > 1e-6:
-        raise ContractError(f"split ratios must sum to 1.0, got {total}")
-    cumulative: list[tuple[str, float]] = []
-    running = 0.0
-    for part in PARTITION_ORDER:
-        if part in weights and weights[part] > 0.0:
-            running += weights[part]
-            cumulative.append((part, running))
-    if len(cumulative) == 0:
-        raise ContractError("no active partitions in ratios")
-    digest = hashlib.sha256(f"{seed}|{group_key}".encode()).digest()
-    draw = int.from_bytes(digest[:8], "big") / 2**64
-    for part, threshold in cumulative:
-        if draw < threshold:
-            return part
-    return cumulative[-1][0]
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise ContractError(f"split seed must be an int, got {seed!r}")
+    packet = _require_packet()
+    try:
+        return str(packet.assign_one(str(group_key), seed, dict(ratios)))
+    except (ValueError, OverflowError, TypeError) as exc:
+        raise ContractError(f"split assignment rejected: {exc}") from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,6 +313,10 @@ class StreamStats:
 class ZstdLineStream:
     """Incremental zstd frame splitter with decompressed-byte offsets.
 
+    Byte-exact oracle comparator for the ``packet`` bridge framing (tests pin
+    both against each other); live paths frame via :func:`_frame_file` /
+    :func:`fetch_game_at`, never through this class at runtime.
+
     Yields ``(offset, game_bytes)`` framed on start/end event boundaries
     while reusing :mod:`decode.py` line rules implicitly: blank lines,
     non-object lines, and unbalanced boundaries still yield byte ranges so
@@ -270,7 +333,7 @@ class ZstdLineStream:
         return self._path
 
     def iter_games(self) -> Iterator[tuple[int, bytes]]:
-        """Yield framed games in file order."""
+        """Yield framed games in file order (byte-exact Python oracle)."""
         pending: list[bytes] = []
         pending_start = 0
         in_game = False

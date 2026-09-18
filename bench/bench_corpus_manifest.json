@@ -26,7 +26,7 @@
   "thresholds": null
  },
  "created_utc": "2026-09-11T16:30:00+00:00",
- "description": "Wave-G1 single re-pin at Wave-F close: every entry recomputed (cutover code + F10 decision-primary corpus); every local entry pinned by sha256; external probe entries resolved+hashed at bench time. The manifest_digest binds every entry and threshold: ANY byte change voids thresholds. 8a2f baseline stays frozen. WP-14 telemetry re-pin: stream_train.py (mlflow/sampler/profiler hooks) + run_config.py (telemetry section); thresholds stay blank-null. Desync re-pin: rust_observations.py entry removed (module deleted, plane feed supersedes); stream_train.py (device-gate validators, hot scalars, chunked workers, YAML feed knobs) + run_config.py (decode_prefetch/expand_batch_games/fetch_prefetch_depth); thresholds stay blank-null. Slice-E re-pin 2026-09-12: stream_train.py (homogeneous-buckets grouping, entry pins, ring depth 3, lint/format) + run_config.py (homogeneous_buckets flag, lint/format); thresholds stay blank-null.",
+ "description": "Wave-G1 single re-pin at Wave-F close: every entry recomputed (cutover code + F10 decision-primary corpus); every local entry pinned by sha256; external probe entries resolved+hashed at bench time. The manifest_digest binds every entry and threshold: ANY byte change voids thresholds. 8a2f baseline stays frozen. WP-14 telemetry re-pin: stream_train.py (mlflow/sampler/profiler hooks) + run_config.py (telemetry section); thresholds stay blank-null. Desync re-pin: rust_observations.py entry removed (module deleted, plane feed supersedes); stream_train.py (device-gate validators, hot scalars, chunked workers, YAML feed knobs) + run_config.py (decode_prefetch/expand_batch_games/fetch_prefetch_depth); thresholds stay blank-null. Slice-E re-pin 2026-09-12: stream_train.py (homogeneous-buckets grouping, entry pins, ring depth 3, lint/format) + run_config.py (homogeneous_buckets flag, lint/format); thresholds stay blank-null. Shrink re-pin: tests/unit/test_rust_stream_wp14.py + tests/unit/test_replay_backend_wp14.py entries refreshed for the fixture sys.modules-pop fix (hard-delegate cutover, no fallback); thresholds stay blank-null. Wave 3 re-pin: training/stream_train.py entry refreshed for the loop-counting bridge cutover (counting oracle tails deleted, bridge-direct fail-closed); thresholds stay blank-null. Speed-wave re-pin: tests/unit/test_rust_stream_wp14.py + tests/unit/test_replay_backend_wp14.py entries refreshed for the shared import-only rust_extension fixture cutover (module-duplicate fixtures deleted); thresholds stay blank-null. Deletion-wave re-pin: models/schema.py + models/encoder.py entries refreshed for translator deletion (make_digest_text -> bridge-direct, byte-identical); parity gates file entry refreshed for the observation facade -> observation_types import migration; thresholds stay blank-null. Harden re-pin: training shell facades deleted (loop/replay/objectives/dataset/run_config/distill + distillation/teacher + analysis/qualification -> split modules), import retargets only; run_config entry dropped; thresholds untouched. Dead-code re-pin: models/schema dead envelope helpers removed; thresholds untouched. Encoder re-pin: additive Rust-handoff wrapper (oracle default unchanged); thresholds untouched. Dead-code re-pin: unused Rust-handoff wrapper chain removed from encoder; thresholds untouched.",
  "entries": [
   {
    "fixtures": [
@@ -248,7 +248,7 @@
    ],
    "kind": "plane-geometry",
    "relpath": "src/hydra2/models/schema.py",
-   "sha256": "sha256:b34ca281684220c5408e330827230cdee84846c71561ffa7560cd6f21906b942"
+   "sha256": "sha256:cb11bf548aa22e75d82d4bb6905292e2311d3521a3ce3607df10ec70aa6b3d79"
   },
   {
    "fixtures": [
@@ -256,7 +256,7 @@
    ],
    "kind": "plane-geometry",
    "relpath": "src/hydra2/models/encoder.py",
-   "sha256": "sha256:9ae63eb37a5d9d35dd7992ea978112b8e88e15c0e8df595d9632c00b11faf83b"
+   "sha256": "sha256:e0724fe097820053df23ade50fdc89842552c3b0129ecf1f3f03327381ce2566"
   },
   {
    "fixtures": [
@@ -1804,7 +1804,7 @@
    ],
    "kind": "cutover-source",
    "relpath": "src/hydra2/training/rust_stream.py",
-   "sha256": "sha256:7885399961449f7659382ba9a21cf083e8dc2aa3a9e5964b00d32a6886dd6fb3"
+   "sha256": "sha256:a8d0868956a47702cd70740d94d7624d879f41098dfc8ae09f1eea25af84af98"
   },
   {
    "fixtures": [
@@ -1812,15 +1812,7 @@
    ],
    "kind": "cutover-source",
    "relpath": "src/hydra2/training/stream_train.py",
-   "sha256": "sha256:853402f0b3a43895c7d0b93ec3428f2295710f0d689368beab4405a5363aaa9a"
-  },
-  {
-   "fixtures": [
-    "F9"
-   ],
-   "kind": "cutover-source",
-   "relpath": "src/hydra2/training/run_config.py",
-   "sha256": "sha256:8d9abe208cfe0559d9a62d8ff1d4f9e2ed54fe8004bc347305dbfda2bad7955b"
+   "sha256": "sha256:d3cd522e29a922fe765e31705bb49fb0f97707990dbfd18e42b15c431eb05db3"
   },
   {
    "fixtures": [
@@ -1828,7 +1820,7 @@
    ],
    "kind": "cutover-source",
    "relpath": "tests/parity/test_parity_gates_g1_g7_wp0b.py",
-   "sha256": "sha256:af51328bc9225e9a63df4aa83aa02d4d93b8b9f86f8e51a5928e9be01a5c2c1c"
+   "sha256": "sha256:5cc481eb6ff57418c01936f5147dc114fa76b6974ef2e739343f3995e2c967cb"
   },
   {
    "fixtures": [
@@ -1836,7 +1828,7 @@
    ],
    "kind": "cutover-source",
    "relpath": "tests/unit/test_rust_stream_wp14.py",
-   "sha256": "sha256:61f86c53545194062c25aa0f720e55f51c233e16b000d63362f3d5ca42561b49"
+   "sha256": "sha256:e27459f3c0e75f23dd353bf474bef46b0e51f1d93436ca63d0479cd2ef540704"
   },
   {
    "fixtures": [
@@ -1844,7 +1836,7 @@
    ],
    "kind": "cutover-source",
    "relpath": "tests/unit/test_replay_backend_wp14.py",
-   "sha256": "sha256:07338d4b69cd026aeafb43329e60fa873ee09010f53238373036213f9d3cd0b4"
+   "sha256": "sha256:3e3cc7d53467cf229b8e9b2197e04e9a1dabf329ce36d4da1d4ad77a6ddd0abd"
   }
  ],
  "fingerprint_fields": [
@@ -1937,6 +1929,6 @@
    "module": "tests.parity.test_parity_gates_g1_g7_wp0b"
   }
  ],
- "manifest_digest": "sha256:e5dc303be49229aac879e89de50d08b96e118f3b28c6f405ec57223051fe8347",
+ "manifest_digest": "sha256:e1e677fc83b34e4bc4511128b000a028e6acbd0391e526ddc067c111f5931028",
  "manifest_version": "2"
 }

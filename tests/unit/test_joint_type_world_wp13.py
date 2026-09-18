@@ -18,7 +18,7 @@ import time
 import pytest
 
 from hydra2.belief.world import make_full_world, world_actor_observation
-from hydra2.contracts.action import CanonicalAction
+from hydra2.contracts.action_model import CanonicalAction
 from hydra2.search.common import SearchRequest, candidate_spec_hash
 from hydra2.search.joint_type_world import (
     THETA_IDS,
@@ -492,7 +492,7 @@ def test_hidden_permutation_invariance_info_key_and_planner() -> None:
     res2 = planner2.act(req2)
     assert res1.selected_action == res2.selected_action
     assert res1.value_vectors == res2.value_vectors
-    from hydra2.contracts.observation import observation_identity_document
+    from hydra2.contracts.observation_actor import observation_identity_document
 
     doc = observation_identity_document(obs)  # type: ignore[arg-type]
     doc_filtered = {k: v for k, v in doc.items() if k != "legal_mask"}

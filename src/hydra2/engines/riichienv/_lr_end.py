@@ -24,7 +24,7 @@ parallel implementation:
   resolution follows the logged flags plus deterministic copy rules, exactly
   like the engine path's log matching) and encoded with the canonical codec;
 - observations: assembled with the canonical
-  :class:`~hydra2.contracts.observation.ObservationBuilder` from the same
+  :class:`~hydra2.contracts.observation_assembly.ObservationBuilder` from the same
   envelope constructors (:mod:`hydra2.engines.riichienv.events`) the adapter
   uses, in the same emission order, so a walled fixture agrees with the
   engine path decision-for-decision (same decision ids, seats, chosen
@@ -57,29 +57,49 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path as Path
-from typing import TYPE_CHECKING as TYPE_CHECKING
-from typing import cast as cast
+from typing import (
+    TYPE_CHECKING as TYPE_CHECKING,
+)
+from typing import (
+    cast as cast,
+)
 
-from hydra2.contracts.action import CanonicalAction as CanonicalAction
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+from hydra2_replay_rs import tiles  # pyrefly: ignore[missing-import]
+
+from hydra2.contracts.action_model import CanonicalAction as CanonicalAction
 from hydra2.contracts.common import ContractError as ContractError
-from hydra2.contracts.common import make_digest_text as make_digest_text
-from hydra2.contracts.common import make_seat as make_seat
-from hydra2.contracts.common import make_tile_id as make_tile_id
-from hydra2.contracts.observation import ObservationBuilder as ObservationBuilder
-from hydra2.engines.riichienv._lr_act import _check_drawer as _check_drawer
-from hydra2.engines.riichienv._lr_act import _clear_stash_no_claim as _clear_stash_no_claim
+from hydra2.contracts.observation_assembly import ObservationBuilder as ObservationBuilder
+from hydra2.engines.riichienv._lr_act import (
+    _check_drawer as _check_drawer,
+)
+from hydra2.engines.riichienv._lr_act import (
+    _clear_stash_no_claim as _clear_stash_no_claim,
+)
 from hydra2.engines.riichienv._lr_act import _do_dahai as _do_dahai
 from hydra2.engines.riichienv._lr_act import _do_tsumo as _do_tsumo
-from hydra2.engines.riichienv._lr_act import _emit_call_resolved as _emit_call_resolved
-from hydra2.engines.riichienv._lr_act import _require_actor as _require_actor
-from hydra2.engines.riichienv._lr_claim import _do_ankan as _do_ankan
-from hydra2.engines.riichienv._lr_claim import _do_claim as _do_claim
+from hydra2.engines.riichienv._lr_act import (
+    _emit_call_resolved as _emit_call_resolved,
+)
+from hydra2.engines.riichienv._lr_act import (
+    _require_actor as _require_actor,
+)
+from hydra2.engines.riichienv._lr_claim import (
+    _do_ankan as _do_ankan,
+)
+from hydra2.engines.riichienv._lr_claim import (
+    _do_claim as _do_claim,
+)
 from hydra2.engines.riichienv._lr_claim import _do_dora as _do_dora
 from hydra2.engines.riichienv._lr_claim import _do_kakan as _do_kakan
 from hydra2.engines.riichienv._lr_claim import _do_reach as _do_reach
 from hydra2.engines.riichienv._lr_claim import _do_reach_accepted as _do_reach_accepted
-from hydra2.engines.riichienv._lr_frame import _CLAIM as _CLAIM
-from hydra2.engines.riichienv._lr_frame import _END as _END
+from hydra2.engines.riichienv._lr_frame import (
+    _CLAIM as _CLAIM,
+)
+from hydra2.engines.riichienv._lr_frame import (
+    _END as _END,
+)
 from hydra2.engines.riichienv._lr_frame import _ROW as _ROW
 from hydra2.engines.riichienv._lr_frame import _SKIP as _SKIP
 from hydra2.engines.riichienv._lr_frame import _START as _START
@@ -93,15 +113,26 @@ from hydra2.engines.riichienv._lr_frame import _rules_hash as _rules_hash
 from hydra2.engines.riichienv._lr_frame import _sim_game_id as _sim_game_id
 from hydra2.engines.riichienv._lr_frame import _table as _table
 from hydra2.engines.riichienv._lr_oracle import _peek_window_claim as _peek_window_claim
-from hydra2.engines.riichienv._lr_rows import _emit as _emit
-from hydra2.engines.riichienv._lr_rows import _GameState as _GameState
-from hydra2.engines.riichienv._lr_walk import _do_start_kyoku as _do_start_kyoku
-from hydra2.engines.riichienv._lr_walk import _pop_draw_head as _pop_draw_head
+from hydra2.engines.riichienv._lr_rows import (
+    _emit as _emit,
+)
+from hydra2.engines.riichienv._lr_rows import (
+    _GameState as _GameState,
+)
+from hydra2.engines.riichienv._lr_walk import (
+    _do_start_kyoku as _do_start_kyoku,
+)
+from hydra2.engines.riichienv._lr_walk import (
+    _pop_draw_head as _pop_draw_head,
+)
 from hydra2.engines.riichienv._lr_walk import _strict_row as _strict_row
 from hydra2.engines.riichienv._oracle_base import _TRANSPARENT_KINDS as _TRANSPARENT_KINDS
-from hydra2.engines.riichienv.events import make_delta as make_delta
-from hydra2.engines.riichienv.events import reason_kind as reason_kind
-from hydra2.engines.riichienv.tiles import mjai_string_of as mjai_string_of
+from hydra2.engines.riichienv.events import (
+    make_delta as make_delta,
+)
+from hydra2.engines.riichienv.events import (
+    reason_kind as reason_kind,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence as Sequence
@@ -162,8 +193,8 @@ def _do_hora(state: _GameState, walk: _KyokuWalk, kyoku: int, event: dict[str, o
             raise state.fail(kyoku, "hora", "tsumo tile differs from the drawn tile")
         expected = CanonicalAction(
             kind=cast("Any", "tsumo"),
-            actor=make_seat(winner),
-            tile=make_tile_id(tile),
+            actor=_bridge_contracts.make_seat(winner),
+            tile=_bridge_contracts.make_tile_id(tile),
             called_tile=None,
             consumed_tiles=(),
             source_seat=None,
@@ -186,8 +217,8 @@ def _do_hora(state: _GameState, walk: _KyokuWalk, kyoku: int, event: dict[str, o
             offered=live_offered,
         )
         try:
-            walk.tw.do_tsumo_win(winner, mjai_string_of(tile))
-        except ContractError as exc:
+            walk.tw.do_tsumo_win(winner, tiles.mjai_string_of(tile))
+        except (ContractError, ValueError) as exc:
             raise state.fail(kyoku, "hora", f"oracle win failed: {exc}") from exc
         source: int | None = None
     else:
@@ -202,15 +233,15 @@ def _do_hora(state: _GameState, walk: _KyokuWalk, kyoku: int, event: dict[str, o
         if step.mjai_type != "hora":
             raise state.fail(kyoku, "hora", f"seat {winner} oracle holds {step.mjai_type}")
         tile = state.last_discard[1]
-        if step.tile is not None and mjai_string_of(step.tile) != mjai_string_of(tile):
+        if step.tile is not None and tiles.mjai_string_of(step.tile) != tiles.mjai_string_of(tile):
             raise state.fail(kyoku, "hora", "ron tile differs from the offered discard")
         expected = CanonicalAction(
             kind=cast("Any", "ron"),
-            actor=make_seat(winner),
-            tile=make_tile_id(tile),
+            actor=_bridge_contracts.make_seat(winner),
+            tile=_bridge_contracts.make_tile_id(tile),
             called_tile=None,
             consumed_tiles=(),
-            source_seat=make_seat(discarder),
+            source_seat=_bridge_contracts.make_seat(discarder),
             declares_riichi=False,
             metadata=(),
         )
@@ -519,11 +550,11 @@ def replay_game(
     builder = ObservationBuilder(
         game_id=sim_game_id,
         rules_id=manifest.rules_id,
-        rules_hash=make_digest_text(rules_hash),
+        rules_hash=_bridge_contracts.make_digest_text(rules_hash),
         action_table_hash=table.digest,
         expected_legal_mask_length=len(table.actions),
-        event_schema_hash=make_digest_text(_event_schema_hash()),
-        packet_boundary_hash=make_digest_text(_packet_boundary_hash()),
+        event_schema_hash=_bridge_contracts.make_digest_text(_event_schema_hash()),
+        packet_boundary_hash=_bridge_contracts.make_digest_text(_packet_boundary_hash()),
     )
     state = _GameState(
         game=record,

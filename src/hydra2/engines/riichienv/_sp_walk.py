@@ -3,20 +3,37 @@
 from __future__ import annotations
 
 from dataclasses import dataclass as dataclass
-from typing import TYPE_CHECKING as TYPE_CHECKING
-from typing import cast as cast
+from typing import (
+    TYPE_CHECKING as TYPE_CHECKING,
+)
+from typing import (
+    cast as cast,
+)
 
-from hydra2.contracts.action import canonical_action_codec as canonical_action_codec
-from hydra2.contracts.common import ContractError as ContractError
-from hydra2.contracts.common import IllegalActionError as IllegalActionError
-from hydra2.contracts.common import make_digest_text as make_digest_text
-from hydra2.contracts.observation import ObservationBuilder as ObservationBuilder
-from hydra2.engines.riichienv._oracle_base import _BAKAZE_TO_WIND as _BAKAZE_TO_WIND
-from hydra2.engines.riichienv._oracle_base import _TRANSPARENT_KINDS as _TRANSPARENT_KINDS
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
+from hydra2.contracts.action_table import canonical_action_codec as canonical_action_codec
+from hydra2.contracts.common import (
+    ContractError as ContractError,
+)
+from hydra2.contracts.common import (
+    IllegalActionError as IllegalActionError,
+)
+from hydra2.contracts.observation_assembly import ObservationBuilder as ObservationBuilder
+from hydra2.engines.riichienv._oracle_base import (
+    _BAKAZE_TO_WIND as _BAKAZE_TO_WIND,
+)
+from hydra2.engines.riichienv._oracle_base import (
+    _TRANSPARENT_KINDS as _TRANSPARENT_KINDS,
+)
 from hydra2.engines.riichienv._sp_capture import _capture_row as _capture_row
 from hydra2.engines.riichienv._sp_oracle import _WindowOracle as _WindowOracle
-from hydra2.engines.riichienv._sp_records import _emit as _emit
-from hydra2.engines.riichienv._sp_records import _event_schema_hash as _event_schema_hash
+from hydra2.engines.riichienv._sp_records import (
+    _emit as _emit,
+)
+from hydra2.engines.riichienv._sp_records import (
+    _event_schema_hash as _event_schema_hash,
+)
 from hydra2.engines.riichienv._sp_records import _expand_nonclaim_legals as _expand_nonclaim_legals
 from hydra2.engines.riichienv._sp_records import _packet_boundary_hash as _packet_boundary_hash
 from hydra2.engines.riichienv.events import make_delta as make_delta
@@ -25,7 +42,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence as Sequence
     from typing import Any as Any
 
-    from hydra2.contracts.action import CanonicalAction as CanonicalAction
+    from hydra2.contracts.action_model import CanonicalAction as CanonicalAction
     from hydra2.engines.riichienv._sp_records import _GameState as _GameState
     from hydra2.engines.riichienv._sp_records import _SimStep as _SimStep
 
@@ -168,17 +185,17 @@ def _fresh_builder(state: _GameState) -> ObservationBuilder:
     """One observation builder per kyoku (walled-adapter parity).
 
     Histories live exactly one kyoku (model cap
-    :data:`~hydra2.contracts.observation.HISTORY_EVENT_CAP`); rebirthing the
+    :data:`~hydra2.contracts.observation_assembly.HISTORY_EVENT_CAP`); rebirthing the
     builder per hand is what the walled adapter does via ``_open_hand``.
     """
     return ObservationBuilder(
         game_id=state.sim_game_id,
         rules_id=state.rules.rules_id,
-        rules_hash=make_digest_text(state.rules_hash),
+        rules_hash=_bridge_contracts.make_digest_text(state.rules_hash),
         action_table_hash=state.table.digest,
         expected_legal_mask_length=len(state.table.actions),
-        event_schema_hash=make_digest_text(_event_schema_hash()),
-        packet_boundary_hash=make_digest_text(_packet_boundary_hash()),
+        event_schema_hash=_bridge_contracts.make_digest_text(_event_schema_hash()),
+        packet_boundary_hash=_bridge_contracts.make_digest_text(_packet_boundary_hash()),
     )
 
 

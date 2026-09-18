@@ -24,10 +24,10 @@ from hydra2.training.loop_batch import (
 from hydra2.training.loop_batch import (
     _validate_batch_no_privileged as _validate_batch_no_privileged,
 )
-from hydra2.training.objectives import (
+from hydra2.training.objectives_loss import (
     _check_total_finite as _check_total_finite,
 )
-from hydra2.training.objectives import (
+from hydra2.training.objectives_loss import (
     validate_supervised_inputs as validate_supervised_inputs,
 )
 
@@ -108,7 +108,7 @@ class SupervisedLoopLossMixin:
             return batch
         decision_ids_raw: list[object] = list(decision_ids_any)
         decision_ids: list[str] = [str(x) for x in decision_ids_raw]
-        from hydra2.belief.oracle_loader import join_oracle_targets
+        from hydra2.belief.oracle_join import join_oracle_targets
 
         joined = join_oracle_targets(decision_ids, src, evaluation_wall_ids=evaluation_wall_ids)
         merged: dict[str, Any] = dict(batch)

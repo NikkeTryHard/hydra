@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.contracts.common import (
     ContractError,
     DigestMismatchError,
@@ -19,13 +21,14 @@ from hydra2.contracts.common import (
     TileId,
     TileType,
     VisibilityViolationError,
-    make_digest_text,
-    make_seat,
     make_sequence_no,
-    make_tile_id,
     make_tile_type,
 )
-from hydra2.contracts.event import EventEnvelope, filter_events_for_actor, visible_to_actor
+from hydra2.contracts.event_envelope import (
+    EventEnvelope,
+    filter_events_for_actor,
+    visible_to_actor,
+)
 from hydra2.contracts.observation_actor import (
     ActorObservation,
     compute_observation_hash,
@@ -72,7 +75,7 @@ class VisibilityValidator:
         """Reject any event ``actor`` may not legitimately hold."""
         if not isinstance(event, EventEnvelope):
             raise ContractError("event must be an EventEnvelope")
-        seat = make_seat(int(actor))
+        seat = _bridge_contracts.make_seat(int(actor))
         if not visible_to_actor(event, seat):
             raise VisibilityViolationError(
                 f"seat {int(seat)} may not hold {event.visibility} event "
@@ -196,12 +199,12 @@ class ObservationBuilder:
             raise ContractError("expected_legal_mask_length must be a positive int")
         self._game_id = game_id
         self._rules_id = _require_str(rules_id, name="rules_id")
-        self._rules_hash = make_digest_text(rules_hash)
-        self._action_table_hash = make_digest_text(action_table_hash)
+        self._rules_hash = _bridge_contracts.make_digest_text(rules_hash)
+        self._action_table_hash = _bridge_contracts.make_digest_text(action_table_hash)
         self._mask_length = expected_legal_mask_length
-        self._event_schema_hash = make_digest_text(event_schema_hash)
+        self._event_schema_hash = _bridge_contracts.make_digest_text(event_schema_hash)
         self._obs_schema_hash = observation_schema_digest()
-        self._packet_boundary_hash = make_digest_text(packet_boundary_hash)
+        self._packet_boundary_hash = _bridge_contracts.make_digest_text(packet_boundary_hash)
         self._histories: tuple[list[EventEnvelope], ...] = ([], [], [], [])
         self._concealed: list[tuple[TileId, ...] | None] = [None, None, None, None]
         self._drawn: list[int | None] = [None, None, None, None]
@@ -307,7 +310,7 @@ class ObservationBuilder:
         added_type = _tile_type_of(added_tile)
         for index, meld in enumerate(self._melds[actor]):
             if meld.kind == "pon" and _tile_type_of(int(meld.tiles[0])) == added_type:
-                tiles = tuple(sorted((*meld.tiles, make_tile_id(added_tile))))
+                tiles = tuple(sorted((*meld.tiles, _bridge_contracts.make_tile_id(added_tile))))
                 self._melds[actor][index] = VisibleMeld(
                     meld_id=None, kind="kakan", owner=meld.owner, tiles=tiles
                 )
@@ -328,7 +331,7 @@ class ObservationBuilder:
 
     def set_concealed_hand(self, actor: Seat, tiles: Sequence[int]) -> None:
         """Store ONE seat's concealed hand; other seats' slots are untouched."""
-        seat = int(make_seat(int(actor)))
+        seat = int(_bridge_contracts.make_seat(int(actor)))
         hand = _tile_tuple(tiles, name="concealed_hand")
         self._concealed[seat] = tuple(sorted(hand))
 
@@ -342,7 +345,7 @@ class ObservationBuilder:
         pending_declaration_discard: int | None = None,
     ) -> None:
         """Update one seat's eligibility facts (partial updates allowed)."""
-        seat = int(make_seat(int(actor)))
+        seat = int(_bridge_contracts.make_seat(int(actor)))
         if furiten is not None:
             self._furiten[seat] = _require_enum(furiten, name="furiten", allowed=_FURIETEN_STATES)
         if can_tsumo is not None:
@@ -350,7 +353,9 @@ class ObservationBuilder:
         if can_riichi is not None:
             self._can_riichi[seat] = _require_bool(can_riichi, name="can_riichi")
         if pending_declaration_discard is not None:
-            self._pending_discard[seat] = int(make_tile_id(pending_declaration_discard))
+            self._pending_discard[seat] = int(
+                _bridge_contracts.make_tile_id(pending_declaration_discard)
+            )
 
     def update_public_state(self, **snapshot: object) -> None:
         """Supply the authoritative public scalar state (closed vocabulary)."""
@@ -392,7 +397,7 @@ class ObservationBuilder:
                 snapshot["riichi_sticks"], name="riichi_sticks", minimum=0, maximum=None
             )
         if "dealer" in snapshot:
-            self._public["dealer"] = make_seat(snapshot["dealer"])  # type: ignore[arg-type]  # reason: snapshot value statically object; validated inside make_seat
+            self._public["dealer"] = _bridge_contracts.make_seat(snapshot["dealer"])  # type: ignore[arg-type]  # reason: snapshot value statically object; validated inside make_seat
         if "scores" in snapshot:
             self._public["scores"] = _quad(
                 snapshot["scores"],
@@ -400,7 +405,7 @@ class ObservationBuilder:
                 validator=_validate_score,
             )
         if "turn_actor" in snapshot:
-            self._public["turn_actor"] = make_seat(snapshot["turn_actor"])  # type: ignore[arg-type]  # reason: snapshot value statically object; validated inside make_seat
+            self._public["turn_actor"] = _bridge_contracts.make_seat(snapshot["turn_actor"])  # type: ignore[arg-type]  # reason: snapshot value statically object; validated inside make_seat
         if "phase" in snapshot:
             self._public["phase"] = _require_enum(snapshot["phase"], name="phase", allowed=PHASES)
         if "live_wall_tiles_remaining" in snapshot:
@@ -419,7 +424,7 @@ class ObservationBuilder:
 
     def build(self, *, actor: Seat, legal_mask: Sequence[bool]) -> ActorObservation:
         """Assemble the observation for ONE seat from its isolated cache."""
-        seat = int(make_seat(int(actor)))
+        seat = int(_bridge_contracts.make_seat(int(actor)))
         mask = tuple(legal_mask)
         if len(mask) != self._mask_length:
             raise ContractError(
@@ -439,12 +444,12 @@ class ObservationBuilder:
         indicators = tuple(self._dora) + (DORA_SENTINEL,) * (DORA_SHAPE[0] - len(self._dora))
         conceal = self._concealed[seat]
         pending = self._pending_discard[seat]
-        history = filter_events_for_actor(self._histories[seat], make_seat(seat))
+        history = filter_events_for_actor(self._histories[seat], _bridge_contracts.make_seat(seat))
         return make_actor_observation(
             game_id=self._game_id,
             decision_id=str(self._public["decision_id"]),
             sequence=make_sequence_no(history[-1].sequence if len(history) > 0 else 0),
-            actor=make_seat(seat),
+            actor=_bridge_contracts.make_seat(seat),
             rules_id=self._rules_id,
             rules_hash=self._rules_hash,
             action_table_hash=self._action_table_hash,
@@ -467,10 +472,14 @@ class ObservationBuilder:
             actor_furiten=self._furiten[seat],
             actor_can_tsumo=self._can_tsumo[seat],
             actor_can_riichi=self._can_riichi[seat],
-            pending_declaration_discard=(None if pending is None else make_tile_id(pending)),
+            pending_declaration_discard=(
+                None if pending is None else _bridge_contracts.make_tile_id(pending)
+            ),
             concealed_hand=conceal if conceal is not None else (),
             own_drawn_tile=(
-                None if self._drawn[seat] is None else make_tile_id(self._drawn[seat])  # type: ignore[arg-type]  # reason: None filtered by ternary; range validated inside make_tile_id
+                None
+                if self._drawn[seat] is None
+                else _bridge_contracts.make_tile_id(self._drawn[seat])  # type: ignore[arg-type]  # reason: None filtered by ternary; range validated inside make_tile_id
             ),
             visible_discards=tuple(tuple(river) for river in self._discards),
             visible_melds=tuple(tuple(row) for row in self._melds),

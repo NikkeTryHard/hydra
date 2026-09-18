@@ -13,6 +13,8 @@ import hashlib
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.contracts.canonical import canonical_json_bytes
 from hydra2.contracts.common import (
     ActionId,
@@ -22,8 +24,6 @@ from hydra2.contracts.common import (
     SequenceNo,
     TileId,
     VisibilityViolationError,
-    make_digest_text,
-    make_seat,
 )
 from hydra2.contracts.event_vocab import (
     _PUBLIC_VISIBLE_TO,
@@ -199,7 +199,7 @@ class EventEnvelope:
         )
         if isinstance(self.visible_to, (str, bytes)) or not isinstance(self.visible_to, Sequence):
             raise ContractError("visible_to must be a sequence of seats")
-        seats = tuple(make_seat(int(s)) for s in self.visible_to)
+        seats = tuple(_bridge_contracts.make_seat(int(s)) for s in self.visible_to)
         if seats != tuple(sorted(set(seats))):
             raise ContractError("visible_to must be strictly ascending with unique seats")
         object.__setattr__(self, "visible_to", seats)
@@ -221,8 +221,10 @@ class EventEnvelope:
                 raise ContractError("public_delta entries must be PublicStateDelta")
             deltas.append(delta)
         object.__setattr__(self, "public_delta", tuple(deltas))
-        object.__setattr__(self, "rules_hash", make_digest_text(self.rules_hash))
-        object.__setattr__(self, "schema_hash", make_digest_text(self.schema_hash))
+        object.__setattr__(self, "rules_hash", _bridge_contracts.make_digest_text(self.rules_hash))
+        object.__setattr__(
+            self, "schema_hash", _bridge_contracts.make_digest_text(self.schema_hash)
+        )
         _validate_visibility_matrix(self)
         _validate_kind_shape(self)
 
@@ -511,7 +513,7 @@ def validate_event_stream(events: Sequence[EventEnvelope]) -> None:
 
 def visible_to_actor(event: EventEnvelope, actor: Seat) -> bool:
     """Whether ``event`` may enter ``actor``'s history (server_private: never)."""
-    actor_seat = make_seat(int(actor))
+    actor_seat = _bridge_contracts.make_seat(int(actor))
     if event.visibility == "public":
         return True
     if event.visibility == "actor_private":
@@ -527,7 +529,7 @@ def filter_events_for_actor(
     Server-private events are dropped here; they can never be serialized into
     any actor history (SPEC 7.1 bullet 3).
     """
-    actor_seat = make_seat(int(actor))
+    actor_seat = _bridge_contracts.make_seat(int(actor))
     return tuple(event for event in events if visible_to_actor(event, actor_seat))
 
 

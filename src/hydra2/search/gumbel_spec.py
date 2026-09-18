@@ -15,16 +15,24 @@ import hashlib
 import logging
 from typing import Any
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.artifacts.canonical import canonical_bytes as canonical_bytes
 from hydra2.contracts.common import ContractError as ContractError
-from hydra2.contracts.common import make_digest_text as make_digest_text
-from hydra2.search.common import DEPLOYABLE_DEADLINE_MS as DEPLOYABLE_DEADLINE_MS
-from hydra2.search.common import MISSING_HASH as MISSING_HASH
+from hydra2.search.common import (
+    DEPLOYABLE_DEADLINE_MS as DEPLOYABLE_DEADLINE_MS,
+)
+from hydra2.search.common import (
+    MISSING_HASH as MISSING_HASH,
+)
 from hydra2.search.common import REPO_ROOT as REPO_ROOT
 from hydra2.search.common import CandidateSpec as CandidateSpec
-from hydra2.search.common import ResourceBudget as ResourceBudget
-from hydra2.search.gumbel_config import GumbelSearchConfig as GumbelSearchConfig
-from hydra2.search.gumbel_config import PuctConfig as PuctConfig
+from hydra2.search.gumbel_config import (
+    GumbelSearchConfig as GumbelSearchConfig,
+)
+from hydra2.search.gumbel_config import (
+    PuctConfig as PuctConfig,
+)
 from hydra2.search.gumbel_core import logger as logger
 
 __all__ = [
@@ -45,8 +53,6 @@ def _load_default_hashes() -> dict[str, str]:
     (model + candidate0 canonical descriptors) — never placeholders here.
     """
     from pathlib import Path  # noqa: TC003
-
-    from hydra2.search.common import MISSING_HASH
 
     repo = REPO_ROOT
     defaults: dict[str, str] = {}
@@ -69,19 +75,13 @@ def _load_default_hashes() -> dict[str, str]:
             "packet_boundary_hash": repo / "configs" / "contracts" / "packet_boundary_v1.json",
         }
         for key, path in mapping.items():
-            if path.exists():
-                defaults[key] = _sha(path)
-            else:
-                defaults[key] = "sha256:" + MISSING_HASH
-    except (ImportError, AttributeError, OSError, ValueError, TypeError, ContractError) as exc:
-        logger.debug("gumbel: file-backed default hashes fallback", exc_info=exc)
-        for key in (
-            "rules_hash",
-            "action_table_hash",
-            "observation_schema_hash",
-            "packet_boundary_hash",
-        ):
-            _ = defaults.setdefault(key, "sha256:" + MISSING_HASH)
+            if not path.exists():
+                raise ContractError(f"gumbel: required config missing: {path}")
+            defaults[key] = _sha(path)
+    except ContractError:
+        raise
+    except (ImportError, AttributeError, OSError, ValueError, TypeError) as exc:
+        raise ContractError(f"gumbel: file-backed default hashes required: {exc}") from exc
     return defaults
 
 
@@ -96,10 +96,10 @@ def _model_hash_from_identity(model: Any | None) -> str:
     if model is not None:
         ident: Any = getattr(model, "model_identity", None)
         if ident is not None:
-            return str(make_digest_text(str(ident)))
+            return str(_bridge_contracts.make_digest_text(str(ident)))
     from hydra2.models.model import Hydra2BaselineModel
 
-    return str(make_digest_text(str(Hydra2BaselineModel().model_identity)))
+    return str(_bridge_contracts.make_digest_text(str(Hydra2BaselineModel().model_identity)))
 
 
 def _derive_utility_manifest_hash(model: Any | None) -> str:
@@ -109,7 +109,7 @@ def _derive_utility_manifest_hash(model: Any | None) -> str:
 
         probe: Any = Hydra2BaselineModel() if model is None else model
         manifest_raw: object = probe.utility_manifest_hash
-        return str(make_digest_text(str(manifest_raw)))
+        return str(_bridge_contracts.make_digest_text(str(manifest_raw)))
     except (ImportError, AttributeError, ValueError, TypeError, OSError) as exc:
         logger.debug("gumbel: utility_manifest_hash derivation failed", exc_info=exc)
         raise ContractError("gumbel: cannot derive utility_manifest_hash from model") from exc

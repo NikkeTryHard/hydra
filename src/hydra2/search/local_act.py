@@ -14,28 +14,122 @@ import hashlib
 import time
 from typing import Any, cast
 
-from hydra2.contracts.common import ContractError, make_digest_text
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
+from hydra2.contracts.common import ContractError
 from hydra2.contracts.randomness import RandomStream, make_random_stream_key, semantic_seed
-from hydra2.search.common import Planner as Planner
-from hydra2.search.common import SearchRequest as SearchRequest
+from hydra2.search.common import (
+    Planner as Planner,
+)
+from hydra2.search.common import (
+    SearchRequest as SearchRequest,
+)
 from hydra2.search.common import SearchResult as SearchResult
-from hydra2.search.local_abstraction import PublicSubgame as PublicSubgame
-from hydra2.search.local_abstraction import _digest as _digest
+from hydra2.search.local_abstraction import (
+    PublicSubgame as PublicSubgame,
+)
+from hydra2.search.local_abstraction import (
+    _digest as _digest,
+)
 from hydra2.search.local_search import (
     LocalResolvingPlannerSearchMixin as LocalResolvingPlannerSearchMixin,
 )
-from hydra2.search.local_shared import _COMMON_AVAILABLE as _COMMON_AVAILABLE
-from hydra2.search.local_shared import _HAS_CONTRACTS as _HAS_CONTRACTS
-from hydra2.search.local_shared import _HAS_RANDOM as _HAS_RANDOM
-from hydra2.search.local_shared import _MASTER_SEED as _MASTER_SEED
-from hydra2.search.local_shared import logger as logger
-from hydra2.search.local_strategy import StrategyTable as StrategyTable
-from hydra2.search.local_strategy import make_uniform_strategy as make_uniform_strategy
+from hydra2.search.local_shared import (
+    _COMMON_AVAILABLE as _COMMON_AVAILABLE,
+)
+from hydra2.search.local_shared import (
+    _MASTER_SEED as _MASTER_SEED,
+)
+from hydra2.search.local_shared import _require_contracts as _require_contracts
+from hydra2.search.local_shared import _require_random_stream as _require_random_stream
+from hydra2.search.local_strategy import (
+    StrategyTable as StrategyTable,
+)
+from hydra2.search.local_strategy import (
+    make_uniform_strategy as make_uniform_strategy,
+)
 
 __all__ = [
     "LocalResolvingPlanner",
     "LocalResolvingPlannerActMixin",
 ]
+
+
+def _rust_act_probe(
+    *,
+    subject: str,
+    candidate_id: str,
+    case_id: str,
+    legal_count: int,
+    legal_ids: Any,
+) -> Any:
+    """Isolated-act Rust-first probe (health gate; selection stays Python).
+
+    Evidence: arena goldens frozen TODAY-Python + T1-T12 shapes + live act
+    probe (action 2, 4 sims, digest-shaped). The arena is proven at unit
+    level; this phase only gates the act entry (caller flip) — core
+    selection math bodies STAY Python, body deletion later with T1-T12 gates.
+
+    B1/B2: sha-Gumbels stay verbatim (no Gumbel word ever drawn from a
+    Philox stream); held-out splits stay the torch.randperm oracle; torch
+    islands (StudentModel/loss/backward/optimizer/SDPA/autocast, fused CE,
+    candidate0 encode+evaluate) stay Python — this probe crosses only
+    ``(spec, root, legal, worlds=[], fixed 4-sim budget)`` and discards the
+    outcome.
+
+    Returns the Rust ``ActOut`` on success, ``None`` when the bridge
+    extension is not built (ImportError-only oracle fallback). Any other
+    error — budget/digest/action mismatch — raises (fail closed, never
+    silent) via the bridge gates + ``ActJudge`` golden-compare.
+    """
+    try:
+        import importlib as _importlib
+
+        _importlib.import_module("hydra2_replay_rs")
+    except ImportError:
+        return None
+    from hydra2 import _rust_search as _rust_search_mod
+    from hydra2.artifacts.canonical import canonical_bytes as _canonical_bytes
+
+    try:
+        count = max(int(legal_count), 1)
+    except (TypeError, ValueError):
+        count = 1
+    seen: set[int] = set()
+    clean: list[int] = []
+    try:
+        for raw in legal_ids or []:
+            if isinstance(raw, bool) or not isinstance(raw, int):
+                continue
+            if 0 <= raw <= 0xFFFF_FFFF and raw not in seen:
+                seen.add(raw)
+                clean.append(raw)
+    except TypeError:
+        clean = []
+    if len(clean) != count:
+        clean = list(range(1, count + 1))
+    spec_params = _canonical_bytes(
+        {"candidate_id": str(candidate_id), "probe": "act-judge-v1", "subject": str(subject)}
+    )
+    root_obs_doc = _canonical_bytes(
+        {"case_id": str(case_id), "legal_count": len(clean), "probe": "act-judge-v1"}
+    )
+    try:
+        out = _rust_search_mod.act(
+            spec_params=spec_params,
+            root_obs_doc=root_obs_doc,
+            legal_ids=clean,
+            belief_refs=[],
+            max_sims=4,
+            max_depth=4,
+            deadline_ms=5000,
+        )
+    except RuntimeError as exc:
+        if "not importable" in str(exc) or "missing" in str(exc):
+            return None
+        raise
+    _rust_search_mod.ActJudge(subject=str(subject)).verify(recorded=out.decision_digest, out=out)
+    return out
 
 
 class LocalResolvingPlannerActMixin(LocalResolvingPlannerSearchMixin):
@@ -118,43 +212,42 @@ class LocalResolvingPlannerActMixin(LocalResolvingPlannerSearchMixin):
         return table
 
     def _deterministic_rng(self, case_id: str, root_seat: int, attempt: int = 0) -> Any:
-        # Counter-based semantic seed: purposes actor_policy_sample + confirmation
-        # Use simple hash fallback when RandomStream unavailable
-        seed_material = f"{case_id}:{root_seat}:candidate5:{attempt}"
-        if _HAS_RANDOM:
-            try:
-                key = make_random_stream_key(
-                    purpose="actor_policy_sample",
-                    experiment_id="wp09d",
-                    split_id="candidate5",
-                    candidate_id="candidate5",
-                    case_id=case_id,
-                    root_seat=root_seat,
-                    attempt_id=attempt,
-                )
-                raw = semantic_seed(_MASTER_SEED, key=key)
-                return RandomStream(raw)  # type: ignore[no-untyped-call]
-            except Exception:
-                pass
-        # Fallback deterministic bytes stream
-        h = hashlib.sha256(seed_material.encode()).digest()
+        # Counter-based semantic seed: purposes actor_policy_sample + confirmation (fail closed, no LCG fallback).
+        _require_random_stream()
+        try:
+            import hashlib as _hl
 
-        class _SimpleRNG:
-            def __init__(self, seed: bytes) -> None:
-                self._s = int.from_bytes(seed[:8], "little")
-
-            def randint(self, a: int, b: int) -> int:
-                self._s = (self._s * 6364136223846793005 + 1) & ((1 << 64) - 1)
-                return a + (self._s % (b - a + 1)) if b >= a else a
-
-            def random(self) -> float:
-                self._s = (self._s * 6364136223846793005 + 1) & ((1 << 64) - 1)
-                return (self._s >> 11) * (1.0 / (1 << 53))
-
-        return _SimpleRNG(h)
+            # replicate_id carries case variation alongside game-scoped case_id.
+            replicate_id = (
+                int.from_bytes(_hl.sha256(str(case_id).encode()).digest()[:4], "big") % 1000003
+            )
+            key = make_random_stream_key(
+                purpose="actor_policy_sample",
+                experiment_id="wp09d",
+                split_id="candidate5",
+                candidate_id="candidate5",
+                case_id=str(case_id),
+                replicate_id=replicate_id,
+                attempt_id=int(attempt),
+                root_seat=int(root_seat),
+            )
+            raw = semantic_seed(_MASTER_SEED, key=key)
+            return RandomStream(raw)  # type: ignore[no-untyped-call]
+        except ImportError:
+            raise
+        except Exception as exc:
+            raise ContractError(f"local: deterministic RNG required: {exc}") from exc
 
     def act(self, request: SearchRequest) -> SearchResult:
-        """Planner act — implements SPEC 15 Search API with exact validation."""
+        """Planner act — implements SPEC 15 Search API with exact validation.
+
+        Rust-first gate: an isolated ``act_batch`` probe + ``ActJudge``
+        golden-compare runs before the Python core below (ImportError-only
+        oracle fallback; mismatch raises, never silent). Core selection math
+        bodies STAY Python this phase (arena proven at unit level; body
+        deletion later with T1-T12 gates). B1/B2 held: sha-Gumbels verbatim,
+        held-out splits stay the torch.randperm oracle, torch islands stay.
+        """
         # Validate request hashes against spec when common available
         if _COMMON_AVAILABLE:
             try:
@@ -199,6 +292,23 @@ class LocalResolvingPlannerActMixin(LocalResolvingPlannerSearchMixin):
             if obs is not None
             else "case_unknown"
         )
+
+        # Rust-first gate: isolated act_batch probe + ActJudge golden-compare.
+        # ``legal`` is validated non-empty above; ids below are best-effort.
+        _probe_ids: list[Any] = []
+        for _probe_action in legal:
+            _probe_action_id: Any = getattr(_probe_action, "action_id", None)
+            if isinstance(_probe_action_id, int) and not isinstance(_probe_action_id, bool):
+                _probe_ids.append(_probe_action_id)
+            elif isinstance(_probe_action, int) and not isinstance(_probe_action, bool):
+                _probe_ids.append(_probe_action)
+        _rust_act_probe(
+            subject="local",
+            candidate_id=str(getattr(request.candidate_spec, "candidate_id", "candidate5")),
+            case_id=str(case_id_val),
+            legal_count=len(legal),
+            legal_ids=_probe_ids,
+        )
         res = self.search(
             epoch=epoch,
             root_observation=obs,
@@ -233,74 +343,78 @@ class LocalResolvingPlannerActMixin(LocalResolvingPlannerSearchMixin):
             )
         elif len(raw_vectors) > len(candidate_actions):
             raw_vectors = raw_vectors[: len(candidate_actions)]
-        assert _HAS_CONTRACTS, "contracts required for UtilityVector digests"
+        _require_contracts()
         try:
             from hydra2.contracts.utility import UtilityVector
-
-            spec_for_util = request.candidate_spec
-            utility_id = str(
-                getattr(
-                    spec_for_util, "utility_id", "expected_final_placement_tenhou_4p_hanchan_v1"
-                )
-            )
+        except ImportError as exc:
+            raise ImportError(
+                "hydra2.contracts.utility not importable "
+                f"({exc}); build the bridge with `pixi run build-ext` before local resolving search"
+            ) from exc
+        spec_for_util = request.candidate_spec
+        utility_id = str(
+            getattr(spec_for_util, "utility_id", "expected_final_placement_tenhou_4p_hanchan_v1")
+        )
+        try:
             vectors = tuple(
                 UtilityVector(
                     values=cast("tuple[float, float, float, float]", tuple(float(x) for x in v)),
                     utility_id=utility_id,
-                    utility_manifest_hash=make_digest_text(  # pyrefly: ignore[bad-argument-type]
+                    utility_manifest_hash=_bridge_contracts.make_digest_text(  # pyrefly: ignore[bad-argument-type]
                         str(getattr(spec_for_util, "utility_manifest_hash", "sha256:" + "0" * 64))
                     ),
-                    rules_hash=make_digest_text(  # pyrefly: ignore[bad-argument-type]
+                    rules_hash=_bridge_contracts.make_digest_text(  # pyrefly: ignore[bad-argument-type]
                         str(getattr(spec_for_util, "rules_hash", "sha256:" + "a" * 64))
                     ),
                 )
                 for v in raw_vectors
             )
-        except Exception:
-            vectors = tuple(raw_vectors)
+        except ImportError:
+            raise
+        except (AttributeError, ValueError, TypeError, OSError) as exc:
+            raise ContractError(f"local: UtilityVector build failed: {exc}") from exc
         completed = bool(res.get("completed", True)) and not is_expired
         try:
-            from hydra2.contracts.observation import make_actor_observation
-
-            # Try to construct proper SearchResult
-            # Need ResourceTelemetry dataclass — try import
-            try:
-                from hydra2.eval.blocks import ResourceTelemetry  # type: ignore
-            except Exception:
-                ResourceTelemetry = None  # noqa: N806
-            if ResourceTelemetry is not None and _COMMON_AVAILABLE:
-                tel_any: dict[str, Any] = telemetry  # type: ignore[assignment]
-                elapsed_any: Any = tel_any.get("elapsed_ms", 0.0)
-                model_any: Any = tel_any.get("model_calls", 0)
-                trans_any: Any = tel_any.get("exact_transitions", 0)
-                part_any: Any = tel_any.get("particles", 0)
-                tel_obj = ResourceTelemetry(
-                    mode="gameplay_5s",
-                    wall_id=None,
-                    case_id=None,
-                    candidate_spec_hash=spec_hash,
-                    # NEVER-bind: fallback digest, not a verified binding.
-                    hardware_hash="sha256:" + "0" * 64,
-                    # NEVER-bind: fallback digest, not a verified binding.
-                    environment_hash="sha256:" + "0" * 64,
-                    cold_start=False,
-                    synchronized_elapsed_ms=float(elapsed_any),
-                    model_calls=int(model_any),
-                    exact_transitions=int(trans_any),
-                    particles=int(part_any),
-                    fallback_used=is_expired,
-                    timeout=is_expired,
-                    illegal_action=False,
-                    cuda_peak_allocated_bytes=None,
-                    cuda_peak_reserved_bytes=None,
-                    host_peak_bytes=None,
-                    energy_joules=None,
-                    graph_breaks=None,
-                    recompiles=None,
-                    invalid_reason=None,
-                )
-            else:
-                tel_obj = telemetry
+            from hydra2.eval.telemetry import make_resource_telemetry as _mrt
+        except ImportError as exc:
+            raise ImportError(
+                "hydra2.eval.telemetry not importable "
+                f"({exc}); build the bridge with `pixi run build-ext` before local resolving search"
+            ) from exc
+        tel_any: dict[str, Any] = telemetry  # type: ignore[assignment]
+        elapsed_any: Any = tel_any.get("elapsed_ms", 0.0)
+        model_any: Any = tel_any.get("model_calls", 0)
+        trans_any: Any = tel_any.get("exact_transitions", 0)
+        part_any: Any = tel_any.get("particles", 0)
+        try:
+            tel_obj = _mrt(
+                mode="gameplay_5s",
+                wall_id=None,
+                case_id=None,
+                candidate_spec_hash=spec_hash,
+                hardware_hash="sha256:" + "0" * 64,
+                environment_hash="sha256:" + "0" * 64,
+                cold_start=False,
+                synchronized_elapsed_ms=float(elapsed_any),
+                model_calls=int(model_any),
+                exact_transitions=int(trans_any),
+                particles=int(part_any),
+                fallback_used=is_expired,
+                timeout=is_expired,
+                illegal_action=False,
+                cuda_peak_allocated_bytes=None,
+                cuda_peak_reserved_bytes=None,
+                host_peak_bytes=None,
+                energy_joules=None,
+                graph_breaks=None,
+                recompiles=None,
+                invalid_reason=None,
+            )
+        except ImportError:
+            raise
+        except (AttributeError, ValueError, TypeError, OSError) as exc:
+            raise ContractError(f"local: telemetry build failed: {exc}") from exc
+        try:
             result = CommonResult(  # type: ignore[call-arg]
                 selected_action=selected,
                 candidate_actions=candidate_actions,
@@ -310,18 +424,11 @@ class LocalResolvingPlannerActMixin(LocalResolvingPlannerSearchMixin):
                 evidence_refs=(),
                 completed=completed,
             )
-            return result
-        except Exception:
-            # Fallback minimal SearchResult
-            return SearchResult(
-                selected_action=selected,
-                candidate_actions=candidate_actions,
-                value_vectors=tuple(vectors),
-                candidate_spec_hash=spec_hash,
-                telemetry=telemetry,
-                evidence_refs=(),
-                completed=completed,
-            )
+        except ImportError:
+            raise
+        except (AttributeError, ValueError, TypeError, OSError) as exc:
+            raise ContractError(f"local: SearchResult build failed: {exc}") from exc
+        return result
 
 
 class LocalResolvingPlanner(  # type: ignore[misc]

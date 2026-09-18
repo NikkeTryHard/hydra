@@ -8,16 +8,25 @@ WP-11 replay is optionally exported when available.
 
 from __future__ import annotations
 
-from hydra2.training.dataset import AuthoritativeParquetDataset, SamplerState, tensorize_actor_row
-from hydra2.training.loop import SupervisedLoop, TrainingLoopConfig, TrainingState
-from hydra2.training.objectives import (
-    compute_metrics,
+from hydra2.training.dataset_encode import tensorize_actor_row
+from hydra2.training.dataset_store import (
+    AuthoritativeParquetDataset,
+    SamplerState,
+)
+from hydra2.training.loop_state import TrainingLoopConfig, TrainingState
+from hydra2.training.loop_train import SupervisedLoop
+from hydra2.training.objectives_loss import (
     compute_supervised_loss,
     masked_cross_entropy,
+)
+from hydra2.training.objectives_metrics import (
+    compute_metrics,
     masked_topk_accuracy,
 )
-from hydra2.training.replay import (
+from hydra2.training.replay_engine import (
     ActorLearnerReplay,
+)
+from hydra2.training.replay_state import (
     PrivilegedLabelStore,
     ReplayConfig,
     ReplayState,

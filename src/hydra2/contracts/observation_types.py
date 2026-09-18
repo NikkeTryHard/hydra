@@ -17,9 +17,12 @@ from hydra2.contracts.common import (
     Seat,
     TileId,
     TileType,
-    make_seat,
-    make_tile_id,
 )
+
+try:
+    from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+except ImportError:  # pragma: no cover - import-time signal, same text as call-site
+    _bridge_contracts = None  # type: ignore[assignment]
 
 __all__ = [
     "DORA_SENTINEL",
@@ -114,7 +117,15 @@ def _require_enum(value: object, *, name: str, allowed: tuple[str, ...]) -> str:
 def _tile_tuple(values: Sequence[int], *, name: str) -> tuple[TileId, ...]:
     if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
         raise ContractError(f"{name} must be a sequence of tile ids")
-    return tuple(make_tile_id(v) for v in values)
+    if _bridge_contracts is None:
+        raise ImportError(
+            "hydra2 tile authority requires the hydra2_replay_rs bridge; "
+            "run `pixi run build-ext` to build the extension before use"
+        )
+    try:
+        return tuple(TileId(_bridge_contracts.make_tile_id(v)) for v in values)
+    except (ValueError, TypeError) as exc:
+        raise ContractError(f"{name} rejected: {exc}") from exc
 
 
 def _quad(values: object, *, name: str, validator) -> tuple:
@@ -151,62 +162,41 @@ class VisibleMeld:
     tiles: tuple[TileId, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.kind not in MELD_KINDS:
-            raise ContractError(f"meld kind must be one of {MELD_KINDS}, got {self.kind!r}")
-        object.__setattr__(self, "owner", make_seat(self.owner))
-        tiles = tuple(make_tile_id(t) for t in self.tiles)
-        if len(tiles) == 0 or list(tiles) != sorted(set(tiles)):
-            raise ContractError(
-                f"{self.kind} meld tiles must be non-empty, unique, ascending: {tiles!r}"
+        """Thin bridge translator: validation lives in ``hydra2_replay_rs.contracts.VisibleMeld``.
+
+        Scalars only cross the boundary (kind/owner/tiles/meld_id/source/called);
+        the bridge owns the gate, Python keeps the typed ContractError surface.
+        """
+        if _bridge_contracts is None:
+            raise ImportError(
+                "hydra2 meld authority requires the hydra2_replay_rs bridge; "
+                "run `pixi run build-ext` to build the extension before use"
             )
-        object.__setattr__(self, "tiles", tiles)
-        expected_len = {"chi": 3, "pon": 3, "daiminkan": 4, "ankan": 4, "kakan": 4}[self.kind]
-        if len(tiles) != expected_len:
-            raise ContractError(
-                f"{self.kind} meld must hold {expected_len} tiles, got {len(tiles)}"
+        try:
+            record = _bridge_contracts.VisibleMeld(  # type: ignore[attr-defined]
+                kind=self.kind,
+                owner=self.owner,
+                tiles=list(self.tiles),
+                meld_id=self.meld_id,
+                source_seat=self.source_seat,
+                called_tile=self.called_tile,
             )
-        types = [_tile_type_of(t) for t in tiles]
-        if self.kind == "chi":
-            if (
-                any(t >= 27 for t in types)
-                or len({t // 9 for t in types}) != 1
-                or max(types) - min(types) != 2
-                or len(set(types)) != 3
-            ):
-                raise ContractError(f"chi meld is not a same-suit run: {tiles!r}")
-        elif len(set(types)) != 1:
-            raise ContractError(f"{self.kind} meld tiles must share one logical type: {tiles!r}")
-        if self.kind in ("ankan", "kakan"):
-            if self.called_tile is not None or self.source_seat is not None:
-                raise ContractError(f"{self.kind} meld has no called tile or source seat")
-            if self.kind == "ankan":
-                base = 4 * types[0]
-                if tiles != tuple(range(base, base + 4)):
-                    raise ContractError(
-                        f"ankan meld tiles {tiles!r} must be consecutive 4 of type {types[0]}"
-                    )
-        else:
-            if self.called_tile is None or self.source_seat is None:
-                raise ContractError(f"{self.kind} meld requires called_tile and source_seat")
-            if isinstance(self.called_tile, bool) or not isinstance(self.called_tile, int):
-                raise ContractError(
-                    "called_tile must be a tile id int 0..135, got "
-                    f"{type(self.called_tile).__name__}"
-                )
-            if isinstance(self.source_seat, bool) or not isinstance(self.source_seat, int):
-                raise ContractError(
-                    f"source_seat must be a seat int 0..3, got {type(self.source_seat).__name__}"
-                )
-            called = make_tile_id(int(self.called_tile))
-            source = make_seat(int(self.source_seat))
-            if source == self.owner:
-                raise ContractError(f"{self.kind} meld source seat equals owner")
-            if called not in tiles:
-                raise ContractError(f"{self.kind} meld called tile {called} not among tiles")
-        resolved = self.meld_id if self.meld_id is not None else visible_meld_id(self)
-        if not isinstance(resolved, str) or resolved == "":
-            raise ContractError("meld_id must resolve to a non-empty string")
-        object.__setattr__(self, "meld_id", resolved)
+        except (ValueError, TypeError) as exc:
+            raise ContractError(f"VisibleMeld rejected: {exc}") from exc
+        object.__setattr__(self, "kind", str(record.kind))
+        object.__setattr__(self, "owner", Seat(int(record.owner)))
+        object.__setattr__(self, "tiles", tuple(TileId(int(t)) for t in record.tiles))
+        object.__setattr__(
+            self,
+            "source_seat",
+            None if record.source_seat is None else Seat(int(record.source_seat)),
+        )
+        object.__setattr__(
+            self,
+            "called_tile",
+            None if record.called_tile is None else TileId(int(record.called_tile)),
+        )
+        object.__setattr__(self, "meld_id", str(record.meld_id))
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -220,5 +210,17 @@ class VisibleMeld:
 
 
 def visible_meld_id(meld: VisibleMeld) -> str:
-    """Canonical prior-meld reference used by kakan metadata (SPEC 6.2)."""
-    return f"{meld.kind}:{'.'.join(str(int(t)) for t in meld.tiles)}"
+    """Canonical prior-meld reference used by kakan metadata (SPEC 6.2).
+
+    Thin bridge translator: scalars (kind + tiles) cross the boundary, never
+    the live meld object; bridge rejections surface as ContractError.
+    """
+    if _bridge_contracts is None:
+        raise ImportError(
+            "hydra2 meld authority requires the hydra2_replay_rs bridge; "
+            "run `pixi run build-ext` to build the extension before use"
+        )
+    try:
+        return _bridge_contracts.visible_meld_id(meld.kind, list(meld.tiles))  # type: ignore[attr-defined]
+    except (ValueError, TypeError) as exc:
+        raise ContractError(f"visible_meld_id rejected: {exc}") from exc

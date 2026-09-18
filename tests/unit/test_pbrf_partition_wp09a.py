@@ -15,6 +15,7 @@ import math
 import time
 
 import pytest
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
 from hydra2.belief.kernel import NaturalPacketKernel
 from hydra2.belief.natural import NaturalBelief
@@ -187,10 +188,12 @@ def test_missing_packet_mass_is_hard_failure() -> None:
             # Return successors with mass 0.6 (bad)
             from hydra2.artifacts.canonical import canonical_bytes as _cb
             from hydra2.belief.kernel import PacketSuccessor
-            from hydra2.contracts.common import Seat, make_seat
-            from hydra2.contracts.event import (
+            from hydra2.contracts.common import Seat
+            from hydra2.contracts.event_envelope import (
                 EventEnvelope,
                 EventPayload,
+            )
+            from hydra2.contracts.event_packet import (
                 make_actor_visible_packet,
                 public_state_chain_hash,
             )
@@ -206,7 +209,7 @@ def test_missing_packet_mass_is_hard_failure() -> None:
 
                 payload = EventPayload(
                     kind="discard",
-                    actor=make_seat((int(epoch.root_actor) + 1) % 4),
+                    actor=_bridge_contracts.make_seat((int(epoch.root_actor) + 1) % 4),
                     tile=tile,  # type: ignore[arg-type]
                     action_id=0,  # type: ignore[arg-type]
                     source_seat=None,
@@ -221,7 +224,7 @@ def test_missing_packet_mass_is_hard_failure() -> None:
                     game_id="game_tiny_001",
                     sequence=seq,  # type: ignore[arg-type]
                     kind="discard",
-                    actor=make_seat((int(epoch.root_actor) + 1) % 4),
+                    actor=_bridge_contracts.make_seat((int(epoch.root_actor) + 1) % 4),
                     visibility="public",
                     visible_to=(Seat(0), Seat(1), Seat(2), Seat(3)),
                     payload=payload,
@@ -825,17 +828,19 @@ def test_child_entry_tile_stored_and_directly_verified() -> None:
 
 def _missing_packet_for(b, epoch):
     from hydra2.artifacts.canonical import canonical_bytes as _cb
-    from hydra2.contracts.common import Seat, make_seat
-    from hydra2.contracts.event import (
+    from hydra2.contracts.common import Seat
+    from hydra2.contracts.event_envelope import (
         EventEnvelope,
         EventPayload,
+    )
+    from hydra2.contracts.event_packet import (
         make_actor_visible_packet,
         public_state_chain_hash,
     )
 
     payload = EventPayload(
         kind="discard",
-        actor=make_seat(0),
+        actor=_bridge_contracts.make_seat(0),
         tile=0,  # type: ignore[arg-type]
         action_id=0,  # type: ignore[arg-type]
         source_seat=None,
@@ -850,7 +855,7 @@ def _missing_packet_for(b, epoch):
         game_id="game_missing",
         sequence=999,  # type: ignore[arg-type]
         kind="discard",
-        actor=make_seat(0),
+        actor=_bridge_contracts.make_seat(0),
         visibility="public",
         visible_to=(Seat(0), Seat(1), Seat(2), Seat(3)),
         payload=payload,

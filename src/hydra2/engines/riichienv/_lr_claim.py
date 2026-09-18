@@ -2,39 +2,61 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING as TYPE_CHECKING
-from typing import cast as cast
+from typing import (
+    TYPE_CHECKING as TYPE_CHECKING,
+)
+from typing import (
+    cast as cast,
+)
 
-from hydra2.contracts.action import CanonicalAction as CanonicalAction
-from hydra2.contracts.action import canonical_action_codec as canonical_action_codec
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+from hydra2_replay_rs import tiles  # pyrefly: ignore[missing-import]
+
+from hydra2.contracts.action_model import CanonicalAction as CanonicalAction
+from hydra2.contracts.action_table import canonical_action_codec as canonical_action_codec
 from hydra2.contracts.common import ContractError as ContractError
-from hydra2.contracts.common import make_seat as make_seat
-from hydra2.contracts.common import make_tile_id as make_tile_id
-from hydra2.contracts.observation import VisibleMeld as VisibleMeld
-from hydra2.contracts.observation import visible_meld_id as visible_meld_id
-from hydra2.engines.riichienv._lr_act import _check_drawer as _check_drawer
-from hydra2.engines.riichienv._lr_act import _emit_call_resolved as _emit_call_resolved
+from hydra2.contracts.observation_types import (
+    VisibleMeld as VisibleMeld,
+)
+from hydra2.contracts.observation_types import (
+    visible_meld_id as visible_meld_id,
+)
+from hydra2.engines.riichienv._lr_act import (
+    _check_drawer as _check_drawer,
+)
+from hydra2.engines.riichienv._lr_act import (
+    _emit_call_resolved as _emit_call_resolved,
+)
 from hydra2.engines.riichienv._lr_act import _open_window as _open_window
 from hydra2.engines.riichienv._lr_act import _require_actor as _require_actor
 from hydra2.engines.riichienv._lr_act import _resolve_dora as _resolve_dora
-from hydra2.engines.riichienv._lr_rows import _capture_row as _capture_row
-from hydra2.engines.riichienv._lr_rows import _claim_canonical as _claim_canonical
-from hydra2.engines.riichienv._lr_rows import _copies_of_string as _copies_of_string
+from hydra2.engines.riichienv._lr_rows import (
+    _capture_row as _capture_row,
+)
+from hydra2.engines.riichienv._lr_rows import (
+    _claim_canonical as _claim_canonical,
+)
 from hydra2.engines.riichienv._lr_rows import _emit as _emit
 from hydra2.engines.riichienv._lr_rows import _expand_nonclaim_legals as _expand_nonclaim_legals
 from hydra2.engines.riichienv._lr_rows import _ippatsu_interrupt as _ippatsu_interrupt
 from hydra2.engines.riichienv._lr_rows import _ippatsu_open as _ippatsu_open
 from hydra2.engines.riichienv._lr_rows import _tracked_consumed as _tracked_consumed
 from hydra2.engines.riichienv._lr_rows import _tracked_discard_tile as _tracked_discard_tile
-from hydra2.engines.riichienv._lr_walk import _peek as _peek
-from hydra2.engines.riichienv._lr_walk import _pop as _pop
+from hydra2.engines.riichienv._lr_walk import (
+    _peek as _peek,
+)
+from hydra2.engines.riichienv._lr_walk import (
+    _pop as _pop,
+)
 from hydra2.engines.riichienv._lr_walk import _pop_draw_head as _pop_draw_head
 from hydra2.engines.riichienv._lr_walk import _strict_row as _strict_row
 from hydra2.engines.riichienv._oracle_base import _legal_mjai_type as _legal_mjai_type
-from hydra2.engines.riichienv.events import make_delta as make_delta
-from hydra2.engines.riichienv.events import meld_delta_value as meld_delta_value
-from hydra2.engines.riichienv.tiles import mjai_string_of as mjai_string_of
-from hydra2.engines.riichienv.tiles import physical_of as physical_of
+from hydra2.engines.riichienv.events import (
+    make_delta as make_delta,
+)
+from hydra2.engines.riichienv.events import (
+    meld_delta_value as meld_delta_value,
+)
 
 if TYPE_CHECKING:
     from typing import Any as Any
@@ -83,7 +105,7 @@ def _do_reach(
         and reach_step.drawn is not None
         and decl_head.drawn == reach_step.drawn
         and decl_head.tile is not None
-        and mjai_string_of(decl_head.tile) == pai
+        and tiles.mjai_string_of(decl_head.tile) == pai
     ):
         _ = _pop(state, walk, kyoku, actor, why="reach-declaration")  # consume decl; head held
         declaration_tile = decl_head.tile
@@ -94,8 +116,8 @@ def _do_reach(
             raise state.fail(kyoku, "reach", f"declaration discard not owned: {exc}") from exc
     expected = CanonicalAction(
         kind=cast("Any", "riichi_discard"),
-        actor=make_seat(actor),
-        tile=make_tile_id(declaration_tile),
+        actor=_bridge_contracts.make_seat(actor),
+        tile=_bridge_contracts.make_tile_id(declaration_tile),
         called_tile=None,
         consumed_tiles=(),
         source_seat=None,
@@ -169,7 +191,7 @@ def _match_stashed_claim(
     pai = event.get("pai")
     if not isinstance(pai, str) or pai == "":
         raise state.fail(kyoku, kind, "logged claim without a pai string")
-    if step.tile is None or mjai_string_of(step.tile) != pai:
+    if step.tile is None or tiles.mjai_string_of(step.tile) != pai:
         raise state.fail(kyoku, kind, "claim names a different tile than the oracle")
     consumed = event.get("consumed")
     if not isinstance(consumed, (list, tuple)):
@@ -179,7 +201,7 @@ def _match_stashed_claim(
         raise state.fail(kyoku, kind, "logged claim without a valid target seat")
     if target != discarder:
         raise state.fail(kyoku, kind, f"claim target {target} != discarder {discarder}")
-    yielded_strings = sorted(mjai_string_of(t) for t in step.consume)
+    yielded_strings = sorted(tiles.mjai_string_of(t) for t in step.consume)
     logged_strings = sorted(str(t) for t in consumed)
     # Yielded consume repeats the called tile (degenerate); the log lists the
     # called tile once plus the hand tiles.
@@ -235,10 +257,10 @@ def _do_claim(
         VisibleMeld(
             meld_id=None,
             kind=cast("Any", kind),
-            owner=make_seat(actor),
-            source_seat=make_seat(discarder),
-            called_tile=make_tile_id(called),
-            tiles=tuple(make_tile_id(t) for t in sorted([*consumed, called])),
+            owner=_bridge_contracts.make_seat(actor),
+            source_seat=_bridge_contracts.make_seat(discarder),
+            called_tile=_bridge_contracts.make_tile_id(called),
+            tiles=tuple(_bridge_contracts.make_tile_id(t) for t in sorted([*consumed, called])),
         )
     )
     try:
@@ -275,7 +297,7 @@ def _do_claim(
                 canonical_action_codec.encode(variant, table=state.table, context=context)
             )
             mask[variant_id] = True
-        except ContractError:
+        except (ContractError, ValueError):
             continue
     can_tsumo = any(a.kind == "tsumo" for a in actions)
     can_riichi = any(a.kind == "riichi_discard" for a in actions)
@@ -344,7 +366,7 @@ def _do_ankan(state: _GameState, walk: _KyokuWalk, kyoku: int, event: dict[str, 
     step = _pop_draw_head(state, walk, kyoku, actor, why="ankan")
     if step.mjai_type != "ankan":
         raise state.fail(kyoku, "ankan", f"seat {actor} oracle holds {step.mjai_type}")
-    yielded_strings = sorted(mjai_string_of(t) for t in step.consume)
+    yielded_strings = sorted(tiles.mjai_string_of(t) for t in step.consume)
     if yielded_strings != sorted(str(t) for t in consumed):
         raise state.fail(kyoku, "ankan", "ankan tiles differ from the oracle")
     try:
@@ -356,10 +378,10 @@ def _do_ankan(state: _GameState, walk: _KyokuWalk, kyoku: int, event: dict[str, 
         raise state.fail(kyoku, "ankan", f"ankan tiles {block!r} are not one block")
     expected = CanonicalAction(
         kind=cast("Any", "ankan"),
-        actor=make_seat(actor),
+        actor=_bridge_contracts.make_seat(actor),
         tile=None,
         called_tile=None,
-        consumed_tiles=tuple(make_tile_id(t) for t in block),
+        consumed_tiles=tuple(_bridge_contracts.make_tile_id(t) for t in block),
         source_seat=None,
         declares_riichi=False,
         metadata=(),
@@ -410,8 +432,8 @@ def _do_ankan(state: _GameState, walk: _KyokuWalk, kyoku: int, event: dict[str, 
         VisibleMeld(
             meld_id=None,
             kind=cast("Any", "ankan"),
-            owner=make_seat(actor),
-            tiles=tuple(make_tile_id(t) for t in block),
+            owner=_bridge_contracts.make_seat(actor),
+            tiles=tuple(_bridge_contracts.make_tile_id(t) for t in block),
         )
     )
     walk.exp_drawer = actor
@@ -445,7 +467,7 @@ def _do_kakan(
     step = _pop_draw_head(state, walk, kyoku, actor, why="kakan")
     if step.mjai_type != "kakan":
         raise state.fail(kyoku, "kakan", f"seat {actor} oracle holds {step.mjai_type}")
-    if step.tile is None or mjai_string_of(step.tile) != pai:
+    if step.tile is None or tiles.mjai_string_of(step.tile) != pai:
         raise state.fail(kyoku, "kakan", "kakan names a different tile than the oracle")
     # The added fourth copy may be the drawn tile or a tile held since the
     # deal; either way the collapsed id equals the logged string.
@@ -456,9 +478,9 @@ def _do_kakan(
     # The yielded tile id is string-collapsed; the true added copy is the one
     # pool copy of this type absent from the prior pon triple (deterministic,
     # contract-valid, and exact on min-rule-disciplined logs).
-    pool = _copies_of_string(pai)
+    pool = tiles.copies_of_string(pai)
     if pai[0] == "5" and len(pai) == 2:
-        base = (int(physical_of(pai)) // 4) * 4
+        base = (int(tiles.physical_of(pai)) // 4) * 4
         pool = [base, base + 1, base + 2, base + 3]
     missing = [c for c in pool if c not in {int(t) for t in prior.tiles}]
     if len(missing) != 1:
@@ -466,8 +488,8 @@ def _do_kakan(
     added = missing[0]
     expected = CanonicalAction(
         kind=cast("Any", "kakan"),
-        actor=make_seat(actor),
-        tile=make_tile_id(added),
+        actor=_bridge_contracts.make_seat(actor),
+        tile=_bridge_contracts.make_tile_id(added),
         called_tile=None,
         consumed_tiles=(),
         source_seat=None,

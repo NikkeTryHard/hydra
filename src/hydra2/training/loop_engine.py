@@ -52,10 +52,10 @@ from hydra2.training.loop_state import (
 from hydra2.training.loop_state import (
     _require_sha256 as _require_sha256,
 )
-from hydra2.training.objectives import (
+from hydra2.training.objectives_loss import (
     compute_supervised_loss as compute_supervised_loss,
 )
-from hydra2.training.objectives import supervised_loss_kernel as supervised_loss_kernel
+from hydra2.training.objectives_loss import supervised_loss_kernel as supervised_loss_kernel
 
 if TYPE_CHECKING:
     from hydra2.tracking.clearml_mirror import ClearmlMirror

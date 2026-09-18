@@ -18,7 +18,8 @@ import pytest
 import torch
 
 from hydra2.contracts.common import ContractError
-from hydra2.training.run_config import load_run_config, resolve_resume_plan
+from hydra2.training._rc_resume import resolve_resume_plan
+from hydra2.training._rc_root import load_run_config
 from hydra2.training.stream_train import (
     _backward_pass_autocast_for,
     run_stream_training,
@@ -41,7 +42,8 @@ pytestmark = [pytest.mark.contract_package("WP-14"), pytest.mark.slow]
 class TestBufferCompaction:
     def _dataset(self, tmp_path: Path, monkeypatch: Any, threshold: int) -> Any:
         import hydra2.training.stream_train as driver
-        from hydra2.data.stream import GameStream, build_manifest
+        from hydra2.data.stream_iter import GameStream
+        from hydra2.data.stream_manifest import build_manifest
 
         monkeypatch.setattr(driver, "_BUFFER_COMPACT_ROWS", threshold)
         train_stems, _ = _pick_stems(need_train=4, need_val=0)
@@ -182,7 +184,8 @@ class TestSeekResume:
     def test_dataset_buffer_round_trip_verbatim(self, tmp_path: Path) -> None:
         """Dataset tail re-expansion is verbatim (rows + hash + counters)."""
         import hydra2.training.stream_train as driver
-        from hydra2.data.stream import GameStream, build_manifest
+        from hydra2.data.stream_iter import GameStream
+        from hydra2.data.stream_manifest import build_manifest
 
         train_stems, _ = _pick_stems(need_train=4, need_val=0)
         corpus = tmp_path / "corpus" / "tenhou"
@@ -342,9 +345,7 @@ class TestTelemetryWiring:
         assert "profiler:update=000002 skipped (cpu-device)" in train_log
 
     def test_mlflow_quiet_mirror_writes_store(self, tmp_path: Path, monkeypatch: Any) -> None:
-        """MLflow on: SQLite store + persisted run id appear; training intact."""
-        mlflow = pytest.importorskip("mlflow")
-        _ = mlflow
+        """MLflow on: REST fallback record + persisted run id appear; training intact."""
         monkeypatch.delenv("HYDRA2_MLFLOW_DISABLED", raising=False)
         train_stems, _ = _pick_stems(need_train=2, need_val=0)
         corpus = tmp_path / "corpus" / "tenhou"
@@ -365,13 +366,21 @@ class TestTelemetryWiring:
         summary = run_stream_training(config, None)
         assert summary["end_update"] == 2
         run_dir = Path(summary["run_dir"])
-        assert (tmp_path / "artifacts" / "mirror" / "mlflow" / "mlruns.db").is_file()
+        fallback = tmp_path / "artifacts" / "mirror" / "mlflow" / "mirror.jsonl"
+        assert fallback.is_file()
+        ops = [
+            json.loads(line)
+            for line in fallback.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert ops[0]["op"] == "start_run"
+        assert any(op["op"] == "log_update" for op in ops)
         run_id_text = (run_dir / "mirror" / "mlflow_run_id").read_text(encoding="utf-8")
         assert run_id_text.strip() != ""
+        assert run_id_text.strip() == ops[0]["run_id"]
 
     def test_mlflow_run_id_survives_resume(self, tmp_path: Path, monkeypatch: Any) -> None:
         """Resume appends to the stored MLflow run instead of opening a new one."""
-        mlflow = pytest.importorskip("mlflow")
         monkeypatch.delenv("HYDRA2_MLFLOW_DISABLED", raising=False)
         train_stems, _ = _pick_stems(need_train=2, need_val=0)
         corpus = tmp_path / "corpus" / "tenhou"
@@ -400,11 +409,18 @@ class TestTelemetryWiring:
         continued = run_stream_training(config, resume)
         assert continued["end_update"] == 2
         assert id_file.read_text(encoding="utf-8").strip() == first_id
-        client = mlflow.tracking.MlflowClient(
-            tracking_uri=f"sqlite:///{tmp_path}/artifacts/mirror/mlflow/mlruns.db"
-        )
+        fallback = tmp_path / "artifacts" / "mirror" / "mlflow" / "mirror.jsonl"
+        ops = [
+            json.loads(line)
+            for line in fallback.read_text(encoding="utf-8").splitlines()
+            if line.strip() != ""
+        ]
         # Fresh run logs updates 1,2; resume re-logs update 2 into the same run.
-        assert sorted(p.step for p in client.get_metric_history(first_id, "total")) == [1, 2, 2]
+        assert sorted(
+            op["step"]
+            for op in ops
+            if op["op"] == "log_update" and op["run_id"] == first_id and "total" in op["metrics"]
+        ) == [1, 2, 2]
 
 
 class TestTrainSegment:
@@ -549,7 +565,7 @@ class TestHomogeneousBuckets:
         assert grouped.get_sampler_state()["offset"] == legacy.get_sampler_state()["offset"] == 8
 
     def _long_manifest(self, tmp_path: Path, *, games: int = 4) -> Any:
-        from hydra2.data.stream import build_manifest
+        from hydra2.data.stream_manifest import build_manifest
 
         train_stems, _ = _pick_stems(need_train=games, need_val=0)
         corpus = tmp_path / "corpus" / "tenhou"
@@ -560,7 +576,7 @@ class TestHomogeneousBuckets:
 
     def _long_dataset(self, manifest: Any, **kwargs: Any) -> Any:
         import hydra2.training.stream_train as driver
-        from hydra2.data.stream import GameStream
+        from hydra2.data.stream_iter import GameStream
 
         # Python backend rows carry live ActorObservation histories, so the
         # visible_history key path is exercised end to end over histories

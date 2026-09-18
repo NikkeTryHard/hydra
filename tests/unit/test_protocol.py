@@ -11,8 +11,9 @@ import dataclasses
 
 import pytest
 import torch
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
-from hydra2.contracts.common import ContractError, make_digest_text
+from hydra2.contracts.common import ContractError
 from hydra2.runtime.protocol import (
     RuntimeHandle,
     RuntimeSpec,
@@ -137,7 +138,7 @@ class TestRuntimeIdentity:
 
     def test_identity_is_canonical_digest_form(self):
         value = runtime_identity(base_spec())
-        assert value == make_digest_text(value)
+        assert value == _bridge_contracts.make_digest_text(value)
 
 
 class TestBuildOrder:

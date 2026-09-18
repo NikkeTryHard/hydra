@@ -8,14 +8,13 @@ overwriting, so stale checkpoints fail closed on config drift.
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import yaml
 
-from hydra2._canon import canonical_json_bytes as canonical_json_bytes
 from hydra2.artifacts.atomic import atomic_replace_bytes as atomic_replace_bytes
+from hydra2.artifacts.digest import of_canonical as of_canonical
 from hydra2.contracts.common import ContractError
 
 if TYPE_CHECKING:
@@ -149,7 +148,7 @@ def run_config_to_dict(config: RunConfig) -> dict[str, Any]:
 
 def run_config_digest(config: RunConfig) -> str:
     """Stable ``sha256:<hex>`` identity of the resolved config (RFC 8785)."""
-    return "sha256:" + hashlib.sha256(canonical_json_bytes(run_config_to_dict(config))).hexdigest()
+    return str(of_canonical(run_config_to_dict(config)))
 
 
 # ---------------------------------------------------------------------------

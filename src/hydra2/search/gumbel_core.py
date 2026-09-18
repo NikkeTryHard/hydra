@@ -21,12 +21,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 
-from hydra2.artifacts.canonical import canonical_bytes
+from hydra2.artifacts.canonical import canonical_bytes_batch
 from hydra2.contracts.common import (
     ContractError,
     DigestText,
     VisibilityViolationError,
-    make_digest_text,
 )
 from hydra2.search.common import (
     DEPLOYABLE_DEADLINE_MS,
@@ -42,31 +41,76 @@ from hydra2.search.common import (
 try:
     from hydra2.contracts.randomness import RandomStream
 
-    _HAS_RANDOM = True
-except ImportError:  # pragma: no cover
-    _HAS_RANDOM = False
-    RandomStream = Any
+    _RANDOM_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    RandomStream = Any  # placeholder; _require_random_stream() raises on use
+    _RANDOM_IMPORT_ERROR = exc
+
+
+def _require_random_stream() -> Any:
+    """Fail-closed RNG access (lazy ImportError with build-ext hint)."""
+    if _RANDOM_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.contracts.randomness not importable "
+            f"({_RANDOM_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before Gumbel search"
+        ) from _RANDOM_IMPORT_ERROR
+    return RandomStream
+
 
 try:
     from hydra2.belief.natural import BeliefEpoch, NaturalBelief
     from hydra2.belief.world import FullWorld, make_full_world, world_actor_observation
 
-    _HAS_BELIEF = True
-except ImportError:  # pragma: no cover
-    _HAS_BELIEF = False
-    NaturalBelief = Any
+    _BELIEF_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    NaturalBelief = Any  # placeholder; _require_belief() raises on use
     BeliefEpoch = Any
     FullWorld = Any
+    make_full_world = Any
+    world_actor_observation = Any
+    _BELIEF_IMPORT_ERROR = exc
+
+
+def _require_belief() -> None:
+    """Fail-closed belief access (lazy ImportError with build-ext hint)."""
+    if _BELIEF_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.belief natural/world not importable "
+            f"({_BELIEF_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before Gumbel search"
+        ) from _BELIEF_IMPORT_ERROR
+
 
 try:
-    from hydra2.contracts.observation import ActorObservation, observation_identity_document
+    from hydra2.contracts.observation_actor import (
+        ActorObservation,
+        observation_identity_document,
+    )
     from hydra2.contracts.utility import UtilityVector
     from hydra2.eval.telemetry import ResourceTelemetry, make_resource_telemetry
 
-    _HAS_TELEMETRY = True
-except ImportError:  # pragma: no cover
-    _HAS_TELEMETRY = False
-    ResourceTelemetry = Any
+    _TELEMETRY_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    ActorObservation = Any  # placeholder; _require_telemetry() raises on use
+    observation_identity_document = Any
+    UtilityVector = Any
+    ResourceTelemetry = Any  # placeholder; _require_telemetry() raises on use
+    make_resource_telemetry = Any
+    _TELEMETRY_IMPORT_ERROR = exc
+
+
+def _require_telemetry() -> Any:
+    """Fail-closed telemetry access (lazy ImportError with build-ext hint)."""
+    if _TELEMETRY_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.eval.telemetry/contracts not importable "
+            f"({_TELEMETRY_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before Gumbel search"
+        ) from _TELEMETRY_IMPORT_ERROR
+    return make_resource_telemetry
+
+
 logger = logging.getLogger(__name__)
 __all__ = [
     "FORBIDDEN_IN_TREE_KEY",
@@ -108,6 +152,25 @@ FORBIDDEN_IN_TREE_KEY: frozenset[str] = frozenset(
 _MASTER_SEED = b"wp09e_gumbel_v1"
 _GUMBEL_SEED_DOMAIN = b"gumbel_root_v1"
 
+
+def _require_search_bridge() -> Any:
+    """Import the built ``search`` bridge surface (fail closed)."""
+    try:
+        import hydra2_replay_rs as _ext  # pyrefly: ignore[missing-import]
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2_replay_rs extension with search not importable; "
+            "build the bridge with `pixi run build-ext` before Gumbel search"
+        ) from exc
+    try:
+        return _ext.search
+    except AttributeError as exc:
+        raise ImportError(
+            "hydra2_replay_rs.search submodule missing (stale .so); "
+            "rebuild the bridge with `pixi run build-ext`"
+        ) from exc
+
+
 # ---------------------------------------------------------------------------
 # Deterministic Gumbel helpers — SPEC 16.7 root Gumbels derive from
 # (case_id, root_seat, candidate_id, action_id). No global RNG.
@@ -132,28 +195,16 @@ def deterministic_gumbel(
         raise ContractError(f"candidate_id must be non-empty str, got {candidate_id!r}")
     if not isinstance(action_id, int) or isinstance(action_id, bool):
         raise ContractError(f"action_id must be int, got {action_id!r}")
-    payload = f"{case_id}:{root_seat}:{candidate_id}:{action_id}".encode()
-    h = hashlib.sha256(_GUMBEL_SEED_DOMAIN + payload).digest()
-    # 8 bytes big-endian -> uniform
-    int_val = int.from_bytes(h[:8], "big")
-    # Avoid 0 or 1: map to (0,1) exclusive via (x+0.5)/2**64
-    u = (int_val + 0.5) / U64_DENOM  # 2**64
-    # Clamp to avoid numerical log issues (should be unnecessary but defensive)
-    if u <= 0.0:
-        u = 1e-12
-    if u >= 1.0:
-        u = 1.0 - 1e-12
-    # Clip to (1e-12, 1-1e-12) for log safety
-    u = min(max(u, 1e-12), 1.0 - 1e-12)
-    g = -math.log(-math.log(u))
-    if not math.isfinite(g):
-        raise ContractError(f"gumbel must be finite, got {g!r} for u={u}")
-    # Clamp extreme tails to keep finite deterministic range for tests
-    if g > 20.0:
-        g = 20.0
-    if g < -20.0:
-        g = -20.0
-    return g
+    # B1 draw rides the bridge (sha-verbatim); Python validation above keeps
+    # the ContractError contract, rollout/descent/table code stays Python.
+    try:
+        return float(
+            _require_search_bridge().gumbel_for_action(case_id, root_seat, candidate_id, action_id)
+        )
+    except ImportError:
+        raise
+    except Exception as exc:
+        raise ContractError(f"gumbel bridge draw failed: {exc}") from exc
 
 
 def deterministic_root_gumbels(
@@ -162,16 +213,23 @@ def deterministic_root_gumbels(
     """Deterministic Gumbels for every legal action."""
     if not isinstance(legal_action_ids, tuple) or len(legal_action_ids) == 0:
         raise ContractError("legal_action_ids must be non-empty tuple")
-    out: dict[int, float] = {}
+    seen: set[int] = set()
     for aid in legal_action_ids:
         if not isinstance(aid, int) or isinstance(aid, bool):
             raise ContractError(f"action_id must be int, got {aid!r}")
-        if aid in out:
+        if aid in seen:
             raise ContractError(f"duplicate action_id {aid}")
-        out[aid] = deterministic_gumbel(
-            case_id=case_id, root_seat=root_seat, candidate_id=candidate_id, action_id=aid
+        seen.add(aid)
+    # Batch draw rides the bridge (one detached call, dict assembled here).
+    try:
+        pairs = _require_search_bridge().gumbel_roots(
+            case_id, root_seat, candidate_id, list(legal_action_ids)
         )
-    return out
+    except ImportError:
+        raise
+    except Exception as exc:
+        raise ContractError(f"gumbel bridge batch draw failed: {exc}") from exc
+    return {int(a): float(g) for a, g in pairs}
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +268,17 @@ def model_vector_for_world(
             wid = _wid_ref
         else:
             wid = str(world)
+    # Digest worlds ride the bridge as the single implementation (fail closed);
+    # non-digest shapes (e.g. PUCT unvisited:{aid} particles) keep the hash
+    # below as their sole implementation (bridge digest gate never sees them).
+    if wid.startswith("sha256:"):
+        try:
+            out = _require_search_bridge().ismcts_model_vector(wid, str(candidate_id))
+            return (float(out[0]), float(out[1]), float(out[2]), float(out[3]))
+        except ImportError:
+            raise
+        except Exception as exc:
+            raise ContractError(f"gumbel bridge model vector failed: {exc}") from exc
     h = hashlib.sha256(f"{wid}:{candidate_id}:leaf".encode()).digest()
     vals = tuple((b % 100) / 100.0 for b in h[:4])
     return vals  # type: ignore[return-value]
@@ -221,6 +290,16 @@ def terminal_vector_for_world(world: Any) -> tuple[float, float, float, float]:
     """Exact terminal utility placeholder — distinct per world, four-seat."""
     _wid2: Any | None = getattr(world, "world_id", None)
     wid: str = _wid2 if isinstance(_wid2, str) and _wid2 != "" else str(world)
+    # Digest worlds ride the bridge as the single implementation (fail closed);
+    # non-digest shapes keep the hash below as their sole implementation.
+    if wid.startswith("sha256:"):
+        try:
+            out = _require_search_bridge().ismcts_terminal_vector(wid)
+            return (float(out[0]), float(out[1]), float(out[2]), float(out[3]))
+        except ImportError:
+            raise
+        except Exception as exc:
+            raise ContractError(f"gumbel bridge terminal vector failed: {exc}") from exc
     h = hashlib.sha256(f"{wid}:terminal".encode()).digest()
     scores = tuple((b % 50) - 25 for b in h[:4])
     base = tuple(float(s) / 50.0 for s in scores)
@@ -236,13 +315,17 @@ def info_key_for_observation(observation: Any) -> str:
     """
     if observation is None:
         raise ContractError("observation must be ActorObservation")
+    _require_telemetry()
     try:
-        from hydra2.contracts.observation import ActorObservation as _Obs
+        from hydra2.contracts.observation_actor import ActorObservation as _Obs
+        from hydra2.contracts.observation_actor import observation_identity_document as _oid
 
         if isinstance(observation, _Obs):
-            doc = observation_identity_document(observation)
+            doc = _oid(observation)
         else:
             raise ContractError("observation must be ActorObservation")
+    except ImportError:
+        raise
     except Exception as exc:  # pragma: no cover
         if isinstance(exc, ContractError):
             raise
@@ -255,7 +338,8 @@ def info_key_for_observation(observation: Any) -> str:
             raise VisibilityViolationError(
                 f"forbidden field {bad!r} in tree key document [PBRF_VIS_TREE_KEY]"
             )
-    payload = canonical_bytes(doc)
+    # ONE batch FFI for the single info-key doc (byte-identical blob).
+    payload = canonical_bytes_batch([doc])[0]
     return "sha256:" + hashlib.sha256(payload).hexdigest()
 
 
@@ -308,6 +392,14 @@ def _legal_ids_for_observation(obs: Any) -> tuple[int, ...]:
 
 def exact_transition(world: Any, actor: int, action_id: int, max_depth: int = 6) -> Any:
     """Exact deterministic transition — consumes one live tile, rotates turn."""
+    _require_belief()
+    try:
+        from hydra2.belief.world import make_full_world as _mfw
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2.belief.world not importable "
+            f"({exc}); build the bridge with `pixi run build-ext` before Gumbel search"
+        ) from exc
     try:
         live = tuple(getattr(world, "live_wall", ()))
         dead = tuple(getattr(world, "dead_wall", ()))
@@ -325,7 +417,8 @@ def exact_transition(world: Any, actor: int, action_id: int, max_depth: int = 6)
         rules_hash = getattr(world, "rules_hash", "sha256:" + "a" * 64)
         obs_hash = getattr(world, "observation_hash", "sha256:" + "b" * 64)
         snapshot = f"gumbel:{getattr(world, 'world_id', 'w')}:{action_id}:{latent['step']}"
-        return make_full_world(
+        _require_belief()
+        return _mfw(
             concealed_hands=hands,
             live_wall=new_live,
             dead_wall=dead,
@@ -334,6 +427,8 @@ def exact_transition(world: Any, actor: int, action_id: int, max_depth: int = 6)
             observation_hash=obs_hash,
             simulator_snapshot=snapshot,
         )
+    except ImportError:
+        raise
     except Exception as exc:
         raise ContractError(f"transition failed: {exc}") from exc
 
@@ -440,13 +535,14 @@ def cached_full_history_agreement(observation: Any) -> bool:
         _h_raw: Any | None = getattr(observation, "observation_hash", None)
         h: str = _h_raw if isinstance(_h_raw, str) and _h_raw != "" else "sha256:" + "0" * 64
         # Full path: hash of canonical identity doc
-        from hydra2.contracts.observation import observation_identity_document as _oid
+        from hydra2.contracts.observation_actor import observation_identity_document as _oid
 
         doc = _oid(observation)
-        full = hashlib.sha256(canonical_bytes(doc)).hexdigest()
-        # Cached path: same doc via cached helper (should be identical)
-        # For stub, we just recompute via same bytes
-        cached = hashlib.sha256(canonical_bytes(doc)).hexdigest()
+        # ONE batch FFI for the single doc; both paths hash the same bytes,
+        # so the agreement check stays bit-identical with one serialization.
+        blob = canonical_bytes_batch([doc])[0]
+        full = hashlib.sha256(blob).hexdigest()
+        cached = hashlib.sha256(blob).hexdigest()
         return full == cached and isinstance(h, str) and h.startswith("sha256:")
     except Exception:
         # Fallback for synthetic observations without full contract

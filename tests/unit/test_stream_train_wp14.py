@@ -21,8 +21,10 @@ import yaml
 import zstandard as zstd
 
 from hydra2.contracts.common import ContractError
-from hydra2.data.stream import assign_split, group_key_for_path
-from hydra2.training.run_config import load_run_config, resolve_resume_plan, run_dir_for
+from hydra2.data.stream_read import assign_split, group_key_for_path
+from hydra2.training._rc_digest import run_dir_for
+from hydra2.training._rc_resume import resolve_resume_plan
+from hydra2.training._rc_root import load_run_config
 from hydra2.training.stream_train import (
     SPLIT_RATIOS,
     _needs_privileged_labels,

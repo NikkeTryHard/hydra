@@ -245,12 +245,6 @@ class PrivilegedLabelStore:
     def get(self, decision_id: str) -> dict[str, Any] | None:
         return self._labels.get(decision_id)
 
-    def contains(self, decision_id: str) -> bool:
-        return decision_id in self._labels
-
-    def decision_ids(self) -> tuple[str, ...]:
-        return tuple(sorted(self._labels.keys()))
-
     def __len__(self) -> int:
         return len(self._labels)
 

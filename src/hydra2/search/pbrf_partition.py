@@ -8,7 +8,7 @@ the action-id derivation, the exhaustive-disjoint partition guards, the
 root-candidate freezer, the deterministic batch allocator, and the
 per-key normalizer diagnostics (Z-hat, normalized weights, ESS). It is
 also the single home for the guarded dependency blocks with their
-``_HAS_*`` feature flags, re-exported by the other ``pbrf_*`` modules.
+fail-closed ``_REQUIRE_*``/``_IMPORT_ERROR`` guards, re-exported by the other ``pbrf_*`` modules.
 The forest and core builder live in :mod:`hydra2.search.pbrf_forest`,
 the commit path in :mod:`hydra2.search.pbrf_commit`, the CandidateSpec
 factory in :mod:`hydra2.search.pbrf_spec`, and the Planner runner in
@@ -24,67 +24,123 @@ import math
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.artifacts.canonical import canonical_bytes
 from hydra2.contracts.common import (
     ContractError,
     DigestText,
     PacketPartitionError,
-    make_digest_text,
     make_parent_id,
-    make_tile_id,
 )
 
 try:
     from hydra2.contracts.randomness import RandomStream
 
-    _HAS_RANDOM = True
-except ImportError:  # pragma: no cover
-    _HAS_RANDOM = False
-    RandomStream = Any
+    _RANDOM_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    RandomStream = Any  # placeholder; _require_random_stream() raises on use
+    _RANDOM_IMPORT_ERROR = exc
+
+
+def _require_random_stream() -> Any:
+    """Fail-closed RNG access (lazy ImportError with build-ext hint)."""
+    if _RANDOM_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.contracts.randomness not importable "
+            f"({_RANDOM_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before PBRF search"
+        ) from _RANDOM_IMPORT_ERROR
+    return RandomStream
+
 
 try:
     from hydra2.belief.kernel import NaturalPacketKernel, PacketSuccessor
 
-    _HAS_KERNEL = True
-except ImportError:  # pragma: no cover
-    _HAS_KERNEL = False
-    NaturalPacketKernel = Any
+    _KERNEL_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    NaturalPacketKernel = Any  # placeholder; _require_kernel() raises on use
     PacketSuccessor = Any
+    _KERNEL_IMPORT_ERROR = exc
+
+
+def _require_kernel() -> Any:
+    """Fail-closed kernel access (lazy ImportError with build-ext hint)."""
+    if _KERNEL_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.belief.kernel not importable "
+            f"({_KERNEL_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before PBRF search"
+        ) from _KERNEL_IMPORT_ERROR
+    return NaturalPacketKernel
+
 
 try:
     from hydra2.belief.natural import BeliefEpoch, NaturalBelief, Particle, PolicySet
 
-    _HAS_BELIEF = True
-except ImportError:  # pragma: no cover
-    _HAS_BELIEF = False
-    BeliefEpoch = Any
+    _BELIEF_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    BeliefEpoch = Any  # placeholder; _require_belief() raises on use
     NaturalBelief = Any
     Particle = Any
     PolicySet = Any
+    _BELIEF_IMPORT_ERROR = exc
+
+
+def _require_belief() -> None:
+    """Fail-closed belief access (lazy ImportError with build-ext hint)."""
+    if _BELIEF_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.belief.natural not importable "
+            f"({_BELIEF_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before PBRF search"
+        ) from _BELIEF_IMPORT_ERROR
+
 
 try:
     from hydra2.contracts.event_packet import ActorVisiblePacket
 
-    _HAS_PACKET = True
-except ImportError:  # pragma: no cover
-    _HAS_PACKET = False
-    ActorVisiblePacket = Any
+    _PACKET_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    ActorVisiblePacket = Any  # placeholder; _require_packet() raises on use
+    _PACKET_IMPORT_ERROR = exc
+
+
+def _require_packet() -> Any:
+    """Fail-closed packet access (lazy ImportError with build-ext hint)."""
+    if _PACKET_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.contracts.event_packet not importable "
+            f"({_PACKET_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before PBRF search"
+        ) from _PACKET_IMPORT_ERROR
+    return ActorVisiblePacket
+
 
 try:
     from hydra2.eval.telemetry import ResourceTelemetry, make_resource_telemetry
 
-    _HAS_TELEMETRY = True
-except ImportError:  # pragma: no cover
-    _HAS_TELEMETRY = False
-    ResourceTelemetry = Any
+    _TELEMETRY_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    ResourceTelemetry = Any  # placeholder; _require_telemetry() raises on use
+    make_resource_telemetry = Any
+    _TELEMETRY_IMPORT_ERROR = exc
+
+
+def _require_telemetry() -> Any:
+    """Fail-closed telemetry access (lazy ImportError with build-ext hint)."""
+    if _TELEMETRY_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.eval.telemetry not importable "
+            f"({_TELEMETRY_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before PBRF search"
+        ) from _TELEMETRY_IMPORT_ERROR
+    return make_resource_telemetry
+
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "_HAS_BELIEF",
-    "_HAS_KERNEL",
-    "_HAS_PACKET",
-    "_HAS_RANDOM",
-    "_HAS_TELEMETRY",
     "ActorVisiblePacket",
     "BeliefEpoch",
     "ChildEntry",
@@ -187,7 +243,7 @@ class ChildEntry:
             or self.raw_weight < 0
         ):
             raise ContractError("raw_weight must be finite nonnegative float")
-        object.__setattr__(self, "target_id", make_digest_text(self.target_id))
+        object.__setattr__(self, "target_id", _bridge_contracts.make_digest_text(self.target_id))
         if not isinstance(self.ancestors, tuple) or any(
             not isinstance(a, str) or a == "" for a in self.ancestors
         ):
@@ -198,8 +254,8 @@ class ChildEntry:
             if isinstance(self.tile, bool) or not isinstance(self.tile, int):
                 raise ContractError("tile must be a TileId int or None")
             try:
-                object.__setattr__(self, "tile", int(make_tile_id(self.tile)))
-            except ContractError:
+                object.__setattr__(self, "tile", int(_bridge_contracts.make_tile_id(self.tile)))
+            except ValueError:
                 raise ContractError("tile must be a TileId in 0..135 or None")
 
 
@@ -218,6 +274,8 @@ class CommitDisposition:
 
 
 def _action_id(action: Any) -> int:
+    # Wave 2 bridge audit: kept Python — action-id normalization (incl. raw-int
+    # passthrough and hash fallback) has no pyfn cover; bridge takes aid explicitly.
     v: Any = getattr(action, "action_id", None)
     if isinstance(v, int) and not isinstance(v, bool):
         return v
@@ -295,6 +353,8 @@ def fixed_allocate(
 ) -> dict[tuple[int, str], int]:
     """Allocate fixed search batches deterministically across children.
 
+    Wave 2 bridge audit: kept Python — frozen schedule allocation is not a
+    sequential-halving cut (no survivors/means/gumbels); no pyfn covers it.
     Deterministic: sorted keys get base batches, remainder distributed by hash order.
     The schedule is frozen before search; outcome-derived reallocation is prohibited.
     """

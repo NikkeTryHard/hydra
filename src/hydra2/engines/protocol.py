@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.artifacts.digest import of_canonical
 from hydra2.contracts.common import (
     ContractError,
@@ -17,18 +19,17 @@ from hydra2.contracts.common import (
     SchemaVersion,
     Seat,
     TileId,
-    make_digest_text,
     make_schema_version,
-    make_seat,
-    make_tile_id,
 )
-from hydra2.contracts.rules import RULES_ID as _CANONICAL_RULES_ID  # noqa: F401  # reason: canary
+from hydra2.contracts.rules_canonical import (
+    RULES_ID as _CANONICAL_RULES_ID,  # noqa: F401  # reason: canary
+)
 
 if TYPE_CHECKING:
-    from hydra2.contracts.action import CanonicalAction
+    from hydra2.contracts.action_model import CanonicalAction
     from hydra2.contracts.event_envelope import EventEnvelope
-    from hydra2.contracts.observation import ActorObservation
-    from hydra2.contracts.rules import RulesManifest
+    from hydra2.contracts.observation_actor import ActorObservation
+    from hydra2.contracts.rules_manifest import RulesManifest
     from hydra2.contracts.utility import RawOutcome
 
 __all__ = [
@@ -64,7 +65,9 @@ class EngineIdentity:
             not isinstance(self.source_revision, str) or len(self.source_revision) == 0
         ):
             raise ContractError("EngineIdentity.source_revision must be None or a non-empty str")
-        object.__setattr__(self, "environment_hash", make_digest_text(self.environment_hash))
+        object.__setattr__(
+            self, "environment_hash", _bridge_contracts.make_digest_text(self.environment_hash)
+        )
 
 
 def wall_schedule_digest(schedule_id: str, physical_tiles: tuple[TileId, ...]) -> DigestText:
@@ -90,7 +93,7 @@ class WallSchedule:
     def __post_init__(self) -> None:
         if len(self.schedule_id) == 0 or not isinstance(self.schedule_id, str):
             raise ContractError("WallSchedule.schedule_id must be a non-empty str")
-        tiles = tuple(make_tile_id(t) for t in self.physical_tiles)
+        tiles = tuple(_bridge_contracts.make_tile_id(t) for t in self.physical_tiles)
         if len(tiles) != WALL_TILE_COUNT:
             raise ContractError(
                 f"WallSchedule must carry exactly {WALL_TILE_COUNT} physical tiles, "
@@ -100,7 +103,7 @@ class WallSchedule:
             raise ContractError("WallSchedule.physical_tiles must permute 0..135 exactly once")
         object.__setattr__(self, "physical_tiles", tiles)
         expected = wall_schedule_digest(self.schedule_id, tiles)
-        recorded = make_digest_text(self.digest)
+        recorded = _bridge_contracts.make_digest_text(self.digest)
         if recorded != expected:
             raise ContractError(
                 f"WallSchedule.digest mismatch: recorded {recorded} != recomputed {expected}"
@@ -139,16 +142,16 @@ class SimulatorSnapshot:
     rules_manifest: RulesManifest
 
     def __post_init__(self) -> None:
-        perms = tuple(make_seat(s) for s in self.seat_permutation)
+        perms = tuple(_bridge_contracts.make_seat(s) for s in self.seat_permutation)
         if sorted(perms) != [0, 1, 2, 3]:
             raise ContractError("snapshot seat_permutation must permute seats 0..3")
         object.__setattr__(self, "seat_permutation", perms)
         object.__setattr__(
             self,
             "schedule_physical_tiles",
-            tuple(make_tile_id(t) for t in self.schedule_physical_tiles),
+            tuple(_bridge_contracts.make_tile_id(t) for t in self.schedule_physical_tiles),
         )
-        object.__setattr__(self, "rules_hash", make_digest_text(self.rules_hash))
+        object.__setattr__(self, "rules_hash", _bridge_contracts.make_digest_text(self.rules_hash))
 
 
 @runtime_checkable
@@ -190,7 +193,7 @@ def validate_seat_permutation(seat_permutation: tuple[Seat, ...]) -> tuple[Seat,
     """
     if not isinstance(seat_permutation, tuple) or len(seat_permutation) != 4:
         raise ContractError("seat_permutation must be a tuple of four entries")
-    normalized = tuple(make_seat(int(s)) for s in seat_permutation)
+    normalized = tuple(_bridge_contracts.make_seat(int(s)) for s in seat_permutation)
     if sorted(normalized) != [0, 1, 2, 3]:
         raise ContractError(f"seat_permutation must permute 0..3 exactly once, got {normalized!r}")
     return normalized
@@ -206,6 +209,6 @@ def seat_permutation_literal(kind: Literal["identity", "shift1", "shift2", "shif
         "reverse": (3, 2, 1, 0),
     }
     try:
-        return tuple(make_seat(s) for s in identities[kind])
+        return tuple(_bridge_contracts.make_seat(s) for s in identities[kind])
     except KeyError as exc:  # pragma: no cover - literal guard
         raise ContractError(f"unknown seat permutation kind {kind!r}") from exc

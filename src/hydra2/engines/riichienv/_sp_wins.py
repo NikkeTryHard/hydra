@@ -3,24 +3,40 @@
 from __future__ import annotations
 
 from dataclasses import replace as replace
-from typing import TYPE_CHECKING as TYPE_CHECKING
-from typing import cast as cast
+from typing import (
+    TYPE_CHECKING as TYPE_CHECKING,
+)
+from typing import (
+    cast as cast,
+)
 
-from hydra2.contracts.action import CanonicalAction as CanonicalAction
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+from hydra2_replay_rs import tiles  # pyrefly: ignore[missing-import]
+
+from hydra2.contracts.action_model import CanonicalAction as CanonicalAction
 from hydra2.contracts.common import ContractError as ContractError
-from hydra2.contracts.common import make_seat as make_seat
-from hydra2.contracts.common import make_tile_id as make_tile_id
-from hydra2.engines.riichienv._sp_records import _emit as _emit
-from hydra2.engines.riichienv._sp_records import _safe_mjai_type as _safe_mjai_type
+from hydra2.engines.riichienv._sp_records import (
+    _emit as _emit,
+)
+from hydra2.engines.riichienv._sp_records import (
+    _safe_mjai_type as _safe_mjai_type,
+)
 from hydra2.engines.riichienv._sp_walk import _strict_row as _strict_row
-from hydra2.engines.riichienv._sp_windows import _check_drawer as _check_drawer
-from hydra2.engines.riichienv._sp_windows import _clear_stash_no_claim as _clear_stash_no_claim
+from hydra2.engines.riichienv._sp_windows import (
+    _check_drawer as _check_drawer,
+)
+from hydra2.engines.riichienv._sp_windows import (
+    _clear_stash_no_claim as _clear_stash_no_claim,
+)
 from hydra2.engines.riichienv._sp_windows import _emit_call_resolved as _emit_call_resolved
 from hydra2.engines.riichienv._sp_windows import _live_step as _live_step
 from hydra2.engines.riichienv._sp_windows import _require_actor as _require_actor
-from hydra2.engines.riichienv.events import make_delta as make_delta
-from hydra2.engines.riichienv.events import reason_kind as reason_kind
-from hydra2.engines.riichienv.tiles import mjai_string_of as mjai_string_of
+from hydra2.engines.riichienv.events import (
+    make_delta as make_delta,
+)
+from hydra2.engines.riichienv.events import (
+    reason_kind as reason_kind,
+)
 
 if TYPE_CHECKING:
     from typing import Any as Any
@@ -73,7 +89,7 @@ def _do_hora(state: _GameState, walk: _KyokuWalk, kyoku: int, event: dict[str, o
         step = _live_step(state, walk, kyoku, winner, mjai_type="hora")
         if step.drawn is None:
             raise state.fail(kyoku, "hora", "tsumo win without a drawn winning step")
-        drawn_str = mjai_string_of(step.drawn)
+        drawn_str = tiles.mjai_string_of(step.drawn)
         offer: Any = None
         for offer_kind in ("hora", "tsumo"):
             try:
@@ -84,13 +100,15 @@ def _do_hora(state: _GameState, walk: _KyokuWalk, kyoku: int, event: dict[str, o
         if offer is None:
             raise state.fail(kyoku, "hora", "tsumo win without a drawn winning step")
         tile = step.drawn
-        if offer.tile is None or mjai_string_of(int(offer.tile)) != mjai_string_of(tile):
+        if offer.tile is None or tiles.mjai_string_of(int(offer.tile)) != tiles.mjai_string_of(
+            tile
+        ):
             raise state.fail(kyoku, "hora", "tsumo tile differs from the drawn tile")
         step = replace(step, mjai_type="hora", tile=tile)
         expected = CanonicalAction(
             kind=cast("Any", "tsumo"),
-            actor=make_seat(winner),
-            tile=make_tile_id(tile),
+            actor=_bridge_contracts.make_seat(winner),
+            tile=_bridge_contracts.make_tile_id(tile),
             called_tile=None,
             consumed_tiles=(),
             source_seat=None,
@@ -113,8 +131,8 @@ def _do_hora(state: _GameState, walk: _KyokuWalk, kyoku: int, event: dict[str, o
             offered=live_offered,
         )
         try:
-            walk.tw.do_tsumo_win(winner, mjai_string_of(tile))
-        except ContractError as exc:
+            walk.tw.do_tsumo_win(winner, tiles.mjai_string_of(tile))
+        except (ContractError, ValueError) as exc:
             raise state.fail(kyoku, "hora", f"oracle win failed: {exc}") from exc
         source: int | None = None
     else:
@@ -127,22 +145,22 @@ def _do_hora(state: _GameState, walk: _KyokuWalk, kyoku: int, event: dict[str, o
         if step is None:
             raise state.fail(kyoku, "hora", f"seat {winner} holds no window step for ron")
         tile = state.last_discard[1]
-        tile_str = mjai_string_of(tile)
+        tile_str = tiles.mjai_string_of(tile)
         if not any(
             _safe_mjai_type(raw) == "hora"
             and raw.tile is not None
-            and mjai_string_of(int(raw.tile)) == tile_str
+            and tiles.mjai_string_of(int(raw.tile)) == tile_str
             for raw in step.raw_legals
         ):
             raise state.fail(kyoku, "hora", f"seat {winner} oracle holds no hora offer")
         step = replace(step, mjai_type="hora", tile=tile)
         expected = CanonicalAction(
             kind=cast("Any", "ron"),
-            actor=make_seat(winner),
-            tile=make_tile_id(tile),
+            actor=_bridge_contracts.make_seat(winner),
+            tile=_bridge_contracts.make_tile_id(tile),
             called_tile=None,
             consumed_tiles=(),
-            source_seat=make_seat(discarder),
+            source_seat=_bridge_contracts.make_seat(discarder),
             declares_riichi=False,
             metadata=(),
         )

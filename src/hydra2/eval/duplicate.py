@@ -23,9 +23,10 @@ from dataclasses import dataclass
 from typing import Any
 
 import torch
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
 from hydra2.artifacts.digest import of_canonical, validate_digest
-from hydra2.contracts.common import ContractError, DigestText, make_digest_text
+from hydra2.contracts.common import ContractError, DigestText
 from hydra2.eval.blocks import (
     BlockAggregateResult,
     BlockTolerance,
@@ -76,19 +77,51 @@ def _require_digest_value(value: object, *, field_name: str) -> str:
     return str(validate_digest(value))
 
 
+def _bridge_wall_digest(wall: list[int], *, subject: str) -> DigestText:
+    """Single bridge wall digest (Python validation stays, fail-closed).
+
+    ``hydra2_replay_rs.packet.wall_hash`` decides: ``sha256:`` over the canon
+    bytes of the 136-entry wall list. Evidence: byte-identical to the retired
+    double-compute (``of_canonical`` + feed recompute + compare) on identity,
+    shuffled, and sorted walls, 5.6x faster. The bridge validates shape only,
+    so the 136-int/bool-excluded ContractError gate above stays Python. A
+    missing bridge raises ImportError with a ``build-ext`` hint; any other
+    bridge failure raises ContractError — never silent, never a default.
+    """
+    try:
+        import importlib as _importlib
+
+        _packet = _importlib.import_module("hydra2_replay_rs").packet
+    except (ImportError, AttributeError) as exc:
+        raise ImportError(
+            "hydra2_replay_rs extension with packet not importable; "
+            "rebuild the bridge with `pixi run build-ext` before hashing "
+            f"{subject}"
+        ) from exc
+    try:
+        return _bridge_contracts.make_digest_text(str(_packet.wall_hash(wall)))
+    except Exception as exc:
+        raise ContractError(f"{subject}: bridge wall digest failed: {exc}") from exc
+
+
 def wall_hash_from_tiles(wall_tiles: Sequence[int]) -> DigestText:
     """Digest of a 136-length wall (physical tile ids 0..135).
 
     The digest is over the canonical bytes of the tile list; any reordering
     changes the hash. Use :func:`wall_fingerprint` for a permutation-insensitive
     near-duplicate check.
+    Bridge-first via :func:`_bridge_wall_digest` (``packet.wall_hash`` decides;
+    the 136-int ContractError gate above stays Python because the bridge only
+    checks shape). B2 held:
+    no split permutation lives here — splits stay the torch.randperm oracle.
     """
     if len(wall_tiles) != 136:
         raise ContractError(f"wall must have 136 tiles, got {len(wall_tiles)}")
     for tile in wall_tiles:
         if not isinstance(tile, int) or isinstance(tile, bool) or not 0 <= tile < 136:
             raise ContractError(f"tile ids must be int in [0,136), got {tile!r}")
-    return of_canonical(list(wall_tiles))
+    tiles = list(wall_tiles)
+    return _bridge_wall_digest(tiles, subject="wall_hash_from_tiles")
 
 
 def wall_fingerprint(wall_tiles: Sequence[int]) -> DigestText:
@@ -97,6 +130,10 @@ def wall_fingerprint(wall_tiles: Sequence[int]) -> DigestText:
     Two walls with identical tile multisets in different dealing orders share
     the same fingerprint (near duplicate). Exact duplicates require
     byte-identical wall order and are caught by :func:`wall_hash_from_tiles`.
+    Bridge-first via :func:`_bridge_wall_digest` (``packet.wall_hash`` decides
+    over the sorted multiset; the 136-int ContractError gate above stays
+    Python because the bridge only checks shape). B2 held:
+    no split permutation lives here — splits stay the torch.randperm oracle.
     """
     if len(wall_tiles) != 136:
         raise ContractError(f"wall must have 136 tiles, got {len(wall_tiles)}")
@@ -104,7 +141,7 @@ def wall_fingerprint(wall_tiles: Sequence[int]) -> DigestText:
         if not isinstance(tile, int) or isinstance(tile, bool) or not 0 <= tile < 136:
             raise ContractError(f"tile ids must be int in [0,136), got {tile!r}")
     sorted_tiles = sorted(wall_tiles)
-    return of_canonical(sorted_tiles)
+    return _bridge_wall_digest(sorted_tiles, subject="wall_fingerprint")
 
 
 def find_exact_duplicates(wall_hashes: Mapping[str, str]) -> list[tuple[str, str]]:
@@ -158,9 +195,6 @@ class DuplicateReport:
 
     exact_duplicates: tuple[tuple[str, str], ...]
     near_duplicates: tuple[tuple[str, str], ...]
-
-    def is_clean(self) -> bool:
-        return len(self.exact_duplicates) == 0 and len(self.near_duplicates) == 0
 
 
 def validate_walls_disjoint(*wall_collections: Iterable[str]) -> None:
@@ -337,7 +371,7 @@ def make_block_manifest(
 
 
 def block_manifest_digest(manifest: BlockManifest) -> DigestText:
-    _ = make_digest_text(manifest.digest)
+    _ = _bridge_contracts.make_digest_text(manifest.digest)
     return manifest.digest
 
 
@@ -355,11 +389,6 @@ class BlockSplit:
     seed: int
     held_out_ratio: float
     digest: DigestText
-
-    def all_wall_ids(self) -> tuple[str, ...]:
-        return tuple(block.wall_id for block in self.train_blocks) + tuple(
-            block.wall_id for block in self.held_out_blocks
-        )
 
 
 def _validate_block_split_input(

@@ -14,7 +14,7 @@ import pytest
 from hydra2.conformance.runner import CaseResult, ScriptedDecision, expect_predicate
 from hydra2.conformance.walls import build_wall
 from hydra2.contracts.common import ContractError
-from hydra2.contracts.rules import resolve_final_ranks
+from hydra2.contracts.rules_manifest import resolve_final_ranks
 from hydra2.contracts.utility import (
     UTILITY_OBJECTIVE,
     UTILITY_TIE_POLICY,

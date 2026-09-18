@@ -10,8 +10,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-
-import zstandard as zstd
+from typing import Any
 
 from hydra2.contracts.common import ContractError, CorruptArtifactError
 from hydra2.data.attestation import Attestation, require_attestation
@@ -33,55 +32,43 @@ class IngestedObject:
     decoded_path: Path
 
 
+def _require_packet() -> Any:
+    """Import the built ``packet`` bridge surface (fail closed)."""
+    try:
+        import hydra2_replay_rs as _ext  # pyrefly: ignore[missing-import]
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2_replay_rs extension with packet not importable; "
+            "build the bridge with `pixi run build-ext` before ingesting objects"
+        ) from exc
+    try:
+        return _ext.packet
+    except AttributeError as exc:
+        raise ImportError(
+            "hydra2_replay_rs.packet submodule missing (stale .so); "
+            "rebuild the bridge with `pixi run build-ext`"
+        ) from exc
+
+
 def decode_zstd_verified(path: Path, expected_sha256: str, expected_len: int) -> bytes:
     """Fully decode a zstd file and verify hash/length; never trusts magic alone.
 
-    Incremental hash over 64 KiB chunks avoids 2x peak (compressed+decoded) and
-    ``max_output_size`` spike of one-shot decode.
-    Evidence:
-    - https://github.com/indygreg/python-zstandard/blob/main/
-      _autodocs/api-reference/stream-readers-writers.md
-    - https://python-zstandard.readthedocs.io/en/latest/decompressor.html
-      (stream_reader for large data)
-    - https://docs.python.org/3/library/hashlib.html (hash.update chunked pattern)
+    Hard dependency (Wave 1 R4): the zstd plane delegates to the Rust bridge
+    (``hydra2_replay_rs.packet`` ``decode_zstd_verified``: 64 KiB reads,
+    512 MiB fail-closed guard, ``sha256:<hex>``/length mismatch → error).
+    ``ImportError`` (extension not built) raises with a ``build-ext`` hint —
+    NO oracle fallback, never silent. Record counting stays Python (the
+    ``len`` over decoded lines in :func:`ingest_packaged_objects`): no bridge
+    count pyfn exists.
     """
-    dctx = zstd.ZstdDecompressor()
-    limit = 512 * 1024 * 1024
-    hasher = hashlib.sha256()
     try:
-        # closefd=False keeps fh lifecycle with outer context; reader closes
-        # its own decompression stream without closing fh twice.
-        # Evidence stream_reader closefd param: python-zstandard docs.
-        # reason: type call-arg — stubs miss closefd kwarg; runtime accepts it.
-        with path.open("rb") as fh, dctx.stream_reader(fh, closefd=False) as reader:  # type: ignore[call-arg]
-            chunks: list[bytes] = []
-            total = 0
-            while True:
-                chunk = reader.read(65536)
-                if chunk == b"":
-                    break
-                total += len(chunk)
-                if total > limit:
-                    raise CorruptArtifactError(
-                        f"decoded size exceeds 512MiB zip-bomb guard for {path}: {total} > {limit}"
-                    )
-                hasher.update(chunk)
-                chunks.append(chunk)
-            decoded = b"".join(chunks)
+        compressed = path.read_bytes()
     except OSError as exc:
         raise CorruptArtifactError(f"cannot read compressed object {path}: {exc}") from exc
-    except zstd.ZstdError as exc:
+    try:
+        return _require_packet().decode_zstd_verified(compressed, expected_sha256, expected_len)
+    except ValueError as exc:
         raise CorruptArtifactError(f"zstd decode failed for {path}: {exc}") from exc
-    actual_sha = "sha256:" + hasher.hexdigest()
-    if actual_sha != expected_sha256:
-        raise CorruptArtifactError(
-            f"decoded hash mismatch for {path}: expected {expected_sha256} got {actual_sha}"
-        )
-    if len(decoded) != expected_len:
-        raise CorruptArtifactError(
-            f"decoded length mismatch for {path}: expected {expected_len} got {len(decoded)}"
-        )
-    return decoded
 
 
 def ingest_packaged_objects(

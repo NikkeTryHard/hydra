@@ -11,12 +11,12 @@ review-size ceiling.
 
 from __future__ import annotations
 
-import hashlib
 import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from hydra2.artifacts.digest import sha256_digest as sha256_digest
 from hydra2.contracts.common import ContractError, CorruptArtifactError
 
 FORBIDDEN_BATCH_KEYS = frozenset(
@@ -55,7 +55,7 @@ def _require_sha256(name: str, value: str) -> str:
 
 
 def _best_ckpt_digest_for(data: bytes) -> str:
-    return "sha256:" + hashlib.sha256(data).hexdigest()
+    return str(sha256_digest(data))
 
 
 def _atomic_publish_best(source: Path, dest: Path) -> str:

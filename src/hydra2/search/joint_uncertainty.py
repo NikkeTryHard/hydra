@@ -18,10 +18,16 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.artifacts.canonical import canonical_bytes
 from hydra2.contracts.common import ContractError
-from hydra2.search.joint_types import _MASTER_SEED as _MASTER_SEED
-from hydra2.search.joint_types import DIVERGENCE_DIRECTIONS as DIVERGENCE_DIRECTIONS
+from hydra2.search.joint_types import (
+    _MASTER_SEED as _MASTER_SEED,
+)
+from hydra2.search.joint_types import (
+    DIVERGENCE_DIRECTIONS as DIVERGENCE_DIRECTIONS,
+)
 from hydra2.search.joint_types import RATIONALITY_RULES as RATIONALITY_RULES
 from hydra2.search.joint_types import SUPPORT_CLASSES as SUPPORT_CLASSES
 from hydra2.search.joint_types import THETA_IDS as THETA_IDS
@@ -92,49 +98,67 @@ def exact_joint_posterior_oracle(
                 f"policy theta mismatch: {policy_for_theta[theta].theta!r} vs {theta!r}"
             )
 
-    # Compute unnormalized weights: w_next = w_prior * q_j(a | I_j, theta) * T
-    # Preserve correlation: each joint particle scaled individually, not via marginal product
-    unnorm: list[tuple[JointParticle, float]] = []
-    total = 0.0
+    # Bridge is the single implementation for the weight math: info keys +
+    # seed domains assemble caller-side over live worlds (FullWorld objects
+    # never cross), then ``search.joint_posterior_weights`` runs the
+    # likelihood + normalize detached. Fail closed on any bridge error.
+    # Memo: info_key depends on (world, opponent_seat) only, NOT theta
+    # (``_wao(world, actor=seat)`` + ``info_key_for_observation`` touch no
+    # theta). Prior is Theta x Worlds, so each world repeats across theta
+    # sharers — exact 2x dedup. Byte-exact: same inputs, same key bytes.
+    from hydra2.belief.world import world_actor_observation as _wao
+
+    info_keys: list[str] = []
+    seed_domains: list[bytes] = []
+    legal_sorted = tuple(sorted(int(a) for a in legal_action_ids))
+    _info_key_cache: dict[str, str] = {}
+    _seed_cache: dict[str, bytes] = {}
     for particle in prior.particles:
-        world = worlds_by_ref.get(particle.world_ref)
-        if world is None:
-            raise ContractError(f"world_ref {particle.world_ref!r} not in worlds_by_ref")
-        from hydra2.belief.world import (
-            world_actor_observation as _wao,
-        )
+        cached_key = _info_key_cache.get(particle.world_ref)
+        if cached_key is None:
+            world = worlds_by_ref.get(particle.world_ref)
+            if world is None:
+                raise ContractError(f"world_ref {particle.world_ref!r} not in worlds_by_ref")
+            obs_j = _wao(world, actor=opponent_seat)
+            cached_key = info_key_for_observation(obs_j)
+            _info_key_cache[particle.world_ref] = cached_key
+        info_keys.append(cached_key)
+        cached_seed = _seed_cache.get(particle.theta)
+        if cached_seed is None:
+            cached_seed = bytes(policy_for_theta[particle.theta].seed_domain)
+            _seed_cache[particle.theta] = cached_seed
+        seed_domains.append(cached_seed)
+    try:
+        from hydra2_replay_rs import search as _joint_bridge
 
-        obs_j = _wao(world, actor=opponent_seat)
-        key_j = info_key_for_observation(obs_j)
-        policy = policy_for_theta[particle.theta]
-        # Likelihood exactly once
-        lp = policy.log_prob(
-            info_key=key_j, legal_action_ids=legal_action_ids, action_id=observed_action_id
+        normed = _joint_bridge.joint_posterior_weights(
+            prior=prior,
+            info_keys=info_keys,
+            seed_domains=seed_domains,
+            legal_ids=[int(a) for a in legal_sorted],
+            observed_id=int(observed_action_id),
+            physical_t=float(physical_transition_prob),
         )
-        likelihood = math.exp(lp)  # in (0,1]
-        # Audit: ensure likelihood was applied once — check finite
-        if not math.isfinite(likelihood) or not 0.0 < likelihood <= 1.0:
-            raise ContractError(f"likelihood must be in (0,1], got {likelihood}")
-        w_unnorm = particle.weight * likelihood * physical_transition_prob
-        if not math.isfinite(w_unnorm) or w_unnorm < 0.0:
-            raise ContractError(f"unnorm weight must be finite non-negative, got {w_unnorm}")
-        unnorm.append((particle, w_unnorm))
-        total += w_unnorm
-
+    except ImportError:
+        raise
+    except Exception as exc:
+        raise ContractError(f"joint bridge posterior failed: {exc}") from exc
+    weights_in = [float(p.weight) for p in prior.particles]
+    total = sum(weights_in)
     if total <= 0.0 or not math.isfinite(total):
         raise ContractError(f"posterior normalizer must be positive finite, got {total}")
 
-    # Normalize preserving joint correlation
+    # Rebuild preserving joint correlation from bridge-normalized weights.
     new_particles: list[JointParticle] = []
-    for particle, w_u in unnorm:
-        w_norm = w_u / total
-        if not math.isfinite(w_norm) or w_norm < 0.0:
-            raise ContractError(f"normalized weight must be finite non-negative, got {w_norm}")
+    for particle, w_norm in zip(prior.particles, list(normed), strict=True):
+        w_norm_f = float(w_norm)
+        if not math.isfinite(w_norm_f) or w_norm_f < 0.0:
+            raise ContractError(f"normalized weight must be finite non-negative, got {w_norm_f}")
         new_particles.append(
             JointParticle(
                 theta=particle.theta,
                 world_ref=particle.world_ref,
-                weight=w_norm,
+                weight=w_norm_f,
                 epoch=particle.epoch,
                 target_id=particle.target_id,
             )
@@ -228,6 +252,8 @@ def coherent_trajectory(
     Returns (world, sampled_action_id) with law induced by exact simulator + behavioral policy.
     Proves trajectory is coherent (uses joint, respects legal masks, same-info).
     """
+    # Wave 2 bridge audit: kept Python — joint-posterior hash draws need live worlds +
+    # policy tables (generic hash, not CTR natural_indices/sampled_draws; no pyfn covers it).
     # Deterministically sample joint via hash of posterior weights
     # Compute cumulative weights
     if len(joint_posterior.particles) == 0:
@@ -460,8 +486,6 @@ def make_joint_type_world_candidate_spec(
             # Fallback dataclass with defaults (e.g., gumbel fallback) may accept no args
             budget = ResourceBudget()  # type: ignore[call-arg]
     try:
-        from hydra2.contracts.common import make_digest_text as _mdt
-
         for name, val in [
             ("rules_hash", rules_hash),
             ("utility_manifest_hash", utility_manifest_hash),
@@ -471,7 +495,7 @@ def make_joint_type_world_candidate_spec(
             ("model_hash", model_hash),
             ("case_manifest_hash", case_manifest_hash),
         ]:
-            _ = _mdt(val)
+            _ = _bridge_contracts.make_digest_text(val)
     except Exception as exc:
         if isinstance(exc, ContractError):
             raise

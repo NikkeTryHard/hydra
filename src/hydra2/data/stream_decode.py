@@ -10,20 +10,21 @@ privileged-leakage firewall (``verify_no_privileged_leakage`` /
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 from concurrent.futures import ProcessPoolExecutor
 from multiprocessing import get_context as _mp_get_context
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from hydra2.contracts.common import ContractError, CorruptArtifactError
-from hydra2.data.decode import GameRecord, decode_game_object
+from hydra2.data.decode import GameRecord
 from hydra2.data.parquet import FORBIDDEN_IN_ACTOR
 from hydra2.data.stream_iter import GameStream
 from hydra2.data.stream_read import (
     StreamCursor,
     StreamGame,
-    ZstdLineStream,
+    _frame_file,
     _Run,
     assign_split,
     compute_wall_hash,
@@ -60,6 +61,64 @@ _WorkerBatchResult = list[
 #: File-batch size bounding in-flight work (prefetch sequences x this many
 #: files); sized with the prefetch default below so emission stays ordered.
 _DECODE_BATCH_GAMES = 16
+#: Frames per ``decode_frames_batch`` call inside the worker. Batches amortize
+#: the bridge round-trip per file while bounding per-call memory (one chunk
+#: of verbatim game bytes, never the whole file).
+_DECODE_FRAME_CHUNK = 64
+
+
+def _require_packet_decode() -> Any:
+    """Import the built ``packet_decode`` bridge surface (fail closed)."""
+    try:
+        import hydra2_replay_rs as _ext  # pyrefly: ignore[missing-import]
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2_replay_rs extension with packet_decode not importable; "
+            "build the bridge with `pixi run build-ext` before decoding games"
+        ) from exc
+    try:
+        return _ext.packet_decode
+    except AttributeError as exc:
+        raise ImportError(
+            "hydra2_replay_rs.packet_decode submodule missing (stale .so); "
+            "rebuild the bridge with `pixi run build-ext`"
+        ) from exc
+
+
+def _materialize_record(raw: bytes, slot: Any, stem: str) -> GameRecord | None:
+    """Materialize one :class:`GameRecord` from a batch decode slot.
+
+    Transport mirror of :func:`decode_game_object`'s materialization tail:
+    ``not ok`` slots yield ``None`` (the worker's undecodable trio, exactly
+    like the old per-game ``decode_game_object`` reject path); ok slots
+    parse events from the verbatim frame and pin the bridge ``event_count``
+    (drift raises, caught per game by the caller). Bridge owns every gate
+    above; this loop only materializes events.
+    """
+    if not slot["ok"]:
+        return None
+    parsed: list[dict[str, object]] = []
+    for line in raw.decode("utf-8").splitlines():
+        parsed.append(cast("dict[str, object]", json.loads(line)))
+    if len(parsed) != slot["event_count"]:
+        raise ContractError(
+            f"decode materialization drift for {stem}: "
+            f"{len(parsed)} parsed vs bridge event_count {slot['event_count']}"
+        )
+    first = parsed[0]
+    first_type = first.get("type")
+    source: dict[str, object] = {"type": first_type} if isinstance(first_type, str) else {}
+    wall_raw = slot.get("wall_tiles")
+    wall = tuple(int(x) for x in wall_raw) if wall_raw is not None else None
+    return GameRecord(
+        game_id=str(slot["game_id"]),
+        object_id=str(slot["object_id"]),
+        packaged_object_id=str(slot["packaged_object_id"]),
+        events=tuple(parsed),
+        raw_bytes_sha256=str(slot["raw_bytes_sha256"]),
+        wall_tiles=wall,
+        source=source,
+    )
 
 
 #: Decode tasks between periodic worker collections. Bounds cyclic-garbage
@@ -100,9 +159,17 @@ def _decode_frames_worker(
     ``wall_hash``/``assigned_split`` use the identical pure functions the
     shared :meth:`_finish_decode` tail applies, so main-thread results are
     bit-identical with ~0.06ms/game of hashing moved off the consumer.
+
+    Framing rides the ``packet`` bridge (:func:`_frame_file` over
+    ``packet.frame_games`` with ``base=0``; resume filtering here) and
+    decode rides one ``packet_decode.decode_frames_batch`` call per frame
+    chunk (stems are ``stem_of`` per file, never synthesized) — byte-exact
+    with the :class:`ZstdLineStream` / per-game oracle, which stays the test
+    comparator and never a runtime fallback. Validation stays per game via
+    :func:`validate_game` (bridge; trap-8 sim verdict stays Python by gate).
     """
     # No local imports: spawn re-imports this module, so module globals
-    # (decode_game_object, validate_game, stem_of, Path, contracts) are present.
+    # (validate_game, stem_of, Path, contracts, bridge helpers) are present.
     global _DECODE_WORKER_TASKS
     _DECODE_WORKER_TASKS += 1
     if _DECODE_WORKER_TASKS % _DECODE_WORKER_COLLECT_EVERY == 0:
@@ -110,36 +177,52 @@ def _decode_frames_worker(
 
         with contextlib.suppress(Exception):
             _gc.collect()
+    packet_decode = _require_packet_decode()
     out: _WorkerBatchResult = []
     for file_index, path_str, base in files:
         fpath = Path(path_str)
         stem = stem_of(fpath)
         group_key = group_key_for_path(fpath)
-        for offset, game_bytes in ZstdLineStream(fpath).iter_games():
-            if offset < base:
-                continue
-            end = offset + len(game_bytes)
+        frames = [
+            (offset, end, game_bytes)
+            for offset, end, game_bytes in _frame_file(fpath, file_index)
+            if offset >= base
+        ]
+        for chunk_start in range(0, len(frames), _DECODE_FRAME_CHUNK):
+            chunk = frames[chunk_start : chunk_start + _DECODE_FRAME_CHUNK]
             try:
-                game = decode_game_object(
-                    object_id=stem,
-                    packaged_object_id=stem,
-                    decoded_bytes=game_bytes,
+                slots = packet_decode.decode_frames_batch(
+                    [game_bytes for _, _, game_bytes in chunk],
+                    [(stem, stem)] * len(chunk),
                 )
-            except (ContractError, CorruptArtifactError, ValueError):
-                out.append((file_index, end, game_bytes, None, None, None, None))
+            except ValueError:
+                # Batch call takes parallel frames/stems by construction, so a
+                # reject here is whole-chunk content failure: quarantine every
+                # frame, never crash the worker on content.
+                for _, end, game_bytes in chunk:
+                    out.append((file_index, end, game_bytes, None, None, None, None))
                 continue
-            vhash = validate_game(game).validation_hash
-            out.append(
-                (
-                    file_index,
-                    end,
-                    game_bytes,
-                    game,
-                    vhash,
-                    compute_wall_hash(game),
-                    assign_split(group_key=group_key, seed=seed, ratios=ratios),
+            for (_, end, game_bytes), slot in zip(chunk, slots, strict=True):
+                try:
+                    game = _materialize_record(game_bytes, slot, stem)
+                except (ContractError, CorruptArtifactError, ValueError):
+                    out.append((file_index, end, game_bytes, None, None, None, None))
+                    continue
+                if game is None:
+                    out.append((file_index, end, game_bytes, None, None, None, None))
+                    continue
+                vhash = validate_game(game).validation_hash
+                out.append(
+                    (
+                        file_index,
+                        end,
+                        game_bytes,
+                        game,
+                        vhash,
+                        compute_wall_hash(game),
+                        assign_split(group_key=group_key, seed=seed, ratios=ratios),
+                    )
                 )
-            )
     return out
 
 

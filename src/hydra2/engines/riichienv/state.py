@@ -17,15 +17,17 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.artifacts.digest import of_canonical
-from hydra2.contracts.common import DigestText, make_seat
-from hydra2.contracts.rules import manifest_to_payload
+from hydra2.contracts.rules_manifest import manifest_to_payload
 from hydra2.contracts.utility import RawOutcome, SettlementFact
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from hydra2.contracts.rules import RulesManifest
+    from hydra2.contracts.common import DigestText
+    from hydra2.contracts.rules_manifest import RulesManifest
 
 
 __all__ = [
@@ -102,7 +104,7 @@ def raw_outcome_from_final(
     ``point_deltas`` is the net movement from the game's starting points;
     per-hand movements live in ``settlements`` (SPEC 5.2).
     """
-    from hydra2.contracts.rules import resolve_final_ranks
+    from hydra2.contracts.rules_manifest import resolve_final_ranks
 
     scores = cast("tuple[int, int, int, int]", tuple(s for s in final_scores))
     start = tuple(s for s in starting_scores)
@@ -132,7 +134,7 @@ def settlement_facts_from_deltas(
     event keeps identities minimal; winners/payer name the point flow.
     """
     quad = cast("tuple[int, int, int, int]", tuple(d for d in deltas))
-    recipients = tuple(make_seat(w) for w in winner_seats)
+    recipients = tuple(_bridge_contracts.make_seat(w) for w in winner_seats)
     if len(recipients) == 0:
         # Nobody gained points (e.g. all-payers exhaustive draw): the
         # settlement contract requires at least one recipient, and a fact
@@ -141,7 +143,7 @@ def settlement_facts_from_deltas(
     return (
         SettlementFact(
             kind=kind,
-            from_seat=None if payer_seat is None else make_seat(payer_seat),
+            from_seat=None if payer_seat is None else _bridge_contracts.make_seat(payer_seat),
             to_seats=recipients,
             point_deltas=quad,
             detail={"source": "riichienv.mjai_deltas"},

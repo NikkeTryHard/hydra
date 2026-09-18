@@ -16,11 +16,7 @@ lane-default CPU with fixed seeds.
 
 from __future__ import annotations
 
-import importlib
 import json
-import os
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -30,9 +26,12 @@ import yaml
 import zstandard as zstd
 
 from hydra2.contracts.common import ContractError
-from hydra2.data.stream import GameStream, assign_split, build_manifest, group_key_for_path
+from hydra2.data.stream_iter import GameStream
+from hydra2.data.stream_manifest import build_manifest
+from hydra2.data.stream_read import assign_split, group_key_for_path
 from hydra2.training import stream_train as driver
-from hydra2.training.run_config import load_run_config, run_config_digest, run_config_to_dict
+from hydra2.training._rc_digest import run_config_digest, run_config_to_dict
+from hydra2.training._rc_root import load_run_config
 
 pytestmark = [pytest.mark.contract_package("WP-14")]
 
@@ -224,7 +223,7 @@ class TestFlag:
 
     def test_python_backend_matches_direct_calls(self, rust_extension: Any) -> None:
         from hydra2.data.replay_expand import expand_game
-        from hydra2.engines.riichienv.log_replay import replay_game
+        from hydra2.engines.riichienv._lr_end import replay_game
 
         wall_less = _decode_game("flag-py-direct")
         rows, sim_path = driver._expand_game_rows(wall_less, "train", "python")
@@ -251,32 +250,6 @@ class TestFlag:
         assert "g1" not in driver._quarantine_class(ru)
 
 
-@pytest.fixture(scope="session")
-def rust_extension(tmp_path_factory: pytest.TempPathFactory) -> Any:
-    """Build the Slice-4 extension once (same recipe as test_rust_stream_wp14)."""
-    root = Path(__file__).resolve().parents[2]
-    crate = root / "tools" / "hydra2-replay-rs"
-    env = {**os.environ, "PYO3_PYTHON": sys.executable}
-    proc = subprocess.run(
-        ["cargo", "build", "--offline", "-p", "hydra2-replay-rs"],
-        cwd=crate,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-    assert proc.returncode == 0, f"cargo build failed:\n{proc.stderr[-4000:]}"
-    built = crate / "target" / "debug" / "libhydra2_replay_rs.so"
-    assert built.is_file(), f"expected cdylib at {built}"
-    ext_dir = tmp_path_factory.mktemp("hydra2_replay_rs")
-    suffix = importlib.machinery.EXTENSION_SUFFIXES[0]
-    shutil.copy(built, ext_dir / f"hydra2_replay_rs{suffix}")
-    sys.path.insert(0, str(ext_dir))
-    try:
-        yield importlib.import_module("hydra2_replay_rs")
-    finally:
-        sys.path.remove(str(ext_dir))
-
-
 @pytest.mark.serial
 class TestPlaneBackend:
     def test_plane_chosen_sequence_matches_python(
@@ -290,7 +263,7 @@ class TestPlaneBackend:
         must equal the python oracle's choices. String decision ids live
         cold-side only and have no plane equivalent by design.
         """
-        from hydra2.engines.riichienv.log_replay import replay_game
+        from hydra2.engines.riichienv._lr_end import replay_game
         from hydra2.training import rust_stream
 
         game = _decode_game("flag-plane-seq")
@@ -329,7 +302,7 @@ class TestPlaneBackend:
         codes (never a new code) while the python oracle raises
         ContractError — both reject the same game.
         """
-        from hydra2.engines.riichienv.log_replay import replay_game
+        from hydra2.engines.riichienv._lr_end import replay_game
         from hydra2.training import rust_stream
 
         bad = _decode_bad_game("flag-plane-q")
@@ -442,7 +415,8 @@ class TestPlaneBackend:
 @pytest.mark.slow
 class TestResumeRefusal:
     def test_resume_refuses_digest_change(self, tmp_path: Path) -> None:
-        from hydra2.training.run_config import load_run_config, resolve_resume_plan
+        from hydra2.training._rc_resume import resolve_resume_plan
+        from hydra2.training._rc_root import load_run_config
         from hydra2.training.stream_train import run_stream_training
 
         train_stems, _ = _pick_stems(need_train=1)

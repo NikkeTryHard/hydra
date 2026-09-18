@@ -328,6 +328,10 @@ fn fill_arena(arena: &mut Vec<u8>, bytes: &[u8], game_idx: u32) -> Result<(), Ga
     Ok(())
 }
 
+// Verified sibling: `crate::framer::decode_zstd_verified` adds the 64 KiB
+// streaming hash + sha/len checks + 512 MiB guard; this fill stays
+// hash-free (the span path hashes downstream via `feed::digest`).
+
 /// Boundary + exactly-one assembly shared by both paths.
 fn finish_game<'a>(
     game_idx: u32,

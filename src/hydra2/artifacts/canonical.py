@@ -9,6 +9,14 @@ Domain (closed): null, bool, string, finite number, array, string-keyed
 object. NaN/Inf, non-string object keys, integers outside the IEEE 754
 double-safe range, lone surrogates, and duplicate keys at the parse boundary
 raise :class:`CanonicalizationError`/:class:`ContractError`.
+
+The Python serializer below is the canon authority. :func:`canonical_bytes`
+is pure Python with no bridge judge on the hot path — digests are
+``hashlib.sha256`` over these bytes at the call sites;
+:func:`canonical_bytes_batch` moves the same serialization across ONE bridge
+FFI per batch (byte-identical blobs, amortized over an act's docs).
+Cross-implementation parity stays pinned by tests, never by per-call
+recomputation.
 """
 
 from __future__ import annotations
@@ -22,6 +30,7 @@ from hydra2.contracts.common import CanonicalizationError, ContractError
 __all__ = [
     "MAX_SAFE_INTEGER",
     "canonical_bytes",
+    "canonical_bytes_batch",
     "canonicalize",
     "es6_number_to_string",
     "loads_canonical",
@@ -159,11 +168,66 @@ def canonicalize(value: Any) -> str:
     return _serialize(value)
 
 
+def _require_bridge() -> Any:
+    """Resolve the Rust digest-judge bridge, fail closed when not built.
+
+    Hard-dependency rule: ``ImportError`` (``hydra2_replay_rs`` extension not
+    importable) or a stale/shadowed ``.so`` lacking the ``canon_rng``
+    submodule raises ``ImportError`` with a ``build-ext`` hint — NO oracle
+    fallback, never silent. Any other failure (digest mismatch, canon
+    reject) raises — never silent. DigestMismatchError stays fail-closed.
+    Honors the bridge's injectable ``_NATIVE_OVERRIDE`` test seam read-only.
+    """
+    try:
+        from hydra2 import _rust_bridge as bridge
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2 canon authority requires the hydra2_replay_rs bridge; "
+            "run `pixi run build-ext` to build the extension before use"
+        ) from exc
+    if bridge._NATIVE_OVERRIDE is not None:
+        return bridge
+    try:
+        import hydra2_replay_rs as _ext  # pyrefly: ignore[missing-import]
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2_replay_rs extension with canon_rng not importable; "
+            "run `pixi run build-ext` to build the bridge before use"
+        ) from exc
+    if not hasattr(_ext, "canon_rng"):
+        raise ImportError(
+            "hydra2_replay_rs.canon_rng submodule missing; "
+            "rebuild the bridge (`pixi run build-ext`)"
+        )
+    return bridge
+
+
 def canonical_bytes(value: Any) -> bytes:
     """RFC 8785 canonical UTF-8 bytes for ``value``; SPEC 2.2 identity form."""
     # Every string (values and keys) is validated during serialization, so the
-    # final encode cannot fail on unpaired surrogates.
+    # final encode cannot fail on unpaired surrogates. Pure Python: no bridge
+    # judge here; digest call sites hash these bytes with hashlib and tests
+    # pin Rust parity.
     return canonicalize(value).encode("utf-8")
+
+
+def canonical_bytes_batch(values: list[Any]) -> list[bytes]:
+    """RFC 8785 canonical UTF-8 bytes for each of ``values`` via ONE bridge FFI.
+
+    Byte-identical to ``[canonical_bytes(v) for v in values]``: the batch
+    crosses the interpreter boundary once (amortized over an act's packet /
+    observation / telemetry docs) instead of paying one FFI per doc. The Rust
+    side stages each object (closed domain: None/bool/int/float/str/list/dict;
+    bool-before-int, tuples rejected, non-string keys rejected,
+    ``|int| > MAX_SAFE_INTEGER`` rejected, NaN/Inf and lone surrogates
+    rejected) then JCS-emits the staged values detached. The first reject
+    fails the whole call with ``ValueError`` naming the item index.
+    Fail-closed: ``ImportError`` with a ``build-ext`` hint when the bridge is
+    not built; bridge errors raise, never silent.
+    """
+    bridge = _require_bridge()
+    native_out = bridge._canon_rng().batch_canonical_bytes(values)
+    return [bytes(blob) for blob in native_out]
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:

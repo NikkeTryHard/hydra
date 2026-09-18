@@ -28,10 +28,12 @@ from hydra2.contracts.common import ContractError
 from hydra2.data.parquet import DecisionRow, write_actor_shards
 from hydra2.eval.blocks import WallBlock
 from hydra2.runtime.checkpoint import hash_state_tree
-from hydra2.training.dataset import AuthoritativeParquetDataset
-from hydra2.training.replay import (
-    FORBIDDEN_REPLAY_KEYS,
+from hydra2.training.dataset_store import AuthoritativeParquetDataset
+from hydra2.training.replay_engine import (
     ActorLearnerReplay,
+)
+from hydra2.training.replay_state import (
+    FORBIDDEN_REPLAY_KEYS,
     PrivilegedLabelStore,
     ReplayConfig,
 )
@@ -844,7 +846,7 @@ class StubValueModel(nn.Module):
 
 
 def test_join_oracle_targets_known_ranks() -> None:
-    from hydra2.belief.oracle_loader import join_oracle_targets
+    from hydra2.belief.oracle_join import join_oracle_targets
 
     store = PrivilegedLabelStore()
     store.add("dec-join-0000", {"ranks": [2, 1, 4, 3]})
@@ -869,7 +871,7 @@ def test_join_oracle_targets_known_ranks() -> None:
 
 
 def test_join_oracle_targets_missing_raises() -> None:
-    from hydra2.belief.oracle_loader import join_oracle_targets
+    from hydra2.belief.oracle_join import join_oracle_targets
 
     store = PrivilegedLabelStore()
     store.add("dec-present", {"ranks": [1, 2, 3, 4]})
@@ -927,7 +929,7 @@ def test_replay_w_value_train_joins_value_targets(tmp_path: Path, actor_parquet_
 
 
 def test_replay_join_leakage_still_rejected(tmp_path: Path, actor_parquet_factory) -> None:
-    from hydra2.belief.oracle_loader import join_oracle_targets
+    from hydra2.belief.oracle_join import join_oracle_targets
 
     parquet_dir = actor_parquet_factory(num_rows=8)
     dataset = AuthoritativeParquetDataset(

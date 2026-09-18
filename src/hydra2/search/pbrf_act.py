@@ -1,13 +1,10 @@
-# ruff: noqa: N814, F841, SIM105  # reason: legacy blanket kept, not narrowed — narrowing surfaces unrelated mid-flight noise outside the owned error set (SIM105 fallback-chain try/except-pass idiom; B007/F841 intentional scratch loop locals; B904 ContractError preconditions; N814 upstream casing; F401 cross-module names re-exported for the shim path). Evidence: https://docs.astral.sh/ruff/rules/
-"""Candidate 3 PBRF planner adapter — act, observe, ponder.
+"""Candidate 3 PBRF planner adapter — construction, act, observe, ponder.
 
-Owns the Planner protocol surface of :class:`PbrfPlanner`: forest
-construction and fixed-batch evaluation in ``act``,
-authoritative-child commit in ``observe``, the no-background-work
-ponder no-op, and the thin join over the search mixin. The
-construction plus budget/telemetry/value driver arrives via the search
-mixin in :mod:`hydra2.search.pbrf_search` so each file stays inside
-the review-size ceiling.
+Owns the construction plus budget/telemetry/value driver (folded from the
+deleted ``pbrf_search`` split host) and the Planner protocol surface of
+:class:`PbrfPlanner`: forest construction and fixed-batch evaluation in
+``act``, authoritative-child commit in ``observe``, the no-background-work
+ponder no-op, and the thin join over the search mixin.
 """
 
 from __future__ import annotations
@@ -17,24 +14,309 @@ import math
 import time
 from typing import Any
 
-from hydra2.contracts.common import ContractError, PacketPartitionError, StaleBeliefError
-from hydra2.contracts.common import make_digest_text as make_digest_text
-from hydra2.search.common import Planner as Planner
-from hydra2.search.common import SearchResult as SearchResult
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
+from hydra2.artifacts.canonical import canonical_bytes_batch
+from hydra2.contracts.common import (
+    CanonicalizationError,
+    ContractError,
+    PacketPartitionError,
+    StaleBeliefError,
+)
+from hydra2.search.common import (
+    Planner as Planner,
+)
+from hydra2.search.common import (
+    ResourceBudget as ResourceBudget,
+)
+from hydra2.search.common import (
+    SearchResult as SearchResult,
+)
 from hydra2.search.common import candidate_spec_hash as candidate_spec_hash
 from hydra2.search.pbrf_commit import commit as commit
+from hydra2.search.pbrf_forest import ImmutableForest as ImmutableForest
 from hydra2.search.pbrf_forest import build_pbrf as build_pbrf
-from hydra2.search.pbrf_partition import _HAS_BELIEF as _HAS_BELIEF
-from hydra2.search.pbrf_partition import NaturalBelief as NaturalBelief
+from hydra2.search.pbrf_partition import (
+    CommitDisposition as CommitDisposition,
+)
+from hydra2.search.pbrf_partition import (
+    NaturalBelief as NaturalBelief,
+)
+from hydra2.search.pbrf_partition import (
+    NaturalPacketKernel as NaturalPacketKernel,
+)
+from hydra2.search.pbrf_partition import PbrfConfig as PbrfConfig
+from hydra2.search.pbrf_partition import PolicySet as PolicySet
 from hydra2.search.pbrf_partition import RandomStream as RandomStream
 from hydra2.search.pbrf_partition import _action_id as _action_id
 from hydra2.search.pbrf_partition import _freeze_candidates as _freeze_candidates
-from hydra2.search.pbrf_search import PbrfPlannerSearchMixin as PbrfPlannerSearchMixin
+from hydra2.search.pbrf_partition import _require_kernel as _require_kernel
+from hydra2.search.pbrf_partition import _require_telemetry as _require_telemetry
 
 __all__ = [
     "PbrfPlanner",
     "PbrfPlannerActMixin",
+    "PbrfPlannerSearchMixin",
 ]
+
+
+def _rust_act_probe(
+    *,
+    subject: str,
+    candidate_id: str,
+    case_id: str,
+    legal_count: int,
+    legal_ids: Any,
+) -> Any:
+    """Isolated-act Rust-first probe (health gate; selection stays Python).
+
+    Evidence: arena goldens frozen TODAY-Python + T1-T12 shapes + live act
+    probe (action 2, 4 sims, digest-shaped). The arena is proven at unit
+    level; this phase only gates the act entry (caller flip) — core
+    selection math bodies STAY Python, body deletion later with T1-T12 gates.
+
+    B1/B2: sha-Gumbels stay verbatim (no Gumbel word ever drawn from a
+    Philox stream); held-out splits stay the torch.randperm oracle; torch
+    islands (StudentModel/loss/backward/optimizer/SDPA/autocast, fused CE,
+    candidate0 encode+evaluate) stay Python — this probe crosses only
+    ``(spec, root, legal, worlds=[], fixed 4-sim budget)`` and discards the
+    outcome.
+
+    Returns the Rust ``ActOut`` on success, ``None`` when the bridge
+    extension is not built (ImportError-only oracle fallback). Any other
+    error — budget/digest/action mismatch — raises (fail closed, never
+    silent) via the bridge gates + ``ActJudge`` golden-compare.
+    """
+    try:
+        import importlib as _importlib
+
+        _importlib.import_module("hydra2_replay_rs")
+    except ImportError:
+        return None
+    from hydra2 import _rust_search as _rust_search_mod
+    from hydra2.artifacts.canonical import canonical_bytes_batch as _canonical_bytes_batch
+
+    try:
+        count = max(int(legal_count), 1)
+    except (TypeError, ValueError):
+        count = 1
+    seen: set[int] = set()
+    clean: list[int] = []
+    try:
+        for raw in legal_ids or []:
+            if isinstance(raw, bool) or not isinstance(raw, int):
+                continue
+            if 0 <= raw <= 0xFFFF_FFFF and raw not in seen:
+                seen.add(raw)
+                clean.append(raw)
+    except TypeError:
+        clean = []
+    if len(clean) != count:
+        clean = list(range(1, count + 1))
+    # ONE batch FFI for the probe's two canonical docs (byte-identical blobs).
+    try:
+        spec_params, root_obs_doc = _canonical_bytes_batch(
+            [
+                {
+                    "candidate_id": str(candidate_id),
+                    "probe": "act-judge-v1",
+                    "subject": str(subject),
+                },
+                {
+                    "case_id": str(case_id),
+                    "legal_count": len(clean),
+                    "probe": "act-judge-v1",
+                },
+            ]
+        )
+    except ImportError:
+        return None
+    try:
+        out = _rust_search_mod.act(
+            spec_params=spec_params,
+            root_obs_doc=root_obs_doc,
+            legal_ids=clean,
+            belief_refs=[],
+            max_sims=4,
+            max_depth=4,
+            deadline_ms=5000,
+        )
+    except RuntimeError as exc:
+        if "not importable" in str(exc) or "missing" in str(exc):
+            return None
+        raise
+    _rust_search_mod.ActJudge(subject=str(subject)).verify(recorded=out.decision_digest, out=out)
+    return out
+
+
+class PbrfPlannerSearchMixin:
+    """Search half of :class:`PbrfPlanner` (folded from deleted pbrf_search).
+
+    Construction plus budget/telemetry/value driver; the act/observe/ponder
+    protocol surface arrives via the act-mixin subclass below.
+    """
+
+    def __init__(
+        self,
+        *,
+        candidate_spec: Any,
+        belief: Any | None = None,
+        kernel: Any | None = None,
+        policy_set: Any | None = None,
+        config: PbrfConfig | None = None,
+    ) -> None:
+        self._spec = candidate_spec
+        if config is not None:
+            self._config = config
+        else:
+            try:
+                _params_raw: Any = getattr(candidate_spec, "parameters", None)
+                if (
+                    _params_raw is None
+                    or not isinstance(_params_raw, dict)
+                    or len(_params_raw) == 0
+                ):
+                    params: dict[str, Any] = {}
+                else:
+                    params = _params_raw  # type: ignore[assignment]
+                _pc_raw: Any = params.get("parent_count", 16)
+                _kt_raw: Any = params.get("kernel_tolerance", 1e-9)
+                _mb_raw: Any = params.get("max_search_batches", 64)
+                _rv_raw: Any = params.get("resource_view", "calls")
+                self._config = PbrfConfig(
+                    parent_count=int(_pc_raw),
+                    kernel_tolerance=float(_kt_raw),
+                    max_search_batches=int(_mb_raw),
+                    resource_view=str(_rv_raw),  # type: ignore[arg-type]
+                    tie_break=str(getattr(candidate_spec, "tie_break", "lexicographic")),
+                )
+            except Exception:
+                self._config = PbrfConfig()
+        self._belief = belief
+        self._kernel = kernel
+        if self._kernel is None:
+            _require_kernel()
+            try:
+                self._kernel = NaturalPacketKernel(kernel_tolerance=self._config.kernel_tolerance)  # type: ignore[call-arg]
+            except ImportError:
+                raise
+            except Exception as exc:
+                raise ContractError(f"kernel required: {exc}") from exc
+        self._policy_set = policy_set
+        if self._policy_set is None:
+            try:
+                self._policy_set = PolicySet()  # type: ignore[call-arg]
+            except Exception:
+                self._policy_set = None
+        self._forest: ImmutableForest | None = None
+        self._last_commit: CommitDisposition | None = None
+        self._last_selected_action: Any | None = None
+        self._model_calls = 0
+        self._transitions = 0
+
+    def _budget(self) -> Any:
+        b = getattr(self._spec, "resource_budget", None)
+        if b is not None:
+            return b
+        return ResourceBudget(
+            mode="gameplay_5s",
+            deadline_ms=5000,
+            fallback_margin_ms=200,
+            max_model_calls=64,
+            max_transitions=256,
+            max_particles=self._config.parent_count,
+            max_memory_bytes=None,
+        )
+
+    def _spec_hash(self) -> str:
+        try:
+            return str(candidate_spec_hash(self._spec))
+        except Exception:
+            # ONE batch FFI for the single fallback doc (byte-identical blob).
+            # The authority serializer rejects bytes input; the batch rejects
+            # it too — translate to the ContractError family this path raised.
+            try:
+                blob = canonical_bytes_batch([str(self._spec).encode()])[0]
+            except ValueError as exc:
+                raise CanonicalizationError(f"pbrf spec hash: {exc}") from exc
+            return "sha256:" + hashlib.sha256(blob).hexdigest()
+
+    def _make_telemetry(
+        self,
+        *,
+        start_ns: int,
+        budget: Any,
+        completed: bool,
+        spec_hash: str,
+        case_id: str,
+        fallback_used: bool = False,
+        timeout: bool = False,
+        illegal: bool = False,
+    ) -> Any:
+        elapsed_ms = (time.monotonic_ns() - start_ns) / 1e6
+        joules = float(self._model_calls) * 0.5 + float(self._transitions) * 0.2
+        mode: str = str(getattr(budget, "mode", "gameplay_5s"))
+        particles: int = self._config.parent_count
+        _require_telemetry()
+        try:
+            from hydra2.eval.telemetry import make_resource_telemetry as _mrt
+        except ImportError as exc:
+            raise ImportError(
+                "hydra2.eval.telemetry not importable "
+                f"({exc}); build the bridge with `pixi run build-ext` before PBRF search"
+            ) from exc
+        try:
+            return _mrt(
+                mode=mode,
+                wall_id=None,
+                case_id=case_id,
+                candidate_spec_hash=_bridge_contracts.make_digest_text(spec_hash),
+                hardware_hash=_bridge_contracts.make_digest_text("sha256:" + "0" * 64),
+                environment_hash=_bridge_contracts.make_digest_text("sha256:" + "0" * 64),
+                cold_start=False,
+                synchronized_elapsed_ms=elapsed_ms,
+                model_calls=self._model_calls,
+                exact_transitions=self._transitions,
+                particles=particles,
+                fallback_used=fallback_used,
+                timeout=timeout,
+                illegal_action=illegal,
+                cuda_peak_allocated_bytes=None,
+                cuda_peak_reserved_bytes=None,
+                host_peak_bytes=None,
+                energy_joules=joules,
+                graph_breaks=None,
+                recompiles=None,
+                invalid_reason=None,
+            )
+        except ImportError:
+            raise
+        except (AttributeError, ValueError, TypeError, OSError) as exc:
+            raise ContractError(f"pbrf: telemetry build failed: {exc}") from exc
+
+    def _value_for_child(
+        self, *, action: Any, packet_id: str, forest: ImmutableForest
+    ) -> tuple[float, float, float, float]:
+        """Deterministic leaf vector for a specific (action, packet) child.
+
+        Bridge is the single implementation (``search.pbrf_child_value``);
+        missing extension raises ``ImportError`` (fail closed).
+        """
+        entries = forest.children.get((_action_id(action), packet_id))
+        if entries is None:
+            return (0.0, 0.0, 0.0, 0.0)
+        try:
+            from hydra2_replay_rs import search as _search_bridge
+
+            rows_p = [e.parent_id[:8] for e in entries]
+            rows_t = [str(e.target_id)[:8] for e in entries]
+            rows_w = [e.raw_weight for e in entries]
+            out = _search_bridge.pbrf_child_value(
+                rows_p, rows_t, rows_w, _action_id(action), packet_id
+            )
+            return (float(out[0]), float(out[1]), float(out[2]), float(out[3]))
+        except ImportError:
+            raise
 
 
 class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
@@ -51,6 +333,13 @@ class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
 
         Returns SearchResult with completed flag, candidate_spec_hash, telemetry,
         and vector values. Deterministic: same request yields same selected_action.
+
+        Rust-first gate: an isolated ``act_batch`` probe + ``ActJudge``
+        golden-compare runs before the Python core below (ImportError-only
+        oracle fallback; mismatch raises, never silent). Core selection math
+        bodies STAY Python this phase (arena proven at unit level; body
+        deletion later with T1-T12 gates). B1/B2 held: sha-Gumbels verbatim,
+        held-out splits stay the torch.randperm oracle, torch islands stay.
         """
         start_ns = time.monotonic_ns()
         # -- validate request ------------------------------------------------
@@ -93,17 +382,26 @@ class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
         case_id: str = str(
             _case_id_raw if _case_id_raw is not None and _case_id_raw != "" else _cand_case_raw
         )
+
+        # Rust-first gate: isolated act_batch probe + ActJudge golden-compare.
+        # ``legal`` is validated non-empty above; ids below are best-effort.
+        _probe_ids: list[Any] = []
+        for _probe_action in legal:
+            _probe_action_id: Any = getattr(_probe_action, "action_id", None)
+            if isinstance(_probe_action_id, int) and not isinstance(_probe_action_id, bool):
+                _probe_ids.append(_probe_action_id)
+            elif isinstance(_probe_action, int) and not isinstance(_probe_action, bool):
+                _probe_ids.append(_probe_action)
+        _rust_act_probe(
+            subject="pbrf",
+            candidate_id=str(candidate_id),
+            case_id=str(case_id),
+            legal_count=len(legal),
+            legal_ids=_probe_ids,
+        )
         belief_epoch: Any = getattr(request, "belief_epoch", None)
         if belief_epoch is None:
-            # Need epoch; create synthetic from request observation if possible
-            obs = getattr(request, "observation", None)
-            if obs is not None and self._belief is not None:
-                try:
-                    belief_epoch = self._belief.begin(obs)  # type: ignore[union-attr]
-                except Exception:
-                    belief_epoch = None
-            if belief_epoch is None:
-                raise ContractError("belief_epoch is required for PBRF core")
+            raise ContractError("belief_epoch is required for PBRF core")
         _budget_raw: Any = getattr(cand_spec, "resource_budget", None)
         budget: Any = _budget_raw if _budget_raw is not None else self._budget()
         if hasattr(budget, "resource_budget"):
@@ -137,40 +435,25 @@ class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
         self._model_calls = 0
         self._transitions = 0
         completed = True
-        fallback_used = False
 
         # -- candidate generator (frozen before enumeration) -----------------
         # Freeze candidates before any packet enumeration evidence: we capture legal as frozen_candidates
         frozen_candidates = _freeze_candidates(legal)
 
         # -- build PBRF forest ------------------------------------------------
-        # Use a deterministic RNG derived from (candidate_id, case_id)
+        # Wave 2 bridge audit: kept Python — semantic-seed derivation has no pyfn
+        # cover (bridge natural_indices takes seed bytes; derivation stays Python).
+        # Deterministic RNG derived from (candidate_id, case_id); no silent None.
         try:
             seed_bytes = hashlib.sha256(f"{candidate_id}:{case_id}:pbrf_core".encode()).digest()
             rng = RandomStream(seed_bytes)  # type: ignore[call-arg]
-        except Exception:
-            rng = None
+        except Exception as exc:
+            raise ContractError(f"pbrf: deterministic RNG required: {exc}") from exc
 
-        # Need belief for sampling; if not supplied use stored
+        # Need belief for sampling; real belief required, no rebuild.
         belief = self._belief
         if belief is None:
-            # Attempt to create a default NaturalBelief if available
-            if _HAS_BELIEF:
-                try:
-                    belief = NaturalBelief()  # type: ignore[call-arg]
-                    # Adopt epochs across belief instances for determinism:
-                    # rebuild from the same observation when the epoch came
-                    # from a different belief store.
-                    obs2 = getattr(request, "observation", None)
-                    if obs2 is not None:
-                        try:
-                            belief_epoch = belief.begin(obs2)
-                        except Exception:
-                            pass
-                except Exception:
-                    belief = None
-            if belief is None:
-                raise ContractError("belief is required for PBRF planner")
+            raise ContractError("belief is required for PBRF planner")
 
         # candidates_fn closure that returns frozen_candidates regardless of parents (ensures freeze)
         def _cand_fn(_parents: Any) -> tuple[Any, ...]:
@@ -196,7 +479,6 @@ class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
             # Check budget exhaustion after forest build
             if exhausted():
                 completed = False
-                fallback_used = True
         except (PacketPartitionError, StaleBeliefError, ContractError):
             raise
         except Exception as exc:
@@ -215,48 +497,37 @@ class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
                 fallback_used=True,
                 timeout=True,
             )
-            # Wrap fallback vectors into UtilityVector (zero vector per spec)
+            # Wrap fallback vectors into UtilityVector (zero vector per spec) — fail closed, no raw fallback.
             try:
                 from hydra2.contracts.utility import UtilityVector
-
+            except ImportError as exc:
+                raise ImportError(
+                    "hydra2.contracts.utility not importable "
+                    f"({exc}); build the bridge with `pixi run build-ext` before PBRF search"
+                ) from exc
+            try:
                 fallback_vec = UtilityVector(
                     values=(0.0, 0.0, 0.0, 0.0),
                     utility_id=str(getattr(cand_spec, "utility_id", "expected_final_placement")),
-                    utility_manifest_hash=make_digest_text(
+                    utility_manifest_hash=_bridge_contracts.make_digest_text(
                         str(getattr(cand_spec, "utility_manifest_hash", "sha256:" + "0" * 64))
                     ),
-                    rules_hash=make_digest_text(
+                    rules_hash=_bridge_contracts.make_digest_text(
                         str(getattr(cand_spec, "rules_hash", "sha256:" + "a" * 64))
                     ),
                 )
                 fb_vectors = tuple(fallback_vec for _ in legal)
-            except Exception:
-                # fallback to raw if UtilityVector fails (should not happen with valid spec hashes)
-                fb_vectors = tuple((0.0, 0.0, 0.0, 0.0) for _ in legal)
-                # but SearchResult requires UtilityVector, so try again with dummy hashes
-                try:
-                    from hydra2.contracts.utility import (
-                        UtilityVector as _UV,
-                    )
-
-                    fb_vectors = tuple(
-                        _UV(
-                            values=(0.0, 0.0, 0.0, 0.0),
-                            utility_id="expected_final_placement",
-                            utility_manifest_hash=make_digest_text("sha256:" + "f" * 64),
-                            rules_hash=make_digest_text("sha256:" + "a" * 64),
-                        )
-                        for _ in legal
-                    )
-                except Exception:
-                    pass
+            except ImportError:
+                raise
+            except (AttributeError, ValueError, TypeError, OSError) as exc:
+                raise ContractError(f"pbrf: fallback UtilityVector build failed: {exc}") from exc
             return SearchResult(
                 selected_action=fallback,
                 candidate_actions=legal,
                 value_vectors=fb_vectors,
-                candidate_spec_hash=make_digest_text(spec_hash),
+                candidate_spec_hash=_bridge_contracts.make_digest_text(spec_hash),
                 telemetry=telemetry,
-                evidence_refs=(make_digest_text(spec_hash),),
+                evidence_refs=(_bridge_contracts.make_digest_text(spec_hash),),
                 completed=False,
             )
         # -- evaluate each action's aggregated child values -------------------
@@ -302,11 +573,16 @@ class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
             )
             try:
                 from hydra2.contracts.utility import UtilityVector
-
+            except ImportError as exc:
+                raise ImportError(
+                    "hydra2.contracts.utility not importable "
+                    f"({exc}); build the bridge with `pixi run build-ext` before PBRF search"
+                ) from exc
+            try:
                 fb2: list[Any] = []
                 for a in legal:
                     vec = value_by_action.get(a, (0.0, 0.0, 0.0, 0.0))
-                    # vec is tuple[float]; wrap
+                    # vec is tuple[float]; wrap — fail closed, no raw fallback.
                     if (
                         isinstance(vec, tuple)
                         and len(vec) == 4
@@ -318,14 +594,14 @@ class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
                                 utility_id=str(
                                     getattr(cand_spec, "utility_id", "expected_final_placement")
                                 ),
-                                utility_manifest_hash=make_digest_text(
+                                utility_manifest_hash=_bridge_contracts.make_digest_text(
                                     str(
                                         getattr(
                                             cand_spec, "utility_manifest_hash", "sha256:" + "f" * 64
                                         )
                                     )
                                 ),
-                                rules_hash=make_digest_text(
+                                rules_hash=_bridge_contracts.make_digest_text(
                                     str(getattr(cand_spec, "rules_hash", "sha256:" + "a" * 64))
                                 ),
                             )
@@ -334,15 +610,17 @@ class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
                         # vec already UtilityVector? keep
                         fb2.append(vec)
                 fb_vectors2 = tuple(fb2)
-            except Exception:
-                fb_vectors2 = tuple(value_by_action.get(a, (0.0, 0.0, 0.0, 0.0)) for a in legal)
+            except ImportError:
+                raise
+            except (AttributeError, ValueError, TypeError, OSError) as exc:
+                raise ContractError(f"pbrf: UtilityVector wrap failed: {exc}") from exc
             return SearchResult(
                 selected_action=fallback,
                 candidate_actions=legal,
                 value_vectors=fb_vectors2,
-                candidate_spec_hash=make_digest_text(spec_hash),
+                candidate_spec_hash=_bridge_contracts.make_digest_text(spec_hash),
                 telemetry=telemetry,
-                evidence_refs=(make_digest_text(spec_hash),),
+                evidence_refs=(_bridge_contracts.make_digest_text(spec_hash),),
                 completed=False,
             )
 
@@ -360,6 +638,8 @@ class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
             except Exception:
                 return 0.0
 
+        # Wave 2 bridge audit: kept Python — scalar-max + hash tie-break over value
+        # vectors is not a bridge selection cut (no halving/gumbel/UCT/PUCT pyfn covers it).
         # Find max scalar; tie break deterministically
         max_scalar = max(_scalar(v) for v in value_by_action.values())
         tied = [a for a, v in value_by_action.items() if abs(_scalar(v) - max_scalar) < 1e-12]
@@ -388,10 +668,15 @@ class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
             fallback_used=False,
             timeout=False,
         )
-        # Wrap value vectors into UtilityVector for SearchResult validation
+        # Wrap value vectors into UtilityVector for SearchResult validation — fail closed, no raw fallback.
         try:
             from hydra2.contracts.utility import UtilityVector
-
+        except ImportError as exc:
+            raise ImportError(
+                "hydra2.contracts.utility not importable "
+                f"({exc}); build the bridge with `pixi run build-ext` before PBRF search"
+            ) from exc
+        try:
             wrapped: list[Any] = []
             for a in legal:
                 vec = value_by_action[a]
@@ -401,25 +686,27 @@ class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
                         utility_id=str(
                             getattr(cand_spec, "utility_id", "expected_final_placement")
                         ),
-                        utility_manifest_hash=make_digest_text(
+                        utility_manifest_hash=_bridge_contracts.make_digest_text(
                             str(getattr(cand_spec, "utility_manifest_hash", "sha256:" + "f" * 64))
                         ),
-                        rules_hash=make_digest_text(
+                        rules_hash=_bridge_contracts.make_digest_text(
                             str(getattr(cand_spec, "rules_hash", "sha256:" + "a" * 64))
                         ),
                     )
                 )
             value_vectors = tuple(wrapped)
-        except Exception:
-            value_vectors = tuple(value_by_action[a] for a in legal)
+        except ImportError:
+            raise
+        except (AttributeError, ValueError, TypeError, OSError) as exc:
+            raise ContractError(f"pbrf: UtilityVector wrap failed: {exc}") from exc
         self._last_selected_action = selected
         return SearchResult(
             selected_action=selected,
             candidate_actions=legal,
             value_vectors=value_vectors,
-            candidate_spec_hash=make_digest_text(spec_hash),
+            candidate_spec_hash=_bridge_contracts.make_digest_text(spec_hash),
             telemetry=telemetry,
-            evidence_refs=(make_digest_text(spec_hash),),
+            evidence_refs=(_bridge_contracts.make_digest_text(spec_hash),),
             completed=True,
         )
 

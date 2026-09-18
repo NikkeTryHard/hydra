@@ -28,12 +28,20 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from hydra2_replay_rs import tiles as _tiles_bridge
 
 from hydra2.contracts.common import ContractError
 from hydra2.data.decode import GameRecord
-from hydra2.engines.riichienv import log_replay as drained
-from hydra2.engines.riichienv import single_pass as live
-from hydra2.engines.riichienv.tiles import mjai_string_of
+from hydra2.engines.riichienv import (
+    _lr_end as drained,
+)
+from hydra2.engines.riichienv import (
+    _sp_game as live,
+)
+from hydra2.engines.riichienv._lr_rows import SIM_DERIVATION_MARK as _DRAINED_SIM_MARK
+from hydra2.engines.riichienv._sp_records import SIM_DERIVATION_MARK as _LIVE_SIM_MARK
+
+mjai_string_of = _tiles_bridge.mjai_string_of
 
 pytestmark = pytest.mark.contract_package("WP-14")
 
@@ -90,7 +98,10 @@ def _mask_kinds(row: Any, table: Any) -> set[tuple[Any, ...]]:
 
 def _table() -> Any:
     from hydra2.config import repo_root
-    from hydra2.contracts.action import ACTION_TABLE_RELPATH, load_action_table
+    from hydra2.contracts.action_artifact import (
+        ACTION_TABLE_RELPATH,
+        load_action_table,
+    )
 
     return load_action_table(repo_root() / ACTION_TABLE_RELPATH)
 
@@ -191,9 +202,9 @@ def test_kyushu_offered_live_past_first_discard() -> None:
 
 def test_derivation_marker_rev_bump_pinned() -> None:
     """Single-pass rows carry marker rev v2, never silently mixing with v1."""
-    assert live.SIM_DERIVATION_MARK == "sim-replay-wall-less-v2"
-    assert drained.SIM_DERIVATION_MARK == "sim-replay-wall-less-v1"
-    assert live.SIM_DERIVATION_MARK != drained.SIM_DERIVATION_MARK
+    assert _LIVE_SIM_MARK == "sim-replay-wall-less-v2"
+    assert _DRAINED_SIM_MARK == "sim-replay-wall-less-v1"
+    assert _LIVE_SIM_MARK != _DRAINED_SIM_MARK
 
 
 def test_tampered_dahai_still_fails_closed() -> None:
@@ -296,7 +307,7 @@ def test_histories_reset_per_kyoku_both_paths() -> None:
 
 def test_history_cap_pinned_to_model_buckets() -> None:
     """The fail-closed cap equals the model's top history bucket (frozen)."""
-    from hydra2.contracts.observation import HISTORY_EVENT_CAP
+    from hydra2.contracts.observation_assembly import HISTORY_EVENT_CAP
     from hydra2.models.schema import HISTORY_BUCKET_LENGTHS
 
     assert HISTORY_EVENT_CAP == HISTORY_BUCKET_LENGTHS[-1] == 256
@@ -304,7 +315,10 @@ def test_history_cap_pinned_to_model_buckets() -> None:
 
 def test_history_overflow_guard_fails_closed() -> None:
     """A 257-envelope history raises at encode; 256 encodes (never truncated)."""
-    from hydra2.contracts.observation import HISTORY_EVENT_CAP, ObservationBuilder
+    from hydra2.contracts.observation_assembly import (
+        HISTORY_EVENT_CAP,
+        ObservationBuilder,
+    )
     from hydra2.engines.riichienv.events import make_envelope
     from hydra2.engines.riichienv.state import seat_winds_for_dealer
     from hydra2.models.encoder import encode_observations

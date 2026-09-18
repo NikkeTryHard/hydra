@@ -37,11 +37,11 @@ from hydra2.training.loop_engine import (
 from hydra2.training.loop_loss import (
     SupervisedLoopLossMixin as SupervisedLoopLossMixin,
 )
-from hydra2.training.objectives import (
-    compute_hot_scalars as compute_hot_scalars,
-)
-from hydra2.training.objectives import (
+from hydra2.training.objectives_loss import (
     global_grad_norm_is_finite as global_grad_norm_is_finite,
+)
+from hydra2.training.objectives_metrics import (
+    compute_hot_scalars as compute_hot_scalars,
 )
 
 if TYPE_CHECKING:

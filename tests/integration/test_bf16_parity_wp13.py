@@ -44,15 +44,20 @@ import pytest
 import torch
 
 from hydra2.contracts.common import ContractError
-from hydra2.contracts.event import EVENT_KINDS, EventEnvelope, EventPayload
-from hydra2.contracts.observation import make_actor_observation
+from hydra2.contracts.event_envelope import (
+    EventEnvelope,
+    EventPayload,
+)
+from hydra2.contracts.event_vocab import (
+    EVENT_KINDS,
+)
+from hydra2.contracts.observation_actor import make_actor_observation
 from hydra2.models.encoder import ActorTensorBatch, encode_observations
 from hydra2.models.model import Hydra2BaselineModel, masked_policy, select_actions
 from hydra2.models.schema import BASELINE_ACTION_COUNT
-from hydra2.runtime.fabric import FabricRuntimeAdapter
 from hydra2.runtime.plain import PlainPytorchAdapter
 from hydra2.runtime.protocol import RuntimeSpec, build_runtime, runtime_identity
-from hydra2.training.objectives import masked_cross_entropy
+from hydra2.training.objectives_loss import masked_cross_entropy
 from tests.conftest import unwrap_model
 
 pytestmark = pytest.mark.gpu
@@ -674,14 +679,12 @@ class TestBf16GradParity:
 
 
 class TestBf16ShortOverlap:
-    def test_s1_to_s5_train_track_and_divergence(self, corpus_artifact, fp32_payload, require_cuda):
+    def test_s1_to_s5_train_track_and_divergence(self, cuda_batches, fp32_payload, require_cuda):
         assert require_cuda is not None
         steps = _overlap_steps()
-        train = corpus_artifact["microbatches"][:TRAIN_MICROBATCHES]
-        held_out = corpus_artifact["microbatches"][TRAIN_MICROBATCHES:]
-        assert len(held_out) == HELD_OUT_MICROBATCHES
-        train_cuda = [(_to_cuda(batch), targets.to("cuda")) for batch, targets in train]
-        held_cuda = [(_to_cuda(batch), targets.to("cuda")) for batch, targets in held_out]
+        train_cuda = cuda_batches[:TRAIN_MICROBATCHES]
+        held_cuda = cuda_batches[TRAIN_MICROBATCHES:]
+        assert len(held_cuda) == HELD_OUT_MICROBATCHES
         torch.manual_seed(SEED)
         ref_model = _fresh_model(fp32_payload, train=True)
         dut_model = _fresh_model(fp32_payload, train=True)
@@ -689,7 +692,7 @@ class TestBf16ShortOverlap:
         dut_opt = torch.optim.AdamW(dut_model.parameters(), lr=3e-4, foreach=True)
         ref_spec = _fp32_spec("plain_pytorch")
         dut_spec = RuntimeSpec(
-            adapter_id="fabric_2.6.5",
+            adapter_id="plain_pytorch",
             device="cuda",
             precision="bf16_mixed",
             compile_mode="eager",
@@ -704,7 +707,7 @@ class TestBf16ShortOverlap:
             spec=ref_spec,
         )
         dut_handle = build_runtime(
-            adapter=FabricRuntimeAdapter(),
+            adapter=PlainPytorchAdapter(),
             model=dut_model,
             optimizer=dut_opt,
             spec=dut_spec,

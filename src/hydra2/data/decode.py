@@ -1,25 +1,51 @@
-"""One-game-per-object JSONL decode — checklist item 3."""
+"""One-game-per-object JSONL decode — checklist item 3.
+
+Hard dependency (shrink end-state): :func:`decode_game_object` is a thin
+delegate over the Rust bridge (``hydra2_replay_rs.packet_decode``
+``decode_frames_batch`` as a single-item batch; ``hydra-feed`` decode owns
+the gates: utf-8, trailing newline, blank-line, JSON, shape, start/end,
+game-id fallback, wall extraction, raw sha). ``ImportError`` (extension not
+built) raises with a ``build-ext`` hint — NO oracle fallback, never silent.
+Stems are parallel params (``stem_of`` per file, never synthesized here).
+Evidence: packet 283/283 + raw sha every game; seals migrated (B3).
+
+:class:`GameRecord` stays the thin transport type (fields are bridge-echoed
+identity plus transport-materialized events). :func:`decode_json_line`
+stays transport-only JSON parse (no bridge line-parse pyfn exists).
+"""
 
 from __future__ import annotations
 
-import hashlib
+import json
 from dataclasses import dataclass
-
-import msgspec
+from typing import Any, cast
 
 from hydra2.contracts.common import ContractError, CorruptArtifactError
 
 __all__ = ["GameRecord", "decode_game_object", "decode_json_line"]
 
-#: Shared strict line decoder (msgspec avoids orjson/simdjson's temp input
-#: copy; proven value-identical to ``json.loads`` on 3000 corpus lines plus
-#: shared-instance threaded decode. Strict: no type coercion, exact doubles.)
-_LINE_DECODER = msgspec.json.Decoder()
+
+def _require_packet_decode() -> Any:
+    """Import the built ``packet_decode`` bridge surface (fail closed)."""
+    try:
+        import hydra2_replay_rs as _ext  # pyrefly: ignore[missing-import]
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2_replay_rs extension with packet_decode not importable; "
+            "build the bridge with `pixi run build-ext` before decoding games"
+        ) from exc
+    try:
+        return _ext.packet_decode
+    except AttributeError as exc:
+        raise ImportError(
+            "hydra2_replay_rs.packet_decode submodule missing (stale .so); "
+            "rebuild the bridge with `pixi run build-ext`"
+        ) from exc
 
 
 def decode_json_line(line: str | bytes) -> object:
-    """Parse one JSON line with the shared strict decoder (hot-path helper)."""
-    return _LINE_DECODER.decode(line)
+    """Parse one JSON line (transport-only; no bridge line-parse pyfn)."""
+    return json.loads(line)
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,103 +59,58 @@ class GameRecord:
     source: dict[str, object]
 
 
-def _game_id_from_events(events: tuple[dict[str, object], ...], object_id: str) -> str:
-    # Prefer explicit game_id field, else derive from object_id
-    for ev in events:
-        gid = ev.get("game_id")
-        if isinstance(gid, str) and gid != "":
-            return gid
-        gid2 = ev.get("gameId")
-        if isinstance(gid2, str) and gid2 != "":
-            return gid2
-    # Synthetic fallback: hash object_id
-    return "game-" + hashlib.sha256(object_id.encode()).hexdigest()[:12]
-
-
 def decode_game_object(
     *, object_id: str, packaged_object_id: str, decoded_bytes: bytes
 ) -> GameRecord:
-    """Decode exactly one game per object; rejects partial/trailing/blank.
+    """Decode exactly one game per object via the Rust bridge (fail closed).
 
-    Rules (mirrors packager canonical_jsonl but stricter for games):
-      - decoded_bytes must be utf-8
-      - split by newline, no blank lines allowed (WP-00B canonical_jsonl would be False)
-      - each line must be valid JSON object with a 'type' field
-      - exactly one 'start_game' / 'startGame' as first record
-      - exactly one 'end_game' / 'endGame' as last record
-      - no data after end_game (no trailing data)
-      - record_count >=2
+    Rules (``hydra-feed`` decode owns them; rejects raise, never skip):
+    utf-8 payload, trailing newline, no blank lines, each line a JSON
+    object with a ``type`` field, exactly one start/end boundary with no
+    trailing data. ``blank_line`` maps to :class:`CorruptArtifactError`
+    (oracle parity); every other reject maps to :class:`ContractError`.
     """
+    if not isinstance(decoded_bytes, (bytes, bytearray)):
+        raise ContractError(
+            f"decoded payload for {object_id} must be bytes, got {type(decoded_bytes).__name__}"
+        )
+    raw = bytes(decoded_bytes)
+    packet_decode = _require_packet_decode()
     try:
-        text = decoded_bytes.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise ContractError(f"decoded bytes not utf-8 for {object_id}: {exc}") from exc
-    if not text.endswith("\n"):
+        slots = packet_decode.decode_frames_batch([raw], [(object_id, packaged_object_id)])
+    except ValueError as exc:
+        raise ContractError(f"decode rejected for {object_id}: {exc}") from exc
+    slot = slots[0]
+    if not slot["ok"]:
+        error_class = slot.get("error_class")
+        event_index = slot.get("event_index")
+        detail = slot.get("detail")
+        message = f"decode {error_class} for {object_id} (event {event_index}): {detail}"
+        if error_class == "blank_line":
+            raise CorruptArtifactError(message)
+        raise ContractError(message)
+    # Transport materialization for the thin type (bridge owns every gate
+    # above; this loop only materializes events — no bridge line-parse pyfn
+    # exists. The count judge fails closed on any materialization drift).
+    parsed: list[dict[str, object]] = []
+    for line in raw.decode("utf-8").splitlines():
+        parsed.append(cast("dict[str, object]", json.loads(line)))
+    if len(parsed) != slot["event_count"]:
         raise ContractError(
-            f"decoded payload for {object_id} must end with newline (missing trailing newline)"
+            f"decode materialization drift for {object_id}: "
+            f"{len(parsed)} parsed vs bridge event_count {slot['event_count']}"
         )
-    # Check for trailing data after end_game is handled after parsing
-    lines = text.splitlines()
-    if len(lines) == 0:
-        raise ContractError(f"empty payload for {object_id}: no game records")
-    # Reject blank lines anywhere: they would be silent skip risk
-    for idx, line in enumerate(lines):
-        if line.strip() == "":
-            raise CorruptArtifactError(
-                f"blank line at index {idx} for {object_id}: blank lines forbidden"
-            )
-    events: list[dict[str, object]] = []
-    for idx, line in enumerate(lines):
-        try:
-            value = decode_json_line(line)
-        except msgspec.DecodeError as exc:
-            raise ContractError(f"line {idx} invalid JSON for {object_id}: {exc}") from exc
-        if not isinstance(value, dict):
-            raise ContractError(
-                f"line {idx} must be JSON object for {object_id}, got {type(value).__name__}"
-            )
-        if "type" not in value:
-            raise ContractError(f"line {idx} missing 'type' field for {object_id}")
-        events.append(value)
-    # One-game-per-object
-    first_type = str(events[0].get("type"))
-    last_type = str(events[-1].get("type"))
-    if first_type not in ("start_game", "startGame", "game_start", "start"):
-        raise ContractError(f"first record must be start_game for {object_id}, got {first_type!r}")
-    if last_type not in ("end_game", "endGame", "game_end", "end"):
-        raise ContractError(f"last record must be end_game for {object_id}, got {last_type!r}")
-    start_count = sum(
-        1 for e in events if str(e.get("type")) in ("start_game", "startGame", "game_start")
-    )
-    end_count = sum(1 for e in events if str(e.get("type")) in ("end_game", "endGame", "game_end"))
-    if start_count != 1 or end_count != 1:
-        raise ContractError(
-            "exactly one start_game and one end_game required for "
-            f"{object_id}, got {start_count}/{end_count}"
-        )
-    # No trailing data already ensured: last is end_game; also ensure no extra bytes beyond newline
-    # Already checked text ends with newline and splitlines removed it.
-    game_id = _game_id_from_events(tuple(events), object_id)
-    # Optional wall extraction
-    wall: tuple[int, ...] | None = None
-    for ev in events:
-        _w = ev.get("wall")
-        if _w is None:
-            _w = ev.get("wall_tiles")
-        if _w is None:
-            _w = ev.get("tiles")
-        w = _w
-        if isinstance(w, list) and len(w) == 136 and all(isinstance(x, int) for x in w):
-            wall = tuple(int(x) for x in w)  # type: ignore[arg-type]
-            # reason: arg-type — payload list object-typed; gated above, int raises
-            break
-    raw_sha = "sha256:" + hashlib.sha256(decoded_bytes).hexdigest()
+    first = parsed[0]
+    first_type = first.get("type")
+    source: dict[str, object] = {"type": first_type} if isinstance(first_type, str) else {}
+    wall_raw = slot.get("wall_tiles")
+    wall = tuple(int(x) for x in wall_raw) if wall_raw is not None else None
     return GameRecord(
-        game_id=game_id,
-        object_id=object_id,
-        packaged_object_id=packaged_object_id,
-        events=tuple(events),
-        raw_bytes_sha256=raw_sha,
+        game_id=str(slot["game_id"]),
+        object_id=str(slot["object_id"]),
+        packaged_object_id=str(slot["packaged_object_id"]),
+        events=tuple(parsed),
+        raw_bytes_sha256=str(slot["raw_bytes_sha256"]),
         wall_tiles=wall,
-        source={"type": first_type},
+        source=source,
     )

@@ -21,13 +21,10 @@ import torch
 import zstandard as zstd
 
 from hydra2.contracts.common import ContractError
-from hydra2.data.stream import (
-    GameStream,
-    PrefetchGameStream,
-    assign_split,
-    build_manifest,
-    group_key_for_path,
-)
+from hydra2.data.stream_decode import PrefetchGameStream
+from hydra2.data.stream_iter import GameStream
+from hydra2.data.stream_manifest import build_manifest
+from hydra2.data.stream_read import assign_split, group_key_for_path
 from hydra2.training import stream_train as driver
 from hydra2.training.stream_train import SPLIT_RATIOS
 

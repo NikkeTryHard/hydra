@@ -18,28 +18,37 @@ import random
 from typing import TYPE_CHECKING, Any
 
 import torch
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
 from hydra2.contracts.common import ContractError
-from hydra2.distillation._teacher_gate import _action_table as _action_table
 from hydra2.distillation._teacher_gate import _require_sha256 as _require_sha256
 
+
+def _require_census_bridge() -> object:
+    """Resolve the census bridge, fail closed when not built (no JSON fallback)."""
+    try:
+        from hydra2_replay_rs import contracts as bridge  # pyrefly: ignore[missing-import]
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2 census authority requires the hydra2_replay_rs bridge; "
+            "run `pixi run build-ext` to build the extension before use"
+        ) from exc
+    if not hasattr(bridge, "action_census") or not hasattr(bridge, "action_census_count"):
+        raise ImportError(
+            "hydra2_replay_rs.contracts census surface missing (stale .so); "
+            "rebuild the bridge (`pixi run build-ext`)"
+        )
+    return bridge
+
+
 if TYPE_CHECKING:
-    from hydra2.contracts.observation import ActorObservation
+    from hydra2.contracts.observation_actor import ActorObservation
     from hydra2.models.model import Hydra2BaselineModel, ModelOutput
     from hydra2.search.common import CandidateSpec
 
 # ---------------------------------------------------------------------------
 # Hash utilities (real math) + REAL teacher case path (exact mask, model priors)
 # ---------------------------------------------------------------------------
-
-
-def _hash_bytes(*parts: bytes) -> bytes:
-    """Combine domains as sha256(p1|p2|...)."""
-    h = hashlib.sha256()
-    for p in parts:
-        h.update(p)
-        h.update(b"|")
-    return h.digest()
 
 
 def _hash_to_uniform(key: bytes, index: int) -> float:
@@ -119,18 +128,20 @@ def _case_hand_tiles(*, case_id: str, teacher_id: str, seed_material: bytes) -> 
 def _discard_mask_for_hand(hand: tuple[int, ...]) -> tuple[bool, ...]:
     """Exact legal mask for a discard-phase case: discards of held tiles only.
 
-    Derived from the canonical action table (kind == "discard", matching tile),
-    never a hash coin-flip. Length equals the full table; every other action is
-    illegal in this fixture phase.
+    Derived from the canonical action census via the bridge (kind == "discard",
+    matching tile), never a hash coin-flip. Length equals the full census;
+    every other action is illegal in this fixture phase. Bit-identical to the
+    retired JSON-table path (verified: bridge order == payload.actions order).
     """
-    entries = _action_table()
+    bridge = _require_census_bridge()
+    records = bridge.action_census()  # type: ignore[attr-defined]
     index_by_tile: dict[int, int] = {}
-    for idx, entry in enumerate(entries):
-        if entry.get("kind") == "discard" and isinstance(entry.get("tile"), int):
-            tile: int = entry["tile"]
-            if tile not in index_by_tile:
-                index_by_tile[tile] = idx
-    mask = [False] * len(entries)
+    for idx, entry in enumerate(records):
+        if entry.kind == "discard" and entry.tile is not None:
+            tile_id: int = int(entry.tile)
+            if tile_id not in index_by_tile:
+                index_by_tile[tile_id] = idx
+    mask = [False] * len(records)
     for tile in hand:
         idx = index_by_tile.get(tile)
         if idx is None:
@@ -153,15 +164,18 @@ def _case_observation(
     """
     if actor not in (0, 1, 2, 3):
         raise ContractError(f"actor must be 0..3, got {actor}")
-    from hydra2.contracts.common import make_digest_text
     from hydra2.contracts.event_schema import (
         build_event_schema_payload,
         compute_event_schema_digest,
     )
-    from hydra2.contracts.observation import (
-        DORA_SENTINEL,
+    from hydra2.contracts.observation_actor import (
         make_actor_observation,
+    )
+    from hydra2.contracts.observation_schema import (
         observation_schema_digest,
+    )
+    from hydra2.contracts.observation_types import (
+        DORA_SENTINEL,
     )
 
     hand = _case_hand_tiles(case_id=case_id, teacher_id=teacher_id, seed_material=seed_material)
@@ -177,11 +191,11 @@ def _case_observation(
             sequence=0,
             actor=actor,
             rules_id="tenhou_4p_hanchan_v1",
-            rules_hash=make_digest_text(spec.rules_hash),
-            action_table_hash=make_digest_text(spec.action_table_hash),
+            rules_hash=_bridge_contracts.make_digest_text(spec.rules_hash),
+            action_table_hash=_bridge_contracts.make_digest_text(spec.action_table_hash),
             event_schema_hash=compute_event_schema_digest(build_event_schema_payload()),
             observation_schema_hash=observation_schema_digest(),
-            packet_boundary_hash=make_digest_text(spec.packet_boundary_hash),
+            packet_boundary_hash=_bridge_contracts.make_digest_text(spec.packet_boundary_hash),
             round_index=0,
             round_wind=27,
             hand_number=0,
@@ -262,7 +276,8 @@ def _teacher_policy_and_value(
     """
     from hydra2.models.encoder import encode_observations
 
-    if len(observation.legal_mask) != len(_action_table()):
+    census_len = int(_require_census_bridge().action_census_count())  # type: ignore[attr-defined]
+    if len(observation.legal_mask) != census_len:
         raise ContractError(
             "WP-10 blocked: observation legal mask does not match canonical action table"
         )

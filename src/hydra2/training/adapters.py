@@ -41,7 +41,7 @@ from hydra2.models.model import ModelOutput
 from hydra2.models.schema import BASELINE_ACTION_COUNT
 
 if TYPE_CHECKING:
-    from hydra2.contracts.observation import ActorObservation
+    from hydra2.contracts.observation_actor import ActorObservation
 
 __all__ = [
     "encode_actor_rows",

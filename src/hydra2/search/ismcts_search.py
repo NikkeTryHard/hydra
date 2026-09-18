@@ -1,23 +1,31 @@
-# ruff: noqa: B905, SIM102  # reason: legacy blanket kept, not narrowed — narrowing surfaces unrelated mid-flight noise outside the owned error set (B905 intentionally non-strict zips; SIM102 nested contract guards). Evidence: https://docs.astral.sh/ruff/rules/
-"""Candidate 1 ISMCTS search loop — tiny transitions and natural-particle simulation.
+# ruff: noqa: B905  # reason: legacy blanket kept, not narrowed — narrowing surfaces unrelated mid-flight noise outside the owned error set (B905 intentionally non-strict zips; SIM102 nested contract guards). Evidence: https://docs.astral.sh/ruff/rules/
+"""Candidate 1 ISMCTS search driver — Rust-batch descent (inversion vertical).
 
-Owns the exact tiny-domain transitions beside their only caller, and the
-simulation half of :class:`NaturalISMCTSPlanner`: construction from a
-candidate spec or a frozen config, particle-to-world materialization,
-single-simulation descent with vector backup, and the budgeted search
-driver returning the structured result dict. The Planner protocol adapter
-arrives via the act-mixin subclass so each file stays inside the
-review-size ceiling.
+The Rust ``ismcts_descent`` driver owns UCT descent, exact tiny-domain
+transitions, leaf vectors, vector backup, and scalarized selection with the
+GIL released. Python builds ONE batch per search (sampled worlds, per-step
+info keys, per-step policy directions, CTR floats) and makes ONE bridge
+call; there is no Python sim loop, no per-step crossing, and no Python
+backup. The retired oracle's outputs are reproduced bit-identically
+(parity file frozen goldens).
+
+Batch precompute mirrors the retired oracle's RNG consumption exactly
+(sample-then-floats per sim, action-independent skeleton): natural world
+samples ride ``belief.sample_natural`` on the caller's stream, and
+continuation floats ride ``rng.random_float`` in (sim, step) order for the
+non-root steps actually visited. Actor sequence, live-wall depletion, and
+budget stops are action-independent (hands never move, one live tile pops
+per transition, turn rotates deterministically), so the skeleton needs no
+actions and no transitions — only the starting world per sim.
 """
 
 from __future__ import annotations
 
-import hashlib
+import json
 from typing import Any
 
-from hydra2.belief.world import make_full_world, world_actor_observation
 from hydra2.contracts.common import ContractError
-from hydra2.search.ismcts_core import _HAS_BELIEF as _HAS_BELIEF
+from hydra2.contracts.observation_actor import observation_identity_document
 from hydra2.search.ismcts_core import _MASTER_SEED as _MASTER_SEED
 from hydra2.search.ismcts_core import InformationSetNode as InformationSetNode
 from hydra2.search.ismcts_core import NaturalISMCTSConfig as NaturalISMCTSConfig
@@ -25,18 +33,21 @@ from hydra2.search.ismcts_core import (
     UniformContinuationPolicy as UniformContinuationPolicy,
 )
 from hydra2.search.ismcts_core import _ActionStats as _ActionStats
-from hydra2.search.ismcts_core import _uct_select as _uct_select
+from hydra2.search.ismcts_core import _require_belief as _require_belief
 from hydra2.search.ismcts_core import info_key_for_observation as info_key_for_observation
 from hydra2.search.ismcts_core import is_redeterminization_enabled as is_redeterminization_enabled
-from hydra2.search.ismcts_core import model_vector_for_world as model_vector_for_world
-from hydra2.search.ismcts_core import terminal_vector_for_world as terminal_vector_for_world
 
 __all__ = [
     "NaturalISMCTSPlannerSearchMixin",
 ]
 
 # ---------------------------------------------------------------------------
-# Tiny simulator helpers — exact transitions for the synthetic domain
+# Action-independent trajectory predicates — batch precompute only.
+#
+# These mirror the retired oracle's actor/terminal/legal-mask semantics so
+# the precomputed envelope (info keys, policy directions, float alignment)
+# matches the descent bit-identically. Descent, transitions, vectors, and
+# backup live in Rust; the retired Python ``_apply_action`` is deleted.
 # ---------------------------------------------------------------------------
 
 
@@ -93,54 +104,34 @@ def _legal_ids_for_observation(obs: Any) -> tuple[int, ...]:
         return (0, 1)
 
 
-def _apply_action(world: Any, actor: int, action_id: int, rng: Any) -> Any:
-    """Exact tiny transition — consumes one live tile, rotates turn, increments step."""
+def _require_driver_bridge() -> Any:
+    """Import the built ``search`` bridge surface (fail closed, no fallback)."""
     try:
-        live = tuple(getattr(world, "live_wall", ()))
-        dead = tuple(getattr(world, "dead_wall", ()))
-        hands = getattr(world, "concealed_hands", None)
-        if hands is None:
-            hands = ((0, 1), (2, 3), (4, 5), (6, 7))
-        else:
-            hands = tuple(tuple(int(t) for t in h) for h in hands)
-        new_live = live[1:] if len(live) > 0 else ()
-        _latent_raw2: Any = getattr(world, "latent_state", {})  # pyrefly: ignore[explicit-any]
-        if _latent_raw2 is not None and isinstance(_latent_raw2, dict) and len(_latent_raw2) > 0:
-            latent: dict[Any, Any] = dict(_latent_raw2)  # pyrefly: ignore[explicit-any]
-        elif _latent_raw2 is not None and isinstance(_latent_raw2, dict):
-            latent = dict(_latent_raw2)  # pyrefly: ignore[explicit-any]
-        elif _latent_raw2 is not None:
-            # _latent_raw2 may be non-dict but truthy
-            try:
-                latent = dict(_latent_raw2)  # pyrefly: ignore[explicit-any]
-            except Exception:
-                latent = {}
-        else:
-            latent = {}
-        latent["step"] = int(latent.get("step", 0)) + 1
-        latent["turn"] = (actor + 1) % 4
-        latent["last_action"] = action_id
-        # keep concealed_hands same (no tile movement in stub — preserves tile conservation for test)
-        rules_hash = getattr(world, "rules_hash", "sha256:" + "a" * 64)
-        obs_hash = getattr(world, "observation_hash", "sha256:" + "b" * 64)
-        snapshot = f"ismcts:{getattr(world, 'world_id', 'w')}:{action_id}:{latent['step']}"
-        return make_full_world(
-            concealed_hands=hands,
-            live_wall=new_live,
-            dead_wall=dead,
-            latent_state=latent,
-            rules_hash=rules_hash,
-            observation_hash=obs_hash,
-            simulator_snapshot=snapshot,
+        import hydra2_replay_rs as _ext  # pyrefly: ignore[missing-import]
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2_replay_rs extension with search not importable; "
+            "build the bridge with `pixi run build-ext` before ISMCTS search"
+        ) from exc
+    try:
+        mod = _ext.search
+    except AttributeError as exc:
+        raise ImportError(
+            "hydra2_replay_rs.search submodule missing (stale .so); "
+            "rebuild the bridge with `pixi run build-ext`"
+        ) from exc
+    if not hasattr(mod, "ismcts_descent"):
+        raise ImportError(
+            "hydra2_replay_rs.search.ismcts_descent missing (stale .so); "
+            "rebuild the bridge with `pixi run build-ext`"
         )
-    except Exception as exc:
-        raise ContractError(f"transition failed: {exc}") from exc
+    return mod
 
 
 class NaturalISMCTSPlannerSearchMixin:
     """Simulation half of :class:`NaturalISMCTSPlanner`.
 
-    Split host for construction and the search driver; the Planner
+    Split host for construction and the Rust-batch search driver; the Planner
     protocol surface arrives via the act-mixin subclass, which adds no
     overrides. Attribute access is duck-typed through the subclass.
     """
@@ -227,174 +218,11 @@ class NaturalISMCTSPlannerSearchMixin:
         if self._belief is not None and hasattr(self._belief, "_worlds"):
             try:
                 return self._belief._worlds[particle.world_ref]
-            except Exception:
-                pass
-        # synthetic fallback: create world with deterministic hands from world_ref hash
-        ref = getattr(particle, "world_ref", str(particle))
-        h = hashlib.sha256(ref.encode()).digest()
-        # produce 4 hands of 2 tiles each from hash bytes
-        hands = []
-        for seat in range(4):
-            t0 = h[seat * 2] % 136
-            t1 = h[seat * 2 + 1] % 136
-            if t0 > t1:
-                t0, t1 = t1, t0
-            if t0 == t1:
-                t1 = (t1 + 1) % 136
-                if t0 > t1:
-                    t0, t1 = t1, t0
-            hands.append((t0, t1))
-        # live wall remaining
-        live = tuple(b % 136 for b in h[8:12])
-        latent = {
-            "step": 0,
-            "turn": int(getattr(self._belief_epoch, "root_actor", 0))
-            if self._belief_epoch is not None
-            else 0,
-        }
-        # Need rules_hash etc from epoch if available
-        rules_hash = (
-            getattr(self._belief_epoch, "rules_hash", "sha256:" + "a" * 64)
-            if self._belief_epoch is not None
-            else "sha256:" + "a" * 64
-        )
-        obs_hash = (
-            getattr(self._belief_epoch, "observation_hash", "sha256:" + "b" * 64)
-            if self._belief_epoch is not None
-            else "sha256:" + "b" * 64
-        )
-        return make_full_world(
-            concealed_hands=tuple(hands),
-            live_wall=live,
-            dead_wall=(),
-            latent_state=latent,
-            rules_hash=rules_hash,
-            observation_hash=obs_hash,
-            simulator_snapshot=f"ismcts_synth:{ref}",
-        )
-
-    def _search_once(
-        self,
-        *,
-        epoch: Any,
-        root_obs: Any,
-        legal_actions: tuple[Any, ...],
-        rng: Any,
-        tree: dict[str, InformationSetNode],
-    ) -> tuple[Any, tuple[float, float, float, float]]:
-        # Sample natural world
-        if self._belief is not None and epoch is not None and _HAS_BELIEF:
-            try:
-                particles: Any = self._belief.sample_natural(epoch, count=1, rng=rng)  # type: ignore[union-attr]  # pyrefly: ignore[explicit-any]
-                particle: Any = particles[0]  # pyrefly: ignore[explicit-any]
-                # verify natural ratio one
-                if particle.log_target_density != particle.log_proposal_density:
-                    raise ContractError("natural world must have log_target == log_proposal")
-                if particle.source != "natural":
-                    raise ContractError("ISMCTS natural may only use natural particles")
-                cur_world = self._world_for_particle(particle)
             except Exception as exc:
-                if isinstance(exc, ContractError):
-                    raise
-                # fallback synthetic
-                h = hashlib.sha256(f"{epoch}:{self._config.candidate_id}:{rng}".encode()).digest()
-                cur_world = self._world_for_particle(type("P", (), {"world_ref": h.hex()[:16]})())
-        else:
-            # Self-contained synthetic world (no belief)
-            h = hashlib.sha256(
-                f"{getattr(root_obs, 'observation_hash', '')}:{self._config.candidate_id}".encode()
-            ).digest()
-            cur_world = self._world_for_particle(type("P", (), {"world_ref": h.hex()[:16]})())
-
-        root_seat = (
-            int(getattr(epoch, "root_actor", getattr(root_obs, "actor", 0)))
-            if epoch is not None
-            else int(getattr(root_obs, "actor", 0))
-        )
-
-        # legal ids for stub (int ids)
-        # root legal actions are provided as CanonicalAction objects; map to ints via action_id
-        def to_id(a: Any) -> int:
-            try:
-                _to_id_raw: Any = getattr(a, "action_id", a)  # pyrefly: ignore[explicit-any]
-                return int(_to_id_raw)  # pyrefly: ignore[explicit-any]
-            except Exception:
-                if isinstance(a, int):
-                    return a
-                return 0
-
-        root_legal_ids = tuple(to_id(a) for a in legal_actions)
-        if len(root_legal_ids) == 0:
-            root_legal_ids = (0, 1)
-        # For simulation internal steps we use mask-derived legal ids from observations
-        path: list[tuple[str, int, InformationSetNode]] = []
-        cur = cur_world
-        step = 0
-        while step < self._config.max_depth and not _is_terminal(cur, self._config.max_depth, step):
-            actor = _actor_to_move(cur)
-            obs = world_actor_observation(cur, actor=actor)
-            # Ensure sandbox observation hasn't leaked hidden tiles
-            # (world_actor_observation already filters)
-            legal_ids = _legal_ids_for_observation(obs)
-            if len(legal_ids) == 0:
-                break
-            if actor == root_seat:
-                key = info_key_for_observation(obs)
-                node = tree.get(key)
-                if node is None:
-                    node = InformationSetNode(key=key, legal_actions=tuple(sorted(legal_ids)))
-                    tree[key] = node
-                else:
-                    # Keep legal up to date (first encounter wins for determinism)
-                    if len(node.legal_actions) == 0:
-                        node.legal_actions = tuple(sorted(legal_ids))
-                # selection
-                aid = _uct_select(
-                    node, legal_ids, root_seat, self._config.uct_c, self._config.tie_break
-                )
-                path.append((key, aid, node))
-            else:
-                policy = self._continuations.get(actor, UniformContinuationPolicy())
-                aid = policy.sample(obs, legal_ids, rng)
-            # budget check before transition
-            if (
-                self._config.max_transitions is not None
-                and self._transitions >= self._config.max_transitions
-            ):
-                break
-            cur = _apply_action(cur, actor, aid, rng)
-            self._transitions += 1
-            step += 1
-            if (
-                self._config.max_transitions is not None
-                and self._transitions >= self._config.max_transitions
-            ):
-                break
-
-        # leaf evaluation — vector
-        if _is_terminal(cur, self._config.max_depth, step):
-            vec = terminal_vector_for_world(cur)
-        else:
-            if (
-                self._config.max_model_calls is not None
-                and self._model_calls >= self._config.max_model_calls
-            ):
-                # budget exhausted before leaf model call — fall back to terminal-style vector
-                vec = terminal_vector_for_world(cur)
-            else:
-                vec = model_vector_for_world(cur, candidate_id=self._config.candidate_id)
-                self._model_calls += 1
-        # backup — same four-seat vector through visited root information nodes
-        for _key, aid, node in path:
-            node.visits += 1
-            st = node.action_stats.get(aid)
-            if st is None:
-                st = _ActionStats(visits=0, value_sum=(0.0, 0.0, 0.0, 0.0))
-                node.action_stats[aid] = st
-            st.visits += 1
-            st.value_sum = tuple(v + dv for v, dv in zip(st.value_sum, vec))  # type: ignore[assignment]
-
-        return cur, vec
+                raise ContractError(
+                    "ismcts: belief world missing for particle; real belief required"
+                ) from exc
+        raise ContractError("ismcts: belief world required; synthetic worlds removed")
 
     def search(
         self,
@@ -417,113 +245,262 @@ class NaturalISMCTSPlannerSearchMixin:
             raise ContractError("legal_actions must be non-empty tuple")
         if not hasattr(rng, "random_below") or not hasattr(rng, "random_float"):
             raise ContractError("rng must be RandomStream")
+        _require_belief()
+        if self._belief is None or epoch is None:
+            raise ContractError("ismcts: belief and epoch required; synthetic worlds removed")
         self._belief_epoch = epoch
         self._reset_counters()
-        tree: dict[str, InformationSetNode] = {}
 
         # Validate that re-determinization hasn't been enabled sneaky
         if is_redeterminization_enabled():
             raise ContractError("re-determinization must remain disabled for Candidate 1")
 
-        # Run simulations within budget
-        sims_to_run = self._config.max_simulations
-        for idx in range(sims_to_run):
-            # counters before sim
-            prev_trans = self._transitions
-            prev_calls = self._model_calls
-            _ = self._search_once(
-                epoch=epoch,
-                root_obs=root_observation,
-                legal_actions=legal_actions,
-                rng=rng,
-                tree=tree,
-            )
-            self._simulations += 1
-            # Enforce budget post-sim
-            if (
-                self._config.max_transitions is not None
-                and self._transitions >= self._config.max_transitions
-            ):
-                break
-            if (
-                self._config.max_model_calls is not None
-                and self._model_calls >= self._config.max_model_calls
-            ):
-                # allow up to inclusive; next sim would exceed, so break if further sim would need model call
-                # For deterministic budget, we simply stop when limit reached
-                if self._model_calls >= self._config.max_model_calls:
-                    # If we would need another model call next sim, break after finishing current sim
-                    # Continue only if we could do terminal simulations without model calls
-                    # Conservative: stop when model_calls exhausted
-                    if self._simulations < sims_to_run:
-                        # peek: would next sim need model call? In our stub most leaves need model call
-                        # So break
-                        pass
-            # deadlock guard: if no progress, break
-            if self._transitions == prev_trans and self._model_calls == prev_calls and idx > 0:
-                pass
-
-        # Select root action via scalarized mean
         root_seat = int(getattr(epoch, "root_actor", getattr(root_observation, "actor", 0)))
         root_key = info_key_for_observation(root_observation)
-        root_node = tree.get(root_key)
-        selected_id: int
-        value_vectors: tuple[tuple[float, float, float, float], ...] = ()
         _cand_ids_list: list[int] = []
         for _cand_item in legal_actions:  # pyrefly: ignore[explicit-any]
             _cand_any: Any = _cand_item  # pyrefly: ignore[explicit-any]
             _cand_raw: Any = getattr(_cand_any, "action_id", _cand_any)  # pyrefly: ignore[explicit-any]
             _cand_ids_list.append(int(_cand_raw))  # pyrefly: ignore[explicit-any]
         candidate_ids: tuple[int, ...] = tuple(_cand_ids_list)
+        sorted_legal = sorted(candidate_ids)
+        if len(set(sorted_legal)) != len(sorted_legal):
+            raise ContractError("legal_actions must hold distinct ids")
+
+        # Identity-doc template for action-independent per-step observations.
+        # Only concealed_hand / live_wall_tiles_remaining / actor / turn_actor /
+        # decision_id vary across steps (hands never move, one live tile pops
+        # per transition, turn rotates deterministically); everything else is
+        # constant for the search. Proven exact against constructed
+        # observations (cheap==real on all continuation steps).
+        try:
+            _template_doc: dict[str, Any] = dict(
+                observation_identity_document(root_observation)  # type: ignore[arg-type]
+            )
+        except ContractError:
+            raise
+        except Exception as exc:
+            raise ContractError(f"root_observation must be ActorObservation: {exc}") from exc
+
+        cfg = self._config
+        sims_to_run = cfg.max_simulations
+        max_depth = cfg.max_depth
+        max_trans = cfg.max_transitions
+
+        worlds_json: list[dict[str, Any]] = []
+        draws: list[float] = []
+        # Envelope skeleton: one row per visited non-root-key step. Each row
+        # carries the ACTING hand only (plus live/actor/step/sim): the doc
+        # mirrors (_doc_for_step/_info_key_for_step/_policy_dir_for_step)
+        # read hands[actor] alone for concealed_hand/decision_id, so one
+        # hand reproduces the full-hands call bit-identically (parity probe).
+        # Step-0 root rows carry root_key, never a hash — recorded per sim.
+        skel_hand: list[list[int]] = []
+        skel_live: list[int] = []
+        skel_actor: list[int] = []
+        skel_want: list[bool] = []
+        skel_sim: list[int] = []
+        skel_step: list[int] = []
+        root_at_zero: list[bool] = []
+        transitions = 0
+
+        for _ in range(sims_to_run):
+            try:
+                particles: Any = self._belief.sample_natural(epoch, count=1, rng=rng)  # type: ignore[union-attr]  # pyrefly: ignore[explicit-any]
+                particle: Any = particles[0]  # pyrefly: ignore[explicit-any]
+                if particle.log_target_density != particle.log_proposal_density:
+                    raise ContractError("natural world must have log_target == log_proposal")
+                if particle.source != "natural":
+                    raise ContractError("ISMCTS natural may only use natural particles")
+                cur_world = self._world_for_particle(particle)
+            except ContractError:
+                raise
+            except Exception as exc:
+                raise ContractError(f"ismcts: belief sampling failed: {exc}") from exc
+
+            try:
+                hands = tuple(tuple(int(t) for t in h) for h in cur_world.concealed_hands)
+                live_start = tuple(int(t) for t in cur_world.live_wall)
+                dead = tuple(int(t) for t in cur_world.dead_wall)
+                _lat: Any = getattr(cur_world, "latent_state", {}) or {}
+                _step0: Any = _lat.get("step", None) if isinstance(_lat, dict) else None
+                _turn0: Any = _lat.get("turn", None) if isinstance(_lat, dict) else None
+                _corp0: Any = _lat.get("corpus_idx", None) if isinstance(_lat, dict) else None
+            except Exception as exc:
+                raise ContractError(f"ismcts: sampled world malformed: {exc}") from exc
+            live_len = len(live_start)
+            actor = _actor_to_move(cur_world)
+
+            sim_idx = len(worlds_json)
+            worlds_json.append(
+                {
+                    "world_id": str(cur_world.world_id),
+                    "hands": [list(h) for h in hands],
+                    "live": list(live_start),
+                    "dead": list(dead),
+                    "step": (None if _step0 is None else int(_step0)),
+                    "turn": (None if _turn0 is None else int(_turn0)),
+                    "corpus_idx": (None if _corp0 is None else int(_corp0)),
+                    "snapshot": str(cur_world.simulator_snapshot),
+                }
+            )
+            root_at_zero.append(actor == root_seat)
+            step = 0
+            stepped = 0 if _step0 is None else int(_step0)
+            while step < max_depth and stepped < max_depth and live_len > 0:
+                if actor == root_seat:
+                    if step != 0:
+                        skel_hand.append(list(hands[actor]))
+                        skel_live.append(live_len)
+                        skel_actor.append(actor)
+                        skel_want.append(True)
+                        skel_sim.append(sim_idx)
+                        skel_step.append(step)
+                else:
+                    skel_hand.append(list(hands[actor]))
+                    skel_live.append(live_len)
+                    skel_actor.append(actor)
+                    skel_want.append(False)
+                    skel_sim.append(sim_idx)
+                    skel_step.append(step)
+                    draws.append(float(rng.random_float()))
+                # Budget gate before the transition (mirrors the retired loop
+                # and the Rust dry-run/replay: sample-then-gate, so breaking
+                # reads count; no transition on the break).
+                if max_trans is not None and transitions >= max_trans:
+                    break
+                transitions += 1
+                step += 1
+                stepped += 1
+                live_len -= 1
+                actor = (actor + 1) % 4
+                if max_trans is not None and transitions >= max_trans:
+                    break
+            if max_trans is not None and transitions >= max_trans:
+                break
+
+        # Resolve the envelope hashes: ONE batch over the acting-hand rows
+        # (Rust parses the template once). Bridge is the single implementation;
+        # missing extension raises ``ImportError`` (fail closed).
+        keys_rows: list[list[str]] = [[""] * max_depth for _ in worlds_json]
+        dirs_rows: list[list[int]] = [[0] * max_depth for _ in worlds_json]
+        for sim, at_root in enumerate(root_at_zero):
+            if at_root:
+                keys_rows[sim][0] = root_key
+        try:
+            from hydra2_replay_rs import search as _step_bridge
+
+            _tpl_json = json.dumps(_template_doc).encode()
+            _keys, _dirs = _step_bridge.ismcts_step_hashes(
+                _tpl_json, skel_hand, skel_live, skel_actor, skel_want
+            )
+            if len(_keys) != len(skel_hand) or len(_dirs) != len(skel_hand):
+                raise ContractError("ismcts: step batch length mismatch")
+            for row in range(len(skel_hand)):
+                sim = skel_sim[row]
+                step = skel_step[row]
+                if skel_want[row]:
+                    keys_rows[sim][step] = str(_keys[row])
+                else:
+                    dirs_rows[sim][step] = int(_dirs[row])
+        except ImportError:
+            raise
+        batch = {
+            "worlds": worlds_json,
+            "rules_hash": str(getattr(epoch, "rules_hash", "")),
+            "observation_hash": str(getattr(epoch, "observation_hash", "")),
+            "root_key": root_key,
+            "root_legal": sorted_legal,
+            "root_seat": root_seat,
+            "step_keys": keys_rows,
+            "policy_dirs": dirs_rows,
+            "rng_floats": draws,
+            "uct_c": cfg.uct_c,
+            "max_depth": max_depth,
+            "max_sims": len(worlds_json),
+            "max_transitions": max_trans,
+            "max_model_calls": cfg.max_model_calls,
+            "candidate_id": cfg.candidate_id,
+            "domain": "ismcts",
+            "tie_break": cfg.tie_break,
+            "leaf_overrides": [],
+        }
+        bridge = _require_driver_bridge()
+        try:
+            out = bridge.ismcts_descent(json.dumps(batch).encode())
+        except ImportError:
+            raise
+        except Exception as exc:
+            raise ContractError(f"ismcts bridge descent failed: {exc}") from exc
+
+        self._simulations = int(out.sims_run)
+        self._transitions = int(out.transitions)
+        self._model_calls = int(out.model_calls)
+
+        # Rebuild the information-set tree from the Rust dump. All nodes are
+        # root-seat infosets; legal masks are uniform in the tiny domain, so
+        # every node carries the sorted root legal set exactly as the retired
+        # loop assigned on first encounter.
+        tree: dict[str, InformationSetNode] = {}
+        try:
+            dump = json.loads(out.tree_json)
+        except Exception as exc:
+            raise ContractError(f"ismcts: descent tree dump malformed: {exc}") from exc
+        for entry in dump:
+            try:
+                key = str(entry["key"])
+                node = InformationSetNode(
+                    key=key,
+                    visits=int(entry["visits"]),
+                    legal_actions=tuple(sorted_legal),
+                )
+                for arm in entry["arms"]:
+                    aid = int(arm["action"])
+                    quad = tuple(float(v) for v in arm["sum"])
+                    if len(quad) != 4:
+                        raise ContractError(
+                            f"ismcts: descent arm sum must hold 4 entries for {aid!r}"
+                        )
+                    node.action_stats[aid] = _ActionStats(
+                        visits=int(arm["visits"]),
+                        value_sum=(quad[0], quad[1], quad[2], quad[3]),
+                    )
+            except Exception as exc:
+                raise ContractError(f"ismcts: descent tree dump malformed: {exc}") from exc
+            tree[key] = node
+
+        root_node = tree.get(root_key)
+        rust_cands = [int(a) for a in out.candidate_ids]
+        rust_vecs: list[tuple[float, float, float, float]] = []
+        for vec in out.value_vectors:
+            quad = tuple(float(v) for v in vec)
+            if len(quad) != 4:
+                raise ContractError("ismcts: descent value vector must hold 4 entries")
+            rust_vecs.append((quad[0], quad[1], quad[2], quad[3]))
+        if len(rust_cands) != len(rust_vecs):
+            raise ContractError("ismcts: descent vectors length mismatch")
+        _vec_by_aid = dict(zip(rust_cands, rust_vecs))
 
         if root_node is None or len(root_node.action_stats) == 0:
-            # No visits — fallback to first legal (Candidate 0 style) with model vector
+            # No visits — the retired loop consulted belief here and always
+            # raised for the synthetic refs; fail closed the same way the
+            # descent reports it (first legal wins, zero visits).
+            if len(candidate_ids) == 0:
+                raise ContractError("legal_actions must be non-empty tuple")
             selected_id = candidate_ids[0]
-            # Produce dummy vectors for evidence
-            vec = model_vector_for_world(
-                self._world_for_particle(type("P", (), {"world_ref": "fallback"})()),
-                candidate_id=self._config.candidate_id,
+            value_vectors: tuple[tuple[float, float, float, float], ...] = tuple(
+                _vec_by_aid.get(aid, (0.0, 0.0, 0.0, 0.0)) for aid in candidate_ids
             )
-            value_vectors = (vec,)
             completed = self._simulations > 0
         else:
-            # Choose action with highest scalarized mean
-            best_id = None
-            best_q = float("-inf")
-            vectors: list[tuple[float, float, float, float]] = []
             for aid in candidate_ids:
-                sm = root_node.scalar_mean(aid, root_seat)
-                mv = root_node.mean_vector(aid)
-                if mv is not None:
-                    vectors.append(mv)
-                if sm is None:
-                    continue
-                if sm > best_q + 1e-12:
-                    best_q = sm
-                    best_id = aid
-                elif best_id is not None and abs(sm - best_q) <= 1e-12:
-                    if self._config.tie_break == "lowest_action_id" and aid < best_id:
-                        best_id = aid
-            if best_id is None:
-                best_id = candidate_ids[0]
-            selected_id = best_id
-            # value_vectors are the mean vectors for each candidate action (or terminal vector if unvisited)
-            vecs: list[tuple[float, float, float, float]] = []
-            for aid in candidate_ids:
-                mv = root_node.mean_vector(aid)
-                if mv is not None:
-                    vecs.append(mv)
-                else:
-                    # unvisited actions get model vector placeholder (preserves 4-dim)
-                    vecs.append(
-                        model_vector_for_world(
-                            self._world_for_particle(
-                                type("P", (), {"world_ref": f"unvisited:{aid}"})()
-                            ),
-                            candidate_id=self._config.candidate_id,
-                        )
+                if aid not in root_node.action_stats:
+                    raise ContractError(
+                        f"ismcts: candidate action {aid} unvisited after "
+                        f"{self._simulations} simulations; real belief required"
                     )
-            value_vectors = tuple(vecs)
+            selected_id = int(out.selected_id)
+            value_vectors = tuple(_vec_by_aid[aid] for aid in candidate_ids)
             completed = True
 
         # Resolve selected CanonicalAction object if possible
@@ -544,36 +521,27 @@ class NaturalISMCTSPlannerSearchMixin:
             "simulations": self._simulations,
             "transitions": self._transitions,
             "model_calls": self._model_calls,
-            "max_simulations": self._config.max_simulations,
-            "max_transitions": self._config.max_transitions,
-            "max_model_calls": self._config.max_model_calls,
-            "max_depth": self._config.max_depth,
-            "uct_c": self._config.uct_c,
-            "tie_break": self._config.tie_break,
-            "candidate_id": self._config.candidate_id,
-            "resource_view": self._config.resource_view,
+            "max_simulations": cfg.max_simulations,
+            "max_transitions": cfg.max_transitions,
+            "max_model_calls": cfg.max_model_calls,
+            "max_depth": cfg.max_depth,
+            "uct_c": cfg.uct_c,
+            "tie_break": cfg.tie_break,
+            "candidate_id": cfg.candidate_id,
+            "resource_view": cfg.resource_view,
             "root_seat": root_seat,
             "tree_nodes": len(tree),
         }
 
         # Budget flags
         budget_exhausted = False
-        if (
-            self._config.max_simulations is not None
-            and self._simulations >= self._config.max_simulations
-        ):
+        if cfg.max_simulations is not None and self._simulations >= cfg.max_simulations:
             budget_exhausted = (
                 False  # simulations budget is exactly the declared budget, not exhaustion
             )
-        if (
-            self._config.max_transitions is not None
-            and self._transitions >= self._config.max_transitions
-        ):
+        if cfg.max_transitions is not None and self._transitions >= cfg.max_transitions:
             budget_exhausted = True
-        if (
-            self._config.max_model_calls is not None
-            and self._model_calls >= self._config.max_model_calls
-        ):
+        if cfg.max_model_calls is not None and self._model_calls >= cfg.max_model_calls:
             # not necessarily exhausted if terminal leaves avoid model calls
             pass
 

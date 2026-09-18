@@ -2,25 +2,40 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING as TYPE_CHECKING
-from typing import cast as cast
+from typing import (
+    TYPE_CHECKING as TYPE_CHECKING,
+)
+from typing import (
+    cast as cast,
+)
 
-from hydra2.contracts.action import CanonicalAction as CanonicalAction
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+from hydra2_replay_rs import tiles  # pyrefly: ignore[missing-import]
+
+from hydra2.contracts.action_model import CanonicalAction as CanonicalAction
 from hydra2.contracts.common import ContractError as ContractError
-from hydra2.contracts.common import make_seat as make_seat
-from hydra2.contracts.common import make_tile_id as make_tile_id
 from hydra2.engines.riichienv._lr_frame import _SimStep as _SimStep
-from hydra2.engines.riichienv._lr_rows import _emit as _emit
-from hydra2.engines.riichienv._lr_rows import _ippatsu_interrupt as _ippatsu_interrupt
-from hydra2.engines.riichienv._lr_walk import _drop_orphans as _drop_orphans
-from hydra2.engines.riichienv._lr_walk import _peek as _peek
+from hydra2.engines.riichienv._lr_rows import (
+    _emit as _emit,
+)
+from hydra2.engines.riichienv._lr_rows import (
+    _ippatsu_interrupt as _ippatsu_interrupt,
+)
+from hydra2.engines.riichienv._lr_walk import (
+    _drop_orphans as _drop_orphans,
+)
+from hydra2.engines.riichienv._lr_walk import (
+    _peek as _peek,
+)
 from hydra2.engines.riichienv._lr_walk import _pop as _pop
 from hydra2.engines.riichienv._lr_walk import _pop_window_heads as _pop_window_heads
 from hydra2.engines.riichienv._lr_walk import _strict_row as _strict_row
-from hydra2.engines.riichienv._oracle_base import _BAKAZE_TO_WIND as _BAKAZE_TO_WIND
-from hydra2.engines.riichienv._oracle_base import _TRANSPARENT_KINDS as _TRANSPARENT_KINDS
-from hydra2.engines.riichienv.tiles import mjai_string_of as mjai_string_of
-from hydra2.engines.riichienv.tiles import physical_of as physical_of
+from hydra2.engines.riichienv._oracle_base import (
+    _BAKAZE_TO_WIND as _BAKAZE_TO_WIND,
+)
+from hydra2.engines.riichienv._oracle_base import (
+    _TRANSPARENT_KINDS as _TRANSPARENT_KINDS,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence as Sequence
@@ -57,8 +72,8 @@ def _resolve_dora(state: _GameState, walk: _KyokuWalk, kyoku: int, marker: str) 
     reused: int | None = None
     for tile in walk.last_oracle_dora:
         try:
-            rendered = mjai_string_of(tile)
-        except ContractError:
+            rendered = tiles.mjai_string_of(tile)
+        except ValueError:
             continue
         if rendered != marker:
             continue
@@ -170,7 +185,7 @@ def _note_forced_draw(
         kind="draw_tile",
         visibility="actor_private",
         actor=actor,
-        tile=int(physical_of(pai)),
+        tile=int(tiles.physical_of(pai)),
     )
 
 
@@ -219,7 +234,7 @@ def _do_tsumo(
             return
         raise state.fail(kyoku, "tsumo", f"seat {actor} oracle queue empty")
     drawn = head.drawn
-    if drawn is None or mjai_string_of(drawn) != pai:
+    if drawn is None or tiles.mjai_string_of(drawn) != pai:
         # A queued head from a later decision (or none at all) means every
         # intervening turn was a post-reach forced discard the oracle omits;
         # only a declared reach sanctions that shape.
@@ -262,7 +277,7 @@ def _do_forced_dahai(
     legal mask translates its live legals. The oracle queues are never
     touched here: a queued head belongs to a later decision.
     """
-    if pos.drawn is None or mjai_string_of(pos.drawn) != pai:
+    if pos.drawn is None or tiles.mjai_string_of(pos.drawn) != pai:
         raise state.fail(kyoku, "dahai", f"seat {actor} forced discard is not the drawn tile")
     step = _SimStep(
         seat=actor,
@@ -287,8 +302,8 @@ def _do_forced_dahai(
     )
     expected = CanonicalAction(
         kind=cast("Any", "tsumogiri"),
-        actor=make_seat(actor),
-        tile=make_tile_id(pos.drawn),
+        actor=_bridge_contracts.make_seat(actor),
+        tile=_bridge_contracts.make_tile_id(pos.drawn),
         called_tile=None,
         consumed_tiles=(),
         source_seat=None,
@@ -353,15 +368,15 @@ def _do_dahai(
         head is not None
         and head.mjai_type == "dahai"
         and head.tile is not None
-        and mjai_string_of(head.tile) == pai
+        and tiles.mjai_string_of(head.tile) == pai
         and head.drawn is not None
         and pos.drawn is not None
-        and mjai_string_of(head.drawn) == mjai_string_of(pos.drawn)
+        and tiles.mjai_string_of(head.drawn) == tiles.mjai_string_of(pos.drawn)
     ):
         step = _pop(state, walk, kyoku, actor, why="dahai")
     elif (
         pos.drawn is not None
-        and mjai_string_of(pos.drawn) == pai
+        and tiles.mjai_string_of(pos.drawn) == pai
         and state.riichi_declared[actor]
         and (head is None or head.mjai_type in ("hora", "ankan", "kakan"))
     ):
@@ -372,13 +387,13 @@ def _do_dahai(
         step = _pop(state, walk, kyoku, actor, why="dahai")
     if step.mjai_type != "dahai":
         raise state.fail(kyoku, "dahai", f"seat {actor} oracle holds {step.mjai_type}")
-    if step.tile is None or mjai_string_of(step.tile) != pai:
+    if step.tile is None or tiles.mjai_string_of(step.tile) != pai:
         raise state.fail(kyoku, "dahai", f"seat {actor} oracle discards a different tile")
     kind = "tsumogiri" if tsumogiri else "discard"
     expected = CanonicalAction(
         kind=cast("Any", kind),
-        actor=make_seat(actor),
-        tile=make_tile_id(step.tile),
+        actor=_bridge_contracts.make_seat(actor),
+        tile=_bridge_contracts.make_tile_id(step.tile),
         called_tile=None,
         consumed_tiles=(),
         source_seat=None,

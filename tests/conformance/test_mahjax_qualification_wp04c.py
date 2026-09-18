@@ -15,22 +15,27 @@ import json
 from pathlib import Path
 
 import pytest
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
 from hydra2.config import artifact_root
 from hydra2.engines.mahjax.capture import capture_mahjax_tuple
-from hydra2.engines.mahjax.differential import (
-    CONVERGENT_DORA_INDICATOR_TYPES,
-    DECLARED_INTERSECTION,
-    EXCLUDED_DIMENSIONS,
-    SCENARIO_REGISTRY,
-    DifferentialResult,
-    build_seeded_round_state,
+from hydra2.engines.mahjax.differential_cases import SCENARIO_REGISTRY
+from hydra2.engines.mahjax.differential_modes import (
     cpu_soak,
     execution_mode_sweep,
     gpu_soak_probe,
+)
+from hydra2.engines.mahjax.differential_projection import (
+    DifferentialResult,
+    build_seeded_round_state,
     make_single_round_env,
-    run_differential,
     wall_to_mahjax_deck,
+)
+from hydra2.engines.mahjax.differential_runner import (
+    CONVERGENT_DORA_INDICATOR_TYPES,
+    DECLARED_INTERSECTION,
+    EXCLUDED_DIMENSIONS,
+    run_differential,
 )
 from hydra2.engines.mahjax.quarantine import ADAPTER_VERSION, OBSERVATION_MODE
 from hydra2.engines.mahjax.shell import MahJaxQuarantineShell
@@ -166,6 +171,8 @@ def test_gpu_soak_requires_cuda_device() -> None:
     assert result["status"] == "passed"
 
 
+# cpu_soak jits in-process (differential_modes.py:402); single-process lane only per AGENTS serial rule.
+@pytest.mark.serial
 def test_cpu_soak_bounded_and_deterministic() -> None:
     result = cpu_soak(steps=20)
     assert result["status"] == "passed"
@@ -198,22 +205,25 @@ def test_differential_zero_mismatch_and_token_issued() -> None:
         str(capture.digest) == result.env_tuple_digest
         or payload["environment_fragment"] == capture.to_fragment()
     )
-    from hydra2.contracts.common import make_digest_text
     from hydra2.engines.mahjax.quarantine import fabricate_test_only_token
 
     shell = MahJaxQuarantineShell()
     fresh_token = fabricate_test_only_token(
-        capture, rules_id=make_digest_text(payload["token"]["rules_id"])
+        capture, rules_id=_bridge_contracts.make_digest_text(payload["token"]["rules_id"])
     )
-    digest = shell.qualify(fresh_token, rules_id=make_digest_text(payload["token"]["rules_id"]))
+    digest = shell.qualify(
+        fresh_token, rules_id=_bridge_contracts.make_digest_text(payload["token"]["rules_id"])
+    )
     assert str(digest) == str(fresh_token.identity_digest)
     tampered = fabricate_test_only_token(
-        capture, rules_id=make_digest_text(payload["token"]["rules_id"])
+        capture, rules_id=_bridge_contracts.make_digest_text(payload["token"]["rules_id"])
     )
     object.__setattr__(tampered, "jax_version", "0.0.0-tampered")
     with pytest.raises(Exception):  # noqa: B017  # reason: hard-failure contract asserts any raise never silent skip; pinning subclass would over-constrain
         shell2 = MahJaxQuarantineShell()
-        shell2.qualify(tampered, rules_id=make_digest_text(payload["token"]["rules_id"]))
+        shell2.qualify(
+            tampered, rules_id=_bridge_contracts.make_digest_text(payload["token"]["rules_id"])
+        )
 
 
 @pytest.mark.serial

@@ -167,7 +167,7 @@ def _action_table() -> list[dict[str, Any]]:
 def load_analysis_gate(candidate_id: str) -> dict[str, Any]:
     """Load the WP-12 analysis gate for a teacher candidate — fail closed.
 
-    Delegates to the canonical :func:`hydra2.analysis.qualification.analysis_gate_for`
+    Delegates to the canonical :func:`hydra2.analysis.qual_gates.analysis_gate_for`
     on the canonical path (``work_packages/WP-12/analysis_gates.json``). WP-10 is
     blocked for the candidate unless the gate exists, is eligible, is
     compute-only, and passed deterministic replay (BUILD:701/738 ordering:
@@ -184,7 +184,7 @@ def load_analysis_gate(candidate_id: str) -> dict[str, Any]:
         raise ContractError(
             f"WP-10 blocked: candidate {candidate_id!r} has no WP-12 analysis identity"
         )
-    from hydra2.analysis.qualification import analysis_gate_for
+    from hydra2.analysis.qual_gates import analysis_gate_for
 
     gate = analysis_gate_for(analysis_id)
     if gate is None:
@@ -344,7 +344,7 @@ def select_teacher(
 def _real_candidate_spec(candidate_id: str) -> CandidateSpec:
     """Resolve the REAL CandidateSpec for a teacher candidate via its factory.
 
-    Mirrors ``hydra2.analysis.qualification._make_gameplay_spec_for`` (same
+    Mirrors ``hydra2.analysis.qual_gates._make_gameplay_spec_for`` (same
     factories, same analysis identity mapping). Unknown/unmapped candidates
     raise ContractError — never a hardcoded default spec.
     """
@@ -353,7 +353,7 @@ def _real_candidate_spec(candidate_id: str) -> CandidateSpec:
         raise ContractError(
             f"WP-10 blocked: candidate {candidate_id!r} has no CandidateSpec factory mapping"
         )
-    from hydra2.analysis.qualification import _make_gameplay_spec_for
+    from hydra2.analysis.qual_gates import _make_gameplay_spec_for
 
     try:
         spec = _make_gameplay_spec_for(analysis_id)

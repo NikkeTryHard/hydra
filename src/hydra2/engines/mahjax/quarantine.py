@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, cast
 
-from hydra2._canon import sha256_digest_of_json
+from hydra2.artifacts.digest import of_canonical
 from hydra2.contracts.common import DigestText, SchemaVersion
 
 #: Adapter identity bound into every token.
@@ -124,7 +124,7 @@ class QualificationToken:
     @property
     def identity_digest(self) -> DigestText:
         """sha256 over canonical bytes of the complete token fragment."""
-        return sha256_digest_of_json(self.to_fragment())
+        return of_canonical(self.to_fragment())
 
 
 def fabricate_test_only_token(

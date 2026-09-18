@@ -34,7 +34,6 @@ __all__ = [
 
 MAHJAX_LIVE_DRAW_COUNT = 70  # deck[83] .. deck[14]
 _MAHJAX_FIRST_DRAW_IDX = 83
-_MAHJAX_LAST_DECK_IX = 14
 
 #: hydra2 dead-wall index -> mahjax deck index for the 14 semantic slots.
 DEAD_WALL_ROLE_MAP: dict[int, int] = {
@@ -424,30 +423,6 @@ def _reference_dora_types(sim: Any) -> tuple[int, ...]:
 def _mahjax_dora_types(state: Any) -> tuple[int, ...]:
     arr: Any = state.round_state.dora_indicators  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
     return tuple(int(cast("Any", t)) for t in arr.tolist() if int(cast("Any", t)) != -1)  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-
-
-def _reference_ura_types(sim: Any) -> tuple[int, ...]:
-    # ura not exposed until win; we treat as empty before hora
-    # For checkpoint before win, expect 0 or 1 indicator hidden? Actually both start with 1.
-    # But ura should remain hidden; we check that public events don't reveal ura.
-    # For simplicity, return first ura if known, but note hidden.
-    try:
-        # engine may have ura_dora_indicators?
-        ura: Any = getattr(cast("Any", cast("Any", sim)._engine), "ura_dora_indicators", None)
-        if ura is not None:
-            return tuple(
-                type_id(int(cast("Any", t))) for t in cast("Any", ura) if int(cast("Any", t)) != -1
-            )
-    except Exception:  # why-broad: ura probe; any shape reports ()
-        pass
-    return ()
-
-
-def _mahjax_ura_types(state: Any) -> tuple[int, ...]:
-    arr: Any = cast("Any", state).round_state.ura_dora_indicators
-    return tuple(
-        int(cast("Any", t)) for t in cast("Any", arr).tolist() if int(cast("Any", t)) != -1
-    )
 
 
 def _reference_win_offer(sim: Any, actor: int) -> bool:

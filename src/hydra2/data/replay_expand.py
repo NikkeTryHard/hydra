@@ -41,6 +41,23 @@ once; per-decision work reuses the adapter's cached legal view (one
 callers slice with :func:`iter_microbatches` without re-decode. Throughput
 (``decisions/sec``) is reported by tests as informational output, never as
 an assert.
+
+Bridge-routing boundary (Wave 1 R3, named keep-reason): this per-decision
+walk stays Python — no bridge pyfn produces :class:`DecisionRow` content.
+The Rust walk (``hydra2_replay_rs.expand_games`` /
+``replay_game_planes[_wall]``) serves decision identity plus tensor planes
+only (``chosen_action_id`` columns and feature blobs); it never materializes
+the per-row ``actor_observation`` JSON, the live :class:`ActorObservation`
+handoff (:func:`stash_live_observation`), or the ``derivation_hash`` /
+``adapter_hash`` / ``observation_hash`` seals :func:`expand_game` commits.
+Routing the oracle through planes would drop those fields and break
+byte-exactness, so the training feed's Rust path
+(:mod:`hydra2.training.stream_expand`) consumes planes while this module
+remains the parity anchor. The per-event scans
+(:func:`_count_row_decisions`, :func:`_skip_index`, :func:`_final_scores`,
+the walk itself) likewise stay Python: no pyfn covers them. Field gap for a
+future pyfn: full DecisionRow materialization (observation JSON plus
+derivation/adapter seals) from staged planes.
 """
 
 from __future__ import annotations
@@ -49,14 +66,14 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
 from hydra2.artifacts.digest import of_canonical
-from hydra2.contracts.action import canonical_action_codec
+from hydra2.contracts.action_table import canonical_action_codec
 from hydra2.contracts.common import (
     ContractError,
     IllegalActionError,
     TileId,
-    make_seat,
-    make_tile_id,
 )
 from hydra2.data.parquet import DecisionRow, PrivilegedRow, validate_privileged_ranks
 from hydra2.engines.protocol import WallSchedule, wall_schedule_digest
@@ -64,11 +81,11 @@ from hydra2.engines.protocol import WallSchedule, wall_schedule_digest
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
-    from hydra2.contracts.action import CanonicalAction
-    from hydra2.contracts.observation import ActorObservation
-    from hydra2.contracts.rules import RulesManifest
+    from hydra2.contracts.action_model import CanonicalAction
+    from hydra2.contracts.observation_actor import ActorObservation
+    from hydra2.contracts.rules_manifest import RulesManifest
     from hydra2.data.decode import GameRecord
-    from hydra2.engines.riichienv.adapter import RiichiEnvExactSimulator
+    from hydra2.engines.riichienv.adapter_core import RiichiEnvExactSimulator
 
 __all__ = [
     "ReplayExpander",
@@ -142,7 +159,7 @@ def _load_rules() -> RulesManifest:
     if cached is not None:
         return cached
     from hydra2.config import repo_root
-    from hydra2.contracts.rules import rules_manifest_from_payload
+    from hydra2.contracts.rules_manifest import rules_manifest_from_payload
 
     rules_path = repo_root() / _RULES_RELPATH
     if not rules_path.is_file():
@@ -190,7 +207,7 @@ def _schedule_for(game_id: str, wall_tiles: tuple[int, ...]) -> WallSchedule:
     """Build the game wall; raises instead of synthesizing a missing wall."""
     if len(wall_tiles) != 136:
         raise ContractError(f"wall_tiles must carry 136 tiles, got {len(wall_tiles)}")
-    physical = tuple(make_tile_id(t) for t in wall_tiles)
+    physical = tuple(_bridge_contracts.make_tile_id(t) for t in wall_tiles)
     schedule_id = f"replay-{game_id}"
     return WallSchedule(
         schedule_id=schedule_id,
@@ -213,10 +230,10 @@ def _require_actor(event: dict[str, object], *, where: str) -> int:
     return actor
 
 
-def _mjai_strings(tiles: Sequence[TileId]) -> list[str]:
-    from hydra2.engines.riichienv.tiles import mjai_string_of
+def _mjai_strings(tile_ids: Sequence[TileId]) -> list[str]:
+    from hydra2_replay_rs import tiles  # pyrefly: ignore[missing-import]
 
-    return [mjai_string_of(int(t)) for t in tiles]
+    return [tiles.mjai_string_of(int(t)) for t in tile_ids]
 
 
 def _wall_id_for(game_id: str, wall_tiles: tuple[int, ...] | None) -> str | None:
@@ -297,7 +314,7 @@ class ReplayExpander:
     __slots__ = ("_rules", "_sim")
 
     def __init__(self) -> None:
-        from hydra2.engines.riichienv.adapter import RiichiEnvExactSimulator
+        from hydra2.engines.riichienv.adapter_core import RiichiEnvExactSimulator
 
         self._sim: RiichiEnvExactSimulator = RiichiEnvExactSimulator()
         self._rules: RulesManifest = _load_rules()
@@ -313,7 +330,12 @@ class ReplayExpander:
         sim.reset(
             rules=self._rules,
             wall=_schedule_for(game.game_id, tuple(wall_tiles)),
-            seat_permutation=(make_seat(0), make_seat(1), make_seat(2), make_seat(3)),
+            seat_permutation=(
+                _bridge_contracts.make_seat(0),
+                _bridge_contracts.make_seat(1),
+                _bridge_contracts.make_seat(2),
+                _bridge_contracts.make_seat(3),
+            ),
         )
         events = game.events
         rows: list[DecisionRow] = []
@@ -413,13 +435,13 @@ class ReplayExpander:
                 raise IllegalActionError(
                     f"logged {kind} by seat {actor} outside the claim window {pending}"
                 )
-            legals = sim.legal_actions(make_seat(actor))
+            legals = sim.legal_actions(_bridge_contracts.make_seat(actor))
             return actor, self._match_claim(actor, kind, ev, legals)
         if kind == "hora" and not bool(ev.get("tsumo", False)):
             actor = _require_actor(ev, where="hora")
             if actor not in pending:
                 return None
-            legals = sim.legal_actions(make_seat(actor))
+            legals = sim.legal_actions(_bridge_contracts.make_seat(actor))
             return actor, self._match_ron(actor, ev, legals)
         return None
 
@@ -456,7 +478,7 @@ class ReplayExpander:
                 raise IllegalActionError(
                     f"reach/dahai actor {actor}/{dactor} != expected decision seat {expected}"
                 )
-            legals = sim.legal_actions(make_seat(expected))
+            legals = sim.legal_actions(_bridge_contracts.make_seat(expected))
             action = self._match_riichi(expected, dev, legals)
             self._emit_row(game, expected, action, len(rows), round_idx, rows, split=split)
             # Engine advance is the effect; result discarded.
@@ -466,7 +488,7 @@ class ReplayExpander:
             actor = _require_actor(ev, where="dahai")
             if actor != expected:
                 raise IllegalActionError(f"dahai by seat {actor} != expected {expected} [{idx}]")
-            legals = sim.legal_actions(make_seat(expected))
+            legals = sim.legal_actions(_bridge_contracts.make_seat(expected))
             action = self._match_dahai(expected, ev, legals, idx=idx)
             self._emit_row(game, expected, action, len(rows), round_idx, rows, split=split)
             # Engine advance is the effect; result discarded.
@@ -476,7 +498,7 @@ class ReplayExpander:
             actor = _require_actor(ev, where=kind)
             if actor != expected:
                 raise IllegalActionError(f"{kind} by seat {actor} != expected {expected} [{idx}]")
-            legals = sim.legal_actions(make_seat(expected))
+            legals = sim.legal_actions(_bridge_contracts.make_seat(expected))
             action = self._match_kan(expected, kind, ev, legals, idx=idx)
             self._emit_row(game, expected, action, len(rows), round_idx, rows, split=split)
             # Engine advance is the effect; result discarded.
@@ -488,7 +510,7 @@ class ReplayExpander:
                 raise IllegalActionError(f"hora by seat {actor} != expected {expected} [{idx}]")
             if not bool(ev.get("tsumo", False)):
                 raise IllegalActionError(f"logged ron outside any claim window at index {idx}")
-            legals = sim.legal_actions(make_seat(expected))
+            legals = sim.legal_actions(_bridge_contracts.make_seat(expected))
             action = self._match_tsumo(expected, ev, legals, idx=idx)
             self._emit_row(game, expected, action, len(rows), round_idx, rows, split=split)
             # Engine advance is the effect; result discarded.
@@ -498,7 +520,7 @@ class ReplayExpander:
 
     def _apply_pass(self, seat: int) -> None:
         sim = self._sim
-        legals = sim.legal_actions(make_seat(seat))
+        legals = sim.legal_actions(_bridge_contracts.make_seat(seat))
         for action in legals:
             if action.kind == "pass":
                 # Mechanical pass advances the engine; result discarded.
@@ -509,7 +531,7 @@ class ReplayExpander:
     def _select_for_apply(self, seat: int, action: CanonicalAction) -> CanonicalAction:
         """Return the cached legal twin to apply (identity for the adapter)."""
         sim = self._sim
-        legals = sim.legal_actions(make_seat(seat))
+        legals = sim.legal_actions(_bridge_contracts.make_seat(seat))
         for legal in legals:
             if legal == action:
                 return legal
@@ -527,7 +549,7 @@ class ReplayExpander:
         split: str,
     ) -> None:
         sim = self._sim
-        observation = sim.actor_observation(make_seat(seat))
+        observation = sim.actor_observation(_bridge_contracts.make_seat(seat))
         context = sim._context_for(seat)
         chosen_id = int(canonical_action_codec.encode(action, table=sim._table, context=context))
         mask = tuple(observation.legal_mask)
@@ -700,9 +722,9 @@ def _optional_tile_key(action: CanonicalAction) -> int:
 
 
 def _tile_string(tile: int) -> str:
-    from hydra2.engines.riichienv.tiles import mjai_string_of
+    from hydra2_replay_rs import tiles  # pyrefly: ignore[missing-import]
 
-    return mjai_string_of(tile)
+    return tiles.mjai_string_of(tile)
 
 
 def _matches_pai(tile: int | None, pai: str) -> bool:
@@ -739,7 +761,7 @@ def expand_privileged_rows(
     privileged writer; ``wall_id`` defaults to the game wall digest when
     ``game.wall_tiles`` is present and is omitted otherwise (never invented).
     """
-    from hydra2.belief.oracle_loader import ranks_from_final_scores
+    from hydra2.belief.oracle_join import ranks_from_final_scores
 
     if split == "":
         raise ContractError("split must be a non-empty string")

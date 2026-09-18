@@ -91,7 +91,8 @@ def _build_loop(
     adapter_id: str = "plain_pytorch",
     device: str | None = None,
 ):
-    from hydra2.training.loop import SupervisedLoop, TrainingLoopConfig
+    from hydra2.training.loop_state import TrainingLoopConfig
+    from hydra2.training.loop_train import SupervisedLoop
 
     torch.manual_seed(0)
     model = _StubModel()
@@ -158,26 +159,22 @@ class TestPlainPin:
             assert torch.equal(v, before[k])
 
 
-@pytest.mark.serial
-class TestFabricRebind:
-    def test_rebind_same_precision_ok_different_raises(self) -> None:
-        pytest.importorskip("lightning_fabric")
-        from hydra2.runtime.fabric import FabricRuntimeAdapter
+class TestPlainSetup:
+    def test_plain_setup_returns_same_objects(self) -> None:
+        from hydra2.runtime.plain import PlainPytorchAdapter
 
-        adapter = FabricRuntimeAdapter()
-        spec_fp32 = _fp32_cpu_spec(adapter_id="fabric_2.6.5", precision="fp32")
-        # First bind records precision; second identical bind reuses fabric.
-        first = adapter._ensure_fabric(spec_fp32)
-        second = adapter._ensure_fabric(spec_fp32)
-        assert first is second
-        spec_bf16 = _fp32_cpu_spec(adapter_id="fabric_2.6.5", precision="bf16_mixed")
-        with pytest.raises(ContractError, match="already bound"):
-            adapter._ensure_fabric(spec_bf16)
+        adapter = PlainPytorchAdapter()
+        model = _StubModel()
+        opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
+        spec = _fp32_cpu_spec(adapter_id="plain_pytorch", precision="fp32")
+        handle = adapter.setup(model=model, optimizer=opt, spec=spec)
+        assert handle.model is model
+        assert handle.optimizer is opt
 
 
 class TestReplayPin:
     def test_replay_config_rejects_bf16(self) -> None:
-        from hydra2.training.replay import ReplayConfig
+        from hydra2.training.replay_state import ReplayConfig
 
         with pytest.raises(ContractError, match="fp32-only"):
             ReplayConfig(
@@ -190,8 +187,9 @@ class TestReplayPin:
 
     def test_replay_runtime_spec_bf16_fails_closed(self, tmp_path: Path) -> None:
         from hydra2.data.parquet import DecisionRow, write_actor_shards
-        from hydra2.training.dataset import AuthoritativeParquetDataset
-        from hydra2.training.replay import ActorLearnerReplay, ReplayConfig
+        from hydra2.training.dataset_store import AuthoritativeParquetDataset
+        from hydra2.training.replay_engine import ActorLearnerReplay
+        from hydra2.training.replay_state import ReplayConfig
 
         dest = tmp_path / "actor_parquet"
         rows = [
@@ -233,7 +231,7 @@ class TestReplayPin:
         model = _StubModel(feature_dim=8, num_actions=8)
         opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
         config = ReplayConfig(microbatch_size=2, accumulation_steps=1, max_updates=1, seed=0)
-        rt_bf16 = _fp32_cpu_spec(adapter_id="fabric_2.6.5", precision="bf16_mixed")
+        rt_bf16 = _fp32_cpu_spec(adapter_id="plain_pytorch", precision="bf16_mixed")
         with pytest.raises(ContractError, match="fp32-only"):
             ActorLearnerReplay(
                 model=model,
@@ -252,8 +250,6 @@ class TestLoopRuntimeAgreement:
         ("adapter_id", "rt_precision", "loop_precision"),
         [
             ("plain_pytorch", "fp32", "bf16_mixed"),
-            ("fabric_2.6.5", "fp32", "bf16_mixed"),
-            ("fabric_2.6.5", "bf16_mixed", "fp32"),
             ("plain_pytorch", "bf16_mixed", "fp32"),
         ],
     )
@@ -270,7 +266,7 @@ class TestLoopRuntimeAgreement:
 
     @pytest.mark.parametrize(
         ("adapter_id", "precision"),
-        [("plain_pytorch", "fp32"), ("fabric_2.6.5", "fp32"), ("fabric_2.6.5", "bf16_mixed")],
+        [("plain_pytorch", "fp32"), ("plain_pytorch", "bf16_mixed")],
     )
     def test_agreeing_constructs(self, tmp_path: Path, adapter_id: str, precision: str) -> None:
         loop, _ = _build_loop(
@@ -311,7 +307,7 @@ class TestDigestDistinctness:
 
     def test_training_state_hash_binds_precision(self) -> None:
         from hydra2.runtime.checkpoint import hash_state_tree
-        from hydra2.training.loop import TrainingState
+        from hydra2.training.loop_state import TrainingState
 
         fp32 = TrainingState(precision="fp32").to_dict()
         bf16 = TrainingState(precision="bf16_mixed").to_dict()
@@ -321,7 +317,8 @@ class TestDigestDistinctness:
 @pytest.mark.serial
 class TestResumePrecisionMismatch:
     def test_resume_rejects_cross_regime(self, tmp_path: Path) -> None:
-        from hydra2.training.loop import SupervisedLoop, TrainingLoopConfig
+        from hydra2.training.loop_state import TrainingLoopConfig
+        from hydra2.training.loop_train import SupervisedLoop
 
         torch.manual_seed(0)
         loop, _ = _build_loop(tmp_path / "a", loop_precision="fp32")
@@ -376,7 +373,7 @@ class TestFiniteSkip:
             assert torch.equal(p0, p1), "skipped step must not move weights"
 
     def test_helper_flags_nonfinite(self) -> None:
-        from hydra2.training.objectives import global_grad_norm_is_finite
+        from hydra2.training.objectives_loss import global_grad_norm_is_finite
 
         model = _StubModel()
         for p in model.parameters():
@@ -388,7 +385,7 @@ class TestFiniteSkip:
 
     def test_helper_finite_single_sync_exact(self) -> None:
         """Fused probe: finite grads report exact norm with one host sync."""
-        from hydra2.training.objectives import global_grad_norm_is_finite
+        from hydra2.training.objectives_loss import global_grad_norm_is_finite
 
         model = _StubModel()
         for p in model.parameters():
@@ -400,7 +397,7 @@ class TestFiniteSkip:
 
     def test_helper_no_grads_is_finite_zero(self) -> None:
         """Fused probe: no grads anywhere is finite with zero norm."""
-        from hydra2.training.objectives import global_grad_norm_is_finite
+        from hydra2.training.objectives_loss import global_grad_norm_is_finite
 
         model = _StubModel()
         finite, norm = global_grad_norm_is_finite(model)

@@ -1,15 +1,23 @@
 """SPEC 2.1 primitive aliases and SPEC 3 typed failure hierarchy.
 
 This module is the bootstrap subset of the contract layer owned by WP-01.
-Contracts import only the Python standard library and other contract modules.
 Full contract modules (rules, utility, tile, action, event, observation)
 arrive in WP-02; nothing here anticipates them.
+
+Deletion wave (minimal-Python end-state): the R2 comparator/validator
+translators (``is_seat``/``is_tile``/``is_digest``, ``make_seat``/
+``make_tile_id``/``make_action_id``/``make_digest_text``) are deleted —
+callers import the ``hydra2_replay_rs.contracts`` bridge directly
+(parity battery + differential probe green on this tree; the bridge raises
+``ValueError``/``TypeError`` where the translators raised ``ContractError``).
+This module keeps the SPEC 2.1 aliases, the SPEC 3 failure hierarchy, and
+the makers with no bridge counterpart.
 """
 
 from __future__ import annotations
 
 import re
-from typing import NewType, TypeGuard
+from typing import NewType
 
 # ---------------------------------------------------------------------------
 # SPEC 3 - Failure model (typed errors). All expected Hydra2 failures derive
@@ -142,7 +150,6 @@ UtcTimestamp = NewType("UtcTimestamp", str)  # RFC 3339 UTC, second or finer pre
 SchemaVersion = NewType("SchemaVersion", str)  # MAJOR.MINOR.PATCH
 
 
-_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _UTC_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$")
 _SCHEMA_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 
@@ -163,37 +170,8 @@ def _require_str(value: str, *, name: str) -> str:
     return value
 
 
-def is_seat(value: object) -> TypeGuard[Seat]:
-    """Narrowing predicate: True iff value is a valid Seat (0..3, bool excluded)."""
-    return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 3
-
-
-def is_digest(value: object) -> TypeGuard[DigestText]:
-    """Narrowing predicate: True iff value matches 'sha256:<64 lowercase hex>'."""
-    return isinstance(value, str) and _DIGEST_RE.fullmatch(value) is not None
-
-
-def is_tile(value: object) -> TypeGuard[TileId]:
-    """Narrowing predicate: True iff value is a valid TileId (0..135, bool excluded)."""
-    return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 135
-
-
-def make_seat(value: int) -> Seat:
-    return Seat(_require_int(value, name="seat", minimum=0, maximum=3))
-
-
 def make_sequence_no(value: int) -> SequenceNo:
     return SequenceNo(_require_int(value, name="sequence_no", minimum=0, maximum=None))
-
-
-def make_action_id(value: int) -> ActionId:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise ContractError(f"action_id={value!r} must be a nonnegative int")
-    return ActionId(value)
-
-
-def make_tile_id(value: int) -> TileId:
-    return TileId(_require_int(value, name="tile_id", minimum=0, maximum=135))
 
 
 def make_tile_type(value: int) -> TileType:
@@ -223,13 +201,6 @@ def make_run_id(value: str) -> RunId:
     if text == "":
         raise ContractError("run_id must be non-empty")
     return RunId(text)
-
-
-def make_digest_text(value: str) -> DigestText:
-    text = _require_str(value, name="digest_text")
-    if _DIGEST_RE.fullmatch(text) is None:
-        raise ContractError(f"digest_text {text!r} must match 'sha256:<64 lowercase hex>'")
-    return DigestText(text)
 
 
 def make_utc_timestamp(value: str) -> UtcTimestamp:

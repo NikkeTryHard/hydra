@@ -21,9 +21,9 @@ import time
 import pytest
 
 from hydra2.artifacts.canonical import canonical_bytes
-from hydra2.contracts.action import CanonicalAction
+from hydra2.contracts.action_model import CanonicalAction
 from hydra2.contracts.common import ContractError
-from hydra2.contracts.observation import make_actor_observation
+from hydra2.contracts.observation_actor import make_actor_observation
 from hydra2.search.common import SearchRequest
 from hydra2.search.persistence_factorial import (
     ARM_DEFS,

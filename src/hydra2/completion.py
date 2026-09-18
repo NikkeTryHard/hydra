@@ -6,7 +6,7 @@ verification of recorded hashes where referenced paths exist, dependency
 record presence, exit disposition, and the atomic mutable index at
 ``$ARTIFACT_ROOT/work_packages/index.json``.
 
-Canonical bytes are RFC 8785 via hydra2.artifacts (see hydra2._canon shim).
+Canonical bytes are RFC 8785 via hydra2.artifacts.
 
 Record hash definition: sha256 over the canonical bytes of the parsed
 record document (whitespace-independent).
@@ -19,17 +19,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
-from hydra2._canon import (
-    atomic_write_bytes,
-    canonical_json_bytes,
-    sha256_digest_of_json,
-    sha256_file,
-)
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
+from hydra2.artifacts.atomic import atomic_replace_bytes
+from hydra2.artifacts.canonical import canonical_bytes
+from hydra2.artifacts.digest import of_canonical, sha256_digest, sha256_file
 from hydra2.contracts.common import (
     ContractError,
     DigestMismatchError,
     IncompatibleSchemaError,
-    make_digest_text,
     make_utc_timestamp,
 )
 
@@ -121,10 +119,10 @@ def coerce_sha256(value: Any) -> str:
     """Accept canonical 'sha256:<hex>' or the bare 64-hex form used by
     pre-WP-01 records (e.g. WP-00A); returns canonical DigestText."""
     try:
-        return make_digest_text(value)
-    except ContractError:
+        return _bridge_contracts.make_digest_text(value)
+    except (ValueError, TypeError):
         if isinstance(value, str) and _BARE_SHA256_RE.fullmatch(value) is not None:
-            return make_digest_text("sha256:" + value)
+            return _bridge_contracts.make_digest_text("sha256:" + value)
         raise
 
 
@@ -308,7 +306,7 @@ def record_hash_of_file(path: Path) -> str:
     tests/contracts/test_bootstrap_supersede.py (RFC 8785 number forms).
     """
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
-    return sha256_digest_of_json(raw)
+    return of_canonical(raw)
 
 
 def _input_matches(
@@ -324,7 +322,6 @@ def _input_matches(
     matches its declared ``git_baseline`` blob is verified as of that
     baseline. Neither live nor baseline matching is a hard failure.
     """
-    import hashlib
     import subprocess
 
     recomputed = sha256_file(path)
@@ -342,7 +339,7 @@ def _input_matches(
         except (OSError, subprocess.SubprocessError):
             proc = None
         if proc is not None and proc.returncode == 0:
-            blob_hash = "sha256:" + hashlib.sha256(proc.stdout).hexdigest()
+            blob_hash = str(sha256_digest(proc.stdout))
             if blob_hash == recorded:
                 return True, f"git-baseline:{git_baseline}"
     return False, recomputed
@@ -465,7 +462,7 @@ def update_index(
     Superseding keeps the previous hash in ``superseded``. Returns
     (index, changed). Idempotent: same hash -> unchanged file.
     """
-    _ = make_digest_text(record_hash)
+    _ = _bridge_contracts.make_digest_text(record_hash)
     index_path = artifact_root / "work_packages" / "index.json"
     index = load_index(artifact_root)
     current = dict(index["current"])
@@ -483,7 +480,7 @@ def update_index(
         "current": dict(sorted(current.items())),
         "superseded": {k: sorted(v) for k, v in sorted(superseded.items())},
     }
-    atomic_write_bytes(index_path, canonical_json_bytes(new_index))
+    atomic_replace_bytes(index_path, canonical_bytes(new_index))
     return new_index, True
 
 

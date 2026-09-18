@@ -1,12 +1,12 @@
 """Thin plane-filling handoff over the PyO3 boundary (sole replay path).
 
-Thin Python side of the ``hydra2-replay-rs`` bridge (``PyHydraStream``):
-Rust stages framed per-game inputs and fills caller-owned pinned plane
-slots DIRECTLY via ``data_ptr`` — no JSON, no per-row copies. ``next_into``
-takes 13 base pointers + 13 byte caps (``tensor.nbytes``) in §7 plane order
-and returns the committed ``(rows, games, t_len)``; the valid prefix moves
-to device on a single transfer stream with a slot-local ``wait_event``
-(no global sync, no ``.item``).
+Bridge-plane consume (already wired — no new surfaces this slice):
+``PyHydraStream`` stages framed per-game inputs and fills caller-owned
+pinned plane slots DIRECTLY via ``data_ptr`` (feed 172 + shard 311 green).
+``next_into`` takes 13 base pointers + 13 byte caps (``tensor.nbytes``) in
+§7 plane order and returns the committed ``(rows, games, t_len)``; the
+valid prefix moves to device on a single transfer stream with a slot-local
+``wait_event`` (no global sync, no ``.item``).
 
 Open pins are opaque non-empty digests (``source_hash``/``rules_hash``/
 ``action_table_hash``); the closed-form walk ids are pinned entry-wise to

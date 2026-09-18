@@ -16,11 +16,16 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
-from hydra2.artifacts.canonical import canonical_bytes
-from hydra2.contracts.common import ContractError, DigestText, make_digest_text
-from hydra2.search.local_shared import _MASTER_SEED as _MASTER_SEED
-from hydra2.search.local_shared import FORBIDDEN_IN_STRATEGY_KEY as FORBIDDEN_IN_STRATEGY_KEY
-from hydra2.search.local_shared import logger as logger
+from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+
+from hydra2.artifacts.canonical import canonical_bytes, canonical_bytes_batch
+from hydra2.contracts.common import ContractError, DigestText
+from hydra2.search.local_shared import (
+    _MASTER_SEED as _MASTER_SEED,
+)
+from hydra2.search.local_shared import (
+    FORBIDDEN_IN_STRATEGY_KEY as FORBIDDEN_IN_STRATEGY_KEY,
+)
 
 __all__ = [
     "AbstractMappingError",
@@ -31,6 +36,7 @@ __all__ = [
     "build_public_subgame",
     "detect_cycle",
     "info_key_for_actor_observation",
+    "info_keys_for_actor_observations",
     "model_vector_for_world",
     "preserves_vector_returns",
     "terminal_vector_for_world",
@@ -56,11 +62,25 @@ def _h(data: bytes) -> str:
 
 
 def _digest(s: str) -> DigestText:
-    return make_digest_text("sha256:" + _h(s.encode()))
+    return _bridge_contracts.make_digest_text("sha256:" + _h(s.encode()))
 
 
-def _seed_bytes(*parts: str) -> bytes:
-    return hashlib.sha256("|".join(parts).encode()).digest()
+def _require_search_bridge() -> Any:
+    """Import the built ``search`` bridge surface (fail closed)."""
+    try:
+        import hydra2_replay_rs as _ext  # pyrefly: ignore[missing-import]
+    except ImportError as exc:
+        raise ImportError(
+            "hydra2_replay_rs extension with search not importable; "
+            "build the bridge with `pixi run build-ext` before local resolving vectors"
+        ) from exc
+    try:
+        return _ext.search
+    except AttributeError as exc:
+        raise ImportError(
+            "hydra2_replay_rs.search submodule missing (stale .so); "
+            "rebuild the bridge with `pixi run build-ext`"
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -68,13 +88,8 @@ def _seed_bytes(*parts: str) -> bytes:
 # ---------------------------------------------------------------------------
 
 
-def info_key_for_actor_observation(observation: Any) -> str:
-    """Canonical per-actor information-set hash (actor-visible only).
-
-    For the tiny domain we hash a payload of:
-      actor, concealed_hand, public visible fields (discards, riichi flags, scores)
-    Excludes legal_mask redundancy, world_id, hidden hands of others.
-    """
+def _info_key_payload(observation: Any) -> dict[str, Any]:
+    """Actor-visible payload hashed by the per-actor information-set key."""
     try:
         actor = int(getattr(observation, "actor", 0))
     except Exception:
@@ -106,6 +121,17 @@ def info_key_for_actor_observation(observation: Any) -> str:
         "sequence": seq,
         "observation_hash": obs_hash,
     }
+    return payload
+
+
+def info_key_for_actor_observation(observation: Any) -> str:
+    """Canonical per-actor information-set hash (actor-visible only).
+
+    For the tiny domain we hash a payload of:
+      actor, concealed_hand, public visible fields (discards, riichi flags, scores)
+    Excludes legal_mask redundancy, world_id, hidden hands of others.
+    """
+    payload = _info_key_payload(observation)
     # Hash via canonical_bytes when available else json
     try:
         blob = canonical_bytes(payload)
@@ -120,6 +146,26 @@ def info_key_for_actor_observation(observation: Any) -> str:
         if bad in key:
             raise ContractError(f"strategy key contains forbidden substring {bad!r}")
     return key
+
+
+def info_keys_for_actor_observations(observations: list[Any]) -> list[str]:
+    """Batch per-actor information-set keys via ONE ``canonical_bytes_batch`` FFI.
+
+    Byte-identical to ``[info_key_for_actor_observation(o) for o in observations]``
+    on canonical-domain payloads (the only shape this module builds): same
+    payloads, same bytes, same digests. Fail-closed: bridge errors raise —
+    callers that tolerate per-slot failure must catch and fall back to the
+    single-key authority loop.
+    """
+    blobs = canonical_bytes_batch([_info_key_payload(o) for o in observations])
+    keys: list[str] = []
+    for blob in blobs:
+        key = "sha256:" + hashlib.sha256(blob).hexdigest()
+        for bad in FORBIDDEN_IN_STRATEGY_KEY:
+            if bad in key:
+                raise ContractError(f"strategy key contains forbidden substring {bad!r}")
+        keys.append(key)
+    return keys
 
 
 def _actor_to_key(actor: int) -> int:
@@ -142,59 +188,35 @@ def model_vector_for_world(
     general-sum feasibility (zero-sum subset). Finite and reproducible.
     """
     wid = str(getattr(world, "world_id", "world_unknown"))
-    h = hashlib.sha256((wid + ":" + leaf_kind).encode()).digest()
-    # 4 values in [-1, 1] from bytes
-    raw = [int.from_bytes(h[i * 2 : i * 2 + 2], "little") for i in range(4)]
-    vals = tuple(((r / 65535.0) * 2.0 - 1.0) for r in raw)
-    # enforce zero-sum for conservation test (general-sum allows non-zero but zero satisfies spec)
-    s = sum(vals)
-    # shift to zero-sum
-    centered = tuple(v - s / 4.0 for v in vals)
-    # bounds check
-    for v in centered:
-        if not math.isfinite(v) or abs(v) > 2.0:
-            raise ContractError(f"vector value out of bounds {v}")
-    return centered  # type: ignore[return-value]
+    # Bridge is the single implementation (fail closed).
+    wid_in = "world_unknown" if wid == "" else wid
+    try:
+        out = _require_search_bridge().ismcts_local_model_vector(wid_in, str(leaf_kind))
+        return (float(out[0]), float(out[1]), float(out[2]), float(out[3]))
+    except ImportError:
+        raise
+    except Exception as exc:
+        raise ContractError(f"local bridge model vector failed: {exc}") from exc
 
 
 def terminal_vector_for_world(world: Any) -> tuple[float, float, float, float]:
-    """Exact terminal settlement vector derived from concealed hands + wall."""
-    # Test proxy only: deterministic hash-derived vectors stand in for
-    # model scores in unit tests; never feed them to real utility.
+    """Exact terminal settlement vector derived from concealed hands + wall.
+
+    Bridge is the single implementation (fail closed).
+    """
     try:
-        hands = getattr(world, "concealed_hands", ((0,),) * 4)
-        # sum tiles per seat as strength proxy
-        sums = []
-        for hand in hands:
-            try:
-                s = sum(int(t) for t in hand)
-            except Exception:
-                s = 0
-            sums.append(float(s))
-        # normalize to zero-sum settlement
-        mean = sum(sums) / 4.0
-        centered = tuple((s - mean) / 10.0 for s in sums)
-        # add wall influence
-        try:
-            # Wall = undealt tile stock: live = drawable, dead = dora reserve.
-            wall = getattr(world, "live_wall", ())
-            wall_sum = sum(int(t) for t in wall) / 100.0
-            centered = tuple(
-                v + wall_sum * (0.1 if i == 0 else -0.03) for i, v in enumerate(centered)
-            )
-            # re-center
-            mean2 = sum(centered) / 4.0
-            centered = tuple(v - mean2 for v in centered)
-        except Exception:
-            pass
-        for v in centered:
-            if not math.isfinite(v):
-                raise ContractError("terminal vector nonfinite")
-        return centered  # type: ignore[return-value]
+        hands_in_raw = getattr(world, "concealed_hands", ((0,),) * 4)
+        wall_raw = getattr(world, "live_wall", ())
+        hands_in = [[int(t) for t in hand] for hand in hands_in_raw]
+        live_in = [] if wall_raw is None else [int(t) for t in wall_raw]
+        out = _require_search_bridge().ismcts_local_terminal_vector(hands_in, live_in)
+        return (float(out[0]), float(out[1]), float(out[2]), float(out[3]))
+    except ImportError:
+        raise
     except ContractError:
         raise
     except Exception as exc:
-        raise ContractError(f"terminal vector failed: {exc}") from exc
+        raise ContractError(f"local bridge terminal vector failed: {exc}") from exc
 
 
 def preserves_vector_returns(vector: tuple[float, ...]) -> bool:
@@ -381,7 +403,7 @@ class PublicSubgame:
                 f"leaf_model must be 'model' or 'terminal', got {self.leaf_model!r}"
             )
         try:
-            _ = make_digest_text(self.public_history_hash)
+            _ = _bridge_contracts.make_digest_text(self.public_history_hash)
         except Exception as exc:
             raise ContractError(
                 f"public_history_hash must be sha256 digest, got {self.public_history_hash!r}"
@@ -389,7 +411,7 @@ class PublicSubgame:
         if not isinstance(self.nodes, tuple) or len(self.nodes) == 0:
             raise ContractError("nodes must be non-empty tuple")
         for n in self.nodes:
-            _ = make_digest_text(n)
+            _ = _bridge_contracts.make_digest_text(n)
         if len(set(self.nodes)) != len(self.nodes):
             raise ContractError("nodes must be distinct (no duplicate public hashes)")
         # edges must reference nodes
@@ -398,20 +420,14 @@ class PublicSubgame:
             if not isinstance(e, (list, tuple)) or len(e) != 3:
                 raise ContractError(f"edge must be (from, to, abstract_id), got {e!r}")
             fr, to, aid = e
-            _ = make_digest_text(fr)
-            _ = make_digest_text(to)
+            _ = _bridge_contracts.make_digest_text(fr)
+            _ = _bridge_contracts.make_digest_text(to)
             if fr not in node_set or to not in node_set:
                 raise ContractError(f"edge references unknown node {e!r}")
             if not isinstance(aid, int) or isinstance(aid, bool) or aid < 0:
                 raise ContractError(f"edge abstract_id must be nonnegative int, got {aid!r}")
             if aid not in self.abstraction.abstract_ids:
                 raise AbstractMappingError(f"edge abstract_id {aid} not in abstraction")
-
-    def node_count(self) -> int:
-        return len(self.nodes)
-
-    def edge_count(self) -> int:
-        return len(self.edges)
 
 
 def build_public_subgame(
