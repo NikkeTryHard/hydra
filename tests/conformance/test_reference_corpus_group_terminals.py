@@ -4,7 +4,7 @@ FIX-01 split home for the abortive/match-end group (triple-ron abort, rank +
 uma accounting, all-last branches). Replays the cases through a group-local
 worker runner (counterexamples + fragment report under tmp_path) so the old
 17-case rollup no longer serialises all groups on one worker. Case logic lives
-in test_reference_corpus_terminals_wp04a (imported, never copied). The wave-C
+in test_reference_corpus_terminals (imported, never copied). The wave-C
 disposition summary stays in that module with the cases it aggregates.
 """
 
@@ -14,8 +14,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from tests.conformance import test_reference_corpus_terminals_wp04a as _cases
-from tests.conformance.test_reference_corpus_wp04a import _publish_group_fragment
+from tests.conformance import test_reference_corpus_terminals as _cases
+from tests.conformance.test_reference_corpus import _publish_group_fragment
 
 if TYPE_CHECKING:
     from pathlib import Path

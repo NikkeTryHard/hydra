@@ -209,7 +209,7 @@ class _TransformerLayer(nn.Module):
         # https://docs.pytorch.org/docs/2.14/generated/torch.nn.functional.scaled_dot_product_attention.html
         # Bucket invariance preserved: padded keys get False identically for
         # 32/64/128 buckets; guarded by
-        # tests/unit/test_model_inference_wp05a.py::
+        # tests/unit/test_model_inference.py::
         # test_cache_full_history_encoding_agreement.
         if key_padding_mask.dtype != torch.bool:
             raise ContractError("key_padding_mask must be bool")

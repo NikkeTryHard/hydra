@@ -13,7 +13,7 @@ import pytest
 
 from hydra2.conformance.runner import CaseResult, expect_predicate
 from hydra2.conformance.walls import type_id
-from tests.conformance.test_reference_corpus_wp04a import (
+from tests.conformance.test_reference_corpus import (
     _do,
     _expect_scores_delta,
     _neg,

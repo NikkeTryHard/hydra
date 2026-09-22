@@ -62,7 +62,7 @@ def _real_wp12_gates(
     if _REAL_WP12_ART is None:
         from hydra2.analysis.qual_gates import generate_hashed_analysis_report
 
-        art = tmp_path_factory.mktemp("wp10_real_wp12")
+        art = tmp_path_factory.mktemp("teacher_real_gates")
         generate_hashed_analysis_report(artifact_root=art)
         _REAL_WP12_ART = str(art)
     monkeypatch.setenv("HYDRA2_ARTIFACT_ROOT", str(_REAL_WP12_ART))

@@ -126,25 +126,25 @@ CHECKLIST_FIELDS_BY_MODULE = {
         "fixture_ART-ATOMIC-001",
         "atomic_publication",
     ),
-    "test_registry_wp02a.py": (
+    "test_registry.py": (
         "artifact_envelope_identity",
         "immutable_registry_rejections",
         "compatibility_and_migration_metadata",
     ),
     "test_bootstrap_supersede.py": ("bootstrap_supersede_shim",),
-    "test_rules_wp02b.py": (
+    "test_rules.py": (
         "manifest_canonical_hash_stable",
         "complete_flag_set",
         "rank_tie_break_encoded",
         "owner_decisions_explicit",
     ),
-    "test_utility_wp02b.py": (
+    "test_utility.py": (
         "raw_utility_identity_round_trip",
         "seat_permutation_invariance",
         "malformed_settlement_rejection",
     ),
     # WP-02C (Wp02cBuilder): fields owned by that module.
-    "test_action_wp02c.py": (
+    "test_action.py": (
         "action_kind_ordinals_frozen",
         "canonical_action_invariants",
         "red_five_identity_preserved",
@@ -153,7 +153,7 @@ CHECKLIST_FIELDS_BY_MODULE = {
         "golden_bytes_engine_independent",
     ),
     # WP-02D: BUILD §5 checklist verbatim + SPEC §22 fixtures.
-    "test_events_obs_wp02d.py": (
+    "test_events_obs.py": (
         "fixture_OBS-DORA-005",
         "fixture_OBS-DRAW-PRIVATE-001",
         "fixture_OBS-HIDDEN-PERM-001",
@@ -171,33 +171,33 @@ CHECKLIST_FIELDS_BY_MODULE = {
         "packet_partition_exhaustive_nonempty",
     ),
     # WP-03B: BUILD §6 WP-03B checklist verbatim.
-    "test_randomness_wp03b.py": (
+    "test_randomness.py": (
         "semantic_seed_derivation",
         "wall_seat_latency_schedules_and_hashes",
         "four_seat_rotation_and_six_two_v_two_allocations",
         "final_evaluation_seeds_isolated_from_selection",
     ),
-    "test_statistics_wp03b.py": (
+    "test_statistics.py": (
         "whole_block_bootstrap_and_sign_flip",
         "fixed_n_formula_and_time_uniform_cs_boundary",
         "known_zero_effect_recovered",
         "known_nonzero_effect_recovered",
         "per_game_resampling_negative_test_fails",
     ),
-    "test_blocks_telemetry_wp03b.py": (
+    "test_blocks_telemetry.py": (
         "wall_block_aggregation_games_not_independent",
         "resource_telemetry_schema",
         "invalid_block_policy_excluded_and_reported",
     ),
-    "test_promotion_case_wp03b.py": ("promotion_record_schema",),
-    "test_schedule_wp03b.py": (
+    "test_promotion_case.py": ("promotion_record_schema",),
+    "test_schedule.py": (
         "schedule_replay_identical",
         "seat_balance_exact_under_schedule",
         "schedule_committed_before_results",
         "invalid_block_excluded_and_reported",
     ),
     # WP-03C (Wp03cBuilder): BUILD lines 381-393 checklist mapped 1:1.
-    "test_mahjax_shell_wp03c.py": (
+    "test_mahjax_shell.py": (
         "runtime_sha_verification",
         "environment_tuple_captured",
         "quarantined_default_state",
@@ -207,7 +207,7 @@ CHECKLIST_FIELDS_BY_MODULE = {
     # WP-04A reference corpus — one entry per module (each case ID is owned
     # by exactly one module below; runner infra stays in the kept file).
     # Claim windows: kuikae, furiten, multi-ron packet priority.
-    "test_reference_corpus_claims_wp04a.py": (
+    "test_reference_corpus_claims.py": (
         "WP04A-03",
         "WP04A-04a",
         "WP04A-04b",
@@ -215,14 +215,14 @@ CHECKLIST_FIELDS_BY_MODULE = {
         "WP04A-06",
     ),
     # Scoring and terminal settlements: red-tile scoring, pao/kazoe, aborts.
-    "test_reference_corpus_scoring_wp04a.py": (
+    "test_reference_corpus_scoring.py": (
         "WP04A-07",
         "WP04A-08",
         "WP04A-09",
         "WP04A-10",
     ),
     # Abortive draws and match end: sanchahou, ranks/uma, all-last branches.
-    "test_reference_corpus_terminals_wp04a.py": (
+    "test_reference_corpus_terminals.py": (
         "WP04A-12",
         "WP04A-13",
         "WP04A-14a",
@@ -233,7 +233,7 @@ CHECKLIST_FIELDS_BY_MODULE = {
     # one entry per module (fields partition the gate claims; each field is
     # owned by exactly one module below).
     # Lineage: raw join, ingest, decode, validation, quarantine, hard failures.
-    "test_data_lineage_wp04b.py": (
+    "test_data_lineage.py": (
         "raw_object_join_immutable",
         "ingest_via_packager_zstd_manifest",
         "decode_one_game_per_object",
@@ -244,7 +244,7 @@ CHECKLIST_FIELDS_BY_MODULE = {
         "hard_failures_silent_skip_partial_split_corrupt",
     ),
     # Partition/serving: whole-game splits, grouping, parquet, caches, loader.
-    "test_data_partition_wp04b.py": (
+    "test_data_partition.py": (
         "partition_whole_games_before_expansion",
         "partition_grouping_and_duplicates",
         "walls_disjoint",
@@ -258,18 +258,18 @@ CHECKLIST_FIELDS_BY_MODULE = {
     # WP-05B Supervised Loop — BUILD §8, one entry per module (fields partition
     # the gate claims; each field is owned by exactly one module below).
     # Objectives: masked BC, auxiliary weights, kernel/validator parity.
-    "test_supervised_objectives_wp05b.py": (
+    "test_supervised_objectives.py": (
         "masked_behavior_cloning_objective",
         "value_event_auxiliary_with_explicit_weights",
     ),
     # Training: deterministic parquet training, resume, optimizer/scheduler/accumulation.
-    "test_supervised_training_wp05b.py": (
+    "test_supervised_training.py": (
         "deterministic_training_over_authoritative_synthetic_parquet",
         "resume_restores_model_optimizer_scheduler_step_rng_sampler_manifest",
         "project_owned_optimizer_scheduler_accumulation_checkpoint",
     ),
     # Loop/reporting: runtime parity, local authority, reports, no privileged fields.
-    "test_supervised_loop_wp05b.py": (
+    "test_supervised_loop.py": (
         "plain_and_fabric_identical_loop_state",
         "local_artifacts_authoritative_wandb_mirror_does_not_overwrite",
         "reports_masked_nll_topk_calibration_support_confusion_strata_legal_uniform",
@@ -278,14 +278,14 @@ CHECKLIST_FIELDS_BY_MODULE = {
     # WP-05C Baseline Qualification — BUILD §8 Wave 5: tiny overfit, deterministic resume,
     # fresh-process inference, reference games, hidden/canary, eager oracle, compile ladder,
     # shape arm not_activated.
-    "test_baseline_wp05c.py": (
+    "test_baseline.py": (
         "baseline_metrics",
         "held_out_eval",
         "deterministic",
         "report",
     ),
     # WP-05A Model and Inference Contract — BUILD §8 / SPEC 11.
-    "test_model_inference_wp05a.py": (
+    "test_model_inference.py": (
         "actor_visible_tensor_encoder_no_privileged_fields",
         "padded_bucketed_histories_with_explicit_masks",
         "model_contract_inference_contract_deterministic_shapes_masks",
@@ -299,7 +299,7 @@ CHECKLIST_FIELDS_BY_MODULE = {
         "optional_shape_features_excluded",
     ),
     # WP-06 Duplicate-Block Match Qualification — BUILD §9 / SPEC 18.
-    "test_duplicate_block_wp06.py": (
+    "test_duplicate_block.py": (
         "exact_and_near_duplicate_detection",
         "disjoint_wall_sets_enforced",
         "block_splitting_whole_walls",
@@ -311,7 +311,7 @@ CHECKLIST_FIELDS_BY_MODULE = {
         "fresh_process_block_load",
     ),
     # WP-07B Oracle Belief Distillation — BUILD §10 / SPEC 14-18 teacher-student deterministic
-    "test_oracle_distillation_wp07b.py": (
+    "test_oracle_distillation.py": (
         "separate_privileged_loader_namespace_process_boundary",
         "train_belief_value_targets_only_from_authorized_train_split",
         "never_expose_privileged_fields_to_inference_encoder",
@@ -324,7 +324,7 @@ CHECKLIST_FIELDS_BY_MODULE = {
     # one entry per module (fields partition the gate claims; each field is
     # owned by exactly one module below).
     # Natural: epoch, world law, proposals, kernel, pushforward/epoch, corpus.
-    "test_belief_natural_wp07a.py": (
+    "test_belief_natural.py": (
         "belief_epoch_immutable_target_identity",
         "natural_world_law_consistent_with_actor_observation",
         "scoreable_proposal_samples_with_log_target_proposal",
@@ -337,7 +337,7 @@ CHECKLIST_FIELDS_BY_MODULE = {
         "tiny_finite_world_corpus_with_exact_probabilities",
     ),
     # Confirmation: full-fidelity runner plus hard packet invariants.
-    "test_belief_natural_confirm_wp07a.py": (
+    "test_belief_natural_confirm.py": (
         "natural_full_fidelity_confirmation_runner",
         "packet_mass_one",
         "no_duplicate_missing_packet",
@@ -347,7 +347,7 @@ CHECKLIST_FIELDS_BY_MODULE = {
         "density_normalization_support",
         "deterministic_confirmation_replay",
     ),
-    "test_belief_confirmation_wp07a.py": (
+    "test_belief_confirmation.py": (
         "belief_epoch_immutable_target_identity",
         "natural_world_law_consistent_with_actor_observation",
         "scoreable_proposal_samples_with_log_target_proposal",
@@ -368,7 +368,7 @@ CHECKLIST_FIELDS_BY_MODULE = {
         "deterministic_confirmation_replay",
     ),
     # WP-08A Candidate 0 Frozen Policy — BUILD §11 / SPEC 15-16.1 / Blueprint §7
-    "test_candidate0_wp08a.py": (
+    "test_candidate0.py": (
         "frozen_policy_baseline",
         "deterministic",
         "report",
@@ -380,7 +380,7 @@ CHECKLIST_FIELDS_BY_MODULE = {
         "candidate_spec_result_promotion_bound",
     ),
     # WP-08B Candidate 1 Natural ISMCTS — BUILD §11 / SPEC 16.2 / Blueprint §8
-    "test_ismcts_natural_wp08b.py": (
+    "test_ismcts_natural.py": (
         "ismcts_natural",
         "determinism",
         "budget",
@@ -395,7 +395,7 @@ CHECKLIST_FIELDS_BY_MODULE = {
         "confirm_naturally_under_matched_resources",
     ),
     # WP-08C Candidate 2 Natural DESPOT — BUILD §11 / SPEC 16.3 / Blueprint §9
-    "test_despot_natural_wp08c.py": (
+    "test_despot_natural.py": (
         "despot_natural_scenarios_only",
         "despot_no_proposal_weights",
         "despot_feasible_lower_not_bound",
@@ -413,7 +413,7 @@ CHECKLIST_FIELDS_BY_MODULE = {
     # one entry per module (fields partition the gate claims; each field is
     # owned by exactly one module below).
     # Core: natural parents, frozen candidates, allocation, commit, squash.
-    "test_pbrf_wp09a.py": (
+    "test_pbrf.py": (
         "pbrf_core",
         "determinism",
         "report",
@@ -426,7 +426,7 @@ CHECKLIST_FIELDS_BY_MODULE = {
     ),
     # Partition: disjoint packet enumeration, provenance, tolerance, missing
     # mass, frozen-candidate stability, stale and reversal failures.
-    "test_pbrf_partition_wp09a.py": (
+    "test_pbrf_partition.py": (
         "exhaustively_enumerate_immediate_disjoint_packet_kernel_per_parent_action",
         "store_parent_id_successor_delta_raw_weight_provenance",
         "require_child_normalizer_partition_within_tolerance",
@@ -436,13 +436,13 @@ CHECKLIST_FIELDS_BY_MODULE = {
         "confirmation_reversal_is_hard_failure",
     ),
     # WP-09B Candidate 4 Modules — one at a time (BUILD §12 / SPEC 16.5 / Blueprint §11.1-11.10)
-    "test_modules_wp09b.py": (
+    "test_modules.py": (
         "modules_one_at_a_time_candidate",
         "determinism",
         "report",
     ),
     # WP-09C Persistence Factorial — BUILD §12 / SPEC 17 / Blueprint §11.11
-    "test_persistence_factorial_wp09c.py": (
+    "test_persistence_factorial.py": (
         "persistence_factorial",
         "determinism",
         "report",
@@ -461,7 +461,7 @@ CHECKLIST_FIELDS_BY_MODULE = {
         "whole_block_factorial_report_frozen",
     ),
     # WP-09D Candidate 5 Local Resolving — BUILD §12 / SPEC 16.6 / Blueprint §12
-    "test_local_resolving_wp09d.py": (
+    "test_local_resolving.py": (
         "local_resolving_candidate",
         "determinism",
         "report",
@@ -479,7 +479,7 @@ CHECKLIST_FIELDS_BY_MODULE = {
         "resource_budget_enforcement",
     ),
     # WP-09E Candidate 6 Gumbel Search — BUILD §12 / SPEC 16.7 / Blueprint §13
-    "test_gumbel_wp09e.py": (
+    "test_gumbel.py": (
         "gumbel_search_candidate",
         "determinism",
         "report",
@@ -494,7 +494,7 @@ CHECKLIST_FIELDS_BY_MODULE = {
         "sequential_halving_declared",
     ),
     # WP-10 Candidate 7 Teacher Distillation — BUILD §13 / SPEC 16.8 (M10)
-    "test_teacher_distillation_wp10.py": (
+    "test_teacher_distillation.py": (
         "teacher_distillation",
         "determinism",
         "report",
@@ -510,13 +510,13 @@ CHECKLIST_FIELDS_BY_MODULE = {
         "teacher_replacement_invalidates",
     ),
     # WP-11 Actor-Learner Replay — BUILD §14 / SPEC 20 (M11) — optional
-    "test_replay_wp11.py": (
+    "test_replay.py": (
         "actor_learner_replay_over_authorized_data",
         "deterministic_replay",
         "no_privileged_fields",
     ),
     # WP-12 Analysis Qualification — BUILD §15 / SPEC 15+18.2 (M12)
-    "test_analysis_wp12.py": (
+    "test_analysis.py": (
         "freeze_finite_analysis_budgets_and_resource_caps",
         "reuse_identical_semantics",
         "permit_only_additional_charged_compute",
@@ -526,7 +526,7 @@ CHECKLIST_FIELDS_BY_MODULE = {
         "generate_hashed_analysis_report",
     ),
     # WP-13 Candidate 8 Joint Type/World — BUILD §16 / SPEC 16.9 / Blueprint §15
-    "test_joint_type_world_wp13.py": (
+    "test_joint_type_world.py": (
         "joint_type_world_candidate",
         "determinism",
         "hidden_permutation_invariance",

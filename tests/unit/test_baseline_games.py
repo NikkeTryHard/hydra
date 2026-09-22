@@ -1,6 +1,6 @@
 """WP-05C reference-games pole (FIX-02a split).
 
-Second half of ``test_baseline_wp05c.py``: the 4-game reference evaluation
+Second half of ``test_baseline.py``: the 4-game reference evaluation
 pole lives here so ``--dist loadscope`` can spread the file-pinned workers.
 No behavior change (num_games=4 gate kept verbatim).
 """

@@ -77,8 +77,8 @@ _LEGACY_SCHEMA_HASH = "sha256:" + "0b" * 32
 
 def _load_events_obs_module() -> ModuleType:
     """Load the WP-02D scripted-round module without depending on collection order."""
-    path = Path(__file__).with_name("test_events_obs_wp02d.py")
-    spec = importlib.util.spec_from_file_location("wp02d_events_obs_tests", path)
+    path = Path(__file__).with_name("test_events_obs.py")
+    spec = importlib.util.spec_from_file_location("events_obs_tests", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

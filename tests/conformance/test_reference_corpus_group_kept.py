@@ -1,7 +1,7 @@
 """WP-04A reference corpus: kept-cases report fragment (01, 02, 11).
 
 FIX-01 split home for the three cases defined in
-test_reference_corpus_wp04a itself. Replays them through a group-local worker
+test_reference_corpus itself. Replays them through a group-local worker
 runner (counterexamples + fragment report under tmp_path) so the old 17-case
 rollup no longer serialises all groups on one worker. Case logic is imported,
 never copied (module alias: importing the test functions by name would make
@@ -14,8 +14,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from tests.conformance import test_reference_corpus_wp04a as _cases
-from tests.conformance.test_reference_corpus_wp04a import _publish_group_fragment
+from tests.conformance import test_reference_corpus as _cases
+from tests.conformance.test_reference_corpus import _publish_group_fragment
 
 if TYPE_CHECKING:
     from pathlib import Path

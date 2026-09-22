@@ -320,7 +320,7 @@ dedup, so equal weights must count separately. `+placement`: this IS the
 live formula — `src/hydra2/search/pbrf.py:304-311` `_ess_for_key`
 (`s = sum(w*w ...); return 1.0/s` over `_normalized_weights`), forwarded by
 `ImmutableForest.ess` (L463-467); diagnostic-only today (L300 comment, sole
-consumer `tests/unit/test_pbrf_wp09a.py:444-445`). Formalizing the trigger
+consumer `tests/unit/test_pbrf.py:444-445`). Formalizing the trigger
 below unblocks the adaptive gate `resample iff ess ≤ η·N else copy`, each
 skip saving one O(parent_count) `kernel.enumerate_next` + ChildEntry rebuild
 (cf. `_fresh_rebuild`). Range `[1,N]` + `N/2` threshold + uniform-attains-`N`

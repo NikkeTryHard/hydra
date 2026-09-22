@@ -18,7 +18,6 @@ Pixi owns env+lock (`pixi.lock`; pins declared in `pyproject.toml` `[tool.pixi.*
 | Full suite | `pixi run test` (both lanes; only if shared contracts/runtime/data touched) |
 | Lint / format / types | `pixi run lint`, `pixi run format-check`, `pixi run typecheck` |
 | Env / probe | `pixi run config-check`, `pixi run env-manifest`, `pixi run runtime-probe` |
-| WP exit | `pixi run hydra2 work-package verify <WP-ID> --artifact-root "$HYDRA2_ARTIFACT_ROOT"` |
 | Lean file | `cd lean && lake env lean Formal/<Path>.lean` (full: `cd lean && lake build`) |
 | Rust packager | `cargo nextest run` inside `crates/packager/` |
 | Rust workspace tests | `PYO3_PYTHON` pinned via root `.cargo/config.toml` `[env]`; test binaries additionally need `LD_LIBRARY_PATH=$PWD/.pixi/envs/default/lib` (libpython link) — e.g. `LD_LIBRARY_PATH=$PWD/.pixi/envs/default/lib cargo nextest run --manifest-path crates/Cargo.toml -p hydra-bridge` |
@@ -93,4 +92,4 @@ Layered DAG, dependencies flow one way: `contracts` (stdlib-only Tenhou vocab) <
 
 ## Done means
 
-`pixi run lint`, `pixi run format-check`, `pixi run typecheck`, plus the scoped package gate, plus `work-package verify` for WP-tracked work. If you did not run them, it does not work. Keep modules ~500 LoC; split past ~800; keep PRs reviewable.
+`pixi run lint`, `pixi run format-check`, `pixi run typecheck`, plus the scoped package gate for tracked work. If you did not run them, it does not work. Keep modules ~500 LoC; split past ~800; keep PRs reviewable.

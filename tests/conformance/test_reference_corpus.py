@@ -651,10 +651,10 @@ def test_wp04a_intersection_report_and_disposition() -> None:
     rule). If a group file drops a case, its GROUP_CASE_IDS shrinks and this
     gate fails loud with the coverage-gap message.
     """
-    from tests.conformance import test_reference_corpus_wp04a_group_claims as _g_claims
-    from tests.conformance import test_reference_corpus_wp04a_group_kept as _g_kept
-    from tests.conformance import test_reference_corpus_wp04a_group_scoring as _g_scoring
-    from tests.conformance import test_reference_corpus_wp04a_group_terminals as _g_term
+    from tests.conformance import test_reference_corpus_group_claims as _g_claims
+    from tests.conformance import test_reference_corpus_group_kept as _g_kept
+    from tests.conformance import test_reference_corpus_group_scoring as _g_scoring
+    from tests.conformance import test_reference_corpus_group_terminals as _g_term
 
     groups = {
         "kept": tuple(_g_kept.GROUP_CASE_IDS),

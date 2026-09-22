@@ -2,7 +2,7 @@
 
 Covers RawObjectRow join, ingest via real packager (--manifest, zstd), decode
 one-game-per-object, validation, and quarantine; partition, parquet, cache,
-loader, and fresh-process coverage lives in test_data_partition_wp04b.
+loader, and fresh-process coverage lives in test_data_partition.
 Hard failures: silent skip, partial acceptance.
 
 Synthetic qualification uses REAL packager binary with synthetic attestation.

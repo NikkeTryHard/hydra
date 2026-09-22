@@ -245,7 +245,7 @@ def test_expand_raw_matches_rebuilt(rust_extension: object, tmp_path: Path, wall
     from hydra2.data.stream_iter import GameStream
     from hydra2.data.stream_manifest import build_manifest
     from hydra2.training import stream_train as driver
-    from tests.unit.test_parallel_expand_wp14 import _good_events, _write_events
+    from tests.unit.test_parallel_expand import _good_events, _write_events
 
     wall = list(range(136)) if walled else None
     _write_events(tmp_path / "game.mjai.json.zst", _good_events("raw-parity", wall=wall))
@@ -274,7 +274,7 @@ def test_expand_raw_quarantine_matches_rebuilt(
     from hydra2.data.stream_iter import GameStream
     from hydra2.data.stream_manifest import build_manifest
     from hydra2.training import stream_train as driver
-    from tests.unit.test_parallel_expand_wp14 import _quarantine_events, _write_events
+    from tests.unit.test_parallel_expand import _quarantine_events, _write_events
 
     _write_events(tmp_path / "bad.mjai.json.zst", _quarantine_events("raw-q", kind=kind))
     manifest = build_manifest(tmp_path)
@@ -299,7 +299,7 @@ def test_batch_pull_matches_serial_pull(rust_extension: object, tmp_path: Path) 
     from hydra2.data.stream_manifest import build_manifest
     from hydra2.models.schema import BASELINE_ACTION_COUNT
     from hydra2.training import stream_train as driver
-    from tests.unit.test_parallel_expand_wp14 import (
+    from tests.unit.test_parallel_expand import (
         _good_events,
         _quarantine_events,
         _write_events,

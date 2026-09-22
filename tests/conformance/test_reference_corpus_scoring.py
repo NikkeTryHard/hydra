@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from hydra2.conformance.runner import expect_predicate
-from tests.conformance.test_reference_corpus_wp04a import (
+from tests.conformance.test_reference_corpus import (
     _do,
     _expect_abortive,
     _expect_scores_delta,

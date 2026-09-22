@@ -18,7 +18,7 @@ Sampled kernel mode (SPEC 14.3.1 PR2 sibling, never replacement):
 - stale rejection
 - exhaustive kernel untouched tripwire
 Confirmation runner and hard packet invariants live in
-test_belief_natural_confirm_wp07a.py.
+test_belief_natural_confirm.py.
 """
 
 from __future__ import annotations

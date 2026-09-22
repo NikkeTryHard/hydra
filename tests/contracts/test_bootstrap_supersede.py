@@ -65,7 +65,7 @@ class TestShimDelegation:
 
 
 class TestVerifyCompatibility:
-    """`hydra2 work-package verify` contract MUST NOT change."""
+    """Canonical JSON bytes of record-shaped docs MUST NOT change."""
 
     def test_string_only_document_hashes_identically_to_bootstrap_algorithm(self):
         doc = {

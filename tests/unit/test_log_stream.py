@@ -16,7 +16,7 @@ import pytest
 from hydra2._native import tiles as _tiles_bridge
 from hydra2.contracts.common import ContractError
 from hydra2.engines.riichienv._lr_end import replay_game
-from tests.unit.test_log_replay_wp14 import _assert_valid_rows, _mask_action_kinds, _record
+from tests.unit.test_log_replay import _assert_valid_rows, _mask_action_kinds, _record
 
 mjai_string_of = _tiles_bridge.mjai_string_of
 

@@ -388,7 +388,7 @@ _RON_HEADER = {
     "oya": 0,
     "scores": [25000, 25000, 25000, 25000],
 }
-# Verbatim deal/flow from tests/unit/test_log_replay_wp14.py
+# Verbatim deal/flow from tests/unit/test_log_replay.py
 # test_invented_single_step_reach_and_ron_emit_rows (ron) and
 # test_invented_chi_on_reach_and_flagless_tsumo_emit_rows (tsumo).
 _RON_BODY = [
@@ -923,7 +923,7 @@ def test_manifest_digest_binds_every_entry() -> None:
     gate_ids = [g["id"] for g in manifest["gates"]]
     assert gate_ids == ["G1", "G2", "G3", "G4", "G5", "G6", "G7"]
     for gate in manifest["gates"]:
-        assert gate["module"] == "tests.parity.test_parity_gates_g1_g7_wp0b"
+        assert gate["module"] == "tests.parity.test_parity_gates_g1_g7"
     entry_tags = {tag for entry in manifest["entries"] for tag in entry["fixtures"]}
     assert {"F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10"} <= entry_tags
     for entry in manifest["entries"]:

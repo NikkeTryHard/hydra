@@ -248,7 +248,7 @@
    ],
    "kind": "plane-geometry",
    "relpath": "python/hydra2/models/schema.py",
-   "sha256": "sha256:57f211ec87527960f80331db7eacf26b477e7941a587d84698eccc5ff01da13a"
+   "sha256": "sha256:91ad1f20fefc57c53714faf65313da54d3d1b9d317fc5375806e7ddd09cbeb84"
   },
   {
    "fixtures": [
@@ -256,7 +256,7 @@
    ],
    "kind": "plane-geometry",
    "relpath": "python/hydra2/models/encoder.py",
-   "sha256": "sha256:05e23d6eb16854c15dbdaf775c90098e3ecabf91e51938eacf49ae164406ae65"
+   "sha256": "sha256:7e4536f21e957e4d5f4efd15a9495144df1e802efcda40444cab5d41bfdb5096"
   },
   {
    "fixtures": [
@@ -1804,7 +1804,7 @@
    ],
    "kind": "cutover-source",
    "relpath": "python/hydra2/training/rust_stream.py",
-   "sha256": "sha256:d4c5c51528b54408726d0a05e09fed4beb394bd650c5703a1ee79b0e6bac8c3d"
+   "sha256": "sha256:8edf6ed01aee8d3df6cfcf58b2a23d300b33a9564879cf5c0e3bcde8f53bb49e"
   },
   {
    "fixtures": [
@@ -1812,22 +1812,22 @@
    ],
    "kind": "cutover-source",
    "relpath": "python/hydra2/training/stream_train.py",
-   "sha256": "sha256:588acbf3912408e23bd763ea87e82324f67f8a92907856abc3a9c255f22734f6"
+   "sha256": "sha256:655d7f6d14238a1cd19563b0135b667ba6c3a76e836ad227adbdb9076aea26d0"
   },
   {
    "fixtures": [
     "F9"
    ],
    "kind": "cutover-source",
-   "relpath": "tests/parity/test_parity_gates_g1_g7_wp0b.py",
-   "sha256": "sha256:d0c3efa47258f43712add235627a3cd981d0c7ebefe506524e27ea0c2eb97b62"
+   "relpath": "tests/parity/test_parity_gates_g1_g7.py",
+   "sha256": "sha256:a4bdd5f8dfb9fd3d2731ba20edd96b12d2814a3d31964777d25ed570e09732d5"
   },
   {
    "fixtures": [
     "F9"
    ],
    "kind": "cutover-source",
-   "relpath": "tests/unit/test_rust_stream_wp14.py",
+   "relpath": "tests/unit/test_rust_stream.py",
    "sha256": "sha256:7192532c9bf5ac1d822e4e9e0ec18cb557bb274d6634bc7bfba75c8d6e36c689"
   },
   {
@@ -1835,8 +1835,8 @@
     "F9"
    ],
    "kind": "cutover-source",
-   "relpath": "tests/unit/test_replay_backend_wp14.py",
-   "sha256": "sha256:0bafa2884a4d52d8d18193f0628cce5d8fbf21397f3a182d24b5272b96b22c3b"
+   "relpath": "tests/unit/test_replay_backend.py",
+   "sha256": "sha256:62ffa3975436ab872c842d52ce23c909a5e55d3baf5b27d1337dc1ecfa93fdc2"
   }
  ],
  "fingerprint_fields": [
@@ -1896,39 +1896,39 @@
   {
    "entry": "test_g1_bitwise_repeat_minus_volatile",
    "id": "G1",
-   "module": "tests.parity.test_parity_gates_g1_g7_wp0b"
+   "module": "tests.parity.test_parity_gates_g1_g7"
   },
   {
    "entry": "test_g2_repeat_allclose_floats_exact_ints",
    "id": "G2",
-   "module": "tests.parity.test_parity_gates_g1_g7_wp0b"
+   "module": "tests.parity.test_parity_gates_g1_g7"
   },
   {
    "entry": "test_g3_dora_shape_fail_closed",
    "id": "G3",
-   "module": "tests.parity.test_parity_gates_g1_g7_wp0b"
+   "module": "tests.parity.test_parity_gates_g1_g7"
   },
   {
    "entry": "test_g4_hora_scores_vs_delta_ron_and_tsumo",
    "id": "G4",
-   "module": "tests.parity.test_parity_gates_g1_g7_wp0b"
+   "module": "tests.parity.test_parity_gates_g1_g7"
   },
   {
    "entry": "test_g5_sink_accounting_identity",
    "id": "G5",
-   "module": "tests.parity.test_parity_gates_g1_g7_wp0b"
+   "module": "tests.parity.test_parity_gates_g1_g7"
   },
   {
    "entry": "test_g6_walled_real_digest_no_sim_mark",
    "id": "G6",
-   "module": "tests.parity.test_parity_gates_g1_g7_wp0b"
+   "module": "tests.parity.test_parity_gates_g1_g7"
   },
   {
    "entry": "test_g7_zero_privileged_keys_in_actor_rows",
    "id": "G7",
-   "module": "tests.parity.test_parity_gates_g1_g7_wp0b"
+   "module": "tests.parity.test_parity_gates_g1_g7"
   }
  ],
- "manifest_digest": "sha256:cb7b1b06d984b31be2750072c512ed4163235dfaa23582e9497ba2bdcaa53441",
+ "manifest_digest": "sha256:3d44456dd85ec3b607522905652e39aa98842d74f6e5bdce65759a2c29c58f0a",
  "manifest_version": "2"
 }

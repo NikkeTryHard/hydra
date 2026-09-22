@@ -47,13 +47,13 @@ GRANDFATHERED = {
     # registry file; split with its package if ever
     "python/hydra2/search/modules/__init__.py",
     # tests
-    "tests/unit/test_supervised_loop_wp05b.py",
-    "tests/conformance/test_reference_corpus_wp04a.py",
-    "tests/integration/test_data_lineage_wp04b.py",
-    "tests/unit/test_pbrf_wp09a.py",
-    "tests/unit/test_log_replay_wp14.py",
-    "tests/unit/test_stream_train_wp14.py",
-    "tests/unit/test_belief_natural_wp07a.py",
+    "tests/unit/test_supervised_loop.py",
+    "tests/conformance/test_reference_corpus.py",
+    "tests/integration/test_data_lineage.py",
+    "tests/unit/test_pbrf.py",
+    "tests/unit/test_log_replay.py",
+    "tests/unit/test_stream_train.py",
+    "tests/unit/test_belief_natural.py",
     # lean (grandfathered as-is; Yaku-split past-1200 never approved)
     "lean/Formal/Mahjong/Yaku.lean",
     "lean/Formal/Mahjong/Turn.lean",

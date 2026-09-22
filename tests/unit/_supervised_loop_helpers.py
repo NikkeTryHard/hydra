@@ -7,7 +7,7 @@ and loop test modules. TEST-ONLY: real runs supply frozen spec digests and
 production datasets; these builders exist so hermetic unit tests can train
 small deterministic loops without fabricating production artifacts.
 
-The stub models live in test_supervised_objectives_wp05b (the objectives
+The stub models live in test_supervised_objectives (the objectives
 module owns the test doubles); this module imports and re-exports them so
 the training and loop modules share a single import source.
 """
@@ -28,7 +28,7 @@ from hydra2.training.dataset_store import AuthoritativeParquetDataset
 from hydra2.training.loop_state import TrainingLoopConfig
 from hydra2.training.loop_train import SupervisedLoop
 from tests.unit._manifest_helpers import make_test_manifest_hashes
-from tests.unit.test_supervised_objectives_wp05b import (
+from tests.unit.test_supervised_objectives import (
     StubModelPerSeat,
     StubModelWithAux,
     StubPolicyModel,

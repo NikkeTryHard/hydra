@@ -367,7 +367,7 @@ def _expected_calibration_error(
 @pytest.fixture(scope="module")
 def corpus_artifact(tmp_path_factory):
     """Build, persist (tmp_path only), reload-verify, and encode the corpus."""
-    corpus_dir = tmp_path_factory.mktemp("bf16_wp13")
+    corpus_dir = tmp_path_factory.mktemp("bf16_corpus")
     specs = _build_specs()
     persisted = {
         "seed": SEED,
@@ -376,7 +376,7 @@ def corpus_artifact(tmp_path_factory):
             for s in specs
         ],
     }
-    path = corpus_dir / "bf16_wp13_corpus.pt"
+    path = corpus_dir / "bf16_corpus.pt"
     torch.save(persisted, path)
     reloaded = torch.load(path, map_location="cpu", weights_only=True)
     assert reloaded == persisted, "corpus persistence round-trip must be exact"

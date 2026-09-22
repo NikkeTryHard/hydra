@@ -2,7 +2,7 @@
 
 Covers owner decisions D-WP02D-2/-5 plus packet partition exclusivity,
 exhaustiveness, nonemptiness, and identity binding on the scripted round.
-Helpers and fixtures arrive from `test_events_obs_wp02d`; this file owns
+Helpers and fixtures arrive from `test_events_obs`; this file owns
 only the packet test classes. Failure mode is fail-closed `ContractError`
 or `DigestMismatchError` on bad grouping or identity, never silent.
 """
@@ -12,8 +12,8 @@ from __future__ import annotations
 import hashlib
 
 import pytest
-from tests.contracts.test_events_obs_wp02d import _PACKET_BOUNDARY_HASH as _PACKET_BOUNDARY_HASH
-from tests.contracts.test_events_obs_wp02d import Round as Round
+from tests.contracts.test_events_obs import _PACKET_BOUNDARY_HASH as _PACKET_BOUNDARY_HASH
+from tests.contracts.test_events_obs import Round as Round
 
 from hydra2.artifacts.canonical import canonical_bytes as canonical_json_bytes
 from hydra2.contracts.common import DigestMismatchError, Seat

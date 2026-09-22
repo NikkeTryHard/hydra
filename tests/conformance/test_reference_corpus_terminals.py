@@ -23,7 +23,7 @@ from hydra2.contracts.utility import (
     root_scalar,
     utility,
 )
-from tests.conformance.test_reference_corpus_wp04a import (
+from tests.conformance.test_reference_corpus import (
     _MANIFEST,
     _PAYLOAD,
     _WAVE_C_RESULTS,

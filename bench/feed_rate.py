@@ -112,21 +112,21 @@ def _bare_hex_of_bytes(data: bytes) -> str:
 
 # F1 builders reused from the golden test module (never duplicated here).
 try:
-    from tests.unit.test_replay_expand_wp14 import (  # noqa: E402
+    from tests.unit.test_replay_expand import (  # noqa: E402
         OBJECT_ID as _GOLD_OBJECT_ID,
     )
-    from tests.unit.test_replay_expand_wp14 import (
+    from tests.unit.test_replay_expand import (
         _golden_events as _test_golden_events,
     )
-    from tests.unit.test_replay_expand_wp14 import (
+    from tests.unit.test_replay_expand import (
         _golden_game as _test_golden_game,
     )
 except ImportError:  # pragma: no cover - fallback loads the same module by path
     import importlib.util as _ilu
 
     _spec = _ilu.spec_from_file_location(
-        "test_replay_expand_wp14",
-        REPO_ROOT / "tests" / "unit" / "test_replay_expand_wp14.py",
+        "test_replay_expand",
+        REPO_ROOT / "tests" / "unit" / "test_replay_expand.py",
     )
     assert _spec is not None and _spec.loader is not None
     _mod = _ilu.module_from_spec(_spec)
@@ -137,7 +137,7 @@ except ImportError:  # pragma: no cover - fallback loads the same module by path
     _GOLD_OBJECT_ID = _mod.OBJECT_ID
 
 # ---------------------------------------------------------------------------
-# Constants: fixture ids, seeds, ratios (mirrors tests/unit/test_stream_wp14).
+# Constants: fixture ids, seeds, ratios (mirrors tests/unit/test_stream.py).
 # ---------------------------------------------------------------------------
 
 _RATIOS = {"train": 0.6, "validation": 0.4}
@@ -380,7 +380,7 @@ def _f1_events() -> list[dict[str, object]]:
 def _stream_game_lines(
     game_id: str, n_mid: int, *, wall: bool = False, dora4: bool = False
 ) -> list[dict[str, object]]:
-    """One stream-test-shaped game (mirrors tests/unit/test_stream_wp14)."""
+    """One stream-test-shaped game (mirrors tests/unit/test_stream)."""
     start: dict[str, object] = {"game_id": game_id, "type": "start_game"}
     if wall:
         start["wall"] = list(range(136))
@@ -455,7 +455,7 @@ def _build_f2(corpus_dir: Path, *, level: int) -> dict[str, object]:
         "zstd_level": level,
         "zstd_version": _zstd_version(),
         "seed": _F2_SEED,
-        "note": "scales test_stream_wp14 _game_bytes; stream leg only (turn_advance is not expand vocab)",
+        "note": "scales test_stream _game_bytes; stream leg only (turn_advance is not expand vocab)",
     }
 
 

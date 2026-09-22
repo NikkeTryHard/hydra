@@ -305,7 +305,7 @@ theorem mis_ratio_bias_via_jensen :
 
 /-- MIS-DOUBLE-001 finite witness (verbatim `tiny_oracle` numbers
 `src/hydra2/search/modules/__init__.py:296-313`, asserted in
-`tests/search/test_modules_wp09b.py:231-233`): `b=[0.7,0.3]`, `q₀=[0.5,0.5]`,
+`tests/search/test_modules.py:231-233`): `b=[0.7,0.3]`, `q₀=[0.5,0.5]`,
 `q₁=[0.2,0.8]`, `n₀=n₁=2` so `m=[0.35,0.65]`; `g=1_{x=false}`, hence the correct
 `∑ b·g = 0.7`, while applying the `b/m` correction twice gives `2.0 ≠ 0.7`. -/
 theorem double_correction_is_wrong :

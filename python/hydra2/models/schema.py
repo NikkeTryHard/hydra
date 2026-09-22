@@ -53,7 +53,7 @@ JSON_SAFE_INT_MAX: int = 2**53 - 1
 # uses a bool participate-mask (``True`` = attend) over these buckets, so
 # padded keys read ``False`` identically at every bucket size — bucket-size
 # invariance holds by construction, guarded by
-# tests/unit/test_model_inference_wp05a.py::
+# tests/unit/test_model_inference.py::
 # test_cache_full_history_encoding_agreement.
 # Device-agnostic: no hardcoded ``sm_120``/``sm_*`` or ``cuda:0`` here; device
 # is carried by tensors (``targets.device`` / ``hist_emb.device``).

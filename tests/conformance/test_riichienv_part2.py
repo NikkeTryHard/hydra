@@ -1,9 +1,9 @@
 """WP-03A RiichiEnv replay determinism poles (FIX-02a split).
 
-Second half of ``test_riichienv_wp03a.py``: the two heaviest full-hanchan
+Second half of ``test_riichienv.py``: the two heaviest full-hanchan
 poles (trace replay + identical games) live here so ``--dist loadscope``
 can spread the file-pinned workers. Helpers below mirror
-``test_riichienv_wp03a.py`` verbatim (keep in sync); no behavior change.
+``test_riichienv.py`` verbatim (keep in sync); no behavior change.
 """
 
 from __future__ import annotations

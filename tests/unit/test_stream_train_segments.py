@@ -24,7 +24,7 @@ from hydra2.training.stream_train import (
     _backward_pass_autocast_for,
     run_stream_training,
 )
-from tests.unit.test_stream_train_wp14 import (
+from tests.unit.test_stream_train import (
     _RATIOS,
     DATA_SEED,
     RUN_ID,

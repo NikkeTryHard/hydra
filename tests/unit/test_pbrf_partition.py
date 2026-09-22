@@ -43,7 +43,7 @@ from hydra2.search.pbrf_partition import (
     validate_packet_partition,
 )
 from hydra2.search.pbrf_spec import make_pbrf_candidate_spec
-from tests.unit.test_pbrf_wp09a import (
+from tests.unit.test_pbrf import (
     _MASTER_RULES,
     _aid,
     _belief_epoch,

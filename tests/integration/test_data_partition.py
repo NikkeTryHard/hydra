@@ -5,7 +5,7 @@ exact and near-duplicate rejection, wall-disjoint splits, Arrow/Parquet actor
 vs privileged separation, privileged-leakage and (4,) dora-shim hard failures,
 content-addressed tensor caches, loader hash and legal-mask verification with
 the explicit narrow-mask flag, corrupt-shard hard failure, and fresh-process
-batch load. Shares the synthetic builders with test_data_lineage_wp04b so each
+batch load. Shares the synthetic builders with test_data_lineage so each
 module runs standalone; ingest, decode, validation, and quarantine stay there.
 """
 

@@ -7,7 +7,7 @@ chosen/quarantine parity on synthetic golden games (``next_into_planes``
 commits the oracle engine's choices; string decision ids live cold-side
 only), the resume refusal on digest change (run digest + dataset buffer
 tag), and the row-cache backend tag. Plane-draining tests build the
-extension once per session (same recipe as ``test_rust_stream_wp14``) and
+extension once per session (same recipe as ``test_rust_stream``) and
 run in the serial lane; the rest is lane-default CPU with fixed seeds.
 """
 
