@@ -1,6 +1,6 @@
 """Persistence factorial kernel — B/F/R/P/C arms, packets, forest state.
 
-Owns the SPEC 17 arm vocabulary shared by the planner and the report:
+Owns the B/F/R/P/C arm vocabulary shared by the planner and the report (B: frozen policy with no search/state/ponder; F: fresh search each own decision with state destroyed after the action and no opponent-time compute; R: retained target-compatible state with zero search work from the emitted action until the next actor-visible packet; P: retained state working only between the emitted action and the next packet, committed through the verified packet; C: laboratory-only fresh search at the next own observation with a predeclared deadline plus wait-window allowance):
 the frozen :class:`PersistenceArm` record with its exact per-arm
 invariants, the :data:`ARM_DEFS` table, the :func:`make_persistence_arm`
 factory, the finite packet kernel (:class:`FinitePacket`,
@@ -86,15 +86,15 @@ __all__ = [
 
 
 # ---------------------------------------------------------------------------
-# PersistenceArm — SPEC 17 exact
+# PersistenceArm — frozen record (id, retain_state, opponent_time_compute, own_deadline_ms, extra_wait_allowance_ms, deployable); B/F/R/P share the deployable own deadline of at most 5000 ms minus the frozen fallback margin; every arm logs actual model calls, transitions, synchronized duration, peak memory, and joules when available
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
 class PersistenceArm:
-    """SPEC 17 PersistenceArm — frozen, validated.
+    """PersistenceArm — frozen, validated (id, retain_state, opponent_time_compute, own_deadline_ms, extra_wait_allowance_ms, deployable, in this exact field order; per-arm retain/compute/deployable invariants enforced against ARM_DEFS; deployable arms share the own deadline of at most 5000 ms).
 
-    Field order matches specification exactly.
+    Field order matches the frozen record exactly.
     """
 
     id: Literal["B", "F", "R", "P", "C"]
@@ -119,7 +119,7 @@ class PersistenceArm:
                 raise ContractError("own_deadline_ms must be positive")
         if not isinstance(self.deployable, bool):
             raise ContractError("deployable must be bool")
-        # SPEC invariants per arm
+        # Per-arm invariants (B: no retain, no opponent-time compute, deployable; F: no retain, no opponent-time compute, deployable; R/P: retain, P with opponent-time compute, deployable; C: laboratory-only, not deployable)
         expected = ARM_DEFS[self.id]
         for k in ("retain_state", "opponent_time_compute", "deployable"):
             if getattr(self, k) != expected[k]:

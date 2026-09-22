@@ -1,6 +1,10 @@
-"""SPEC 18.2 resource telemetry schema and missing-telemetry policy.
+"""Resource telemetry schema and missing-telemetry policy.
 
-Counters include all planner overhead named by the resource view. Missing
+Every arm logs actual model calls, transitions, synchronized duration, peak
+memory, and joules when available; counters include all planner overhead
+named by the resource view.
+
+Missing
 required telemetry invalidates a block according to the predeclared tolerance
 and is NEVER imputed silently: :func:`telemetry_invalid_reason` names every
 missing field, and :func:`block_missing_telemetry_report` aggregates the
@@ -31,7 +35,11 @@ __all__ = [
 
 @dataclass(frozen=True, slots=True)
 class ResourceTelemetry:
-    """SPEC 18.2 telemetry row; field order matches the specification."""
+    """Telemetry row; frozen field order (mode, wall_id, case_id,
+    candidate_spec_hash, hardware_hash, environment_hash, cold_start,
+    synchronized_elapsed_ms, model_calls, exact_transitions, particles,
+    fallback_used, timeout, illegal_action, cuda/host peaks, energy_joules,
+    graph_breaks, recompiles, invalid_reason)."""
 
     mode: str
     wall_id: str | None

@@ -362,7 +362,7 @@ def write_privileged_ranks(
 def verify_no_privileged_leakage(actor_parquet_path: Path) -> None:
     """Hard failure: privileged inference field in actor shard is forbidden.
 
-    Zero-copy ingest (perf-A 4.3):
+    Zero-copy ingest:
     - memory_map, pre_buffer, use_threads for mmap + coalesced reads.
     - table.to_batches(8192) streams zero-copy slices vs whole to_pylist.
     - column.to_numpy(zero_copy_only=False) for primitives; strings still

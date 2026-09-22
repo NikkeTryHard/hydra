@@ -1,4 +1,4 @@
-"""Shared search contracts — SPEC 15 CandidateSpec/Search API.
+"""Shared search contracts — frozen, validated CandidateSpec/Search API (the runner validates the selected action against the exact mask; incomplete/deadline results are discarded with Candidate 0 fallback on the reserved margin; the spec identity binds exact utility bytes, packet-boundary semantics, and purpose-specific RNG schema).
 
 This module is the single authority for ``ResourceBudget``, ``CandidateSpec``,
 ``SearchRequest``, ``SearchResult`` and the ``Planner`` protocol. All
@@ -166,9 +166,9 @@ def _require_json_value(where: str, value: Any) -> None:
 
 @dataclass(frozen=True, slots=True)
 class ResourceBudget:
-    """SPEC 15 ResourceBudget — frozen, validated.
+    """ResourceBudget — frozen, validated.
 
-    Fields follow the specification order exactly.
+    Fields in exact order: mode, deadline_ms, fallback_margin_ms, max_model_calls, max_transitions, max_particles, max_memory_bytes.
     """
 
     mode: str
@@ -218,9 +218,9 @@ def resource_budget_to_json(budget: ResourceBudget) -> dict[str, object]:
 
 @dataclass(frozen=True, slots=True)
 class CandidateSpec:
-    """SPEC 15 CandidateSpec — frozen, validated.
+    """CandidateSpec — frozen, validated.
 
-    Field order matches the specification exactly; JSON projection follows that order.
+    Identity binds exact utility bytes, packet-boundary semantics, and purpose-specific RNG schema; field order is frozen and the JSON projection follows that order.
     """
 
     candidate_id: str
@@ -325,7 +325,7 @@ class CandidateSpec:
 
 
 def candidate_spec_to_json(spec: CandidateSpec) -> dict[str, object]:
-    """SPEC-order JSON projection (without digest)."""
+    """Canonical field-order JSON projection (without digest)."""
     return {
         "candidate_id": spec.candidate_id,
         "algorithm": spec.algorithm,
@@ -352,7 +352,7 @@ def candidate_spec_to_json(spec: CandidateSpec) -> dict[str, object]:
 
 
 def candidate_spec_hash(spec: CandidateSpec) -> DigestText:
-    """Content hash of the canonical JSON projection (SPEC 15)."""
+    """Content hash of the canonical JSON projection (sha256 over canonical bytes, prefixed sha256:)."""
     payload = candidate_spec_to_json(spec)
     digest = hashlib.sha256(canonical_bytes(payload)).hexdigest()
     return DigestText("sha256:" + digest)
@@ -360,7 +360,7 @@ def candidate_spec_hash(spec: CandidateSpec) -> DigestText:
 
 @dataclass(frozen=True, slots=True)
 class SearchRequest:
-    """SPEC 15 SearchRequest — frozen.
+    """SearchRequest — frozen (observation hashes and spec hashes validated by direct comparison before search).
 
     The observation and candidate_spec hashes are not stored redundantly;
     callers validate them inside ``candidate0`` via direct comparison.
@@ -406,7 +406,7 @@ class SearchRequest:
 
 @dataclass(frozen=True, slots=True)
 class SearchResult:
-    """SPEC 15 SearchResult — frozen."""
+    """SearchResult — frozen (selected action validated against the exact mask; incomplete/deadline results discarded with Candidate 0 fallback on the reserved margin)."""
 
     selected_action: Any  # CanonicalAction
     candidate_actions: tuple[Any, ...]
@@ -449,7 +449,7 @@ class SearchResult:
 
 
 class Planner(Protocol):
-    """SPEC 15 Planner protocol."""
+    """Planner protocol (act/observe/ponder; ponder mutates only planner-owned speculative state; observe verifies packet/epoch then commits or rebuilds)."""
 
     def act(self, request: SearchRequest) -> SearchResult: ...
 

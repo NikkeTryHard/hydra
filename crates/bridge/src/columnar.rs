@@ -74,9 +74,9 @@
 //! the workspace lockfile via `parquet =59.3.0`; no other new dependency —
 //! no serde_jcs/rayon/arrow-ipc/safetensors/anyhow bridge-side).
 //!
-//! SIBLING-OWNED SHARD API (Phase3Expand-confirmed, 2026-09-16 — this file
-//! MUST NOT compile until their `replay::expand` module lands; confirmed
-//! names MUST NOT be guess-fixed locally):
+//! SIBLING-OWNED SHARD API (this file MUST NOT compile until the sibling
+//! `replay::expand` module lands; confirmed names MUST NOT be guess-fixed
+//! locally):
 //! - `hydra_shard::replay::expand::OwnedSimGameInput` (`game_id`,
 //!   `source_object_id`, `split`, `rules_hash`, `adapter_hash`,
 //!   `action_table_hash: String`, `wall_digest: Option<String>` as DigestText
@@ -97,7 +97,7 @@
 //!   single `RecordBatch` per call — the bridge wraps `vec![batch]` for the
 //!   capsule stream; the caller sizes inputs so rows land near [`BATCH`]).
 //! - `ExpandError: Display + std::error::Error` (mapped to `PyValueError`).
-//! - CONFIRMED 2026-09-16 (`assemble_owned_games`, Expand-provided): each blob
+//! - Confirmed (`assemble_owned_games`, Expand-provided): each blob
 //!   is one UTF-8 JSON object (`game_id`/`source_object_id`/`split`/
 //!   `rules_hash`/`adapter_hash`/`action_table_hash: string`,
 //!   `wall_digest: string|null`, `decisions: [{round_idx, seat,

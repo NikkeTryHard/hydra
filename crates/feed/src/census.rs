@@ -1,4 +1,4 @@
-//! Action census: frozen kind ordinals + full SPEC 6.3 template enumeration.
+//! Action census: frozen kind ordinals + full canonical action-template enumeration (every structurally valid template exactly once; canonical bytes and digest freeze the indices).
 //!
 //! Mirrors `src/hydra2/contracts/action_kinds.py` (`ACTION_KIND_ORDINALS`,
 //! never reordered) and `src/hydra2/contracts/action_model.py`
@@ -39,7 +39,7 @@ pub fn frozen_census() -> &'static [ActionTemplate] {
     &FROZEN_CENSUS
 }
 
-/// SPEC 6.1 action kinds in frozen ordinal order (`action_kinds.py:71-85`).
+/// Action kinds in frozen ordinal order (pass 0, discard 1, tsumogiri 2, riichi_discard 3, chi 4, pon 5, daiminkan 6, ankan 7, kakan 8, ron 9, tsumo 10, abort_nine_terminals 11, accept_abortive_draw 12; `action_kinds.py:71-85`).
 /// Discriminants ARE the ordinals: never reordered, never extended in place.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,7 +60,7 @@ pub enum ActionKind {
 }
 
 impl ActionKind {
-    /// Frozen SPEC 6.1 ordinal (the discriminant).
+/// Frozen kind ordinal (the discriminant: pass 0 through accept_abortive_draw 12, never reordered).
     pub fn ordinal(self) -> u8 {
         self as u8
     }
@@ -125,7 +125,7 @@ impl ActionKind {
     }
 }
 
-/// One canonical action slot (SPEC 6.3), mirroring `CanonicalActionTemplate`.
+/// One canonical action slot, mirroring `CanonicalActionTemplate` (kind, tile, called tile, consumed tiles, source offset relative modulo four, riichi flag, meld-ref flag; actor is contextual and excluded from template identity).
 ///
 /// `consumed_len` is always `<= 4` (chi/pon 2, daiminkan 3, ankan 4, else 0);
 /// only `consumed[..consumed_len]` is significant. `declares_riichi` is true
@@ -152,7 +152,7 @@ impl ActionTemplate {
     }
 }
 
-/// SPEC 6.3 generation order: lexicographic with `None` before integers
+/// Generation order: lexicographic over (kind ordinal, tile, called tile, consumed tiles, source offset, riichi flag, meld-ref flag) with `None` before integers
 /// (`template_sort_key`). `Option`'s `Ord` (`None < Some`) is exactly the
 /// `none_first_int` mapping, and slice `Ord` is tuple-lexicographic, so this
 /// `Ord` is the Python key bit-for-bit.

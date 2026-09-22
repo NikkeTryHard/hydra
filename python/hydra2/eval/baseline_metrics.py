@@ -1,4 +1,8 @@
-"""WP-05C baseline metric math: masked NLL, top-k, calibration, held-out split.
+"""Baseline metric math: masked NLL, top-k, calibration, held-out split.
+
+Tiny-shard overfit to NLL 0.15 / top-1 0.90; complete reference games with
+zero illegal actions/timeouts; hidden permutation and canary tests; eager
+FP32 oracle recorded.
 
 Owns the deterministic kernels over the legal subspace: masked cross-entropy
 with illegal logits excluded, legal-uniform comparison, top-k accuracy,
@@ -42,7 +46,10 @@ __all__ = [
 BASELINE_METRICS_VERSION = "1.0.0"
 OVERFIT_NLL_THRESHOLD = 0.15
 OVERFIT_TOP1_THRESHOLD = 0.90
-# Compile ladder order per SPEC 19 — eager is the oracle.
+# Compile ladder order is fixed — eager is the semantic oracle (eager FP32
+# exact simulator, plain PyTorch, padded/bucketed histories, SDPA, dense
+# action head, AdamW default, ordinary checkpoint); later arms qualify only
+# in order with the eager comparator.
 COMPILE_ORDER = ("eager", "default", "max-autotune-no-cudagraphs", "max-autotune")
 EAGER_ORACLE_ID = "eager_fp32"
 
@@ -62,7 +69,8 @@ def _require_legal_mask(mask: torch.Tensor) -> torch.Tensor:
         raise ContractError(f"legal_mask must be [B,A], got shape {tuple(mask.shape)}")
     if mask.shape[0] == 0:
         raise ContractError("legal_mask batch dimension must be > 0")
-    # Nonterminal all-false is hard error per SPEC 11.1 / WP-02D.
+    # Nonterminal all-false is hard error (mask before softmax/loss/argmax;
+    # illegal probability exactly zero; dora shape fixed at (5,), never a padded (4,)).
     if torch.compiler.is_compiling():
         torch._check_tensor_all(
             mask.any(dim=1),

@@ -1,4 +1,4 @@
-"""Environment manifest capture (BUILD WP-01).
+"""Environment manifest capture (locked-environment identity).
 
 Captures the locked environment identity: pixi.lock hash, Python, torch
 (version, CUDA, cuDNN, arch list), NVIDIA driver via nvidia-smi, device

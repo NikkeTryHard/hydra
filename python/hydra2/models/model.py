@@ -123,7 +123,13 @@ def select_actions(logits: torch.Tensor, legal_mask: torch.Tensor) -> torch.Tens
 
 @dataclass(frozen=True, slots=True)
 class ModelOutput:
-    """Inference output (SPEC 11.3)."""
+    """Inference output (policy_logits [B,A] with width equal to the legal
+    mask width; placement_logits [B,4,4] seat x final-rank; value_vector
+    [B,4] retaining all four seats with the root seat selected only at the
+    root decision; event/belief head definitions and target support frozen in
+    the model spec; diagnostics carry tensor-derived actor-visible values
+    only; SDPA boolean mask True means participate with evaluation dropout
+    exactly 0.0)."""
 
     policy_logits: torch.Tensor  # [B,A]
     placement_logits: torch.Tensor  # [B,4,4]
@@ -335,14 +341,16 @@ class Hydra2BaselineModel(nn.Module):
         self.history_buckets = history_buckets
         self.utility_id = utility_id
         if utility_manifest_hash is None:
-            # Synthetic utility manifest identical to WP-02B test fixture (zero-sum).
+            # Synthetic utility manifest identical to the Tenhou rules/utility
+            # test fixture (expected-final-placement utility, zero-sum only
+            # with manifest proof).
             from hydra2.contracts.utility import (
                 UTILITY_OBJECTIVE,
                 UTILITY_TIE_POLICY,
                 make_utility_manifest,
             )
 
-            # Golden envelope digest from WP-02B.
+            # Golden rules-envelope digest (tenhou_4p_hanchan_v1 manifest bytes).
             golden_rules_hash = (
                 "sha256:3042a493280224f533d831f371275b1c96585cf1db5a2e5fb86ec259f403286b"
             )

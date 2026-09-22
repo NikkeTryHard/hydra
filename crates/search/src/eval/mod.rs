@@ -275,7 +275,7 @@ pub fn py_list_repr(items: &[&str]) -> String {
 mod tests {
     use super::*;
 
-    /// STREAM goldens (`/tmp/eval_goldens4.py`, pixi torch 2.14/numpy 2.5.3):
+    /// STREAM goldens (torch 2.14/numpy 2.5.3 oracle draws):
     /// first two `get_bytes(8)` draws + rejection draws + unit float off the
     /// `score-selection-v1:0` seed. Any CTR reinvention fails here.
     #[test]

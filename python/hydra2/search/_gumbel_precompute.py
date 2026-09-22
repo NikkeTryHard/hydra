@@ -1,4 +1,4 @@
-"""Gumbel precompute helpers — frozen policy plus Rust-batch envelope (WP-09E).
+"""Gumbel precompute helpers — frozen policy plus Rust-batch envelope (deterministic root Gumbels from (case_id, root_seat, candidate_id, action_id); sequential-halving rounds and visit allocations spec-supplied; model-call/transition matched comparator; every transition exact).
 
 Single home for `UniformContinuationPolicy` plus `_require_driver_bridge`,
 `_halving_slots`, `_dry_float_need`, and `_exact_sum_for_mean` shared by the

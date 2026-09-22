@@ -1,6 +1,6 @@
 """WP-14 MLflow observer mirror over local authoritative artifacts.
 
-Local checkpoints/manifests stay authoritative (D-007): this module only
+Local checkpoints/manifests stay authoritative: this module only
 copies allowlisted scalars, digests, and JSON snapshots for
 visualization. It NEVER feeds values back into training, RNG, or sampler
 state, and every method degrades to a warn-only no-op instead of raising.

@@ -171,7 +171,10 @@ def build_stratified_order(
 
 
 class AuthoritativeParquetDataset:
-    """Deterministic authoritative parquet dataset for WP-05B.
+    """Deterministic authoritative parquet dataset (masked behavior cloning
+    source; loader verifies manifest/shard hashes, schema hashes, row counts,
+    legal masks, and split membership; corrupt shards abort, never silently
+    skip).
 
     Args:
         parquet_dir: directory containing ``actor-*.parquet`` shards written

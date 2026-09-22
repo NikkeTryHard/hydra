@@ -1,10 +1,17 @@
-"""Evaluation case declarations (SPEC 18.3/18.4 unit binding).
+"""Evaluation case declarations.
+
+Uncertainty-unit binding: case for independent decision cases, iid_pair for
+paired natural confirmations, wall_block for duplicate matches,
+smc_population for independent controlled-SMC populations, rqmc_scramble for
+independent scrambles, game_cluster only for held-out model/calibration
+metrics.
 
 A case fixes the primary contrast, the two opaque arm labels, and the
-uncertainty unit BEFORE results exist. The unit vocabulary is the SPEC 18.4
-literal list; ``game_cluster`` is legal only for held-out model/calibration
-diagnostics (SPEC 18.4: "``game_cluster`` only for held-out
-model/calibration metrics") and is rejected for confirmation cases.
+uncertainty unit BEFORE results exist. The unit vocabulary is the frozen
+literal list (case, iid_pair, wall_block, smc_population, rqmc_scramble,
+game_cluster); ``game_cluster`` is legal only for held-out model/calibration
+diagnostics ("``game_cluster`` only for held-out model/calibration metrics")
+and is rejected for confirmation cases.
 """
 
 from __future__ import annotations
@@ -35,7 +42,8 @@ __all__ = [
     "make_eval_case",
 ]
 
-#: Declared primary block outcome contrast (SPEC 18.3, bridge-owned).
+#: Declared primary block outcome contrast (declared expected-final-placement
+#: contrast; bridge-owned single source).
 PRIMARY_METRIC: str = _bridge_contracts.EVAL_PRIMARY_METRIC
 
 

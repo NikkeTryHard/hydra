@@ -165,9 +165,9 @@ pub mod cache;
 //
 // Greenfield `ArrowWriter` parity gate: NO Rust writer existed before this
 // module (`parquet_join.rs:1-12` proves read-only); the parity test is
-// greenfield, NOT a regression (M1: `parquet =59.3.0` pinned).
+// greenfield, NOT a regression (the `parquet =59.3.0` dependency is pinned exact).
 //
-// 5-EXACT ONLY (mirrors `parquet.py:238-246` + corrections §2):
+// 5-EXACT ONLY (mirrors `parquet.py:238-246`; the five settings below are exact):
 // 1. `compression = ZSTD`
 // 2. `compression_level = 3`
 // 3. `use_dictionary = true`
@@ -178,7 +178,7 @@ pub mod cache;
 //
 // M3: `created_by` is UNSET — this module NEVER calls
 // `set_created_by`; the footer carries the default
-// `parquet-rs version 59.3.0` provenance. Probe B asserts it is present
+// `parquet-rs version 59.3.0` default writer provenance. Probe B asserts it is present
 // and non-empty without pinning its text.
 //
 // MUST-NOT-ADD (each forks `dataset_hash` goldens; separate hash-migration

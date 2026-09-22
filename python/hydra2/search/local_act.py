@@ -1,7 +1,7 @@
 # ruff: noqa: F401  # reason: legacy blanket kept, not narrowed — narrowing surfaces unrelated mid-flight noise outside the owned error set (F401 optional-dependency fallback shims + re-exported spec symbols). Evidence: https://docs.astral.sh/ruff/rules/
 """Candidate 5 local resolving — act: Planner protocol plus final planner join.
 
-Owns the SPEC 15 Search API adapter (request validation, deadline fallback,
+Owns the frozen Search API adapter (request validation with every hash binding checked before search, deadline fallback with Candidate 0 on the reserved margin,
 telemetry and value-vector assembly) plus the final :class:`LocalResolvingPlanner`
 join over the search mixin. Construction and the resolving loop live in
 :mod:`hydra2.search.local_search`; the CandidateSpec factory lives in
@@ -236,7 +236,7 @@ class LocalResolvingPlannerActMixin(LocalResolvingPlannerSearchMixin):
             raise ContractError(f"local: deterministic RNG required: {exc}") from exc
 
     def act(self, request: SearchRequest) -> SearchResult:
-        """Planner act — implements SPEC 15 Search API with exact validation.
+        """Planner act — implements the frozen Search API with exact validation (selected action checked against the exact mask; incomplete/deadline results discarded with Candidate 0 fallback).
 
         Rust-first gate: an isolated ``act_batch`` probe + ``ActJudge``
         golden-compare runs before the Python core below (ImportError-only

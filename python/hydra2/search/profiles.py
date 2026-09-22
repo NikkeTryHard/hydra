@@ -1,4 +1,4 @@
-"""Candidate profiles + cost-gated admission + Gumbel/PUCT accounting (SPEC 16.7 PR3).
+"""Candidate profiles + cost-gated admission + Gumbel/PUCT accounting (root Gumbels derive deterministically from (case_id, root_seat, candidate_id, action_id); sequential-halving rounds and visit allocations are spec-supplied; frozen CandidateProfile rows carry cap M, horizon H, carry quota, and halving rounds with jobs = 4M.log2(M) and transitions bounded by jobs x H; the admission gate selects the largest profile passing the synchronized cost gate on disjoint pilot states, otherwise Candidate 0).
 
 Profiles are LABELED PRIORS, not measured capacities: the rows below promote to
 capacities only via the RTX pilot fixture. The admission gate selects the largest

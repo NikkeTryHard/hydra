@@ -1,4 +1,4 @@
-"""Hydra2 MahJax quarantine shell (BUILD WP-03C).
+"""Hydra2 MahJax quarantine shell: fail-closed until a bound qualification token arrives.
 
 Public surface: the fail-closed shell, the qualification state machine, and
 the environment-tuple capture used to bind WP-04C qualification tokens.

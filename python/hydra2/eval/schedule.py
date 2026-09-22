@@ -1,4 +1,8 @@
-"""SPEC 18.1 match schedules — committed before any result exists.
+"""Match schedules — committed before any result exists.
+
+MatchSchedule fixes wall ids, walls hash, seat allocations, latency schedule
+hash, rules hash, and seed protocol hash per wall; divergent games remain
+members of one wall block, not identical counterfactual paths.
 
 For each wall the schedule fixes, in order:
 
@@ -39,7 +43,8 @@ __all__ = [
     "seat_pair_placements_exact",
 ]
 
-#: Latency vocabulary (SPEC 18.1, bridge-owned; fallback keeps pre-wire imports green).
+#: Latency vocabulary (frozen schedule vocabulary, bridge-owned; fallback
+#: keeps pre-wire imports green).
 LATENCY_CLASSES: tuple[str, str, str] = (
     tuple(_bridge_contracts.LATENCY_CLASSES)  # type: ignore[attr-defined]  # reason: eval_schedule leaf lands with MAIN wiring; hasattr fallback covers stale .so
     if hasattr(_bridge_contracts, "LATENCY_CLASSES")
@@ -78,7 +83,9 @@ _SEED_PROTOCOL_PAYLOAD: dict[str, object] = {
 
 @dataclass(frozen=True, slots=True)
 class MatchSchedule:
-    """SPEC 18.1 schedule; frozen before results exist."""
+    """Match schedule; frozen before results exist (wall_ids, walls_hash,
+    seat_allocations, latency_schedule_hash, rules_hash, seed_protocol_hash,
+    in this exact field order)."""
 
     wall_ids: tuple[str, ...]
     walls_hash: DigestText

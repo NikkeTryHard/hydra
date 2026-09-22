@@ -1,9 +1,15 @@
-"""WP-05B training loop package entry.
+"""Training loop package entry.
+
+Project-owned supervised loop: masked behavior cloning objective with
+value/event auxiliary objectives and explicit weights; project-owned
+optimizer/scheduler/accumulation/checkpoint; plain and Fabric adapters share
+identical loop state; masked NLL, top-k, calibration, support/confusion,
+strata, and legal-uniform comparison reported.
 
 Exports the project-owned supervised loop, authoritative parquet dataset,
 masked objectives and reporting helpers.  Inference loaders cannot import
 privileged row constructors (enforced by __all__ and separate modules).
-WP-11 replay is optionally exported when available.
+Actor-learner replay is optionally exported when available.
 """
 
 from __future__ import annotations

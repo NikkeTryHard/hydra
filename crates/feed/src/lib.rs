@@ -7,7 +7,7 @@
 //! (CI triple-grep enforces; data flows feed → shard/bridge one-way only).
 //! FORBIDS (see manifest — this crate must never gain): Python bindings,
 //! memory maps, or columnar formats. Hashing/canon/RNG ARE feed-owned:
-//! `canon` (serde_jcs 0.2.0 ONLY-exact bytes) + `digest` (sha2 0.11 identity)
+//! `canon` (`serde_jcs 0.2.0` ONLY-exact bytes) + `digest` (`sha2 0.11` SHA-256 identity)
 //! + `rng` (Philox NEW streams + Lemire) + `fixed` (utility fixed-point) are
 //!   the single owners every later phase calls; packet/columnar/search/eval
 //!   CALL canon (never a second printer). Attestation seals (M17) canonicalize

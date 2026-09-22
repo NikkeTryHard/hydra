@@ -1,4 +1,7 @@
-"""WP-05B supervised report metrics: NLL, top-k, calibration, temperature.
+"""Supervised report metrics: NLL, top-k, calibration, temperature.
+
+Masked NLL, top-k, calibration, support/confusion, strata, and legal-uniform
+comparison reported.
 
 Owns the eval-time report math over the legal subspace: shared metric-input
 validation with fp32 upcast, frozen-bin ECE, support extremes, per-type

@@ -1,6 +1,13 @@
-"""WP-06 duplicate-block qualification — exact/near duplicates, disjoint walls, block eval.
+"""Duplicate-block qualification — exact/near duplicates, disjoint walls, block eval.
 
-Implements BUILD WP-06 checklist (M7b):
+Implements the duplicate-block qualification checklist (load
+agents/checkpoints in fresh processes; four focal-seat rotations for 1-v-3
+diagnostics; all six A-seat allocations for symmetric 2-v-2; committed
+wall/seat/latency schedules; whole-wall-block aggregation; hidden final
+partition; expected-final-placement primary with
+points/first/fourth/deal-in/riichi/call/latency/energy diagnostics;
+illegal/timeout/fallback/invalid-block recording; blinded pilot before
+freezing the margin/sample rule):
 
 * exact duplicates: two wall ids sharing the identical wall digest (same bytes)
 * near duplicates: two walls sharing the logical fingerprint (same sorted wall
@@ -12,9 +19,13 @@ Implements BUILD WP-06 checklist (M7b):
 * reports: block manifest, seat-balance audit, telemetry completeness
 
 Fresh-process, seed-protocol commitment, wall-block bootstrap/sign-flip, and
-held-out hiding follow SPEC 18.1-18.3; this module is the thin qualification
-layer that wires :mod:`hydra2.eval.schedule`, :mod:`hydra2.eval.blocks`,
-:mod:`hydra2.eval.telemetry`, and :mod:`hydra2.eval.statistics`.
+held-out hiding follow the frozen schedule contract (MatchSchedule fixes wall
+ids, walls hash, seat allocations, latency schedule hash, rules hash, and
+seed protocol hash per wall, committed before any result exists; divergent
+games remain members of one wall block); this module is the thin
+qualification layer that wires :mod:`hydra2.eval.schedule`,
+:mod:`hydra2.eval.blocks`, :mod:`hydra2.eval.telemetry`, and
+:mod:`hydra2.eval.statistics`.
 """
 
 import math
@@ -473,14 +484,17 @@ def confirmation_sidecar(
     telemetry_report: Mapping[str, Any] | None = None,
     admission: str = "full",
 ) -> dict[str, Any]:
-    """Additive confirmation sidecar (SPEC 18.4 PR4).
+    """Additive confirmation sidecar (pure function returning
+    schedule_commitment_hash, excluded wall blocks with reason/detail, and
+    the telemetry completeness digest).
 
     Binds schedule commitment + wall-block exclusions + telemetry completeness
     beside (never instead of) a confirmation path's own hashes. Pure function;
     decision outputs are untouched. `admission="not-run"` marks callers that
     hand-roll hashes without admission (e.g. teacher five-arms); their empty
     exclusion list MUST NOT be read as a clean bill. Full admission migration
-    is WP-10-owned.
+    belongs to the teacher-distillation change (teacher selected only from
+    fully-gated outcomes; replacing the teacher invalidates dependents).
     """
     from hydra2.eval.schedule import schedule_commitment_hash
 

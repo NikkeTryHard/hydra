@@ -7,13 +7,13 @@
 [build]
 jobs = 16
 rustc-wrapper = "sccache"
-# PGO: F10-duel profile for hydra-feed (regenerated 2026-09-09 against segment-2 keeps).
+# PGO: F10-duel profile for hydra-feed (regenerated against segment-2 keeps).
 # Canonical profile location: pgo-data/feed.profdata (workspace-cwd-relative). Behavior-identical
 # profiling only; tripwire (nextest -p hydra-feed, 76 tests) stays green; F10 holds 432/96/0.
 # FINGERPRINT-WIPE REQUIRED: the first build that enables profile-use MUST invalidate stale
 # fingerprints (`cargo clean` or `rm -rf target/release/.fingerprint`); config rustflag changes
 # do not dirty Fresh units, else stale non-PGO artifacts get measured as Fresh.
-# CAVEATS (verified 2026-09-09; cachyos cargo 1.98.1 + sccache 0.17.0 server, server cwd=/):
+# CAVEATS (verified cargo 1.98.1 + sccache 0.17.0 server, server cwd=/):
 # (1) this cargo does NOT forward `[build] rustflags` to rustc (file or --config CLI; env
 #     RUSTFLAGS and `target.*.rustflags` DO arrive) — the harness MUST deliver profile-use via
 #     RUSTFLAGS env (absolute path) or `[target.<triple>] rustflags`, never this key alone.

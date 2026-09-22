@@ -60,7 +60,9 @@ if TYPE_CHECKING:
 
 
 class ActorLearnerReplay(ActorLearnerReplayCheckpointMixin):
-    """Project-owned actor-learner replay over authorized data (WP-11).
+    """Project-owned actor-learner replay over authorized data (frozen rollout
+    artifact with mandatory masked PPO; exact simulator eager; plain/Fabric
+    equivalent; multi-seed comparison; replay/evaluation-wall isolation).
 
     Parameters
     ----------
@@ -218,7 +220,7 @@ class ActorLearnerReplay(ActorLearnerReplayCheckpointMixin):
 
         with contextlib.suppress(Exception):
             _ = self.model.to(self.device)
-        # Perf-B torch.compile — dynamic shapes, guarded determinism
+        # Compiled-loop torch.compile region — dynamic shapes, guarded determinism
         # + availability (cite docs).
         # Evidence:
         #  https://docs.pytorch.org/docs/stable/generated/torch.compile.html

@@ -1,8 +1,13 @@
-"""SPEC 18.4 promotion record — retained for every candidate outcome.
+"""Promotion record — retained for every candidate outcome.
 
-All Candidates 0-6 retain records including failure/rejection; the record is
-an immutable value object over validated fields, digest-identified via
-:func:`promotion_digest` so registries can pin outcomes by content.
+All Candidates 0-6 retain records including failure/rejection; candidate
+selection and natural confirmation use disjoint semantic streams; a promotion
+that cannot name its schedule, machine, and excluded walls is not
+reproducible and MUST NOT issue disposition promoted.
+
+The record is an immutable value object over validated fields,
+digest-identified via :func:`promotion_digest` so registries can pin outcomes
+by content.
 """
 
 from __future__ import annotations
@@ -44,7 +49,9 @@ UncertaintyUnit = Literal[
     "game_cluster",
 ]
 
-#: SPEC 18.4 uncertainty-unit vocabulary (bridge-owned single source).
+#: Uncertainty-unit vocabulary (case, iid_pair, wall_block, smc_population,
+#: rqmc_scramble, game_cluster — game_cluster only for held-out
+#: model/calibration; bridge-owned single source).
 UNCERTAINTY_UNITS: tuple[str, ...] = _bridge_contracts.PROMOTION_UNCERTAINTY_UNITS
 _GATE_VALUES: tuple[str, ...] = _bridge_contracts.PROMOTION_GATE_VALUES
 _DISPOSITIONS: tuple[str, ...] = _bridge_contracts.PROMOTION_DISPOSITIONS
@@ -52,7 +59,11 @@ _DISPOSITIONS: tuple[str, ...] = _bridge_contracts.PROMOTION_DISPOSITIONS
 
 @dataclass(frozen=True, slots=True)
 class PromotionRecord:
-    """SPEC 18.4 promotion record; field order matches the specification.
+    """Promotion record; frozen field order (candidate_spec_hash,
+    utility_manifest_hash, comparator_spec_hashes, case_manifest_hash,
+    result_table_hash, resource_view, uncertainty_unit, pass_inequality,
+    observed_estimate, confidence_bounds, gates, disposition, plus optional
+    schedule_hash, environment_hash, excluded_blocks covered by the digest).
 
     ``schedule_hash`` is the schedule commitment hash
     (:func:`hydra2.eval.schedule.schedule_commitment_hash`, binding every

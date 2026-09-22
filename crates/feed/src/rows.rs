@@ -94,10 +94,10 @@ impl From<crate::canon::CanonError> for RowsError {
 
 
 // ---------------------------------------------------------------------------
-// Packaged transport row (WP-00B authority)
+// Packaged transport row
 // ---------------------------------------------------------------------------
 
-/// WP-00B transport authority. Field order follows `rows.py:119-140` for
+/// Packaged transport row. Field order follows `rows.py:119-140` for
 /// readability; JCS sorts keys on the wire (see module-doc B3 note).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PackagedObjectRow {
@@ -412,10 +412,10 @@ pub fn check_no_duplicate_paths(rows: &[PackagedObjectRow]) -> Result<(), RowsEr
 }
 
 // ---------------------------------------------------------------------------
-// Raw join row (WP-04B authority)
+// Raw join row
 // ---------------------------------------------------------------------------
 
-/// WP-04B authority: join of one packaged row + one attestation
+/// Raw join row: join of one packaged row + one attestation
 /// (`rows.py:265-282`). Identity is the join id (`object_id`); the packaged
 /// row is never mutated by the join.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -602,7 +602,7 @@ pub fn make_raw_object_row(input: RawJoinInput) -> Result<RawObjectRow, RowsErro
 // and ids are recomputed, never translated by comparison).
 //
 // Single-printer rule: every seal id minted below goes through `feed::canon`
-// (serde_jcs 0.2.0 exact) + `feed::digest` (SHA-256 ONLY) — the same two
+// (`serde_jcs 0.2.0` exact) + `feed::digest` (SHA-256 ONLY) — the same two
 // owners the verify path calls. Manifest *framing* (JSONL lines) is
 // transport, not identity: callers serialize reminted rows with
 // `feed::canon` (JCS) and parse with `serde_json` (order-insensitive, same
@@ -1379,7 +1379,7 @@ mod tests {
             parse_packaged_row(&bad_digest),
             Err(RowsError::BadDigest { .. })
         ));
-        // Bare-hex normalizes at parse (pre-WP-01 compat, rows.py:184-194).
+// Bare-hex normalizes at parse (compat with older caller-ordered seals, rows.py:184-194).
         let mut bare = good.clone();
         bare.as_object_mut().unwrap().insert(
             "source_bytes_sha256".to_string(),

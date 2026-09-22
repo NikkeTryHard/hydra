@@ -294,11 +294,11 @@ mod tests {
         .collect()
     }
 
-    /// FEST goldens (`/tmp/eval_goldens3.py`): mean per-block
-    /// differences — draw-independent, so they pin the assembly
-    /// without any PCG64 port. P-F seed preimage golden (the oracle's
-    /// `PERSIST_PF_B0` records the first 8 bytes `36ddb6520588a78a` of
-    /// the full `sha256("persistence-P-F-v1")` below).
+    /// FEST goldens: mean per-block differences — draw-independent, so
+    /// they pin the assembly without any PCG64 port. P-F seed preimage
+    /// golden (the oracle's `PERSIST_PF_B0` records the first 8 bytes
+    /// `36ddb6520588a78a` of the full `sha256("persistence-P-F-v1")`
+    /// below).
     #[test]
     fn factorial_estimate_goldens() {
         assert_eq!(
@@ -315,8 +315,8 @@ mod tests {
         }
     }
 
-    /// FACTOR_BLOCK_HASH golden (`/tmp/eval_goldens2.py`) over
-    /// `{block_ids: [wb-0, wb-1], placements}`; P mean golden.
+    /// FACTOR_BLOCK_HASH golden over `{block_ids: [wb-0, wb-1],
+    /// placements}`; P mean golden.
     #[test]
     fn factorial_block_hash_golden() {
         let samples: HashMap<String, Vec<ResourceSample>> = [

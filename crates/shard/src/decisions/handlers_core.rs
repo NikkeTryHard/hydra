@@ -32,7 +32,7 @@ pub fn walk_game_with_version(
     version: EngineVersion,
 ) -> Result<Vec<ReplayRow>, WalkReject> {
     prescan(game)?;
-    // S7 `reset(wall)`: mint the real digest once per game (never a
+    // `reset(wall)`: mint the real digest once per game (never a
     // placeholder). Wall-less stays `None` (SIM mark).
     let wall_digest: Option<String> = match &game.wall_tiles {
         None => None,

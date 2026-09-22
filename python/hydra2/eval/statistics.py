@@ -1,20 +1,26 @@
-"""SPEC 18.3 uncertainty machinery — blocks, bootstrap, sign-flip, CS.
+"""Uncertainty machinery — blocks, bootstrap, sign-flip, CS.
 
-The independent unit of confirmation is the COMPLETE WALL BLOCK; games inside
-a wall share the wall deck and are therefore never independent units
-(SPEC 18.1/18.3). Everything here resamples whole blocks:
+The independent unit of confirmation is the COMPLETE WALL BLOCK; primary
+block outcome is the declared expected-final-placement contrast; alpha,
+beta, pilot s, practical margin delta, multiplicity, maximum blocks, and
+fixed-N versus named time-uniform CS are frozen blind to arm labels.
+
+Everything here resamples whole blocks after collapsing each block to a
+single contrast value; games inside a wall share the wall deck and are
+therefore never independent units:
 
 * :func:`bootstrap_blocks` — percentile bootstrap over block contrasts;
 * :func:`sign_flip_interval` — random Rademacher sign flips of block
   contrasts (symmetric-null interval);
-* :func:`fixed_n_samples` — the SPEC fixed sample size formula
-  ``N = ceil(((z_(1-alpha) + z_(1-beta)) * s / delta)**2)``;
+* :func:`fixed_n_samples` — the fixed sample size formula
+  ``N = ceil(((z_(1-alpha) + z_(1-beta)) * s / delta)**2)`` with alpha, beta,
+  pilot s, and practical margin delta frozen blind to arm labels;
 * :func:`hedged_confidence_sequence` / :func:`hedged_cs_path` — a concrete,
   named time-uniform confidence sequence: the hedged-betting capital process
   of Waudby-Smith & Ramdas (2023) with predictable lambdas and a grid union
   bound over means, valid simultaneously at every peek time;
 * :func:`sequential_design_guard` — adaptive peeking without a declared
-  sequential design invalidates confirmation (SPEC 18.3);
+  sequential design invalidates confirmation;
 * :func:`cluster_bootstrap` — clustered diagnostics resample game/player
   groups, never decisions (grouping is a two-value literal by construction).
 
@@ -114,7 +120,9 @@ def placement_block_contrast(blocks: tuple[WallBlock, ...]) -> tuple[float, ...]
 
 
 def fixed_n_samples(*, s: float, delta: float, alpha: float, beta: float) -> int:
-    """SPEC 18.3: ``N = ceil(((z_(1-alpha) + z_(1-beta)) * s / delta)^2)`` (bridge-checked)."""
+    """Fixed sample size ``N = ceil(((z_(1-alpha) + z_(1-beta)) * s / delta)^2)``
+    with alpha, beta, pilot s, and practical margin delta frozen blind to arm
+    labels (bridge-checked)."""
     try:
         leaf = _bridge_search.eval_stats_fixed_n_samples  # type: ignore[attr-defined]  # reason: eval_stats leaf lands with MAIN wiring; AttributeError fallback covers stale .so
     except AttributeError:

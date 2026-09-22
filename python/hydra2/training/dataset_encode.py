@@ -98,8 +98,8 @@ def tensorize_actor_row(
 ) -> dict[str, Any]:
     """Deterministic tensorization of one actor row for tests/synthetic data.
 
-    The real WP-05A encoder would parse ``actor_observation`` JSON and produce
-    per ``model_input_v1`` tensors.  This helper is the WP-05B synthetic
+    The real actor-visible encoder would parse ``actor_observation`` JSON and produce
+    per ``model_input_v1`` tensors.  This helper is the supervised synthetic
     stand-in that is deterministic, actor-visible only, and never touches
     privileged data.
 

@@ -13,7 +13,7 @@
 //! NEVER authorize — verified decode hashes every output byte and checks
 //! `sha`+`len` when the caller supplies them.
 //!
-//! Identity discipline (endstate 0.3): SHA-256 ONLY via `feed::digest`
+//! Identity discipline: SHA-256 ONLY via `feed::digest`
 //! (same primitive; streaming `update` per 64 KiB chunk, chunk-size
 //! invariant), canon bytes ONLY via `feed::canon`. No second printer, no
 //! second hasher, no BLAKE3.

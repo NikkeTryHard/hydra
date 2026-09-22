@@ -176,8 +176,10 @@ class TrainingState:
 class TrainingLoopConfig:
     """Loop-owned hyperparameters and objective weights (explicit, no defaults).
 
-    All weights are model-spec supplied per SPEC 20; zero-weight heads MAY be
-    absent.  Accumulation, clipping, checkpoint frequency and scheduler
+    All weights are model-spec supplied (every weight/head/target/masking/
+    reduction lives in the named head specification; implicit defaults
+    prohibited); zero-weight heads MAY be absent.  Accumulation, clipping,
+    checkpoint frequency and scheduler
     identities are fixed here so that resume is byte-identical.
     """
 

@@ -238,7 +238,10 @@ def _bucket_length(actual: int, buckets: tuple[int, ...] = HISTORY_BUCKET_LENGTH
 
 @dataclass(frozen=True, slots=True)
 class ActorTensorBatch:
-    """Batched actor-visible tensors (SPEC 11.1).
+    """Batched actor-visible tensors (padded/bucketed histories with explicit
+    history_mask; legal_mask [B,A]; mask before softmax/loss/argmax with
+    illegal probability exactly zero; encoder validates the ActorObservation
+    first and padding values never carry semantics without a mask).
 
     Mask polarity: ``history_mask``/``legal_mask`` use ``True`` = participate,
     while ``key_padding_mask`` in models/model.py uses ``True`` = padding

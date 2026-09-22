@@ -1,8 +1,15 @@
-"""SPEC 18.1/18.3 wall-block aggregation and the invalid-block policy.
+"""Wall-block aggregation and the invalid-block policy.
+
+The independent unit is the complete wall block: games within one wall share
+the dealt wall deck and every divergent game remains a member of that one
+wall block — they are NOT identical counterfactual paths and NOT independent
+units; for each wall the symmetric 2-v-2 uses all six A-in-two-seats
+placements and the 1-v-3 rotates A through all four seats; divergent games
+remain members of one wall block.
 
 Games within one wall share the dealt wall deck and every divergent game
 remains a member of that one wall block — they are NOT identical
-counterfactual paths and NOT independent units (SPEC 18.1). Aggregation
+counterfactual paths and NOT independent units. Aggregation
 therefore collapses each block to a single contrast value before any
 uncertainty method sees it.
 

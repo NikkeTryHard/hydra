@@ -27,7 +27,7 @@ pub fn require_digest(text: &str, name: &str) -> Result<(), RowsError> {
 }
 
 /// Bare-hex → `sha256:` normalization at parse (mirrors `norm`,
-/// `rows.py:185-194`; pre-WP-01 compat). `None` passes through for nullable
+/// `rows.py:185-194`; compat with older caller-ordered seals). `None` passes through for nullable
 /// fields; non-strings and malformed strings are kept as-is here and
 /// rejected by the constructor validation (same two-step as Python).
 pub(crate) fn norm_digest(value: Option<&serde_json::Value>) -> Option<String> {

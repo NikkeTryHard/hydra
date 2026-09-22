@@ -3,7 +3,8 @@
 //! Rust owner of `src/hydra2/artifacts/canonical.py`: every identity path
 //! (manifest / row / packet / info-key / derivation / attestation / registry
 //! seals) hashes THESE bytes, never `serde_json` pretty / `sort_keys` / simd
-//! re-emit (fork by construction; endstate §0.3).
+//! re-emit (fork by construction: identity is SHA-256 over these canonical bytes only,
+//! never a second printer or hasher).
 //!
 //! - Byte source: `serde_jcs 0.2.0` ONLY-exact (`to_vec` / `to_string` /
 //!   `to_writer` agree byte-exact — same normative sentence on all three entry

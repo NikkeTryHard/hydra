@@ -34,10 +34,9 @@
 //! `_teacher_policy_and_value`) that STAY Python per invariants — no
 //! Rust surface exists for them here by design (no Rust GPU math).
 //!
-//! PCG64 draw-path decision (2026-09-16, conditional GO for port-A,
-//! port-B stands until the KAT lands): numpy `bootstrap_blocks` wall
-//! (min over 60/30/15 reps, R=2000, Intel Ultra 7 265KF, numpy 2.5.3,
-//! rustc 1.98 -O; /tmp throwaway bench, deleted after measurement) vs a
+//! PCG64 draw-path decision (conditional GO for port-A, port-B stands
+//! until the KAT lands): numpy `bootstrap_blocks` wall (min over
+//! 60/30/15 reps, R=2000, Intel Ultra 7 265KF, numpy 2.5.3, rustc 1.98 -O optimised builds) vs a
 //! Rust same-shape draw+mean+sort kernel. N=30 (canonical
 //! `SelectionConfig`): numpy 0.327ms vs PCG64-DXSM proxy 0.125ms (+162%)
 //! vs Xoshiro256++ ceiling 0.067ms; N=100: 0.935 vs 0.387 (+142%);
@@ -806,7 +805,7 @@ mod tests {
         assert!(group_means(&[&g0, &[]]).is_err());
     }
 
-    /// FIXEDN golden (`/tmp/eval_goldens2.py`): `N=56`, raw
+    /// FIXEDN golden: `N=56`, raw
     /// `55.64301508817788` (margin 0.64 — Acklam error cannot flip it).
     #[test]
     fn fixed_n_golden() {
@@ -817,7 +816,7 @@ mod tests {
         assert!(fixed_n_samples(1.5, 0.5, 0.05, 1.0).is_err());
     }
 
-    /// Hedged-CS goldens (`/tmp/eval_goldens2/3.py`): uninformative
+    /// Hedged-CS goldens: uninformative
     /// 8-value path stays `(0.02, 0.98)` (grid edges); multi-peek keeps
     /// one pair per peek; flat-64 grid-8 concentrates to the golden
     /// pair (1e-12 tolerates libm `ln` variance; edges are grid thetas).

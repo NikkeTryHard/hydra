@@ -528,8 +528,8 @@ impl ForestState {
 mod tests {
     use super::*;
 
-    /// PACKET goldens (`/tmp/eval_goldens2.py`): the `(epoch:abc123, 3,
-    /// 0)` id, the two-branch probabilities + deltas, rebuild equality.
+    /// PACKET goldens: the `(epoch:abc123, 3, 0)` id, the two-branch
+    /// probabilities + deltas, rebuild equality.
     #[test]
     fn packet_id_and_rebuild_goldens() {
         assert_eq!(

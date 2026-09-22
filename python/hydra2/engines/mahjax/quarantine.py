@@ -1,4 +1,4 @@
-"""MahJax adapter qualification state machine (BUILD WP-03C checklist item 3).
+"""MahJax adapter qualification state machine (boots QUARANTINED; only a bound token qualifies).
 
 The adapter boots :attr:`AdapterState.QUARANTINED` and may transition to
 :data:`AdapterState.QUALIFIED` ONLY via a
@@ -24,7 +24,8 @@ from hydra2.contracts.common import DigestText, SchemaVersion
 #: Adapter identity bound into every token.
 ADAPTER_VERSION = SchemaVersion("1.0.0")
 
-#: Observation mode served by this engine family (SPEC §8 canonical boundary).
+#: Observation mode served by this engine family (the canonical actor-observation
+#: boundary: only actor-visible state is exposed).
 OBSERVATION_MODE = "canonical_v1"
 
 

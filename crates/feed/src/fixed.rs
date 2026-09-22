@@ -401,7 +401,7 @@ pub fn exact_total_is_zero(vals: &[f64; 4]) -> Result<bool, FixedError> {
 }
 
 // ---------------------------------------------------------------------------
-// Final-rank resolution (SPEC 5.1, east1 seat-wind tie-break)
+// Final-rank resolution (ranks 1..4, one per seat exactly once; ties broken by lower seat index, the East-1 seat-wind order)
 // ---------------------------------------------------------------------------
 
 /// Resolve placement ranks 1..=4 from raw final scores.
@@ -565,7 +565,7 @@ mod tests {
         assert!(exact_total_is_zero(&[-0.0, 0.0, 0.0, 0.0]).unwrap());
     }
 
-    /// SPEC 5.1 rank goldens (`test_rules_wp02b.py` + WP-04A conformance pins).
+/// Rank goldens (pinned vectors in `test_rules_wp02b.py` plus conformance pins).
     #[test]
     fn final_ranks_match_pinned_vectors() {
         assert_eq!(resolve_final_ranks([30000, 25000, 20000, 15000]), [1, 2, 3, 4]);

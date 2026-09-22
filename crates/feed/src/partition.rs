@@ -21,7 +21,7 @@
 //! `partition.py:161-167` holds a local literal, the import lives in the
 //! manifest — worded as value-equality per Data m4, never claimed same-symbol.
 //!
-//! Identity discipline (endstate §0.3):
+//! Identity discipline (SHA-256 only on identity paths; canon owns bytes and digest owns hashes; no second printer, no second hasher):
 //! - SHA-256 ONLY on identity paths. No BLAKE3 anywhere here.
 //! - Spec/games/manifest digests call `feed::canon` + `feed::digest`
 //!   (Data M1: canon owns bytes+math, this module frames+parses+calls). There
@@ -303,7 +303,7 @@ fn cumulative_thresholds(
 /// Draw for one group: `u64BE(sha256(f"{seed}|{group}")[..8]) / 2**64`.
 ///
 /// Byte-exact with `stream_read.py:171-172` and `partition.py:180-181`.
-/// Routed through `feed::digest::sha256_hex` (the single owned `sha2 0.11`
+/// Routed through `feed::digest::sha256_hex` (the single owned `sha2 0.11` SHA-256
 /// hasher — this module owns NO second hasher): the first 16 hex chars
 /// decode to the same `u64BE` value as the first 8 digest bytes.
 fn hex_val(c: u8) -> u64 {

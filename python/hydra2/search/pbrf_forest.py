@@ -328,8 +328,7 @@ def _is_target_compatible(
 class ImmutableForest:
     """Immutable PBRF forest — frozen parents, candidates, children, allocations.
 
-    Mirrors SPEC 16.4 ``return ImmutableForest(epoch, parents, frozen_candidates, children)``.
-    Children are indexed by ``(action_id, packet_id)`` and each holds a tuple of
+    Built as ``ImmutableForest(epoch, parents, frozen_candidates, children)``: natural parents sampled, candidates frozen before enumeration, per-action/per-parent exhaustive successors keyed by ``(action_id, packet_id)`` with ``raw_weight = probability/len(parents)`` and per-key normalizers within kernel tolerance. Each key holds a tuple of
     ``ChildEntry`` with raw weights summing to Z_hat per key.
     All fields are immutable; consumers must not mutate via aliasing.
 
@@ -439,7 +438,7 @@ def build_pbrf(
     rng: Any | None = None,
     config: PbrfConfig | None = None,
 ) -> ImmutableForest:
-    """Build PBRF forest per SPEC 16.4.
+    """Build PBRF forest (natural parents sampled; candidates frozen before any enumeration; per-action/per-parent exhaustive successors with partition check; per-key normalizers within kernel tolerance; fixed allocation schedule).
 
     Steps:
       parents = belief.sample_natural(epoch, count=parent_count, rng=rng)

@@ -1,4 +1,4 @@
-"""MahJax environment-tuple capture (BUILD WP-03C checklist item 2).
+"""MahJax environment-tuple capture: the tuple a qualification token binds against.
 
 Captures the complete runtime tuple that a WP-04C qualification token binds
 against: installed mahjax origin (Git commit id), pixi lock hash, JAX/jaxlib
@@ -7,7 +7,7 @@ Python implementation. The tuple is hashed into an ``environment fragment``
 that is persisted alongside the WP-01 environment manifest.
 
 This module never mutates :mod:`hydra2.runtime.environment`; it reuses its
-helpers read-only per the WP-03C brief.
+helpers read-only (consumed, never mutated, by this shell).
 """
 
 from __future__ import annotations
@@ -87,7 +87,8 @@ def verify_installed_origin(*, pin_sha: str = MAHJAX_PIN_SHA) -> str:
     """Verify the installed mahjax origin commit id against ``pin_sha``.
 
     Returns the verified commit id; raises :class:`QualificationRequiredError`
-    on any mismatch (BUILD WP-03C checklist item 1: runtime SHA verification).
+    on any mismatch (runtime SHA verification: the installed origin must equal
+    the pin).
     """
     commit_id = installed_origin_commit_id()
     if commit_id != pin_sha:
@@ -141,8 +142,8 @@ def relevant_xla_flags() -> tuple[tuple[tuple[str, str], ...], dict[str, str]]:
 
 
 def _lock_sha256() -> DigestText:
-    # Read-only reuse of the WP-01 helper (directive: runtime.environment
-    # helpers are consumed, never mutated, by this shell).
+    # Read-only reuse of the locked-environment helper: the runtime.environment
+    # helpers are consumed, never mutated, by this shell.
     from hydra2.runtime.environment import _pixi_lock_hash
 
     return _bridge_contracts.make_digest_text(_pixi_lock_hash())
@@ -236,7 +237,7 @@ def capture_mahjax_tuple() -> MahJaxEnvironmentTuple:
 def write_mahjax_environment_fragment(
     destination_dir: Path | None = None,
 ) -> tuple[Path, DigestText]:
-    """Atomically publish the tuple fragment beside the WP-01 env manifest.
+    """Atomically publish the tuple fragment beside the environment manifest.
 
     Defaults to ``<artifact_root>/environment/`` — i.e. stored *alongside*
     ``environment-manifest.json``. Returns ``(path, fragment_digest)``.

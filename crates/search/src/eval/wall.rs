@@ -177,9 +177,9 @@ mod tests {
         (0..136).collect()
     }
 
-    /// WALL goldens (`/tmp/eval_goldens.py`): ordered hash, ordered
-    /// fingerprint (equal — ordered input is already sorted), reversed
-    /// hash (differs), reversed fingerprint (equal — multiset).
+    /// WALL goldens: ordered hash, ordered fingerprint (equal — ordered
+    /// input is already sorted), reversed hash (differs), reversed
+    /// fingerprint (equal — multiset).
     #[test]
     fn wall_hash_and_fingerprint_goldens() {
         let tiles = ordered_wall();

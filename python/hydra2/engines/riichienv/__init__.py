@@ -1,4 +1,4 @@
-"""RiichiEnv 0.4.10 reference adapter (WP-03A, decision D-003).
+"""RiichiEnv 0.4.10 reference adapter (WP-03A reference engine).
 
 Public surface: :class:`RiichiEnvExactSimulator` (SPEC 9 ExactSimulator) and
 the import-verified :data:`ENGINE_IDENTITY`.

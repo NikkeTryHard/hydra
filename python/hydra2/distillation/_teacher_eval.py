@@ -233,8 +233,9 @@ def evaluate_five_arms(
             "student_plus_search": s - p,
         }
     # The +search arms reuse the exact search-integrated policies (no fabricated
-    # boost — SPEC:1587). Probe both once on the first game so failures surface
-    # loudly instead of silently collapsing arms.
+    # boost — a fabricated refinement would be a mock-search signal). Probe both
+    # once on the first game so failures surface loudly instead of silently
+    # collapsing arms.
     _ = teacher_plus_search_policy(justification=justification, observation=observations[0])
     _ = student_plus_search_policy(student=student, observation=observations[0])
     arms = ["pre_distill", "student", "teacher", "teacher_plus_search", "student_plus_search"]
@@ -436,7 +437,7 @@ def teacher_plus_search_policy(
 
     Invokes the exact teacher candidate path (spec-bound model prior over the
     observation's exact legal mask). No hash-derived boost is applied: a
-    fabricated refinement would be a mock-search signal (SPEC:1587), so the
+    fabricated refinement would be a mock-search signal, so the
     integrated policy is the exact teacher policy until a qualified search
     runtime refines it (recorded in provenance by callers).
     """
@@ -458,7 +459,7 @@ def student_plus_search_policy(
 
     Encodes via the real model_input_v1 path and masks to the observation's
     exact legal mask. Like the teacher arm, no fabricated search boost is
-    applied (SPEC:1587); the policy is the exact student policy.
+    applied; the policy is the exact student policy.
     """
     if not isinstance(student, StudentModel):
         raise ContractError(f"student must be StudentModel, got {type(student)}")

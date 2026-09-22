@@ -11,10 +11,10 @@ sha2 = "0.11"
 memmap2 = "0.9"
 parquet = "=59.3.0"
 # Phase 3 columnar (integration-applied once; expand request + writer/reader/cache):
-# - arrow-array/arrow-schema =59.3.0 (Phase3Expand expand builders — serial,
+# - arrow-array/arrow-schema =59.3.0 pinned exact (Phase3Expand expand builders — serial,
 #   no arrow-ipc/serde_jcs/rayon/safetensors needed expand-side).
-# - arrow-ipc =59.3.0 (writer/reader IPC File/Stream + memmap2 views).
-# - safetensors =0.8.0 (cache.rs mmap; compat-read + offset-validate).
+# - arrow-ipc =59.3.0 pinned exact (writer/reader IPC File/Stream + memmap2 views).
+# - safetensors =0.8.0 pinned exact (cache.rs mmap; compat-read + offset-validate).
 arrow-array = "=59.3.0"
 arrow-schema = "=59.3.0"
 arrow-ipc = "=59.3.0"

@@ -213,7 +213,7 @@ class PbrfConfig:
 class ChildEntry:
     """One particle's contribution to a specific (action, packet) child.
 
-    Mirrors SPEC 16.4 pseudocode: parent_id, successor_world_ref, successor_delta,
+    Mirrors the PBRF build pseudocode (natural parents; candidates frozen before enumeration; per-action/per-parent exhaustive successors; ``raw_weight = probability/len(parents)``): parent_id, successor_world_ref, successor_delta,
     raw_weight (= probability/len(parents)), target_id, epoch.
 
     ``tile`` is the originating transition tile (TileId 0..135) captured at
@@ -290,7 +290,7 @@ def _action_id(action: Any) -> int:
 
 
 def validate_packet_partition(successors: Any, *, tolerance: float = 1e-9) -> None:
-    """Validate exhaustive disjoint packet partition (SPEC 14.3).
+    """Validate exhaustive disjoint packet partition (successors pairwise disjoint by complete packet identity; finite nonnegative probabilities summing to one within tolerance; physical and actor-policy likelihood each applied once; exact-simulator successors; no parent-only reweight).
 
     Checks finite nonnegative probabilities sum to 1 within tolerance and
     pairwise distinct packet_id. Mirrors DESPOT helper for cross-test consistency.

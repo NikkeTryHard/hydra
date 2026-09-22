@@ -211,7 +211,7 @@ def _require_search_bridge() -> Any:
 def is_redeterminization_enabled() -> bool:
     """Re-determinization is disabled until a named conditional-law proof exists.
 
-    SPEC 16.2: ``q_j(x | I_j, immutable_constraints)`` must preserve public reach,
+    State keys are canonical information-set hashes for the acting player (no world/full-state hash in the action-selection key); ``q_j(x | I_j, immutable_constraints)`` must preserve public reach,
     root-known tiles and observed packets, with exact ratio applied once.
     Without the tiny-state proof, this flag remains ``False`` and any call that
     attempts conditional re-sampling raises ``ContractError``.

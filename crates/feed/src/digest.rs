@@ -2,8 +2,8 @@
 //!
 //! Rust owner of `src/hydra2/artifacts/digest.py` (`sha256_digest` in-mem +
 //! `sha256_file` 1 MiB chunked second path). The two paths MUST agree on
-//! identical input (BUILD WP-02A exit; KAT-1 gates it). BLAKE3 is barred on
-//! identity (endstate §0.3); transient non-identity keys with an explicit
+//! identical input (the KAT-1 sha-hello test gates both paths agreeing). BLAKE3 is barred on
+//! identity (SHA-256 is the only identity hasher); transient non-identity keys with an explicit
 //! allowlist are the ONLY exception, and they never live here.
 //!
 //! - `sha2 0.11` ONLY on identity (`Sha256::digest` / `new` + `update` +
@@ -108,7 +108,7 @@ impl std::io::Write for HashWriter {
     }
 }
 
-/// SPEC 13 legacy CTR domain tag: 13 chars + NUL (`randomness.py:405` `_DOMAIN`).
+/// Legacy compatibility CTR domain tag for the Python `RandomStream` oracle's domain (NEW shuffle/sample/split streams use Philox; this tag serves only the pinned legacy sha256-CTR path): 13 chars + NUL (`randomness.py:405` `_DOMAIN`).
 pub const CTR_DOMAIN_TAG: &[u8; 14] = b"hydra2_ctr_v1\x00";
 
 /// Legacy sha256-CTR block (mirrors `RandomStream._block_at`,
@@ -195,7 +195,7 @@ mod tests {
         assert_eq!(w.finish(), fused);
     }
 
-    /// SPEC 13 CTR goldens: `sha256(DOMAIN || lenBE32 || seed || indexBE64)`
+/// Legacy CTR goldens: `sha256(DOMAIN || lenBE32 || seed || indexBE64)`
     /// pinned against the `hashlib` oracle (`RandomStream._block_at`).
     #[test]
     fn ctr_block_matches_oracle_goldens() {

@@ -184,9 +184,9 @@ pub fn spec_parameters_digest(spec: &PersistenceCandidateSpec) -> Result<String,
 mod tests {
     use super::*;
 
-    /// GUMBEL goldens (`/tmp/eval_goldens.py`, `:186` default seed):
-    /// exact `[0,1)` scalars per (arm, case, action). A preimage fork
-    /// (separator, order, encoding) fails all four.
+    /// GUMBEL goldens (`:186` default seed): exact `[0,1)` scalars per
+    /// (arm, case, action). A preimage fork (separator, order, encoding)
+    /// fails all four.
     #[test]
     fn deterministic_gumbel_parity_golden() {
         assert_eq!(

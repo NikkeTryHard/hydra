@@ -78,12 +78,13 @@ def derive_hand_wall(
             str(hand_index),
         )
     ).encode("utf-8")
-    # Perf-B P-B12 HIGH: single-hash seeded vectorized permutation replaces 135xsha256 Fisher-Yates.
+    # Fast path: single-hash-seeded vectorized permutation replaces the
+    # 135xsha256 Fisher-Yates.
     # Evidence: https://numpy.org/doc/stable/reference/random/generated/numpy.random.Generator.permutation.html
     #  + https://numpy.org/doc/stable/reference/random/generated/numpy.random.default_rng.html
     #  — permutation(136) is O(136) in C vs 135xpython rejection + 5 sha256 digests per hand; still
     #  deterministic via WALL_STREAM_NAME keyed digest (SPEC 13) and preserves SPEC 9 invariant.
-    # Single hash seeded permutation cost ~5µs vs ~25µs Python Fisher-Yates (perf-B §5).
+    # Single-hash-seeded permutation costs ~5µs vs ~25µs for the Python Fisher-Yates fallback.
     # Fallback keeps correctness when numpy absent.
     digest = hashlib.sha256(key).digest()
     seed = int.from_bytes(digest[:8], "big")

@@ -37,7 +37,7 @@
 //! [`actor_schema`] is byte-exact with `parquet._ACTOR_SCHEMA`: the 13
 //! `ACTOR_FIELDS` names in order, `pa.string()` -> `Utf8`, `pa.int64()` ->
 //! `Int64`, `chosen_action_id` nullable (null exactly when the action id is
-//! unresolved — the S4 pin), all other columns non-nullable. `expand_batch`
+//! unresolved), all other columns non-nullable. `expand_batch`
 //! buckets caller-ordered inputs into those columns the way
 //! `write_actor_shards` buckets rows per split, except rows stay in caller
 //! order (no per-split regrouping: ordering is the caller's `order` manifest

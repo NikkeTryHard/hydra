@@ -44,8 +44,8 @@ use super::schedule::{MatchSchedule, TOTAL_GAMES_PER_WALL, schedule_commitment_h
 /// Python banker's `round` (round-half-to-even on exact `.5`).
 /// `n*ratio` in f64 is exact-or-nearest exactly like CPython's double
 /// multiply, and `round_half_even` below acts on that double — the
-/// `/tmp/eval_goldens3.py` ROUND goldens pin 9 cases (`0.5->0`,
-/// `2.5->2`, `3.5->4`, `2.0->2`, `2.1->2`).
+/// ROUND goldens pin 9 cases (`0.5->0`, `2.5->2`, `3.5->4`, `2.0->2`,
+/// `2.1->2`).
 pub fn held_count(n: usize, ratio: f64) -> Result<usize, SearchError> {
     if n == 0 {
         return Err(SearchError::InvalidArg {
@@ -529,16 +529,15 @@ mod tests {
             .collect()
     }
 
-    /// T7-part + B2: the torch oracle's `RANDPERM` vectors
-    /// (`/tmp/eval_goldens.py`, pixi torch 2.14) are pinned here so a
-    /// future `philox_split_perm` must reproduce them; the split below
-    /// consumes them as caller-supplied perms (oracle stays torch).
-    /// digest/membership/sorted-sides golden from `/tmp/eval_goldens2.py`.
+    /// T7-part + B2: the torch 2.14 oracle's `RANDPERM` vectors are pinned
+    /// here so a future `philox_split_perm` must reproduce them; the
+    /// split below consumes them as caller-supplied perms (oracle stays
+    /// torch). Digest/membership/sorted-sides golden.
     #[test]
     fn torch_randperm_oracle_and_split_golden() {
         assert_eq!(held_count(10, 0.2).unwrap(), 2);
         assert_eq!(held_count(7, 0.3).unwrap(), 2);
-        // Banker's rounding edges (/tmp/eval_goldens3.py ROUND goldens).
+        // Banker's rounding edges (ROUND goldens).
         assert_eq!(held_count(1, 0.5).unwrap_or(1), 1);
         assert_eq!(round_half_even(0.5), 0);
         assert_eq!(round_half_even(1.5), 2);
@@ -592,7 +591,7 @@ mod tests {
         assert!(validate_blocks_disjoint(&game_dup).is_err());
     }
 
-    /// Manifest golden (`/tmp/eval_goldens2.py` MANIFEST/MANIFEST_HASH).
+    /// Manifest golden (MANIFEST/MANIFEST_HASH).
     #[test]
     fn block_manifest_golden() {
         use super::super::schedule::{build_match_schedule, schedule_commitment_hash};

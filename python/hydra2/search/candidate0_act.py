@@ -3,8 +3,9 @@
 Owns the observation-to-codec context builder, the ``candidate0`` single
 model-evaluation entry point (hash-gate validation, masked policy, frozen
 choice, decode, telemetry), and the stateless deterministic
-``FrozenCandidate0`` planner (SPEC 16.1). Frozen choice and the spec factory
-live in :mod:`hydra2.search.candidate0_frozen`.
+``FrozenCandidate0`` planner (one cached model evaluation only: no belief,
+particles, search, pondering, online adaptation, or hidden state). Frozen
+choice and the spec factory live in :mod:`hydra2.search.candidate0_frozen`.
 """
 
 from __future__ import annotations
@@ -153,7 +154,7 @@ def candidate0(
     action_table: Any,
     action_codec: Any,
 ) -> Any:
-    """Exact SPEC 16.1 Candidate 0 API — one model evaluation.
+    """Exact Candidate 0 API — one cached model evaluation.
 
     Validates every hash binding before touching the model (ContractError on mismatch),
     does one ``encoder.encode`` + ``model.evaluate``, masked policy, frozen_choice,
@@ -168,7 +169,7 @@ def candidate0(
     spec: Any = request.candidate_spec
     obs: ActorObservation = request.observation
 
-    # ---- hash binding validation (SPEC 15 Contract gate) ----
+    # ---- hash binding validation (observation/rules/action/observation/packet hashes must match the spec before search; mismatch raises ContractError) ----
     obs_rules_hash: Any = obs.rules_hash
     spec_rules_hash: Any = spec.rules_hash
     if str(obs_rules_hash) != str(spec_rules_hash):
@@ -428,5 +429,5 @@ class FrozenCandidate0:
             self._history = self._history[-_candidate0_history_limit:]
 
     def ponder(self, *, deadline_monotonic_ns: int) -> None:
-        # No particles/search/pondering — explicitly no-op per BUILD checklist
+        # No particles/search/pondering — Candidate 0 is one cached model evaluation with no belief, particles, search, pondering, online learning, or hidden state, so ponder is explicitly a no-op
         return

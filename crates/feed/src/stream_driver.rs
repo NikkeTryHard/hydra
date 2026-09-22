@@ -168,7 +168,7 @@ pub struct DriverJob {
     pub game_id: String,
     /// Whole-game key for the window hash (`raw_bytes_sha256`, `sha256:`).
     pub key: String,
-    /// S7 wall override (136 tiles) or `None` for the wall-less sim path.
+    /// Wall override (136 tiles) or `None` for the wall-less sim path.
     pub wall: Option<Vec<u32>>,
 }
 

@@ -172,8 +172,8 @@ def _require_search_bridge() -> Any:
 
 
 # ---------------------------------------------------------------------------
-# Deterministic Gumbel helpers — SPEC 16.7 root Gumbels derive from
-# (case_id, root_seat, candidate_id, action_id). No global RNG.
+# Deterministic Gumbel helpers — Candidate 6 root Gumbels derive deterministically from
+# (case_id, root_seat, candidate_id, action_id); sequential-halving rounds and visit allocations are spec-supplied. No global RNG.
 # ---------------------------------------------------------------------------
 
 

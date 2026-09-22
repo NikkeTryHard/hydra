@@ -175,6 +175,7 @@ pub const fn chosen_id(kind: u8, tile: u8, called: u8) -> u32 {
 ///   `called` (suited only); offset is always −1.
 /// - pon: `consumed` = 2 sorted takes, same type as `called`, both
 ///   distinct from it (a 2-subset of the block minus the called copy).
+/// - daiminkan: `consumed` = the other three block takes.
 /// - ankan: `consumed` = the full sorted block.
 ///
 /// Returns `None` on any mismatch (walk rejects `action-id-unresolved`).

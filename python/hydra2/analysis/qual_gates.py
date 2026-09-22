@@ -79,8 +79,7 @@ class AnalysisGateRecord:
     A candidate is teacher-eligible only if this record exists, has
     ``compute_only == True``, ``deterministic_replay_ok == True``, no
     privileged leak, and the analysis budget is finite and larger than
-    gameplay. ``rejected`` candidates remain registry evidence, never teachers
-    (BUILD §10).
+    gameplay. ``rejected`` candidates remain registry evidence, never teachers.
     """
 
     candidate_id: str
@@ -144,7 +143,7 @@ def _load_default_hashes_for_spec() -> dict[str, str]:
     utility/model derive from the live model; rng/stream/case use the
     candidate0 canonical descriptors verbatim. Never constant hashes: this
     path is prod-reachable (gate records), so derivation failure raises
-    loudly instead of fabricating a manifest (BUILD S17).
+    loudly instead of fabricating a manifest.
     """
     # repo_root() walks to the marker so this survives the analysis/ depth.
     from hydra2.config import repo_root

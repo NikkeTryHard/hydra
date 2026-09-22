@@ -1,4 +1,4 @@
-//! Public-state chain folds over canonical envelope documents (SPEC 7.2).
+//! Public-state chain folds over canonical envelope documents (one shared hash across belief and search: each packet id is sha256 over canonical bytes excluding the id, and packets are mutually exclusive, exhaustive, and nonempty).
 //!
 //! Mirrors `src/hydra2/contracts/event_packet.py` (`_fold_public_hash`,
 //! `public_state_chain_hash`) without copying it: the fold input

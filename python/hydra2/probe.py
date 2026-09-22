@@ -1,9 +1,10 @@
 """``python -m hydra2.probe``: WP-01 runtime-probe checklist.
 
-Executes every probe from BUILD_EXECUTION_PLAN WP-01 with real assertions:
-clean frozen install, fresh-process imports, Trainer-package absence, and
-the full GPU probe suite (parity/resume/ordering/fallback) via
-``pytest tests/integration``. Any failure fails the command loudly.
+Executes every locked-environment probe with real assertions: clean frozen
+install, fresh-process imports, Trainer-package absence, CUDA torch with
+sm_120 kernels, and the full GPU probe suite (parity/resume/ordering/
+fallback) via ``pytest tests/integration``. Any failure fails the command
+loudly.
 """
 
 import shutil

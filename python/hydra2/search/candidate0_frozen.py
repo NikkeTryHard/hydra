@@ -3,9 +3,10 @@
 Owns the frozen ``frozen_choice`` tie-break arms (greedy, frozen-temperature,
 value-break), the file-backed config-hash loaders, the model-identity digest
 binder, and the ``make_candidate0_spec`` factory that binds them into a frozen
-CandidateSpec (SPEC 16.1). All hash fields bind before cases; tie-break and
-fallback margin stay frozen. The single-evaluation act path lives in
-:mod:`hydra2.search.candidate0_act`.
+CandidateSpec (one model evaluation only: no belief, particles, search,
+pondering, online adaptation, or hidden state; all hash fields bind before
+cases; tie-break and fallback margin stay frozen). The single-evaluation act
+path lives in :mod:`hydra2.search.candidate0_act`.
 """
 
 from __future__ import annotations

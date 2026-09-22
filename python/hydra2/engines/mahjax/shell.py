@@ -1,4 +1,4 @@
-"""MahJax quarantine shell (BUILD WP-03C).
+"""MahJax quarantine shell (fail-closed until a bound qualification token arrives).
 
 Construction verifies the installed mahjax origin SHA and boots
 :attr:`AdapterState.QUARANTINED`. Every trajectory/data/evaluation

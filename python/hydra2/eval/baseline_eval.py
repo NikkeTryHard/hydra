@@ -1,4 +1,9 @@
-"""WP-05C baseline evaluation harness: repeat, overfit, games, report.
+"""Baseline evaluation harness: repeat, overfit, games, report.
+
+Tiny-shard overfit to the declared threshold; deterministic
+interrupted/resumed runs; fresh-process checkpoint inference; complete
+reference games with zero illegal actions/timeouts; hidden permutation and
+canary tests; eager FP32 oracle recorded.
 
 Owns the process-level evaluation built on the metric kernels in
 :mod:`hydra2.eval.baseline_metrics`: fresh-subprocess determinism repeat,
@@ -286,7 +291,10 @@ def evaluate_reference_games(
 
     The fallback selects the first legal action (deterministic) and never times
     out. The evaluation asserts zero illegal actions and zero timeouts, matching
-    the BUILD WP-05C gate "Complete reference games: zero illegal actions/timeouts."
+    the baseline gate "Complete reference games: zero illegal actions/timeouts"
+    (tiny-shard overfit to the declared threshold, deterministic
+    interrupted/resumed runs, fresh-process checkpoint inference, hidden
+    permutation/canary tests, eager FP32 oracle recorded).
 
     Returns a summary dict with digests for report incorporation.
     """
@@ -486,7 +494,7 @@ def make_baseline_report(
 ) -> dict[str, Any]:
     """Build the canonical baseline report document (deterministic, hashed).
 
-    The report is the WP-05C evaluation artifact: it binds the held-out split,
+    The report is the baseline evaluation artifact: it binds the held-out split,
     both metric bundles, oracle identity, and diagnostics. It is published
     atomically and its digest is the report identity.
     """

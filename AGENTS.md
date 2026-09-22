@@ -6,20 +6,20 @@ RFC 2119 applies to MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL. `NEVER` 
 
 ## Stack (exact; Pixi is sole authority)
 
-Pixi owns env+lock (`pixi.lock`). You MUST NEVER create `uv.lock`, use a stray `.venv`, or run bare `pytest`/`python`/`ruff`. Verified 2026-09-10 via `pixi run config-check`: `torch==2.14.0+cu130` (cuda 13.0, sm_120 available), `lightning-fabric==2.6.5`, `riichienv==0.4.10`, mahjax pinned `cff90d1` (v0.1.3), `ruff==0.16.6`, `pyrefly==1.2.0`, `pytest==9.1.1`, `clearml==2.1.12`, python 3.12. Pyrefly MUST use pin `.pixi/envs/default/bin/python`.
+Pixi owns env+lock (`pixi.lock`; pins declared in `pyproject.toml` `[tool.pixi.*]`). You MUST NEVER create `uv.lock`, use a stray `.venv`, or run bare `pytest`/`python`/`ruff`. Pins: `torch==2.14.0` (CUDA 13.0, sm_120 kernels), `riichienv==0.4.10`, mahjax `cff90d1e68cf21464071864672a9618bb20f2551` (v0.1.3), `ruff==0.16.6`, `pyrefly==1.2.0`, `pytest==9.1.1`, `clearml==2.1.12`, python 3.12. `lightning`/`pytorch-lightning`/`lightning-fabric` MUST stay absent (fabric removed). `pixi run config-check` proves the running env matches these pins. Pyrefly MUST use pin `.pixi/envs/default/bin/python`.
 
 ## Commands (always through Pixi; never on host)
 
 | Need | Command |
 | --- | --- |
-| Focused test | `pixi run test <file>::<test>` |
+| Focused test | `pixi run test-unit <file>::<test>` (or the lane owning the file: `test-contracts`, `test-search`, `test-integration`; `test-serial` for `gpu`/`serial`-marked) |
 | Parallel lanes | `pixi run test-cpu` + `pixi run test-serial` (REQUIRED split; append `--package <WP-ID>` where the task supports it) |
-| Package gate | `pixi run test-{unit,integration,contracts} --package <WP-ID>`; `pixi run test-analysis --package WP-12` (`test-{search,training,conformance}` run unscoped `pytest tests`) |
+| Package gate | `pixi run test-{unit,integration,contracts,search,training} --package <WP-ID>`; `pixi run test-analysis` (WP-12 baked in); `pixi run test-conformance` (conformance/engines/parity trees, single-process) |
 | Full suite | `pixi run test` (both lanes; only if shared contracts/runtime/data touched) |
 | Lint / format / types | `pixi run lint`, `pixi run format-check`, `pixi run typecheck` |
 | Env / probe | `pixi run config-check`, `pixi run env-manifest`, `pixi run runtime-probe` |
 | WP exit | `pixi run hydra2 work-package verify <WP-ID> --artifact-root "$HYDRA2_ARTIFACT_ROOT"` |
-| Lean file | `cd lean && lake env lean Formal/<Path>.lean` (full: `lake build`) |
+| Lean file | `cd lean && lake env lean Formal/<Path>.lean` (full: `cd lean && lake build`) |
 | Rust packager | `cargo nextest run` inside `crates/packager/` |
 | Rust workspace tests | `PYO3_PYTHON` pinned via root `.cargo/config.toml` `[env]`; test binaries additionally need `LD_LIBRARY_PATH=$PWD/.pixi/envs/default/lib` (libpython link) — e.g. `LD_LIBRARY_PATH=$PWD/.pixi/envs/default/lib cargo nextest run --manifest-path crates/Cargo.toml -p hydra-bridge` |
 | Bridge build | `pixi run build-ext` (portable max; ONLY source of published artifacts) |
@@ -30,13 +30,13 @@ Capture once to a log file, then grep it. NEVER re-run a suite with different gr
 ## Correctness invariants (non-negotiable)
 
 - `dora_indicators` shape is `(5,)`. NEVER pad `(4,)` with a shim; `(4,)` artifacts are incompatible.
-- JSON identity artifacts MUST use RFC 8785 canonical bytes + SHA-256 (`src/hydra2/_canon.py`, `src/hydra2/artifacts/`).
-- Randomness MUST use semantic counter-based streams from `IMPLEMENTATION_SPEC.md`. NEVER `datetime.now()` or unseeded RNG in tests.
+- JSON identity artifacts MUST use RFC 8785 canonical bytes + SHA-256 (`python/hydra2/artifacts/canonical.py`, `python/hydra2/artifacts/`).
+- Randomness MUST use semantic counter-based streams: every draw derives from a fully named stream key (purpose + experiment/game scope + attempt) hashed to its seed. NEVER `datetime.now()`, wall-clock seeds, global counters, or unseeded RNG in tests.
 - `CUBLAS_WORKSPACE_CONFIG` MUST be set before any CUDA context (done in `tests/conftest.py`); inductor cache is version-keyed there. Do not move it.
 - Simulator stays eager. Only pure-tensor model regions MAY compile (`torch.compile`/inductor); SDPA is the standard dense-attention path. Every speed claim needs fixed-corpus eager parity + cold-start/latency/throughput/memory/determinism evidence per device.
 - MahJax is a quarantined accelerator at its pinned SHA until conformance passes. NEVER let accelerator trajectories leak into reference data.
-- No Lightning Trainer: `lightning`/`pytorch-lightning` MUST stay absent (`TRAINER_FORBIDDEN_PACKAGES` in `src/hydra2/config.py`). Own the loop, optimizer, schedule, accumulation, checkpoint.
-- `HYDRA2_ARTIFACT_ROOT` MUST live outside raw/confidential data roots. NEVER publish raw samples, source identity, or sponsor identity (D-017).
+- No Lightning Trainer: `lightning`/`pytorch-lightning` MUST stay absent (`TRAINER_FORBIDDEN_PACKAGES` in `python/hydra2/config.py`). Own the loop, optimizer, schedule, accumulation, checkpoint.
+- `HYDRA2_ARTIFACT_ROOT` MUST live outside raw/confidential data roots. Dataset authority is confidential: use non-identifying source IDs with authorization attestation; NEVER publish raw samples, source identity, or sponsor identity.
 
 ```python
 # CORRECT: fixed (5,) dora, actor-visible mask, counter-stream seed
@@ -48,7 +48,7 @@ dora = F.pad(dora4, (0, 1))  # NEVER — hides an incompatible artifact
 
 ## Architecture boundaries
 
-Layered DAG, dependencies flow one way: `contracts` (stdlib-only Tenhou vocab) <- `artifacts` <- `engines` (riichienv 0.4.10 reference adapter; mahjax JAX shell) <- `runtime` (plain eager / Fabric adapter) + `data` (zstd ingest -> validate -> quarantine -> parquet) -> `models` (actor-visible encoder + SDPA transformer) -> `belief` (natural packets) -> `search` (candidate0/ISMCTS/DESPOT/PBRF/Gumbel/resolving) -> `eval` (duplicate-wall blocks, expected final placement) + `training`/`distillation` + `analysis`/`tracking`/`completion`. NEVER invert an edge (e.g. models importing search; workers touching raw stores). `lean/` is a manual-sync sidecar: no codegen either direction; no `sorry` in files called done. `tools/mjai-dataset-packager/` is isolated (clang+mold, nextest); behavior changes need compatibility evidence.
+Layered DAG, dependencies flow one way: `contracts` (stdlib-only Tenhou vocab) <- `artifacts` <- `engines` (riichienv 0.4.10 reference adapter; mahjax JAX shell) <- `runtime` (plain eager adapter; Fabric removed) + `data` (zstd ingest -> validate -> quarantine -> parquet) -> `models` (actor-visible encoder + SDPA transformer) -> `belief` (natural packets) -> `search` (candidate0/ISMCTS/DESPOT/PBRF/Gumbel/resolving) -> `eval` (duplicate-wall blocks, expected final placement) + `training`/`distillation` + `analysis`…
 
 ## Language policy (Python minimal, Rust preferred)
 
@@ -60,10 +60,10 @@ Layered DAG, dependencies flow one way: `contracts` (stdlib-only Tenhou vocab) <
 
 1. Versioned canonical artifacts from completed packages. 2. `docs/BUILD_EXECUTION_PLAN.md` (order, gates, evidence). 3. `docs/IMPLEMENTATION_SPEC.md` (schemas, APIs, algorithms). 4. `docs/PROJECT_PLAN.md` (direction). 5. `docs/ALGORITHM_EXPERIMENT_BLUEPRINT.md` (candidate intent). 6. External refs (rationale only; NEVER override contracts). On conflict: stop the package, record the exact conflict, NEVER silent-pick. Missing spec blocks implementation; it NEVER authorizes guessing.
 
-## Comment self-containment (Lean + Rust comments)
+## Comment self-containment (all code comments: Lean + Rust + Python)
 
-- **Self-contained comments.** Lean/Rust comments MUST state invariant + failure mode inline.
-- **Allowed refs.** Source-file paths (`file://src/...`, `src/...`, `Formal/...`) + online URLs (`https://...`) ONLY; URLs stay full even if path contains `docs/`.
+- **Self-contained comments.** All code comments (Lean, Rust, Python) MUST state invariant + failure mode inline.
+- **Allowed refs.** Source-file paths (`file://python/...`, `python/...`, `crates/...`, `Formal/...`) + online URLs (`https://...`) ONLY; URLs stay full even if path contains `docs/`.
 - **Banned pointers.** NEVER bare doc pointers in comments: `SPEC §`, `per SPEC/BUILD`, `Blueprint §`, `IMPLEMENTATION_SPEC.md`, `docs/...`, `ideas/...`, `>> SPEC >>`, `file://docs/...`.
 - **No-benefit provenance.** Delete it; numbers/thresholds MUST stay inline.
 
@@ -89,7 +89,7 @@ Layered DAG, dependencies flow one way: `contracts` (stdlib-only Tenhou vocab) <
 
 - Allowed: focused `pixi run` commands, reading any file, `lake build`/`cargo nextest run` in their own trees.
 - Ask-first: schema/contract changes (update all affected docs+hashes first), dependency adds, kernel/compile-arm changes (need per-device qualification), A100 hours (ledger entry first per D-015).
-- NEVER: bare `pytest`/`python`/`ruff` on host; `uv.lock`; secrets/keys in repo or prompts; force-push; suppressing warnings/errors to hide failure; live Tenhou/Soul clients; benchmark claims without artifact evidence.
+- NEVER: bare `pytest`/`python`/`ruff` on host; `uv.lock`; secrets/keys in repo or prompts; force-push (history stays linear: `pull.rebase=true` + `merge.ff=only` are set in repo config — pulls rebase, merges fast-forward-only); suppressing warnings/errors to hide failure; live Tenhou/Soul clients; benchmark claims without artifact evidence.
 
 ## Done means
 

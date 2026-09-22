@@ -65,7 +65,7 @@ __all__ = [
 
 
 # ---------------------------------------------------------------------------
-# Declared rule intersection (BUILD item 1: enumerated explicitly).
+# Declared rule intersection (enumerated explicitly below: compared vs excluded).
 # ---------------------------------------------------------------------------
 
 #: Rule dimensions whose observable behaviour IS compared at checkpoints.
@@ -341,9 +341,9 @@ def run_differential(
     """Run the full differential suite over SCENARIO_REGISTRY.
 
     Persists first counterexample per failing case to
-    ``$ROOT/counterexamples/WP-04C/`` and, only on zero mismatches,
+    ``<artifact_root>/counterexamples/WP-04C/`` and, only on zero mismatches,
     publishes a qualification token bound to the full environment tuple to
-    ``$ROOT/tokens/WP-04C/`` with a shell round-trip check.
+    ``<artifact_root>/tokens/WP-04C/`` with a shell round-trip check.
     """
     if artifact_root is None:
         from hydra2.config import artifact_root as _ar

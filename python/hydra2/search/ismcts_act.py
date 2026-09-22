@@ -129,7 +129,7 @@ class NaturalISMCTSPlannerActMixin(NaturalISMCTSPlannerSearchMixin):
     def act(self, request: SearchRequest) -> SearchResult:
         """Planner act — RETIRED (fail closed, never silent).
 
-        Retired 2026-09-17: this entry raised ``TypeError`` on every valid
+        Retired: this entry raised ``TypeError`` on every valid
         input — ``SearchRequest`` requires ``CanonicalAction`` legals, which
         carry no ``action_id`` int, so the search mapping crashed; the
         telemetry call also used retired ``make_resource_telemetry`` kwargs.

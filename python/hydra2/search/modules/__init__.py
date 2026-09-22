@@ -1,7 +1,7 @@
 # ruff: noqa: N806  # reason: kept, not narrowed; uppercase registry locals intentional
 """Candidate 4 modules — one at a time.
 
-Implements SPEC 16.5 and Blueprint §11.1-11.10 (one module at a time):
+Implements the Candidate 4 module interface (exactly one enabled module per qualification CandidateSpec: module_id, validate_spec, transform, evidence; required invariants per module below) and the per-module formulas (Rao-Blackwell through constrained value-of-computation routing, one module at a time):
 
 - Each module remains behind one flag (exactly one enabled per CandidateSpec).
 - Every module uses a named CandidateSpec, passes its tiny oracle, then fresh matched confirmation.
@@ -13,8 +13,7 @@ This package owns the module registry, per-module tiny oracles, determinism via
 semantic counter-based seeds, and the Candidate 4 spec factory.
 
 Payload is intentionally small and CPU-only; GPU paths are not required for
-qualification of one-at-a-time semantics (see BUILD compute note: use GPU when
-beneficial — search is CPU here per plan). Each module's tiny oracle encodes
+qualification of one-at-a-time semantics (small CPU-only payload; search stays CPU while other compute uses the accelerator only where beneficial). Each module's tiny oracle encodes
 its blueprint formula exactly so promotion evidence is defensible.
 
 Determinism: every stochastic choice derives from
@@ -34,8 +33,7 @@ import torch
 from hydra2.contracts.common import ContractError
 
 # ---------------------------------------------------------------------------
-# Module identities — one per Blueprint §11.1-11.10
-# ---------------------------------------------------------------------------
+# Module identities — one per module formula (Rao-Blackwell 11.1 through VOC routing 11.10)
 
 VALID_MODULE_IDS: tuple[str, ...] = (
     "rao_blackwell",
@@ -212,7 +210,11 @@ class _BaseModule:
 
 
 class RaoBlackwellModule(_BaseModule):
-    """Blueprint 11.1: replace sampled g(X,Y) with sum_y P(Y|X) g(X,y)."""
+    """Rao-Blackwell: replace sampled g(X,Y) with the exact conditional sum
+    RB(X) = sum_y P(Y=y|X) g(X,y) over a declared enumerable finite variable
+    with exact conditional weights; equal expectation to the sampled estimator;
+    every policy/transition evaluation charged.
+    """
 
     module_id = "rao_blackwell"
 
@@ -274,7 +276,7 @@ class RaoBlackwellModule(_BaseModule):
 
 
 class DefensiveMISModule(_BaseModule):
-    """Blueprint 11.2: m=(n0 q0 + n1 q1)/(n0+n1); gamma_hat = 1/(n0+n1) sum b L g / m."""
+    """Defensive targeted MIS: balance denominator m(x) = (n0*q0(x) + n1*q1(x))/(n0+n1); unnormalized gamma_hat_e(g) = 1/(n0+n1) sum b*L*g/m with the single correction b*L/m applied once; natural floor epsilon preserved; no clipping and no second correction; targeted counts never estimate P(e); finite-sample ratio is search-only."""
 
     module_id = "defensive_mis"
 
@@ -324,7 +326,7 @@ class DefensiveMISModule(_BaseModule):
 
 
 class StructuralCRNModule(_BaseModule):
-    """Blueprint 11.3: shared primitive u, branch-specific F_a^{-1}(u)."""
+    """Structural common random numbers: shared primitive uniforms u mapped through each branch's own conditional law z_a = F_a^{-1}(u), z_b = F_b^{-1}(u); declared coupled primitive IDs; empirical covariance recorded; independent control retained; never force equal opponent actions after divergent observations."""
 
     module_id = "structural_crn"
 
@@ -397,7 +399,7 @@ class StructuralCRNModule(_BaseModule):
 
 
 class FixedMLMCModule(_BaseModule):
-    """Blueprint 11.4: hat_D = mean(D0)+ sum mean(D_ell - D_{ell-1})."""
+    """Fixed multilevel Monte Carlo: E[D_L] = E[D_0] + sum_{ell=1..L} E[D_ell - D_{ell-1}] with adjacent levels sharing declared semantic randomness; estimator hat_D = mean(D_0) + sum_ell mean(D_ell - D_{ell-1}); signed complete telescope; pilot-frozen ladder and counts; independent groups per level; no outcome-dependent extra-level allocation."""
 
     module_id = "fixed_mlmc"
 
@@ -443,7 +445,7 @@ class FixedMLMCModule(_BaseModule):
 
 
 class RQMCModule(_BaseModule):
-    """Blueprint 11.5: independently scrambled LD points; one scramble one replicate."""
+    """Randomized quasi-Monte Carlo: independently scrambled low-discrepancy points mapped through a declared inverse-CDF or categorical partition; one scramble is one dependent replicate; uncertainty is across independent scrambles, never within one scramble."""
 
     module_id = "rqmc"
 
@@ -508,7 +510,7 @@ class RQMCModule(_BaseModule):
 
 
 class ScenarioCoresetModule(_BaseModule):
-    """Blueprint 11.6: weighted subset from current population, search-only."""
+    """Scenario coreset: weighted subset selected only from the current search population, storing original scenario IDs and nonnegative weights summing to one; the weighted objective is for search only, never for confirmation."""
 
     module_id = "coreset"
 
@@ -552,7 +554,7 @@ class ScenarioCoresetModule(_BaseModule):
 
 
 class PrimalDualPruningModule(_BaseModule):
-    """Blueprint 11.7: prune b only when U_b < L_a simultaneously."""
+    """Primal-dual pruning: prune candidate b only when the valid simultaneous one-sided confidence statement U_b < L_a holds at the declared uncertainty unit with multiplicity correction; a sampled mean, approximate critic, or unrelated optimistic difference is not a bound."""
 
     module_id = "pruning"
 
@@ -620,7 +622,7 @@ def alloc_cost(visits: tuple[int, ...], n_actions: int) -> int:
 
 
 class ControlledSMCModule(_BaseModule):
-    """Blueprint 11.8: unnormalized Feynman-Kac, independent populations uncertainty."""
+    """Controlled sequential Monte Carlo: unnormalized Feynman-Kac functional gamma_T(f) = E_q[f(X_0:T) product_t G_t] with exact incremental ratios and conditionally unbiased resampling; independent populations are the uncertainty unit, never descendants; the normalized ratio is never called unbiased."""
 
     module_id = "controlled_smc"
 
@@ -655,7 +657,7 @@ class ControlledSMCModule(_BaseModule):
 
 
 class PersistentForestModule(_BaseModule):
-    """Blueprint 11.9: commit only target-identical, squash siblings."""
+    """Persistent event forest: speculate only from current actor-visible history; on the next actual packet verify/rebuild the transition, rekey the epoch, transport only target-identical artifacts, and delete/squash all incompatible statistics; each packet-child commit matches a from-scratch posterior rebuild."""
 
     module_id = "persistent_forest"
 
@@ -691,7 +693,7 @@ class PersistentForestModule(_BaseModule):
 
 
 class VOCRoutingModule(_BaseModule):
-    """Blueprint 11.10: floor/cap/exact budget/charged overhead; frozen routing."""
+    """Constrained value-of-computation routing (heuristic): fit the routing score on pilot data; reserve a natural/coverage floor for every live child; cap any child; allocate the remaining fixed budget with the frozen score (20% to support/recovery, 20% round-robin over retained positive-mass cells, 60% by frozen predicted-value scores; no cell exceeds max(0.25, 1/m)); log all overhead and missed branches; total charged work equals the budget; no outcome-derived allocation in confirmation."""
 
     module_id = "voc_routing"
 

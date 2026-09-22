@@ -130,7 +130,10 @@ class SupervisedLoopCheckpointMixin:
         else:
             destination = Path(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        # Payload sections required by SPEC 10 (6 keys)
+        # Payload sections required by the checkpoint manifest (6 keys:
+        # model_state, optimizer_state, scheduler_state, training_state,
+        # sampler_state, rng_state; run_spec_hash and the selected source hash
+        # verified before mutating runtime objects)
         # Scheduler state may be empty dict when no scheduler
         sched_state: Any
         if self.scheduler is not None and hasattr(self.scheduler, "state_dict"):
@@ -195,7 +198,9 @@ class SupervisedLoopCheckpointMixin:
                 f"checkpoint model_spec_hash {manifest.model_spec_hash} "
                 f"!= expected {self.manifest_hashes['model_spec_hash']}"
             )
-        # Apply after verification (order matters per SPEC 10)
+        # Apply after verification (run_spec_hash and the selected source hash
+        # verified before mutating runtime objects; model/optimizer/scheduler
+        # restored before training state, sampler, RNG)
         # Restore model / optimizer / scheduler from payload (these are device-agnostic CPU tensors)
         self.model.load_state_dict(payload["model_state"])
         self.optimizer.load_state_dict(payload["optimizer_state"])

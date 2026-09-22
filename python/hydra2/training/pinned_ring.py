@@ -1,6 +1,7 @@
 """Caller-owned pinned host ring with async H2D over one transfer stream.
 
-Phase-3 feed stage (perf-max-throughput plan appendix C): producer fills
+Phase-3 feed stage (pinned host ring with async host-to-device over one
+transfer stream): producer fills
 caller-owned ``torch.empty(pin_memory=True)`` slots shaped FROM
 :mod:`hydra2.models.schema` field order (never hand-duplicated), the consumer
 moves them with ``.to(cuda, non_blocking=True)`` on a single transfer stream,

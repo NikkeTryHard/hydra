@@ -79,7 +79,7 @@ def _legacy_cache_path(cache_root: Path, digest: str) -> Path:
     return cache_root / hexpart[:2] / hexpart[2:4] / f"{hexpart}.pt"
 
 
-# torch dtype <-> safetensors dtype-name map (safetensors 0.8 §"DTypes").
+# torch dtype <-> safetensors dtype-name map (safetensors 0.8 "DTypes" vocabulary).
 # No other dtypes are representable: cache tensors outside this map are a
 # ContractError, not a silent downcast.
 _TORCH_TO_SAFETENSORS: dict[torch.dtype, str] = {

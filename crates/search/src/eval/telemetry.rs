@@ -346,8 +346,8 @@ mod tests {
         }
     }
 
-    /// ROW goldens (`/tmp/eval_goldens4.py`): usable row, caller-marked
-    /// row, cuda-view missing pair — byte-identical strings.
+    /// ROW goldens: usable row, caller-marked row, cuda-view missing
+    /// pair — byte-identical strings.
     #[test]
     fn row_gate_goldens() {
         let tol = TelemetryTolerance::strict();

@@ -1,9 +1,11 @@
-"""WP-05B supervised loss: masked behavior cloning + auxiliary heads.
+"""Supervised loss: masked behavior cloning + auxiliary heads.
 
 Owns the training-time loss math: fail-closed device gate, grad-norm probe,
 masked cross-entropy over legal actions (formula mirrored by
 :mod:`hydra2.training.fused_ce`), auxiliary helpers, eager contract checks,
-and the SPEC 20 loss kernel with its eager entry point.
+and the supervised loss kernel (L = w_policy * masked_cross_entropy +
+w_placement * placement_loss + w_value * value_mse + event/belief head terms,
+all weights model-spec supplied) with its eager entry point.
 """
 
 from __future__ import annotations
@@ -31,7 +33,9 @@ __all__ = [
 # ``-inf`` is mathematically exact and matches ``eval/baseline.py`` and
 # ``models/model.py`` (masked_policy).  When all logits are masked (all-false
 # legal row) softmax would be NaN for *both* ``-inf`` and ``-1e9`` (sum 0);
-# that case is a hard ``ContractError`` per SPEC 11.1 before masking, so
+# that case is a hard ``ContractError`` (nonterminal all-false legal row is
+# a hard error: mask before softmax/loss/argmax with illegal probability
+# exactly zero) before masking, so
 # finiteness is preserved.  Single source avoids magic ``-1.0e9`` repeats.
 _MASKED_LOGIT_NEG: float = float("-inf")
 # Pinned default for legal-only label smoothing (masked-LS: soft mass
@@ -216,7 +220,9 @@ def _generic_mse_loss(
 
 
 def _check_legal_rows(legal_mask: torch.Tensor) -> None:
-    """Nonterminal check: every row needs at least one legal action (SPEC 11.1)."""
+    """Nonterminal check: every row needs at least one legal action (mask
+    before softmax/loss/argmax; illegal probability exactly zero after
+    normalization)."""
     _fail_closed_gate(
         legal_mask.any(dim=1),
         lambda: ContractError("nonterminal all-false legal row is hard error (SPEC 11.1)"),
@@ -307,15 +313,17 @@ def supervised_loss_kernel(
     batch: dict[str, Any],
     weights: dict[str, Any],
 ) -> dict[str, Any]:
-    """Check-free supervised-loss math (COMPILED fast path; see loop Perf-B).
+    """Check-free supervised-loss math (COMPILED fast path; the compiled loop
+    calls validate-then-kernel so the inductor graph holds zero host syncs).
 
     Callers MUST pre-validate via :func:`validate_supervised_inputs` (the
     loop does) or call :func:`compute_supervised_loss`.  Data-dependent
     checks below are gated on ``not torch.compiler.is_compiling()`` so the
     inductor graph holds zero host syncs; key/shape/dtype checks stay inline
     (trace-safe, constant-folded).  Math is identical to the validating path.
-
-    SPEC 20 formula:
+    Supervised objective (every weight/head/target/masking/reduction
+    model-spec supplied; zero-weight heads MAY be absent; implicit defaults
+    prohibited):
 
         L = w_policy * masked_cross_entropy(label_smoothing)
           + w_placement * placement_loss
@@ -488,7 +496,7 @@ def supervised_loss_kernel(
     # Store per-head for logging (detached later)
     losses["_event_per_head"] = event_losses
 
-    # Belief auxiliary heads (treated identically to event for WP-05B)
+    # Belief auxiliary heads (explicit weights; zero-weight heads absent)
     belief_losses: dict[str, torch.Tensor] = {}
     for head_id, w in w_belief.items():
         if w == 0.0:
@@ -532,7 +540,9 @@ def compute_supervised_loss(
     batch: dict[str, Any],
     weights: dict[str, Any],
 ) -> dict[str, Any]:
-    """SPEC 20 supervised loss with eager pre-validation (see kernel docstring).
+    """Supervised loss with eager pre-validation (see kernel docstring;
+    L = w_policy * masked_cross_entropy + w_placement * placement_loss +
+    w_value * value_mse + event/belief head terms).
 
     Validates inputs (raising the identical errors the kernel skips under
     compile), then runs :func:`supervised_loss_kernel` eagerly.  Replay,

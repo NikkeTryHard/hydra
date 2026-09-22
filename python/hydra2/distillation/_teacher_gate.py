@@ -49,7 +49,7 @@ TEACHER_CANDIDATES: tuple[str, ...] = (
     )
 )
 
-# Rejected modules/candidates remain registry evidence, never teachers (BUILD §13).
+# Rejected modules/candidates remain registry evidence, never teachers.
 REJECTED_CANDIDATES: frozenset[str] = (
     _distill_bridge.REJECTED_CANDIDATES
     if hasattr(_distill_bridge, "REJECTED_CANDIDATES")
@@ -59,7 +59,7 @@ REJECTED_CANDIDATES: frozenset[str] = (
 # Gate hash domain — every digest below is content-addressed to a real artifact
 # (CandidateSpec via per-candidate factory, WP-12 analysis-gate record). Missing
 # prerequisites fail closed with ContractError (WP-10 blocked); nothing is
-# synthesized (BUILD:818, SPEC:1587/1604).
+# synthesized: no fabricated boosts, no defaulted digests.
 _GATE_KINDS: tuple[str, ...] = (
     _distill_bridge.TEACHER_GATE_KINDS
     if hasattr(_distill_bridge, "TEACHER_GATE_KINDS")
@@ -199,8 +199,8 @@ def load_analysis_gate(candidate_id: str) -> dict[str, Any]:
     Delegates to the canonical :func:`hydra2.analysis.qual_gates.analysis_gate_for`
     on the canonical path (``work_packages/WP-12/analysis_gates.json``). WP-10 is
     blocked for the candidate unless the gate exists, is eligible, is
-    compute-only, and passed deterministic replay (BUILD:701/738 ordering:
-    WP-12 executes before WP-10 teacher selection). Rejected candidates raise
+    compute-only, and passed deterministic replay (ordering: WP-12 executes
+    before WP-10 teacher selection). Rejected candidates raise
     (never an ``eligible=False`` dict — fail closed with exception).
     Returned hashes are the REAL gate-record digests, never synthesized.
     """

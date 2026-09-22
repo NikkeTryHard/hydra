@@ -1,4 +1,5 @@
-"""Resume prime snapshots and envelopes (WP-14 split from stream_resume).
+"""Resume prime snapshots and envelopes (split from stream_resume; single
+home for the prime snapshot path).
 
 Single home for `_capture_prime_snapshot`, `_prime_cache_path`,
 `_save_prime_snapshot`, `_load_prime_snapshot`, `_ResumeEnvelope`, and

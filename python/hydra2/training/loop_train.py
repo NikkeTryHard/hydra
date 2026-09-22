@@ -464,7 +464,10 @@ class SupervisedLoopTrainMixin(SupervisedLoopEngineMixin, SupervisedLoopLossMixi
 
 
 class SupervisedLoop(SupervisedLoopTrainMixin):
-    """Project-owned supervised training loop (WP-05B).
+    """Project-owned supervised training loop (masked behavior cloning with
+    explicit weights; resume restores model, optimizer, scheduler, step, RNG,
+    sampler, and manifest identities; masked NLL, top-k, calibration
+    reported).
 
     Thin subclass joining the split mixins; construction, the
     validated-loss step, the accumulation loop, checkpoint persistence,

@@ -446,7 +446,7 @@ impl ReplayRow {
             self.chosen_action_id,
             self.chosen_unresolved,
         );
-        // S7 pin: the SIM mark rides ONLY wall-less rows. Walled rows must
+        // Invariant: the SIM mark rides ONLY wall-less rows. Walled rows must
         // carry a real digest (fail closed in debug when missing).
         debug_assert!(
             self.wall_digest.as_ref().is_none_or(|d| d.starts_with("sha256:") && d.len() == 7 + 64),
@@ -772,7 +772,7 @@ mod decision_json_tests {
 // `wall_id` rule (wall-less v1): the driver never binds walls, so
 // `wall_id: None` OMITS the key entirely (never a placeholder, never
 // `""`). An explicit `Some` digest passes through verbatim (the walled
-// path's real digest, minted once S6 wall support lands); `Some("")`
+// path's real digest, minted once walled support lands); `Some("")`
 // fails closed.
 
 use crate::ids::decision_id;
@@ -1215,7 +1215,7 @@ mod privileged_tests {
 
 /// Pinned engine name (`ENGINE_NAME`).
 pub const ENGINE_NAME: &str = "riichienv";
-/// Pinned engine version (`RIICHENV_VERSION_PIN`, decision D-003).
+/// Pinned engine version (`RIICHENV_VERSION_PIN`; the reference-engine adapter must conform to the Tenhou-anchored rules manifest and never define rules by fiat).
 pub const ENGINE_VERSION: &str = "0.4.8";
 /// Pinned adapter version (`ADAPTER_VERSION`).
 pub const ADAPTER_VERSION: &str = "1.0.0";
@@ -1225,16 +1225,16 @@ pub const RULES_ID: &str = "tenhou_4p_hanchan_v1";
 pub const RULES_ARTIFACT_TYPE: &str = "hydra2.rules_manifest";
 
 /// `rules_hash` of the pinned rules artifact (sha256 of the published file
-/// bytes; verified against the Python oracle before landing Slice 5).
+/// bytes; verified against the Python oracle).
 pub const PINNED_RULES_HASH: &str =
     "sha256:3042a493280224f533d831f371275b1c96585cf1db5a2e5fb86ec259f403286b";
 /// `adapter_hash` of the pinned engine identity (verified against Python
-/// `_adapter_hash()` before landing Slice 5).
+/// `_adapter_hash()`).
 pub const PINNED_ADAPTER_HASH: &str =
     "sha256:61f4d0328b5fbf46c0bdd9331e573b11e0166b357e93e218e96a5152c7c71c33";
 /// `action_table_hash` of the pinned v1 table (the CONTENT digest
 /// `table.digest`, not the artifact-file bytes hash; verified against
-/// Python `load_action_table(...).digest` before landing Slice 5).
+/// Python `load_action_table(...).digest`).
 pub const PINNED_ACTION_TABLE_HASH: &str =
     "sha256:7b55693428384713f6a6ab7292f57657259c2ca9f05139944d4c8c6197ae76e8";
 

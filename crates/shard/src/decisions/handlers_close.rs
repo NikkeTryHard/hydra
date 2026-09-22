@@ -692,11 +692,11 @@ mod s3_chosen_resolution_tests {
     //! oracle wall), `apply_discard` (exact-then-drawn-preferred, matching
     //! `_track_discard`), and the `do_*` dispatch order
     //! (tsumo/dahai/reach/claim/ankan/kakan/hora/ryukyoku). Matching stays
-    //! ledger-copy based: no engine offer is consulted (that is S6).
+    //! ledger-copy based: no engine offer is consulted here (offers arrive only through the engine-answer bridge).
     //!
     //! KNOWN-RESIDUAL (recorded, never fixed here — fixing any of these would
-    //! reimplement engine rules in a second language; S6 deletes the
-    //! approximations with the engine-answer bridge):
+    //! reimplement engine rules in a second language; the engine-answer bridge deletes the
+    //! approximations):
     //! - kuikae-discards: the live engine withholds kuikae-illegal discards
     //!   after melds; the wall-less driver offers every string-kind instead
     //!   (probe class `mask-extra/kuikae-discards`, post-claim rows).

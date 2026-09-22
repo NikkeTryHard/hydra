@@ -205,7 +205,7 @@ def commit(
     actual_packet: Any,
     belief: Any,
 ) -> tuple[ImmutableForest, CommitDisposition]:
-    """Commit to authoritative realized child per SPEC 16.4.
+    """Commit to authoritative realized child (action must have been emitted from the forest; the authoritative epoch comes from exact pushforward-condition on the realized packet; absent or target-incompatible matches take the miss-rebuild path; hits rekey, carry normalized conditional weights log(raw_i/Z), and squash all sibling values/visits/posteriors).
 
     Steps:
       require action was emitted from forest

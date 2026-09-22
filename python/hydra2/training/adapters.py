@@ -1,4 +1,8 @@
-"""WP-05B real-model adapter: ``ModelOutput``/rows bridge for supervised training.
+"""Real-model adapter: ``ModelOutput``/rows bridge for supervised training.
+
+Masked behavior cloning with value/event auxiliary objectives;
+project-owned optimizer/scheduler/accumulation/checkpoint; masked NLL,
+top-k, calibration reported.
 
 Day-one training runs the real :class:`Hydra2BaselineModel` over real
 :class:`AuthoritativeParquetDataset` batches.  The model speaks

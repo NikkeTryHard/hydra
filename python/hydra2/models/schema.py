@@ -1,9 +1,18 @@
-"""WP-05A model input and spec contracts — SPEC 11.1.
+"""Model input and spec contracts.
+
+Versioned ModelInputSchema enumerates every public scalar/categorical/tile/
+history feature plus history_mask, legal_mask, actor_seats, and observation
+hashes in canonical order with no arbitrary runtime feature key; all
+shapes/dtypes/ranges versioned; encoder validates the ActorObservation
+first; padding values never carry semantics without a mask; nonterminal
+all-false legal row is a hard error.
 
 Implements :class:`TensorFieldSpec`, :class:`ModelInputSchema`,
 :class:`ModelHeadSpec` and :class:`ModelSpec` with RFC 8785 digest
-semantics. Baseline excludes optional shape features (SPEC 11.2); any
-arm publishes a new schema identity.
+semantics. Baseline excludes optional actor-visible shape features
+(own/public physical counts, post-discard shanten, own-wait, ukeire —
+availability/shape features only, never wall probabilities, opponent-hand
+estimates, or values); any arm publishes a new schema identity.
 """
 
 from __future__ import annotations
@@ -34,8 +43,9 @@ MODEL_INPUT_RELPATH = Path("configs") / "models" / "model_input_v1.json"
 JSON_SAFE_INT_MAX: int = 2**53 - 1
 
 # Baseline bucketing — padded/bucketed histories with explicit ``history_mask``.
-# Four power-of-two buckets ``(32, 64, 128, 256)`` are **frozen** by SPEC 11.1;
-# changing them is a new schema identity (digest changes). Powers of two
+# Four power-of-two buckets ``(32, 64, 128, 256)`` are **frozen** (changing
+# feature name/order/shape/dtype/range/padding/mask is a schema break with a
+# new identity and digest). Powers of two
 # additionally bound ``torch.compile`` recompilation: each distinct ``T`` would
 # recompile up to ``recompile_limit=8`` without ``dynamic=True`` /
 # ``isolate_recompiles=True`` (see
@@ -104,7 +114,10 @@ __all__ = [
 
 @dataclass(frozen=True, slots=True)
 class TensorFieldSpec:
-    """One tensor field in the versioned input schema (SPEC 11.1)."""
+    """One tensor field in the versioned input schema (name, dtype among
+    bool/int32/int64/float32, shape symbols limited to B,T,A,F, padding_value,
+    valid range, mask_field; padding values never carry semantics without a
+    mask)."""
 
     name: str
     dtype: Literal["bool", "int32", "int64", "float32"]
@@ -136,7 +149,10 @@ class TensorFieldSpec:
 
 @dataclass(frozen=True, slots=True)
 class ModelInputSchema:
-    """Versioned input-schema binding (SPEC 11.1)."""
+    """Versioned input-schema binding (enumerates every feature in canonical
+    order with history buckets, action count, and digest; changing feature
+    name/order/shape/dtype/range/padding/mask is a schema break; model state,
+    caches, checkpoints, exports, and results bind the digest)."""
 
     schema_version: str
     fields: tuple[TensorFieldSpec, ...]
@@ -176,7 +192,10 @@ class ModelInputSchema:
 
 @dataclass(frozen=True, slots=True)
 class ModelHeadSpec:
-    """Head descriptor — output key, target and loss (SPEC 11.1)."""
+    """Head descriptor — output key, target and loss (head_specs sorted by
+    head_id; output key, target, loss, masking, reduction, and every
+    coefficient live in the named head specification; unknown
+    architecture/head/loss IDs rejected by the registry)."""
 
     head_id: str
     output_key: str
@@ -199,7 +218,11 @@ class ModelHeadSpec:
 
 @dataclass(frozen=True, slots=True)
 class ModelSpec:
-    """Model identity binding (SPEC 11.1)."""
+    """Model identity binding (schema_version, input_schema_hash,
+    feature_derivation_hash identifying the exact actor-observation-to-tensor
+    code/config, architecture, head_specs, action/observation/utility hashes,
+    digest; changing any field invalidates dependent state, caches,
+    checkpoints, exports, and results)."""
 
     schema_version: str
     input_schema_hash: DigestText

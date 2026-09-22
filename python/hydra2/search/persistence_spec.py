@@ -86,7 +86,7 @@ def make_persistence_candidate_spec(
     max_transitions: int | None = None,
     parameters: dict[str, Any] | None = None,
 ) -> Any:
-    """Build CandidateSpec for a persistence arm (SPEC 15, deployable check)."""
+    """Build CandidateSpec for a persistence arm (frozen spec validated against the exact mask with Candidate 0 fallback; deployable arms share the own deadline of at most 5000 ms)."""
     from hydra2.search.common import CandidateSpec, ResourceBudget
 
     arm = make_persistence_arm(arm_id)

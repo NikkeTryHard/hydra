@@ -155,8 +155,8 @@ struct PackagedFullDoc<'a> {
     created_at_utc: &'a str,
 }
 impl PackagedObjectRow {
-    /// Canonical JSON bytes of this row (RFC 8785 JCS via `serde_jcs`
-    /// 0.2.0 exact — the single seal printer). With `include_id = false`
+    /// Canonical JSON bytes of this row (RFC 8785 JCS via `serde_jcs` 0.2.0 exact,
+    /// the single seal printer). With `include_id = false`
     /// the `packaged_object_id` field is omitted; those bytes are exactly
     /// what the id hashes. Digests hash in bare-hex (stripped) form.
     pub fn canonical_bytes(&self, include_id: bool) -> Result<Vec<u8>> {

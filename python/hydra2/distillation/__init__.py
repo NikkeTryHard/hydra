@@ -1,6 +1,7 @@
 """Hydra2 distillation package — WP-10 Candidate 7 Teacher Distillation.
 
-Owned: distillation/teacher (BUILD §13 / SPEC 16.8).
+Owned: distillation/teacher — teacher-eligibility gate, trajectory records,
+five-arm evaluation, and student training.
 """
 
 from __future__ import annotations

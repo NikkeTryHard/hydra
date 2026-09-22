@@ -393,7 +393,7 @@ class RulesManifest:
 
 
 # ---------------------------------------------------------------------------
-# Rank resolution with the encoded tie-break (BUILD checklist item).
+# Rank resolution with the encoded tie-break.
 # ---------------------------------------------------------------------------
 
 
@@ -402,8 +402,8 @@ def resolve_final_ranks(final_scores: Sequence[int]) -> tuple[int, int, int, int
 
     Encodes rank_tie_break="east1_seat_wind_order": equal scores are ordered by
     seat wind order of East-1 (man.html L1025 「終了時に同点の場合は東1局の風順で順位を決定」).
-    Seats 0..3 align with East/South/West/North winds (SPEC §8), so the lower
-    seat index takes the better rank on ties.
+    Seats 0..3 are the East/South/West/North winds of East-1 in actor-observation
+    seat order, so the lower seat index takes the better rank on ties.
     Thin bridge delegate: ``hydra2._native.contracts.resolve_final_ranks``
     decides (same tie-break, same +/-1e12 domain, bool excluded). Evidence:
     value parity on strict/tie/edge quads, 1.06-1.16x faster. Bridge rejects

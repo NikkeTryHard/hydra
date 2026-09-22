@@ -103,7 +103,8 @@ const fn build_haipai_slots() -> [u8; 52] {
 /// Frozen haipai slot order, seat-major (`walls.py:34-52`).
 const HAIPAI_SLOTS: [u8; 52] = build_haipai_slots();
 
-/// Logical tile type of a physical id (SPEC §4.1, `walls.py:94-96`).
+/// Logical tile type of a physical id (`TileId = 4 * TileType + copy` with
+/// copy in 0..3, so the type is `physical // 4`; `walls.py:94-96`).
 ///
 /// `div_euclid` reproduces Python `//` floor semantics exactly (positive
 /// divisor), including for negative inputs where truncating `/` diverges.

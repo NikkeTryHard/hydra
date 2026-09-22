@@ -1,8 +1,9 @@
-"""Import-time engine identity pinning (BUILD WP-03A checklist item 1).
-
+"""Import-time engine identity pinning: the reference adapter checklist pins
+the adapter to one exact engine build.
 ``import hydra2.engines.riichienv`` fails with :class:`UnsupportedRuleError`
 unless the installed ``riichienv`` distribution is exactly the pinned 0.4.10
-reference build (PROJECT_PLAN decision D-003).
+reference build — the only engine build whose walls, events, and settlements
+the adapter maps.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ __all__ = [
 ]
 
 ENGINE_NAME = "riichienv"
-#: PROJECT_PLAN D-003 pin; 0.4.10 is the current reference build.
+#: Exact engine-build pin; 0.4.10 is the only reference build the adapter maps.
 RIICHENV_VERSION_PIN = "0.4.10"
 ADAPTER_VERSION = make_schema_version(SchemaVersion("1.0.0"))
 

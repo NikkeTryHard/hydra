@@ -1,9 +1,8 @@
-"""SHA-256 digest identity — SPEC 2.2 textual form ``sha256:<64 lowercase hex>``.
+"""SHA-256 digest identity — textual form ``sha256:<64 lowercase hex>``.
 
-Two independent recomputation paths are provided on purpose (BUILD WP-02A
-exit): :func:`sha256_digest` hashes in-memory bytes, :func:`sha256_file`
+Two independent recomputation paths are provided on purpose:
+:func:`sha256_digest` hashes in-memory bytes, :func:`sha256_file`
 streams a file in chunks. Golden tests require both to agree.
-
 Hard dependency (shrink end-state): :func:`sha256_digest`,
 :func:`of_canonical`, and :func:`sha256_file` are thin hard-Rust delegates —
 the bridge (``hydra2._native.canon_rng`` detached batch API) computes and

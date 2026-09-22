@@ -17,7 +17,7 @@ identity wall; attestation metadata carries the layout proof):
   the indicator two slots lower (129, 127, ...); ura markers occupy the
   interleaved slots below each indicator.
 
-Physical tile identity follows SPEC §4.1: ``type == id // 4`` with man types
+Physical tile identity: ``type == id // 4`` with man types
 0..8, pin 9..17, sou 18..26 and honors E/S/W/N/P/F/C at 27..33; red fives are
 ids 16 (5mr), 52 (5pr) and 88 (5sr).
 """
@@ -75,7 +75,7 @@ TILE_C: int = _bridge_contracts.TILE_C  # chun
 
 
 def type_id(physical: int) -> int:
-    """Logical tile type of a physical id (SPEC §4.1)."""
+    """Logical tile type of a physical id: ``type == id // 4``."""
     return _bridge_contracts.type_id(physical)
 
 

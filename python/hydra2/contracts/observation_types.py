@@ -32,7 +32,7 @@ __all__ = [
 ]
 
 # ---------------------------------------------------------------------------
-# Fixed dora indicator shape (BUILD checklist: `(5,)`, declared sentinel).
+# Fixed dora indicator shape: exactly `(5,)` slots, `-1` sentinel for unrevealed.
 # ---------------------------------------------------------------------------
 # Dora = bonus-indicator tiles; unrevealed slots carry -1, never a tile.
 

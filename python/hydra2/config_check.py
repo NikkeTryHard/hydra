@@ -1,8 +1,7 @@
 """``python -m hydra2.config_check``: prove the running environment matches
 the declared dependency contract.
 
-Checks (all hard failures on mismatch):
-- torch == 2.13.0 exactly, with CUDA build and sm_120 kernels present
+- torch == 2.14.0 exactly (the pyproject pin), with CUDA build and sm_120 kernels present
 - Trainer packages absent; lightning-fabric must NOT be installed (M3 kill)
 - riichienv == 0.4.10, mahjax at the pinned git SHA, jax importable
 - ruff / pyrefly / pytest installed versions match the pyproject pins
@@ -18,7 +17,7 @@ from typing import Any
 def _pypi_pins() -> dict[str, str]:
     # Portable pyproject locate: repo_root() marker walk (not parents[2] depth).
     # Evidence: https://docs.python.org/3/library/pathlib.html
-    # Evidence: src/hydra2/config.py:90-108 _find_repo_root walk pattern
+    # Evidence: python/hydra2/config.py _find_repo_root marker-walk pattern
     from hydra2.config import repo_root
 
     pyproject = repo_root() / "pyproject.toml"

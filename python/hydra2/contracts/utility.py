@@ -2,12 +2,12 @@
 
 Raw scores/ranks/deltas survive training targets, backups, and logs;
 :class:`UtilityVector` is derived strictly through a :class:`UtilityManifest`
-that carries its own identity ``digest`` (RFC 8785 canonical bytes of the
 manifest document minus the digest field, computed contract-locally because
-contracts never import artifacts — SPEC §1).
+contracts import only the standard library and sibling contracts, never
+artifacts).
 
 Zero-sum is descriptive only and true only when the manifest proves it; no
-code hard-codes a zero-sum vector (BUILD WP-02B).
+code hard-codes a zero-sum vector.
 
 Rust-judged fixed surface: ``utility()`` ranks/values and the exact-total
 zero-sum check delegate first to the ``hydra2._native.canon_rng`` fixed

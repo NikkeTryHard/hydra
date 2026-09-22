@@ -254,7 +254,7 @@ mod tests {
     }
 
     /// T1-part: wall order stable + Neumaier-exact collapse (AGG golden
-    /// `0.4166666666666667` from `/tmp/eval_goldens2.py`).
+    /// `0.4166666666666667`).
     #[test]
     fn aggregate_single_block_golden() {
         let block = WallBlock::new(

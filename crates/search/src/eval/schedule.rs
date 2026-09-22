@@ -414,8 +414,8 @@ mod tests {
         (0u8..32).collect()
     }
 
-    /// T2 goldens (`/tmp/eval_goldens.py`, pixi torch 2.14): commitment,
-    /// walls/latency/proto hashes for the 2-wall KAT schedule.
+    /// T2 goldens (torch 2.14 oracle): commitment, walls/latency/proto hashes for the 2-wall
+    /// KAT schedule.
     #[test]
     fn commitment_goldens() {
         let walls = vec!["w-001".to_string(), "w-002".to_string()];
@@ -462,9 +462,9 @@ mod tests {
         }
     }
 
-    /// Semantic-seed spot golden (`/tmp/eval_goldens3.py`): the first
-    /// schedule draw's seed bytes prove the key projection (with nulls)
-    /// matches `make_random_stream_key` + `semantic_seed`.
+    /// Semantic-seed spot golden: the first schedule draw's seed bytes
+    /// prove the key projection (with nulls) matches
+    /// `make_random_stream_key` + `semantic_seed`.
     #[test]
     fn semantic_seed_spot() {
         let key = schedule_stream_key("exp-kat", "split-kat", 0);

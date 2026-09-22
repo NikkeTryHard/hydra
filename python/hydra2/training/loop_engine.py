@@ -246,7 +246,7 @@ class SupervisedLoopEngineMixin(SupervisedLoopCheckpointMixin):
         # Ensure model is on device
         with contextlib.suppress(Exception):
             _ = self.model.to(self.device)
-        # Perf-B torch.compile — dynamic shapes, guarded determinism
+        # Compiled-loop torch.compile region — dynamic shapes, guarded determinism
         # + availability (cite docs).
         # Evidence:
         #  https://docs.pytorch.org/docs/stable/generated/torch.compile.html

@@ -246,7 +246,7 @@ class GumbelSearchPlannerSearchMixin:
         cid = str(cid_raw)
         candidate_id = getattr(self._config, "candidate_id", "candidate6")
 
-        # Deterministic root Gumbels — SPEC 16.7: (case_id, root_seat, candidate_id, action_id)
+        # Deterministic root Gumbels — Candidate 6: (case_id, root_seat, candidate_id, action_id); every transition exact, model supplies priors/opponent/belief/leaf only
         gumbels = deterministic_root_gumbels(
             case_id=cid, root_seat=root_seat, candidate_id=candidate_id, legal_action_ids=sorted_ids
         )
