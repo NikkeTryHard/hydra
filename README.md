@@ -32,8 +32,8 @@ Full suite takes ~30 min (conformance soak). `HYDRA2_SKIP_GPU_SOAK=1` skips GPU 
 
 - `src/hydra2/` — contracts, engines (RiichiEnv/MahJax), search, belief, training, eval, artifacts
 - `configs/` — rules, contracts, model specs, attestations
-- `tools/mjai-dataset-packager/` — restart-safe Rust MJAI packager
-- `tools/hydra2-replay-rs/` — replay-only Rust core (encode stays Python)
+- `crates/packager/` — restart-safe Rust MJAI packager
+- `crates/` — replay-only Rust core (encode stays Python)
 - `tests/` — unit, contracts, search, integration, conformance
 
 ## Compute support

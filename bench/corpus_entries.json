@@ -1685,7 +1685,7 @@
       "n_games": 1,
       "n_lines": 13,
       "part": "walled-synth.jsonl",
-      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s7/walled-synth.jsonl",
+      "relpath": "crates/tests/fixtures/s7/walled-synth.jsonl",
       "sha256": "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19"
     },
     {
@@ -1694,7 +1694,7 @@
       "n_games": 1,
       "n_lines": 12,
       "part": "walled-real.jsonl",
-      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s7/walled-real.jsonl",
+      "relpath": "crates/tests/fixtures/s7/walled-real.jsonl",
       "sha256": "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
     },
     {
@@ -1703,7 +1703,7 @@
       "n_games": 1,
       "n_lines": 11,
       "part": "walled-ankan.jsonl",
-      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s7/walled-ankan.jsonl",
+      "relpath": "crates/tests/fixtures/s7/walled-ankan.jsonl",
       "sha256": "sha256:a965cecbb10300d160d8ea821744f9abd64686ce49ee8ef179f5507932f78aa1"
     },
     {
@@ -1712,7 +1712,7 @@
       "n_games": 1,
       "n_lines": 19,
       "part": "walled-kakan.jsonl",
-      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s7/walled-kakan.jsonl",
+      "relpath": "crates/tests/fixtures/s7/walled-kakan.jsonl",
       "sha256": "sha256:7fbbc8dee524c337a7f10ce98b244f72b21aa31882dd40e413a803786f748065"
     },
     {
@@ -1721,7 +1721,7 @@
       "n_games": 1,
       "n_lines": 7,
       "part": "walled-truncated.jsonl",
-      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s7/walled-truncated.jsonl",
+      "relpath": "crates/tests/fixtures/s7/walled-truncated.jsonl",
       "sha256": "sha256:78e8394a70337d77932deeb2db43706a167af8e19ae78c601c53131b37b4020b"
     },
     {
@@ -1730,7 +1730,7 @@
       "n_games": 1,
       "n_lines": 13,
       "part": "walled-post-terminal.jsonl",
-      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s7/walled-post-terminal.jsonl",
+      "relpath": "crates/tests/fixtures/s7/walled-post-terminal.jsonl",
       "sha256": "sha256:b7499fc3350671ea51d1db7726ffe0314c0edd51413ff2ea90deec0740948a35"
     },
     {
@@ -1739,7 +1739,7 @@
       "n_games": 1,
       "n_lines": 12,
       "part": "good-a.jsonl",
-      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s4/good-a.jsonl",
+      "relpath": "crates/tests/fixtures/s4/good-a.jsonl",
       "sha256": "sha256:f1369b770a4e4d8746350a68112a2c86db2b875ce28651c35b10e447f24eccac"
     },
     {
@@ -1748,7 +1748,7 @@
       "n_games": 1,
       "n_lines": 14,
       "part": "good-b.jsonl",
-      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s4/good-b.jsonl",
+      "relpath": "crates/tests/fixtures/s4/good-b.jsonl",
       "sha256": "sha256:0c6611aac934dcd189e29260138186e62da737be70ec588356a21ec9acc74487"
     },
     {
@@ -1757,7 +1757,7 @@
       "n_games": 1,
       "n_lines": 4,
       "part": "q-framing.jsonl",
-      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s4/q-framing.jsonl",
+      "relpath": "crates/tests/fixtures/s4/q-framing.jsonl",
       "sha256": "sha256:f5d4d0b684cd99f050330d41c3b15d5ebb8325c22a78ebbf93658845d0854435"
     },
     {
@@ -1766,7 +1766,7 @@
       "n_games": 1,
       "n_lines": 2,
       "part": "q-truncated.jsonl",
-      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s4/q-truncated.jsonl",
+      "relpath": "crates/tests/fixtures/s4/q-truncated.jsonl",
       "sha256": "sha256:ab69e4757350fa19599d6edd7fa3342682ff1e7009b8bb7ba11e863c824c2387"
     },
     {
@@ -1775,7 +1775,7 @@
       "n_games": 1,
       "n_lines": 4,
       "part": "q-unknown-event.jsonl",
-      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s4/q-unknown-event.jsonl",
+      "relpath": "crates/tests/fixtures/s4/q-unknown-event.jsonl",
       "sha256": "sha256:5d74acf78e9e4a798f0446e13062eb5c9f60c9b2c000864227fa89d53ff0ff51"
     },
     {
@@ -1784,7 +1784,7 @@
       "n_games": 1,
       "n_lines": 4,
       "part": "q-bare-dora.jsonl",
-      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s4/q-bare-dora.jsonl",
+      "relpath": "crates/tests/fixtures/s4/q-bare-dora.jsonl",
       "sha256": "sha256:569c1590e1e8b2625a7480a8c5198201d5e642432a236d3d88bb9ffb5eb573f7"
     },
     {
@@ -1793,7 +1793,7 @@
       "n_games": 1,
       "n_lines": 7,
       "part": "q-double-ron.jsonl",
-      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s4/q-double-ron.jsonl",
+      "relpath": "crates/tests/fixtures/s4/q-double-ron.jsonl",
       "sha256": "sha256:e96b32cd7d80b72a15d5903c1fd70997d46d58cc2e7b70989095b016ee9dfb8e"
     },
     {
@@ -1802,7 +1802,7 @@
       "n_games": 1,
       "n_lines": 3,
       "part": "q-turn-order.jsonl",
-      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s4/q-turn-order.jsonl",
+      "relpath": "crates/tests/fixtures/s4/q-turn-order.jsonl",
       "sha256": "sha256:b3908224c5e5f1e3802f0467d035baf8a5f169a2ab6a29580963653a9dd3d65c"
     },
     {
@@ -1811,7 +1811,7 @@
       "n_games": 1,
       "n_lines": 4,
       "part": "q-tile-conservation.jsonl",
-      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s4/q-tile-conservation.jsonl",
+      "relpath": "crates/tests/fixtures/s4/q-tile-conservation.jsonl",
       "sha256": "sha256:3e848c92fff91dd4e2f9c367cf7566bc7329fcbb064d258efc77f0cb3d177c31"
     },
     {
@@ -1820,7 +1820,7 @@
       "n_games": 1,
       "n_lines": 3,
       "part": "q-wall-bearing.jsonl",
-      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s4/q-wall-bearing.jsonl",
+      "relpath": "crates/tests/fixtures/s4/q-wall-bearing.jsonl",
       "sha256": "sha256:4402671c9480acad546c94f06e07f22ae02ce25dbc9fd9f4dff50aeb8c6b183b"
     },
     {
@@ -1829,7 +1829,7 @@
       "n_games": 1,
       "n_lines": 12,
       "part": "priv-a.jsonl",
-      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s5/priv-a.jsonl",
+      "relpath": "crates/tests/fixtures/s5/priv-a.jsonl",
       "sha256": "sha256:eecb4f3ef9ed3f054554fafe9eceb29f9648a52172e9e0a1064c5041d296bec6"
     },
     {
@@ -1838,7 +1838,7 @@
       "n_games": 1,
       "n_lines": 12,
       "part": "priv-tie.jsonl",
-      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s5/priv-tie.jsonl",
+      "relpath": "crates/tests/fixtures/s5/priv-tie.jsonl",
       "sha256": "sha256:c8affee8f6f07008a58eb390a3eb70243540fc3ac05e765e9627ad38b1146bcf"
     },
     {
@@ -1847,7 +1847,7 @@
       "n_games": 1,
       "n_lines": 12,
       "part": "priv-missing.jsonl",
-      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s5/priv-missing.jsonl",
+      "relpath": "crates/tests/fixtures/s5/priv-missing.jsonl",
       "sha256": "sha256:f1369b770a4e4d8746350a68112a2c86db2b875ce28651c35b10e447f24eccac"
     },
     {
@@ -1856,7 +1856,7 @@
       "n_games": 1,
       "n_lines": 12,
       "part": "priv-alias.jsonl",
-      "relpath": "tools/hydra2-replay-rs/tests/fixtures/s5/priv-alias.jsonl",
+      "relpath": "crates/tests/fixtures/s5/priv-alias.jsonl",
       "sha256": "sha256:604a37965cbc58605389af893f321330e8eaa8da3ec44afff10788ddd666a493"
     },
     {
@@ -1865,7 +1865,7 @@
       "n_games": null,
       "n_lines": 3,
       "part": "a.mjai.json.zst",
-      "relpath": "tools/mjai-dataset-packager/tests/fixtures/golden/a.mjai.json.zst",
+      "relpath": "crates/packager/tests/fixtures/golden/a.mjai.json.zst",
       "sha256": "sha256:86726541f6ede8e07a5a5ea953ca784faf54f1deaed9ccd369ceca31e982a140"
     },
     {
@@ -1874,7 +1874,7 @@
       "n_games": null,
       "n_lines": 2,
       "part": "b.mjai.json.zst",
-      "relpath": "tools/mjai-dataset-packager/tests/fixtures/golden/b.mjai.json.zst",
+      "relpath": "crates/packager/tests/fixtures/golden/b.mjai.json.zst",
       "sha256": "sha256:9e388b6696e9f5934024342027c3173a5660ed5bd7580eb35fd6f0e6bd935ad6"
     },
     {
@@ -1883,8 +1883,8 @@
       "n_games": 0,
       "n_lines": 42578,
       "part": "frozen-row-hashes.json",
-      "relpath": "tools/hydra2-replay-rs/tests/fixtures/frozen-row-hashes.json",
-      "sha256": "sha256:b1453fd84630aa989dd8828646b507c9dd72e3d9f8472e5b8d65a4e3f549eb42"
+      "relpath": "crates/tests/fixtures/frozen-row-hashes.json",
+      "sha256": "sha256:17fbe04214cbf2f20be2bec788252d449bd341343cdc9b921bdf9aa6bcce1e3f"
     },
     {
       "id": "F7",
@@ -1893,7 +1893,7 @@
       "n_lines": 326,
       "part": "freeze_row_hashes.py",
       "relpath": "scripts/freeze_row_hashes.py",
-      "sha256": "sha256:145dc283e553e2cbc7810f47ed3f8e8083b982fe52fe85782c3b5606861ff3e3"
+      "sha256": "sha256:c839df308a2e449e61b4f070a7d980b829bce1ab618e84528bf95948777ffd6a"
     },
     {
       "details": {

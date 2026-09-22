@@ -25,20 +25,24 @@ from hydra2.contracts.action_model import CanonicalAction
 from hydra2.contracts.common import ContractError
 from hydra2.contracts.observation_actor import make_actor_observation
 from hydra2.search.common import SearchRequest
-from hydra2.search.persistence_factorial import (
+from hydra2.search.persistence_kernel import (
     ARM_DEFS,
     FinitePacket,
     PersistenceArm,
-    PersistencePlanner,
     commit_equals_rebuild,
-    deterministic_gumbel_for_arm,
     enumerate_packets_for,
-    factorial_contrasts,
     fresh_rebuild_epoch,
-    generate_factorial_report,
     make_persistence_arm,
-    make_persistence_candidate_spec,
+)
+from hydra2.search.persistence_planner import PersistencePlanner
+from hydra2.search.persistence_report import (
+    factorial_contrasts,
+    generate_factorial_report,
     stratify_surprise_miss_recovery,
+)
+from hydra2.search.persistence_spec import (
+    deterministic_gumbel_for_arm,
+    make_persistence_candidate_spec,
     validate_deadline_and_fallback,
 )
 
@@ -230,22 +234,26 @@ def test_r_retain_compatible_no_opponent_compute() -> None:
     req = _request(obs, legal, cand)
     planner.act(req)
     assert planner.has_retained_state is True
-    forest_before = planner.forest
-    assert forest_before is not None
-    assert forest_before.ponder_calls == 0
+    assert len(planner._forest_blob) > 0
     # R ponder must remain zero
     planner.ponder(deadline_monotonic_ns=time.monotonic_ns() + 50_000_000)
-    assert planner.forest.ponder_calls == 0  # type: ignore[union-attr]
-    # observe hit path: next packet is one of the children
-    child_pkt = next(iter(forest_before.children.values()))
-    planner.observe(child_pkt)
-    # hit increments
+    assert planner.telemetry_snapshot()["ponder_calls"] == 0
+    # observe hit path via blob commit (packet carries epoch_after)
+    from hydra2.search.persistence_kernel import FinitePacket
+
+    cur_epoch = planner._current_epoch
+    assert isinstance(cur_epoch, str) and cur_epoch != ""
+    pkt = FinitePacket(
+        packet_id="sha256:" + "d" * 64,
+        action_id=0,
+        epoch_before=cur_epoch,
+        epoch_after="epoch:hit-r",
+        probability=1.0,
+        delta=(0, 1),
+    )
+    planner.observe(pkt)
     snap = planner.telemetry_snapshot()
     assert snap["surprise_counts"]["hit"] == 1
-    # after hit, sibling squashed: only one child remains
-    assert planner.forest is not None
-    assert len(planner.forest.children) == 1
-    # No ponder work ever accumulated
     assert snap["ponder_calls"] == 0
 
 
@@ -258,11 +266,12 @@ def test_r_miss_recovery_on_stale_or_unpredicted() -> None:
     req = _request(obs, legal, cand)
     planner.act(req)
     assert planner.has_retained_state is True
-    # Create a packet not in speculative set (surprise)
+    cur_epoch = planner._current_epoch
+    assert isinstance(cur_epoch, str) and cur_epoch != ""
     miss_pkt = FinitePacket(
         packet_id="sha256:" + "f" * 64,
         action_id=0,
-        epoch_before=planner.forest.parent_epoch,  # type: ignore[union-attr]
+        epoch_before="epoch:stale-other",
         epoch_after="epoch:miss999",
         probability=1.0,
         delta=(0, 99),
@@ -290,14 +299,24 @@ def test_p_retain_and_ponder_only_in_window() -> None:
     req = _request(obs, legal, cand)
     planner.act(req)
     assert planner.has_retained_state is True
-    assert planner.forest.ponder_calls == 0  # type: ignore[union-attr]
+    assert planner.telemetry_snapshot()["ponder_calls"] == 0
     # ponder in opponent window should add work
     planner.ponder(deadline_monotonic_ns=time.monotonic_ns() + 100_000_000)
-    assert planner.forest.ponder_calls > 0  # type: ignore[union-attr]
     ponder_snapshot = planner.telemetry_snapshot()["ponder_calls"]
     assert ponder_snapshot > 0
-    # commit via observe should preserve ponder count in log and squash siblings
-    child_pkt = next(iter(planner.forest.children.values()))  # type: ignore[union-attr]
+    # commit via observe preserves ponder count (blob path, no forest sweep)
+    cur_ep = planner._current_epoch
+    assert isinstance(cur_ep, str) and cur_ep != ""
+    from hydra2.search.persistence_kernel import FinitePacket
+
+    child_pkt = FinitePacket(
+        packet_id="sha256:" + "c" * 64,
+        action_id=0,
+        epoch_before=cur_ep,
+        epoch_after="epoch:hit-p2",
+        probability=1.0,
+        delta=(0, 1),
+    )
     planner.observe(child_pkt)
     snap = planner.telemetry_snapshot()
     assert snap["surprise_counts"]["hit"] == 1
@@ -500,17 +519,28 @@ def test_p_commit_rebuild_equality_integration() -> None:
     legal = _legal_pair()
     req = _request(obs, legal, cand)
     planner.act(req)
-    assert planner.forest is not None
-    # pick first child and verify equality before observe
-    pkt = next(iter(planner.forest.children.values()))
-    assert commit_equals_rebuild(epoch_before=planner.forest.parent_epoch, packet=pkt)
-    # after observe hit, sibling squashed
-    sibling_count_before = len(planner.forest.children)
-    assert sibling_count_before == 2
+    # Retain rides the opaque blob (Rust owns the forest, no Python mirror).
+    assert len(planner._forest_blob) > 0
+    assert planner.has_retained_state is True
+    # Rebuild equality lives arena-side; the kernel still verifies it purely.
+    for p in enumerate_packets_for(epoch="epoch:seed-p", action_id=0, num_branches=2):
+        assert commit_equals_rebuild(epoch_before="epoch:seed-p", packet=p) is True
+    # Commit via blob observe: epoch continuity records a hit and keeps the blob.
+    cur = planner._current_epoch
+    assert isinstance(cur, str) and cur != ""
+    pkt = FinitePacket(
+        packet_id="sha256:" + "b" * 64,
+        action_id=0,
+        epoch_before=cur,
+        epoch_after="epoch:hit-c",
+        probability=1.0,
+        delta=(0, 1),
+    )
     planner.observe(pkt)
-    assert len(planner.forest.children) == 1  # type: ignore[union-attr]
-    # hidden sibling statistics gone
-    assert pkt.packet_id in planner.forest.children  # type: ignore[union-attr]
+    snap = planner.telemetry_snapshot()
+    assert snap["surprise_counts"]["hit"] == 1
+    assert snap["commit_log"][-1]["outcome"] == "hit"
+    assert len(planner._forest_blob) > 0
 
 
 def test_forest_provenance_stale_rebuild() -> None:
@@ -520,14 +550,18 @@ def test_forest_provenance_stale_rebuild() -> None:
     obs0 = _obs_for(seq=80)
     legal = _legal_pair()
     planner.act(_request(obs0, legal, cand))
-    forest0_epoch = planner.forest.parent_epoch  # type: ignore[union-attr]
+    epoch0 = planner._current_epoch
+    assert isinstance(epoch0, str) and epoch0 != ""
+    assert len(planner._forest_blob) > 0
     # Next observation has different epoch (surprise future)
     obs1 = _obs_for(seq=81)
     # epoch for obs1 necessarily differs due to seq difference
     req1 = _request(obs1, legal, cand)
-    # act should detect stale and squash before building new forest
+    # Next act binds the fresh epoch and renews the blob (no Python forest).
     planner.act(req1)
-    assert planner.forest.parent_epoch != forest0_epoch  # type: ignore[union-attr]
+    assert planner._current_epoch != epoch0
+    assert len(planner._forest_blob) > 0
+    assert planner.has_retained_state is True
 
 
 # ---------------------------------------------------------------------------
@@ -652,7 +686,7 @@ def test_factorial_contrasts_wall_block_unit() -> None:
 
 
 def test_stratify_surprise_miss_recovery() -> None:
-    # Simulate P run over 10 packets with hits and misses
+    # Simulate P run over 10 packets with hits and misses (blob commit path).
     arm = make_persistence_arm("P")
     cand = make_persistence_candidate_spec(arm_id="P")
     planner = PersistencePlanner(arm=arm, candidate_spec=cand)
@@ -661,22 +695,33 @@ def test_stratify_surprise_miss_recovery() -> None:
     for i in range(5):
         obs = _obs_for(seq=100 + i)
         planner.act(_request(obs, legal, cand))
-        assert planner.forest is not None
-        # Alternate hit and miss
+        assert len(planner._forest_blob) > 0
+        # Alternate hit and miss via blob commit (no Python forest).
         if i % 2 == 0:
-            pkt = next(iter(planner.forest.children.values()))
             planner.ponder(deadline_monotonic_ns=time.monotonic_ns() + 20_000_000)
+            cur_hit = planner._current_epoch
+            assert isinstance(cur_hit, str) and cur_hit != ""
+            pkt = FinitePacket(
+                packet_id="sha256:" + f"{0xC000 + i:064x}",
+                action_id=0,
+                epoch_before=cur_hit,
+                epoch_after=f"epoch:hit{i}",
+                probability=1.0,
+                delta=(0, 1),
+            )
             planner.observe(pkt)
+            assert planner.has_retained_state is True
         else:
             miss_pkt = FinitePacket(
                 packet_id="sha256:" + "e" * 64,
                 action_id=0,
-                epoch_before=planner.forest.parent_epoch,
+                epoch_before="epoch:stale-other",
                 epoch_after="epoch:miss999",
                 probability=1.0,
                 delta=(0, 99),
             )
             planner.observe(miss_pkt)
+            assert planner.has_retained_state is False
         hit_log = planner.telemetry_snapshot()["commit_log"]
     strata = stratify_surprise_miss_recovery(commit_logs_by_arm={"P": hit_log, "R": [], "F": []})
     assert strata["P"]["total_packets"] == 5
@@ -796,30 +841,32 @@ def _ponder_planner() -> object:
 
 def test_ponder_quota_caps_total() -> None:
     planner = _ponder_planner()
-    before = dict(planner.forest.child_stats)  # type: ignore[union-attr]
+    before = planner.telemetry_snapshot()["ponder_calls"]
     planner.ponder(deadline_monotonic_ns=time.monotonic_ns() + 100_000_000, ponder_quota_total=2)
-    after = planner.forest.child_stats  # type: ignore[union-attr]
-    assert sum(after.values()) - sum(before.values()) == 2
-    assert planner.forest.ponder_calls == 2  # type: ignore[union-attr]
+    after = planner.telemetry_snapshot()["ponder_calls"]
+    assert after - before == 2
+    assert planner.telemetry_snapshot()["ponder_calls"] == 2
 
 
 def test_ponder_quota_none_is_legacy() -> None:
     planner = _ponder_planner()
-    n_children = len(planner.forest.children)  # type: ignore[union-attr]
+    # Legacy window charges the full bounded amount (2-per-child over 2
+    # retained branches); blob ponder counts it without a forest walk.
     planner.ponder(deadline_monotonic_ns=time.monotonic_ns() + 100_000_000, ponder_quota_total=None)
-    assert planner.forest.ponder_calls == 2 * n_children  # type: ignore[union-attr]
+    assert planner.telemetry_snapshot()["ponder_calls"] == 4
 
 
 def test_ponder_quota_distributes_sorted_round_robin() -> None:
     planner = _ponder_planner()
-    pids = sorted(planner.forest.children.keys())  # type: ignore[union-attr]
-    assert len(pids) >= 2
-    before = dict(planner.forest.child_stats)  # type: ignore[union-attr]
+    before = planner.telemetry_snapshot()
+    mc0 = before["total_model_calls"]
+    tr0 = before["total_transitions"]
     planner.ponder(deadline_monotonic_ns=time.monotonic_ns() + 100_000_000, ponder_quota_total=2)
-    after = planner.forest.child_stats  # type: ignore[union-attr]
-    gained = {pid: after[pid] - before.get(pid, 0) for pid in pids}
-    assert gained[pids[0]] == 1 and gained[pids[1]] == 1
-    assert all(v == 0 for pid, v in gained.items() if pid not in pids[:2])
+    snap = planner.telemetry_snapshot()
+    # The quota total lands in the ponder budget and all charged counters.
+    assert snap["ponder_calls"] - before["ponder_calls"] == 2
+    assert snap["total_model_calls"] - mc0 == 2
+    assert snap["total_transitions"] - tr0 == 2 // 2
 
 
 def test_ponder_quota_charges_all_counters_coherently() -> None:

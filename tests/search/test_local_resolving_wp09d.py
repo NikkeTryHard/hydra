@@ -11,24 +11,25 @@ import pytest
 from hydra2.belief.natural import NaturalBelief
 from hydra2.belief.world import make_full_world, world_actor_observation
 from hydra2.contracts.common import ContractError
-from hydra2.search.local_resolving import (
+from hydra2.search.local_abstraction import (
     AbstractMappingError,
     CycleDetectedError,
     LocalResolvingAbstraction,
-    LocalResolvingConfig,
-    LocalResolvingPlanner,
-    StrategyTable,
     abstraction_round_trip,
     build_public_subgame,
     detect_cycle,
-    exhaustive_tiny_game_values,
     info_key_for_actor_observation,
-    is_equilibrium_claimed,
-    leaf_vector_replay,
-    make_candidate5_spec,
     model_vector_for_world,
     terminal_vector_for_world,
     validate_abstraction_mapping,
+)
+from hydra2.search.local_act import LocalResolvingPlanner
+from hydra2.search.local_spec import LocalResolvingConfig, make_candidate5_spec
+from hydra2.search.local_strategy import (
+    StrategyTable,
+    exhaustive_tiny_game_values,
+    is_equilibrium_claimed,
+    leaf_vector_replay,
 )
 
 pytestmark = pytest.mark.contract_package("WP-09D")
@@ -272,7 +273,7 @@ def test_cycle_detection() -> None:
     detect_cycle(sub)  # should not raise
     # inject cycle by adding back edge
     # create a subgame where first node points to last and last points back to first
-    from hydra2.search.local_resolving import PublicSubgame
+    from hydra2.search.local_abstraction import PublicSubgame
 
     nodes = ("sha256:" + "a" * 64, "sha256:" + "b" * 64, "sha256:" + "c" * 64)
     edges = ((nodes[0], nodes[1], 0), (nodes[1], nodes[2], 1), (nodes[2], nodes[0], 0))  # cycle
@@ -342,7 +343,7 @@ def test_invalid_abstraction_mappings() -> None:
         bad_ab = LocalResolvingAbstraction(
             name="custom", concrete_to_abstract=((0, 99), (1, 99)), abstract_ids=(99,)
         )
-        from hydra2.search.local_resolving import PublicSubgame
+        from hydra2.search.local_abstraction import PublicSubgame
 
         PublicSubgame(
             horizon=1,

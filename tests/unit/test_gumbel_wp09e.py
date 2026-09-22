@@ -24,24 +24,22 @@ from hydra2.contracts.action_model import CanonicalAction
 from hydra2.contracts.common import ContractError
 from hydra2.contracts.randomness import RandomStream
 from hydra2.search.common import SearchRequest, candidate_spec_hash
-from hydra2.search.gumbel import (
-    GumbelSearchConfig,
-    GumbelSearchPlanner,
-    PuctBaselinePlanner,
-    PuctConfig,
+from hydra2.search.gumbel_act import GumbelSearchPlanner
+from hydra2.search.gumbel_config import GumbelSearchConfig, PuctConfig
+from hydra2.search.gumbel_core import (
     cached_full_history_agreement,
     deterministic_gumbel,
     deterministic_root_gumbels,
     exact_transition,
     info_key_for_observation,
     learned_rules_transition_rejected,
-    make_gumbel_candidate_spec,
-    make_puct_candidate_spec,
     model_vector_for_world,
     scalarize_vector,
     terminal_vector_for_world,
     validate_hidden_permutation_invariance,
 )
+from hydra2.search.gumbel_puct import PuctBaselinePlanner
+from hydra2.search.gumbel_spec import make_gumbel_candidate_spec, make_puct_candidate_spec
 
 pytestmark = pytest.mark.contract_package("WP-09E")
 

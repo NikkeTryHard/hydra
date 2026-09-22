@@ -34,12 +34,8 @@ from hydra2.contracts.action_table import (
 from hydra2.contracts.common import ContractError
 from hydra2.contracts.observation_actor import make_actor_observation
 from hydra2.models.model import Hydra2BaselineModel
-from hydra2.search.candidate0 import (
-    FrozenCandidate0,
-    candidate0,
-    frozen_choice,
-    make_candidate0_spec,
-)
+from hydra2.search.candidate0_act import FrozenCandidate0, candidate0
+from hydra2.search.candidate0_frozen import frozen_choice, make_candidate0_spec
 from hydra2.search.common import SearchRequest, candidate_spec_hash
 
 if TYPE_CHECKING:

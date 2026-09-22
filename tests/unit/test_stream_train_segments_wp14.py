@@ -595,7 +595,7 @@ class TestHomogeneousBuckets:
             seed=DATA_SEED,
             drop_last=True,
             need_privileged=False,
-            replay_backend="python",
+            replay_backend="rust",
             **kwargs,
         )
 

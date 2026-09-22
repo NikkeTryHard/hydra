@@ -30,7 +30,7 @@ fails closed. Coverage map:
   rows bind ``SIM_DERIVATION_MARK`` with ``wall_digest None`` (never invented).
 - G7 actor firewall: envelopes are EXACTLY the 13 ``ACTOR_FIELDS`` (pinned
   against the Rust ``ACTOR_FIELDS``/``FORBIDDEN_IN_ACTOR`` literals in
-  ``tools/hydra2-replay-rs/src/{hydra2_row,py_stream}.rs``); ZERO
+  ``crates/src/{hydra2_row,py_stream}.rs``); ZERO
   ``hidden_tiles/wall/dead_wall/opponent_hand/full_world/privileged*`` keys
   in actor rows (top level and nested) — a leak aborts.
 
@@ -66,7 +66,7 @@ from hydra2.models.encoder import encode_observations
 from hydra2.training.replay_state import FORBIDDEN_REPLAY_KEYS
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-FIXTURES = REPO_ROOT / "tools" / "hydra2-replay-rs" / "tests" / "fixtures"
+FIXTURES = REPO_ROOT / "crates" / "tests" / "fixtures"
 FROZEN_FIXTURE = FIXTURES / "frozen-row-hashes.json"
 MANIFEST_PATH = REPO_ROOT / "bench" / "bench_corpus_manifest.json"
 
@@ -191,7 +191,7 @@ def test_g1_freeze_check_first_oracle_moved_aborts() -> None:
     """Drifted pins abort with the exact oracle-moved message; nothing compared."""
     freeze = _freeze_mod()
     tampered = {
-        "metadata": {"oracle_pins": {"src/hydra2/data/rows.py": "0" * 64}},
+        "metadata": {"oracle_pins": {"python/hydra2/data/rows.py": "0" * 64}},
         "hashes": {},
     }
     with pytest.raises(_GateAbortError, match="oracle moved - re-pin and re-run"):
@@ -801,7 +801,7 @@ def test_g6_walled_real_digest_no_sim_mark() -> None:
 # G7 — actor firewall (ZERO privileged keys in actor rows, leak aborts).
 # ---------------------------------------------------------------------------
 
-#: Verbatim Rust literals (tools/hydra2-replay-rs/src/{hydra2_row,py_stream}.rs).
+#: Verbatim Rust literals (crates/src/{hydra2_row,py_stream}.rs).
 RUST_ACTOR_FIELDS = [
     "game_id",
     "round_id",

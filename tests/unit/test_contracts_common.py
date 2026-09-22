@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import pytest
-from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
+from hydra2._native import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 from hydra2.contracts.common import (
     ContractError,
     DigestMismatchError,

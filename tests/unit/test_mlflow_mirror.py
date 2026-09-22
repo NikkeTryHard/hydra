@@ -2,7 +2,7 @@
 
 REST-transport contract (M2 declared+landed): the MLflow SDK is dead, so
 this file injects a recording ``_FakeBridgeMirror`` double for
-``hydra2_replay_rs.mirror`` (no server, no extension build required) and
+``hydra2._native.mirror`` (no server, no extension build required) and
 asserts: default-on gating, kill-switch precedence, Null never touching
 transport, allowlisted scalars over the REST envelope + file fallback,
 resume reusing the run id, and warn-only fallback on unreachable server /
@@ -30,7 +30,7 @@ pytestmark = pytest.mark.contract_package("WP-14")
 
 
 class _FakeBridgeMirror:
-    """Recording stand-in for ``hydra2_replay_rs.mirror`` (no server)."""
+    """Recording stand-in for ``hydra2._native.mirror`` (no server)."""
 
     def __init__(self, *, ok: bool = True, fail: BaseException | None = None) -> None:
         self.ok = ok
@@ -69,18 +69,20 @@ def _install_bridge(monkeypatch: pytest.MonkeyPatch, bridge: _FakeBridgeMirror |
     from types import ModuleType
 
     if bridge is None:
-        monkeypatch.setitem(sys.modules, "hydra2_replay_rs", None)
+        monkeypatch.setitem(sys.modules, "hydra2._native", None)
         return
-    top = ModuleType("hydra2_replay_rs")
+    top = ModuleType("hydra2._native")
     top.mirror = bridge  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "hydra2_replay_rs", top)
+    monkeypatch.setitem(sys.modules, "hydra2._native", top)
 
 
 @pytest.fixture
 def _store_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Re-enable the mirror against a hermetic tracking dir (conftest disables)."""
     monkeypatch.delenv("HYDRA2_MLFLOW_DISABLED", raising=False)
-    for key in [key for key in sys.modules if key.split(".")[0] == "hydra2_replay_rs"]:
+    for key in [
+        key for key in sys.modules if key == "hydra2._native" or key.startswith("hydra2._native.")
+    ]:
         monkeypatch.delitem(sys.modules, key, raising=False)
     store = tmp_path / "mlruns"
     monkeypatch.setenv("HYDRA2_MLFLOW_TRACKING_DIR", str(store))
@@ -123,7 +125,9 @@ def test_null_mirror_never_touches_transport(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Disabled mirror: every method no-ops without the bridge or the SDK."""
-    for key in [key for key in sys.modules if key.split(".")[0] == "hydra2_replay_rs"]:
+    for key in [
+        key for key in sys.modules if key == "hydra2._native" or key.startswith("hydra2._native.")
+    ]:
         monkeypatch.delitem(sys.modules, key, raising=False)
     store = tmp_path / "mlruns"
     mirror = make_mirror(enabled=False, tracking_dir=store)
@@ -135,7 +139,7 @@ def test_null_mirror_never_touches_transport(
     mirror.log_promotion({"observed_estimate": 2.5})
     mirror.log_duplicate_audit(manifest_digest="sha256:0")
     mirror.close()  # never raises, never imports
-    assert "hydra2_replay_rs" not in sys.modules
+    assert "hydra2._native" not in sys.modules
     assert "mlflow" not in sys.modules
     assert not store.exists()
 

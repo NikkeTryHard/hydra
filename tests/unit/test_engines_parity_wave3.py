@@ -15,8 +15,8 @@ from __future__ import annotations
 import hashlib
 
 import pytest
-from hydra2_replay_rs import tiles
 
+from hydra2._native import tiles
 from hydra2.contracts.randomness import (
     RandomStream,
     make_random_stream_key,

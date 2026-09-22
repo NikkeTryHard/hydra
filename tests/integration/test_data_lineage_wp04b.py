@@ -44,9 +44,7 @@ from hydra2.data.validate import ValidationError, ValidationOutcome, validate_ga
 
 pytestmark = pytest.mark.contract_package("WP-04B")
 REPO_ROOT = Path(__file__).resolve().parents[2]
-PACKAGER_BIN = (
-    REPO_ROOT / "tools" / "mjai-dataset-packager" / "target" / "debug" / "mjai-dataset-packager"
-)
+PACKAGER_BIN = REPO_ROOT / "crates" / "packager" / "target" / "debug" / "mjai-dataset-packager"
 CONFIG_RULES = REPO_ROOT / "configs" / "rules" / "tenhou_4p_hanchan_v1.json"
 CONFIG_ACTION_TABLE = REPO_ROOT / "configs" / "contracts" / "action_table_v1.json"
 CONFIG_OBS_SCHEMA = REPO_ROOT / "configs" / "contracts" / "observation_schema_v1.json"
@@ -75,9 +73,7 @@ def _tenhou_mount() -> Path:
     return Path(os.environ.get("HYDRA2_TENHOU_MOUNT", "/mnt/samsung_nvme/samsung/mahjong_dataset"))
 
 
-PACKAGER_BIN = (
-    REPO_ROOT / "tools" / "mjai-dataset-packager" / "target" / "debug" / "mjai-dataset-packager"
-)
+PACKAGER_BIN = REPO_ROOT / "crates" / "packager" / "target" / "debug" / "mjai-dataset-packager"
 CONFIG_RULES = REPO_ROOT / "configs" / "rules" / "tenhou_4p_hanchan_v1.json"
 CONFIG_ACTION_TABLE = REPO_ROOT / "configs" / "contracts" / "action_table_v1.json"
 CONFIG_OBS_SCHEMA = REPO_ROOT / "configs" / "contracts" / "observation_schema_v1.json"

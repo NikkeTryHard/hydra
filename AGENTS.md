@@ -20,7 +20,10 @@ Pixi owns env+lock (`pixi.lock`). You MUST NEVER create `uv.lock`, use a stray `
 | Env / probe | `pixi run config-check`, `pixi run env-manifest`, `pixi run runtime-probe` |
 | WP exit | `pixi run hydra2 work-package verify <WP-ID> --artifact-root "$HYDRA2_ARTIFACT_ROOT"` |
 | Lean file | `cd lean && lake env lean Formal/<Path>.lean` (full: `lake build`) |
-| Rust packager | `cargo nextest run` inside `tools/mjai-dataset-packager/` |
+| Rust packager | `cargo nextest run` inside `crates/packager/` |
+| Rust workspace tests | `PYO3_PYTHON` pinned via root `.cargo/config.toml` `[env]`; test binaries additionally need `LD_LIBRARY_PATH=$PWD/.pixi/envs/default/lib` (libpython link) — e.g. `LD_LIBRARY_PATH=$PWD/.pixi/envs/default/lib cargo nextest run --manifest-path crates/Cargo.toml -p hydra-bridge` |
+| Bridge build | `pixi run build-ext` (portable max; ONLY source of published artifacts) |
+| Bridge build, local max | `pixi run build-ext-max` (`target-cpu=native`; non-portable, local benchmarks ONLY — rebuild plain `build-ext` before any measured run) |
 
 Capture once to a log file, then grep it. NEVER re-run a suite with different greps. Batch edits before building: one build, not build-per-edit.
 
@@ -46,6 +49,12 @@ dora = F.pad(dora4, (0, 1))  # NEVER — hides an incompatible artifact
 ## Architecture boundaries
 
 Layered DAG, dependencies flow one way: `contracts` (stdlib-only Tenhou vocab) <- `artifacts` <- `engines` (riichienv 0.4.10 reference adapter; mahjax JAX shell) <- `runtime` (plain eager / Fabric adapter) + `data` (zstd ingest -> validate -> quarantine -> parquet) -> `models` (actor-visible encoder + SDPA transformer) -> `belief` (natural packets) -> `search` (candidate0/ISMCTS/DESPOT/PBRF/Gumbel/resolving) -> `eval` (duplicate-wall blocks, expected final placement) + `training`/`distillation` + `analysis`/`tracking`/`completion`. NEVER invert an edge (e.g. models importing search; workers touching raw stores). `lean/` is a manual-sync sidecar: no codegen either direction; no `sorry` in files called done. `tools/mjai-dataset-packager/` is isolated (clang+mold, nextest); behavior changes need compatibility evidence.
+
+## Language policy (Python minimal, Rust preferred)
+
+- **Python is last resort, NEVER default.** New logic MUST land in Rust (`crates/*`) behind a thin PyO3 boundary; Python stays ONLY where the runtime forces it (`torch` nn/optim/SDPA + owned loop, JAX `jit` shells, `pyarrow`/`zstandard` edges, Python-only SDKs, stdlib `contracts`, POSIX helpers).
+- **Thin-shim rule.** New Python MUST stay typing + firewall + one batched FFI call (~100 LoC per bridge file). Bytes, loops, hashes, validators, frozen tables belong in Rust behind `OnceLock`/`PyOnceLock` + batch entry points. Per-row/per-node Python callbacks on hot paths are FORBIDDEN.
+- **Bridge builds.** `build-ext` is the portable max (release + fat LTO + single CGU + stripped) and the ONLY source of published artifacts. `build-ext-max` adds `target-cpu=native` for local benchmarks; its binaries are non-portable and MUST NEVER back published measurements. RUSTFLAGS env REPLACES config rustflags (never merges) — any env preset MUST repeat the mold link-arg or the link silently falls back to bfd.
 
 ## Docs authority (conflicts)
 

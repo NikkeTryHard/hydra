@@ -8,8 +8,8 @@ import textwrap
 from pathlib import Path
 
 import pytest
-from hydra2_replay_rs import eval as _bridge_eval
 
+from hydra2._native import eval as _bridge_eval
 from hydra2.contracts.common import ContractError
 from hydra2.eval.blocks import BlockTolerance, WallBlock, aggregate_blocks
 from hydra2.eval.duplicate import (

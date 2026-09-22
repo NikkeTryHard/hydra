@@ -131,15 +131,17 @@ def test_assembled_batch_forward_loss_bitwise(rust_extension: object, walled: bo
 
 
 def _game_pull_vs_python(*, walled: bool) -> tuple[list[dict], list[dict]]:
-    """Game-pull slim rows vs python oracle rows on the golden 5-row game."""
+    """Game-pull slim rows vs engine oracle rows on the golden 5-row game."""
+    from hydra2.data.replay_expand import expand_game
     from hydra2.data.stream_iter import GameStream
     from hydra2.data.stream_manifest import build_manifest
-    from hydra2.training.stream_train import _expand_game_planes, _expand_game_rows, _row_to_dict
+    from hydra2.engines.riichienv._lr_end import replay_game
+    from hydra2.training.stream_expand import _expand_game_planes, _row_to_dict
 
     corpus = _golden_tmpdir(walled=walled)
     manifest = build_manifest(corpus)
     game = next(iter(GameStream(manifest, seed=7, ratios={"train": 1.0}, split=None))).game
-    actor_rows, _ = _expand_game_rows(game, "train", "python")
+    actor_rows = expand_game(game, split="train") if walled else replay_game(game, split="train")
     py = [_row_to_dict(r) for r in actor_rows]
     rust, _ = _expand_game_planes(game, "train")
     assert len(rust) == len(py) == 5
@@ -201,7 +203,7 @@ def test_dataset_game_pull_sequence_restore_parity(rust_extension: object) -> No
     def _factory() -> GameStream:
         return GameStream(manifest, seed=7, ratios={"train": 1.0}, split=None)
 
-    def _make(backend: str) -> driver._StreamDataset:
+    def _make() -> driver._StreamDataset:
         return driver._StreamDataset(
             stream_factory=_factory,
             num_actions=BASELINE_ACTION_COUNT,
@@ -209,31 +211,23 @@ def test_dataset_game_pull_sequence_restore_parity(rust_extension: object) -> No
             seed=7,
             drop_last=True,
             need_privileged=False,
-            replay_backend=backend,
+            replay_backend="rust",
         )
 
-    rust_ds, py_ds = _make("rust"), _make("python")
-    assert rust_ds._pull_game() and py_ds._pull_game()
-    assert [(r["decision_id"], r["chosen_action_id"]) for r in rust_ds._rows] == [
-        (r["decision_id"], r["chosen_action_id"]) for r in py_ds._rows
-    ]
-    snap = rust_ds.buffer_snapshot()
-    fresh = _make("rust")
+    ds = _make()
+    assert ds._pull_game()
+    snap = ds.buffer_snapshot()
+    fresh = _make()
     fresh.restore_buffer(snap)
-    have, want = rust_ds.next_batch(5), py_ds.next_batch(5)
-    assert torch.equal(have["chosen_action_id"], want["chosen_action_id"])
-    assert torch.equal(have["legal_mask"], want["legal_mask"])
-    assert have["_decision_ids"] == want["_decision_ids"]
-    assert have["_action_kinds"] == want["_action_kinds"]
-    assert set(have["actor_batch"].features.keys()) == set(want["actor_batch"].features.keys())
-    for key in sorted(want["actor_batch"].features.keys()):
-        assert torch.equal(have["actor_batch"].features[key], want["actor_batch"].features[key])
-    # Restored buffer replays the identical microbatch (re-expand + hash).
-    revived = fresh.next_batch(5)
-    assert torch.equal(revived["chosen_action_id"], have["chosen_action_id"])
-    assert revived["_decision_ids"] == have["_decision_ids"]
-    rust_ds.close()
-    py_ds.close()
+    have, revived = ds.next_batch(5), fresh.next_batch(5)
+    assert torch.equal(have["chosen_action_id"], revived["chosen_action_id"])
+    assert torch.equal(have["legal_mask"], revived["legal_mask"])
+    assert have["_decision_ids"] == revived["_decision_ids"]
+    assert have["_action_kinds"] == revived["_action_kinds"]
+    assert set(have["actor_batch"].features.keys()) == set(revived["actor_batch"].features.keys())
+    for key in sorted(have["actor_batch"].features.keys()):
+        assert torch.equal(have["actor_batch"].features[key], revived["actor_batch"].features[key])
+    ds.close()
     fresh.close()
 
 
@@ -380,20 +374,20 @@ def test_ext_freshness_gate(tmp_path: Path) -> None:
     rust_batch._check_fresh(_so("bare.so"))
     # Fresh sidecar: allowed.
     mt = max(p.stat().st_mtime for p in src.rglob("*") if p.is_file())
-    (tmp_path / "hydra2_replay_rs.build.json").write_text(
+    (tmp_path / "hydra2._native.build.json").write_text(
         json.dumps({"source_root": str(src), "source_mtime": mt})
     )
     rust_batch._check_fresh(_so("fresh.so"))
     # Sources newer than the recorded build: fail closed.
     old = mt - 100.0
-    (tmp_path / "hydra2_replay_rs.build.json").write_text(
+    (tmp_path / "hydra2._native.build.json").write_text(
         json.dumps({"source_root": str(src), "source_mtime": old})
     )
     os.utime(src / "a.rs", (old + 50.0, old + 50.0))
     with pytest.raises(ContractError, match="stale"):
         rust_batch._check_fresh(_so("stale.so"))
     # Missing source tree (source-less deploy): nothing to compare, allowed.
-    (tmp_path / "hydra2_replay_rs.build.json").write_text(
+    (tmp_path / "hydra2._native.build.json").write_text(
         json.dumps({"source_root": str(tmp_path / "gone"), "source_mtime": old})
     )
     rust_batch._check_fresh(_so("noroot.so"))
@@ -410,18 +404,24 @@ def test_multi_group_gather_matches_python(rust_extension: object) -> None:
     assertion here is byte equality with the python encoder path.
     """
     _ = rust_extension
+    from hydra2.data.replay_expand import expand_game
     from hydra2.data.stream_iter import GameStream
     from hydra2.data.stream_manifest import build_manifest
+    from hydra2.engines.riichienv._lr_end import replay_game
     from hydra2.models.schema import BASELINE_ACTION_COUNT
     from hydra2.training.dataset_encode import encode_observation_rows
     from hydra2.training.rust_batch import assemble_slim_batch
-    from hydra2.training.stream_train import _expand_game_planes, _expand_game_rows, _row_to_dict
+    from hydra2.training.stream_expand import _expand_game_planes, _row_to_dict
 
     def _both(walled: bool) -> tuple[list[dict], list[dict]]:
         corpus = _golden_tmpdir(walled=walled)
         manifest = build_manifest(corpus)
         streamed = next(iter(GameStream(manifest, seed=7, ratios={"train": 1.0}, split=None)))
-        actor_rows, _ = _expand_game_rows(streamed.game, "train", "python")
+        actor_rows = (
+            expand_game(streamed.game, split="train")
+            if walled
+            else replay_game(streamed.game, split="train")
+        )
         py = [_row_to_dict(r) for r in actor_rows]
         rust, _ = _expand_game_planes(streamed.game, "train", streamed.raw)
         assert len(rust) == len(py) == 5

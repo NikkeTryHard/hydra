@@ -15,8 +15,8 @@ import json
 from pathlib import Path
 
 import pytest
-from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
+from hydra2._native import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 from hydra2.config import artifact_root
 from hydra2.engines.mahjax.capture import capture_mahjax_tuple
 from hydra2.engines.mahjax.differential_cases import SCENARIO_REGISTRY

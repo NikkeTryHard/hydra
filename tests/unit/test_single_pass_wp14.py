@@ -28,8 +28,8 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from hydra2_replay_rs import tiles as _tiles_bridge
 
+from hydra2._native import tiles as _tiles_bridge
 from hydra2.contracts.common import ContractError
 from hydra2.data.decode import GameRecord
 from hydra2.engines.riichienv import (

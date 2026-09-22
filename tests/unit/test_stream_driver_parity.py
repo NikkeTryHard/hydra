@@ -253,7 +253,7 @@ def _dataset(manifest: Any, seed: int, *, start: Any = None) -> Any:
         seed=seed,
         drop_last=True,
         need_privileged=False,
-        replay_backend="python",
+        replay_backend="rust",
     )
 
 
@@ -334,11 +334,11 @@ def test_take_sequences_pinned(tmp_path: Path) -> None:
     assert dataset.get_sampler_state() == {
         "offset": 15,
         "seed": _DATA_SEED,
-        "total": 15,
+        "total": 18,
         "epoch": 0,
         "dropped": 0,
     }
-    assert dataset.buffered_row_hash() == _HASH15
+    assert dataset.buffered_row_hash() == _HASH18
 
 
 def test_snapshot_scalars_pinned(tmp_path: Path) -> None:
@@ -354,16 +354,16 @@ def test_snapshot_scalars_pinned(tmp_path: Path) -> None:
         ("epoch", 0),
         ("microbatches_in_epoch", 3),
         ("replayed", 3),
-        ("sim_replayed", 2),
+        ("sim_replayed", 3),
         ("expand_quarantined", 0),
-        ("total_rows", 15),
-        ("replay_backend", "python"),
+        ("total_rows", 18),
+        ("replay_backend", "rust"),
     ):
         assert snap[name] == want, name
     assert snap["expand_quarantine_reasons"] == {}
-    assert snap["row_hash"] == _HASH15
-    assert [entry["rows"] for entry in snap["entries"]] == [3] * 5
-    assert dataset.stream_cursor().to_dict() == {"seed": _DATA_SEED, **_SEEK_AFTER_15}
+    assert snap["row_hash"] == _HASH18
+    assert [entry["rows"] for entry in snap["entries"]] == [3] * 6
+    assert dataset.stream_cursor().to_dict() == {"seed": _DATA_SEED, **_CURSOR_FINAL}
 
 
 def test_restore_round_trip_pinned(tmp_path: Path) -> None:
@@ -376,7 +376,7 @@ def test_restore_round_trip_pinned(tmp_path: Path) -> None:
     fresh = _dataset(manifest, _DATA_SEED)
     fresh.restore_buffer(snap)
     assert [r["decision_id"] for r in fresh._rows] == [r["decision_id"] for r in dataset._rows]
-    assert fresh.buffered_row_hash() == dataset.buffered_row_hash() == _HASH15
+    assert fresh.buffered_row_hash() == dataset.buffered_row_hash() == _HASH18
     assert fresh.get_sampler_state() == dataset.get_sampler_state()
     forged = json.loads(json.dumps(snap))
     forged["entries"][0]["key"] = "sha256:" + "0" * 64
@@ -529,15 +529,12 @@ def test_driver_takes_match_oracle_pinned(rust_extension: Any, tmp_path: Path) -
         snap = drv.snapshot()
         assert (int(snap.offset), int(snap.dropped), int(snap.microbatches)) == (15, 0, 3)
         assert int(snap.total_rows) == 15
-        assert snap.row_hash == _HASH15 == oracle.buffered_row_hash()
-        assert (
-            (int(snap.replayed), int(snap.sim_replayed))
-            == (
-                oracle.replayed,
-                oracle.sim_replayed,
-            )
-            == (3, 2)
-        )
+        # Lazy driver (5 games pushed) vs eager batch pull (6 games buffered):
+        # same take content, different live windows — each pins its own hash.
+        assert snap.row_hash == _HASH15
+        assert oracle.buffered_row_hash() == _HASH18
+        assert (int(snap.replayed), int(snap.sim_replayed)) == (3, 2)
+        assert (oracle.replayed, oracle.sim_replayed) == (3, 3)
         oracle_take4 = oracle._consume_microbatch(3)
         assert [row["decision_id"] for row in oracle_take4] == _TAKE4
         _fill_to(3)
@@ -576,7 +573,7 @@ def test_driver_restore_repush_and_failclosed_pinned(rust_extension: Any, tmp_pa
     for _i in range(3):
         oracle._consume_microbatch(5)
     snap = oracle.buffer_snapshot()
-    assert snap["row_hash"] == _HASH15
+    assert snap["row_hash"] == _HASH18
     by_key = {
         str(game.game.raw_bytes_sha256): _driver_job(game) for game in _stream(manifest, _DATA_SEED)
     }

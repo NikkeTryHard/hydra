@@ -166,7 +166,7 @@ class TestSerialParallelParity:
             seed=DATA_SEED,
             drop_last=True,
             need_privileged=True,
-            replay_backend="python",
+            replay_backend="rust",
         )
         # Production shape: prefetch decode plus the bounded expansion pool.
         parallel = driver._StreamDataset(
@@ -185,7 +185,7 @@ class TestSerialParallelParity:
             seed=DATA_SEED,
             drop_last=True,
             need_privileged=True,
-            replay_backend="python",
+            replay_backend="rust",
             expand_workers=4,
         )
         try:
@@ -289,7 +289,7 @@ class TestParallelGuards:
                     feature_dim=64,
                     seed=DATA_SEED,
                     drop_last=True,
-                    replay_backend="python",
+                    replay_backend="rust",
                     expand_workers=bad,  # type: ignore[arg-type]
                 )
 
@@ -310,7 +310,7 @@ class TestParallelGuards:
             feature_dim=64,
             seed=DATA_SEED,
             drop_last=True,
-            replay_backend="python",
+            replay_backend="rust",
             expand_workers=99,
         )
         try:
@@ -336,7 +336,7 @@ class TestParallelGuards:
             feature_dim=64,
             seed=DATA_SEED,
             drop_last=True,
-            replay_backend="python",
+            replay_backend="rust",
             expand_workers=2,
         )
         try:
@@ -362,7 +362,7 @@ class TestParallelGuards:
             feature_dim=64,
             seed=DATA_SEED,
             drop_last=True,
-            replay_backend="python",
+            replay_backend="rust",
             expand_workers=2,
         )
         dataset.close()
@@ -386,7 +386,7 @@ class TestPoolHygiene:
             seed=DATA_SEED,
             drop_last=True,
             need_privileged=True,
-            replay_backend="python",
+            replay_backend="rust",
             expand_workers=2,
         )
 

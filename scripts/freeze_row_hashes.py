@@ -35,7 +35,7 @@ when any pin differs. Moving oracle = void parity.
 
 Usage (from the repo root, ``pixi run python`` so ``hydra2`` imports resolve):
   freeze:  scripts/freeze_row_hashes.py freeze --rows /tmp/replay-s1/oracle-compact.jsonl \\
-               --out tools/hydra2-replay-rs/tests/fixtures/frozen-row-hashes.json [--allow ...]
+               --out crates/tests/fixtures/frozen-row-hashes.json [--allow ...]
   check:   scripts/freeze_row_hashes.py check --frozen <fixture> --rows <rust-rows.jsonl>
 """
 
@@ -48,42 +48,67 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+try:
+    from hydra2._native import contracts as _freeze_bridge
+except ImportError:  # pragma: no cover - stale .so falls back to the oracle below
+    _freeze_bridge = None  # type: ignore[assignment]
+
+_bridge_allow_is_valid = getattr(_freeze_bridge, "script_allow_is_valid", None)
+_bridge_allow_drop_keys = getattr(_freeze_bridge, "script_allow_drop_keys", None)
+
+
+def _allow_is_valid(name: str) -> bool:
+    """Bridge-first closed-allowlist membership (byte-identical fallback)."""
+    if _bridge_allow_is_valid is not None:
+        return bool(_bridge_allow_is_valid(name))
+    return name in CLOSED_ALLOW
+
+
+def _allow_drop_keys(name: str) -> tuple[str, ...]:
+    """Bridge-first ALLOW_DROP lookup (byte-identical fallback)."""
+    if _bridge_allow_drop_keys is not None:
+        keys = _bridge_allow_drop_keys(name)
+        if keys is not None:
+            return tuple(str(k) for k in keys)
+    return ALLOW_DROP[name]
+
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Every oracle input the wall-less rows depend on (relpath -> pinned).
 # The tile codec moved to Rust in Wave 3 (tiles.py deleted); its owner
 # files are pinned here like any other oracle input.
 ORACLE_INPUTS = (
-    "src/hydra2/engines/riichienv/actions.py",
-    "src/hydra2/engines/riichienv/events.py",
-    "tools/hydra2-replay-rs/crates/hydra-shard/src/tile.rs",
-    "tools/hydra2-replay-rs/crates/hydra-bridge/src/tiles.rs",
-    "src/hydra2/engines/riichienv/state.py",
-    "src/hydra2/engines/riichienv/identity.py",
-    "src/hydra2/engines/riichienv/_oracle_base.py",
-    "src/hydra2/engines/riichienv/_lr_act.py",
-    "src/hydra2/engines/riichienv/_lr_claim.py",
-    "src/hydra2/engines/riichienv/_lr_end.py",
-    "src/hydra2/engines/riichienv/_lr_frame.py",
-    "src/hydra2/engines/riichienv/_lr_oracle.py",
-    "src/hydra2/engines/riichienv/_lr_rows.py",
-    "src/hydra2/engines/riichienv/_lr_walk.py",
-    "src/hydra2/engines/riichienv/_sp_capture.py",
-    "src/hydra2/engines/riichienv/_sp_game.py",
-    "src/hydra2/engines/riichienv/_sp_kans.py",
-    "src/hydra2/engines/riichienv/_sp_oracle.py",
-    "src/hydra2/engines/riichienv/_sp_reach.py",
-    "src/hydra2/engines/riichienv/_sp_records.py",
-    "src/hydra2/engines/riichienv/_sp_walk.py",
-    "src/hydra2/engines/riichienv/_sp_windows.py",
-    "src/hydra2/engines/riichienv/_sp_wins.py",
-    "src/hydra2/engines/riichienv/adapter_identity.py",
-    "src/hydra2/engines/riichienv/adapter_core.py",
-    "src/hydra2/engines/riichienv/adapter_step.py",
-    "src/hydra2/engines/riichienv/adapter_events_a.py",
-    "src/hydra2/engines/riichienv/adapter_events_b.py",
-    "src/hydra2/data/parquet.py",
-    "src/hydra2/models/encoder.py",
+    "python/hydra2/engines/riichienv/actions.py",
+    "python/hydra2/engines/riichienv/events.py",
+    "crates/shard/src/tile.rs",
+    "crates/bridge/src/tiles.rs",
+    "python/hydra2/engines/riichienv/state.py",
+    "python/hydra2/engines/riichienv/identity.py",
+    "python/hydra2/engines/riichienv/_oracle_base.py",
+    "python/hydra2/engines/riichienv/_lr_act.py",
+    "python/hydra2/engines/riichienv/_lr_claim.py",
+    "python/hydra2/engines/riichienv/_lr_end.py",
+    "python/hydra2/engines/riichienv/_lr_frame.py",
+    "python/hydra2/engines/riichienv/_lr_oracle.py",
+    "python/hydra2/engines/riichienv/_lr_rows.py",
+    "python/hydra2/engines/riichienv/_lr_walk.py",
+    "python/hydra2/engines/riichienv/_sp_capture.py",
+    "python/hydra2/engines/riichienv/_sp_game.py",
+    "python/hydra2/engines/riichienv/_sp_kans.py",
+    "python/hydra2/engines/riichienv/_sp_oracle.py",
+    "python/hydra2/engines/riichienv/_sp_reach.py",
+    "python/hydra2/engines/riichienv/_sp_records.py",
+    "python/hydra2/engines/riichienv/_sp_walk.py",
+    "python/hydra2/engines/riichienv/_sp_windows.py",
+    "python/hydra2/engines/riichienv/_sp_wins.py",
+    "python/hydra2/engines/riichienv/adapter_identity.py",
+    "python/hydra2/engines/riichienv/adapter_core.py",
+    "python/hydra2/engines/riichienv/adapter_step.py",
+    "python/hydra2/engines/riichienv/adapter_events_a.py",
+    "python/hydra2/engines/riichienv/adapter_events_b.py",
+    "python/hydra2/data/parquet.py",
+    "python/hydra2/models/encoder.py",
     "configs/contracts/action_table_v1.json",
 )
 
@@ -119,7 +144,7 @@ def oracle_pins(repo_root: Path = REPO_ROOT) -> dict[str, str]:
 
 
 def _mjai_string_of(tile_id: int):  # lazy import: needs the pixi env
-    from hydra2_replay_rs import tiles
+    from hydra2._native import tiles
 
     return tiles.mjai_string_of(tile_id)
 
@@ -210,14 +235,14 @@ def row_hash(doc: dict, allow: tuple[str, ...], repo_root: Path = REPO_ROOT) -> 
     from hydra2.artifacts.digest import of_canonical
 
     for name in allow:
-        doc = _drop_paths(doc, ALLOW_DROP[name])
+        doc = _drop_paths(doc, _allow_drop_keys(name))
     return str(of_canonical(doc))
 
 
 def _parse_allow(values: list[str]) -> tuple[str, ...]:
     # Accept `--allow a b` and `--allow a,b` spellings alike.
     flat = [part for value in values for part in value.split(",") if part]
-    unknown = [v for v in flat if v not in CLOSED_ALLOW]
+    unknown = [v for v in flat if not _allow_is_valid(v)]
     if unknown:
         print(
             f"error: --allow accepts only the closed set {list(CLOSED_ALLOW)}; "

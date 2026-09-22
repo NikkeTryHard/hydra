@@ -7,15 +7,12 @@ from pathlib import Path
 
 import pytest
 
+from hydra2._native import contracts as _rules_bridge  # pyrefly: ignore[missing-import]
 from hydra2.artifacts.canonical import canonical_bytes, loads_canonical
 from hydra2.contracts.common import (
     ContractError,
     DigestMismatchError,
     RulesMismatchError,
-)
-from hydra2.contracts.rules_canonical import (
-    RULES_ID,
-    SOURCE_EVIDENCE_KEY,
 )
 from hydra2.contracts.rules_manifest import (
     rules_manifest_from_payload,
@@ -30,10 +27,12 @@ from hydra2.contracts.utility import (
     make_utility_manifest,
     root_scalar,
     utility,
-    utility_manifest_digest_document,
     utility_manifest_from_payload,
     utility_manifest_to_payload,
 )
+
+RULES_ID = _rules_bridge.RULES_ID
+SOURCE_EVIDENCE_KEY = _rules_bridge.SOURCE_EVIDENCE_KEY
 
 pytestmark = pytest.mark.contract_package("WP-02B")
 
@@ -114,13 +113,6 @@ class TestRawUtilityIdentityRoundTrip:
         # JSON text round trip keeps the digest stable (ES6 number formatting).
         text = json.dumps(json.loads(canonical_bytes(payload)))
         assert utility_manifest_from_payload(json.loads(text)).digest == umanifest.digest
-
-    def test_contract_canonical_writer_matches_artifacts_authority(self, umanifest):
-        from hydra2.artifacts.canonical import canonical_bytes as authority_bytes
-        from hydra2.contracts.rules_canonical import canonical_contract_json_bytes
-
-        document = utility_manifest_digest_document(umanifest)
-        assert canonical_contract_json_bytes(document) == authority_bytes(document)
 
 
 class TestSeatPermutationInvariance:

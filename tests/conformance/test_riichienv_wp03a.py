@@ -16,8 +16,8 @@ import random
 from pathlib import Path
 
 import pytest
-from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
+from hydra2._native import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 from hydra2.artifacts.digest import of_canonical
 from hydra2.contracts.action_model import CanonicalAction
 from hydra2.contracts.common import (

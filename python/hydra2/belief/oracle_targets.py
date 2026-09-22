@@ -1,0 +1,320 @@
+"""WP-07B oracle targets — deterministic teacher targets from privileged rows.
+
+Owns the materialized target record and the derivation helpers shared by
+the store and join paths: belief/value targets from privileged labels
+through the canonical utility manifest, and teacher-logit inversion.
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
+from hydra2._native import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
+from hydra2.artifacts.digest import sha256_digest
+from hydra2.contracts.common import ContractError
+
+#: Frozen target tables + pure target-math cores (single source:
+#: ``hydra2._native.contracts`` ORACLE_*; this module keeps the dataclass +
+#: dispatch roots and every ContractError text, ``__all__`` unchanged).
+
+if TYPE_CHECKING:
+    from hydra2.contracts.utility import UtilityManifest
+
+
+@dataclass(frozen=True, slots=True)
+class OracleTarget:
+    """Deterministic teacher target derived from privileged row."""
+
+    decision_id: str
+    wall_id: str
+    # Belief target: distribution over hidden tile types (34-dim, sum=1)
+    belief_target: tuple[float, ...]
+    # Value target: 4-seat UtilityVector.values via utility()
+    # (ranks -> rank_values -> values; e.g. (20,10,-10,-20) permuted,
+    # zero-sum, NOT a distribution). Opaque join on decision_id only —
+    # actor batch carries decision_id + observation_hash, never privileged.
+    value_target: tuple[float, ...]
+    # Event target: next event kind id (0..19) for belief model
+    event_target: int
+    # Teacher soft logits (pre-softmax, for KL distillation)
+    teacher_belief_logits: tuple[float, ...]
+    teacher_value_logits: tuple[float, ...]
+    # Provenance
+    split: str
+    observation_hash: str
+
+
+def _belief_target_from_privileged(
+    privileged_label: dict[str, Any] | None,
+    decision_id: str,
+    *,
+    allow_synthetic: bool = False,
+) -> tuple[float, ...]:
+    """Deterministic 34-dim belief target from privileged hidden tiles.
+
+    Real path: ``hidden_tiles`` / ``hidden_tile_counts`` (34-list) or
+    ``wait_tiles``. When no real signal is present the legacy deterministic
+    hash fallback applies ONLY with ``allow_synthetic=True`` (synthetic-only
+    opt-in, byte-identical to the pre-flag behavior); otherwise raises
+    :class:`ContractError` (fail closed — missing labels never silently
+    hash-synthesize on real paths).
+    """
+    if isinstance(privileged_label, dict):
+        # Try to extract hidden counts if present
+        _h_a: Any | None = privileged_label.get("hidden_tiles")
+        _h_b: Any | None = privileged_label.get("hidden_tile_counts")
+        hidden: Any | None = _h_a if _h_a is not None else _h_b
+        if isinstance(hidden, list) and len(hidden) == _bridge_contracts.ORACLE_BELIEF_DIM:
+            # HEAD-identical sum (exact big-int accumulation for int lanes);
+            # the total-or-1.0 rule + division live in the bridge.
+            _raw_total: float = float(sum(hidden))  # type: ignore[unknown-argument-type]  # reason: Any from privileged dict; float() validates. Evidence: https://docs.python.org/3/library/functions.html#float
+            staged: list[float] = [float(x) for x in hidden]  # type: ignore[unknown-argument-type]  # reason: Any element intentional; float() validates
+            normalized: list[float] = _bridge_contracts.oracle_normalize_34(staged, _raw_total)
+            return tuple(normalized)
+        # Try wait tiles
+        waits: Any | None = privileged_label.get("wait_tiles")
+        if isinstance(waits, list) and len(waits) > 0:
+            vec: list[float] = [0.0] * _bridge_contracts.ORACLE_BELIEF_DIM
+            for t in waits:
+                if isinstance(t, int) and 0 <= t < _bridge_contracts.ORACLE_BELIEF_DIM:
+                    vec[t] += 1.0
+            _vec_total: float = float(sum(vec))
+            wait_normalized: list[float] = _bridge_contracts.oracle_normalize_34(vec, _vec_total)
+            return tuple(wait_normalized)
+    if not allow_synthetic:
+        raise ContractError(
+            f"belief target: missing privileged hidden tiles for {decision_id!r} "
+            "(fail closed; synthetic opt-in via allow_synthetic=True)"
+        )
+    # Digest line via the canon bridge (byte-identical to the retired hashlib
+    # digest; ImportError with build-ext hint). Repeat-fold + normalize live in
+    # the bridge (32-byte digests always take the `(h * 3)[:34]` branch);
+    # allow_synthetic gate preserved (tests-only, fail-closed default).
+    h = bytes.fromhex(str(sha256_digest(decision_id.encode())).removeprefix("sha256:"))
+    digest_vec: list[float] = _bridge_contracts.oracle_belief_from_digest(h)
+    return tuple(digest_vec)
+
+
+def _zero_tol() -> float:
+    """Bridge zero-sum tolerance (Rust golden, never restated)."""
+    tol: float = _bridge_contracts.ORACLE_ZERO_SUM_ABS_TOL
+    return tol
+
+
+def _oracle_utility_manifest() -> UtilityManifest:
+    """Canonical day-one utility manifest (same golden as models/model.py)."""
+    from hydra2.contracts.utility import (
+        UTILITY_OBJECTIVE,
+        UTILITY_TIE_POLICY,
+        make_utility_manifest,
+    )
+
+    utility_id: str = _bridge_contracts.ORACLE_UTILITY_ID
+    schema_version: str = _bridge_contracts.ORACLE_UTILITY_SCHEMA_VERSION
+    rules_id: str = _bridge_contracts.RULES_ID
+    rules_hash: str = _bridge_contracts.ORACLE_RULES_HASH
+    rank_values: tuple[float, float, float, float] = _bridge_contracts.ORACLE_RANK_VALUES
+    value_min: float = _bridge_contracts.ORACLE_VALUE_MIN
+    value_max: float = _bridge_contracts.ORACLE_VALUE_MAX
+    return make_utility_manifest(
+        utility_id=utility_id,
+        schema_version=schema_version,
+        rules_id=rules_id,
+        rules_hash=rules_hash,
+        objective=UTILITY_OBJECTIVE,
+        rank_values=rank_values,
+        tie_policy=UTILITY_TIE_POLICY,
+        value_min=value_min,
+        value_max=value_max,
+        zero_sum=True,
+    )
+
+
+def _value_from_ranks_via_utility(ranks_in: Any) -> tuple[float, ...] | None:
+    """Map ranks permutation 1..4 through utility() to UtilityVector.values.
+
+    Returns None when input is not a strict 1..4 permutation (caller falls
+    through to legacy paths). Synthesizes a RawOutcome whose final_scores
+    are consistent with the ranks (rank 1 -> 40000, 2 -> 30000, 3 -> 20000,
+    4 -> 10000) so utility()'s ranks -> rank_values -> values mapping is
+    exact; utility() itself remains the fixed point (never duplicated).
+
+    Single owner: the bridge is owned by contracts.utility (Rust-judged
+    ``validate_ranks`` gate + ``utility_for_ranks_fixed`` indexing;
+    ranks/indexing agree both sides, m8 exact-total True both sides, pyfn
+    probes live) — this call site calls flipped ``utility()`` and only reads
+    the score-synthesis consts (``ORACLE_SCORE_FOR_RANK`` / ``ORACLE_SCORE_BASE``)
+    from the bridge, never the scoring itself.
+    """
+    if not isinstance(ranks_in, (list, tuple)) or len(ranks_in) != 4:
+        return None
+    if any(isinstance(x, bool) for x in ranks_in) or not all(isinstance(x, int) for x in ranks_in):
+        return None
+    # Guards prove 4 ints (bool rejected), so int() would be identity.
+    _ranks_int: list[int] = list(ranks_in)
+    ranks = tuple(_ranks_int)
+    if sorted(ranks) == [0, 1, 2, 3]:
+        # Zero-based seat convention -> 1..4 for utility().
+        ranks = tuple(r + 1 for r in ranks)
+    if sorted(ranks) != [1, 2, 3, 4]:
+        return None
+    from hydra2.contracts.utility import RawOutcome, utility
+
+    manifest = _oracle_utility_manifest()
+    rank_scores: tuple[int, ...] = _bridge_contracts.ORACLE_SCORE_FOR_RANK
+    score_for_rank = {
+        1: rank_scores[0],
+        2: rank_scores[1],
+        3: rank_scores[2],
+        4: rank_scores[3],
+    }
+    final_scores = tuple(score_for_rank[r] for r in ranks)  # type: ignore[index]  # ranks validated permutation above
+    score_base: int = _bridge_contracts.ORACLE_SCORE_BASE
+    point_deltas = tuple(s - score_base for s in final_scores)
+    outcome = RawOutcome(
+        final_scores=final_scores,  # type: ignore[arg-type]  # validated quad above
+        ranks=ranks,  # type: ignore[arg-type]  # validated permutation above
+        point_deltas=point_deltas,  # type: ignore[arg-type]  # derived from validated scores
+        settlements=(),
+        rules_id=manifest.rules_id,
+        rules_hash=manifest.rules_hash,
+    )
+    return tuple(utility(outcome, manifest).values)
+
+
+def _value_target_from_privileged(
+    privileged_label: dict[str, Any] | None,
+    decision_id: str,
+    *,
+    allow_synthetic: bool = False,
+) -> tuple[float, ...]:
+    """Deterministic 4-dim value target from privileged ranks (utility scale).
+
+    Real paths (in order): ``ranks`` / 4-list ``final_placement`` permutation
+    via ``utility()``; explicit ``value_vector`` / ``utility_vector`` /
+    ``placement`` 4-list; legacy single-int ``final_placement`` / ``rank``
+    0..3 mapped through the utility manifest (0-based rank +1 -> 1..4 selects
+    ``rank_values[rank]`` at the rank index — utility scale, never 0/1
+    one-hot). When no real signal is present the legacy deterministic hash
+    fallback applies ONLY with ``allow_synthetic=True`` (synthetic-only
+    opt-in, byte-identical to the pre-flag behavior); otherwise raises
+    :class:`ContractError` (fail closed).
+    """
+    if isinstance(privileged_label, dict):
+        # Day-one authoritative path: ranks -> utility() -> UtilityVector.values.
+        # Accepts "ranks" permutation 1..4, or "final_placement" as a 4-list
+        # permutation 1..4 (distinct from legacy single-int 0..3 below).
+        # Opaque join: actor side supplies decision_id only; privileged ranks
+        # never enter the actor batch (firewall: validate_actor_batch_no_privileged).
+        _ranks_candidate: Any | None = privileged_label.get("ranks")
+        if _ranks_candidate is None:
+            _fp: Any | None = privileged_label.get("final_placement")
+            if isinstance(_fp, (list, tuple)) and len(_fp) == 4:
+                _ranks_candidate = _fp
+        _via_utility = (
+            _value_from_ranks_via_utility(_ranks_candidate)
+            if _ranks_candidate is not None
+            else None
+        )
+        if _via_utility is not None:
+            return _via_utility
+        _v_a: Any | None = privileged_label.get("value_vector")
+        _v_b: Any | None = privileged_label.get("utility_vector")
+        _v_c: Any | None = privileged_label.get("placement")
+        _v_tmp: Any | None = _v_a if _v_a is not None else _v_b
+        v: Any | None = _v_tmp if _v_tmp is not None else _v_c
+        value_dim: int = _bridge_contracts.ORACLE_VALUE_DIM
+        if isinstance(v, list) and len(v) == value_dim:
+            # Explicit 4-list value claim: strict validation against the
+            # manifest (never silently passed through). Bool is not a number.
+            _vals_list: list[float] = []
+            for _i, _x in enumerate(v):
+                if isinstance(_x, bool) or not isinstance(_x, (int, float)):
+                    raise ContractError(
+                        f"value target: entry[{_i}] must be a number for {decision_id!r}, "
+                        f"got {_x!r}"
+                    )
+                if not math.isfinite(float(_x)):
+                    raise ContractError(
+                        f"value target: entry[{_i}] must be finite for {decision_id!r}"
+                    )
+                # _x narrowed to int | float here; float() keeps int case exact.
+                _vals_list.append(float(_x))
+            _vals = tuple(_vals_list)
+            _manifest = _oracle_utility_manifest()
+            # UtilityManifest bounds are float already; float() would be identity.
+            _lo = _manifest.value_min
+            _hi = _manifest.value_max
+            for _i, _x in enumerate(_vals):
+                if _x < _lo or _x > _hi:
+                    raise ContractError(
+                        f"value target: entry[{_i}]={_x!r} outside manifest bounds "
+                        f"[{_lo}, {_hi}] for {decision_id!r}"
+                    )
+            if bool(getattr(_manifest, "zero_sum", False)):
+                _total = math.fsum(_vals)
+                if not math.isclose(
+                    _total,
+                    0.0,
+                    rel_tol=0.0,
+                    abs_tol=_zero_tol(),
+                ):
+                    raise ContractError(
+                        "value target: zero-sum manifest requires values summing to 0 "
+                        f"for {decision_id!r}, got sum {_total!r}"
+                    )
+            return _vals
+        # Single placement rank (legacy shape; utility scale, never one-hot):
+        _r_a: Any | None = privileged_label.get("final_placement")
+        _r_b: Any | None = privileged_label.get("rank")
+        _rank_raw: Any | None = _r_a if _r_a is not None else _r_b
+        rank: int | None = _rank_raw if isinstance(_rank_raw, int) else None
+        if rank is not None and not isinstance(_rank_raw, bool) and 0 <= rank < value_dim:
+            # Utility scale, never one-hot: rank_values[rank] at the rank index
+            # (same entry utility() itself uses); indexing lives in the bridge.
+            ranked: tuple[float, ...] = _bridge_contracts.oracle_value_from_rank(rank)
+            return tuple(ranked)
+    if not allow_synthetic:
+        raise ContractError(
+            f"value target: missing privileged ranks for {decision_id!r} "
+            "(fail closed; synthetic opt-in via allow_synthetic=True)"
+        )
+    # Hash-fallback synthetic target — synthetic-only opt-in (allow_synthetic=True),
+    # byte-identical to the pre-flag behavior; never mixed with real utility()
+    # targets except under explicit opt-in.
+    # Deterministic pseudo value from hash (digest via canon bridge; nibble lanes
+    # live in the bridge). The sum + rule + division stay HEAD-verbatim: float
+    # sums are interpreter-compensated, so only this expression reproduces them.
+    h = int(
+        str(sha256_digest((decision_id + "_value").encode())).removeprefix("sha256:")[:8],
+        16,
+    )
+    # 4-seat softmax-like values
+    scores: list[float] = _bridge_contracts.oracle_nibble_scores_from_word(h)
+    _score_sum: float = float(sum(scores))
+    total: float = _score_sum if _score_sum != 0.0 else 1.0
+    return tuple(s / total for s in scores)
+
+
+def _teacher_logits_from_targets(
+    belief_target: tuple[float, ...], value_target: tuple[float, ...]
+) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    # Invert softmax with small epsilon: logits = log(p+eps) live in the bridge
+    # (NaN order preserved); tuple packing stays here.
+    belief_vec: list[float] = _bridge_contracts.oracle_teacher_logits_for(list(belief_target))
+    value_vec: list[float] = _bridge_contracts.oracle_teacher_logits_for(list(value_target))
+    belief_logits = tuple(belief_vec)
+    value_logits = tuple(value_vec)
+    return belief_logits, value_logits
+
+
+__all__ = [
+    "OracleTarget",
+    "_belief_target_from_privileged",
+    "_oracle_utility_manifest",
+    "_teacher_logits_from_targets",
+    "_value_from_ranks_via_utility",
+    "_value_target_from_privileged",
+]

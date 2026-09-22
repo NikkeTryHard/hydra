@@ -1,0 +1,521 @@
+"""Candidate 2 natural DESPOT — scenarios, packet guards, seeding, spec factory.
+
+Owns the natural-scenario vocabulary (uniform ``1/K`` weight, equal
+target/proposal densities), the frozen DESPOT hyper-parameters, the packet
+partition guards with the proposal-reversal negative control, the
+semantic-seed derivation over ``(candidate_id, case_id, scenario_idx,
+attempt_id)``, and the candidate-spec factory with its default budget.
+The search policy lives in :mod:`hydra2.search.despot_search`, the
+expansion loop in :mod:`hydra2.search.despot_act`, and result assembly in
+:mod:`hydra2.search.despot_result`.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+import math
+from dataclasses import dataclass, field
+from typing import Any, Literal, cast
+
+from hydra2.artifacts.canonical import canonical_bytes
+from hydra2.contracts.common import (
+    ContractError,
+    PacketPartitionError,
+)
+
+logger = logging.getLogger(__name__)
+
+try:
+    from hydra2.contracts.randomness import RandomStream
+
+    _RANDOM_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    RandomStream = Any  # placeholder; _require_random_stream() raises on use
+    _RANDOM_IMPORT_ERROR = exc
+
+
+def _require_random_stream() -> Any:
+    """Fail-closed RNG access (lazy ImportError with build-ext hint)."""
+    if _RANDOM_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.contracts.randomness not importable "
+            f"({_RANDOM_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before DESPOT search"
+        ) from _RANDOM_IMPORT_ERROR
+    return RandomStream
+
+
+try:
+    from hydra2.belief.kernel import NaturalPacketKernel
+    from hydra2.belief.natural import BeliefEpoch, NaturalBelief
+
+    _BELIEF_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    NaturalBelief = Any  # placeholder; _require_belief() raises on use
+    BeliefEpoch = Any
+    NaturalPacketKernel = Any
+    _BELIEF_IMPORT_ERROR = exc
+
+
+def _require_belief() -> None:
+    """Fail-closed belief access (lazy ImportError with build-ext hint)."""
+    if _BELIEF_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.belief kernel/natural not importable "
+            f"({_BELIEF_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before DESPOT search"
+        ) from _BELIEF_IMPORT_ERROR
+
+
+try:
+    from hydra2.eval.telemetry import ResourceTelemetry, make_resource_telemetry
+
+    _TELEMETRY_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    ResourceTelemetry = Any  # placeholder; _require_telemetry() raises on use
+    make_resource_telemetry = Any
+    _TELEMETRY_IMPORT_ERROR = exc
+
+
+def _require_telemetry() -> Any:
+    """Fail-closed telemetry access (lazy ImportError with build-ext hint)."""
+    if _TELEMETRY_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.eval.telemetry not importable "
+            f"({_TELEMETRY_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before DESPOT search"
+        ) from _TELEMETRY_IMPORT_ERROR
+    return make_resource_telemetry
+
+
+try:
+    from hydra2.contracts.utility import UtilityVector
+
+    _UTILITY_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover
+    UtilityVector = Any  # placeholder; _require_utility() raises on use
+    _UTILITY_IMPORT_ERROR = exc
+
+
+def _require_utility() -> Any:
+    """Fail-closed utility access (lazy ImportError with build-ext hint)."""
+    if _UTILITY_IMPORT_ERROR is not None:
+        raise ImportError(
+            "hydra2.contracts.utility not importable "
+            f"({_UTILITY_IMPORT_ERROR}); build the bridge with `pixi run build-ext` "
+            "before DESPOT search"
+        ) from _UTILITY_IMPORT_ERROR
+    return UtilityVector
+
+
+__all__ = [
+    "_MASTER_SEED",
+    "DespotConfig",
+    "NaturalScenario",
+    "_DespotNode",
+    "_default_budget",
+    "_hash_tie_break",
+    "_scenario_seed_bytes",
+    "make_despot_candidate_spec",
+    "packet_aliasing_rejected",
+    "proposal_reversal_fixture",
+    "validate_packet_partition",
+]
+
+
+# ---------------------------------------------------------------------------
+# Shared search contract lives in common.py, which is authoritative.
+# The import below raises when common.py is unavailable (single authority;
+# no minimal-contract fallback).
+# ---------------------------------------------------------------------------
+
+try:  # shared contracts live in common.py (single authority)
+    from hydra2.search.common import (
+        CandidateSpec as CandidateSpec,
+    )
+    from hydra2.search.common import (
+        ResourceBudget as ResourceBudget,
+    )
+
+    _COMMON_AVAILABLE = True
+except ImportError as exc:
+    raise ImportError(
+        "hydra2.search.common is required for despot_core; "
+        "the minimal-contract fallback was removed (single authority is search.common)"
+    ) from exc
+
+# ---------------------------------------------------------------------------
+# Scenario — natural (world, semantic randomness)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class NaturalScenario:
+    """One natural scenario: ``(world_ref, semantic_rng)``.
+
+    ``weight`` is uniform ``1/K`` (natural), never proposal-weighted.
+    ``log_target_density`` and ``log_proposal_density`` are kept equal for
+    natural sampling (ratio one); proposal variants MUST NOT reuse this type.
+    """
+
+    scenario_id: int
+    world_ref: str
+    # semantic seed bytes derived deterministically from (case_id, candidate_id, scenario_id)
+    semantic_seed_bytes: bytes
+    log_target_density: float
+    log_proposal_density: float
+    weight: float  # 1/K
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.scenario_id, int)
+            or isinstance(self.scenario_id, bool)
+            or self.scenario_id < 0
+        ):
+            raise ContractError("scenario_id must be nonnegative int")
+        if not isinstance(self.world_ref, str) or self.world_ref == "":
+            raise ContractError("world_ref must be non-empty str")
+        if not isinstance(self.semantic_seed_bytes, bytes) or len(self.semantic_seed_bytes) != 32:
+            raise ContractError("semantic_seed_bytes must be 32 bytes")
+        if not math.isfinite(self.log_target_density) or not math.isfinite(
+            self.log_proposal_density
+        ):
+            raise ContractError("log densities must be finite")
+        if self.log_target_density != self.log_proposal_density:
+            raise ContractError("natural scenario requires log_target == log_proposal (ratio one)")
+        if not math.isfinite(self.weight) or self.weight <= 0 or self.weight > 1:
+            raise ContractError("weight must be finite in (0,1]")
+
+
+@dataclass(frozen=True, slots=True)
+class DespotConfig:
+    """Frozen DESPOT hyper-parameters (part of CandidateSpec.parameters)."""
+
+    num_scenarios: int = 16
+    regularization: float | None = None  # None = no regularization; otherwise heuristic
+    max_depth: int = 4
+    tie_break: str = "lexicographic"
+    # budget view: which dimension is the declared comparison view
+    resource_view: Literal["calls", "transitions", "joules"] = "calls"
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.num_scenarios, int)
+            or isinstance(self.num_scenarios, bool)
+            or self.num_scenarios <= 0
+        ):
+            raise ContractError("num_scenarios must be positive int")
+        if self.max_depth <= 0:
+            raise ContractError("max_depth must be positive")
+        if self.tie_break not in ("lexicographic", "stable_hash"):
+            raise ContractError("tie_break must be lexicographic or stable_hash")
+        if self.regularization is not None and (
+            not isinstance(self.regularization, float) or not math.isfinite(self.regularization)
+        ):
+            raise ContractError("regularization must be finite float or None")
+
+
+# ---------------------------------------------------------------------------
+# Helpers — packet partition, proposal-reversal, aliasing
+# ---------------------------------------------------------------------------
+
+
+def validate_packet_partition(successors: Any, *, tolerance: float = 1e-9) -> None:
+    """Validate that packet successors form a disjoint exhaustive partition.
+
+    Checks:
+    - pairwise packet_id distinct (aliasing rejected),
+    - probabilities finite, nonnegative, sum to 1 within tolerance,
+    - each successor carries distinct packet identity (no aliasing).
+    """
+    if successors is None:
+        raise PacketPartitionError("successors must be non-empty [PBRF_PARTITION_EMPTY]")
+    try:
+        if len(successors) == 0:  # type: ignore[arg-type]
+            raise PacketPartitionError("successors must be non-empty [PBRF_PARTITION_EMPTY]")
+    except TypeError:
+        pass
+    pids: list[str] = []
+    total = 0.0
+    for s in successors:
+        pid = getattr(getattr(s, "packet", None), "packet_id", None)
+        if pid is None:
+            # fallback: s itself may be packet_id string
+            pid_raw: Any = getattr(s, "packet_id", None)
+            pid = pid_raw if isinstance(pid_raw, str) and pid_raw != "" else str(s)
+        if not isinstance(pid, str) or pid == "":
+            raise ContractError("successor packet_id must be non-empty str")
+        pids.append(pid)
+        prob = getattr(s, "probability", None)
+        if prob is not None:
+            if (
+                not isinstance(prob, (int, float))
+                or not math.isfinite(float(prob))
+                or float(prob) < 0
+            ):
+                raise ContractError("probability must be finite nonnegative")
+            total += float(prob)
+    if len(pids) != len(set(pids)):
+        raise PacketPartitionError(
+            f"packet aliasing: duplicate packet_id in {[p[:12] for p in pids]} [PBRF_PARTITION_ALIAS]"
+        )
+    if any(hasattr(s, "probability") for s in successors) and abs(total - 1.0) > tolerance:
+        raise PacketPartitionError(
+            f"packet mass {total} != 1 within {tolerance} [PBRF_PARTITION_MASS]"
+        )
+
+
+def packet_aliasing_rejected(successors: Any) -> bool:
+    """Return True iff successors would be rejected for aliasing/mass error."""
+    try:
+        validate_packet_partition(successors)
+    except (PacketPartitionError, ContractError):
+        return True
+    return False
+
+
+def proposal_reversal_fixture() -> dict[str, Any]:
+    """Tiny fixture proving unweighted non-natural scenarios can flip the action.
+
+    Constructs a 2-world, 2-action case where:
+    - natural law is uniform (0.5, 0.5),
+    - true value favors action 0,
+    - proposal law is biased 0.9/0.1 toward world 1 (which favors action 1),
+    - unweighted proposal mean chooses the *wrong* action, while correctly
+      weighted (b/q) or natural mean chooses correctly.
+
+    The fixture is used as a negative control: calling an arbitrary weighted
+    number an upper bound is prohibited; this demonstrates that proposal bias
+    without correction reverses decisions.
+    """
+    try:
+        from hydra2._native import search as _despot_seeds_bridge
+
+        _fixture_fn = _despot_seeds_bridge.despot_proposal_reversal_fixture  # type: ignore[attr-defined]  # reason: despot_seeds leaf lands with MAIN wiring; AttributeError fallback covers stale .so
+    except (ImportError, AttributeError):
+        pass  # stale .so: fall through to the oracle below (same values)
+    else:
+        try:
+            return _fixture_fn()
+        except (ValueError, TypeError) as exc:
+            raise ContractError(str(exc)) from exc
+    # world 0: values {a0: 0.8, a1: 0.2}, world 1: {a0: 0.1, a1: 0.9}
+    # natural expected: a0=0.45, a1=0.55? Actually to make a0 correct, swap:
+    # Let's set world0 a0=1.0 a1=0.0, world1 a0=0.0 a1=1.0 but with proposal bias toward world1,
+    # natural uniform gives tie 0.5 vs 0.5. Need bias to flip.
+    # Instead make values: world0 a0=0.9 a1=0.0, world1 a0=0.0 a1=0.6
+    # natural: a0=0.45, a1=0.30 -> a0 wins.
+    # proposal biased 0.9 to world1: unweighted a0≈0.09 a1≈0.54 -> a1 wins (reversal)
+    # weighted correction restores natural.
+
+    natural_probs = (0.5, 0.5)
+    proposal_probs = (0.1, 0.9)  # heavily favors world 1
+    values = ({0: 0.9, 1: 0.0}, {0: 0.0, 1: 0.6})
+
+    def expected(probs: tuple[float, ...], vals: tuple[dict[int, float], ...]) -> dict[int, float]:
+        acc: dict[int, float] = {0: 0.0, 1: 0.0}
+        for p, v in zip(probs, vals, strict=False):
+            for a in acc:
+                acc[a] = acc[a] + p * v[a]
+        return acc
+
+    natural_mean: dict[int, float] = expected(natural_probs, values)
+    proposal_unweighted: dict[int, float] = expected(proposal_probs, values)
+    # weighted correction: each proposal sample weighted by b/q
+    weighted: dict[int, float] = {0: 0.0, 1: 0.0}
+    for i, (pb, qb) in enumerate(zip(natural_probs, proposal_probs, strict=False)):
+        w: float = pb / qb if qb > 0 else 0.0
+        # expected contribution of proposal-weighted estimator = sum_q [w * v * q] = sum_b v
+        # but for fixture illustration we compute reweighted mean
+        for a in weighted:
+            weighted[a] = weighted[a] + proposal_probs[i] * w * values[i][a]
+
+    # natural chooses a0 (0.45 > 0.30)
+    def _max_key_mean(d: dict[int, float], k: int) -> float:
+        return d[k]
+
+    natural_choice: int = max(natural_mean, key=lambda k: natural_mean[cast("int", k)])
+    proposal_choice: int = max(
+        proposal_unweighted, key=lambda k: proposal_unweighted[cast("int", k)]
+    )
+    weighted_choice: int = max(weighted, key=lambda k: weighted[cast("int", k)])
+    return {
+        "natural_mean": natural_mean,
+        "proposal_unweighted_mean": proposal_unweighted,
+        "proposal_weighted_mean": weighted,
+        "natural_choice": natural_choice,
+        "proposal_unweighted_choice": proposal_choice,
+        "proposal_weighted_choice": weighted_choice,
+        "reversal": natural_choice != proposal_choice,
+        "correction_restores": natural_choice == weighted_choice,
+        "note": "unweighted non-natural reverses; weighted restores — proves proposal bias without correction is unsafe",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Deterministic scenario seeding
+# ---------------------------------------------------------------------------
+
+_MASTER_SEED = b"wp08c_despot_natural_v1"
+
+
+def _scenario_seed_bytes(
+    *, candidate_id: str, case_id: str, scenario_idx: int, attempt_id: int = 0
+) -> bytes:
+    """Deterministic 32-byte seed for one scenario.
+
+    Uses semantic-seed derivation when available; otherwise falls back to
+    SHA-256 over a canonical payload. Determinism is over (candidate_id,
+    case_id, scenario_idx, attempt_id) — never call order.
+    """
+    try:
+        from hydra2._native import search as _despot_seeds_bridge
+
+        _seed_fn = _despot_seeds_bridge.despot_scenario_seed_bytes  # type: ignore[attr-defined]  # reason: despot_seeds leaf lands with MAIN wiring; AttributeError fallback covers stale .so
+    except (ImportError, AttributeError):
+        pass  # stale .so: fall through to the oracle below (same bytes)
+    else:
+        try:
+            return _seed_fn(candidate_id, case_id, scenario_idx, attempt_id)  # pyrefly: ignore[unknown-argument-type] # untyped bridge seed fn
+        except (ValueError, TypeError) as exc:
+            raise ContractError(str(exc)) from exc
+    payload = canonical_bytes(
+        {
+            "candidate_id": candidate_id,
+            "case_id": case_id,
+            "scenario_idx": scenario_idx,
+            "attempt_id": attempt_id,
+            "master": _MASTER_SEED.hex(),
+        }
+    )
+    return hashlib.sha256(payload).digest()
+
+
+def _hash_tie_break(actions: tuple[Any, ...], candidate_id: str) -> Any:
+    """Stable lexicographic tie break via hash of candidate_id + action id."""
+    # Bridge split: the aid projection (including the salted-hash fallback)
+    # stays Python-side; the sha hex ordering lives in
+    # ``hydra2._native.search.despot_hash_tie_break_index``.
+
+    def aid(a: Any) -> int:
+        v = getattr(a, "action_id", None)
+        if isinstance(v, int) and not isinstance(v, bool):
+            return v
+        if isinstance(a, int) and not isinstance(a, bool):
+            return a
+        return hash(str(a)) & 0xFFFFFFFF
+
+    _items = list(actions)
+    if len(_items) == 0:
+        return None
+    try:
+        from hydra2._native import search as _despot_seeds_bridge
+
+        _tie_fn = _despot_seeds_bridge.despot_hash_tie_break_index  # type: ignore[attr-defined]  # reason: despot_seeds leaf lands with MAIN wiring; AttributeError fallback covers stale .so
+    except (ImportError, AttributeError):
+        pass  # stale .so: fall through to the oracle below (same winner)
+    else:
+        try:
+            _cid = candidate_id if isinstance(candidate_id, str) else str(candidate_id)
+            _idx: int = _tie_fn(_cid, [str(aid(a)) for a in _items])  # pyrefly: ignore[unknown-argument-type] # untyped bridge tie fn
+        except (ValueError, TypeError) as exc:
+            raise ContractError(str(exc)) from exc
+        return _items[_idx]
+    best = None
+    best_key = None
+    for a in _items:
+        # use hash of (candidate_id, aid) to be deterministic but not call-order dependent
+        h = hashlib.sha256(f"{candidate_id}:{aid(a)}".encode()).hexdigest()
+        if best_key is None or h < best_key:
+            best_key = h
+            best = a
+    return best
+
+
+# ---------------------------------------------------------------------------
+# Planner node
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class _DespotNode:
+    """One DESPOT belief-action node (actor-visible)."""
+
+    # Wave 2 bridge audit: kept Python — node tables stay Python (lower_value is a
+    # feasible-policy estimate, priority_proxy explicitly not an upper bound; no UCT/PUCT pyfn covers it).
+
+    node_id: str
+    depth: int
+    lower_value: float  # feasible policy estimate at this node (not a bound)
+    priority_proxy: float  # heuristic search priority; explicitly NOT an upper bound
+    visits: int = 0
+    children: dict[Any, _DespotNode] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Factory helper for CandidateSpec binding
+# ---------------------------------------------------------------------------
+
+
+def _default_budget() -> Any:
+    """Default gameplay_5s budget for tests (common contract, single authority)."""
+    return ResourceBudget(
+        mode="gameplay_5s",
+        deadline_ms=5000,
+        fallback_margin_ms=200,
+        max_model_calls=64,
+        max_transitions=256,
+        max_particles=16,
+        max_memory_bytes=None,
+    )
+
+
+def make_despot_candidate_spec(
+    *,
+    candidate_id: str = "candidate2_despot_natural",
+    num_scenarios: int = 16,
+    regularization: float | None = None,
+    max_depth: int = 4,
+    resource_budget: Any | None = None,
+    # dummy-until-real: pilot default, replaced by _canonical_hashes/caller before commit.
+    rules_hash: str = "sha256:" + "a" * 64,
+) -> Any:
+    """Build a frozen CandidateSpec for natural DESPOT (test helper)."""
+    if resource_budget is None:
+        resource_budget = _default_budget()
+    params = {
+        "num_scenarios": num_scenarios,
+        "max_depth": max_depth,
+        "regularization": regularization,
+        "tie_break": "lexicographic",
+        "resource_view": "calls",
+    }
+    try:
+        return CandidateSpec(
+            candidate_id=candidate_id,
+            algorithm="despot_natural",
+            algorithm_version="1.0.0",
+            rules_hash=rules_hash,
+            utility_id="expected_final_placement",
+            utility_manifest_hash="sha256:" + "b" * 64,
+            action_table_hash="sha256:" + "c" * 64,
+            observation_schema_hash="sha256:" + "d" * 64,
+            packet_boundary_hash="sha256:" + "e" * 64,
+            model_hash="sha256:" + "f" * 64,
+            belief_model_hash=None,
+            event_model_hash=None,
+            continuation_policy_hashes=(),
+            proposal_spec_hash=None,
+            case_manifest_hash="sha256:" + "0" * 64,
+            resource_budget=resource_budget,
+            fallback_candidate_id="candidate0",
+            tie_break="lexicographic",
+            rng_protocol_hash="sha256:" + "1" * 64,
+            random_stream_schema_hash="sha256:" + "2" * 64,
+            parameters=params,
+        )
+    except (AttributeError, ValueError, TypeError) as exc:
+        raise ContractError(
+            f"despot: CandidateSpec build requires search.common contract: {exc}"
+        ) from exc

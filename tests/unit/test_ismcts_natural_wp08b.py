@@ -13,14 +13,16 @@ from hydra2.belief.world import make_full_world, world_actor_observation
 from hydra2.contracts.common import ContractError, VisibilityViolationError
 from hydra2.contracts.observation_actor import make_actor_observation
 from hydra2.contracts.randomness import RandomStream
-from hydra2.search.ismcts_natural import (
+from hydra2.search.ismcts_act import (
+    NaturalISMCTSPlanner,
+    double_weighting_oracle_detects_correction,
+)
+from hydra2.search.ismcts_core import (
     FORBIDDEN_IN_TREE_KEY,
     InformationSetNode,
     NaturalISMCTSConfig,
-    NaturalISMCTSPlanner,
     UniformContinuationPolicy,
     attempt_redeterminize,
-    double_weighting_oracle_detects_correction,
     info_key_for_observation,
     is_redeterminization_enabled,
     model_vector_for_world,

@@ -7,19 +7,19 @@ from pathlib import Path
 
 import pytest
 
+from hydra2._native import contracts as _rules_bridge  # pyrefly: ignore[missing-import]
 from hydra2.artifacts.canonical import canonical_bytes, loads_canonical
 from hydra2.artifacts.digest import sha256_digest
 from hydra2.artifacts.registry import artifact_id, envelope_from_json
 from hydra2.contracts.common import ContractError
-from hydra2.contracts.rules_canonical import (
-    RULES_MANIFEST_PAYLOAD_FIELDS,
-    SOURCE_EVIDENCE_KEY,
-)
 from hydra2.contracts.rules_manifest import (
     manifest_to_payload,
     resolve_final_ranks,
     rules_manifest_from_payload,
 )
+
+RULES_MANIFEST_PAYLOAD_FIELDS = _rules_bridge.RULES_MANIFEST_PAYLOAD_FIELDS
+SOURCE_EVIDENCE_KEY = _rules_bridge.SOURCE_EVIDENCE_KEY
 
 pytestmark = pytest.mark.contract_package("WP-02B")
 

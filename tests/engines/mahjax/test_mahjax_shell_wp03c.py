@@ -17,8 +17,8 @@ import sys
 from typing import Any
 
 import pytest
-from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
+from hydra2._native import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 from hydra2.artifacts.canonical import canonical_bytes as canonical_json_bytes
 from hydra2.artifacts.digest import of_canonical as sha256_digest_of_json
 from hydra2.artifacts.digest import sha256_file

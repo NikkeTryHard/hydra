@@ -1,0 +1,32 @@
+# Repo-level cargo defaults: cargo discovers config from the WORKING directory
+# upward, so `crates/.cargo/config.toml` alone never covers builds invoked at
+# the repo root (e.g. `pixi run build-ext`, which runs from `$PIXI_PROJECT_ROOT`).
+# This file guarantees the three build disciplines from any cwd:
+# - sccache wraps every rustc call (shared cache across workspaces/targets);
+# - parallelism caps at 16 threads (this box has 20 CPUs; uncapped oversubscribes);
+# - linking goes through clang + mold (mirrors the global `~/.cargo/config.toml`
+#   and `crates/packager/.cargo/config.toml`; duplicate `-fuse-ld=mold` args
+#   across config levels are harmless — last wins, same value).
+#   WARNING: any RUSTFLAGS env SHADOWS this rustflags entry entirely — cargo's
+#   four rustflag sources are mutually exclusive, first-wins (RUSTFLAGS beats
+#   config, never merges). Env presets MUST repeat the link-arg inside
+#   RUSTFLAGS or the link silently falls back to bfd (seen 2026-09-21).
+# LTO policy lives with the profiles, not here: workspace release is `lto fat`
+# (`crates/Cargo.toml`, inherited by `bench`), packager release is `lto thin`
+# (`crates/packager/Cargo.toml`); dev/test profiles stay unoptimized on purpose.
+[build]
+jobs = 16
+rustc-wrapper = "sccache"
+
+# Interpreter the pyo3 build script configures against. Pinned (not probed)
+# because ambient `python3` on PATH (pyenv/uv shims) prints a `sys.version`
+# string pyo3 0.29 cannot parse, which fails every pyo3-ffi rebuild with
+# `failed to parse CPython sys.version`. `relative` keeps this
+# checkout-portable; on machines without a pixi env yet the path dangles
+# and pyo3 falls back to PATH probing (previous behavior).
+[env]
+PYO3_PYTHON = { value = ".pixi/envs/default/bin/python", relative = true }
+
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]

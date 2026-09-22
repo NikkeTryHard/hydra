@@ -25,8 +25,8 @@ from hydra2.contracts.action_model import CanonicalAction
 from hydra2.contracts.common import PacketPartitionError
 from hydra2.contracts.randomness import RandomStream
 from hydra2.search.common import SearchRequest, candidate_spec_hash
-from hydra2.search.despot_natural import (
-    NaturalDespotPlanner,
+from hydra2.search.despot_act import NaturalDespotPlanner
+from hydra2.search.despot_core import (
     NaturalScenario,
     make_despot_candidate_spec,
     packet_aliasing_rejected,

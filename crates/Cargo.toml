@@ -1,0 +1,48 @@
+[workspace]
+members = ["feed", "shard", "search", "bridge"]
+resolver = "2"
+
+[profile.release]
+opt-level = 3  # portable max; target-cpu stays out (build-ext-max owns it)
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "unwind"
+# NOTE: per-package `panic` overrides are rejected by cargo
+# (`panic` may not be specified in a `package` profile), so the
+# feed/shard-abort + bridge-unwind split is inexpressible: release stays
+# all-unwind, which preserves the safety-critical half (bridge unwinding
+# into stream_py_err instead of aborting the interpreter).
+[profile.bench]
+inherits = "release"
+[workspace.lints.clippy]
+# Hard deny: cdylib/libs must return Result/PyResult to the Python boundary,
+# never abort the interpreter or scribble on its stdout. Tests/examples stay
+# ergonomic via crates/clippy.toml allow-*-in-tests + per-file allows.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unreachable = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+# Numeric hardening (warn): shard/feed index math and score casts must state
+# their policy (try_from/saturating) instead of silent `as` truncation.
+cast_possible_truncation = "warn"
+cast_sign_loss = "warn"
+cast_precision_loss = "warn"
+cast_possible_wrap = "warn"
+# Curated noise allows (revisit quarterly): doc lints contradict deny-panic,
+# repetitions/must-use/pub-crate are taste, crate-versions is out of control.
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+redundant_pub_crate = "allow"
+multiple_crate_versions = "allow"
+# Deliberately absent: whole pedantic/nursery/cargo groups (hundreds of
+# opinionated hits; cherry-picks above carry the value), unsafe_code=forbid
+# (feed checked_slice, shard mmap, bridge capsule FFI are legitimate unsafe),
+# missing_docs (undocumented-public flood — adopt only with doc culture).

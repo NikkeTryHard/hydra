@@ -4,8 +4,8 @@
 # - Copy this file to a run file (e.g. configs/training/my-run.yaml) and
 #   launch with: hydra2 train my-run.yaml --dry-run   (plan only, reads no
 #   data, mutates nothing) then: hydra2 train my-run.yaml
-# - Code wins on drift: src/hydra2/training/run_config.py is authoritative;
-#   unknown keys raise ContractError with a stable message (strict loader).
+# - Code wins on drift: python/hydra2/training/_rc_root.py (load_run_config)
+#   plus the _rc_* family is authoritative;
 # - Streaming-first: training consumes .mjai.json.zst straight from
 #   data.root (no parquet shards), yet ephemeral rows carry the identical
 #   contracts (validate-then-quarantine, actor/privileged split, wall-disjoint
@@ -36,7 +36,7 @@ data:
   drop_last: true # WHY: pins tail behavior so sample counts reproduce bit-identically.
   num_workers: 0 # WHY: loader worker count; resume with a different count is a hard error.
   world_size: 1 # WHY: data-parallel world; rank comes from launch env and is verified at bind.
-  replay_backend: rust # WHY: Rust plane feed (tensor-native, no per-row Python); requires `pixi run build-ext` once per env. python selects the parity oracle.
+  replay_backend: rust # WHY: Rust plane feed (tensor-native, no per-row Python); requires `pixi run build-ext` once per env.
   # FEED TUNING (all in YAML per repo rule — no hidden constants; file refs in WHY):
   decode_prefetch: 64 # WHY: games held in the background decode pool (src/hydra2/data/stream.py PrefetchGameStream). Must cover one expansion batch; raise if StreamStats.waits climbs.
   expand_batch_games: 64 # WHY: games pulled per fill round, sharded over spawn workers with one bridge FFI per chunk (src/hydra2/training/stream_train.py _fill_parallel via rust_batch.expand_game_batch).

@@ -28,45 +28,30 @@ def pytest_configure(config: pytest.Config) -> None:
 
 @pytest.fixture(scope="session")
 def rust_extension() -> Any:
-    """Import the lane-built Rust replay extension (import-only, never builds).
+    """Import the lane-built Rust extension (import-only, never builds).
 
     Lane precondition: run ``pixi run build-ext`` first. This fixture runs
-    ZERO cargo and copies NO 175MiB ``.so`` into tmp dirs (the per-worker
-    rebuild + tmp-copy disease is gone: 16x concurrent in test-cpu, 4x
-    sequential in test-serial). Resolution order: ``$HYDRA2_TEST_EXTDIR``
-    (lane-set shared dir) else ``<repo>/build/test-ext`` else the installed
-    ``hydra2_replay_rs`` package (``build-ext``'s install target); missing
-    everywhere fails loud. Staleness stays fail-closed at the USE sites
+    ZERO cargo and copies NO ``.so`` into tmp dirs. Single install target:
+    the ``hydra2._native`` submodule (``build-ext``'s editable install);
+    missing fails loud. Staleness stays fail-closed at the USE sites
     (``rust_batch._check_fresh`` over the ``build.json`` sidecar), never
     here. The ``sys.modules`` pop on teardown is kept so a late-session
     import never pins a shadowed copy.
     """
     import importlib
-    import os
     import sys
-    from pathlib import Path
 
-    root = Path(__file__).resolve().parents[2]
-    ext_dir: Path | None = None
-    env_dir = os.environ.get("HYDRA2_TEST_EXTDIR")
-    for candidate in ([Path(env_dir)] if env_dir else []) + [root / "build" / "test-ext"]:
-        if candidate.is_dir():
-            ext_dir = candidate
-            sys.path.insert(0, str(ext_dir))
-            break
     try:
         try:
-            yield importlib.import_module("hydra2_replay_rs")
+            yield importlib.import_module("hydra2._native")
         except ImportError as exc:
             raise ImportError(
-                "hydra2_replay_rs bridge not importable; run `pixi run build-ext` first"
+                "hydra2._native bridge not importable; run `pixi run build-ext` first"
             ) from exc
     finally:
-        if ext_dir is not None:
-            sys.path.remove(str(ext_dir))
         # Pop the module itself: a shadowed copy must never leak to later
         # importers in this worker — import succeeds but attributes miss.
-        sys.modules.pop("hydra2_replay_rs", None)
+        sys.modules.pop("hydra2._native", None)
 
 
 @pytest.fixture(scope="session")

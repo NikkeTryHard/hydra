@@ -2,7 +2,7 @@
 
 REST-transport contract (M2 declared+landed): the ClearML SDK is dead, so
 this file injects a recording ``_FakeBridgeMirror`` double for
-``hydra2_replay_rs.mirror`` (no server, no extension build required) and
+``hydra2._native.mirror`` (no server, no extension build required) and
 asserts:
 
 1. disabled by default (every method a no-op, neither ``clearml`` nor the
@@ -56,7 +56,7 @@ _TELEMETRY_DIGEST = "sha256:" + "cd" * 32
 
 
 class _FakeBridgeMirror:
-    """Recording stand-in for ``hydra2_replay_rs.mirror`` (no server)."""
+    """Recording stand-in for ``hydra2._native.mirror`` (no server)."""
 
     def __init__(self, *, ok: bool = True, fail: BaseException | None = None) -> None:
         self.ok = ok
@@ -96,7 +96,9 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for var in _ENV_VARS:
         monkeypatch.delenv(var, raising=False)
     monkeypatch.delitem(sys.modules, "clearml", raising=False)
-    for key in [key for key in sys.modules if key.split(".")[0] == "hydra2_replay_rs"]:
+    for key in [
+        key for key in sys.modules if key == "hydra2._native" or key.startswith("hydra2._native.")
+    ]:
         monkeypatch.delitem(sys.modules, key, raising=False)
 
 
@@ -105,9 +107,9 @@ def fake_bridge(clean_env: None, monkeypatch: pytest.MonkeyPatch) -> _FakeBridge
     from types import ModuleType
 
     bridge = _FakeBridgeMirror()
-    top = ModuleType("hydra2_replay_rs")
+    top = ModuleType("hydra2._native")
     top.mirror = bridge  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "hydra2_replay_rs", top)
+    monkeypatch.setitem(sys.modules, "hydra2._native", top)
     return bridge
 
 
@@ -166,7 +168,7 @@ def test_disabled_by_default_is_noop(clean_env: None, tmp_path: Path) -> None:
     mirror.close()
     mirror.close()
     assert "clearml" not in sys.modules
-    assert "hydra2_replay_rs" not in sys.modules
+    assert "hydra2._native" not in sys.modules
     assert not offline.exists()
 
 
@@ -369,9 +371,9 @@ def test_unreachable_server_falls_back_without_raise(
     from types import ModuleType
 
     bridge = _FakeBridgeMirror(ok=False)
-    top = ModuleType("hydra2_replay_rs")
+    top = ModuleType("hydra2._native")
     top.mirror = bridge  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "hydra2_replay_rs", top)
+    monkeypatch.setitem(sys.modules, "hydra2._native", top)
     mirror, offline = _make_enabled(tmp_path, monkeypatch, run_name="fallback-run")
     assert mirror.start_run() is not None
     with pytest.warns(UserWarning, match="transport fallback"):
@@ -393,9 +395,9 @@ def test_bridge_raise_falls_back_without_raise(
     from types import ModuleType
 
     bridge = _FakeBridgeMirror(fail=ConnectionError("refused"))
-    top = ModuleType("hydra2_replay_rs")
+    top = ModuleType("hydra2._native")
     top.mirror = bridge  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "hydra2_replay_rs", top)
+    monkeypatch.setitem(sys.modules, "hydra2._native", top)
     mirror, offline = _make_enabled(tmp_path, monkeypatch, run_name="raise-run")
     assert mirror.start_run() is not None
     with pytest.warns(UserWarning, match="transport fallback"):
@@ -407,7 +409,7 @@ def test_missing_bridge_extension_falls_back(
     clean_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Unbuilt extension: file fallback only, never raises, never imports the SDK."""
-    monkeypatch.setitem(sys.modules, "hydra2_replay_rs", None)
+    monkeypatch.setitem(sys.modules, "hydra2._native", None)
     mirror, offline = _make_enabled(tmp_path, monkeypatch, run_name="nobridge-run")
     assert mirror.start_run() is not None
     with pytest.warns(UserWarning, match="transport fallback"):
@@ -428,7 +430,7 @@ def test_null_mirror_never_touches_transport(clean_env: None, tmp_path: Path) ->
     mirror.log_promotion({"observed_estimate": 2.5})
     mirror.log_duplicate_audit(manifest_digest=_DIGEST)
     mirror.close()
-    assert "hydra2_replay_rs" not in sys.modules
+    assert "hydra2._native" not in sys.modules
     assert "clearml" not in sys.modules
     assert not offline.exists()
 
@@ -440,9 +442,9 @@ def test_base_url_env_override(
     from types import ModuleType
 
     bridge = _FakeBridgeMirror()
-    top = ModuleType("hydra2_replay_rs")
+    top = ModuleType("hydra2._native")
     top.mirror = bridge  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "hydra2_replay_rs", top)
+    monkeypatch.setitem(sys.modules, "hydra2._native", top)
     monkeypatch.setenv("HYDRA2_CLEARML_ENABLED", "1")
     monkeypatch.setenv("HYDRA2_CLEARML_MIRROR_URL", "http://from-env:8080")
     mirror = make_mirror(offline_dir=tmp_path / "a", base_url="http://explicit:9000")

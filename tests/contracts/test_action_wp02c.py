@@ -14,9 +14,10 @@ import random
 from pathlib import Path
 
 import pytest
-from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
+from hydra2._native import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 from hydra2.artifacts.canonical import canonical_bytes
+from hydra2.artifacts.canonical import canonical_bytes as canonical_json_bytes
 from hydra2.contracts.action_artifact import (
     ACTION_TABLE_ARTIFACT_TYPE,
     ACTION_TABLE_SCHEMA_VERSION,
@@ -43,9 +44,6 @@ from hydra2.contracts.action_table import (
 )
 from hydra2.contracts.action_table import (
     canonical_action_codec as codec,
-)
-from hydra2.contracts.canonical import (
-    canonical_json_bytes,
 )
 from hydra2.contracts.common import (
     ContractError,

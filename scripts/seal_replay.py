@@ -54,7 +54,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-WORKSPACE = REPO_ROOT / "tools" / "hydra2-replay-rs"
+WORKSPACE = REPO_ROOT / "crates"
 HOOK_FILTER = "seal_replay_driver_hook"
 ROWS_GATE_FILTER = "rows::"
 

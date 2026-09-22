@@ -15,8 +15,8 @@ import math
 import time
 
 import pytest
-from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
+from hydra2._native import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 from hydra2.belief.kernel import NaturalPacketKernel
 from hydra2.belief.natural import NaturalBelief
 from hydra2.contracts.common import (
@@ -27,20 +27,22 @@ from hydra2.contracts.common import (
 )
 from hydra2.contracts.randomness import RandomStream
 from hydra2.search.common import SearchRequest
-from hydra2.search.pbrf import (
-    ChildEntry,
+from hydra2.search.pbrf_act import PbrfPlanner
+from hydra2.search.pbrf_commit import commit
+from hydra2.search.pbrf_forest import (
     ImmutableForest,
-    PbrfConfig,
-    PbrfPlanner,
     _conditional_carry_logps,
     _is_target_compatible,
     _verify_delta_reconstruction,
     build_pbrf,
-    commit,
+)
+from hydra2.search.pbrf_partition import (
+    ChildEntry,
+    PbrfConfig,
     fixed_allocate,
-    make_pbrf_candidate_spec,
     validate_packet_partition,
 )
+from hydra2.search.pbrf_spec import make_pbrf_candidate_spec
 from tests.unit.test_pbrf_wp09a import (
     _MASTER_RULES,
     _aid,
@@ -351,7 +353,7 @@ def test_stale_child_is_hard_failure() -> None:
     # Try to commit forest2 using packet from forest (cross-epoch) — should result in miss_rebuild (stale)
     # Use forest2's action/packet but try to commit forest (epoch mismatch) should produce stale detection and rebuild
     # Instead test that rekey_and_verify rejects tampered delta
-    from hydra2.search.pbrf import rekey_and_verify
+    from hydra2.search.pbrf_commit import rekey_and_verify
 
     # Tamper delta
     tampered = tuple(
@@ -394,7 +396,7 @@ def test_confirmation_reversal_is_hard_failure() -> None:
     )
     # Simulate search picking max scalar (deterministic) vs confirmation that would pick different if not frozen
     # For our deterministic value function, frozen selection is stable across repeats
-    from hydra2.search.pbrf import PbrfPlanner
+    from hydra2.search.pbrf_act import PbrfPlanner
 
     spec = make_pbrf_candidate_spec(
         parent_count=4, max_search_batches=8, candidate_id="candidate3_pbrf_core_v1"
@@ -706,8 +708,8 @@ def test_policy_world_code_in_table() -> None:
 
 
 def test_observe_commits_emitted_action_despite_packet_collision() -> None:
-    # Kernel packet ids are action-free: every pid exists under every action.
-    # observe() must commit the stored emitted action, never first-hit-wins.
+    # Trigger-only commit: observe() consumes the stored act()-emitted action
+    # one-shot (blob path), never first-hit-wins via forest sweep.
     b, epoch, obs = _belief_epoch()
     legal = _legal_pair()
     spec = make_pbrf_candidate_spec(parent_count=2, max_search_batches=4)
@@ -720,17 +722,14 @@ def test_observe_commits_emitted_action_despite_packet_collision() -> None:
         belief_epoch=epoch,
     )
     planner.act(req)
-    # Pin the emitted action to the second candidate: the old candidate sweep
-    # would commit the first candidate's identical pid instead.
+    # Pin the emitted action to the second candidate: observe must commit the
+    # stored action one-shot, not sweep forest children.
     planner._last_selected_action = legal[1]
-    oaid = _aid(legal[1])
-    pid = next(pid for (ka, pid) in planner._forest.children if ka == oaid)
     parent = b.sample_natural(epoch, count=1, rng=RandomStream(b"collide_pkt"))[0]
     succs = NaturalPacketKernel().enumerate_next(epoch=epoch, particle=parent, action=legal[1])
-    pkt = next(s.packet for s in succs if s.packet.packet_id == pid)
+    pkt = succs[0].packet
     planner.observe(pkt)
     assert planner._last_commit is not None and planner._last_commit.kind == "hit_commit"
-    assert (oaid, pid) in planner._forest.children
     assert planner._last_selected_action is None  # consumed one-shot
 
 
@@ -820,7 +819,7 @@ def test_child_entry_tile_stored_and_directly_verified() -> None:
     succs = NaturalPacketKernel().enumerate_next(epoch=epoch, particle=parent, action=action)
     pkt = next(s.packet for s in succs if s.packet.packet_id == pid)
     auth = b.pushforward_condition(epoch, action=action, packet=pkt)
-    from hydra2.search.pbrf import rekey_and_verify
+    from hydra2.search.pbrf_commit import rekey_and_verify
 
     rekeyed = rekey_and_verify(entries, auth, forest=forest, action_id=aid)
     assert tuple(r.tile for r in rekeyed) == tuple(e.tile for e in entries)

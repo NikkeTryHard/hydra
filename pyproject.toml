@@ -1,6 +1,6 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["maturin>=1.15"]
+build-backend = "maturin"
 
 [project]
 name = "hydra2"
@@ -17,8 +17,11 @@ dependencies = ["pyarrow>=25.0.1,<26", "zstandard>=0.25.0,<0.26", "jax[cuda13]>=
 [project.scripts]
 hydra2 = "hydra2.cli:main"
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/hydra2"]
+[tool.maturin]
+bindings = "pyo3"
+python-source = "python"
+module-name = "hydra2._native"
+manifest-path = "crates/bridge/Cargo.toml"
 
 [tool.pixi.workspace]
 name = "hydra2"
@@ -71,15 +74,15 @@ test-contracts = { cmd = "pytest tests/contracts -m 'not gpu and not serial' -n 
 test-search = { cmd = "pytest tests/search -m 'not gpu and not serial' -n 16 --dist loadscope --durations=15 --durations-min=1.0", env = { CUDA_VISIBLE_DEVICES = "", JAX_PLATFORMS = "cpu", XLA_PYTHON_CLIENT_PREALLOCATE = "false" } }
 test-training = { cmd = "pytest tests/unit -k 'train or loop or replay or stream or baseline or supervised' -m 'not gpu and not serial' -n 16 --dist loadscope --durations=15 --durations-min=1.0", env = { CUDA_VISIBLE_DEVICES = "", JAX_PLATFORMS = "cpu", XLA_PYTHON_CLIENT_PREALLOCATE = "false" } }
 test-analysis = { cmd = "pytest tests --package WP-12" }
-# jax-import lint scope (m8): eager `import jax` is barred in src/hydra2/training +
+# jax-import lint scope (m8): eager `import jax` is barred in python/hydra2/training +
 # tests/unit (XLA init cost + GPU OOM + concurrent-import aborts in xdist lanes);
 # tests/engines is EXEMPT (mahjax needs in-proc JAX there); lazy/function-level
 # imports are covered too (the CI grep must match indented imports, no ^ anchor);
 # training workers force CPU determinism via differential_modes (never in-proc JAX
 # in the hot lane). Scope note only — enforced as a CI grep, not a pixi task change.
-lint = { cmd = "ruff check src tests" }
-format-check = { cmd = "ruff format --check src tests" }
-typecheck = { cmd = "pyrefly check src" }
+lint = { cmd = "ruff check python tests" }
+format-check = { cmd = "ruff format --check python tests" }
+typecheck = { cmd = "pyrefly check python" }
 loc-gate = { cmd = "python scripts/check_loc.py" }
 config-check = { cmd = "python -m hydra2.config_check" }
 env-manifest = { cmd = "python -m hydra2.runtime.environment" }
@@ -94,65 +97,89 @@ runtime-probe = { cmd = "python -m hydra2.probe" }
 # packaging-config edits invalidate, pure-Rust mtime gates miss both; pixi env
 # changes invalidate automatically; cargo fingerprinting handles intra-Rust
 # incrementality underneath (two layers, no overlap, no custom gate script).
-# INTERIM cmd: `maturin develop` against the bridge PACKAGE manifest (not the
-# virtual workspace root — maturin needs a package manifest), pure-Rust fallback
-# until the mixed-layout migration lands (see crates/hydra-bridge/Cargo.toml
-# note); outputs retarget to the installed _native module + _native.pyi then.
-# Until that migration the _native outputs never materialize, so the task
-# rebuilds (always-fresh beats a stale .so measured as fresh); the no-touch
-# skip subcase (T-stale) goes green with the migration.
-build-ext = { cmd = "maturin develop --release --manifest-path \"$PIXI_PROJECT_ROOT/tools/hydra2-replay-rs/crates/hydra-bridge/Cargo.toml\"", inputs = ["tools/hydra2-replay-rs/Cargo.toml", "tools/hydra2-replay-rs/Cargo.lock", "tools/hydra2-replay-rs/crates/**/*.rs", "tools/hydra2-replay-rs/crates/**/Cargo.toml", "tools/hydra2-replay-rs/python/**/*.py", "pyproject.toml", "pixi.lock"], outputs = ["$PIXI_PROJECT_ROOT/.pixi/envs/default/lib/python3.12/site-packages/hydra_bridge/_native*.so"] }
+# `maturin develop` against the bridge PACKAGE manifest (not the virtual
+# workspace root — maturin needs a package manifest). Develop installs
+# EDITABLE: the cdylib lands beside the sources at
+# `python/hydra2/_native*.so` (imported via the `hydra2.pth` hook), NOT in
+# site-packages — so `outputs` points at the source-tree artifact. `outputs`
+# MUST stay project-relative globs (`$PIXI_PROJECT_ROOT/` prefix never
+# matches). `py.typed` + `_native.pyi` are tracked sources (inputs here via
+# `python/**/*.py`), never outputs.
+build-ext = { cmd = "maturin develop --release --manifest-path \"$PIXI_PROJECT_ROOT/crates/bridge/Cargo.toml\"", inputs = ["crates/Cargo.toml", "crates/Cargo.lock", "crates/**/*.rs", "crates/**/Cargo.toml", "crates/**/*.py", "python/**/*.py", "pyproject.toml", "pixi.lock"], outputs = ["python/hydra2/_native*.so"] }
+# build-ext-max: local-benchmark ONLY. Same as build-ext plus
+# `-C target-cpu=native` (host SIMD for the numeric hot loops). The link-arg
+# is folded into RUSTFLAGS on purpose: cargo's rustflag sources are MUTUALLY
+# EXCLUSIVE (RUSTFLAGS env beats config files, never merges), so env without
+# link-arg silently fell back to bfd (measured 2026-09-21: GCC ident, no
+# mold). Binaries are non-portable and MUST NEVER back published artifacts —
+# rebuild plain `build-ext` before any measured run. No `outputs` stamp on
+# purpose: the output path is identical to build-ext, so fingerprinting cannot
+# tell them apart; this task always rebuilds.
+build-ext-max = { cmd = "maturin develop --release --manifest-path \"$PIXI_PROJECT_ROOT/crates/bridge/Cargo.toml\"", inputs = ["crates/Cargo.toml", "crates/Cargo.lock", "crates/**/*.rs", "crates/**/Cargo.toml", "crates/**/*.py", "python/**/*.py", "pyproject.toml", "pixi.lock"], env = { RUSTFLAGS = "-C target-cpu=native -C link-arg=-fuse-ld=mold" } }
 # Conformance area runs single-process with no -m filter: it mixes CPU,
 # serial, and GPU-soak gates that only run outside xdist workers.
 test-conformance = { cmd = "pytest tests/conformance tests/engines tests/parity -n 0 --durations=15 --durations-min=1.0" }
 [tool.ruff]
 target-version = "py312"
-line-length = 100  # keep 100 (stricter than 120) — src is green; search/tests tolerate E501 via per-file-ignores
-src = ["src", "tests"]
+line-length = 100  # E501 relaxed per-file where long literals aid readability
+src = ["python", "tests"]
 
 [tool.ruff.lint]
 
-# Lean-strict for sophisticated AI research stack (ruff 0.16.6). Rationale evaluated via `ruff check --statistics`:
-# - Before: ["E","F","W","I","N","UP","B","A","C4","SIM","RUF"] (11) — src green, tests 204 errors (fixed to 22 via --fix).
-# - Evaluated candidates: S (bandit), ARG (unused-args), DTZ (datetimez), TC (type-checking), TID (tidy-imports).
-#   * S: +126 new hits (S101 44 asserts, S110 47 pass, S311 9 random, S603 8 subprocess...). S101 is idiomatic for
-#     contracts/tests, S311 is expected for simulation RNG (non-crypto), S110 is intentional cache-miss handling.
-#     Security value low for internal research (no untrusted input), noise high → disabled (lean stricter would
-#     enable but needs 100+ #nosec triage; documented for future if exposed).
-#   * ARG: +95 hits (24 ARG001 src, 23 ARG002 src, 48 tests). Many are protocol/interface stubs (belief log_prob,
-#     confirmation runner) where signature is required by Liskov; prefixing `_` would churn but catch dead code.
-#     Valuable but noisy for protocol-heavy AI code → disabled for now, re-enable after interface stabilises.
-#   * DTZ: 0 hits today (free). Enforces tz-aware datetimes for distributed logs/metrics → enabled.
-#   * TC (TCH): 47 hits, auto-fixable (moves typing-only imports under TYPE_CHECKING, cuts runtime overhead
-#     + cycle risk). Valuable for JAX/torch import hygiene → enabled.
-#   * TID: 0 hits today (banned-api not configured, future-proofs policy) → enabled.
-#   * PERF (perflint): training/models hot-path alloc anti-patterns (torch.zeros_like in forward, torch.arange per
-#     step, list(torch.tensor(...))) hidden while PERF off. Enabled globally as advisory; per-file-ignores keep
-#     it active only for src/hydra2/training + src/hydra2/models (other dirs + tests set PERF ignore). Run
-#     `pixi run ruff check --select PERF --statistics src/hydra2/training src/hydra2/models` for advisory report
-#     (see perf-A.md P2 + perf-B.md §3). Noise outside hot path (search/contracts/runtime) ignored to keep gate green.
-# - Keep essential hygiene: E,F,W (pycodestyle) + I (isort) + N (pep8-naming) — non-negotiable.
-# - Keep modernization: UP (pyupgrade) enforces 3.12 idioms.
-# - Keep bug prevention (strict): B, C4, SIM, RUF, A (built-ins shadowing) — critical for training/belief correctness.
-# - Disabled noise: ANN/D (annotations/docstrings), PL, ERA, etc. — too chatty for research velocity (PERF now enabled).
-# - line-length 100 kept (stricter than 120); E501 relaxed per-file for search/test fixtures where literals are long.
-select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM", "RUF", "DTZ", "TC", "TID", "PERF"]
+# Lean-strict for an AI research stack: hygiene + bug prevention on, velocity killers off.
+# On, non-negotiable: E,F,W (pycodestyle) + I (isort) + N (pep8-naming).
+# On: UP (pyupgrade) enforces current-version idioms.
+# On: B, C4, SIM, RUF, A (built-in shadowing) — bug prevention for training/belief code.
+# On: DTZ — tz-aware datetimes for distributed logs/metrics.
+# On: TC — typing-only imports under TYPE_CHECKING (runtime overhead + cycle risk).
+# On: TID — reserves banned-api policy for later.
+# On, hot-path scoped: PERF — alloc anti-patterns where tensors loop; ignored elsewhere.
+# Off: S (bandit) — asserts are test idiom, sim RNG is non-crypto by design,
+#   cache-miss pass-handling is intentional; no untrusted input in this stack.
+# Off: ARG — protocol/interface stubs carry signatures required by contract.
+# Off: ANN/D and friends — annotation/docstring tax kills research velocity.
+# line-length lives with the [tool.ruff] table; E501 relaxed per-file where literals run long.
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM", "RUF", "DTZ", "TC", "TID", "PERF", "RET", "FURB", "ISC001", "ICN001", "T201"]
+# Return discipline (RET: assign-before-return, else-after-return, return-None): mechanical
+# readability wins for numeric/model code; all autofixable, so future hits stay green via --fix.
+# Idioms (FURB: min/max, if-exp, slice-prefix): handbook-blessed, all autofixable.
+# Missing-comma catcher (ISC001): single-line implicit string concat is almost always a bug.
+# Alias convention (ICN001): standard scientific-stack import aliases.
+# No-print rule (T201): print in library code is a perf + hygiene bug. Scoped below —
+# entry-point CLIs print as their interface, training phase-log is a deliberate stdout
+# contract, test harnesses keep output; everything else uses logging.getLogger(__name__).
+# Evaluated and DEFERRED (real signal, wrong shape for a bulk edit):
+# - TRY300/301: raise-in-try/else hygiene needs manual, behavior-touching refactors across
+#   search/training — a per-site wave, not a flag flip.
+# - BLE001: mostly intentional stale-.so fallback and quarantine blind-excepts.
+# - SLF001: cross-module private access is load-bearing in tests and belief scaffolding.
+# - FBT: boolean-trap fixes change public API signatures — needs API review first.
+# - COM812: trailing commas are formatter territory; bulk --fix is diff noise.
+# - EM, whole-TRY (TRY003 fights EM), PLC0415 (fights TC lazy imports), ANN/D/PLR0913/C901
+#   (research-velocity killers) — stay off.
 
 [tool.ruff.lint.per-file-ignores]
 # Search: wall/score tables exceed 100 cols — wrapping harms readability; PERF noisy outside hot path
-"src/hydra2/search/*.py" = ["E501", "PERF"]
+"python/hydra2/search/*.py" = ["E501", "PERF"]
 "tests/search/*.py" = ["E501", "PERF"]
 # Tests: fixture literals are long (E501) and scientific notation uses capitals (B, A, K, SEED) for batch/action dims
-# — N806 would force `b`/`a` renaming that hurts readability vs paper notation. Keep N for src strict, relax for tests.
+# — N806 would force `b`/`a` renaming that hurts readability vs paper notation. Keep N for python strict, relax for tests.
 # S101 kept ignored for future if S re-enabled (assert is test idiom). PERF ignored in tests (not hot path).
-"tests/**/*.py" = ["E501", "S101", "N806", "PERF"]
+"tests/**/*.py" = ["E501", "S101", "N806", "PERF", "T201"]
 # Non-hot modules: PERF advisory only for training/models; ignore elsewhere to keep gate green while exposing hot-path allocs
-"src/hydra2/eval/*.py" = ["PERF"]
-"src/hydra2/runtime/*.py" = ["PERF"]
-"src/hydra2/data/*.py" = ["PERF"]
-"src/hydra2/contracts/*.py" = ["PERF"]
-"src/hydra2/engines/*.py" = ["PERF"]
-"src/hydra2/belief/*.py" = ["PERF"]
+"python/hydra2/eval/*.py" = ["PERF"]
+"python/hydra2/runtime/*.py" = ["PERF"]
+"python/hydra2/data/*.py" = ["PERF"]
+"python/hydra2/contracts/*.py" = ["PERF"]
+"python/hydra2/engines/*.py" = ["PERF"]
+"python/hydra2/belief/*.py" = ["PERF"]
+# T201 scope: entry-point CLIs print as their interface; training phase-log is a deliberate
+# stdout contract (see stream_expand.py phase-log note); harness/test output stays.
+"python/hydra2/cli.py" = ["T201"]
+"python/hydra2/config_check.py" = ["T201"]
+"python/hydra2/probe.py" = ["T201"]
+"python/hydra2/runtime/environment.py" = ["T201"]
+"python/hydra2/training/*.py" = ["T201"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -165,67 +192,68 @@ markers = [
 ]
 
 [tool.pyrefly]
-# Lean-strict 2026-09-01: project-includes only src (tests excluded).
-# Before: 0 errors, 1,079 suppressed (663 hidden + 416 unused, 34 codes) at audit start.
-#  - 7 blanket `# pyrefly: ignore` files hid ~652 diagnostics (gumbel, pbrf, joint, local_resolving, distill/teacher x2, qualification).
-#  - 416 unused ignores (407 type + 9 pyrefly) indicated over-suppression drift.
-# After: blankets removed, 409 unused cleaned (see `pixi run pyrefly check --remove-unused-ignores=all`), 427 suppressed remain (real per-line hides).
-# Promotion per audit $TMPDIR/pyrefly-suppressed.md (workstation-local, unvendored) §5 & §8:
-#  - 16 codes → error (319 hidden at default+zuban: bad-argument-type 211, missing-argument 25, etc.) — real contract bugs (Seat/TileId, None deref, missing args).
-#  - 10 codes → warn (275 hidden: implicit-bool 120 + unknown-argument-type 155 dominant) — hygiene, not CI-blocking.
-#  - 9 Any-related → keep suppressed (explicit-any 255 etc.) — JAX/torch bridge uses Any intentionally (mahjax, riichienv, torch Tensor are untyped C++/CUDA extensions; annotating 400+ Any would churn with zero bug value). Documented in audit §9.
-# Next wave (fan-out) fixes the 319 newly surfaced errors via asserts/narrowing/casts (no blanket ignores).
-project-includes = ["src"]
-# Root-cause fix (lintzero 2026-09-03, researched 2026-09-04 — keep long-term):
-# pyrefly auto-discovers ./.venv (empty, uv-made, no third-party packages) instead of
-# the pixi env, producing 64 phantom missing-import errors (torch/jax/numpy/pyarrow/...
-# all installed in .pixi/envs/default). Point at the pixi interpreter explicitly.
-# Docs-sanctioned: discovery order is flag > active venv/conda > config pin > project
-# .venv walk, so the pin outranks any stray .venv in CLI and LSP; relative paths are
-# explicitly supported and absolutized from the config root (portable across checkouts
-# on the same platform; not across POSIX/Windows). pixi has no native pyrefly support
-# (upstream request facebook/pyrefly#4432, open PR #4490); pixi docs: `pixi run` for
-# execution + interpreter pin for analysis-time resolution. Removal condition: vendored
-# pyrefly includes #4490 AND dump-config proves auto-discovery without the pin.
+# Strictness is declared per code below. Per-line ignores mark intentional Any at the
+# torch/JAX/C++ boundary (untyped extensions); blanket file-level ignores are out —
+# every suppression names its code, inline, with a reason.
+project-includes = ["python"]
+# Point at the pixi interpreter explicitly: a stray .venv in the project root (empty,
+# no third-party packages) shadows the pixi env under pyrefly's auto-discovery and
+# produces phantom missing-import errors for installed packages. The pin outranks any
+# stray .venv in CLI and LSP. Removal condition: dump-config proves auto-discovery
+# without the pin.
 # Relative to project root; standard pixi layout, works on any checkout.
-# uv.lock is banned here (sole-authority note at line 15) — uv recreates the shadowing .venv.
+# pixi has no native pyrefly support, so `pixi run` drives execution while this pin
+# drives analysis-time resolution.
+# uv.lock is banned here (per the sole-authority note under [project]) — uv recreates
+# the shadowing .venv.
 python-interpreter-path = ".pixi/envs/default/bin/python"
 [tool.pyrefly.errors]
-# --- 16 promoted to error (319 hidden, CI-blocking) ---
-bad-argument-type = "error"          # 211 hidden — Seat/TileId newtype confusion, int|None → int
-missing-argument = "error"           # 25 hidden — CandidateSpec missing required fields
-bad-instantiation = "error"          # 14 hidden — Any cannot be instantiated
-missing-attribute = "error"          # 13 hidden — None.shape, object.get on payload
-bad-return = "error"                 # 13 hidden — Literal[-1,0,1,2] return mismatch
-unsupported-operation = "error"      # 11 hidden — None subscript, list[str].__setitem__
-invalid-inheritance = "error"        # 9 hidden — Planner | common.Planner union as base
-unbound-name = "error"               # 6 hidden — RandomStream/belief uninitialized (determinism)
-missing-module-attribute = "error"   # 4 hidden — qualification gate missing import
-bad-assignment = "error"             # 3 hidden — event envelope vocab type mismatch
-bad-index = "error"                  # 3 hidden — observation tuple indexing confusion
-not-iterable = "error"               # 2 hidden — object not iterable (attestation)
-not-callable = "error"               # 1 hidden — None called as function
-read-only = "error"                  # 1 hidden — read-only cursor set (replay)
-invalid-argument = "error"           # 1 hidden — Any passed as class
-no-matching-overload = "error"       # 2 hidden — sorted(dict.get) overload ambiguity
-# --- 10 promoted to warning (275 hidden, triaged per-file) ---
-implicit-bool = "warn"               # 120 hidden — str|None/list → bool hides empty-vs-missing
-unknown-argument-type = "warn"       # 155 hidden — JAX Any arg, coverage (dominant)
-unknown-variable-type = "warn"       # 33 hidden — rows.setdefault etc. (strict surface)
-unknown-attribute-type = "warn"      # 1 hidden — inferred Any attr (rare)
-unused-call-result = "warn"          # 52 hidden — handle.write() int, text.encode() ignored
-implicit-reexport = "warn"           # 1 hidden — CanonicalizationError re-export hygiene
-implicitly-defined-attribute = "warn" # 2 hidden — self.x in non-ctor (test setup)
-pytorch-efficiency-lint-item-call = "warn" # 4 hidden — Tensor.item() GPU sync (perf)
-pytorch-efficiency-lint-cuda-call = "warn" # 0 hidden today, enable for future
+# Promoted to error: fail CI. Each code names a real contract-bug class.
+bad-argument-type = "error"          # Seat/TileId newtype confusion, int|None → int
+missing-argument = "error"           # CandidateSpec missing required fields
+bad-instantiation = "error"          # Any cannot be instantiated
+missing-attribute = "error"          # None.shape, object.get on payload
+bad-return = "error"                 # return-shape mismatch (fixed placement tuples, etc.)
+unsupported-operation = "error"      # None subscript, list[str].__setitem__
+invalid-inheritance = "error"        # union as base class
+unbound-name = "error"               # uninitialized streams/state (determinism)
+missing-module-attribute = "error"   # qualification gate missing import
+bad-assignment = "error"             # event envelope vocab type mismatch
+bad-index = "error"                  # observation tuple indexing confusion
+not-iterable = "error"               # object not iterable (attestation)
+not-callable = "error"               # None called as function
+# missing-super-call catches skipped cooperative init in multi-inheritance (silent init
+# bugs); redundant-cast keeps explicit casts honest (the codebase's own converter emits
+# this deliberately). no-any-return and unannotated-return stay out: they fire across the
+# torch/JAX boundary where Any is the interface, and need per-site triage first.
+missing-super-call = "error"
+redundant-cast = "error"
+# Explicit pins (match current defaults, guard against upstream drift): untyped third-party
+# imports stay warnings, redundant int()/str() conversions stay warnings for later cleanup.
+untyped-import = "warn"
+unnecessary-type-conversion = "warn"
+read-only = "error"                  # read-only cursor set (replay)
+invalid-argument = "error"           # Any passed as class
+no-matching-overload = "error"       # sorted(dict.get) overload ambiguity
+# Promoted to warn: hygiene, triaged per file (never CI-blocking).
+implicit-bool = "warn"               # str|None/list → bool hides empty-vs-missing
+unknown-argument-type = "warn"       # JAX Any arg, coverage (dominant)
+unknown-variable-type = "warn"       # rows.setdefault etc. (strict surface)
+unknown-attribute-type = "warn"      # inferred Any attr (rare)
+unused-call-result = "warn"          # ignored handle.write()/encode() results
+implicit-reexport = "warn"           # CanonicalizationError re-export hygiene
+implicitly-defined-attribute = "warn" # self.x in non-ctor (test setup)
+pytorch-efficiency-lint-item-call = "warn" # Tensor.item() GPU sync (perf)
+pytorch-efficiency-lint-cuda-call = "warn" # pins future CUDA-sync call sites
 pytorch-efficiency-lint-print-tensor = "warn"
-# --- 9 kept suppressed (Any-heavy JAX/torch bridge, zero bug value if forced) ---
-explicit-any = "ignore"              # 255 hidden — JAX state dict Any intentional
+# Kept suppressed: intentional Any at the torch/JAX bridge (untyped C++/CUDA
+# extensions; annotating every site would churn with no bug value).
+explicit-any = "ignore"              # JAX state dict Any intentional
 implicit-any = "ignore"              # umbrella — covers all implicit-Any sub-kinds
-implicit-any-attribute = "ignore"    # 2 hidden — Any|None attr (search scaffolding)
-implicit-any-empty-container = "ignore" # 1 hidden — [] vs list[X]()
-implicit-any-lambda = "ignore"       # 7 hidden — lambda w: w.world_id pedantic
-implicit-any-parameter = "ignore"    # 41 at all, 0 hidden at default — protocol stubs
-implicit-any-type-argument = "ignore" # 2 hidden — Queue[_T] missing param
-unannotated-return = "ignore"        # 1 hidden — inferred returns for simulation stubs
-missing-override-decorator = "ignore" # 3 hidden — torch nn.Module forward overrides
+implicit-any-attribute = "ignore"    # Any|None attr (search scaffolding)
+implicit-any-empty-container = "ignore" # [] vs list[X]()
+implicit-any-lambda = "ignore"       # lambda w: w.world_id pedantic
+implicit-any-parameter = "ignore"    # protocol/interface stubs carry required signatures
+implicit-any-type-argument = "ignore" # Queue[_T] missing param
+unannotated-return = "ignore"        # inferred returns for simulation stubs
+missing-override-decorator = "ignore" # torch nn.Module forward overrides

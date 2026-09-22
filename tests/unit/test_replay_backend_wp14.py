@@ -1,17 +1,14 @@
-"""WP-14 replay backend flag: python oracle backend + plane parity (K1 cutover).
+"""WP-14 replay backend flag: rust-only plane feed (oracle removed).
 
 Covers the flag surface only (no replay logic): the ``data.replay_backend``
-default (``"rust"`` plane feed; ``"python"`` selects the oracle shim for parity;
-the ``rust_json`` id refuses fail-closed) + strict parsing + run-digest identity,
-the ``_expand_game_rows`` dispatch
-parity on the python path (thin shim, byte-identical to the direct
-``replay_game``/``expand_game`` calls), the plane-path chosen/quarantine
-parity on synthetic golden games (``next_into_planes`` commits the oracle's
-choices; string decision ids live cold-side only), the resume refusal on
-digest change (run digest + dataset buffer tag), and the row-cache backend
-tag. Plane-draining tests build the extension once per session (same recipe
-as ``test_rust_stream_wp14``) and run in the serial lane; the rest is
-lane-default CPU with fixed seeds.
+default (``"rust"`` plane feed; ``"python"`` and ``rust_json`` ids refuse
+fail-closed) + strict parsing + run-digest identity, the plane-path
+chosen/quarantine parity on synthetic golden games (``next_into_planes``
+commits the oracle engine's choices; string decision ids live cold-side
+only), the resume refusal on digest change (run digest + dataset buffer
+tag), and the row-cache backend tag. Plane-draining tests build the
+extension once per session (same recipe as ``test_rust_stream_wp14``) and
+run in the serial lane; the rest is lane-default CPU with fixed seeds.
 """
 
 from __future__ import annotations
@@ -213,30 +210,13 @@ class TestFlag:
         )
         assert run_config_digest(again) == run_config_digest(base)
 
-    def test_helper_rejects_unknown_backend(self) -> None:
-        game = _decode_game("flag-unknown-be", wall=None)
+    def test_helper_rejects_unknown_and_retired_backend(self) -> None:
         with pytest.raises(ContractError, match="replay_backend"):
-            driver._expand_game_rows(game, "train", "bogus")
-        walled = _decode_game("flag-unknown-be-w", wall=WALL)
+            driver._require_replay_backend("bogus")
+        # The retired python oracle fails closed like any unknown id.
         with pytest.raises(ContractError, match="replay_backend"):
-            driver._expand_game_rows(walled, "train", "bogus")
-
-    def test_python_backend_matches_direct_calls(self, rust_extension: Any) -> None:
-        from hydra2.data.replay_expand import expand_game
-        from hydra2.engines.riichienv._lr_end import replay_game
-
-        wall_less = _decode_game("flag-py-direct")
-        rows, sim_path = driver._expand_game_rows(wall_less, "train", "python")
-        direct = replay_game(wall_less, split="train")
-        assert sim_path is True
-        assert [r.decision_id for r in rows] == [r.decision_id for r in direct]
-        assert [r.chosen_action_id for r in rows] == [r.chosen_action_id for r in direct]
-
-        walled = _decode_game("flag-py-direct-w", wall=WALL)
-        rows_w, sim_w = driver._expand_game_rows(walled, "train", "python")
-        direct_w = expand_game(walled, split="train")
-        assert sim_w is False
-        assert [r.decision_id for r in rows_w] == [r.decision_id for r in direct_w]
+            driver._require_replay_backend("python")
+        assert driver._require_replay_backend("rust") == "rust"
 
     def test_classifier_unifies_backend_quote_styles(self) -> None:
         py = ContractError(
@@ -286,15 +266,6 @@ class TestPlaneBackend:
                     break
         assert chosen == [r.chosen_action_id for r in py_rows]
 
-    def test_wall_bound_matches_expand(self) -> None:
-        from hydra2.data.replay_expand import expand_game
-
-        game = _decode_game("flag-rust-walled", wall=WALL)
-        rows, sim_path = driver._expand_game_rows(game, "train", "python")
-        direct = expand_game(game, split="train")
-        assert sim_path is False
-        assert [r.decision_id for r in rows] == [r.decision_id for r in direct]
-
     def test_plane_quarantine_closed_vocab(self, rust_extension: Any, tmp_path: Path) -> None:
         """Bogus-mid games quarantine whole-game on the plane path.
 
@@ -338,10 +309,10 @@ class TestPlaneBackend:
     ) -> None:
         from hydra2.training import rust_stream
 
-        monkeypatch.setitem(sys.modules, "hydra2_replay_rs", None)
+        monkeypatch.setitem(sys.modules, "hydra2._native", None)
         inputs = tmp_path / "inputs"
         inputs.mkdir()
-        with pytest.raises(RuntimeError, match="hydra2_replay_rs"):
+        with pytest.raises(RuntimeError, match="hydra2\\._native"):
             rust_stream.open_rust_plane_stream(
                 [str(inputs)],
                 2,
@@ -372,7 +343,7 @@ class TestPlaneBackend:
                 shuffle_buffer=0,
             )
 
-        # K1 cutover: single python backend (the rust_json id is deleted).
+        # Rust-only feed: serial pull plus snapshot restore on plane rows.
         ds = driver._StreamDataset(
             stream_factory=lambda: _factory("train"),
             num_actions=6792,
@@ -380,7 +351,7 @@ class TestPlaneBackend:
             seed=DATA_SEED,
             drop_last=True,
             need_privileged=False,
-            replay_backend="python",
+            replay_backend="rust",
         )
         while ds._pull_game():
             pass
@@ -399,7 +370,7 @@ class TestPlaneBackend:
             seed=DATA_SEED,
             drop_last=True,
             need_privileged=False,
-            replay_backend="python",
+            replay_backend="rust",
         )
         fresh.restore_buffer(snap)
         assert [r["decision_id"] for r in fresh._rows] == [r["decision_id"] for r in ds._rows]
@@ -431,7 +402,7 @@ class TestResumeRefusal:
                 artifact_root=tmp_path / "artifacts",
                 max_updates=1,
                 run_id=run_id,
-                backend="python",
+                backend="rust",
             ),
             environ={},
         )
@@ -448,7 +419,7 @@ class TestResumeRefusal:
                 artifact_root=tmp_path / "artifacts",
                 max_updates=2,
                 run_id=run_id,
-                backend="python",
+                backend="rust",
             ),
             environ={},
         )

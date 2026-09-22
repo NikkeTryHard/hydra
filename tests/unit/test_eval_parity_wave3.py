@@ -14,8 +14,8 @@ from __future__ import annotations
 import math
 
 import pytest
-from hydra2_replay_rs import eval as _bridge_eval
 
+from hydra2._native import eval as _bridge_eval
 from hydra2.contracts.randomness import (
     RandomStream,
     make_random_stream_key,

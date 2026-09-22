@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from hydra2.contracts.canonical import canonical_json_bytes
+from hydra2.artifacts.canonical import canonical_bytes as canonical_json_bytes
 from hydra2.contracts.common import ContractError, DigestMismatchError, DigestText, Seat
 from hydra2.contracts.observation_actor import (
     ActorObservation,

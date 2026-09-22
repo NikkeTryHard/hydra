@@ -208,8 +208,7 @@ def test_deterministic_training_over_authoritative_synthetic_parquet(
         # So override dataset to use same parquet_dir but separate loop instance
         # Actually _build_loop above created dataset from parquet_dir; but checkpoint_dir differs.
         # We need to recreate loop with same seed but isolated ckpt dir; the function already uses seed=42 for both.
-        hist = loop.train(max_updates=4)
-        return hist
+        return loop.train(max_updates=4)
 
     # First run
     torch.use_deterministic_algorithms(True)
@@ -525,10 +524,9 @@ def test_encode_pin_flag_byte_identical_skips_page_lock(
 
     The pinned-ring feed stages H2D from its own pinned slots, so
     encode-side pin_memory() calls are pure overhead there. Both arms are
-    hermetic (no CUDA needed): the True arm forces the oracle fallback path
-    (bridge bulk stage bypasses Tensor.pin_memory via torch.empty +
-    ring_fill_batch, so the ring lookup is nulled first) by making
-    pin_memory() raise, proving the warning fires; the False arm makes
+    hermetic (no CUDA needed): the True arm forces the ring-stage alloc to
+    fail (OOM-class errors propagate raw past the bridge), proving the
+    warning fires and tensors stay pageable; the False arm makes
     pin_memory() boom-if-called, proving the gate never attempts it.
     """
     hand = (0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48)
@@ -539,13 +537,12 @@ def test_encode_pin_flag_byte_identical_skips_page_lock(
     def _boom(self: torch.Tensor) -> torch.Tensor:
         raise RuntimeError("boom: page lock must not be attempted")
 
+    def _boom_empty(*args: object, **kwargs: object) -> torch.Tensor:
+        raise RuntimeError("boom: pinned alloc must fall back")
+
     # True arm: forced fallback — warning fires, tensors stay pageable.
-    # Null the ring lookup first: with the bridge installed the bulk stage
-    # pins via torch.empty(pin_memory=True) + ring_fill_batch and never
-    # calls Tensor.pin_memory, so the boom below would never fire. The
-    # warning owns the ImportError-only oracle path exercised here.
-    monkeypatch.setattr("hydra2.models.encoder._ring_native", lambda: None)
     monkeypatch.setattr(torch.Tensor, "pin_memory", _boom)
+    monkeypatch.setattr(torch, "empty", _boom_empty)
     with caplog.at_level(logging.WARNING):
         pinned = encode_observation_rows(
             rows, num_actions=BASELINE_ACTION_COUNT, feature_dim=FEATURE_DIM, pin_memory=True

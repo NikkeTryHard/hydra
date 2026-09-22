@@ -1,0 +1,11 @@
+# Unit tests (#[cfg(test)]) keep unwrap/expect/panic/prints via the allows below;
+# lib code stays denied in Cargo.toml. Integration targets in tests/ are separate
+# crates that allow-*-in-tests does not reach — they carry per-file #![allow] headers.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-dbg-in-tests = true
+allow-print-in-tests = true
+
+# Numeric fns take many params; default is 7.
+too-many-arguments-threshold = 10

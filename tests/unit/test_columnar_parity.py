@@ -1,7 +1,7 @@
 """Probe-C: same-batches-to-both-writers parity (Rust ArrowWriter vs pq.write_table).
 
 Contract under test: the Rust 5-exact writer
-(``tools/hydra2-replay-rs/crates/hydra-shard/src/writer.rs``:
+(``crates/shard/src/writer.rs``:
 ``write_parity_probe`` over ``writer_props_5exact``) writes the IDENTICAL
 logical batch as the Python oracle call (``parquet.py:238-246`` 5-exact:
 zstd/level-3/dict/batch-8192/store_schema). Comparison is by file-content
@@ -47,6 +47,7 @@ import pytest
 
 from hydra2 import _rust_columnar
 from hydra2.data.parquet import _ACTOR_SCHEMA, ACTOR_FIELDS
+from hydra2.training.shard_reader import dataset_hash_of
 
 pytestmark = pytest.mark.slow
 
@@ -115,7 +116,7 @@ def _rust_probe_parquet(workdir: Path) -> Path:
     file raises — never a silent skip.
     """
     root = Path(__file__).resolve().parents[2]
-    crate = root / "tools" / "hydra2-replay-rs"
+    crate = root / "crates"
     emit = workdir / "rust-out"
     emit.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, "PYO3_PYTHON": sys.executable, "HYDRA2_PROBEC_OUT": str(emit)}
@@ -249,7 +250,7 @@ def test_probe_c_same_batches_both_writers_parity(tmp_path: Path) -> None:
     py_hash = _rust_columnar.table_dataset_hash(py_back)
     rust_hash = _rust_columnar.table_dataset_hash(rust_back)
     assert py_hash == rust_hash
-    assert py_hash == _rust_columnar.dataset_hash_of_ids(_probe_ids())
+    assert py_hash == dataset_hash_of(_probe_ids())
 
     # Gate 2: file-content class — names, logical types, row counts, per-column
     # logical values in file order (ChunkedArray.equals is order-sensitive).
@@ -295,9 +296,7 @@ def test_probe_c_rust_writer_stays_five_exact() -> None:
     fails here before it can fork ``dataset_hash`` goldens.
     """
     root = Path(__file__).resolve().parents[2]
-    src = (
-        root / "tools" / "hydra2-replay-rs" / "crates" / "hydra-shard" / "src" / "writer.rs"
-    ).read_text(encoding="utf-8")
+    src = (root / "crates" / "shard" / "src" / "writer.rs").read_text(encoding="utf-8")
     code_lines = []
     for lineno, line in enumerate(src.splitlines(), start=1):
         head = line.split("//")[0]

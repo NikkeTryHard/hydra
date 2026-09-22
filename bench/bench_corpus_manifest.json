@@ -26,7 +26,7 @@
   "thresholds": null
  },
  "created_utc": "2026-09-11T16:30:00+00:00",
- "description": "Wave-G1 single re-pin at Wave-F close: every entry recomputed (cutover code + F10 decision-primary corpus); every local entry pinned by sha256; external probe entries resolved+hashed at bench time. The manifest_digest binds every entry and threshold: ANY byte change voids thresholds. 8a2f baseline stays frozen. WP-14 telemetry re-pin: stream_train.py (mlflow/sampler/profiler hooks) + run_config.py (telemetry section); thresholds stay blank-null. Desync re-pin: rust_observations.py entry removed (module deleted, plane feed supersedes); stream_train.py (device-gate validators, hot scalars, chunked workers, YAML feed knobs) + run_config.py (decode_prefetch/expand_batch_games/fetch_prefetch_depth); thresholds stay blank-null. Slice-E re-pin 2026-09-12: stream_train.py (homogeneous-buckets grouping, entry pins, ring depth 3, lint/format) + run_config.py (homogeneous_buckets flag, lint/format); thresholds stay blank-null. Shrink re-pin: tests/unit/test_rust_stream_wp14.py + tests/unit/test_replay_backend_wp14.py entries refreshed for the fixture sys.modules-pop fix (hard-delegate cutover, no fallback); thresholds stay blank-null. Wave 3 re-pin: training/stream_train.py entry refreshed for the loop-counting bridge cutover (counting oracle tails deleted, bridge-direct fail-closed); thresholds stay blank-null. Speed-wave re-pin: tests/unit/test_rust_stream_wp14.py + tests/unit/test_replay_backend_wp14.py entries refreshed for the shared import-only rust_extension fixture cutover (module-duplicate fixtures deleted); thresholds stay blank-null. Deletion-wave re-pin: models/schema.py + models/encoder.py entries refreshed for translator deletion (make_digest_text -> bridge-direct, byte-identical); parity gates file entry refreshed for the observation facade -> observation_types import migration; thresholds stay blank-null. Harden re-pin: training shell facades deleted (loop/replay/objectives/dataset/run_config/distill + distillation/teacher + analysis/qualification -> split modules), import retargets only; run_config entry dropped; thresholds untouched. Dead-code re-pin: models/schema dead envelope helpers removed; thresholds untouched. Encoder re-pin: additive Rust-handoff wrapper (oracle default unchanged); thresholds untouched. Dead-code re-pin: unused Rust-handoff wrapper chain removed from encoder; thresholds untouched.",
+ "description": "Wave-G1 single re-pin at Wave-F close: every entry recomputed (cutover code + F10 decision-primary corpus); every local entry pinned by sha256; external probe entries resolved+hashed at bench time. The manifest_digest binds every entry and threshold: ANY byte change voids thresholds. 8a2f baseline stays frozen. WP-14 telemetry re-pin: stream_train.py (mlflow/sampler/profiler hooks) + run_config.py (telemetry section); thresholds stay blank-null. Desync re-pin: rust_observations.py entry removed (module deleted, plane feed supersedes); stream_train.py (device-gate validators, hot scalars, chunked workers, YAML feed knobs) + run_config.py (decode_prefetch/expand_batch_games/fetch_prefetch_depth); thresholds stay blank-null. Slice-E re-pin 2026-09-12: stream_train.py (homogeneous-buckets grouping, entry pins, ring depth 3, lint/format) + run_config.py (homogeneous_buckets flag, lint/format); thresholds stay blank-null. Shrink re-pin: tests/unit/test_rust_stream_wp14.py + tests/unit/test_replay_backend_wp14.py entries refreshed for the fixture sys.modules-pop fix (hard-delegate cutover, no fallback); thresholds stay blank-null. Wave 3 re-pin: training/stream_train.py entry refreshed for the loop-counting bridge cutover (counting oracle tails deleted, bridge-direct fail-closed); thresholds stay blank-null. Speed-wave re-pin: tests/unit/test_rust_stream_wp14.py + tests/unit/test_replay_backend_wp14.py entries refreshed for the shared import-only rust_extension fixture cutover (module-duplicate fixtures deleted); thresholds stay blank-null. Deletion-wave re-pin: models/schema.py + models/encoder.py entries refreshed for translator deletion (make_digest_text -> bridge-direct, byte-identical); parity gates file entry refreshed for the observation facade -> observation_types import migration; thresholds stay blank-null. Harden re-pin: training shell facades deleted (loop/replay/objectives/dataset/run_config/distill + distillation/teacher + analysis/qualification -> split modules), import retargets only; run_config entry dropped; thresholds untouched. Dead-code re-pin: models/schema dead envelope helpers removed; thresholds untouched. Encoder re-pin: additive Rust-handoff wrapper (oracle default unchanged); thresholds untouched. Dead-code re-pin: unused Rust-handoff wrapper chain removed from encoder; thresholds untouched. Encoder-cutover re-pin: models/encoder.py entry refreshed for the Rust-first bulk-fill cutover (stage_encoder_batch bridge path plus ImportError-only oracle twin, parity-proven bit-identical); thresholds stay blank-null. Oracle-removal re-pin: models/encoder.py entry refreshed for the Rust-only encoder cutover (numpy oracle fill deleted, bridge required); thresholds stay blank-null. Backend-removal re-pin: python/hydra2/training/stream_train.py entry refreshed (replay_backend rust-only, oracle dispatch deleted); thresholds stay blank-null.",
  "entries": [
   {
    "fixtures": [
@@ -35,7 +35,7 @@
    ],
    "kind": "synth-smoke",
    "n_lines": 14,
-   "relpath": "tools/hydra2-replay-rs/tests/fixtures/s4/good-b.jsonl",
+   "relpath": "crates/tests/fixtures/s4/good-b.jsonl",
    "sha256": "sha256:0c6611aac934dcd189e29260138186e62da737be70ec588356a21ec9acc74487"
   },
   {
@@ -44,7 +44,7 @@
    ],
    "kind": "wall-less-ok",
    "n_lines": 12,
-   "relpath": "tools/hydra2-replay-rs/tests/fixtures/s4/good-a.jsonl",
+   "relpath": "crates/tests/fixtures/s4/good-a.jsonl",
    "sha256": "sha256:f1369b770a4e4d8746350a68112a2c86db2b875ce28651c35b10e447f24eccac"
   },
   {
@@ -53,7 +53,7 @@
    ],
    "kind": "quarantine",
    "n_lines": 4,
-   "relpath": "tools/hydra2-replay-rs/tests/fixtures/s4/q-bare-dora.jsonl",
+   "relpath": "crates/tests/fixtures/s4/q-bare-dora.jsonl",
    "sha256": "sha256:569c1590e1e8b2625a7480a8c5198201d5e642432a236d3d88bb9ffb5eb573f7"
   },
   {
@@ -62,7 +62,7 @@
    ],
    "kind": "quarantine",
    "n_lines": 7,
-   "relpath": "tools/hydra2-replay-rs/tests/fixtures/s4/q-double-ron.jsonl",
+   "relpath": "crates/tests/fixtures/s4/q-double-ron.jsonl",
    "sha256": "sha256:e96b32cd7d80b72a15d5903c1fd70997d46d58cc2e7b70989095b016ee9dfb8e"
   },
   {
@@ -71,7 +71,7 @@
    ],
    "kind": "quarantine",
    "n_lines": 4,
-   "relpath": "tools/hydra2-replay-rs/tests/fixtures/s4/q-framing.jsonl",
+   "relpath": "crates/tests/fixtures/s4/q-framing.jsonl",
    "sha256": "sha256:f5d4d0b684cd99f050330d41c3b15d5ebb8325c22a78ebbf93658845d0854435"
   },
   {
@@ -80,7 +80,7 @@
    ],
    "kind": "quarantine",
    "n_lines": 4,
-   "relpath": "tools/hydra2-replay-rs/tests/fixtures/s4/q-tile-conservation.jsonl",
+   "relpath": "crates/tests/fixtures/s4/q-tile-conservation.jsonl",
    "sha256": "sha256:3e848c92fff91dd4e2f9c367cf7566bc7329fcbb064d258efc77f0cb3d177c31"
   },
   {
@@ -89,7 +89,7 @@
    ],
    "kind": "quarantine",
    "n_lines": 2,
-   "relpath": "tools/hydra2-replay-rs/tests/fixtures/s4/q-truncated.jsonl",
+   "relpath": "crates/tests/fixtures/s4/q-truncated.jsonl",
    "sha256": "sha256:ab69e4757350fa19599d6edd7fa3342682ff1e7009b8bb7ba11e863c824c2387"
   },
   {
@@ -98,7 +98,7 @@
    ],
    "kind": "quarantine",
    "n_lines": 3,
-   "relpath": "tools/hydra2-replay-rs/tests/fixtures/s4/q-turn-order.jsonl",
+   "relpath": "crates/tests/fixtures/s4/q-turn-order.jsonl",
    "sha256": "sha256:b3908224c5e5f1e3802f0467d035baf8a5f169a2ab6a29580963653a9dd3d65c"
   },
   {
@@ -107,7 +107,7 @@
    ],
    "kind": "quarantine",
    "n_lines": 4,
-   "relpath": "tools/hydra2-replay-rs/tests/fixtures/s4/q-unknown-event.jsonl",
+   "relpath": "crates/tests/fixtures/s4/q-unknown-event.jsonl",
    "sha256": "sha256:5d74acf78e9e4a798f0446e13062eb5c9f60c9b2c000864227fa89d53ff0ff51"
   },
   {
@@ -116,7 +116,7 @@
    ],
    "kind": "walled-ok-companion",
    "n_lines": 3,
-   "relpath": "tools/hydra2-replay-rs/tests/fixtures/s4/q-wall-bearing.jsonl",
+   "relpath": "crates/tests/fixtures/s4/q-wall-bearing.jsonl",
    "sha256": "sha256:4402671c9480acad546c94f06e07f22ae02ce25dbc9fd9f4dff50aeb8c6b183b"
   },
   {
@@ -125,7 +125,7 @@
    ],
    "kind": "quarantine",
    "n_lines": 12,
-   "relpath": "tools/hydra2-replay-rs/tests/fixtures/s6/q-engine-desync.jsonl",
+   "relpath": "crates/tests/fixtures/s6/q-engine-desync.jsonl",
    "sha256": "sha256:c0ecee189aa36313b1db9c901b8ddce53ce877e1ba71daaf0d846066fddbe514"
   },
   {
@@ -134,7 +134,7 @@
    ],
    "kind": "walled",
    "n_lines": 13,
-   "relpath": "tools/hydra2-replay-rs/tests/fixtures/s7/walled-synth.jsonl",
+   "relpath": "crates/tests/fixtures/s7/walled-synth.jsonl",
    "sha256": "sha256:d73c33779e30a8250ce64f347055db7605b2a2419561a50d4bdb3446d5d31f19"
   },
   {
@@ -143,7 +143,7 @@
    ],
    "kind": "walled",
    "n_lines": 12,
-   "relpath": "tools/hydra2-replay-rs/tests/fixtures/s7/walled-real.jsonl",
+   "relpath": "crates/tests/fixtures/s7/walled-real.jsonl",
    "sha256": "sha256:8e70b57f5aef4cb771c97f9cd170de2f4f8ad794e8c50d1ae0bb4980a3bf02ea"
   },
   {
@@ -152,7 +152,7 @@
    ],
    "kind": "walled",
    "n_lines": 11,
-   "relpath": "tools/hydra2-replay-rs/tests/fixtures/s7/walled-ankan.jsonl",
+   "relpath": "crates/tests/fixtures/s7/walled-ankan.jsonl",
    "sha256": "sha256:a965cecbb10300d160d8ea821744f9abd64686ce49ee8ef179f5507932f78aa1"
   },
   {
@@ -161,7 +161,7 @@
    ],
    "kind": "walled",
    "n_lines": 19,
-   "relpath": "tools/hydra2-replay-rs/tests/fixtures/s7/walled-kakan.jsonl",
+   "relpath": "crates/tests/fixtures/s7/walled-kakan.jsonl",
    "sha256": "sha256:7fbbc8dee524c337a7f10ce98b244f72b21aa31882dd40e413a803786f748065"
   },
   {
@@ -170,7 +170,7 @@
    ],
    "kind": "walled",
    "n_lines": 13,
-   "relpath": "tools/hydra2-replay-rs/tests/fixtures/s7/walled-post-terminal.jsonl",
+   "relpath": "crates/tests/fixtures/s7/walled-post-terminal.jsonl",
    "sha256": "sha256:b7499fc3350671ea51d1db7726ffe0314c0edd51413ff2ea90deec0740948a35"
   },
   {
@@ -179,7 +179,7 @@
    ],
    "kind": "walled",
    "n_lines": 7,
-   "relpath": "tools/hydra2-replay-rs/tests/fixtures/s7/walled-truncated.jsonl",
+   "relpath": "crates/tests/fixtures/s7/walled-truncated.jsonl",
    "sha256": "sha256:78e8394a70337d77932deeb2db43706a167af8e19ae78c601c53131b37b4020b"
   },
   {
@@ -188,7 +188,7 @@
    ],
    "kind": "privileged-vector",
    "n_lines": 12,
-   "relpath": "tools/hydra2-replay-rs/tests/fixtures/s5/priv-a.jsonl",
+   "relpath": "crates/tests/fixtures/s5/priv-a.jsonl",
    "sha256": "sha256:eecb4f3ef9ed3f054554fafe9eceb29f9648a52172e9e0a1064c5041d296bec6"
   },
   {
@@ -197,7 +197,7 @@
    ],
    "kind": "privileged-vector",
    "n_lines": 12,
-   "relpath": "tools/hydra2-replay-rs/tests/fixtures/s5/priv-alias.jsonl",
+   "relpath": "crates/tests/fixtures/s5/priv-alias.jsonl",
    "sha256": "sha256:604a37965cbc58605389af893f321330e8eaa8da3ec44afff10788ddd666a493"
   },
   {
@@ -206,7 +206,7 @@
    ],
    "kind": "privileged-vector",
    "n_lines": 12,
-   "relpath": "tools/hydra2-replay-rs/tests/fixtures/s5/priv-missing.jsonl",
+   "relpath": "crates/tests/fixtures/s5/priv-missing.jsonl",
    "sha256": "sha256:f1369b770a4e4d8746350a68112a2c86db2b875ce28651c35b10e447f24eccac"
   },
   {
@@ -215,7 +215,7 @@
    ],
    "kind": "privileged-vector",
    "n_lines": 12,
-   "relpath": "tools/hydra2-replay-rs/tests/fixtures/s5/priv-tie.jsonl",
+   "relpath": "crates/tests/fixtures/s5/priv-tie.jsonl",
    "sha256": "sha256:c8affee8f6f07008a58eb390a3eb70243540fc3ac05e765e9627ad38b1146bcf"
   },
   {
@@ -223,7 +223,7 @@
     "F5"
    ],
    "kind": "privileged-vector",
-   "relpath": "tools/hydra2-replay-rs/tests/fixtures/s5/rules-tampered.json",
+   "relpath": "crates/tests/fixtures/s5/rules-tampered.json",
    "sha256": "sha256:03a9d495536def755d5b5afb1b91eedd16dc776d1460f66d2966a4c45425c641"
   },
   {
@@ -231,7 +231,7 @@
     "F6"
    ],
    "kind": "packager-zst",
-   "relpath": "tools/mjai-dataset-packager/tests/fixtures/c.mjai.json.zst",
+   "relpath": "crates/packager/tests/fixtures/c.mjai.json.zst",
    "sha256": "sha256:81bfa3545c14a7fca064f44375e395c2910bf1bde0547e28a9988956c16ec919"
   },
   {
@@ -239,24 +239,24 @@
     "F7"
    ],
    "kind": "frozen-hashes",
-   "relpath": "tools/hydra2-replay-rs/tests/fixtures/frozen-row-hashes.json",
-   "sha256": "sha256:b1748d4172674d8362ddd65f66434556484e7c4d060210060800959d93802868"
+   "relpath": "crates/tests/fixtures/frozen-row-hashes.json",
+   "sha256": "sha256:17fbe04214cbf2f20be2bec788252d449bd341343cdc9b921bdf9aa6bcce1e3f"
   },
   {
    "fixtures": [
     "F9"
    ],
    "kind": "plane-geometry",
-   "relpath": "src/hydra2/models/schema.py",
-   "sha256": "sha256:cb11bf548aa22e75d82d4bb6905292e2311d3521a3ce3607df10ec70aa6b3d79"
+   "relpath": "python/hydra2/models/schema.py",
+   "sha256": "sha256:57f211ec87527960f80331db7eacf26b477e7941a587d84698eccc5ff01da13a"
   },
   {
    "fixtures": [
     "F9"
    ],
    "kind": "plane-geometry",
-   "relpath": "src/hydra2/models/encoder.py",
-   "sha256": "sha256:e0724fe097820053df23ade50fdc89842552c3b0129ecf1f3f03327381ce2566"
+   "relpath": "python/hydra2/models/encoder.py",
+   "sha256": "sha256:05e23d6eb16854c15dbdaf775c90098e3ecabf91e51938eacf49ae164406ae65"
   },
   {
    "fixtures": [
@@ -1803,16 +1803,16 @@
     "F9"
    ],
    "kind": "cutover-source",
-   "relpath": "src/hydra2/training/rust_stream.py",
-   "sha256": "sha256:a8d0868956a47702cd70740d94d7624d879f41098dfc8ae09f1eea25af84af98"
+   "relpath": "python/hydra2/training/rust_stream.py",
+   "sha256": "sha256:d4c5c51528b54408726d0a05e09fed4beb394bd650c5703a1ee79b0e6bac8c3d"
   },
   {
    "fixtures": [
     "F9"
    ],
    "kind": "cutover-source",
-   "relpath": "src/hydra2/training/stream_train.py",
-   "sha256": "sha256:d3cd522e29a922fe765e31705bb49fb0f97707990dbfd18e42b15c431eb05db3"
+   "relpath": "python/hydra2/training/stream_train.py",
+   "sha256": "sha256:588acbf3912408e23bd763ea87e82324f67f8a92907856abc3a9c255f22734f6"
   },
   {
    "fixtures": [
@@ -1820,7 +1820,7 @@
    ],
    "kind": "cutover-source",
    "relpath": "tests/parity/test_parity_gates_g1_g7_wp0b.py",
-   "sha256": "sha256:5cc481eb6ff57418c01936f5147dc114fa76b6974ef2e739343f3995e2c967cb"
+   "sha256": "sha256:d0c3efa47258f43712add235627a3cd981d0c7ebefe506524e27ea0c2eb97b62"
   },
   {
    "fixtures": [
@@ -1828,7 +1828,7 @@
    ],
    "kind": "cutover-source",
    "relpath": "tests/unit/test_rust_stream_wp14.py",
-   "sha256": "sha256:e27459f3c0e75f23dd353bf474bef46b0e51f1d93436ca63d0479cd2ef540704"
+   "sha256": "sha256:7192532c9bf5ac1d822e4e9e0ec18cb557bb274d6634bc7bfba75c8d6e36c689"
   },
   {
    "fixtures": [
@@ -1836,7 +1836,7 @@
    ],
    "kind": "cutover-source",
    "relpath": "tests/unit/test_replay_backend_wp14.py",
-   "sha256": "sha256:3e3cc7d53467cf229b8e9b2197e04e9a1dabf329ce36d4da1d4ad77a6ddd0abd"
+   "sha256": "sha256:0bafa2884a4d52d8d18193f0628cce5d8fbf21397f3a182d24b5272b96b22c3b"
   }
  ],
  "fingerprint_fields": [
@@ -1929,6 +1929,6 @@
    "module": "tests.parity.test_parity_gates_g1_g7_wp0b"
   }
  ],
- "manifest_digest": "sha256:e1e677fc83b34e4bc4511128b000a028e6acbd0391e526ddc067c111f5931028",
+ "manifest_digest": "sha256:cb7b1b06d984b31be2750072c512ed4163235dfaa23582e9497ba2bdcaa53441",
  "manifest_version": "2"
 }

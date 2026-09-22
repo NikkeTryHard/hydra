@@ -51,7 +51,7 @@ os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 import torch  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-for _p in (str(REPO_ROOT / "src"), str(REPO_ROOT)):
+for _p in (str(REPO_ROOT / "python"), str(REPO_ROOT)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
@@ -77,6 +77,38 @@ from hydra2.training.pinned_ring import (  # noqa: E402
     slot_layout,
     slot_nbytes,
 )
+
+try:
+    from hydra2._native import contracts as _script_bridge
+except ImportError:  # pragma: no cover - stale .so falls back to the oracle below
+    _script_bridge = None  # type: ignore[assignment]
+
+_bridge_percentile_index = getattr(_script_bridge, "script_percentile_index", None)
+_bridge_rate_per_sec = getattr(_script_bridge, "script_rate_per_sec", None)
+_bridge_grid_total = getattr(_script_bridge, "script_grid_total", None)
+_bridge_bare_hex = getattr(_script_bridge, "script_sha256_bare_hex", None)
+
+
+def _rate_per_sec(n: int, elapsed: float) -> float:
+    """Bridge-first `n / elapsed if elapsed > 0 else 0.0` (byte-identical fallback)."""
+    if _bridge_rate_per_sec is not None:
+        return float(_bridge_rate_per_sec(n, elapsed))
+    return float(n) / float(elapsed) if float(elapsed) > 0 else 0.0
+
+
+def _grid_total(n_files: int, per_file: int) -> int:
+    """Bridge-first `n_files * per_file` closed form (byte-identical fallback)."""
+    if _bridge_grid_total is not None:
+        return int(_bridge_grid_total(n_files, per_file))
+    return int(n_files) * int(per_file)
+
+
+def _bare_hex_of_bytes(data: bytes) -> str:
+    """Bridge-first bare sha256 hex of pre-canonicalized bytes (hashlib fallback)."""
+    if _bridge_bare_hex is not None:
+        return str(_bridge_bare_hex(bytes(data)))
+    return hashlib.sha256(bytes(data)).hexdigest()
+
 
 # F1 builders reused from the golden test module (never duplicated here).
 try:
@@ -124,8 +156,8 @@ _F11_FILES = 64
 _F11_GAMES_PER_FILE = 12
 _F11_BUILDER = "f11-v1"
 _F10_TEMPLATES = (
-    "tools/hydra2-replay-rs/tests/fixtures/s7/walled-synth.jsonl",
-    "tools/hydra2-replay-rs/tests/fixtures/s7/walled-real.jsonl",
+    "crates/tests/fixtures/s7/walled-synth.jsonl",
+    "crates/tests/fixtures/s7/walled-real.jsonl",
 )
 
 _CORPUS_FILES = {
@@ -139,37 +171,37 @@ _CORPUS_FILES = {
 # F3-F7 reference existing repo fixtures (never copied, only pinned).
 _REF_FIXTURES: dict[str, list[str]] = {
     "F3": [
-        "tools/hydra2-replay-rs/tests/fixtures/s7/walled-synth.jsonl",
-        "tools/hydra2-replay-rs/tests/fixtures/s7/walled-real.jsonl",
-        "tools/hydra2-replay-rs/tests/fixtures/s7/walled-ankan.jsonl",
-        "tools/hydra2-replay-rs/tests/fixtures/s7/walled-kakan.jsonl",
-        "tools/hydra2-replay-rs/tests/fixtures/s7/walled-truncated.jsonl",
-        "tools/hydra2-replay-rs/tests/fixtures/s7/walled-post-terminal.jsonl",
+        "crates/tests/fixtures/s7/walled-synth.jsonl",
+        "crates/tests/fixtures/s7/walled-real.jsonl",
+        "crates/tests/fixtures/s7/walled-ankan.jsonl",
+        "crates/tests/fixtures/s7/walled-kakan.jsonl",
+        "crates/tests/fixtures/s7/walled-truncated.jsonl",
+        "crates/tests/fixtures/s7/walled-post-terminal.jsonl",
     ],
     "F4": [
-        "tools/hydra2-replay-rs/tests/fixtures/s4/good-a.jsonl",
-        "tools/hydra2-replay-rs/tests/fixtures/s4/good-b.jsonl",
-        "tools/hydra2-replay-rs/tests/fixtures/s4/q-framing.jsonl",
-        "tools/hydra2-replay-rs/tests/fixtures/s4/q-truncated.jsonl",
-        "tools/hydra2-replay-rs/tests/fixtures/s4/q-unknown-event.jsonl",
-        "tools/hydra2-replay-rs/tests/fixtures/s4/q-bare-dora.jsonl",
-        "tools/hydra2-replay-rs/tests/fixtures/s4/q-double-ron.jsonl",
-        "tools/hydra2-replay-rs/tests/fixtures/s4/q-turn-order.jsonl",
-        "tools/hydra2-replay-rs/tests/fixtures/s4/q-tile-conservation.jsonl",
-        "tools/hydra2-replay-rs/tests/fixtures/s4/q-wall-bearing.jsonl",
+        "crates/tests/fixtures/s4/good-a.jsonl",
+        "crates/tests/fixtures/s4/good-b.jsonl",
+        "crates/tests/fixtures/s4/q-framing.jsonl",
+        "crates/tests/fixtures/s4/q-truncated.jsonl",
+        "crates/tests/fixtures/s4/q-unknown-event.jsonl",
+        "crates/tests/fixtures/s4/q-bare-dora.jsonl",
+        "crates/tests/fixtures/s4/q-double-ron.jsonl",
+        "crates/tests/fixtures/s4/q-turn-order.jsonl",
+        "crates/tests/fixtures/s4/q-tile-conservation.jsonl",
+        "crates/tests/fixtures/s4/q-wall-bearing.jsonl",
     ],
     "F5": [
-        "tools/hydra2-replay-rs/tests/fixtures/s5/priv-a.jsonl",
-        "tools/hydra2-replay-rs/tests/fixtures/s5/priv-tie.jsonl",
-        "tools/hydra2-replay-rs/tests/fixtures/s5/priv-missing.jsonl",
-        "tools/hydra2-replay-rs/tests/fixtures/s5/priv-alias.jsonl",
+        "crates/tests/fixtures/s5/priv-a.jsonl",
+        "crates/tests/fixtures/s5/priv-tie.jsonl",
+        "crates/tests/fixtures/s5/priv-missing.jsonl",
+        "crates/tests/fixtures/s5/priv-alias.jsonl",
     ],
     "F6": [
-        "tools/mjai-dataset-packager/tests/fixtures/golden/a.mjai.json.zst",
-        "tools/mjai-dataset-packager/tests/fixtures/golden/b.mjai.json.zst",
+        "crates/packager/tests/fixtures/golden/a.mjai.json.zst",
+        "crates/packager/tests/fixtures/golden/b.mjai.json.zst",
     ],
     "F7": [
-        "tools/hydra2-replay-rs/tests/fixtures/frozen-row-hashes.json",
+        "crates/tests/fixtures/frozen-row-hashes.json",
         "scripts/freeze_row_hashes.py",
     ],
 }
@@ -186,6 +218,9 @@ def _percentile(xs: list[float], q: float) -> float | None:
     if not xs:
         return None
     ordered = sorted(xs)
+    if _bridge_percentile_index is not None:
+        idx = _bridge_percentile_index(len(ordered), float(q))
+        return ordered[int(idx)] if idx is not None else None
     return ordered[min(int(q * len(ordered)), len(ordered) - 1)]
 
 
@@ -305,9 +340,7 @@ def _compress_zst(raw: bytes, *, level: int) -> bytes:
     if exe is None:
         raise BenchError("zstd CLI not found on PATH; cannot write .zst corpus")
     try:
-        proc = subprocess.run(
-            [exe, f"-{level}", "-c"], input=raw, capture_output=True, check=True
-        )
+        proc = subprocess.run([exe, f"-{level}", "-c"], input=raw, capture_output=True, check=True)
     except subprocess.CalledProcessError as exc:
         raise BenchError(f"zstd compression failed: {exc.stderr.decode()[:200]}") from exc
     return proc.stdout
@@ -465,15 +498,11 @@ def _f10_templates() -> list[list[dict[str, object]]]:
         path = REPO_ROOT / rel
         if not path.is_file():
             raise BenchError(f"F10 template missing: {rel}")
-        out.append(
-            [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
-        )
+        out.append([json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()])
     return out
 
 
-def _f10_stamp(
-    template: list[dict[str, object]], game_id: str
-) -> list[dict[str, object]]:
+def _f10_stamp(template: list[dict[str, object]], game_id: str) -> list[dict[str, object]]:
     """Clone one template game with boundary game_id stamped (wall shared)."""
     events: list[dict[str, object]] = []
     for line in template:
@@ -482,6 +511,8 @@ def _f10_stamp(
             e["game_id"] = game_id
         events.append(e)
     return events
+
+
 def _f10_wall(template: list[dict[str, object]]) -> tuple[int, ...]:
     """Template's own 136-wall (mirrors decode.py extraction, not identity)."""
     for ev in template:
@@ -490,6 +521,8 @@ def _f10_wall(template: list[dict[str, object]]) -> tuple[int, ...]:
             if isinstance(w, list) and len(w) == 136 and all(isinstance(x, int) for x in w):
                 return tuple(int(x) for x in w)
     return tuple(range(136))
+
+
 def _f10_template_rows(templates: list[list[dict[str, object]]]) -> list[int]:
     """Exact per-template decisions via expand_game (fail-closed on zero)."""
     counts: list[int] = []
@@ -509,6 +542,7 @@ def _f10_template_rows(templates: list[list[dict[str, object]]]) -> list[int]:
         counts.append(len(rows))
     return counts
 
+
 def _build_f10(corpus_dir: Path, *, level: int) -> list[dict[str, object]]:
     """Decision-bearing primary: F10 files of real dahai/hora MJAI games.
 
@@ -517,14 +551,10 @@ def _build_f10(corpus_dir: Path, *, level: int) -> list[dict[str, object]]:
     estimated. Builder version + template shas pin the bytes (builder hash).
     """
     templates = _f10_templates()
-    template_shas = [
-        str(sha256_file(REPO_ROOT / rel)) for rel in _F10_TEMPLATES
-    ]
+    template_shas = [str(sha256_file(REPO_ROOT / rel)) for rel in _F10_TEMPLATES]
     # Exact per-template decisions (fail-closed: template must expand).
     template_rows = _f10_template_rows(templates)
-    builder_hash = str(
-        sha256_digest((_F10_BUILDER + "\n" + "\n".join(template_shas)).encode())
-    )
+    builder_hash = str(sha256_digest((_F10_BUILDER + "\n" + "\n".join(template_shas)).encode()))
     f10_dir = corpus_dir / _CORPUS_FILES["F10_DIR"]
     f10_dir.mkdir(parents=True, exist_ok=True)
     entries: list[dict[str, object]] = []
@@ -572,14 +602,10 @@ def _build_f11(corpus_dir: Path, *, level: int) -> list[dict[str, object]]:
     expand_game so n_decisions is exact, never estimated.
     """
     templates = _f10_templates()
-    template_shas = [
-        str(sha256_file(REPO_ROOT / rel)) for rel in _F10_TEMPLATES
-    ]
+    template_shas = [str(sha256_file(REPO_ROOT / rel)) for rel in _F10_TEMPLATES]
     # Exact per-template decisions (fail-closed: template must expand).
     template_rows = _f10_template_rows(templates)
-    builder_hash = str(
-        sha256_digest((_F11_BUILDER + "\n" + "\n".join(template_shas)).encode())
-    )
+    builder_hash = str(sha256_digest((_F11_BUILDER + "\n" + "\n".join(template_shas)).encode()))
     f11_dir = corpus_dir / _CORPUS_FILES["F11_DIR"]
     f11_dir.mkdir(parents=True, exist_ok=True)
     entries: list[dict[str, object]] = []
@@ -656,9 +682,7 @@ def _ref_entry(fid: str, rel: str) -> dict[str, object]:
         entry["n_games"] = None
     else:
         entry["n_lines"] = _count_text_lines(path)
-        entry["n_games"] = (
-            _count_start_games(path) if path.suffix in (".jsonl", ".json") else None
-        )
+        entry["n_games"] = _count_start_games(path) if path.suffix in (".jsonl", ".json") else None
     return entry
 
 
@@ -767,15 +791,15 @@ def _expand_pass(
     t_end = time.perf_counter()
     elapsed = t_end - t0
     n = len(rows)
+    n_events = sum(len(g) for g in games)
     return {
         "unit": "expanded_rows",
         "n_decisions": n,
-        "n_events": sum(len(g) for g in games),
+        "n_events": n_events,
         "n_batches": len(batches),
-        "decisions_per_sec": n / elapsed if elapsed > 0 else 0.0,
-        "events_per_sec": sum(len(g) for g in games) / elapsed if elapsed > 0 else 0.0,
-        "batches_per_sec": len(batches) / elapsed if elapsed > 0 else 0.0,
-        "elapsed_s": elapsed,
+        "decisions_per_sec": _rate_per_sec(n, elapsed),
+        "events_per_sec": _rate_per_sec(n_events, elapsed),
+        "batches_per_sec": _rate_per_sec(len(batches), elapsed),
         "phases": {
             "scan_s": t_scan - t0,
             "expand_s": t_expand - t_scan,
@@ -791,10 +815,11 @@ def _expand_pass(
 def _expand_streamed(games: list) -> tuple[int, int]:
     """Expand every streamed game fail-closed; returns (n_rows, n_events).
 
-    F10-ONLY: every game must bear decisions. Expansion failure aborts the
-    pass (never a silent skip); dora (5,) is asserted per row. Framing-only
-    corpora (F2/F8) never reach this helper (turn_advance is unmapped in
-    replay_expand and wall-less — expansion would raise there).
+    Decision-primary corpora only (F10/F11): every game must bear decisions.
+    Expansion failure aborts the pass (never a silent skip); dora (5,) is
+    asserted per row. Framing-only corpora (F2/F8) never reach this helper
+    (turn_advance is unmapped in replay_expand and wall-less — expansion
+    would raise there).
     """
     n_rows = 0
     n_events = 0
@@ -803,9 +828,7 @@ def _expand_streamed(games: list) -> tuple[int, int]:
         try:
             rows = expand_game(game.game)
         except Exception as exc:
-            raise BenchError(
-                f"stream-leg expansion failed for {game.game.game_id}: {exc}"
-            ) from exc
+            raise BenchError(f"stream-leg expansion failed for {game.game.game_id}: {exc}") from exc
         for row in rows:
             dora = row.actor_observation["dora_indicators"]
             if not isinstance(dora, list) or len(dora) != 5:
@@ -815,13 +838,21 @@ def _expand_streamed(games: list) -> tuple[int, int]:
 
 
 def _stream_pass(
-    corpus_root: Path, *, chunk: int, seed: int, ring: bool, B: int, T: int, depth: int,
+    corpus_root: Path,
+    *,
+    chunk: int,
+    seed: int,
+    ring: bool,
+    B: int,
+    T: int,
+    depth: int,
     expand: bool = False,
 ) -> dict[str, object]:
-    """Stream leg. ``expand=True`` (F10 only) expands every game fail-closed and
-    reports decisions as expanded rows; framing-only corpora (F2/F8) keep the
-    legacy emitted-games path (turn_advance is unmapped in replay_expand and
-    wall-less, so expansion would raise — never attempted there).
+    """Stream leg. ``expand=True`` (F10/F11 decision-primary) expands every game
+    fail-closed and reports decisions as expanded rows; framing-only corpora
+    (F2/F8) keep the legacy emitted-games path (turn_advance is unmapped in
+    replay_expand and wall-less, so expansion would raise — never attempted
+    there).
     """
     t0 = time.perf_counter()
     manifest = build_manifest(corpus_root)
@@ -855,12 +886,9 @@ def _stream_pass(
         "n_decisions": n_decisions,
         "n_events": n_events,
         "n_batches": len(micros),
-        "decisions_per_sec": n_decisions / elapsed if elapsed > 0 else 0.0,
-        "events_per_sec": (n_events / elapsed if elapsed > 0 else 0.0)
-        if n_events is not None
-        else None,
-        "batches_per_sec": len(micros) / elapsed if elapsed > 0 else 0.0,
-        "elapsed_s": elapsed,
+        "decisions_per_sec": _rate_per_sec(n_decisions, elapsed),
+        "events_per_sec": (_rate_per_sec(n_events, elapsed) if n_events is not None else None),
+        "batches_per_sec": _rate_per_sec(len(micros), elapsed),
         "phases": {
             "scan_s": t_scan - t0,
             "framing_s": t_frame - t_scan,
@@ -874,6 +902,298 @@ def _stream_pass(
         "stream_counters": counters,
     }
 
+#: Process-wide probe-train state for the update leg (built once per config;
+#: cold fresh-process spawns rebuild by construction).
+_UPDATE_TRAIN_STATE: dict[str, dict[str, object]] = {}
+
+
+def _update_train_state(config_path: str) -> dict[str, object]:
+    """Build (once per process) the probe model/optimizer/loss mirror for the update leg.
+
+    Mirrors ``bench/kbench.py::main`` production wiring: real ``RunConfig``
+    model/optimizer/scheduler builders, ``PlainPytorchAdapter`` runtime
+    handle, compiled ``supervised_loss_kernel``, and config weights. Any
+    build failure raises fail-closed (never a synth stand-in).
+    """
+    cached = _UPDATE_TRAIN_STATE.get(config_path)
+    if cached is not None:
+        return cached
+    import contextlib as _contextlib
+
+    from hydra2.runtime.plain import PlainPytorchAdapter
+    from hydra2.runtime.protocol import RuntimeSpec, build_runtime
+    from hydra2.training import stream_train as st
+    from hydra2.training._rc_root import load_run_config
+    from hydra2.training.objectives_loss import supervised_loss_kernel
+
+    if not torch.cuda.is_available():
+        raise BenchError("update leg requires CUDA (probe model trains on device)")
+    if not os.environ.get("HYDRA2_DATA_ROOT"):
+        raise BenchError("update leg requires HYDRA2_DATA_ROOT (config interpolation)")
+    cfg = load_run_config(config_path)
+    action_count = int(cfg.model.action_count)
+    torch.set_float32_matmul_precision("highest")
+    torch.backends.cudnn.allow_tf32 = False
+    torch.backends.cudnn.benchmark = False
+    torch.manual_seed(0)
+    torch.cuda.manual_seed_all(0)
+    model = st._build_model(cfg)
+    optimizer = st._build_optimizer(cfg, model)
+    scheduler = st._build_scheduler(cfg, optimizer)
+    spec = RuntimeSpec(
+        adapter_id=cfg.runtime.adapter_id,  # type: ignore[arg-type]
+        device=cfg.runtime.device,
+        precision=cfg.loop.precision,  # type: ignore[arg-type]
+        compile_mode=cfg.runtime.compile_mode,  # type: ignore[arg-type]
+        backward_pass_autocast=st._backward_pass_autocast_for(
+            precision=cfg.loop.precision, compile_mode=cfg.runtime.compile_mode
+        ),
+    )
+    handle = build_runtime(
+        adapter=PlainPytorchAdapter(), model=model, optimizer=optimizer, spec=spec
+    )
+    try:
+        compiled_loss = torch.compile(
+            supervised_loss_kernel,
+            mode="max-autotune-no-cudagraphs",
+            dynamic=False,
+            fullgraph=False,
+            isolate_recompiles=True,
+        )
+    except TypeError:
+        compiled_loss = torch.compile(
+            supervised_loss_kernel,
+            mode="max-autotune-no-cudagraphs",
+            dynamic=False,
+            fullgraph=False,
+        )
+    state: dict[str, object] = {
+        "model": handle.model,
+        "handle": handle,
+        "optimizer": optimizer,
+        "scheduler": scheduler,
+        "compiled_loss": compiled_loss,
+        "action_count": action_count,
+        "use_amp": cfg.loop.precision == "bf16_mixed",
+        "clip_norm": cfg.loop.gradient_clip_norm,
+        "weights": {
+            "w_policy": cfg.weights.w_policy,
+            "w_placement": cfg.weights.w_placement,
+            "w_value": cfg.weights.w_value,
+            "w_event": dict(cfg.weights.w_event or {}),
+            "w_belief": dict(cfg.weights.w_belief or {}),
+            "label_smoothing": cfg.weights.label_smoothing,
+        },
+        "nullcontext": _contextlib.nullcontext,
+    }
+    _ = state["model"].train()  # type: ignore[union-attr]
+    _UPDATE_TRAIN_STATE[config_path] = state
+    return state
+
+
+def _update_pass(corpus_subdir: Path, *, seed: int, config_path: str) -> dict[str, object]:
+    """End-to-end training-update timer on decision-primary rows.
+
+    Stages per pass: fetch (manifest scan + ordered stream list), expand
+    (``expand_game`` per game fail-closed + ``_row_to_dict`` slimming),
+    encode (``encode_observation_rows`` per B=2048 tiled update), H2D (pinned
+    bytes ``.to(cuda, non_blocking=True)`` on ONE transfer stream with ONE
+    event recorded after the transfers plus ``wait_event`` on the consumer
+    stream — the record-leg mechanism, timed including transfer completion),
+    step (probe-model forward + compiled loss + backward + opt/sched, timed
+    by CUDA events exactly like kbench pass 1).
+
+    Rows tile per T-bucket to exactly B=2048 (``tiled: true`` + natural counts
+    recorded; dense-op timing is value-independent, same basis as kbench).
+    Buckets with zero natural rows are skipped, never zero-filled; a vacuous
+    corpus raises. Loss/grad finiteness is fail-closed per update.
+    """
+    from hydra2.models.encoder import ActorTensorBatch
+    from hydra2.models.model import validate_actor_batch
+    from hydra2.models.schema import BASELINE_ACTION_COUNT, HISTORY_BUCKET_LENGTHS
+    from hydra2.training.adapters import model_output_to_loss_dict
+    from hydra2.training.dataset_encode import encode_observation_rows
+    from hydra2.training.objectives_loss import (
+        _check_total_finite,
+        global_grad_norm_is_finite,
+        validate_supervised_inputs,
+    )
+    from hydra2.training.objectives_metrics import compute_hot_scalars
+    from hydra2.training.stream_expand import _row_to_dict
+
+    _B = 2048
+    buckets = list(HISTORY_BUCKET_LENGTHS)
+    device = torch.device("cuda")
+    t0 = time.perf_counter()
+    manifest = build_manifest(corpus_subdir)
+    t_scan = time.perf_counter()
+    stream = PrefetchGameStream(manifest, seed=seed, ratios=dict(_RATIOS), split=None)
+    games = list(stream)
+    t_frame = time.perf_counter()
+    slim_rows: list[dict[str, object]] = []
+    for game in games:
+        try:
+            grown = expand_game(game.game)
+        except Exception as exc:
+            raise BenchError(f"update-leg expansion failed for {game.game.game_id}: {exc}") from exc
+        for row in grown:
+            dora = row.actor_observation["dora_indicators"]
+            if not isinstance(dora, list) or len(dora) != 5:
+                raise BenchError("dora (5,) sentinel violated in update-leg expansion")
+            slim_rows.append(_row_to_dict(row))
+    t_expand = time.perf_counter()
+    if not slim_rows:
+        raise BenchError("update leg vacuous: zero expanded rows")
+
+    def _bucket_of(row: dict[str, object]) -> int:
+        obs: object = row["actor_observation"]
+        hist: object = (
+            obs.visible_history if hasattr(obs, "visible_history") else obs.get("visible_history")  # type: ignore[union-attr]
+        )
+        n = len(hist) if hist is not None else 0  # type: ignore[arg-type]
+        for b in buckets:
+            if max(1, n) <= b:
+                return b
+        raise BenchError(f"update-leg row over history cap: len={n}")
+
+    by_bucket: dict[int, list[dict[str, object]]] = {b: [] for b in buckets}
+    for row in slim_rows:
+        by_bucket[_bucket_of(row)].append(row)
+    t_bucket = time.perf_counter()
+    state = _update_train_state(config_path)
+    action_count = int(state["action_count"])
+    if action_count != BASELINE_ACTION_COUNT:
+        raise BenchError(f"update leg pins baseline vocab, got {action_count}")
+    t_build = time.perf_counter()
+    xfer = torch.cuda.Stream()
+    per_bucket: dict[str, dict[str, object]] = {}
+    n_updates = 0
+    encode_s = h2d_s = step_s = 0.0
+    for b in buckets:
+        natural = by_bucket[b]
+        if not natural:
+            per_bucket[str(b)] = {"natural_rows": 0, "updates": 0, "skipped": True}
+            continue
+        tiled = [natural[i % len(natural)] for i in range(_B)]
+        t_e0 = time.perf_counter()
+        batch = encode_observation_rows(tiled, num_actions=BASELINE_ACTION_COUNT)
+        actor = batch["actor_batch"]
+        validate_actor_batch(actor, action_count)
+        t_e1 = time.perf_counter()
+        host_tensors: dict[str, torch.Tensor] = {}
+        for name, ten in actor.features.items():
+            if isinstance(ten, torch.Tensor):
+                host_tensors[f"features.{name}"] = ten
+        host_tensors["chosen_action_id"] = batch["chosen_action_id"]
+        with torch.cuda.stream(xfer):
+            moved = {k: v.to(device, non_blocking=True) for k, v in host_tensors.items()}
+            evt = torch.cuda.Event()
+            evt.record(xfer)
+        torch.cuda.current_stream().wait_event(evt)
+        torch.cuda.synchronize()
+        t_h1 = time.perf_counter()
+        moved_feats = {k[9:]: v for k, v in moved.items() if k.startswith("features.")}
+        actor_dev = ActorTensorBatch(
+            features=moved_feats,
+            history_mask=moved_feats["history_mask"],
+            legal_mask=moved_feats["legal_mask"],
+            observation_hashes=actor.observation_hashes,
+            actor_seats=moved_feats["actor_seats"],
+        )
+        loss_batch = {
+            "legal_mask": moved_feats["legal_mask"],
+            "chosen_action_id": moved["chosen_action_id"],
+        }
+        ev0 = torch.cuda.Event(enable_timing=True)
+        ev1 = torch.cuda.Event(enable_timing=True)
+        ev0.record()
+        autocast = (
+            torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+            if state["use_amp"]
+            else state["nullcontext"]()  # type: ignore[operator]
+        )
+        with autocast:
+            model_out = model_output_to_loss_dict(state["model"](actor_dev))  # type: ignore[operator]
+            validate_supervised_inputs(model_out, loss_batch, state["weights"])
+            losses = state["compiled_loss"](model_out, loss_batch, state["weights"])  # type: ignore[operator]
+            _check_total_finite(losses["total"])
+        total = losses["total"]
+        state["handle"].backward(total)  # type: ignore[union-attr]
+        finite, _norm = global_grad_norm_is_finite(state["model"])  # type: ignore[arg-type]
+        if not finite:
+            raise BenchError(f"non-finite grads in update-leg step (bucket {b})")
+        if state["clip_norm"] is not None:
+            torch.nn.utils.clip_grad_norm_(
+                state["model"].parameters(), state["clip_norm"]  # type: ignore[union-attr,arg-type]
+            )
+        state["optimizer"].step()  # type: ignore[union-attr]
+        state["scheduler"].step()  # type: ignore[union-attr]
+        state["optimizer"].zero_grad(set_to_none=True)  # type: ignore[union-attr]
+        _ = compute_hot_scalars(
+            model_out["policy_logits"].detach(),
+            loss_batch["chosen_action_id"].detach(),
+            loss_batch["legal_mask"].detach(),
+        )
+        loss_val = float(total.detach().cpu().item())
+        if loss_val != loss_val:
+            raise BenchError(f"non-finite timed loss (bucket {b})")
+        ev1.record()
+        torch.cuda.synchronize()
+        t_s1 = time.perf_counter()
+        encode_s += t_e1 - t_e0
+        h2d_s += t_h1 - t_e1
+        step_s += ev0.elapsed_time(ev1) / 1000.0
+        n_updates += 1
+        per_bucket[str(b)] = {
+            "natural_rows": len(natural),
+            "updates": 1,
+            "tiled_rows": _B,
+            "loss": loss_val,
+        }
+    t_end = time.perf_counter()
+    if n_updates == 0:
+        raise BenchError("update leg vacuous: no bucket held rows")
+    elapsed = t_end - t0
+    tiled_total = n_updates * _B
+    unit = "tiled_updates"
+    return {
+        "unit": unit,
+        "n_games": len(games),
+        "n_decisions": len(slim_rows),
+        "n_events": len(slim_rows),
+        "n_batches": n_updates,
+        "n_updates": n_updates,
+        "tiled_rows": tiled_total,
+        "rows_per_update": _B,
+        "decisions_per_sec": _rate_per_sec(n_updates, elapsed),
+        "events_per_sec": _rate_per_sec(tiled_total, elapsed),
+        "batches_per_sec": _rate_per_sec(n_updates, elapsed),
+        "updates_per_sec": _rate_per_sec(n_updates, elapsed),
+        "phases": {
+            "scan_s": t_scan - t0,
+            "framing_s": t_frame - t_scan,
+            "expand_s": t_expand - t_frame,
+            "bucket_s": t_bucket - t_expand,
+            "build_s": t_build - t_bucket,
+            "encode_s": encode_s,
+            "h2d_s": h2d_s,
+            "step_s": step_s,
+            "total_s": elapsed,
+        },
+        "per_bucket": per_bucket,
+        "ring": None,
+        "feed": "update",
+        "tiled": True,
+        "overlap": {
+            "mechanism": "record-then-wait",
+            "transfer_stream": True,
+            "events_per_update": 1,
+            "wait_on_consumer": True,
+            "note": "mechanism timed, not achieved-overlap claim",
+        },
+    }
+
+
 
 def _ring_probe(*, B: int, T: int, depth: int) -> dict[str, object]:
     """Live ring collector: N=depth+3 refills, stats() carries h2d/sync windows."""
@@ -884,9 +1204,7 @@ def _ring_probe(*, B: int, T: int, depth: int) -> dict[str, object]:
     try:
         shapes = {name: shape for name, (shape, _dt) in layout.items()}
         for _ in range(depth + 3):
-            batch = {
-                name: torch.empty(shapes[name], dtype=dtypes[name]) for name in shapes
-            }
+            batch = {name: torch.empty(shapes[name], dtype=dtypes[name]) for name in shapes}
             ring.next(batch)
         stats = ring.stats()
     finally:
@@ -930,7 +1248,7 @@ def cmd_smoke(args: argparse.Namespace) -> int:
     manifest = build_manifest(f8_dir)
     stream = PrefetchGameStream(manifest, seed=_SEED, ratios=dict(_RATIOS), split=None)
     games = list(stream)
-    want = _F8_FILES * _F8_GAMES_PER_FILE
+    want = _grid_total(_F8_FILES, _F8_GAMES_PER_FILE)
     assert len(games) == want, f"F8 leg: {len(games)} != {want}"
     micros = list(slice_microbatches(games, 32))
     covered = sum(len(m) for m in micros)
@@ -941,7 +1259,7 @@ def cmd_smoke(args: argparse.Namespace) -> int:
     manifest10 = build_manifest(f10_dir)
     stream10 = PrefetchGameStream(manifest10, seed=_SEED, ratios=dict(_RATIOS), split=None)
     games10 = list(stream10)
-    want10 = _F10_FILES * _F10_GAMES_PER_FILE
+    want10 = _grid_total(_F10_FILES, _F10_GAMES_PER_FILE)
     assert len(games10) == want10, f"F10 leg: {len(games10)} != {want10}"
     rows10, _ = _expand_streamed(games10)
     assert rows10 > 0, "F10 leg vacuous: zero expanded rows"
@@ -992,10 +1310,32 @@ def _timed_pass(args: argparse.Namespace) -> dict[str, object]:
                 T=args.T,
                 depth=args.depth,
             )
-        subdir = _CORPUS_FILES["F10_DIR"] if args.corpus == "f10" else _CORPUS_FILES["F8_DIR"]
+        if args.corpus == "f10":
+            subdir = _CORPUS_FILES["F10_DIR"]
+        elif args.corpus == "f11":
+            subdir = _CORPUS_FILES["F11_DIR"]
+        else:
+            subdir = _CORPUS_FILES["F8_DIR"]
         return _stream_pass(
-            corpus_dir / subdir, chunk=args.chunk, seed=args.seed, ring=args.ring,
-            B=args.B, T=args.T, depth=args.depth, expand=(args.corpus == "f10"),
+            corpus_dir / subdir,
+            chunk=args.chunk,
+            seed=args.seed,
+            ring=args.ring,
+            B=args.B,
+            T=args.T,
+            depth=args.depth,
+            expand=(args.corpus in ("f10", "f11")),
+        )
+    if args.leg == "update":
+        if args.corpus not in ("f10", "f11"):
+            raise BenchError(f"update leg needs a decision-primary corpus, got {args.corpus!r}")
+        if args.B != 2048:
+            raise BenchError(f"update leg pins B=2048 (kbench geometry), got B={args.B}")
+        subdir = _CORPUS_FILES["F10_DIR"] if args.corpus == "f10" else _CORPUS_FILES["F11_DIR"]
+        return _update_pass(
+            corpus_dir / subdir,
+            seed=args.seed,
+            config_path=str(args.config),
         )
     raise BenchError(f"unknown leg {args.leg!r}")
 
@@ -1022,10 +1362,9 @@ def _stream_file_pass(
         "n_decisions": n,
         "n_events": _F2_TARGET_LINES if path.name == _CORPUS_FILES["F2"] else None,
         "n_batches": len(micros),
-        "decisions_per_sec": n / elapsed if elapsed > 0 else 0.0,
+        "decisions_per_sec": _rate_per_sec(n, elapsed),
         "events_per_sec": None,
-        "batches_per_sec": len(micros) / elapsed if elapsed > 0 else 0.0,
-        "elapsed_s": elapsed,
+        "batches_per_sec": _rate_per_sec(len(micros), elapsed),
         "phases": {
             "scan_s": t_scan - t0,
             "framing_s": t_frame - t_scan,
@@ -1058,11 +1397,12 @@ def cmd_run(args: argparse.Namespace) -> int:
     threads_record = _configure_runtime(threads=args.threads, pinned=args.pin)
     corpus_dir = Path(args.corpus_dir)
     entries_path = Path(args.entries)
-    entries_digest = hashlib.sha256(
+    entries_pre = (
         canonical_bytes(json.loads(entries_path.read_text(encoding="utf-8")))
         if entries_path.is_file()
         else b"no-entries"
-    ).hexdigest()
+    )
+    entries_digest = _bare_hex_of_bytes(entries_pre)
     if args.manifest_digest:
         manifest_tag = args.manifest_digest.removeprefix("sha256:")[:16]
     else:
@@ -1072,11 +1412,27 @@ def cmd_run(args: argparse.Namespace) -> int:
     cold_passes: list[dict[str, object]] = []
     for _ in range(3):
         cmd = [
-            sys.executable, str(Path(__file__).resolve()), "run-once",
-            "--corpus-dir", str(corpus_dir), "--leg", args.leg, "--corpus", args.corpus,
-            "--chunk", str(args.chunk), "--seed", str(args.seed),
-            "--B", str(args.B), "--T", str(args.T), "--depth", str(args.depth),
-            "--threads", str(args.threads or 0),
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "run-once",
+            "--corpus-dir",
+            str(corpus_dir),
+            "--leg",
+            args.leg,
+            "--corpus",
+            args.corpus,
+            "--chunk",
+            str(args.chunk),
+            "--seed",
+            str(args.seed),
+            "--B",
+            str(args.B),
+            "--T",
+            str(args.T),
+            "--depth",
+            str(args.depth),
+            "--threads",
+            str(args.threads or 0),
         ]
         cmd.append("--pin" if args.pin else "--no-pin")
         cmd.append("--ring" if args.ring else "--no-ring")
@@ -1118,6 +1474,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         "batches_per_sec": pick("batches_per_sec"),
         "unit": warm_passes[-1]["unit"],
     }
+
     # Top-level aliases matching bench_corpus_manifest.json required_fields
     # (warm leg is the headline series; cold/warm blocks stay authoritative).
     def opt_rates(key: str) -> list[float]:
@@ -1192,8 +1549,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(f"cold decisions/sec runs: {cold_block['decisions_per_sec_runs']}")
     print(f"cold median: {cold_block['median']:.3f} {cold_block['unit']}/s")
     print(f"warm decisions/sec runs: {warm_block['decisions_per_sec_runs']}")
-    print(f"warm median: {warm_block['median']:.3f} {warm_block['unit']}/s "
-          f"(p50={warm_block['p50']:.3f} p99={warm_block['p99']:.3f})")
+    print(
+        f"warm median: {warm_block['median']:.3f} {warm_block['unit']}/s "
+        f"(p50={warm_block['p50']:.3f} p99={warm_block['p99']:.3f})"
+    )
     print(f"gate: {artifact['gate']} (thresholds blank baseline, no pass/fail)")
     print(f"artifact: {dest} [{digest}]")
     return 0
@@ -1214,19 +1573,29 @@ def cmd_build_corpus(args: argparse.Namespace) -> int:
     out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"corpus: {corpus_dir} ({len(entries)} entries -> {out})")
     for entry in entries:
-        print(f"  {entry['id']} {entry.get('part', '')} {entry.get('relpath')} "
-              f"lines={entry.get('n_lines')} games={entry.get('n_games')}")
+        print(
+            f"  {entry['id']} {entry.get('part', '')} {entry.get('relpath')} "
+            f"lines={entry.get('n_lines')} games={entry.get('n_games')}"
+        )
     return 0
 
 
 def _add_common(sp: argparse.ArgumentParser) -> None:
     sp.add_argument("--corpus-dir", default=str(REPO_ROOT / "bench" / "corpus"))
-    sp.add_argument("--threads", type=int, default=0,
-                    help="worker threads when pinned (0 = auto affinity count)")
+    sp.add_argument(
+        "--threads",
+        type=int,
+        default=0,
+        help="worker threads when pinned (0 = auto affinity count)",
+    )
     pin = sp.add_mutually_exclusive_group()
     pin.add_argument("--pin", dest="pin", action="store_true", default=True)
-    pin.add_argument("--no-pin", dest="pin", action="store_false",
-                     help="unpinned run: threads=unpinned, gate=invalid")
+    pin.add_argument(
+        "--no-pin",
+        dest="pin",
+        action="store_false",
+        help="unpinned run: threads=unpinned, gate=invalid",
+    )
     ring = sp.add_mutually_exclusive_group()
     ring.add_argument("--ring", dest="ring", action="store_true", default=True)
     ring.add_argument("--no-ring", dest="ring", action="store_false")
@@ -1249,8 +1618,8 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("run", "run-once"):
         p = sub.add_parser(name)
         _add_common(p)
-        p.add_argument("--leg", choices=["expand", "stream"], default="stream")
-        p.add_argument("--corpus", choices=["f1", "f2", "f8", "f10"], default="f10")
+        p.add_argument("--leg", choices=["expand", "stream", "update"], default="stream")
+        p.add_argument("--corpus", choices=["f1", "f2", "f8", "f10", "f11"], default="f10")
         p.add_argument("--chunk", type=int, default=32)
         p.add_argument("--seed", type=int, default=_SEED)
         p.add_argument("--B", type=int, default=32)
@@ -1260,6 +1629,11 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--entries", default=str(REPO_ROOT / "bench" / "corpus_entries.json"))
         p.add_argument("--manifest-digest", default=None)
         p.add_argument("--gate-verdicts", default=None)
+        p.add_argument(
+            "--config",
+            default=str(REPO_ROOT / "configs" / "training" / "local-rtx5070.yaml"),
+            help="probe run YAML for the update leg model build (update leg only)",
+        )
         p.set_defaults(fn=cmd_run if name == "run" else cmd_run_once)
     args = parser.parse_args(argv)
     if getattr(args, "threads", 0) == 0:

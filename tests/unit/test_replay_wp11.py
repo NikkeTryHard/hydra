@@ -589,7 +589,7 @@ def test_checkpoint_manifest_verified_before_mutation(
         manifest_hashes=make_test_manifest_hashes(),  # test-only digests
     )
     replay.train(max_updates=1)
-    ckpt = sorted(ckpt_dir.glob("ckpt-*.pt"))[-1]
+    ckpt = max(ckpt_dir.glob("ckpt-*.pt"))
     hash_state_tree(model.state_dict())
     # Corrupt manifest by loading with wrong run_spec_hash
     model2 = StubPolicyModel()

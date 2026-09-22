@@ -26,6 +26,7 @@ from hydra2.belief.natural import NaturalBelief
 from hydra2.belief.world import make_full_world, world_actor_observation
 from hydra2.contracts.common import ContractError
 from hydra2.contracts.randomness import RandomStream, make_random_stream_key, semantic_seed
+from hydra2.search.ismcts_act import NaturalISMCTSPlanner
 from hydra2.search.ismcts_core import (
     NaturalISMCTSConfig,
     attempt_redeterminize,
@@ -35,7 +36,6 @@ from hydra2.search.ismcts_core import (
 from hydra2.search.ismcts_core import info_key_for_observation as info_key
 from hydra2.search.ismcts_core import model_vector_for_world as model_vector
 from hydra2.search.ismcts_core import terminal_vector_for_world as terminal_vector
-from hydra2.search.ismcts_natural import NaturalISMCTSPlanner
 
 _MASTER = b"ismcts_driver_parity_v1"
 _EXPERIMENT = "ismcts-driver-parity"

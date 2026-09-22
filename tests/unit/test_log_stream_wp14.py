@@ -12,8 +12,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
-from hydra2_replay_rs import tiles as _tiles_bridge
 
+from hydra2._native import tiles as _tiles_bridge
 from hydra2.contracts.common import ContractError
 from hydra2.engines.riichienv._lr_end import replay_game
 from tests.unit.test_log_replay_wp14 import _assert_valid_rows, _mask_action_kinds, _record

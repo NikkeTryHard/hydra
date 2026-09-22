@@ -9,23 +9,19 @@ import time
 from functools import cache
 
 import pytest
-from hydra2_replay_rs import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 
+from hydra2._native import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 from hydra2.belief.kernel import NaturalPacketKernel
 from hydra2.belief.natural import NaturalBelief
 from hydra2.belief.world import make_full_world, world_actor_observation
 from hydra2.contracts.action_model import CanonicalAction
 from hydra2.contracts.randomness import RandomStream
 from hydra2.search.common import SearchRequest, candidate_spec_hash
-from hydra2.search.pbrf import (
-    ImmutableForest,
-    PbrfConfig,
-    PbrfPlanner,
-    build_pbrf,
-    commit,
-    fixed_allocate,
-    make_pbrf_candidate_spec,
-)
+from hydra2.search.pbrf_act import PbrfPlanner
+from hydra2.search.pbrf_commit import commit
+from hydra2.search.pbrf_forest import ImmutableForest, build_pbrf
+from hydra2.search.pbrf_partition import PbrfConfig, fixed_allocate
+from hydra2.search.pbrf_spec import make_pbrf_candidate_spec
 
 pytestmark = pytest.mark.contract_package("WP-09A")
 

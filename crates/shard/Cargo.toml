@@ -1,0 +1,29 @@
+[package]
+name = "hydra-shard"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hydra-feed = { path = "../feed" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.11"
+memmap2 = "0.9"
+parquet = "=59.3.0"
+# Phase 3 columnar (integration-applied once; expand request + writer/reader/cache):
+# - arrow-array/arrow-schema =59.3.0 (Phase3Expand expand builders — serial,
+#   no arrow-ipc/serde_jcs/rayon/safetensors needed expand-side).
+# - arrow-ipc =59.3.0 (writer/reader IPC File/Stream + memmap2 views).
+# - safetensors =0.8.0 (cache.rs mmap; compat-read + offset-validate).
+arrow-array = "=59.3.0"
+arrow-schema = "=59.3.0"
+arrow-ipc = "=59.3.0"
+safetensors = "=0.8.0"
+
+[dev-dependencies]
+clap = { version = "4.0", features = ["derive"] }
+zstd = "0.14"
+flate2 = "1.1"
+
+[lints]
+workspace = true

@@ -1,6 +1,8 @@
-# Rust and editor-generated build state
+# Rust and editor-generated build state (plus the maturin-develop cdylib,
+# which always lands beside the `python/hydra2/` sources; never committed)
 /target/
 **/target/
+*.so
 
 # Local profiling artifacts (perf record output + backups; never committed)
 perf.data*

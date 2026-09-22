@@ -25,8 +25,8 @@ import json
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
-from hydra2_replay_rs import tiles as _tiles_bridge
 
+from hydra2._native import tiles as _tiles_bridge
 from hydra2.contracts.common import ContractError
 from hydra2.data.decode import GameRecord
 from hydra2.data.parquet import FORBIDDEN_IN_ACTOR
@@ -152,7 +152,7 @@ def _arranged_wall(events: list[dict[str, object]]) -> tuple[int, ...]:
     Copy pools are consumed base-first across tehais then draws, so the engine
     path deals and draws deterministic distinct copies the assertions pin.
     """
-    from hydra2_replay_rs import tiles as _tiles_bridge
+    from hydra2._native import tiles as _tiles_bridge
 
     physical_of = _tiles_bridge.physical_of
 

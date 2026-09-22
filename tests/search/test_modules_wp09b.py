@@ -42,7 +42,8 @@ from hydra2.search.modules import (
     module_evidence,
     validate_one_at_a_time,
 )
-from hydra2.search.pbrf import PbrfConfig, build_pbrf
+from hydra2.search.pbrf_forest import build_pbrf
+from hydra2.search.pbrf_partition import PbrfConfig
 from hydra2.search.profiles import (
     PROFILES,
     CandidateProfile,

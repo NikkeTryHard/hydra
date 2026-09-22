@@ -106,9 +106,9 @@ def _default_jax_cache_dir() -> str:
 os.environ.setdefault("JAX_COMPILATION_CACHE_DIR", _default_jax_cache_dir())
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_SRC = os.path.join(_REPO_ROOT, "src")
-if _SRC not in sys.path:
-    sys.path.insert(0, _SRC)
+_PY_SRC = os.path.join(_REPO_ROOT, "python")
+if _PY_SRC not in sys.path:
+    sys.path.insert(0, _PY_SRC)
 
 #: module basename -> named report fields asserted by that module. Moved
 #: verbatim from tests/contracts/conftest.py when selection/reporting became single-source.

@@ -1,7 +1,7 @@
 """Thin plane-filling handoff over the PyO3 boundary (K1 cutover, serial lane).
 
 Drives ``hydra2.training.rust_stream`` (thin plane bridge) over the compiled
-``hydra2_replay_rs`` extension: framed per-game inputs in, caller-pinned
+``hydra2._native`` extension: framed per-game inputs in, caller-pinned
 plane slots out. Proves the K1 acceptance set:
 
 - serial drain green over ``next_into_planes`` with the 26 §7 planes in
