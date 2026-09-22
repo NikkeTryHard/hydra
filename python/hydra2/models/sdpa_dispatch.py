@@ -7,7 +7,7 @@ MATH stays listed so the pin degrades to the same fallback the default
 path would take — never an error, never a silent new kernel. No SM
 version is hardcoded anywhere: health is probed at runtime with
 :func:`backend_health` on real-shaped inputs. Full backend table:
-tests/integration/test_attention_dispatch.
+tests/integration/test_attention_dispatch.py.
 """
 
 from __future__ import annotations
