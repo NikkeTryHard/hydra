@@ -23,8 +23,11 @@ import pytest
 from hydra2.contracts.common import ContractError
 from hydra2.contracts.randomness import RandomStream, make_random_stream_key, semantic_seed
 from hydra2.eval.blocks import WallBlock
-from hydra2.eval.statistics import (
+from hydra2.eval.selection import (
     SelectionConfig,
+    selection_gate_check,
+)
+from hydra2.eval.statistics import (
     bootstrap_blocks,
     ci_covers,
     cluster_bootstrap,
@@ -32,7 +35,6 @@ from hydra2.eval.statistics import (
     hedged_confidence_sequence,
     hedged_cs_path,
     placement_block_contrast,
-    selection_gate_check,
     sequential_design_guard,
     sign_flip_interval,
 )
@@ -370,7 +372,7 @@ def _honest_telemetry_row(**overrides: object):  # type: ignore[no-untyped-def]
 
 def test_score_selection_excludes_telemetry_invalid_wall() -> None:
     """Telemetry-invalid wall never enters the score: metric covers VALID only."""
-    from hydra2.eval.statistics import score_selection
+    from hydra2.eval.selection import score_selection
 
     blocks = (
         WallBlock(wall_id="w-0", game_ids=("g-0",), contrasts=(0.5,)),
@@ -404,7 +406,7 @@ def test_score_selection_excludes_telemetry_invalid_wall() -> None:
 
 def test_score_selection_guard_blocks_undeclared_peek() -> None:
     """Guard wiring: scoring at an undeclared peek raises even when valid."""
-    from hydra2.eval.statistics import score_selection
+    from hydra2.eval.selection import score_selection
 
     blocks = (
         WallBlock(wall_id="w-0", game_ids=("g-0",), contrasts=(0.5,)),
@@ -486,7 +488,7 @@ def test_score_selection_exclusions_carried_to_promotion_record() -> None:
     """Exclusions-carried: score return preserves blocks for the record."""
     from hydra2.eval.promotion import make_promotion_record, promotion_digest
     from hydra2.eval.schedule import build_match_schedule, schedule_commitment_hash
-    from hydra2.eval.statistics import score_selection
+    from hydra2.eval.selection import score_selection
 
     blocks = (
         WallBlock(wall_id="w-0", game_ids=("g-0",), contrasts=(0.5,)),

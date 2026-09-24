@@ -1,0 +1,103 @@
+# RTX 5070 saturation recipe (Step-2 pin of the measured ladder ceiling).
+# Cloned from configs/training/local-rtx5070.yaml, never edited in place:
+# 2048-row microbatch x accum 4 x 16 workers measured 24.0k rows/s at 8.1GB
+# (vs canonical 22.5k); mb3072 thrashes, mb4096 OOMs, accum8 adds latency
+# for +1.5%. LR stays 0.0003 (100-update probes sane at accum 2/4/8); if the
+# probe trails control by >2pts, halve to 0.00015 and re-probe (retune rule).
+# Warmup 400 keeps warmup-rows constant vs canonical 100 at 4x batch.
+# Eval microbatch is explicit: never inherit the 8192 effective batch.
+run:
+  id: local-rtx5070-sat
+  kind: supervised
+  description: 'Saturation recipe: mb2048 x accum4 x workers16, bg-save, no graphs.'
+data:
+  root: ${HYDRA2_DATA_ROOT}/tenhou-houou-mjai-2024
+  scope: tenhou-4p-hanchan
+  train_split: train
+  val_split: validation
+  wall_disjoint: true
+  leakage_check: true
+  dora_width: 5
+  actor_privileged_split: true
+  dataset_manifest_hash: null
+  shuffle_buffer_size: 10000
+  drop_last: true
+  num_workers: 16
+  world_size: 1
+  replay_backend: rust
+  decode_prefetch: 64 # WHY: background decode pool (src/hydra2/data/stream.py
+  # PrefetchGameStream); cover one expansion batch.
+  expand_batch_games: 64 # WHY: games per fill round, one bridge FFI per chunk
+  # (src/hydra2/training/stream_train.py _fill_parallel).
+model:
+  architecture_id: hydra2_baseline_transformer_v1
+  action_count: 6792
+  parameters: {}
+weights:
+  w_policy: 1.0
+  w_placement: 0.0
+  w_value: 0.0
+  w_event: null
+  w_belief: null
+  privileged_source_hash: null
+optimizer:
+  id: adamw
+  lr: 0.0003
+  betas:
+  - 0.9
+  - 0.999
+  weight_decay: 0.01
+scheduler:
+  id: cosine
+  warmup_updates: 400
+  parameters: {}
+runtime:
+  adapter_id: plain_pytorch
+  device: cuda
+  precision: bf16_mixed
+  compile_mode: max-autotune-no-cudagraphs
+loop:
+  microbatch_size: 2048
+  accumulation_steps: 4
+  gradient_clip_norm: 1.0
+  max_updates: 2500
+  checkpoint_frequency_updates: 500
+  precision: bf16_mixed
+  keep_last_checkpoints: null
+  log_per_type_metrics: false
+  fetch_prefetch_depth: 8 # depth covers the 4-deep accumulation window + overlap.
+seeds:
+  data_seed: 0
+  train_seed: 0
+  selection_seed: 0
+selection:
+  N: 30
+  pilot_s: 1.5
+  delta: 0.5
+  alpha: 0.05
+  beta: 0.2
+  design: fixed_n
+  declared_peeks:
+  - 30
+  margin: 0.0
+  resamples: 2000
+  seed: 0
+mirror:
+  enabled: false
+  project: hydra2-tenhou-4p
+  task_name: null
+  offline_dir: null
+eval:
+  frequency_updates: 2500
+  num_batches: 10
+  walls_dir: null
+  microbatch_size: 2048
+output:
+  artifact_root: null
+  run_id: null
+rl: null
+telemetry:
+  mlflow_enabled: true
+  verbose_enabled: true
+  verbose_interval_ms: 50
+  profiler_captures: 0

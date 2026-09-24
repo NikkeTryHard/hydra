@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from hydra2.contracts.common import ContractError, CorruptArtifactError
-from hydra2.eval.statistics import SelectionConfig, score_selection
+from hydra2.eval.selection import SelectionConfig, score_selection
 from hydra2.runtime.checkpoint import (
     build_manifest,
     capture_rng_state,

@@ -44,6 +44,7 @@ class _StreamDatasetBufferMixin(_StreamDatasetCore):
     _replay_backend: str
     _need_privileged: bool
     _homogeneous_buckets: bool
+    _pack_histories: bool
     _num_actions: int
     _feature_dim: int
     _epoch: int
@@ -122,7 +123,11 @@ class _StreamDatasetBufferMixin(_StreamDatasetCore):
         """
         from hydra2.training.rust_batch import assemble_slim_batch
 
-        batch = assemble_slim_batch(taken, action_count=self._num_actions)
+        batch = assemble_slim_batch(
+            taken,
+            action_count=self._num_actions,
+            pack_histories=bool(getattr(self, "_pack_histories", False)),
+        )
         batch["_epoch"] = torch.tensor(self._epoch)
         return batch
 
@@ -145,8 +150,8 @@ class _StreamDatasetBufferMixin(_StreamDatasetCore):
             epoch = getattr(state, "epoch", 0)
         if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
             raise ContractError(f"sampler offset invalid: {offset!r}")
-        if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch != 0:
-            raise ContractError(f"sampler epoch must be 0 (single-pass), got {epoch!r}")
+        if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0:
+            raise ContractError(f"sampler epoch must be a non-negative int, got {epoch!r}")
         if offset < self._dropped:
             raise ContractError(
                 f"sampler offset {offset} precedes compacted prefix {self._dropped}"
@@ -154,7 +159,7 @@ class _StreamDatasetBufferMixin(_StreamDatasetCore):
         if offset > len(self._rows) + self._dropped:
             raise ContractError(f"sampler offset {offset} beyond buffered rows {len(self._rows)}")
         self._offset = offset
-        self._epoch = 0
+        self._epoch = epoch
 
     def buffered_row_hash(self) -> str:
         """Game-keyed sidecar hash over the live window (K4: no per-row id strings)."""
@@ -350,9 +355,7 @@ class _StreamDatasetBufferMixin(_StreamDatasetCore):
         self._offset = int(offset)  # type: ignore[arg-type]
         self._dropped = int(dropped)  # type: ignore[arg-type]
         self._microbatches_in_epoch = int(micro)  # type: ignore[arg-type]
-        if int(epoch) != 0:  # type: ignore[arg-type]
-            raise ContractError(f"dataset buffer epoch {epoch!r} != 0 (single-pass)")
-        self._epoch = 0
+        self._epoch = int(epoch)  # type: ignore[arg-type]
         # Prefix totals (fail-closed when absent/malformed; never recomputed).
         for name in ("replayed", "sim_replayed", "expand_quarantined"):
             value = snapshot.get(name)
@@ -445,8 +448,8 @@ class _StreamDataset(_StreamDatasetBufferMixin):
     Games are pulled on demand, expanded to slim plane rows by the Rust walk,
     and assembled per microbatch; privileged rows ride along into
     :attr:`privileged` (train-split rows only).
-    Single-pass: the stream is consumed once, epoch pinned 0; exhaustion
-    with rows still demanded fails closed (rescope ``max_updates`` to
-    supply), and resume seeks to the recorded frontier with verbatim buffer
-    + RNG + dedup-prefix restore.
+    Multi-epoch wrap: the live epoch starts at 0 and rolls forward when the
+    corpus is exhausted while rows are still demanded (only an empty split
+    fails closed); resume seeks to the recorded frontier at the recorded
+    epoch with verbatim buffer + RNG + dedup-prefix restore.
     """

@@ -84,15 +84,9 @@ from hydra2.engines.riichienv._lr_act import (
     _require_actor as _require_actor,
 )
 from hydra2.engines.riichienv._lr_claim import (
-    _do_ankan as _do_ankan,
-)
-from hydra2.engines.riichienv._lr_claim import (
     _do_claim as _do_claim,
 )
-from hydra2.engines.riichienv._lr_claim import _do_dora as _do_dora
-from hydra2.engines.riichienv._lr_claim import _do_kakan as _do_kakan
 from hydra2.engines.riichienv._lr_claim import _do_reach as _do_reach
-from hydra2.engines.riichienv._lr_claim import _do_reach_accepted as _do_reach_accepted
 from hydra2.engines.riichienv._lr_frame import (
     _CLAIM as _CLAIM,
 )
@@ -111,6 +105,12 @@ from hydra2.engines.riichienv._lr_frame import _rules as _rules
 from hydra2.engines.riichienv._lr_frame import _rules_hash as _rules_hash
 from hydra2.engines.riichienv._lr_frame import _sim_game_id as _sim_game_id
 from hydra2.engines.riichienv._lr_frame import _table as _table
+from hydra2.engines.riichienv._lr_kans import (
+    _do_ankan as _do_ankan,
+)
+from hydra2.engines.riichienv._lr_kans import _do_dora as _do_dora
+from hydra2.engines.riichienv._lr_kans import _do_kakan as _do_kakan
+from hydra2.engines.riichienv._lr_kans import _do_reach_accepted as _do_reach_accepted
 from hydra2.engines.riichienv._lr_oracle import _peek_window_claim as _peek_window_claim
 from hydra2.engines.riichienv._lr_rows import (
     _emit as _emit,

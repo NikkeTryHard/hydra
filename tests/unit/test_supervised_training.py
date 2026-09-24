@@ -99,7 +99,10 @@ def test_fused_ce_matches_eager_forward_backward(monkeypatch: pytest.MonkeyPatch
     # Production wiring: masked_cross_entropy's fused branch must return the
     # same mean (pins branch-taken + reduction, not just the op).
     loss_w = masked_cross_entropy(logits.detach(), targets, legal, label_smoothing=eps)
-    assert abs(float(loss_w) - float(loss_f)) < 1e-6, (float(loss_w), float(loss_f))
+    assert abs(float(loss_w.detach()) - float(loss_f.detach())) < 1e-6, (
+        float(loss_w.detach()),
+        float(loss_f.detach()),
+    )
 
 
 @pytest.mark.gpu

@@ -336,6 +336,20 @@ class _GatedOverlapFeed:
             return value.to(self._device, non_blocking=True)
         return value
 
+    def _sync_packed(self, packed: Any) -> Any:
+        # Packed stream bypasses the fixed-layout ring (variable total):
+        # small tensors ride the synchronous H2D while the bulk overlaps.
+        if packed is None:
+            return None
+        from hydra2.models.encoder import PackedHistories
+
+        return PackedHistories(
+            packed_kind=self._sync_tensor(packed.packed_kind),
+            cu_seqlens=self._sync_tensor(packed.cu_seqlens),
+            row_lengths=tuple(packed.row_lengths),
+            max_len=int(packed.max_len),
+        )
+
     def _sync_value(self, value: Any) -> Any:
         from hydra2.models.encoder import ActorTensorBatch
 
@@ -360,6 +374,7 @@ class _GatedOverlapFeed:
                 legal_mask=moved_features["legal_mask"],
                 observation_hashes=value.observation_hashes,
                 actor_seats=moved_features["actor_seats"],
+                packed=self._sync_packed(getattr(value, "packed", None)),
             )
         return value
 
@@ -384,6 +399,7 @@ class _GatedOverlapFeed:
                 legal_mask=ring_out["legal_mask"],
                 observation_hashes=actor_batch.observation_hashes,
                 actor_seats=ring_out["actor_seats"],
+                packed=self._sync_packed(getattr(actor_batch, "packed", None)),
             )
         moved: dict[str, Any] = {}
         for key, value in dict(cpu_batch).items():
@@ -409,14 +425,20 @@ class _GatedOverlapFeed:
 
 
 def _open_gated_feed(
-    *, microbatch: int, action_count: int, device: Any
+    *, microbatch: int, action_count: int, device: Any, depth: int = 3
 ) -> _GatedOverlapFeed | None:
     """Open the caller-owned overlap feed, or ``None`` for the sync fallback.
 
     Gated opt-in: CUDA target with CUDA available and pinnable host memory
     only; anything else (CPU runs, CPU-only tests, failed alloc) returns
     ``None`` and the loop keeps its synchronous path (queue_wait stays 0.0).
+    Depth must cover one accumulation window plus one spare overlap slot;
+    the caller sizes it as ``accumulation_steps + 2`` (accum 1 keeps the
+    historical depth 3 exactly). Undersized rings stall on slot recycle
+    (visible as sustained queue_wait_ms per the telemetry scaling rule).
     """
+    if isinstance(depth, bool) or not isinstance(depth, int) or depth < 2:
+        raise ContractError(f"gated feed ring depth must be an int >= 2, got {depth!r}")
     try:
         resolved = torch.device(device)
     except (RuntimeError, TypeError, ValueError):
@@ -428,7 +450,7 @@ def _open_gated_feed(
         from hydra2.training.pinned_ring import PinnedRing, slot_layout
 
         layout = slot_layout(microbatch, max(HISTORY_BUCKET_LENGTHS), action_count=action_count)
-        ring = PinnedRing.open(layout, depth=3, device=resolved)
+        ring = PinnedRing.open(layout, depth=depth, device=resolved)
     except Exception:
         return None
     return _GatedOverlapFeed(ring, resolved)

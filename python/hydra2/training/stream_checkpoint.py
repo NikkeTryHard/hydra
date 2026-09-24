@@ -27,6 +27,7 @@ from hydra2.artifacts.digest import sha256_digest as sha256_digest
 from hydra2.contracts.common import ContractError as ContractError
 from hydra2.data.stream_iter import GameStream as GameStream
 from hydra2.runtime.checkpoint import capture_rng_state as capture_rng_state
+from hydra2.runtime.checkpoint_publish import _snapshot_payload_to_cpu as _snapshot_payload_to_cpu
 from hydra2.training.stream_build import (
     _prefix_hashes_name as _prefix_hashes_name,
 )
@@ -158,6 +159,8 @@ def _write_streaming_checkpoint(
     loop: SupervisedLoop,
     dataset: _StreamDataset,
     batch_size: int,
+    writer: Any = None,
+    span_sink: Any = None,
 ) -> Path:
     """Atomically publish ``ckpt-<update>.pt`` + ResumeExactPlan sidecar.
 
@@ -165,9 +168,24 @@ def _write_streaming_checkpoint(
     bridge ``resume`` judge (wrapping ``data_seed + epoch``; missing bridge
     raises — mismatch=raise, never an oracle), while ``rng_state`` capture
     and the ``_rng_anchors()`` bundle stay torch/Python (no Rust GPU math).
+
+    Every live read (model/optimizer/scheduler state, dataset and shuffle
+    snapshots, RNG) happens synchronously before returning; GPU tensors are
+    snapshotted to detached CPU clones. With ``writer`` given, the
+    ``torch.save`` serialization plus the three atomic file publishes run
+    on the background worker while training continues and this returns the
+    reserved path immediately (the caller owns draining before eval and
+    closing at run end). Without a writer the publish runs inline, exactly
+    as before. Failure mode: a worker error raises at the caller's next
+    poll/drain (fail closed); the returned path is reserved, never a
+    promise that bytes already landed.
     """
     checkpoint_dir = run_dir / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    import time as _time
+
+    _asm_t0 = _time.perf_counter()
+    _asm_wall = _time.time()
     scheduler_state: Any = {}
     if loop.scheduler is not None and hasattr(loop.scheduler, "state_dict"):
         with contextlib.suppress(Exception):
@@ -188,7 +206,7 @@ def _write_streaming_checkpoint(
         prefix_hashes = dataset._stream.prefix_hashes_snapshot()
     prefix_blob = "".join(f"{sha}\n" for sha in prefix_hashes).encode("utf-8")
     prefix_name = _prefix_hashes_name(update)
-    atomic_replace_bytes(checkpoint_dir / prefix_name, prefix_blob)
+    prefix_target = checkpoint_dir / prefix_name
     prefix_record = {
         "file": prefix_name,
         "count": len(prefix_hashes),
@@ -215,15 +233,23 @@ def _write_streaming_checkpoint(
             "prefix_hashes": prefix_record,
         },
     }
-    buffer = io.BytesIO()
-    torch.save(payload, buffer)
-    blob = buffer.getvalue()
-    payload_digest = str(sha256_digest(blob))
-    ckpt_path = checkpoint_dir / f"ckpt-{update:06d}.pt"
-    atomic_replace_bytes(ckpt_path, blob)
+    # Snapshot GPU tensors to detached CPU clones BEFORE any background
+    # handoff: state_dict() aliases live parameters and the next update
+    # mutates them. The plain leaves above are already fresh copies
+    # (buffer/shuffle snapshots, to_dict, sampler state), and the snapshot
+    # rebuilds their containers anyway, so the worker owns everything it
+    # serializes. Inline path keeps the live payload (byte-identical to the
+    _snap_t0 = _time.perf_counter()
 
+    _snap_wall = _time.time()
+    publish_payload = _snapshot_payload_to_cpu(payload) if writer is not None else payload
+    _snap_ms = (_time.perf_counter() - _snap_t0) * 1000.0 if writer is not None else 0.0
+    _main_spans: list[tuple[str, float, float]] = []
+    if span_sink is not None:
+        _main_spans.append(("assemble", _asm_wall, (_snap_wall - _asm_wall) * 1000.0))
+        _main_spans.append(("snapshot", _snap_wall, _snap_ms))
     data_cursor = dataset.stream_cursor()
-    sidecar: dict[str, Any] = {
+    sidecar_body: dict[str, Any] = {
         "global_update": update,
         "run_digest": run_digest,
         "stream_cursor": _sidecar_cursor(data_cursor),
@@ -251,12 +277,37 @@ def _write_streaming_checkpoint(
             "stream_manifest_hash": stream_digest,
             "dataset_manifest_hash": stream_digest,
         },
-        "payload_sha256": payload_digest,
     }
-    atomic_replace_bytes(
-        ckpt_path.with_suffix(".json"),
-        json.dumps(sidecar, indent=2, sort_keys=True).encode("utf-8"),
-    )
+    ckpt_path = checkpoint_dir / f"ckpt-{update:06d}.pt"
+
+    def _publish() -> Path:
+        buffer = io.BytesIO()
+        torch.save(publish_payload, buffer)
+        blob = buffer.getvalue()
+        payload_digest = str(sha256_digest(blob))
+        # Generation order preserved on the single worker: prefix record,
+        # then payload, then the sidecar naming the payload digest — the
+        # same order as the historical inline publish.
+        atomic_replace_bytes(prefix_target, prefix_blob)
+        atomic_replace_bytes(ckpt_path, blob)
+        sidecar = dict(sidecar_body)
+        sidecar["payload_sha256"] = payload_digest
+        atomic_replace_bytes(
+            ckpt_path.with_suffix(".json"),
+            json.dumps(sidecar, indent=2, sort_keys=True).encode("utf-8"),
+        )
+        return ckpt_path
+
+    if writer is not None:
+        writer.submit(
+            _publish,
+            generation=int(update),
+            description=f"stream-ckpt-{update:06d}",
+            span_sink=span_sink,
+            main_spans=tuple(_main_spans),
+        )
+    else:
+        _publish()
     return ckpt_path
 
 
@@ -319,7 +370,12 @@ def _append_new_history(run_dir: Path, history: list[dict[str, float]]) -> int:
             update: int = int(entry.get("global_update", -1))
             if update in logged:
                 continue
-            payload = json.dumps(entry, sort_keys=True) + "\n"
+            # Wall stamp at write time only (logging-only: the in-memory
+            # entry stays byte-identical for checkpoint payloads, digests,
+            # and resume — a hashed wall clock would break identity).
+            row = dict(entry)
+            row["t_wall_s"] = time.time()
+            payload = json.dumps(row, sort_keys=True) + "\n"
             _ = metrics_handle.write(payload)  # intentionally discarded: byte count unneeded
             _ = log_handle.write(  # intentionally discarded: byte count unneeded
                 f"update={update:06d} total={entry.get('total', 0.0):.6f} "
@@ -339,6 +395,7 @@ def _run_holdout_eval(
     loop: SupervisedLoop,
     run_dir: Any,
     update: int,
+    span_sink: Any = None,
 ) -> dict[str, Any] | None:
     """Held-out eval on val-split games (observer: never touches train state).
 
@@ -383,6 +440,7 @@ def _run_holdout_eval(
         rows: list[dict[str, Any]] = []
         games_touched = 0
         expand_start = time.perf_counter()
+        expand_wall_start = time.time()
         for streamed in stream:
             if len(rows) >= need_batches * micro:
                 break
@@ -399,14 +457,43 @@ def _run_holdout_eval(
         if len(rows) == 0:
             raise ContractError("no val rows for held-out eval")
         encode_start = time.perf_counter()
+        encode_wall_start = time.time()
         from hydra2.training.rust_batch import assemble_slim_batch
 
         batches = [
-            assemble_slim_batch(rows[start : start + micro], action_count=config.model.action_count)
+            assemble_slim_batch(
+                rows[start : start + micro],
+                action_count=config.model.action_count,
+                pack_histories=config.loop.pack_histories,
+            )
             for start in range(0, need_batches * micro, micro)
         ]
         encode_wall = time.perf_counter() - encode_start
+        report_t0 = time.perf_counter()
+        report_wall_start = time.time()
         report: dict[str, Any] = loop.evaluate_report(batches)
+        report_ms = (time.perf_counter() - report_t0) * 1000.0
+        if span_sink is not None:
+            # Stage rows are observer-only (never hashed, never in the
+            # eval entry): wall time must not leak into eval.jsonl.
+            span_sink.emit(
+                stage="eval-expand",
+                dur_ms=expand_wall * 1000.0,
+                update=update,
+                t_start_s=expand_wall_start,
+            )
+            span_sink.emit(
+                stage="eval-encode",
+                dur_ms=encode_wall * 1000.0,
+                update=update,
+                t_start_s=encode_wall_start,
+            )
+            span_sink.emit(
+                stage="eval-report",
+                dur_ms=report_ms,
+                update=update,
+                t_start_s=report_wall_start,
+            )
         entry: dict[str, Any] = {"update": update}
         for key, value in report.items():
             entry[key] = float(value) if isinstance(value, (int, float)) else value

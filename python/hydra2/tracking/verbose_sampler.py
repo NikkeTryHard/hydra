@@ -58,10 +58,8 @@ except ImportError:  # pragma: no cover - import-time signal; oracle branch belo
 __all__ = [
     "DEFAULT_INTERVAL_MS",
     "VALID_INTERVALS_MS",
-    "NullVerboseSampler",
     "VerboseSampler",
     "is_enabled",
-    "make_verbose_sampler",
     "resolve_interval_ms",
 ]
 
@@ -583,28 +581,3 @@ class VerboseSampler:
             self._bump("torch")
             self._warn_once("torch", exc.__class__.__name__)
             return None
-
-
-class NullVerboseSampler(VerboseSampler):
-    """Disabled sampler: never spawns a thread, never imports SDKs."""
-
-    def __init__(self) -> None:
-        super().__init__(enabled=False, sink_path="verbose-telemetry.jsonl")
-
-    def start(self) -> bool:
-        """Always off; cheap no-op."""
-        return False
-
-
-def make_verbose_sampler(**kwargs: Any) -> VerboseSampler:
-    """Build an enabled sampler when opted in, else :class:`NullVerboseSampler`.
-
-    Never raises: any misconfiguration falls back to a disabled sampler.
-    """
-    try:
-        enabled = kwargs.pop("enabled", None)
-        if not is_enabled(explicit=enabled):
-            return NullVerboseSampler()
-        return VerboseSampler(enabled=True, **kwargs)
-    except Exception:
-        return NullVerboseSampler()

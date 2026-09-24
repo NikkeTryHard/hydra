@@ -22,11 +22,9 @@ from hydra2.contracts.event_envelope import (
     EventEnvelope,
     EventPayload,
 )
-from hydra2.contracts.event_packet import (
-    make_actor_visible_packet,
-    public_state_chain_hash,
-)
+from hydra2.contracts.event_packet import make_actor_visible_packet
 from hydra2.contracts.observation_actor import make_actor_observation
+from hydra2.contracts.packet_chain import public_state_chain_hash
 from tests.unit.test_belief_natural import (
     _make_belief,
     _make_world_and_obs,

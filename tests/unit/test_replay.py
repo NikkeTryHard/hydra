@@ -629,7 +629,7 @@ def test_forbidden_keys_constant() -> None:
 
 def _gated_selection_fixture():  # type: ignore[no-untyped-def]
     """Two valid wall blocks (mean 3.0) + telemetry + frozen fixed_n config."""
-    from hydra2.eval.statistics import SelectionConfig
+    from hydra2.eval.selection import SelectionConfig
     from hydra2.eval.telemetry import make_resource_telemetry
 
     def _row(wall_id: str):  # type: ignore[no-untyped-def]

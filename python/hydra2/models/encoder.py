@@ -237,6 +237,27 @@ def _bucket_length(actual: int, buckets: tuple[int, ...] = HISTORY_BUCKET_LENGTH
 
 
 @dataclass(frozen=True, slots=True)
+class PackedHistories:
+    """Variable-length packing of one microbatch's real history prefixes.
+
+    Rows stay in pull order (never sorted — order is determinism):
+    ``packed_kind`` concatenates each row's real ``[0:L_i)`` prefix,
+    ``cu_seqlens`` holds int32 ``[0, L_1, L_1+L_2, ..., total]`` boundaries,
+    ``row_lengths`` the per-row ``L_i``, ``max_len`` the longest prefix.
+    All tensors are CPU at assembly; the device move carries them with the
+    batch. ``None`` on the batch means the bucketed path (default until
+    the packed branch qualifies). Failure mode: any length disagreeing
+    with its row mask popcount fails closed at build time, never a
+    silently shifted window.
+    """
+
+    packed_kind: torch.Tensor  # [total] int64, concatenated real prefixes
+    cu_seqlens: torch.Tensor  # [B+1] int32 boundaries on CPU
+    row_lengths: tuple[int, ...]  # per-row real lengths, pull order
+    max_len: int  # longest real prefix in this batch
+
+
+@dataclass(frozen=True, slots=True)
 class ActorTensorBatch:
     """Batched actor-visible tensors (padded/bucketed histories with explicit
     history_mask; legal_mask [B,A]; mask before softmax/loss/argmax with
@@ -246,6 +267,10 @@ class ActorTensorBatch:
     Mask polarity: ``history_mask``/``legal_mask`` use ``True`` = participate,
     while ``key_padding_mask`` in models/model.py uses ``True`` = padding
     (single ``~`` inversion at the encode-to-model boundary).
+
+    ``packed`` carries the variable-length branch (None = bucketed path):
+    the padded planes stay present (validation + length ground truth), and
+    the model consumes the packed stream instead of the ``[B,T]`` planes.
     """
 
     features: dict[str, torch.Tensor]
@@ -253,6 +278,7 @@ class ActorTensorBatch:
     legal_mask: torch.Tensor  # [B,A] bool
     observation_hashes: tuple[DigestText, ...]
     actor_seats: torch.Tensor  # [B] int64
+    packed: PackedHistories | None = None
 
 
 def encode_observations(

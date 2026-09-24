@@ -14,8 +14,10 @@ timeout 5s, retries 0 — the observer must not stall train), then ALWAYS
 append the same payload to the warn-only file fallback
 (``mirror/mlflow/mirror.jsonl`` + ``manifests/<stem>.json``; tensor bytes
 never cross — checkpoints travel as file name + manifest snapshot only).
-Every transport failure degrades to ``warn`` + file record, never a raise
-and never a disable (only unexpected local errors use ``_degraded``).
+A failed POST against a configured endpoint degrades to ``warn`` + file
+record, never a raise and never a disable; the hermetic default endpoint
+(closed loopback, no server configured) records silently — the file
+fallback IS the mode there (only unexpected local errors use ``_degraded``).
 What stays frozen and visible:
 
 - The allowlist lives in :mod:`hydra2.tracking.clearml_mirror` and is
@@ -66,6 +68,7 @@ try:
 except ImportError:  # pragma: no cover - import-time signal; oracle branch below decides
     _bridge_contracts = None  # type: ignore[assignment]
 
+from hydra2.tracking._mirror_leaves import _DEFAULT_BASE_URL as _DEFAULT_BASE_URL
 from hydra2.tracking.clearml_mirror import (
     _append_jsonl,
     _bridge_mirror,
@@ -258,8 +261,12 @@ class MlflowMirror:
             return False
 
     def _note_transport(self, op: str, ok: bool) -> None:
-        """Warn-only transport note; the file record below always lands."""
-        if not ok:
+        # Warn-only transport note; the file record below always lands.
+        # Hermetic default endpoint (closed loopback = no server configured):
+        # the file fallback IS the mode there, so a failed POST warns
+        # nothing. A configured endpoint that fails warns — something is
+        # actually wrong. Never raises, never disables.
+        if not ok and self._base_url != _DEFAULT_BASE_URL:
             warnings.warn(f"mlflow mirror transport fallback ({op})", stacklevel=3)
 
     def start_run(self, *, run_id: str | None = None) -> str | None:

@@ -29,7 +29,6 @@ from hydra2.contracts.common import (
 )
 from hydra2.contracts.event_envelope import (
     EventEnvelope,
-    envelope_identity_document,
     filter_events_for_actor,
 )
 from hydra2.contracts.event_schema import compute_event_schema_digest
@@ -38,6 +37,9 @@ from hydra2.contracts.event_vocab import (
     _reject_constant,
     _reject_duplicate_keys,
     _require_enum,
+)
+from hydra2.contracts.packet_chain import (
+    public_state_chain_hash_prefixes as public_state_chain_hash_prefixes,
 )
 
 try:
@@ -73,8 +75,6 @@ __all__ = [
     "packet_identity_document",
     "parse_packet_boundary_spec",
     "partition_actor_packets",
-    "public_state_chain_hash",
-    "public_state_chain_hash_prefixes",
     "validate_packet_partition",
 ]
 
@@ -409,44 +409,6 @@ def make_actor_visible_packets(
         )
         for item, packet_id in zip(items, packet_ids, strict=True)
     )
-
-
-_EMPTY_CHAIN_DIGEST = DigestText("sha256:" + hashlib.sha256(b"").hexdigest())
-
-
-def _fold_chain_digest(prefix: DigestText, event: EventEnvelope) -> DigestText:
-    """One public fold step (shared by the single and prefix-batch chain paths)."""
-    fold_doc = {"prefix": str(prefix), "event": envelope_identity_document(event)}
-    fold_bytes = canonical_json_bytes(fold_doc)
-    return DigestText("sha256:" + hashlib.sha256(fold_bytes).hexdigest())
-
-
-def public_state_chain_hash(events: Sequence[EventEnvelope]) -> DigestText:
-    """Fold public event identities into a chained state hash (deterministic)."""
-    digest = _EMPTY_CHAIN_DIGEST
-    for event in events:
-        if event.visibility == "public":
-            digest = _fold_chain_digest(digest, event)
-    return digest
-
-
-def public_state_chain_hash_prefixes(
-    events: Sequence[EventEnvelope],
-) -> tuple[DigestText, ...]:
-    """Chain digest after each prefix: ``out[k] == public_state_chain_hash(events[:k])``.
-
-    Incremental single pass over the stream (same fold bytes as the single
-    path, hashed with ``hashlib``): replaces the per-segment full re-walk in
-    :func:`partition_actor_packets` (O(segments*events) serializations) with
-    O(events). Non-public events carry the running digest forward unchanged.
-    """
-    out: list[DigestText] = [_EMPTY_CHAIN_DIGEST]
-    digest = _EMPTY_CHAIN_DIGEST
-    for event in events:
-        if event.visibility == "public":
-            digest = _fold_chain_digest(digest, event)
-        out.append(digest)
-    return tuple(out)
 
 
 def validate_packet_partition(packets: Sequence[ActorVisiblePacket]) -> None:

@@ -295,7 +295,7 @@ def _is_target_compatible(
             # realized packet observation plus the authoritative hashes, proving
             # the epoch was not forged or swapped under this packet. Without a
             # packet observation there is nothing to bind: epoch check stands.
-            from hydra2.belief.natural import _target_id_for as _recompute_target
+            from hydra2.belief.natural_target import _target_id_for as _recompute_target
 
             if obs_after is not None:
                 rules_raw: object = getattr(epoch, "rules_hash", "")

@@ -86,7 +86,7 @@ def _parse_selection(raw: Any) -> SelectionConfig:
         seed=seed,
     )
     try:
-        from hydra2.eval.statistics import SelectionConfig as _Authoritative
+        from hydra2.eval.selection import SelectionConfig as _Authoritative
 
         _ = _Authoritative(  # intentionally discarded: construction validates cross-module contract
             N=selection.N,

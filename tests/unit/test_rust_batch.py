@@ -200,8 +200,8 @@ def test_dataset_game_pull_sequence_restore_parity(rust_extension: object) -> No
     corpus = _golden_tmpdir(walled=False)
     manifest = build_manifest(corpus)
 
-    def _factory() -> GameStream:
-        return GameStream(manifest, seed=7, ratios={"train": 1.0}, split=None)
+    def _factory(epoch: int = 0) -> GameStream:
+        return GameStream(manifest, seed=7, ratios={"train": 1.0}, split=None, epoch=epoch)
 
     def _make() -> driver._StreamDataset:
         return driver._StreamDataset(
@@ -316,8 +316,8 @@ def test_batch_pull_matches_serial_pull(rust_extension: object, tmp_path: Path) 
     )
     manifest = build_manifest(tmp_path)
 
-    def _factory() -> GameStream:
-        return GameStream(manifest, seed=7, ratios={"train": 1.0}, split=None)
+    def _factory(epoch: int = 0) -> GameStream:
+        return GameStream(manifest, seed=7, ratios={"train": 1.0}, split=None, epoch=epoch)
 
     def _make() -> driver._StreamDataset:
         return driver._StreamDataset(

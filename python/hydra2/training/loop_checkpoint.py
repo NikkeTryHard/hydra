@@ -20,12 +20,18 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 from hydra2.contracts.common import ContractError, CorruptArtifactError
-from hydra2.eval.statistics import SelectionConfig, score_selection
+from hydra2.eval.selection import SelectionConfig, score_selection
 from hydra2.runtime.checkpoint import (
     build_manifest,
     capture_rng_state,
     load_checkpoint,
     save_checkpoint,
+)
+from hydra2.runtime.checkpoint_publish import (
+    _BackgroundCheckpointWriter as _BackgroundCheckpointWriter,
+)
+from hydra2.runtime.checkpoint_publish import (
+    _snapshot_payload_to_cpu as _snapshot_payload_to_cpu,
 )
 from hydra2.training.loop_batch import (
     _batch_action_kinds as _batch_action_kinds,
@@ -84,6 +90,8 @@ class SupervisedLoopCheckpointMixin:
     manifest_hashes: dict[str, str]
     state: TrainingState
     _forward_autocast: Any
+    _mirror: Any
+    _mlflow_mirror: Any
 
     # ------------------------------------------------------------------
     # Sampler state helpers
@@ -116,12 +124,26 @@ class SupervisedLoopCheckpointMixin:
     # Checkpointing — local authoritative artifacts
     # ------------------------------------------------------------------
 
-    def save_checkpoint(self, destination: Path | None = None) -> Path:
+    def save_checkpoint(self, destination: Path | None = None, *, on_published: Any = None) -> Path:
         """Atomically publish a checkpoint (local authoritative).
 
         An observer mirror (see tracking/), if configured, may ``shutil.copy``
         from this path but MUST NOT overwrite it — no code path in this module
         writes through a mirror.
+
+        The payload is snapshotted to CPU synchronously (~50ms: the same
+        copies the manifest hasher already makes), then the manifest build
+        plus the single ``torch.save`` publish run on the loop's background
+        writer while training continues. Loops that own their writer (the
+        default: unit flows and one-shot ``train()`` callers) wait inline,
+        so the file is on disk on return exactly as before; loops with an
+        attached external writer (streaming) return the reserved path
+        immediately and the bytes land asynchronously — those callers MUST
+        drain (per-update poll, pre-eval drain, end-of-run close) and the
+        ``on_published`` hook fires only after the generation lands, so the
+        mirror never announces bytes that failed to land. Failure mode: a
+        worker error raises on the calling thread at the next wait/poll
+        (fail closed, never a silent skip).
 
         Returns the destination path published.
         """
@@ -160,21 +182,109 @@ class SupervisedLoopCheckpointMixin:
             "sampler_state": sampler_state,
             "rng_state": capture_rng_state(),
         }
-        manifest = build_manifest(
-            run_spec_hash=self.manifest_hashes["run_spec_hash"],
-            model_spec_hash=self.manifest_hashes["model_spec_hash"],
-            optimizer_spec_hash=self.manifest_hashes["optimizer_spec_hash"],
-            scheduler_spec_hash=self.manifest_hashes["scheduler_spec_hash"],
-            environment_hash=self.manifest_hashes["environment_hash"],
-            rules_hash=self.manifest_hashes["rules_hash"],
-            utility_manifest_hash=self.manifest_hashes["utility_manifest_hash"],
-            action_schema_hash=self.manifest_hashes["action_schema_hash"],
-            observation_schema_hash=self.manifest_hashes["observation_schema_hash"],
-            dataset_manifest_hash=self.manifest_hashes["dataset_manifest_hash"],
-            rollout_artifact_hash=None,
-            payload=payload,
+        # Snapshot on the calling thread BEFORE submit: state_dict() aliases
+        # live parameters and optimizer state, and the next update mutates
+        # them; the worker must only ever see detached CPU clones. Timed
+        # for the stage log (observer-only wall time, never hashed).
+        import time as _time
+
+        _snap_t0 = _time.perf_counter()
+        _snap_wall = _time.time()
+        snapshot = _snapshot_payload_to_cpu(payload)
+        _snap_ms = (_time.perf_counter() - _snap_t0) * 1000.0
+        _span_sink = self.__dict__.get("_span_sink")
+        _main_spans: tuple[tuple[str, float, float], ...] = (
+            (("snapshot", _snap_wall, _snap_ms),) if _span_sink is not None else ()
         )
-        return save_checkpoint(destination=destination, manifest=manifest, payload=payload)
+        hashes = dict(self.manifest_hashes)
+        writer = self._checkpoint_writer()
+        external = bool(self.__dict__.get("_ckpt_writer_external", False))
+        generation = int(self.state.global_update)
+        dest = Path(destination)
+
+        def _publish() -> Path:
+            manifest = build_manifest(
+                run_spec_hash=hashes["run_spec_hash"],
+                model_spec_hash=hashes["model_spec_hash"],
+                optimizer_spec_hash=hashes["optimizer_spec_hash"],
+                scheduler_spec_hash=hashes["scheduler_spec_hash"],
+                environment_hash=hashes["environment_hash"],
+                rules_hash=hashes["rules_hash"],
+                utility_manifest_hash=hashes["utility_manifest_hash"],
+                action_schema_hash=hashes["action_schema_hash"],
+                observation_schema_hash=hashes["observation_schema_hash"],
+                dataset_manifest_hash=hashes["dataset_manifest_hash"],
+                rollout_artifact_hash=None,
+                payload=snapshot,
+            )
+            return save_checkpoint(destination=dest, manifest=manifest, payload=snapshot)
+
+        def _done() -> None:
+            # dest is resolved above, so the hook fires with the published
+            # path whether wait() runs it inline (loop-owned) or poll()
+            # runs it later (external): exactly once either way.
+            if on_published is not None:
+                on_published(dest)
+
+        future = writer.submit(
+            _publish,
+            generation=generation,
+            on_done=_done if on_published is not None else None,
+            description=f"loop-checkpoint-{generation:06d}",
+            span_sink=_span_sink,
+            main_spans=_main_spans,
+        )
+        if not external:
+            # Loop-owned writer: preserve the historical synchronous contract
+            # (file on disk on return); wait() fires the hook inline here.
+            writer.wait(future)
+        return dest
+
+    def attach_checkpoint_writer(self, writer: Any, *, span_sink: Any = None) -> None:
+        """Attach a caller-owned background writer (streaming takes over).
+
+        After attach, :meth:`save_checkpoint` returns the reserved path
+        immediately and the caller owns draining (per-update poll, pre-eval
+        drain, end-of-run close). Refuses to orphan in-flight saves: if the
+        current writer still holds pending generations, attaching raises
+        instead of abandoning them (abandoned futures would fire mirror
+        hooks for a writer nobody polls).
+        """
+        current = self.__dict__.get("_ckpt_writer")
+        if current is not None and getattr(current, "_pending", None):
+            raise ContractError("cannot attach a checkpoint writer while saves are still pending")
+        self.__dict__["_ckpt_writer"] = writer
+        self.__dict__["_ckpt_writer_external"] = True
+        self.__dict__["_span_sink"] = span_sink
+
+    def drain_checkpoints(self) -> None:
+        """Block until every submitted generation lands, firing due hooks."""
+        writer = self.__dict__.get("_ckpt_writer")
+        if writer is None:
+            return
+        writer.drain()
+
+    def _checkpoint_writer(self) -> Any:
+        """Loop-owned writer, lazily created (owns sync semantics by default)."""
+        writer = self.__dict__.get("_ckpt_writer")
+        if writer is None:
+            writer = _BackgroundCheckpointWriter()
+            self.__dict__["_ckpt_writer"] = writer
+            self.__dict__["_ckpt_writer_external"] = False
+        return writer
+
+    def _poll_checkpoint_writer(self) -> None:
+        """Fire hooks for landed generations; raise the first worker error.
+
+        Cheap when idle. Called once per training update so a failed save
+        stops training at the next update boundary (fail closed), and
+        confirmed generations announce to the mirror with at most one
+        update of delay.
+        """
+        writer = self.__dict__.get("_ckpt_writer")
+        if writer is None:
+            return
+        writer.poll()
 
     def resume_from_checkpoint(self, source: Path) -> None:
         """Verified resume: validates manifest before mutating any runtime object.
@@ -184,7 +294,13 @@ class SupervisedLoopCheckpointMixin:
 
         On success, restores model, optimizer, scheduler, TrainingState,
         sampler cursor and RNG so that training continues bit-identically.
+
+        Drains pending background saves first: a resume cannot start while
+        its own checkpoint file is still being written (loading a torn
+        file would fail closed on digest mismatch, but waiting is cheaper
+        and never reads a partial write).
         """
+        self.drain_checkpoints()
         source = Path(source)
         manifest, payload = load_checkpoint(
             source=source,

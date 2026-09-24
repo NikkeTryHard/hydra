@@ -19,6 +19,7 @@ from typing import Any
 from hydra2._native import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 from hydra2.artifacts.canonical import canonical_bytes, canonical_bytes_batch
 from hydra2.contracts.common import ContractError, DigestText
+from hydra2.search.local_graph import detect_cycle as detect_cycle
 from hydra2.search.local_shared import (
     _MASTER_SEED as _MASTER_SEED,
 )
@@ -29,12 +30,10 @@ from hydra2.search.local_shared import _digest as _digest
 
 __all__ = [
     "AbstractMappingError",
-    "CycleDetectedError",
     "LocalResolvingAbstraction",
     "PublicSubgame",
     "abstraction_round_trip",
     "build_public_subgame",
-    "detect_cycle",
     "info_key_for_actor_observation",
     "info_keys_for_actor_observations",
     "model_vector_for_world",
@@ -46,10 +45,6 @@ __all__ = [
 
 class AbstractMappingError(ContractError):  # type: ignore[misc]
     """Abstraction maps concrete to invalid abstract or loses required coverage."""
-
-
-class CycleDetectedError(ContractError):  # type: ignore[misc]
-    """Public-history graph contains a cycle — subgame invalid."""
 
 
 # ---------------------------------------------------------------------------
@@ -564,42 +559,3 @@ def build_public_subgame(
     # Cycle check after build
     detect_cycle(subgame)
     return subgame
-
-
-def detect_cycle(subgame: PublicSubgame) -> None:
-    """DFS cycle detection on directed public-history graph.
-
-    Raises CycleDetectedError if any directed cycle exists. Horizon-bounded
-    DAG should be acyclic; abstraction that aliases distinct public histories
-    to same hash can introduce cycles, which must be rejected.
-    """
-    bridge = _optional_search_bridge()
-    detect = None
-    if bridge is not None:
-        detect = getattr(bridge, "local_graph_detect_cycle", None)
-    if detect is not None:
-        try:
-            detect(subgame.nodes, subgame.edges)
-        except ValueError as exc:
-            raise CycleDetectedError(str(exc)) from exc
-        return
-    # Fallback oracle (bridge absent/stale): identical DFS, identical text.
-    # Build adjacency
-    adj: dict[str, list[str]] = {n: [] for n in subgame.nodes}
-    for fr, to, _ in subgame.edges:
-        adj[fr].append(to)
-    WHITE, GRAY, BLACK = 0, 1, 2  # noqa: N806
-    color: dict[str, int] = dict.fromkeys(subgame.nodes, WHITE)
-
-    def dfs(u: str) -> None:
-        color[u] = GRAY
-        for v in adj.get(u, []):
-            if color[v] == GRAY:
-                raise CycleDetectedError(f"cycle detected: {u} -> {v} closes loop")
-            if color[v] == WHITE:
-                dfs(v)
-        color[u] = BLACK
-
-    for n in subgame.nodes:
-        if color[n] == WHITE:
-            dfs(n)

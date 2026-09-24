@@ -371,6 +371,11 @@ class TestFiniteSkip:
         assert history[-1].get("skipped_updates") == 2.0
         for p0, p1 in zip(init_params, model.parameters(), strict=True):
             assert torch.equal(p0, p1), "skipped step must not move weights"
+        # Skip entries omit non-finite grad keys (absence, not value) but keep lr.
+        for h in history:
+            assert "grad_norm_pre" not in h
+            assert "grad_norm_post" not in h
+            assert "lr_now" in h
 
     def test_helper_flags_nonfinite(self) -> None:
         from hydra2.training.objectives_loss import global_grad_norm_is_finite

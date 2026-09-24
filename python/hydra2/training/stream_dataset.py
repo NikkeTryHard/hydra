@@ -3,8 +3,9 @@
 Owns the :class:`_StreamDatasetCore` pull/expand/fill machinery (serial
 pulls, the bounded parallel-expansion pool, microbatch fills); the
 buffered-window half (grouped takes, sampler state, snapshots, verbatim
-restore) rides :class:`_StreamDatasetBufferMixin`. Single-pass with the
-epoch pinned at 0: exhaustion while rows are still demanded fails closed.
+restore) rides :class:`_StreamDatasetBufferMixin`. Multi-epoch wrap: the live
+epoch starts at 0 and rolls forward when the corpus is exhausted while rows
+are still demanded (only an empty split fails closed).
 
 Fill path: the bounded spawn pool (:meth:`_fill_parallel`) plus the serial
 pull/batch-expansion tails (:meth:`_pull_game` / :meth:`_pull_game_batch`);
@@ -56,7 +57,7 @@ class _StreamDatasetCore:
     def __init__(
         self,
         *,
-        stream_factory: Callable[[], GameStream],
+        stream_factory: Callable[[int], GameStream],
         num_actions: int,
         feature_dim: int,
         seed: int,
@@ -67,11 +68,14 @@ class _StreamDatasetCore:
         expand_batch_games: int = 64,
         pin_memory: bool = True,
         homogeneous_buckets: bool = False,
+        pack_histories: bool = False,
     ) -> None:
         if drop_last is not True:
-            raise ContractError(f"single-pass requires drop_last=true, got {drop_last!r}")
+            raise ContractError(f"multi-epoch requires drop_last=true, got {drop_last!r}")
         if not isinstance(homogeneous_buckets, bool):
             raise ContractError(f"homogeneous_buckets must be a bool, got {homogeneous_buckets!r}")
+        if not isinstance(pack_histories, bool):
+            raise ContractError(f"pack_histories must be a bool, got {pack_histories!r}")
         if (
             isinstance(expand_workers, bool)
             or not isinstance(expand_workers, int)
@@ -97,7 +101,7 @@ class _StreamDatasetCore:
         self._feature_dim = feature_dim
         self._seed = seed
         self._drop_last = drop_last
-        self._epoch = 0  # single-pass: epoch pinned 0 (no wrap, no start_epoch)
+        self._epoch = 0  # live epoch; rolls forward on corpus exhaustion (multi-epoch wrap)
         self._rows: list[dict[str, Any]] = []
         self._offset = 0
         self._dropped = 0
@@ -117,10 +121,9 @@ class _StreamDatasetCore:
         # Caller-owned transfer owns pinning: when a pinned-ring feed stages
         # the H2D copy, encode-side pin_memory() calls (29 page-locks per
         # microbatch) are pure overhead — the ring copies into its own pinned
-        # slots. The driver clears this once the feed is open; the sync path
-        # keeps it set so non_blocking H2D still overlaps.
         self.pin_memory = pin_memory
         self._homogeneous_buckets = homogeneous_buckets
+        self._pack_histories = pack_histories
         self._buffered_entries: list[dict[str, Any]] = []
         # Python pool fill count (telemetry only).
         self.feed_fallbacks = 0
@@ -147,15 +150,32 @@ class _StreamDatasetCore:
             )
         return self._stream.cursor()
 
+    def _roll_epoch(self) -> None:
+        """Advance to the next epoch on corpus exhaustion (multi-epoch wrap).
+
+        Drops the consumed stream/iterator and rebuilds from the factory at
+        the new epoch (fresh origin, rotated shuffle, empty dedup set by
+        construction). Buffered rows stay: rows are rows, and order
+        determinism rides the epoch-parameterized shuffle seeds. Abandoning
+        the old iterator shuts a prefetch pool via generator cleanup (its
+        executor scope lives inside the source generator); the roll stalls
+        only for in-flight decode batches, at most once per epoch.
+        """
+        self._stream = None
+        self._iter = None
+        self._epoch += 1
+        self._stream = self._factory(self._epoch)
+        self._iter = iter(self._stream)
+
     def _ensure_iter(self) -> None:
-        # Single-pass: the stream is built once and consumed to exhaustion.
-        # ``_stream`` is never reset, so a consumed iterator (``_iter`` None
-        # with ``_stream`` set) stays consumed — recreating it here would
-        # silently re-read the corpus from scratch (duplicated rows, backward
-        # resume frontier). Post-exhaustion pulls return ``False`` and the
-        # terminal ``_fill`` below fails closed.
+        # The stream is built lazily at the live epoch and rebuilt by
+        # _roll_epoch on exhaustion. A consumed iterator (_iter None with
+        # _stream set) stays consumed until the next roll — recreating it
+        # here would silently re-read the corpus from scratch (duplicated
+        # rows, backward resume frontier). Post-exhaustion pulls return
+        # False and _fill rolls the epoch (fail closed only on empty splits).
         if self._iter is None and self._stream is None:
-            self._stream = self._factory()
+            self._stream = self._factory(self._epoch)
             self._iter = iter(self._stream)
 
     def _pull_game(self) -> bool:
@@ -304,8 +324,8 @@ class _StreamDatasetCore:
         fork-with-threads deadlocks racily; spawn re-imports clean workers
         (same rationale as :func:`_scan_corpus_parallel`). One pool per
         dataset, built once per run and reused across fills — never rebuilt
-        per fill or per epoch (single-pass pins epoch 0, so no epoch boundary
-        exists to respawn at; post-first-fill spawn cost is zero by
+        per fill or per epoch roll (the roll rebuilds the game stream, not
+        this pool; post-first-fill spawn cost is zero by
         construction). Workers start under :func:`_pool_worker_init` (one
         torch thread each); :meth:`close` shuts the pool down.
         """
@@ -378,8 +398,9 @@ class _StreamDatasetCore:
         :meth:`_fill` game-for-game; per-game :class:`ContractError`
         quarantines-and-counts (fail closed, never a silent drop) while a
         chunk-level failure quarantines each game it carried (same reason)
-        and any other worker failure propagates. Terminal exhaustion raises
-        the serial messages verbatim.
+        and any other worker failure propagates. Stream exhaustion rolls the
+        epoch via :meth:`_roll_epoch` and keeps filling (only an empty split
+        fails closed).
         """
         _t_pool = time.perf_counter() if self._offset == 0 else 0.0
         pool = self._get_expand_pool()
@@ -404,11 +425,8 @@ class _StreamDatasetCore:
             if len(batch) == 0:
                 if self._live_count() == 0 and self._offset == 0:
                     raise ContractError("stream yielded zero train rows (empty split?)")
-                raise ContractError(
-                    f"stream exhausted with {self._live_count()} buffered rows, need {need} "
-                    "(single-pass: stream end with updates remaining; "
-                    "rescope loop.max_updates to supply)"
-                )
+                self._roll_epoch()
+                continue
             _t_pull = time.perf_counter() if timed else 0.0
             size = max(1, (len(batch) + workers - 1) // workers)
             chunks = [batch[i : i + size] for i in range(0, len(batch), size)]
@@ -542,7 +560,7 @@ class _StreamDatasetCore:
         self._dropped += drop_rows
 
     def _fill(self, need: int) -> None:
-        """Buffer at least ``need`` consumable rows (single-pass: exhaustion is terminal)."""
+        """Buffer at least ``need`` consumable rows (exhaustion rolls the epoch)."""
         self.feed_fallbacks += 1
         if self._expand_workers > 0:
             self._fill_parallel(need)
@@ -552,8 +570,4 @@ class _StreamDatasetCore:
                 continue
             if self._live_count() == 0 and self._offset == 0:
                 raise ContractError("stream yielded zero train rows (empty split?)")
-            raise ContractError(
-                f"stream exhausted with {self._live_count()} buffered rows, need {need} "
-                "(single-pass: stream end with updates remaining; "
-                "rescope loop.max_updates to supply)"
-            )
+            self._roll_epoch()

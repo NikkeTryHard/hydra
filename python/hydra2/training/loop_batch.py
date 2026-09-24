@@ -172,12 +172,25 @@ def _move_batch_to_device(batch: dict[str, Any], device: torch.device) -> dict[s
                             if isinstance(v.actor_seats, torch.Tensor)
                             else v.actor_seats
                         )
+                        _packed = getattr(v, "packed", None)
+                        if _packed is not None:
+                            # Packed stream rides the same H2D as the planes
+                            # (small: concatenated prefixes + int32 bounds).
+                            from hydra2.models.encoder import PackedHistories
+
+                            _packed = PackedHistories(
+                                packed_kind=_packed.packed_kind.to(device, non_blocking=True),
+                                cu_seqlens=_packed.cu_seqlens.to(device, non_blocking=True),
+                                row_lengths=tuple(_packed.row_lengths),
+                                max_len=int(_packed.max_len),
+                            )
                         moved[k] = ActorTensorBatch(
                             features=_moved_features,
                             history_mask=_hm,
                             legal_mask=_lm,
                             observation_hashes=v.observation_hashes,
                             actor_seats=_seats,
+                            packed=_packed,
                         )
                     except Exception:
                         moved[k] = v

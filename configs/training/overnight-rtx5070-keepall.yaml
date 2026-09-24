@@ -1,0 +1,104 @@
+# Overnight keep-all successor (storage-bounded rollback for overfitting).
+# Cloned from configs/training/overnight-rtx5070.yaml, never edited in place:
+# same mb2048 x accum4 x workers16 recipe (24.0k rows/s at 8.1GB), LR 0.0003.
+# 100000 updates ≈ 10h at measured 0.36s/update; the corpus wraps ~12-20x
+# (exact roll updates reported from the probe, never hardcoded here).
+# Warmup 1000 is ~1% of horizon (cosine rest stretches via horizon math).
+# Checkpoint every 500 updates with keep-all bounds disk (~60MB/event x200 ≈12GB worst case).
+# Eval every 2000 updates: 50 evals x ~17s ≈ 15min total overhead.
+# Eval microbatch stays explicit 2048: never inherit the 8192 effective batch.
+run:
+  id: local-rtx5070-overnight-keepall
+  kind: supervised
+  description: 'Overnight keep-all: sat recipe x 100k updates multi-epoch, ckpt/500 keep-all, eval/2k per-type.'
+data:
+  root: ${HYDRA2_DATA_ROOT}/tenhou-houou-mjai-2024
+  scope: tenhou-4p-hanchan
+  train_split: train
+  val_split: validation
+  wall_disjoint: true
+  leakage_check: true
+  dora_width: 5
+  actor_privileged_split: true
+  dataset_manifest_hash: null
+  shuffle_buffer_size: 10000
+  drop_last: true
+  num_workers: 16
+  world_size: 1
+  replay_backend: rust
+  decode_prefetch: 64 # WHY: background decode pool (src/hydra2/data/stream.py
+  # PrefetchGameStream); cover one expansion batch.
+  expand_batch_games: 64 # WHY: games per fill round, one bridge FFI per chunk
+  # (src/hydra2/training/stream_train.py _fill_parallel).
+model:
+  architecture_id: hydra2_baseline_transformer_v1
+  action_count: 6792
+  parameters: {}
+weights:
+  w_policy: 1.0
+  w_placement: 0.0
+  w_value: 0.0
+  w_event: null
+  w_belief: null
+  privileged_source_hash: null
+optimizer:
+  id: adamw
+  lr: 0.0003
+  betas:
+  - 0.9
+  - 0.999
+  weight_decay: 0.01
+scheduler:
+  id: cosine
+  warmup_updates: 1000
+  parameters: {}
+runtime:
+  adapter_id: plain_pytorch
+  device: cuda
+  precision: bf16_mixed
+  compile_mode: max-autotune-no-cudagraphs
+loop:
+  microbatch_size: 2048
+  accumulation_steps: 4
+  gradient_clip_norm: 1.0
+  max_updates: 100000
+  checkpoint_frequency_updates: 500
+  precision: bf16_mixed
+  keep_last_checkpoints: null
+  log_per_type_metrics: true
+  fetch_prefetch_depth: 8 # depth covers the 4-deep accumulation window + overlap.
+seeds:
+  data_seed: 0
+  train_seed: 0
+  selection_seed: 0
+selection:
+  N: 30
+  pilot_s: 1.5
+  delta: 0.5
+  alpha: 0.05
+  beta: 0.2
+  design: fixed_n
+  declared_peeks:
+  - 30
+  margin: 0.0
+  resamples: 2000
+  seed: 0
+mirror:
+  enabled: false
+  project: hydra2-tenhou-4p
+  task_name: null
+  offline_dir: null
+eval:
+  frequency_updates: 2000
+  num_batches: 10
+  walls_dir: null
+  microbatch_size: 2048
+output:
+  artifact_root: null
+  run_id: null
+rl: null
+telemetry:
+  mlflow_enabled: true
+  verbose_enabled: true
+  verbose_interval_ms: 50
+  profiler_captures: 1

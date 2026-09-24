@@ -51,6 +51,37 @@ if TYPE_CHECKING:
     from hydra2.training.loop_state import TrainingState as TrainingState
 
 
+def _save_checkpoint_with_mirror(loop: Any, entry: dict[str, float]) -> Path:
+    """Submit one checkpoint generation with its mirror announcement.
+
+    Captures the update number now (the hook may fire updates later, and
+    must announce the generation it belongs to, not the then-current
+    one). The hook receives the published destination from the loop's
+    ``save_checkpoint``, so no box is needed regardless of when it fires.
+    """
+    update = int(loop.state.global_update)
+    hashes = dict(loop.manifest_hashes)
+
+    def _fire(dest: Path) -> None:
+        manifest_json = {
+            "checkpoint_file": dest.name,
+            "global_update": update,
+            "manifest_hashes": hashes,
+        }
+        loop._mirror.log_update(entry, step=update)
+        loop._mirror.log_checkpoint(
+            checkpoint_path=dest,
+            manifest_json=manifest_json,
+        )
+        loop._mlflow_mirror.log_update(entry, step=update)
+        loop._mlflow_mirror.log_checkpoint(
+            checkpoint_path=dest,
+            manifest_json=manifest_json,
+        )
+
+    return loop.save_checkpoint(on_published=_fire)
+
+
 class SupervisedLoopTrainMixin(SupervisedLoopEngineMixin, SupervisedLoopLossMixin):
     """Accumulation loop for :class:`SupervisedLoop`.
 
@@ -287,6 +318,16 @@ class SupervisedLoopTrainMixin(SupervisedLoopEngineMixin, SupervisedLoopLossMixi
                     "skipped_updates": float(self.state.skipped_updates),
                     "skipped_this_update": 1.0,
                 }
+                # Optimizer health (successor observability; no new host sync):
+                # grad probe is non-finite here so pre/post keys are omitted
+                # (sidecar + mirror drop non-finite); lr reads pre-skip value
+                # since the scheduler is not stepped on skip — correct.
+                try:
+                    _skip_lr = float(self.optimizer.param_groups[0]["lr"])
+                except (KeyError, IndexError, TypeError, ValueError):
+                    _skip_lr = float("nan")
+                if _skip_lr == _skip_lr and abs(_skip_lr) != float("inf"):
+                    _skip_entry["lr_now"] = _skip_lr
                 self.loss_history.append(_skip_entry)
                 self._global_metrics_history.append({"masked_nll": _skip_avg})
                 _logging_ms = (time.perf_counter() - _log_t0) * 1000.0
@@ -295,25 +336,9 @@ class SupervisedLoopTrainMixin(SupervisedLoopEngineMixin, SupervisedLoopLossMixi
                     self.state.global_update % self.config.checkpoint_frequency_updates == 0
                     or self.state.global_update == target_global
                 ):
-                    dest: Path = self.save_checkpoint()
-                    self._mirror.log_update(_skip_entry, step=self.state.global_update)
-                    self._mirror.log_checkpoint(
-                        checkpoint_path=dest,
-                        manifest_json={
-                            "checkpoint_file": dest.name,
-                            "global_update": self.state.global_update,
-                            "manifest_hashes": dict(self.manifest_hashes),
-                        },
-                    )
-                    self._mlflow_mirror.log_update(_skip_entry, step=self.state.global_update)
-                    self._mlflow_mirror.log_checkpoint(
-                        checkpoint_path=dest,
-                        manifest_json={
-                            "checkpoint_file": dest.name,
-                            "global_update": self.state.global_update,
-                            "manifest_hashes": dict(self.manifest_hashes),
-                        },
-                    )
+                    _ = _save_checkpoint_with_mirror(self, _skip_entry)
+                # Per-update writer poll: cheap when idle; fail closed on error.
+                self._poll_checkpoint_writer()
                 continue
             if self.config.gradient_clip_norm is not None:
                 model_params: Any = self.model.parameters()
@@ -411,6 +436,28 @@ class SupervisedLoopTrainMixin(SupervisedLoopEngineMixin, SupervisedLoopLossMixi
                 "skipped_updates": float(self.state.skipped_updates),
                 "skipped_this_update": 0.0,
             }
+            # Optimizer health from already-in-scope values (no new host sync):
+            # pre is the fused probe at :281, post is pure-arithmetic mirror of
+            # clip_grad_norm_ at :333-337, lr is group-0 trunk base after
+            # scheduler.step() (head multiplier rides separately).
+            try:
+                _pre = float(_grad_norm)
+            except (TypeError, ValueError):
+                _pre = float("nan")
+            if _pre == _pre and abs(_pre) != float("inf"):
+                entry["grad_norm_pre"] = _pre
+                _clip = self.config.gradient_clip_norm
+                if isinstance(_clip, (int, float)) and float(_clip) > 0:
+                    _post = min(float(_clip), _pre)
+                else:
+                    _post = _pre
+                entry["grad_norm_post"] = _post
+            try:
+                _lr_now = float(self.optimizer.param_groups[0]["lr"])
+            except (KeyError, IndexError, TypeError, ValueError):
+                _lr_now = float("nan")
+            if _lr_now == _lr_now and abs(_lr_now) != float("inf"):
+                entry["lr_now"] = _lr_now
             for _event_pos, _event_head in enumerate(_event_head_keys):
                 entry[f"event_{_event_head}"] = _extra_means[_event_pos]
             _belief_base = len(_event_head_keys)
@@ -422,31 +469,21 @@ class SupervisedLoopTrainMixin(SupervisedLoopEngineMixin, SupervisedLoopLossMixi
             self._record_update_telemetry(optimizer_ms=_optimizer_ms, logging_ms=_logging_ms)
 
             # Checkpointing: local authoritative artifact, atomic publish.
-            # Mirror hook fires only after a successful save (observer-only).
+            # The save snapshots to CPU and publishes on the background
+            # writer; the mirror hook fires only after that generation lands
+            # (observer-only, never ahead of the bytes). The per-update poll
+            # below surfaces a failed save at the next update boundary.
             if (
                 self.state.global_update % self.config.checkpoint_frequency_updates == 0
                 or self.state.global_update == target_global
             ):
-                dest: Path = self.save_checkpoint()
-                self._mirror.log_update(entry, step=self.state.global_update)
-                self._mirror.log_checkpoint(
-                    checkpoint_path=dest,
-                    manifest_json={
-                        "checkpoint_file": dest.name,
-                        "global_update": self.state.global_update,
-                        "manifest_hashes": dict(self.manifest_hashes),
-                    },
-                )
-                self._mlflow_mirror.log_update(entry, step=self.state.global_update)
-                self._mlflow_mirror.log_checkpoint(
-                    checkpoint_path=dest,
-                    manifest_json={
-                        "checkpoint_file": dest.name,
-                        "global_update": self.state.global_update,
-                        "manifest_hashes": dict(self.manifest_hashes),
-                    },
-                )
+                _ = _save_checkpoint_with_mirror(self, entry)
+            # Per-update writer poll: cheap when idle; fail closed on error.
+            self._poll_checkpoint_writer()
 
+        # Flush any generation that landed on the final update so one-shot
+        # train() callers observe its mirror announcement on return.
+        self._poll_checkpoint_writer()
         if _prefetch_ex is not None:
             with contextlib.suppress(Exception):
                 _prefetch_ex.shutdown(wait=True)

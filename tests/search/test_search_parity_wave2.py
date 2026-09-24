@@ -28,7 +28,6 @@ from hydra2.search.ismcts_core import (
     InformationSetNode,
     NaturalISMCTSConfig,
     _ActionStats,
-    _uct_select,
     validate_tree_keys_contain_no_world_id,
 )
 from hydra2.search.ismcts_core import (
@@ -37,6 +36,7 @@ from hydra2.search.ismcts_core import (
 from hydra2.search.ismcts_core import model_vector_for_world as ismcts_model_vector
 from hydra2.search.ismcts_core import scalarize_vector as ismcts_scalarize
 from hydra2.search.ismcts_core import terminal_vector_for_world as ismcts_terminal_vector
+from hydra2.search.ismcts_select import _uct_select as _uct_select
 
 _MASTER = b"wave2_search_parity_v1"
 _EXPERIMENT = "wave2-search-parity"

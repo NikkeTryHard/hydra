@@ -31,9 +31,9 @@ src/hydra2/
   train/{state.py,objective.py,supervised/,distill/,rl/}
   eval/{schedule.py,case.py,runner.py,blocks.py,statistics.py,telemetry.py,promotion.py}
   performance/{candidate.py,qualify.py,ledger.py}
-  tracking/{__init__.py,clearml_mirror.py,mlflow_mirror.py,verbose_sampler.py}
+  tracking/{__init__.py,clearml_mirror.py,mlflow_mirror.py,verbose_sampler.py,_mirror_leaves.py}
 ```
-Tracking is observer-only, two-tier; local artifacts stay authoritative.
+Tracking is observer-only, two-tier; local artifacts stay authoritative. Leaves live in _mirror_leaves.py bridge-first with byte-identical fallbacks; transport, file fallback, clocks, and run registries stay in the mirrors.
 Tier 1 (quiet, default-on): an MLflow mirror (per-artifact-root SQLite store
 `mirror/mlflow/mlruns.db`, offline, no server) copies allowlisted scalars,
 digests, and JSON snapshots; `HYDRA2_MLFLOW_DISABLED=1` kill-switch wins.

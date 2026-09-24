@@ -70,7 +70,15 @@ def test_hot_entry_always_lean(tmp_path: Path, actor_parquet_factory) -> None:
         loop.config = dataclasses.replace(loop.config, log_per_type_metrics=flag)
         hist = loop.train(max_updates=2)
         assert len(hist) == 2
-        core = ("total", "policy", "masked_nll", "top1")
+        core = (
+            "total",
+            "policy",
+            "masked_nll",
+            "top1",
+            "grad_norm_pre",
+            "grad_norm_post",
+            "lr_now",
+        )
         dropped = (
             "top3",
             "top5",
@@ -86,6 +94,8 @@ def test_hot_entry_always_lean(tmp_path: Path, actor_parquet_factory) -> None:
                 assert key in entry, f"core key {key!r} missing (flag={flag})"
             for key in dropped:
                 assert key not in entry, f"hot key {key!r} must ride eval, not history"
+            # No second host sync: grad post is arithmetic mirror of pre.
+            assert entry["grad_norm_post"] <= entry["grad_norm_pre"] + 1e-9
 
 
 # ---------------------------------------------------------------------------
@@ -93,10 +103,12 @@ def test_hot_entry_always_lean(tmp_path: Path, actor_parquet_factory) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_plain_seeded_repeat_identical_loop_state(tmp_path: Path, actor_parquet_factory) -> None:
+@pytest.mark.gpu
+def test_plain_seeded_repeat_identical_loop_state(
+    tmp_path: Path, actor_parquet_factory, require_cuda: torch.device
+) -> None:
+    _ = require_cuda  # hard-fails without CUDA; silent CPU fallback is forbidden.
     parquet_dir = actor_parquet_factory(num_rows=16)
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA unavailable — plain seeded repeat requires RTX 5070 per spec")
 
     from hydra2.runtime.plain import PlainPytorchAdapter
     from hydra2.runtime.protocol import RuntimeSpec

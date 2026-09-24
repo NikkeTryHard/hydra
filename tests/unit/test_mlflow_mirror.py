@@ -226,7 +226,7 @@ def test_unreachable_server_falls_back_without_raise(
 ) -> None:
     """Transport ``False`` (unreachable server) warns + records, never raises."""
     _install_bridge(monkeypatch, _FakeBridgeMirror(ok=False))
-    mirror = make_mirror(enabled=True, tracking_dir=_store_env)
+    mirror = make_mirror(enabled=True, tracking_dir=_store_env, base_url="http://127.0.0.1:1")
     assert mirror.start_run() is not None
     with pytest.warns(UserWarning, match="transport fallback"):
         mirror.log_update({"total": 1.0}, step=0)
@@ -243,7 +243,7 @@ def test_bridge_raise_falls_back_without_raise(
 ) -> None:
     """A raising bridge degrades to warn + file record, never raises."""
     _install_bridge(monkeypatch, _FakeBridgeMirror(fail=TimeoutError("timed out")))
-    mirror = make_mirror(enabled=True, tracking_dir=_store_env)
+    mirror = make_mirror(enabled=True, tracking_dir=_store_env, base_url="http://127.0.0.1:1")
     assert mirror.start_run() is not None
     with pytest.warns(UserWarning, match="transport fallback"):
         mirror.log_update({"total": 1.0}, step=0)
@@ -255,7 +255,7 @@ def test_missing_bridge_extension_falls_back(
 ) -> None:
     """Unbuilt extension: file fallback only, never raises, never imports the SDK."""
     _install_bridge(monkeypatch, None)
-    mirror = make_mirror(enabled=True, tracking_dir=_store_env)
+    mirror = make_mirror(enabled=True, tracking_dir=_store_env, base_url="http://127.0.0.1:1")
     assert mirror.start_run() is not None
     with pytest.warns(UserWarning, match="transport fallback"):
         mirror.log_update({"total": 1.0, "not_a_metric": 2.0}, step=3)

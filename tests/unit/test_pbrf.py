@@ -291,10 +291,8 @@ def test_commit_miss_returns_fresh_rebuild() -> None:
         EventEnvelope,
         EventPayload,
     )
-    from hydra2.contracts.event_packet import (
-        make_actor_visible_packet,
-        public_state_chain_hash,
-    )
+    from hydra2.contracts.event_packet import make_actor_visible_packet
+    from hydra2.contracts.packet_chain import public_state_chain_hash
 
     rh = epoch.rules_hash
     sh = "sha256:" + "c" * 64

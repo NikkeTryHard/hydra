@@ -10,10 +10,12 @@ import pytest
 
 from hydra2.tracking.verbose_sampler import (
     DEFAULT_INTERVAL_MS,
-    NullVerboseSampler,
     is_enabled,
-    make_verbose_sampler,
     resolve_interval_ms,
+)
+from hydra2.tracking.verbose_sampler_factory import (
+    NullVerboseSampler,
+    make_verbose_sampler,
 )
 
 if TYPE_CHECKING:

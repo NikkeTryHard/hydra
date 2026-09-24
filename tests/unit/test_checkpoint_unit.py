@@ -26,6 +26,10 @@ from hydra2.runtime.checkpoint import (
     save_checkpoint,
     state_tree,
 )
+from hydra2.runtime.checkpoint_publish import (
+    _BackgroundCheckpointWriter,
+    _snapshot_payload_to_cpu,
+)
 
 D = "sha256:" + "b" * 64
 
@@ -312,3 +316,130 @@ class TestManifestEnvelope:
         del payload["rng_state"]
         with pytest.raises(ContractError, match="missing sections"):
             make_manifest(payload)
+
+
+class TestBackgroundPublish:
+    def test_snapshot_saves_pre_mutation_values(self, tmp_path):
+        torch.manual_seed(0)
+        model = torch.nn.Linear(4, 4)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=0.01)
+        inputs = torch.randn(6, 4)
+        targets = torch.randn(6, 4)
+        optimizer.zero_grad(set_to_none=True)
+        loss = torch.nn.functional.mse_loss(model(inputs), targets)
+        loss.backward()
+        optimizer.step()
+        pre_weights = {key: value.cpu().clone() for key, value in model.state_dict().items()}
+        payload = {
+            "model_state": model.state_dict(),
+            "optimizer_state": optimizer.state_dict(),
+            "scheduler_state": {},
+            "training_state": {"global_update": 1},
+            "sampler_state": {"cursor": 0},
+            "rng_state": {"cpu": torch.get_rng_state()},
+        }
+        # Snapshot synchronously, then hand the worker the clones while the
+        # live model keeps training: whatever lands must equal pre-mutation.
+        snapshot = _snapshot_payload_to_cpu(payload)
+        writer = _BackgroundCheckpointWriter()
+        try:
+            destination = tmp_path / "ck-bg.pt"
+
+            def _publish():
+                manifest = make_manifest(snapshot)
+                return save_checkpoint(destination=destination, manifest=manifest, payload=snapshot)
+
+            writer.submit(_publish, generation=0, description="bg-isolation")
+            with torch.no_grad():
+                for param in model.parameters():
+                    param.add_(100.0)
+            for state in optimizer.state.values():
+                state["exp_avg"].add_(100.0)
+            writer.drain()
+        finally:
+            writer.close()
+        _, loaded = load_checkpoint(
+            source=destination, expected_run_spec_hash=D, expected_source_hash="sha256:" + "c" * 64
+        )
+        for key, before in pre_weights.items():
+            assert torch.equal(loaded["model_state"][key].cpu(), before)
+            assert not torch.equal(loaded["model_state"][key].cpu(), model.state_dict()[key].cpu())
+
+    def test_worker_error_surfaces_and_hook_skipped(self):
+        writer = _BackgroundCheckpointWriter()
+        try:
+            fired: list[bool] = []
+
+            def _boom():
+                raise RuntimeError("boom-background-publish")
+
+            writer.submit(
+                _boom, generation=0, on_done=lambda: fired.append(True), description="boom"
+            )
+            with pytest.raises(RuntimeError, match="boom-background-publish"):
+                writer.drain()
+            assert fired == []
+            writer.poll()
+        finally:
+            writer.close()
+
+    def test_spans_emit_on_landing_with_sink(self, tmp_path):
+        collected: list[dict] = []
+
+        class _Sink:
+            def emit(self, *, stage, dur_ms, update, t_start_s=None):
+                collected.append(
+                    {"stage": stage, "dur_ms": dur_ms, "update": update, "t_start_s": t_start_s}
+                )
+
+        writer = _BackgroundCheckpointWriter()
+        try:
+            writer.submit(
+                lambda: None,
+                generation=7,
+                description="span-probe",
+                span_sink=_Sink(),
+                main_spans=(("snapshot", 1000.0, 12.5),),
+            )
+            writer.drain()
+        finally:
+            writer.close()
+        by_stage = {row["stage"]: row for row in collected}
+        assert set(by_stage) == {"snapshot", "worker:span-probe"}
+        assert by_stage["snapshot"]["update"] == 7
+        assert by_stage["snapshot"]["dur_ms"] == 12.5
+        assert by_stage["worker:span-probe"]["update"] == 7
+        assert by_stage["worker:span-probe"]["dur_ms"] >= 0.0
+        assert by_stage["worker:span-probe"]["t_start_s"] is not None
+
+    def test_failed_save_emits_no_spans(self):
+        collected: list[dict] = []
+
+        class _Sink:
+            def emit(self, *, stage, dur_ms, update, t_start_s=None):
+                collected.append({"stage": stage})
+
+        writer = _BackgroundCheckpointWriter()
+        try:
+
+            def _boom():
+                raise RuntimeError("boom-span-probe")
+
+            writer.submit(
+                _boom,
+                generation=0,
+                description="boom",
+                span_sink=_Sink(),
+                main_spans=(("snapshot", 1000.0, 1.0),),
+            )
+            with pytest.raises(RuntimeError, match="boom-span-probe"):
+                writer.drain()
+            assert collected == []
+        finally:
+            writer.close()
+
+    def test_snapshot_rejects_unsupported_leaf(self):
+        payload = sample_payload()
+        payload["training_state"] = {"opaque": object()}
+        with pytest.raises(CorruptArtifactError):
+            _snapshot_payload_to_cpu(payload)

@@ -21,13 +21,13 @@ below is judged by average final placement over many nights, not by flashy wins.
   `tests/integration/test_duplicate_block_wp06.py` and
   `tests/integration/test_schedule_wp03b.py` hold. MAIN-verified: 48 scoped
   tests green, lint+format+typecheck clean.
-- [ ] Oracle real-data fixture. Gate: one small fixture built from a real log
+- [x] Oracle real-data fixture. Gate: one small fixture built from a real log
   excerpt runs end to end through the teacher/oracle path (refs
-  `lean/Formal/Blueprint/Opponent.lean`, `lean/Formal/Blueprint/Belief.lean`).
-- [ ] Spec re-pin. Gate: `docs/IMPLEMENTATION_SPEC.md` matches the frozen Python
-  surface (known drift at audit time: tracking tree listed fewer files;
-  actual is `tracking/{__init__.py,clearml_mirror.py,mlflow_mirror.py,
-  verbose_sampler.py}`). No training runs until this matches.
+  `lean/Formal/Blueprint/Opponent.lean`, `lean/Formal/Blueprint/Belief.lean`; proof `tests/unit/test_oracle_real_log_fixture.py::test_real_log_excerpt_runs_teacher_oracle_path`).
+- [x] Spec re-pin. Gate: `docs/IMPLEMENTATION_SPEC.md` matches the frozen Python
+  surface (tracking tree now lists all five files including `_mirror_leaves.py`;
+  verified `tracking/{__init__.py,clearml_mirror.py,mlflow_mirror.py,
+  verbose_sampler.py,_mirror_leaves.py}`). Training runs unblocked.
 
 ## 3. BASELINE — first real training run
 

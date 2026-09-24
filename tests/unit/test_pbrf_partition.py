@@ -195,10 +195,8 @@ def test_missing_packet_mass_is_hard_failure() -> None:
                 EventEnvelope,
                 EventPayload,
             )
-            from hydra2.contracts.event_packet import (
-                make_actor_visible_packet,
-                public_state_chain_hash,
-            )
+            from hydra2.contracts.event_packet import make_actor_visible_packet
+            from hydra2.contracts.packet_chain import public_state_chain_hash
 
             # Fabricate a packet but with prob 0.3 each -> total 0.6
             # Use real packet construction to keep kernel interface valid
@@ -832,10 +830,8 @@ def _missing_packet_for(b, epoch):
         EventEnvelope,
         EventPayload,
     )
-    from hydra2.contracts.event_packet import (
-        make_actor_visible_packet,
-        public_state_chain_hash,
-    )
+    from hydra2.contracts.event_packet import make_actor_visible_packet
+    from hydra2.contracts.packet_chain import public_state_chain_hash
 
     payload = EventPayload(
         kind="discard",

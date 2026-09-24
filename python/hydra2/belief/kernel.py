@@ -37,8 +37,8 @@ from hydra2.contracts.event_envelope import EventEnvelope, EventPayload, envelop
 from hydra2.contracts.event_packet import (
     ActorVisiblePacket,
     make_actor_visible_packets,
-    public_state_chain_hash,
 )
+from hydra2.contracts.packet_chain import public_state_chain_hash as public_state_chain_hash
 
 
 #: Bridge packet-successor row shape (single source: ``hydra2._native.search``

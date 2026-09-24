@@ -34,6 +34,7 @@ import torch
 
 from hydra2.contracts.common import ContractError
 from hydra2.models.encoder import ActorTensorBatch, bucket_for_length
+from hydra2.models.encoder import PackedHistories as PackedHistories
 from hydra2.models.schema import BASELINE_ACTION_COUNT, HISTORY_BUCKET_LENGTHS
 
 if TYPE_CHECKING:
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
 __all__ = [
     "assemble_slim_batch",
     "assemble_training_batch",
+    "build_packed_batch",
     "expand_game_batch",
     "replay_game_planes",
 ]
@@ -303,10 +305,82 @@ def _slice_game_planes(
     return out
 
 
+def build_packed_batch(
+    rows: list[dict[str, Any]],
+    batch: dict[str, Any],
+) -> PackedHistories:
+    """Pack one assembled microbatch's real history prefixes (CPU).
+
+    Rows stay in pull order (never sorted — order is determinism): for each
+    row ``i`` the real length ``L_i`` is its history-mask popcount, and the
+    packed stream concatenates ``history_event_kind[i, :L_i]``. Lengths
+    cross-check the staged ``_hist_len`` the Rust pull stamps per row (exact
+    mask popcount at stage time): any disagreement fails closed instead of
+    silently shifting a window. Masks must be prefix-contiguous (real block
+    then pad tail); a hole fails closed. Rows without a staged length fall
+    back to the max bucket path at the caller (grouping must never mask
+    errors), so this function requires the stamp. An all-empty batch
+    (total 0) packs to empty bounds; the model renders the zero-vector
+    pooling the bucketed path produces for empty histories.
+    """
+    try:
+        actor = batch["actor_batch"]
+        kind: torch.Tensor = actor.features["history_event_kind"]
+        mask: torch.Tensor = actor.history_mask
+    except (KeyError, AttributeError) as exc:
+        raise ContractError(f"packed batch needs assembled history planes: {exc}") from exc
+    batch_size = int(mask.shape[0])
+    if len(rows) != batch_size:
+        raise ContractError(
+            f"packed rows {len(rows)} != batch rows {batch_size} (order is determinism)"
+        )
+    if kind.shape != mask.shape:
+        raise ContractError(f"packed kind {tuple(kind.shape)} != mask {tuple(mask.shape)}")
+    pad_width = int(mask.shape[1])
+    # Vectorized lengths: one popcount kernel, one host transfer (CPU
+    # planes, so no device syncs) — never a per-row Python loop.
+    lengths_t: torch.Tensor = mask.sum(dim=1).to(torch.int32)
+    lengths: list[int] = lengths_t.tolist()
+    # Staged cross-check in one vector compare (exact mask popcount stamped
+    # at pull time): any disagreement fails closed naming the first bad
+    # row instead of silently shifting a window.
+    staged: list[int] = []
+    for pos, row in enumerate(rows):
+        stamp = row.get("_hist_len")
+        if isinstance(stamp, bool) or not isinstance(stamp, int):
+            raise ContractError(
+                f"packed row {pos} lacks staged _hist_len (grouping never masks errors)"
+            )
+        staged.append(int(stamp))
+    staged_t: torch.Tensor = torch.tensor(staged)
+    if bool((lengths_t != staged_t).any().item()):
+        bad = int((lengths_t != staged_t).nonzero()[0].item())
+        raise ContractError(
+            f"packed row {bad} staged length {staged[bad]} != mask popcount {lengths[bad]}"
+        )
+    # Prefix-contiguity in one op: a real block followed by pad tail has no
+    # 0->1 transition anywhere (empty and full rows pass trivially).
+    if pad_width > 1 and bool((mask[:, 1:] & ~mask[:, :-1]).any().item()):
+        raise ContractError("packed history mask not prefix-contiguous")
+    # Single boolean-select kernel in row-major order = pull order.
+    packed_kind: torch.Tensor = kind[mask]
+    bounds = [0]
+    for length in lengths:
+        bounds.append(bounds[-1] + length)
+    cu_seqlens = torch.tensor(bounds, dtype=torch.int32)
+    return PackedHistories(
+        packed_kind=packed_kind,
+        cu_seqlens=cu_seqlens,
+        row_lengths=tuple(lengths),
+        max_len=max(lengths) if len(lengths) > 0 else 0,
+    )
+
+
 def assemble_slim_batch(
     rows: list[dict[str, Any]],
     *,
     action_count: int = BASELINE_ACTION_COUNT,
+    pack_histories: bool = False,
 ) -> dict[str, Any]:
     """Assemble a loop-ready batch from slim Rust-plane rows (no encoder).
 
@@ -318,7 +392,9 @@ def assemble_slim_batch(
     ``{"actor_batch", "chosen_action_id", "legal_mask", "_decision_ids",
     "_action_kinds"}`` — the exact training/eval batch contract. Any row
     without ``_planes`` fails closed (a mixed-backend buffer would silently
-    mis-assemble).
+    mis-assemble). With ``pack_histories`` the batch additionally carries
+    the packed stream on ``actor_batch.packed`` (padded planes stay: the
+    model consumes packed instead of ``[B,T]`` when present).
     """
     if len(rows) == 0:
         raise ContractError("assemble_slim_batch requires at least one row")
@@ -363,6 +439,11 @@ def assemble_slim_batch(
     batch = assemble_training_batch(planes, action_count=action_count)
     batch["_decision_ids"] = [str(row["decision_id"]) for row in rows]
     batch["_action_kinds"] = [str(row["action_kind"]) for row in rows]
+    if pack_histories:
+        import dataclasses
+
+        packed = build_packed_batch(rows, batch)
+        batch["actor_batch"] = dataclasses.replace(batch["actor_batch"], packed=packed)
     return batch
 
 

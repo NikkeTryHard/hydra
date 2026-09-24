@@ -13,17 +13,19 @@ from hydra2.belief.world import make_full_world, world_actor_observation
 from hydra2.contracts.common import ContractError
 from hydra2.search.local_abstraction import (
     AbstractMappingError,
-    CycleDetectedError,
     LocalResolvingAbstraction,
     abstraction_round_trip,
     build_public_subgame,
-    detect_cycle,
     info_key_for_actor_observation,
     model_vector_for_world,
     terminal_vector_for_world,
     validate_abstraction_mapping,
 )
 from hydra2.search.local_act import LocalResolvingPlanner
+from hydra2.search.local_graph import (
+    CycleDetectedError,
+    detect_cycle,
+)
 from hydra2.search.local_spec import LocalResolvingConfig, make_candidate5_spec
 from hydra2.search.local_strategy import (
     StrategyTable,
