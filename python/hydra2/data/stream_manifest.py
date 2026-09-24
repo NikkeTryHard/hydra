@@ -44,11 +44,12 @@ def _contracts_const(name: str, fallback: object) -> Any:
 
 if TYPE_CHECKING:
     import random
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
 
 __all__ = [
     "DEFAULT_GROUPING_KEYS",
+    "HOLDOUT_SPEC",
     "PARTITION_ORDER",
     "RESERVOIR_BLOB_VERSION",
     "SCAN_CACHE_VERSION",
@@ -60,6 +61,7 @@ __all__ = [
     "manifest_digest",
     "parse_shuffle_rng",
     "read_reservoir_blob",
+    "resolve_root_id",
     "save_scan_cache",
     "scan_cache_path",
     "serialize_shuffle_rng",
@@ -142,20 +144,28 @@ SplitName = Literal["train", "validation", "test", "decision_eval", "block_eval"
 
 @dataclass(frozen=True, slots=True)
 class FileEntry:
-    """One corpus file: path + compressed bytes; counts populated by scan pass."""
+    """One corpus file: absolute IO path plus its digest identity.
+
+    ``path`` is the absolute filesystem path (IO/stat only, never hashed);
+    the digest identity is ``(root_id, relpath, bytes)`` so rerouting a root
+    to another mount keeps the digest stable while a changed root list (or a
+    renamed root id) fails closed exactly once via the digest mismatch.
+    """
 
     path: Path
     bytes: int
+    root_id: str = ""
+    relpath: str = ""
     game_count: int | None = None
     wall_hashes: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class StreamManifest:
-    """Deterministic file list; order is sha256-hex of the relative path."""
+    """Deterministic file list; order is sha256-hex of root-id + NUL + relpath."""
 
     files: tuple[FileEntry, ...]
-    root: Path
+    roots: tuple[tuple[str, str], ...] = ()
 
     def __len__(self) -> int:
         return len(self.files)
@@ -165,56 +175,103 @@ class StreamManifest:
         return tuple(entry.path for entry in self.files)
 
 
-def build_manifest(root: Path | str, pattern: str = "*.mjai.json.zst") -> StreamManifest:
-    """Collect files under ``root`` in sha256-hex relative-path order.
+#: Whole-root holdout spec bound into digests and scan-cache envelopes.
+#: Exclusion is the mechanism (quarantined/future directories never enter a
+#: train manifest); per-root 80/20 group-hash validation covers
+#: in-distribution eval. Empty `val_roots` today: era-holdouts are separate
+#: eval-only runs, never a training split.
+HOLDOUT_SPEC: dict[str, object] = {"mechanism": "per-root-stratified", "val_roots": []}
+
+
+def _normalize_roots(
+    roots: Sequence[tuple[str, Path | str]] | Path | str,
+) -> list[tuple[str, Path]]:
+    """Normalize the manifest source list to ``[(root-id, absolute dir)]``.
+
+    A bare path stays valid (single root keyed by its leaf-dir basename, so
+    probes and unit corpora need no pairs); otherwise every item must be an
+    ``(id, path)`` pair with a non-empty basename-style id (no `/`, no NUL —
+    ids join the order-key preimage) and an existing directory. Duplicate ids
+    fail closed: two roots sharing an id would order and split identically.
+    """
+    if isinstance(roots, (str, Path)):
+        pairs: list[tuple[str, Path | str]] = [(Path(roots).name, roots)]
+    else:
+        pairs = list(roots)
+    normalized: list[tuple[str, Path]] = []
+    seen: set[str] = set()
+    for item in pairs:
+        if not isinstance(item, (tuple, list)) or len(item) != 2:
+            raise ContractError(f"manifest roots must be (root-id, path) pairs, got {item!r}")
+        rid, raw_base = item
+        if not isinstance(rid, str) or rid == "" or "/" in rid or "\0" in rid:
+            raise ContractError(f"manifest root id must be a non-empty basename, got {rid!r}")
+        if rid in seen:
+            raise ContractError(f"manifest duplicate root id {rid!r}")
+        seen.add(rid)
+        base = raw_base if isinstance(raw_base, Path) else Path(str(raw_base))
+        if not base.is_dir():
+            raise ContractError(f"stream root not a directory: {base}")
+        normalized.append((rid, base))
+    return normalized
+
+
+def build_manifest(
+    roots: Sequence[tuple[str, Path | str]] | Path | str, pattern: str = "*.mjai.json.zst"
+) -> StreamManifest:
+    """Collect files across roots in sha256-hex ``root-id + NUL + relpath`` order.
 
     The hash orders (never splits): split assignment uses
     :func:`assign_split` exclusively. Order keys are minted in one
-    ``canon_rng.batch_sha256`` call over the relative-POSIX path bytes
+    ``canon_rng.batch_sha256`` call over the namespaced preimage bytes
     (``ImportError`` with a ``build-ext`` hint when the extension is not
-    built — NO oracle fallback); key bytes are identical to the retired
-    ``hashlib.sha256`` per-path loop, so the order is unchanged.
+    built — NO oracle fallback); duplicate relpaths under different roots
+    order and split independently, never colliding.
     """
-    base = Path(root)
-    if not base.is_dir():
-        raise ContractError(f"stream root not a directory: {base}")
-    found = [path for path in base.rglob(pattern) if path.is_file()]
+    normalized = _normalize_roots(roots)
+    found: list[tuple[str, Path, str]] = []
+    for rid, base in normalized:
+        for path in base.rglob(pattern):
+            if path.is_file():
+                found.append((rid, path, path.relative_to(base).as_posix()))
     canon_rng = _require_canon_rng()
     try:
         digests: list[str] = canon_rng.batch_sha256(
-            [path.relative_to(base).as_posix().encode() for path in found]
+            [(rid + "\0" + rel).encode() for rid, _, rel in found]
         )
         keys = [text.removeprefix("sha256:") for text in digests]
     except ValueError as exc:
-        raise ContractError(f"manifest ordering failed for {base}: {exc}") from exc
+        raise ContractError(f"manifest ordering failed: {exc}") from exc
     keyed = sorted(zip(keys, found, strict=True), key=lambda kv: kv[0])
-    entries = tuple(FileEntry(path=path, bytes=path.stat().st_size) for _, path in keyed)
-    return StreamManifest(files=entries, root=base)
+    entries = tuple(
+        FileEntry(path=path, bytes=path.stat().st_size, root_id=rid, relpath=rel)
+        for _, (rid, path, rel) in keyed
+    )
+    return StreamManifest(files=entries, roots=tuple((rid, str(base)) for rid, base in normalized))
 
 
 def manifest_digest(manifest: StreamManifest) -> str:
     """Bind the file list for RunSpec provenance.
 
     Thin bridge delegate: ``hydra2._native.columnar.stream_manifest_digest``
-    binds ``[(path, bytes)]`` verbatim in manifest order through the
-    feed-owned ``hydra_feed::manifest::manifest_digest`` (ASCII fast-path
+    binds ``[(root_id, relpath, bytes)]`` verbatim in manifest order through
+    the feed-owned ``hydra_feed::manifest::manifest_digest`` (ASCII fast-path
     with fail-closed canon cross-check — ``ImportError`` with a
     ``build-ext`` hint when the extension is not built, NO oracle
     fallback), so digests are byte-identical to
-    ``sha256(canonical_bytes([{bytes, path}, ...]))``. Any divergence
-    breaks scan-cache keys loudly (raise here, miss downstream),
-    never silently.
+    ``sha256(canonical_bytes([{bytes, path, root_id}, ...]))`` with
+    ``path`` = relpath. Any divergence breaks scan-cache keys loudly
+    (raise here, miss downstream), never silently. Absolute IO paths stay
+    outside the digest: rerouting a root to another mount keeps the digest
+    stable, while a changed root list fails the pin exactly once.
 
-    Stays on the assembled-bytes primitive (not
-    ``packet_decode.manifest_digest``): the bridge digest binds relative
-    POSIX paths and rejects absolute ones, while this digest binds the
-    stored ``entry.path.as_posix()`` strings verbatim — rerouting the
-    file list would change every absolute-root digest.
+    Stays off ``packet_decode.manifest_digest`` (sha-sort fork): order here
+    is the stored manifest order, never re-sorted.
     """
     columnar = _require_columnar()
     try:
         digest_text: str = columnar.stream_manifest_digest(
-            [(entry.path.as_posix(), entry.bytes) for entry in manifest.files]
+            [(entry.root_id, entry.relpath, entry.bytes) for entry in manifest.files]
         )
         return digest_text
     except (ValueError, OverflowError, TypeError) as exc:
@@ -289,8 +346,82 @@ def read_reservoir_blob(path: Path | str) -> list[bytes]:
     return list(raws)
 
 
+def resolve_root_id(roots: Sequence[tuple[str, str]], path: Path) -> str:
+    """Resolve the manifest root id owning an absolute corpus path.
+
+    The longest matching root prefix wins (roots are disjoint shelf
+    directories). No match fails closed — the corpus moved out from under
+    the manifest, and the digest pin would refuse it too. Callers on hot
+    paths read ``entry.root_id`` directly and never call this; resume
+    restore entries (path/offset only) and the serial scan's file-boundary
+    tracker are the only users.
+    """
+    text = path.as_posix()
+    best: str | None = None
+    best_len = -1
+    for rid, base in roots:
+        prefix = base if base.endswith("/") else base + "/"
+        if (text == base or text.startswith(prefix)) and len(prefix) > best_len:
+            best, best_len = rid, len(prefix)
+    if best is None:
+        raise ContractError(f"path outside every manifest root: {path}")
+    return best
+
+
 #: Scan-cache envelope version (bump on schema change; mismatch → miss).
-SCAN_CACHE_VERSION = 1
+#: v2 adds the `roots` + `holdout` + `root_games` keys; v1 envelopes miss,
+#: never coerce (a v1 cache predates namespaced digests, so its pin could
+#: never match a v2 digest anyway).
+SCAN_CACHE_VERSION = 2
+
+
+def _roots_match(cached: object, expected: Sequence[tuple[str, str]]) -> bool:
+    """Exact root-list comparison (order matters; fail-closed to miss).
+
+    JSON round-trips pairs as 2-lists; tuples coerce element-wise. A changed
+    root list changes the manifest digest already, so this is belt-and-braces
+    provenance (the envelope names its corpus even when the digest is read
+    out of band).
+    """
+    if not isinstance(cached, list):
+        return False
+    want = [[rid, base] for rid, base in expected]
+    if len(cached) != len(want):
+        return False
+    for have, need in zip(cached, want, strict=True):
+        if not isinstance(have, list) or have != need:
+            return False
+    return True
+
+
+def _holdout_match(cached: object, expected: Mapping[str, object]) -> bool:
+    """Exact holdout-spec comparison (fail-closed to miss)."""
+    if not isinstance(cached, dict):
+        return False
+    return dict(cached) == dict(expected)
+
+
+def _root_games_match(cached: object) -> list[list[object]] | None:
+    """Validate the cached per-root game tallies, else ``None`` (miss).
+
+    Shape is ``[[root-id, train-games, val-games], ...]`` with true ints;
+    bool excluded (bool is an int subclass). Counts re-derive from the scan
+    on a miss, never defaulted.
+    """
+    if not isinstance(cached, list):
+        return None
+    out: list[list[object]] = []
+    for row in cached:
+        if not isinstance(row, list) or len(row) != 3:
+            return None
+        rid, train_games, val_games = row
+        if not isinstance(rid, str) or rid == "":
+            return None
+        for value in (train_games, val_games):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                return None
+        out.append([rid, train_games, val_games])
+    return out
 
 
 def scan_cache_path(run_dir: Path | str) -> Path:
@@ -329,6 +460,8 @@ def load_scan_cache(
     ratios: Mapping[str, float],
     train_split: str,
     val_split: str,
+    roots: Sequence[tuple[str, str]],
+    holdout: Mapping[str, object],
 ) -> dict[str, object] | None:
     """Load a cached scan report on exact key match, else ``None`` (miss).
     Corrupt/stale entries fail closed to miss (full scan), never raise.
@@ -354,6 +487,10 @@ def load_scan_cache(
         if raw.get("train_split") != train_split or raw.get("val_split") != val_split:
             return None
         if not _ratios_match(raw.get("ratios"), ratios):
+            return None
+        if not _roots_match(raw.get("roots"), roots):
+            return None
+        if not _holdout_match(raw.get("holdout"), holdout):
             return None
         scan = raw.get("scan")
         if not isinstance(scan, dict):
@@ -386,9 +523,13 @@ def load_scan_cache(
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 return None
             counts[key] = value
+        root_games = _root_games_match(scan.get("root_games"))
+        if root_games is None:
+            return None
         return {
             "train_walls": sorted(train_walls),
             "val_walls": sorted(val_walls),
+            "root_games": root_games,
             **counts,
         }
     except (TypeError, ValueError, AttributeError):
@@ -403,6 +544,8 @@ def save_scan_cache(
     ratios: Mapping[str, float],
     train_split: str,
     val_split: str,
+    roots: Sequence[tuple[str, str]],
+    holdout: Mapping[str, object],
     scan: Mapping[str, object],
 ) -> None:
     """Best-effort atomic cache write (never fails training on I/O error).
@@ -421,11 +564,14 @@ def save_scan_cache(
             "ratios": dict(ratios),
             "train_split": train_split,
             "val_split": val_split,
+            "roots": [[rid, base] for rid, base in roots],
+            "holdout": dict(holdout),
             "scan": {
                 # reason: type arg-type on scan payload object; sorted/int
                 # re-validated by isinstance guards on load, fail-closed miss.
                 "train_walls": sorted(scan["train_walls"]),  # type: ignore[arg-type]
                 "val_walls": sorted(scan["val_walls"]),  # type: ignore[arg-type]
+                "root_games": [list(row) for row in scan["root_games"]],  # type: ignore[arg-type]
                 "train_games": int(scan["train_games"]),  # type: ignore[arg-type]
                 "val_games": int(scan["val_games"]),  # type: ignore[arg-type]
                 "train_sim_games": int(scan["train_sim_games"]),  # type: ignore[arg-type]

@@ -18,6 +18,7 @@ from hydra2.data.stream_manifest import (
     PARTITION_ORDER,
     parse_shuffle_rng,
     read_reservoir_blob,
+    resolve_root_id,
     serialize_shuffle_rng,
 )
 from hydra2.data.stream_read import (
@@ -32,7 +33,7 @@ from hydra2.data.stream_read import (
     assign_split,
     compute_wall_hash,
     fetch_game_at,
-    group_key_for_path,
+    group_key_for_entry,
     stem_of,
 )
 from hydra2.data.validate import validate_game
@@ -45,6 +46,16 @@ if TYPE_CHECKING:
 __all__ = [
     "GameStream",
 ]
+
+
+def _root_id_for_path(manifest: StreamManifest, fpath: Path) -> str:
+    """Resolve the manifest root id owning an absolute corpus path.
+
+    Thin alias over :func:`resolve_root_id` (one definition, in the
+    manifest owner): resume restore entries carry path/offset only, so the
+    split check re-derives the namespaced group from the live manifest.
+    """
+    return resolve_root_id(manifest.roots, fpath)
 
 
 class GameStream:
@@ -247,7 +258,9 @@ class GameStream:
         else:
             wall_hash = compute_wall_hash(game)
             assigned = assign_split(
-                group_key=group_key_for_path(entry.path), seed=self._seed, ratios=self._ratios
+                group_key=group_key_for_entry(root_id=entry.root_id, path=entry.path),
+                seed=self._seed,
+                ratios=self._ratios,
             )
         if self._split is not None and assigned != self._split:
             if stats is not None:
@@ -360,7 +373,11 @@ class GameStream:
                 raise ContractError(f"snapshot game key mismatch at {fpath}:{game_offset}")
             wall_hash = compute_wall_hash(game)
             assigned = assign_split(
-                group_key=group_key_for_path(fpath), seed=self._seed, ratios=self._ratios
+                group_key=group_key_for_entry(
+                    root_id=_root_id_for_path(self._manifest, fpath), path=fpath
+                ),
+                seed=self._seed,
+                ratios=self._ratios,
             )
             if self._split is not None and assigned != self._split:
                 raise ContractError("restored shuffle game split mismatch")
@@ -395,7 +412,12 @@ class GameStream:
                 # validated at construction, int() raises on misuse.
                 game_offset = int(entry["offset"])  # type: ignore[arg-type]
                 fetched = fetch_game_at(
-                    fpath, game_offset, seed=self._seed, ratios=self._ratios, expected_sha=key
+                    fpath,
+                    game_offset,
+                    seed=self._seed,
+                    ratios=self._ratios,
+                    expected_sha=key,
+                    root_id=_root_id_for_path(self._manifest, fpath),
                 )
                 if self._split is not None and fetched.split != self._split:
                     raise ContractError("restored shuffle game split mismatch")

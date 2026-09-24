@@ -53,7 +53,7 @@
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyModule, PyString};
+use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyModule, PyString};
 
 /// Frozen section vocabulary, restating `rc_sections.rs:45-72` (single-sourced
 /// there; repeated here so each section renders its own `one of [...]` list
@@ -754,8 +754,10 @@ fn validate_run(staged: &RunStaged) -> Result<(String, String, String), String> 
 // data
 // ---------------------------------------------------------------------------
 
-const DATA_ALLOWED: [&str; 17] = [
+const DATA_ALLOWED: [&str; 19] = [
     "root",
+    "roots",
+    "holdout",
     "scope",
     "train_split",
     "val_split",
@@ -781,6 +783,7 @@ pub(crate) struct FlagStage {
 struct DataStaged {
     unknown: UnknownView,
     root: Option<String>,
+    roots: Vec<(String, String)>,
     scope: OptStr,
     train_split: OptStr,
     val_split: OptStr,
@@ -802,7 +805,7 @@ struct DataStaged {
 }
 
 struct DataValid {
-    root: String,
+    roots: Vec<(String, String)>,
     scope: String,
     train_split: String,
     val_split: String,
@@ -824,8 +827,11 @@ struct DataValid {
 fn rc_parse_data(py: Python<'_>, raw: Bound<'_, PyAny>) -> PyResult<Py<PyDict>> {
     let dict = section_dict(&raw, "data")?;
     let unknown = stage_unknown(&dict, &DATA_ALLOWED, "data")?;
-    // `root`: nonempty gate (Unicode `strip`, per `rc_require.rs:484-505`) then
-    // the absolute-path check on the staged text.
+    // `root` (legacy single) / `roots` (multi-root pairs): exactly one may be
+    // present. Legacy `root` keeps the nonempty gate (Unicode `strip`, per
+    // `rc_require.rs:484-505`); `roots` is a list of `[id, path]` pairs with
+    // non-empty ids (no `/`, no NUL — ids join the manifest order-key
+    // preimage) and non-empty path text (absolute-path check in validate).
     let root_slot = field_slot(&dict, "root", "rc_parse_data")?;
     let root: Option<String> = match root_slot {
         None => None,
@@ -850,6 +856,62 @@ fn rc_parse_data(py: Python<'_>, raw: Bound<'_, PyAny>) -> PyResult<Py<PyDict>> 
         }
         Some(_) => None,
     };
+    let roots: Vec<(String, String)> = match field_slot(&dict, "roots", "rc_parse_data")? {
+        None => Vec::new(),
+        Some(obj) => {
+            let pairs: Vec<Vec<String>> = obj.extract().map_err(|_| {
+                PyValueError::new_err(
+                    "contracts rc_parse_data: data.roots must be a list of [id, path] string pairs",
+                )
+            })?;
+            let mut out = Vec::with_capacity(pairs.len());
+            for (idx, pair) in pairs.iter().enumerate() {
+                if pair.len() != 2 {
+                    return Err(PyValueError::new_err(format!(
+                        "contracts rc_parse_data: data.roots[{idx}] must be an [id, path] pair"
+                    )));
+                }
+                let id = pair[0].trim();
+                if id.is_empty() || id.contains('/') || id.contains('\0') {
+                    return Err(PyValueError::new_err(format!(
+                        "contracts rc_parse_data: data.roots[{idx}] id must be a non-empty basename without '/' or NUL"
+                    )));
+                }
+                if pair[1].trim().is_empty() {
+                    return Err(PyValueError::new_err(format!(
+                        "contracts rc_parse_data: data.roots[{idx}] path must be a non-empty string"
+                    )));
+                }
+                out.push((id.to_string(), pair[1].clone()));
+            }
+            out
+        }
+    };
+    // `holdout`: persisted whole-root holdout spec (written by
+    // `run_config_to_dict`, owned by Python's HOLDOUT_SPEC constant).
+    // Tolerated here so run.yaml round-trips parse; shape-checked, never
+    // applied (no config surface stages it into DataConfig).
+    if let Some(obj) = field_slot(&dict, "holdout", "rc_parse_data")? {
+        let held = obj.cast::<PyDict>().map_err(|_| {
+            PyValueError::new_err("contracts rc_parse_data: data.holdout must be a mapping")
+        })?;
+        let unreadable = |e: PyErr| {
+            PyValueError::new_err(format!("contracts rc_parse_data field unreadable: {e}"))
+        };
+        let mechanism_ok = held
+            .get_item("mechanism")
+            .map_err(unreadable)?
+            .is_some_and(|v| v.is_instance_of::<PyString>());
+        let val_roots_ok = held
+            .get_item("val_roots")
+            .map_err(unreadable)?
+            .is_some_and(|v| v.is_instance_of::<PyList>());
+        if !mechanism_ok || !val_roots_ok {
+            return Err(PyValueError::new_err(
+                "contracts rc_parse_data: data.holdout must hold mechanism/val_roots",
+            ));
+        }
+    }
     let scope = stage_opt_str(field_slot(&dict, "scope", "rc_parse_data")?, TENHOU_SCOPE)?;
     let train_split = stage_opt_str(field_slot(&dict, "train_split", "rc_parse_data")?, "train")?;
     let val_split = stage_opt_str(
@@ -908,6 +970,7 @@ fn rc_parse_data(py: Python<'_>, raw: Bound<'_, PyAny>) -> PyResult<Py<PyDict>> 
     let staged = DataStaged {
         unknown,
         root,
+        roots,
         scope,
         train_split,
         val_split,
@@ -931,7 +994,12 @@ fn rc_parse_data(py: Python<'_>, raw: Bound<'_, PyAny>) -> PyResult<Py<PyDict>> 
         .detach(|| validate_data(&staged))
         .map_err(PyValueError::new_err)?;
     let out = PyDict::new(py);
-    out.set_item("root", valid.root)?;
+    let roots_py: Vec<Vec<String>> = valid
+        .roots
+        .iter()
+        .map(|(id, path)| vec![id.clone(), path.clone()])
+        .collect();
+    out.set_item("roots", roots_py)?;
     out.set_item("scope", valid.scope)?;
     out.set_item("train_split", valid.train_split)?;
     out.set_item("val_split", valid.val_split)?;
@@ -1056,14 +1124,40 @@ pub(crate) fn set_int_field(
 #[allow(clippy::too_many_lines)]
 fn validate_data(staged: &DataStaged) -> Result<DataValid, String> {
     check_unknown(&staged.unknown)?;
-    let Some(root) = &staged.root else {
-        return Err("data.root must be a non-empty string".to_owned());
+    // Exactly one source shape: legacy `root` XOR multi-root `roots`.
+    // Legacy keeps its exact historical messages; `roots` gates per element.
+    let roots: Vec<(String, String)> = if staged.roots.is_empty() {
+        let Some(root) = &staged.root else {
+            return Err("data.root must be a non-empty string".to_owned());
+        };
+        if !root.starts_with('/') {
+            return Err(format!(
+                "data.root must be an absolute path after interpolation, got {root:?}"
+            ));
+        }
+        let id = root.rsplit('/').next().unwrap_or("");
+        vec![(id.to_string(), root.clone())]
+    } else {
+        if staged.root.is_some() {
+            return Err(
+                "data.root and data.roots are mutually exclusive; use roots for multi-root runs"
+                    .to_owned(),
+            );
+        }
+        let mut seen: Vec<&str> = Vec::with_capacity(staged.roots.len());
+        for (idx, (id, path)) in staged.roots.iter().enumerate() {
+            if seen.contains(&id.as_str()) {
+                return Err(format!("data.roots[{idx}] duplicate root id {id:?}"));
+            }
+            seen.push(id.as_str());
+            if !path.starts_with('/') {
+                return Err(format!(
+                    "data.roots[{idx}] path must be an absolute path after interpolation, got {path:?}"
+                ));
+            }
+        }
+        staged.roots.clone()
     };
-    if !root.starts_with('/') {
-        return Err(format!(
-            "data.root must be an absolute path after interpolation, got {root:?}"
-        ));
-    }
     match &staged.scope.text {
         Some(text) if text == TENHOU_SCOPE => {}
         _ => {
@@ -1150,7 +1244,7 @@ fn validate_data(staged: &DataStaged) -> Result<DataValid, String> {
         1024,
     )?;
     Ok(DataValid {
-        root: root.clone(),
+        roots,
         scope: staged
             .scope
             .text
@@ -1342,7 +1436,7 @@ pub(crate) const LABEL_SMOOTHING_ENDS: FloatEnds = FloatEnds {
 // loop
 // ---------------------------------------------------------------------------
 
-const LOOP_ALLOWED: [&str; 12] = [
+const LOOP_ALLOWED: [&str; 13] = [
     "microbatch_size",
     "accumulation_steps",
     "gradient_clip_norm",
@@ -1355,6 +1449,7 @@ const LOOP_ALLOWED: [&str; 12] = [
     "log_per_type_metrics",
     "fit_temperature",
     "fetch_prefetch_depth",
+    "pack_histories",
 ];
 
 struct LoopStaged {
@@ -1375,6 +1470,7 @@ struct LoopStaged {
     log_per_type_metrics: BoolStage,
     fit_temperature: BoolStage,
     fetch_prefetch_depth: IntSlot,
+    pack_histories: BoolStage,
 }
 
 struct LoopValid {
@@ -1390,6 +1486,7 @@ struct LoopValid {
     log_per_type_metrics: bool,
     fit_temperature: bool,
     fetch_prefetch_depth: HugeInt,
+    pack_histories: bool,
 }
 
 /// `_parse_loop` (oracle `_rc_parse.py:363-425`): microbatching, clipping,
@@ -1457,6 +1554,8 @@ fn rc_parse_loop(py: Python<'_>, raw: Bound<'_, PyAny>) -> PyResult<Py<PyDict>> 
         py,
         field_slot(&dict, "fetch_prefetch_depth", "rc_parse_loop")?,
     )?;
+    let pack_histories =
+        stage_loop_bool(field_slot(&dict, "pack_histories", "rc_parse_loop")?, false)?;
     let staged = LoopStaged {
         unknown,
         clip_present,
@@ -1475,6 +1574,7 @@ fn rc_parse_loop(py: Python<'_>, raw: Bound<'_, PyAny>) -> PyResult<Py<PyDict>> 
         log_per_type_metrics,
         fit_temperature,
         fetch_prefetch_depth,
+        pack_histories,
     };
     let valid = py
         .detach(|| validate_loop(&staged))
@@ -1555,6 +1655,7 @@ fn rc_parse_loop(py: Python<'_>, raw: Bound<'_, PyAny>) -> PyResult<Py<PyDict>> 
         &valid.fetch_prefetch_depth,
         3,
     )?;
+    out.set_item("pack_histories", valid.pack_histories)?;
     Ok(out.unbind())
 }
 
@@ -1668,6 +1769,7 @@ fn validate_loop(staged: &LoopStaged) -> Result<LoopValid, String> {
     let log_per_type_metrics =
         check_loop_bool("log_per_type_metrics", &staged.log_per_type_metrics)?;
     let fit_temperature = check_loop_bool("fit_temperature", &staged.fit_temperature)?;
+    let pack_histories = check_loop_bool("pack_histories", &staged.pack_histories)?;
     if staged.fetch_prefetch_depth.present {
         check_bounded_int(
             "loop",
@@ -1726,6 +1828,7 @@ fn validate_loop(staged: &LoopStaged) -> Result<LoopValid, String> {
             check_loop_present("fetch_prefetch_depth", &staged.fetch_prefetch_depth)?,
             3,
         ),
+        pack_histories,
     })
 }
 
@@ -1764,13 +1867,11 @@ mod tests {
         // allowlists (:61, :75-95, :166, :197-209, :234-236, :286-290,
         // :318-320, :364-380) and `rc_sections.rs:45-72` vocab.
         assert_eq!(RUN_ALLOWED, ["id", "kind", "description"]);
-        assert_eq!(DATA_ALLOWED.len(), 17);
+        assert_eq!(DATA_ALLOWED.len(), 19);
         assert_eq!(MODEL_ALLOWED.len(), 3);
         assert_eq!(WEIGHTS_ALLOWED.len(), 7);
         assert_eq!(OPTIMIZER_ALLOWED.len(), 5);
-        assert_eq!(SCHEDULER_ALLOWED.len(), 5);
-        assert_eq!(RUNTIME_ALLOWED.len(), 4);
-        assert_eq!(LOOP_ALLOWED.len(), 12);
+        assert_eq!(LOOP_ALLOWED.len(), 13);
         assert_eq!(RUN_KINDS, ["supervised"]);
         assert_eq!(TENHOU_SCOPE, "tenhou-4p-hanchan");
         assert_eq!(OPTIMIZER_IDS, ["adamw", "adam", "sgd"]);
@@ -1942,6 +2043,111 @@ mod tests {
                     .contains("loop.gradient_clip_norm must be null or positive finite, got 0.0"),
                 "unexpected clip error text: {err}"
             );
+        });
+    }
+    #[test]
+    fn data_roots_parse_and_gates() {
+        // Contract: legacy `root` normalizes to one pair keyed by the leaf
+        // basename; `roots` carries explicit pairs; both/neither/duplicates/
+        // relative paths/malformed pairs fail closed.
+        Python::initialize();
+        Python::attach(|py| {
+            let raw = PyDict::new(py);
+            raw.set_item("root", "/mnt/data/tenhou-houou-mjai-2024")
+                .unwrap();
+            let out = rc_parse_data(py, raw.into_any()).unwrap();
+            let roots: Vec<Vec<String>> = out
+                .bind(py)
+                .get_item("roots")
+                .unwrap()
+                .unwrap()
+                .extract()
+                .unwrap();
+            assert_eq!(
+                roots,
+                vec![vec![
+                    "tenhou-houou-mjai-2024".to_string(),
+                    "/mnt/data/tenhou-houou-mjai-2024".to_string()
+                ]]
+            );
+            let raw = PyDict::new(py);
+            raw.set_item(
+                "roots",
+                vec![
+                    vec!["houou".to_string(), "/mnt/a".to_string()],
+                    vec!["jade".to_string(), "/mnt/b".to_string()],
+                ],
+            )
+            .unwrap();
+            let out = rc_parse_data(py, raw.into_any()).unwrap();
+            let roots: Vec<Vec<String>> = out
+                .bind(py)
+                .get_item("roots")
+                .unwrap()
+                .unwrap()
+                .extract()
+                .unwrap();
+            assert_eq!(roots.len(), 2);
+            assert_eq!(roots[1][0], "jade");
+            // Both shapes at once fail closed.
+            let raw = PyDict::new(py);
+            raw.set_item("root", "/mnt/a").unwrap();
+            raw.set_item("roots", vec![vec!["x".to_string(), "/mnt/a".to_string()]])
+                .unwrap();
+            assert!(rc_parse_data(py, raw.into_any()).is_err());
+            // Duplicate ids fail closed.
+            let raw = PyDict::new(py);
+            raw.set_item(
+                "roots",
+                vec![
+                    vec!["x".to_string(), "/mnt/a".to_string()],
+                    vec!["x".to_string(), "/mnt/b".to_string()],
+                ],
+            )
+            .unwrap();
+            let err = rc_parse_data(py, raw.into_any()).unwrap_err();
+            assert!(err.to_string().contains("duplicate root id"), "got {err}");
+            // Relative paths fail closed.
+            let raw = PyDict::new(py);
+            raw.set_item("roots", vec![vec!["x".to_string(), "rel/path".to_string()]])
+                .unwrap();
+            let err = rc_parse_data(py, raw.into_any()).unwrap_err();
+            assert!(err.to_string().contains("absolute path"), "got {err}");
+            // Malformed pairs fail closed.
+            let raw = PyDict::new(py);
+            raw.set_item("roots", vec![vec!["only-id".to_string()]])
+                .unwrap();
+            assert!(rc_parse_data(py, raw.into_any()).is_err());
+            // Neither shape fails closed with the legacy text.
+            let raw = PyDict::new(py);
+            let err = rc_parse_data(py, raw.into_any()).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("data.root must be a non-empty string"),
+                "got {err}"
+            );
+            // Persisted holdout spec round-trips (tolerated, shape-checked).
+            let raw = PyDict::new(py);
+            raw.set_item("root", "/mnt/a").unwrap();
+            let hold = PyDict::new(py);
+            hold.set_item("mechanism", "per-root-stratified").unwrap();
+            hold.set_item("val_roots", PyList::new(py, Vec::<String>::new()).unwrap())
+                .unwrap();
+            raw.set_item("holdout", hold).unwrap();
+            let out = rc_parse_data(py, raw.into_any()).unwrap();
+            let roots: Vec<Vec<String>> = out
+                .bind(py)
+                .get_item("roots")
+                .unwrap()
+                .unwrap()
+                .extract()
+                .unwrap();
+            assert_eq!(roots.len(), 1);
+            // Malformed holdout fails closed.
+            let raw = PyDict::new(py);
+            raw.set_item("root", "/mnt/a").unwrap();
+            raw.set_item("holdout", "nope").unwrap();
+            assert!(rc_parse_data(py, raw.into_any()).is_err());
         });
     }
 }

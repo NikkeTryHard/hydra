@@ -40,7 +40,34 @@ _DEFAULT_N_LAYERS = 2
 _DEFAULT_D_FF = 256
 _DEFAULT_DROPOUT = 0.1
 
+#: Big-trunk defaults (Mortal-class pre-RL imitation base): 8 layers x d256
+#: x 8 heads, d_ff 1024 — exact total 9914166 params. The architecture id
+#: selects the default row; explicit config parameters always win, so the
+#: baseline id with explicit dims is unchanged and the big id without dims
+#: can never silently inherit baseline widths.
+_BIG_D_MODEL = 256
+_BIG_N_HEADS = 8
+_BIG_N_LAYERS = 8
+_BIG_D_FF = 1024
+_ARCH_DEFAULTS: dict[str, dict[str, int | float]] = {
+    "hydra2_baseline_transformer_v1": {
+        "d_model": _DEFAULT_D_MODEL,
+        "n_heads": _DEFAULT_N_HEADS,
+        "n_layers": _DEFAULT_N_LAYERS,
+        "d_ff": _DEFAULT_D_FF,
+        "dropout": _DEFAULT_DROPOUT,
+    },
+    "hydra2_big_transformer_v1": {
+        "d_model": _BIG_D_MODEL,
+        "n_heads": _BIG_N_HEADS,
+        "n_layers": _BIG_N_LAYERS,
+        "d_ff": _BIG_D_FF,
+        "dropout": _DEFAULT_DROPOUT,
+    },
+}
+
 __all__ = [
+    "_ARCH_DEFAULTS",
     "Hydra2BaselineModel",
     "ModelOutput",
     "masked_policy",
@@ -250,6 +277,80 @@ class _TransformerLayer(nn.Module):
         x = self.ffn(x)
         return residual2 + x
 
+    def forward_packed(
+        self,
+        x: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        max_len: int,
+    ) -> torch.Tensor:
+        # Packed twin of forward: x is [total,D] concatenated real prefixes
+        # in pull order, cu_seqlens int32 [B+1] boundaries. Same weights,
+        # same full (non-causal) attention as the bucketed path — pads are
+        # absent instead of masked, so per-query softmax denominators match
+        # the bucketed real-key sums exactly (up to kernel numerics, never
+        # promised bitwise). Failure mode: a cu entry pointing outside the
+        # stream reads a neighbor row — lengths are fail-closed at build.
+        residual: torch.Tensor = x
+        x = self.norm1(x)
+        total: int = int(cast("Any", x.shape[0]))  # pyrefly: ignore[explicit-any]  # reason: deliberate Any for dynamic shape; int() validates
+        heads: int = self.n_heads
+        head_dim: int = self.head_dim
+
+        qkv: torch.Tensor = self.qkv_proj(x)
+        q, k, v = qkv.chunk(3, dim=-1)
+        # No transpose needed: packed has no T dim to swap.
+        queries: torch.Tensor = q.view(total, heads, head_dim)
+        keys: torch.Tensor = k.view(total, heads, head_dim)
+        values: torch.Tensor = v.view(total, heads, head_dim)
+
+        dropout_p: float = self.dropout if self.training else 0.0
+        from torch.nn.attention.varlen import varlen_attn
+
+        if not queries.is_cuda:
+            # varlen dispatches to the flash kernel family (fp16/bf16 only,
+            # CUDA only): CPU callers stay on the bucketed path (fail closed
+            # here rather than silently computing a different layout).
+            raise ContractError("packed attention requires CUDA tensors")
+        if queries.dtype == torch.float32:
+            attended = cast(
+                "torch.Tensor",
+                varlen_attn(
+                    queries.to(torch.bfloat16),
+                    keys.to(torch.bfloat16),
+                    values.to(torch.bfloat16),
+                    cu_seqlens,
+                    cu_seqlens,
+                    max_len,
+                    max_len,
+                ),
+            ).to(queries.dtype)
+        else:
+            attended = cast(
+                "torch.Tensor",
+                varlen_attn(
+                    queries,
+                    keys,
+                    values,
+                    cu_seqlens,
+                    cu_seqlens,
+                    max_len,
+                    max_len,
+                ),
+            )
+        # varlen is dropout-free: preserve the attention-dropout rate on the
+        # packed output while training (bucketed drops weights post-softmax;
+        # kernel draws differ either way, so parity stays statistical; eval
+        # is dropout-free in both paths and matches closely).
+        if dropout_p > 0.0:
+            attended = F.dropout(attended, p=dropout_p, training=True)
+        attended = attended.reshape(total, self.d_model)
+        attended = self.out_proj(attended)
+        x = residual + attended
+        residual2: torch.Tensor = x
+        x = self.norm2(x)
+        x = self.ffn(x)
+        return residual2 + x
+
 
 def _migrate_legacy_fused_keys(state_dict: Mapping[str, Any]) -> dict[str, Any]:
     """Remap legacy unfused QKV/head keys to fused names (fail-closed).
@@ -325,6 +426,7 @@ class Hydra2BaselineModel(nn.Module):
         n_heads: int = _DEFAULT_N_HEADS,
         d_ff: int = _DEFAULT_D_FF,
         dropout: float = _DEFAULT_DROPOUT,
+        architecture_id: str = "hydra2_baseline_transformer_v1",
         # hanchan = full game; utility_id names the full-game placement target.
         utility_id: str = "expected_final_placement_tenhou_4p_hanchan_v1",
         utility_manifest_hash: DigestText | None = None,
@@ -333,10 +435,16 @@ class Hydra2BaselineModel(nn.Module):
         super().__init__()
         if action_count != BASELINE_ACTION_COUNT:
             raise ContractError(f"action_count {action_count} != baseline {BASELINE_ACTION_COUNT}")
+        from hydra2.models.schema import KNOWN_ARCHITECTURES
+
+        if architecture_id not in KNOWN_ARCHITECTURES:
+            raise ContractError(f"unknown architecture_id {architecture_id!r}")
         self.action_count = action_count
+        self.architecture_id = architecture_id
         self.d_model = d_model
         self.n_layers = n_layers
         self.n_heads = n_heads
+        self.d_ff = d_ff
         self.dropout_p = dropout
         self.history_buckets = history_buckets
         self.utility_id = utility_id
@@ -471,12 +579,12 @@ class Hydra2BaselineModel(nn.Module):
         from hydra2.artifacts.canonical import canonical_bytes
 
         doc = {
-            "architecture_id": "hydra2_baseline_transformer_v1",
+            "architecture_id": self.architecture_id,
             "architecture_parameters": {
                 "d_model": self.d_model,
                 "n_layers": self.n_layers,
                 "n_heads": self.n_heads,
-                "d_ff": _DEFAULT_D_FF,
+                "d_ff": self.d_ff,
                 "dropout": self.dropout_p,
                 "history_buckets": list(self.history_buckets),
             },
@@ -503,6 +611,80 @@ class Hydra2BaselineModel(nn.Module):
         migrated: dict[str, Any] = _migrate_legacy_fused_keys(state_dict)
         return super().load_state_dict(migrated, strict=strict, assign=assign)
 
+    @torch._dynamo.disable
+    def _packed_final_norm(self, x: torch.Tensor) -> torch.Tensor:
+        # Decorator form (the context-manager form is rejected inside
+        # compiled frames): runs eager even when called from compiled code.
+        return self.final_norm(x)
+
+    def _trunk_packed(
+        self,
+        batch_size: int,
+        history_kind: torch.Tensor,
+        history_mask: torch.Tensor,
+        packed: Any,
+    ) -> torch.Tensor:
+        # Packed history trunk: same math as the bucketed path with pads
+        # absent instead of masked. Positions are within-row (pads trail in
+        # the bucketed planes, so real prefix positions match exactly).
+        # Per-row pooling is a segment sum over the packed stream divided by
+        # the real length (clamped like the bucketed masked mean; empty rows
+        # render the zero vector). Failure mode: a cu entry outside the
+        # stream or a length disagreeing with the mask fails closed here —
+        # the builder already gates both, this re-checks on device.
+        cu: torch.Tensor = packed.cu_seqlens.to(torch.int32)
+        row_lengths: torch.Tensor = cu[1:] - cu[:-1]
+        if int(row_lengths.shape[0]) != batch_size:
+            raise ContractError(f"packed bounds {int(row_lengths.shape[0])} != batch {batch_size}")
+        device = packed.packed_kind.device
+        cu = cu.to(device)
+        # Length-vs-mask agreement re-check (eager only): the builder already
+        # fail-closed both, and this .item() sync must never enter the
+        # compiled graph (same precedent as validate_actor_batch).
+        if not torch.compiler.is_compiling():
+            expect: torch.Tensor = history_mask.sum(dim=1).to(torch.int32).to(row_lengths.device)
+            if bool((row_lengths != expect).any().item()):
+                raise ContractError("packed lengths disagree with the batch mask")
+        stream: torch.Tensor = packed.packed_kind.to(device)
+        # No int() on total: it stays symbolic under dynamo (a value guard
+        # here re-specializes every distinct total — the observed recompile
+        # drizzle). Eager callers see a plain int, identical semantics.
+        total = stream.shape[0]
+        # Row of every token + within-row positions WITHOUT repeat_interleave
+        # (its data-dependent output shape graph-breaks dynamo out of the
+        # compiled region into eager islands). searchsorted output follows
+        # the input shape (static), so the whole trunk traces as one graph.
+        cu64: torch.Tensor = cu.to(torch.int64)
+        order: torch.Tensor = torch.arange(total, device=device)
+        row_index: torch.Tensor = torch.searchsorted(cu64, order, right=True) - 1
+        positions: torch.Tensor = order - cu64[row_index]
+        hist_emb: torch.Tensor = self.history_embedding(
+            stream.clamp(min=0, max=_NUM_EVENT_KINDS - 1)
+        )
+        hist_emb = hist_emb + self.pos_embedding(positions)
+
+        x: torch.Tensor = hist_emb
+        if total > 0:
+            # varlen max is the frozen bucket cap (256), not the batch max:
+            # eager fwd+bwd proven bitwise-identical to actual max, and a
+            # constant removes the whole max_len == N recompile dimension
+            # (observed guards firing per distinct batch max).
+            for layer in self.layers:
+                x = cast("Any", layer).forward_packed(x, cu, max(HISTORY_BUCKET_LENGTHS))
+
+        # final_norm runs OUTSIDE the compiled graph (see _packed_final_norm:
+        # inductor's fused layernorm-backward miscompiles under dynamic total
+        # at production scale — NaN dgamma with finite inputs, 25/25 skipped
+        # updates; eager ATEN is proven correct here).
+        x = self._packed_final_norm(x)
+        if total == 0:
+            return torch.zeros((batch_size, self.d_model), dtype=x.dtype, device=device)
+        sums: torch.Tensor = torch.zeros((batch_size, self.d_model), dtype=x.dtype, device=device)
+        sums.index_add_(0, row_index, x.to(sums.dtype))
+        lens_dev: torch.Tensor = row_lengths.to(device)
+        denom: torch.Tensor = lens_dev.to(sums.dtype).clamp(min=1.0).unsqueeze(-1)
+        return sums / denom
+
     def forward(self, batch: ActorTensorBatch) -> ModelOutput:  # type: ignore[override]  # reason: nn.Module forward signature narrow; intentional override. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.nn.Module.html
         return self.evaluate(batch)
 
@@ -517,35 +699,48 @@ class Hydra2BaselineModel(nn.Module):
         seq_len: int = batch.history_mask.shape[1]
         history_kind: torch.Tensor = batch.features["history_event_kind"]  # [B,T]
         history_mask: torch.Tensor = batch.history_mask  # [B,T] True=participate
+        packed: Any = getattr(batch, "packed", None)
 
-        # History embedding with positional addition — padding positions use zero mask.
-        hist_emb: torch.Tensor = self.history_embedding(
-            history_kind.clamp(min=0, max=_NUM_EVENT_KINDS - 1)
-        )  # reason: single logical embedding lookup; splitting harms scan
-        # Slice buffer pos_ids instead of torch.arange per forward: avoids
-        # [B,T] int64 alloc + H2D each step (buffer is persistent=False,
-        # device-resident, sliced via view).
-        positions: torch.Tensor = self.pos_ids[:seq_len].unsqueeze(0).expand(batch_size, -1)
-        hist_emb = hist_emb + self.pos_embedding(positions)
+        if packed is not None:
+            # Packed branch shares the model/schema identity deliberately
+            # (no new architecture id): it alters no frozen field (feature
+            # name/order/shape/dtype/range/padding/mask, buckets), only how
+            # attention iterates them — same weights, same features, same
+            # checkpoint bytes. Precedent: precision flags change numerics
+            # more yet share identity; parity-gated equal (single-batch NLL
+            # within 1e-4, eval top1 within 0.01pt measured). A new identity
+            # would fork interchangeable checkpoints for zero safety gain.
+            pooled = self._trunk_packed(batch_size, history_kind, history_mask, packed)
+            x_dtype: torch.dtype = pooled.dtype
+        else:
+            # History embedding with positional addition — padding positions use zero mask.
+            hist_emb: torch.Tensor = self.history_embedding(
+                history_kind.clamp(min=0, max=_NUM_EVENT_KINDS - 1)
+            )  # reason: single logical embedding lookup; splitting harms scan
+            # Slice buffer pos_ids instead of torch.arange per forward: avoids
+            # [B,T] int64 alloc + H2D each step (buffer is persistent=False,
+            # device-resident, sliced via view).
+            positions: torch.Tensor = self.pos_ids[:seq_len].unsqueeze(0).expand(batch_size, -1)
+            hist_emb = hist_emb + self.pos_embedding(positions)
 
-        # SDPA bool mask uses True=attend, so invert participate -> padding.
-        key_padding_mask: torch.Tensor = ~history_mask  # [B,T] True where padding
+            # SDPA bool mask uses True=attend, so invert participate -> padding.
+            key_padding_mask: torch.Tensor = ~history_mask  # [B,T] True where padding
 
-        x: torch.Tensor = hist_emb
-        for layer in self.layers:
-            x = layer(x, key_padding_mask)
+            x: torch.Tensor = hist_emb
+            for layer in self.layers:
+                x = layer(x, key_padding_mask)
 
-        x: torch.Tensor = self.final_norm(x)
+            x = self.final_norm(x)
 
-        # Masked mean pool over history — padded positions excluded. The mask
-        # follows x.dtype (bf16 trunk under autocast, fp32 default identical).
-        mask_f: torch.Tensor = history_mask.to(x.dtype).unsqueeze(-1)  # [B,T,1]
-        # When history empty (all padding), denominator zero; use zero vector.
-        denom: torch.Tensor = mask_f.sum(dim=1).clamp(min=1.0)  # [B,1]
-        pooled: torch.Tensor = (x * mask_f).sum(dim=1) / denom  # [B,D]
-
+            # Masked mean pool over history — padded positions excluded. The mask
+            # follows x.dtype (bf16 trunk under autocast, fp32 default identical).
+            mask_f: torch.Tensor = history_mask.to(x.dtype).unsqueeze(-1)  # [B,T,1]
+            # When history empty (all padding), denominator zero; use zero vector.
+            denom: torch.Tensor = mask_f.sum(dim=1).clamp(min=1.0)  # [B,1]
+            pooled = (x * mask_f).sum(dim=1) / denom  # [B,D]
+            x_dtype = x.dtype
         # Scalar branch — build 64-dim vector from actor-visible scalars.
-        scalar_vec: torch.Tensor = self._build_scalar_features(batch, dtype=x.dtype)  # [B,64]
+        scalar_vec: torch.Tensor = self._build_scalar_features(batch, dtype=x_dtype)  # [B,64]
         scalar_emb: torch.Tensor = self.scalar_proj(scalar_vec)  # [B,D]
         trunk: torch.Tensor = torch.cat([pooled, scalar_emb], dim=-1)  # [B, 2D]
 
@@ -711,12 +906,12 @@ class Hydra2BaselineModel(nn.Module):
             "schema_version": "1.0.0",
             "input_schema_hash": str(input_hash),
             "feature_derivation_hash": str(deriv_hash),
-            "architecture_id": "hydra2_baseline_transformer_v1",
+            "architecture_id": self.architecture_id,
             "architecture_parameters": {
                 "d_model": self.d_model,
                 "n_layers": self.n_layers,
                 "n_heads": self.n_heads,
-                "d_ff": _DEFAULT_D_FF,
+                "d_ff": self.d_ff,
                 "dropout": self.dropout_p,
                 "history_buckets": list(self.history_buckets),
             },

@@ -29,7 +29,7 @@ from hydra2.data.stream_read import (
     _Run,
     assign_split,
     compute_wall_hash,
-    group_key_for_path,
+    group_key_for_entry,
     stem_of,
 )
 from hydra2.data.validate import _adapter_ok as _validate_adapter_ok
@@ -217,15 +217,16 @@ _DECODE_WORKER_TASKS = 0
 
 
 def _decode_frames_worker(
-    files: list[tuple[int, str, int]],
+    files: list[tuple[int, str, int, str]],
     *,
     seed: int,
     ratios: dict[str, float],
 ) -> _WorkerBatchResult:
     """Frame+decode+validate one ordered file batch in a spawn worker.
 
-    Input ``(file_index, path, base)`` mirrors :meth:`GameStream._framed_from`
-    offset semantics; output per game ``(file_index, end, game_bytes, game,
+    Input ``(file_index, path, base, root_id)`` mirrors :meth:`GameStream._framed_from`
+    offset semantics plus the manifest root id for the namespaced split
+    group; output per game ``(file_index, end, game_bytes, game,
     validation_hash, wall_hash, assigned_split)`` in file order (``None``
     payload trio for undecodable games, exactly like :meth:`_decode_inline`).
     ``wall_hash``/``assigned_split`` use the identical pure functions the
@@ -252,10 +253,10 @@ def _decode_frames_worker(
             _ = _gc.collect()
     packet_decode = _require_packet_decode()
     out: _WorkerBatchResult = []
-    for file_index, path_str, base in files:
+    for file_index, path_str, base, file_rid in files:
         fpath = Path(path_str)
         stem = stem_of(fpath)
-        group_key = group_key_for_path(fpath)
+        group_key = group_key_for_entry(root_id=file_rid, path=fpath)
         frames = [
             (offset, end, game_bytes)
             for offset, end, game_bytes in _frame_file(fpath, file_index)
@@ -397,10 +398,10 @@ class PrefetchGameStream(GameStream):
         ) as pool:
             while True:
                 while inflight < self._prefetch and not exhausted:
-                    batch: list[tuple[int, str, int]] = []
+                    batch: list[tuple[int, str, int, str]] = []
                     while len(batch) < _DECODE_BATCH_GAMES and nxt < len(files):
                         base = first_base if nxt == run.file_index else 0
-                        batch.append((nxt, files[nxt].path.as_posix(), base))
+                        batch.append((nxt, files[nxt].path.as_posix(), base, files[nxt].root_id))
                         nxt += 1
                     if nxt >= len(files):
                         exhausted = True

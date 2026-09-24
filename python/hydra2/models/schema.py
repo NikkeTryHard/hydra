@@ -69,6 +69,7 @@ KNOWN_ARCHITECTURES: frozenset[str] = frozenset(
     {
         "hydra2_baseline_transformer_v1",
         "hydra2_baseline_mlp_v1",
+        "hydra2_big_transformer_v1",
     }
 )
 KNOWN_LOSS_IDS: frozenset[str] = frozenset(

@@ -25,7 +25,7 @@ import zstandard as zstd
 from hydra2.contracts.common import ContractError
 from hydra2.data.stream_iter import GameStream
 from hydra2.data.stream_manifest import build_manifest
-from hydra2.data.stream_read import assign_split, group_key_for_path
+from hydra2.data.stream_read import assign_split, group_key_for_entry
 from hydra2.training import stream_train as driver
 from hydra2.training._rc_digest import run_config_digest, run_config_to_dict
 from hydra2.training._rc_root import load_run_config
@@ -97,12 +97,16 @@ def _decode_bad_game(game_id: str) -> Any:
 
 
 def _split_of(stem: str) -> str:
-    probe = Path("tenhou") / f"{stem}.mjai.json.zst"
+    probe = Path("corpus") / "tenhou" / f"{stem}.mjai.json.zst"
     ratios = {
         "train": driver.SPLIT_RATIOS["train"],
         "validation": driver.SPLIT_RATIOS["validation"],
     }
-    return assign_split(group_key=group_key_for_path(probe), seed=DATA_SEED, ratios=ratios)
+    return assign_split(
+        group_key=group_key_for_entry(root_id="corpus", path=probe),
+        seed=DATA_SEED,
+        ratios=ratios,
+    )
 
 
 def _pick_stems(*, need_train: int, need_val: int = 0) -> tuple[list[str], list[str]]:
@@ -330,7 +334,7 @@ class TestPlaneBackend:
         _write_game(corpus / f"{train_stems[1]}.mjai.json.zst", "flag-ds-wall", wall=WALL)
         manifest = build_manifest(tmp_path / "corpus")
 
-        def _factory(split: str) -> GameStream:
+        def _factory(split: str, epoch: int = 0) -> GameStream:
             return GameStream(
                 manifest,
                 seed=DATA_SEED,
@@ -338,14 +342,14 @@ class TestPlaneBackend:
                     "train": driver.SPLIT_RATIOS["train"],
                     "validation": driver.SPLIT_RATIOS["validation"],
                 },
-                epoch=0,
+                epoch=epoch,
                 split=split,
                 shuffle_buffer=0,
             )
 
         # Rust-only feed: serial pull plus snapshot restore on plane rows.
         ds = driver._StreamDataset(
-            stream_factory=lambda: _factory("train"),
+            stream_factory=lambda epoch=0: _factory("train", epoch),
             num_actions=6792,
             feature_dim=64,
             seed=DATA_SEED,
@@ -364,7 +368,7 @@ class TestPlaneBackend:
         # Row-exact resume: snapshot restores verbatim.
         snap = ds.buffer_snapshot()
         fresh = driver._StreamDataset(
-            stream_factory=lambda: _factory("train"),
+            stream_factory=lambda epoch=0: _factory("train", epoch),
             num_actions=6792,
             feature_dim=64,
             seed=DATA_SEED,

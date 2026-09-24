@@ -642,16 +642,26 @@ fn assign_partitions(
 ///
 /// Thin wrapper over `manifest::build_manifest_from_paths` (sha-sort file
 /// order) + `manifest::digest` (ASCII fast-path with fail-closed canon
-/// cross-check, feed-owned). `files` are `(relative POSIX path, compressed
-/// bytes)` pairs in ANY order (the feed sorts by sha256-hex of the path —
-/// the hash orders, never splits); `root` is provenance display only and
-/// does not enter the digest. Empty path or absolute path is `ValueError`.
+/// cross-check, feed-owned). `files` are `(root-id, relative POSIX path,
+/// compressed bytes)` triples in ANY order (the feed sorts by sha256-hex of
+/// `root-id + NUL + relpath` — the hash orders, never splits); `root` is
+/// provenance display only and does not enter the digest. Empty path,
+/// absolute path, or empty root-id is `ValueError`.
 ///
 /// Returns the `sha256:<hex>` digest (shape-gated attached, never defaulted).
 #[pyfunction]
 #[pyo3(signature = (files, root=""))]
-fn manifest_digest(py: Python<'_>, files: Vec<(String, u64)>, root: &str) -> PyResult<String> {
-    for (idx, (path, _)) in files.iter().enumerate() {
+fn manifest_digest(
+    py: Python<'_>,
+    files: Vec<(String, String, u64)>,
+    root: &str,
+) -> PyResult<String> {
+    for (idx, (root_id, path, _)) in files.iter().enumerate() {
+        if root_id.is_empty() {
+            return Err(PyValueError::new_err(format!(
+                "packet_decode manifest_digest file {idx} root_id must be non-empty"
+            )));
+        }
         if path.is_empty() {
             return Err(PyValueError::new_err(format!(
                 "packet_decode manifest_digest file {idx} path must be non-empty relative POSIX"
@@ -1285,16 +1295,17 @@ mod packet_decode_tests {
     #[test]
     fn manifest_digest_shapes_and_order() {
         // Contract: digest is sha256: shaped, deterministic, and
-        // input-order independent (feed sha-sorts by path); bad paths fail.
+        // input-order independent (feed sha-sorts by root-id + relpath);
+        // bad root-ids/paths fail.
         Python::initialize();
         Python::attach(|py| {
             let files_a = vec![
-                ("b.mjai.json.zst".to_string(), 20u64),
-                ("a.mjai.json.zst".to_string(), 10u64),
+                ("ryu".to_string(), "b.mjai.json.zst".to_string(), 20u64),
+                ("ryu".to_string(), "a.mjai.json.zst".to_string(), 10u64),
             ];
             let files_b = vec![
-                ("a.mjai.json.zst".to_string(), 10u64),
-                ("b.mjai.json.zst".to_string(), 20u64),
+                ("ryu".to_string(), "a.mjai.json.zst".to_string(), 10u64),
+                ("ryu".to_string(), "b.mjai.json.zst".to_string(), 20u64),
             ];
             let da = manifest_digest(py, files_a, "").unwrap();
             let db = manifest_digest(py, files_b, "").unwrap();
@@ -1303,24 +1314,47 @@ mod packet_decode_tests {
             let manifest = hydra_feed::manifest::build_manifest_from_paths(
                 "",
                 vec![
-                    ("a.mjai.json.zst".to_string(), 10u64),
-                    ("b.mjai.json.zst".to_string(), 20u64),
+                    ("ryu".to_string(), "a.mjai.json.zst".to_string(), 10u64),
+                    ("ryu".to_string(), "b.mjai.json.zst".to_string(), 20u64),
                 ],
             );
             // Feed file order is sha-sorted (hash orders, never splits).
             let keys: Vec<String> = manifest
                 .files
                 .iter()
-                .map(|f| hydra_feed::manifest::order_key(&f.path))
+                .map(|f| hydra_feed::manifest::order_key(&f.root_id, &f.path))
                 .collect();
             let mut sorted = keys.clone();
             sorted.sort();
             assert_eq!(keys, sorted);
             let expect = hydra_feed::manifest::manifest_digest(&manifest).unwrap();
             assert!(check_match(&da, &expect).is_ok());
+            // Root id namespaces: same paths under another root differ.
+            let dc = manifest_digest(
+                py,
+                vec![
+                    ("lobby".to_string(), "a.mjai.json.zst".to_string(), 10u64),
+                    ("lobby".to_string(), "b.mjai.json.zst".to_string(), 20u64),
+                ],
+                "",
+            )
+            .unwrap();
+            assert_ne!(da, dc);
             // Absolute + empty paths fail closed attached.
-            assert!(manifest_digest(py, vec![("/abs/x".to_string(), 1u64)], "").is_err());
-            assert!(manifest_digest(py, vec![("".to_string(), 1u64)], "").is_err());
+            assert!(
+                manifest_digest(
+                    py,
+                    vec![("ryu".to_string(), "/abs/x".to_string(), 1u64)],
+                    ""
+                )
+                .is_err()
+            );
+            assert!(
+                manifest_digest(py, vec![("ryu".to_string(), "".to_string(), 1u64)], "").is_err()
+            );
+            assert!(
+                manifest_digest(py, vec![("".to_string(), "a".to_string(), 1u64)], "").is_err()
+            );
         });
     }
 
@@ -1340,7 +1374,12 @@ mod packet_decode_tests {
                 .extract()
                 .unwrap();
             let _ = validate_batch(py, vec![record], true).unwrap();
-            let _ = manifest_digest(py, vec![("x.mjai.json.zst".to_string(), 3u64)], "").unwrap();
+            let _ = manifest_digest(
+                py,
+                vec![("ryu".to_string(), "x.mjai.json.zst".to_string(), 3u64)],
+                "",
+            )
+            .unwrap();
             let after: (u64, u64) = judge_stats(py).unwrap();
             assert!(after.0 > before.0);
             assert!(after.1 > before.1);

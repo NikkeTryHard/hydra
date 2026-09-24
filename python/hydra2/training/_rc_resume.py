@@ -334,7 +334,7 @@ def format_plan(
         f"run: {effective_run_id(config)} (kind={config.run.kind})",
         f"digest: {digest}",
         f"run_dir: {run_dir}",
-        f"data: root={config.data.root} scope={config.data.scope} "
+        f"data: roots={len(config.data.roots)} scope={config.data.scope} "
         f"train={config.data.train_split} val={config.data.val_split} "
         f"wall_disjoint={config.data.wall_disjoint} buffer={config.data.shuffle_buffer_size} "
         f"workers={config.data.num_workers}x{config.data.world_size}",

@@ -124,7 +124,7 @@ impl From<CanonError> for ManifestError {
 // File list (sha-sort)
 // ---------------------------------------------------------------------------
 
-/// One corpus file: relative POSIX path + compressed size.
+/// One corpus file: root id + relative POSIX path + compressed size.
 ///
 /// Counts (`wall_hashes` etc.) are populated by the scan pass, not here —
 /// mirroring `stream_manifest.FileEntry` (`:58-65`).
@@ -132,39 +132,54 @@ impl From<CanonError> for ManifestError {
 pub struct FileEntry {
     /// Relative POSIX path (`path.relative_to(base).as_posix()`).
     pub path: String,
+    /// Root id: the `(root-id, absolute path)` pair key from the run config
+    /// (`data.roots`; defaults to the leaf-dir basename). Namespaces order
+    /// keys, digests, and split groups across roots sharing a relpath.
+    pub root_id: String,
     /// Compressed size in bytes (`st_size` at collect time).
     pub bytes: u64,
 }
 
-/// Deterministic file list; order is sha256-hex of the relative path.
+/// Deterministic file list; order is sha256-hex of `root-id + NUL + relpath`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamManifest {
     /// Files in sha-sort order.
     pub files: Vec<FileEntry>,
-    /// Collection root (display/provenance; ordering uses relative paths).
+    /// Collection root (display/provenance; ordering uses root-id + paths).
     pub root: String,
 }
 
-/// Order key: sha256-hex (lowercase, no prefix) of the relative POSIX path.
+/// Order key: sha256-hex (lowercase, no prefix) of `root-id + NUL + relpath`.
 ///
-/// Mirrors `build_manifest._order_key` (stream_manifest.py:94-95). Routed
-/// through `feed::digest::sha256_hex` (the single owned hasher); the prefix
-/// is stripped for the sort key (ordering only, never an identity digest).
-pub fn order_key(rel_posix: &str) -> String {
-    let prefixed = crate::digest::sha256_hex(rel_posix.as_bytes());
+/// The NUL separator keeps `(root-id, relpath)` concatenation unambiguous
+/// (no boundary-shift collision between e.g. `("ab","c")` and `("a","bc")`).
+/// Mirrors `build_manifest` key minting (stream_manifest.py order-key call).
+/// Routed through `feed::digest::sha256_hex` (the single owned hasher); the
+/// prefix is stripped for the sort key (ordering only, never identity).
+pub fn order_key(root_id: &str, rel_posix: &str) -> String {
+    let mut preimage = Vec::with_capacity(root_id.len() + 1 + rel_posix.len());
+    preimage.extend_from_slice(root_id.as_bytes());
+    preimage.push(0);
+    preimage.extend_from_slice(rel_posix.as_bytes());
+    let prefixed = crate::digest::sha256_hex(&preimage);
     prefixed["sha256:".len()..].to_string()
 }
 
-/// Build a manifest from `(relative POSIX path, bytes)` pairs, sha-sorted.
+/// Build a manifest from `(root-id, relative POSIX path, bytes)` triples,
+/// sha-sorted by the namespaced order key.
 pub fn build_manifest_from_paths(
     root: &str,
-    mut paths: Vec<(String, u64)>,
+    mut paths: Vec<(String, String, u64)>,
 ) -> StreamManifest {
-    paths.sort_by_key(|a| order_key(&a.0));
+    paths.sort_by_key(|a| order_key(&a.0, &a.1));
     StreamManifest {
         files: paths
             .into_iter()
-            .map(|(path, bytes)| FileEntry { path, bytes })
+            .map(|(root_id, path, bytes)| FileEntry {
+                path,
+                root_id,
+                bytes,
+            })
             .collect(),
         root: root.to_string(),
     }
@@ -179,10 +194,7 @@ pub fn build_manifest_from_paths(
 /// ASCII except `"` (`0x22`) and `\` (`0x5C`).
 pub fn is_escape_free_ascii(text: &str) -> bool {
     for b in text.bytes() {
-        let ok = b == 0x20
-            || b == 0x21
-            || (0x23..=0x5B).contains(&b)
-            || (0x5D..=0x7E).contains(&b);
+        let ok = b == 0x20 || b == 0x21 || (0x23..=0x5B).contains(&b) || (0x5D..=0x7E).contains(&b);
         if !ok {
             return false;
         }
@@ -194,21 +206,24 @@ pub fn is_escape_free_ascii(text: &str) -> bool {
 struct ManifestElement<'a> {
     bytes: u64,
     path: &'a str,
+    root_id: &'a str,
 }
-
 /// Bind the file list for RunSpec provenance.
 ///
-/// Byte-identical to `sha256(canonical_bytes([{bytes, path}, ...]))` by
-/// construction in both paths (element key order `bytes < path`; compact
-/// list encoding `[` + comma-joined elements + `]`). The fast path assembles
-/// the same bytes directly when every path is escape-free ASCII; anything
-/// else takes the element-wise canon path. Production ALWAYS recomputes the
-/// canon path and returns `Err(Canon)` on divergence (fail-closed, all
-/// builds). Any divergence breaks scan-cache keys loudly (miss → full
-/// scan), never silently.
+/// Byte-identical to `sha256(canonical_bytes([{bytes, path, root_id}, ...]))`
+/// by construction in both paths (element key order `bytes < path < root_id`;
+/// compact list encoding `[` + comma-joined elements + `]`). The fast path
+/// assembles the same bytes directly when every path AND root-id is
+/// escape-free ASCII; anything else takes the element-wise canon path.
+/// Production ALWAYS recomputes the canon path and returns `Err(Canon)` on
+/// divergence (fail-closed, all builds). Any divergence breaks scan-cache
+/// keys loudly (miss → full scan), never silently.
 pub fn manifest_digest(manifest: &StreamManifest) -> Result<String, ManifestError> {
     let eligible = !manifest.files.is_empty()
-        && manifest.files.iter().all(|e| is_escape_free_ascii(&e.path));
+        && manifest
+            .files
+            .iter()
+            .all(|e| is_escape_free_ascii(&e.path) && is_escape_free_ascii(&e.root_id));
     if eligible {
         let mut fast: Vec<u8> = Vec::new();
         fast.push(b'[');
@@ -220,6 +235,8 @@ pub fn manifest_digest(manifest: &StreamManifest) -> Result<String, ManifestErro
             fast.extend_from_slice(entry.bytes.to_string().as_bytes());
             fast.extend_from_slice(b",\"path\":\"");
             fast.extend_from_slice(entry.path.as_bytes());
+            fast.extend_from_slice(b"\",\"root_id\":\"");
+            fast.extend_from_slice(entry.root_id.as_bytes());
             fast.extend_from_slice(b"\"}");
         }
         fast.push(b']');
@@ -253,6 +270,7 @@ fn manifest_digest_canon(manifest: &StreamManifest) -> Result<String, ManifestEr
         let el = ManifestElement {
             bytes: entry.bytes,
             path: &entry.path,
+            root_id: &entry.root_id,
         };
         let bytes = canonical_bytes(&el, "manifest:digest")?;
         buf.extend_from_slice(&bytes);
@@ -300,9 +318,12 @@ pub fn encode_reservoir_blob(
     raws: &[&[u8]],
     level: i32,
 ) -> Result<(Vec<u8>, ReservoirIndex), ManifestError> {
-    let count: u32 = raws.len().try_into().map_err(|_| ManifestError::BlobCorrupt {
-        detail: "too many games for reservoir blob".to_string(),
-    })?;
+    let count: u32 = raws
+        .len()
+        .try_into()
+        .map_err(|_| ManifestError::BlobCorrupt {
+            detail: "too many games for reservoir blob".to_string(),
+        })?;
     let mut out: Vec<u8> = Vec::new();
     let mut header = [0u8; 16];
     header[..8].copy_from_slice(RESERVOIR_MAGIC);
@@ -378,11 +399,10 @@ pub fn decode_reservoir_blob(data: &[u8]) -> Result<Vec<Vec<u8>>, ManifestError>
                 detail: "reservoir blob truncated frame".to_string(),
             });
         }
-        let raw = zstd::decode_all(&data[off..off + flen]).map_err(|e| {
-            ManifestError::BlobCorrupt {
+        let raw =
+            zstd::decode_all(&data[off..off + flen]).map_err(|e| ManifestError::BlobCorrupt {
                 detail: format!("reservoir frame corrupt ({e})"),
-            }
-        })?;
+            })?;
         raws.push(raw);
         off += flen;
     }
@@ -517,8 +537,7 @@ pub fn load_scan_cache(
     val_walls.sort();
     let train_set: std::collections::BTreeSet<&str> =
         train_walls.iter().map(String::as_str).collect();
-    let val_set: std::collections::BTreeSet<&str> =
-        val_walls.iter().map(String::as_str).collect();
+    let val_set: std::collections::BTreeSet<&str> = val_walls.iter().map(String::as_str).collect();
     if !train_set.is_disjoint(&val_set) {
         return None;
     }
@@ -553,9 +572,13 @@ pub fn encode_scan_cache(
     report: &ScanReport,
 ) -> Result<String, ManifestError> {
     let get = |key: &str| -> Result<u64, ManifestError> {
-        report.counts.get(key).copied().ok_or_else(|| ManifestError::BlobCorrupt {
-            detail: format!("scan report missing count {key:?}"),
-        })
+        report
+            .counts
+            .get(key)
+            .copied()
+            .ok_or_else(|| ManifestError::BlobCorrupt {
+                detail: format!("scan report missing count {key:?}"),
+            })
     };
     let mut train_walls = report.train_walls.clone();
     let mut val_walls = report.val_walls.clone();
@@ -617,7 +640,11 @@ pub fn serialize_shuffle_rng(state: &ShuffleRngState) -> BTreeMap<String, serde_
         (
             "state".to_string(),
             serde_json::Value::Array(
-                state.state.iter().map(|v| serde_json::Value::from(*v)).collect(),
+                state
+                    .state
+                    .iter()
+                    .map(|v| serde_json::Value::from(*v))
+                    .collect(),
             ),
         ),
         (
@@ -645,7 +672,9 @@ pub fn parse_shuffle_rng(
     };
     for key in raw.keys() {
         if key != "version" && key != "state" && key != "gauss_next" {
-            return Err(bad(&format!("shuffle buffer_rng_state unknown keys [{key:?}]")));
+            return Err(bad(&format!(
+                "shuffle buffer_rng_state unknown keys [{key:?}]"
+            )));
         }
     }
     let version = raw
@@ -657,7 +686,9 @@ pub fn parse_shuffle_rng(
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| bad("shuffle buffer_rng_state.state must be a non-empty int list"))?;
     if state_raw.is_empty() {
-        return Err(bad("shuffle buffer_rng_state.state must be a non-empty int list"));
+        return Err(bad(
+            "shuffle buffer_rng_state.state must be a non-empty int list",
+        ));
     }
     let mut state = Vec::with_capacity(state_raw.len());
     for value in state_raw {
@@ -670,12 +701,13 @@ pub fn parse_shuffle_rng(
             }
         }
     }
-    let gauss_next = match raw.get("gauss_next") {
-        None | Some(serde_json::Value::Null) => None,
-        Some(v) => Some(v.as_f64().ok_or_else(|| {
-            bad("shuffle buffer_rng_state.gauss_next must be a float or null")
-        })?),
-    };
+    let gauss_next =
+        match raw.get("gauss_next") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(v) => Some(v.as_f64().ok_or_else(|| {
+                bad("shuffle buffer_rng_state.gauss_next must be a float or null")
+            })?),
+        };
     Ok(ShuffleRngState {
         version,
         state,
@@ -767,26 +799,42 @@ mod tests {
         build_manifest_from_paths(
             "/data",
             vec![
-                ("b/20240102.mjai.json.zst".to_string(), 10),
-                ("a/20240101.mjai.json.zst".to_string(), 20),
+                (
+                    "ryu".to_string(),
+                    "b/20240102.mjai.json.zst".to_string(),
+                    10,
+                ),
+                (
+                    "ryu".to_string(),
+                    "a/20240101.mjai.json.zst".to_string(),
+                    20,
+                ),
             ],
         )
     }
 
     #[test]
     fn sha_sort_orders_by_path_hash_not_lexically() {
-        // Contract: order key is sha256-hex of the relative path. Sorted
-        // files must equal paths sorted by that key (lexical order is only
-        // sometimes the same — the key function is the contract).
+        // Contract: order key is sha256-hex of `root-id + NUL + relpath`.
+        // Sorted files must equal entries sorted by that key (lexical order
+        // is only sometimes the same — the key function is the contract).
         let m = manifest_two_files();
         let mut want = vec![
-            "b/20240102.mjai.json.zst",
-            "a/20240101.mjai.json.zst",
+            ("ryu", "b/20240102.mjai.json.zst"),
+            ("ryu", "a/20240101.mjai.json.zst"),
         ];
-        want.sort_by_key(|a| order_key(a));
-        let got: Vec<&str> = m.files.iter().map(|e| e.path.as_str()).collect();
+        want.sort_by_key(|a| order_key(a.0, a.1));
+        let got: Vec<(&str, &str)> = m
+            .files
+            .iter()
+            .map(|e| (e.root_id.as_str(), e.path.as_str()))
+            .collect();
         assert_eq!(got, want);
-        assert_eq!(order_key("a").len(), 64);
+        assert_eq!(order_key("ryu", "a").len(), 64);
+        // The root id namespaces the key: same relpath under two roots
+        // orders (and splits) independently, never colliding.
+        assert_ne!(order_key("aaa", "x"), order_key("aab", "x"));
+        assert_ne!(order_key("ab", "c"), order_key("a", "bc"));
     }
 
     #[test]
@@ -795,6 +843,7 @@ mod tests {
         // bytes == canon bytes ⇒ same digest. Non-ASCII ⇒ canon path.
         let m = manifest_two_files();
         assert!(m.files.iter().all(|e| is_escape_free_ascii(&e.path)));
+        assert!(m.files.iter().all(|e| is_escape_free_ascii(&e.root_id)));
         let digest = manifest_digest(&m).unwrap();
         assert!(digest.starts_with("sha256:"));
         assert_eq!(digest.len(), 7 + 64);
@@ -802,10 +851,27 @@ mod tests {
         assert_eq!(digest, canon);
         // Stability: rebuild ⇒ same digest.
         assert_eq!(digest, manifest_digest(&manifest_two_files()).unwrap());
+        // Root id binds: same paths under another root digest differently.
+        let other = build_manifest_from_paths(
+            "/data",
+            vec![
+                (
+                    "lobby".to_string(),
+                    "b/20240102.mjai.json.zst".to_string(),
+                    10,
+                ),
+                (
+                    "lobby".to_string(),
+                    "a/20240101.mjai.json.zst".to_string(),
+                    20,
+                ),
+            ],
+        );
+        assert_ne!(digest, manifest_digest(&other).unwrap());
         // Non-ASCII path takes the canon arm and still binds.
         let uni = build_manifest_from_paths(
             "/data",
-            vec![("t/é.mjai.json.zst".to_string(), 5)],
+            vec![("ryu".to_string(), "t/é.mjai.json.zst".to_string(), 5)],
         );
         assert!(!is_escape_free_ascii("t/é.mjai.json.zst"));
         let d2 = manifest_digest(&uni).unwrap();
@@ -873,10 +939,7 @@ mod tests {
 
     #[test]
     fn scan_cache_hit_miss_and_disjoint_fail_closed() {
-        let ratios = BTreeMap::from([
-            ("train".to_string(), 0.8),
-            ("validation".to_string(), 0.2),
-        ]);
+        let ratios = BTreeMap::from([("train".to_string(), 0.8), ("validation".to_string(), 0.2)]);
         let mut counts = BTreeMap::new();
         for (i, k) in SCAN_COUNT_KEYS.iter().enumerate() {
             counts.insert(k.to_string(), i as u64);
@@ -886,9 +949,15 @@ mod tests {
             val_walls: vec!["sha256:bb".to_string()],
             counts,
         };
-        let text =
-            encode_scan_cache("sha256:deadbeef", 7, &ratios, "train", "validation", &report)
-                .unwrap();
+        let text = encode_scan_cache(
+            "sha256:deadbeef",
+            7,
+            &ratios,
+            "train",
+            "validation",
+            &report,
+        )
+        .unwrap();
         let hit = load_scan_cache(&text, "sha256:deadbeef", 7, &ratios, "train", "validation")
             .expect("exact key match hits");
         assert_eq!(hit.train_walls, report.train_walls);
@@ -903,11 +972,27 @@ mod tests {
         let mut other_ratios = ratios.clone();
         other_ratios.insert("train".to_string(), 0.5);
         assert!(
-            load_scan_cache(&text, "sha256:deadbeef", 7, &other_ratios, "train", "validation")
-                .is_none()
+            load_scan_cache(
+                &text,
+                "sha256:deadbeef",
+                7,
+                &other_ratios,
+                "train",
+                "validation"
+            )
+            .is_none()
         );
-        assert!(load_scan_cache("not json", "sha256:deadbeef", 7, &ratios, "train", "validation")
-            .is_none());
+        assert!(
+            load_scan_cache(
+                "not json",
+                "sha256:deadbeef",
+                7,
+                &ratios,
+                "train",
+                "validation"
+            )
+            .is_none()
+        );
         // V1 envelope is a miss (dual-read window is blobs; caches re-scan).
         let v1_text = text.replace(
             &format!("\"version\":{SCAN_CACHE_VERSION}"),
@@ -957,7 +1042,11 @@ mod tests {
         let map = serialize_shuffle_rng(&state);
         assert_eq!(
             map.keys().collect::<Vec<_>>(),
-            [&"gauss_next".to_string(), &"state".to_string(), &"version".to_string()]
+            [
+                &"gauss_next".to_string(),
+                &"state".to_string(),
+                &"version".to_string()
+            ]
         );
         assert_eq!(parse_shuffle_rng(&map).unwrap(), state);
         let null_gauss = ShuffleRngState {

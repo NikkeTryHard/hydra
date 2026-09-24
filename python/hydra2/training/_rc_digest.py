@@ -16,6 +16,7 @@ import yaml  # pyrefly: ignore[untyped-import] # pyyaml ships no stubs here; saf
 from hydra2._native import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 from hydra2.artifacts.atomic import atomic_replace_bytes as atomic_replace_bytes
 from hydra2.contracts.common import ContractError
+from hydra2.data.stream_manifest import HOLDOUT_SPEC as HOLDOUT_SPEC
 
 if TYPE_CHECKING:
     from hydra2.training._rc_sections import RunConfig as RunConfig
@@ -42,7 +43,8 @@ def run_config_to_dict(config: RunConfig) -> dict[str, Any]:
             "description": config.run.description,
         },
         "data": {
-            "root": config.data.root,
+            "roots": [[rid, base] for rid, base in config.data.roots],
+            "holdout": dict(HOLDOUT_SPEC),
             "scope": config.data.scope,
             "train_split": config.data.train_split,
             "val_split": config.data.val_split,
@@ -109,6 +111,7 @@ def run_config_to_dict(config: RunConfig) -> dict[str, Any]:
             "log_per_type_metrics": config.loop.log_per_type_metrics,
             "fit_temperature": config.loop.fit_temperature,
             "fetch_prefetch_depth": config.loop.fetch_prefetch_depth,
+            "pack_histories": config.loop.pack_histories,
         },
         "seeds": {
             "data_seed": config.seeds.data_seed,

@@ -104,13 +104,21 @@ def test_manifest_order_is_sha256_hex_and_stable(tmp_path: Path) -> None:
         _write(tmp_path / name, [_game_bytes(name)])
     first = build_manifest(tmp_path)
     second = build_manifest(tmp_path)
+    # Single-path roots key by the leaf-dir basename; duplicate relpaths
+    # under different roots order independently, never colliding.
     expected = sorted(
         [tmp_path / name for name in ("b.mjai.json.zst", "a.mjai.json.zst", "c.mjai.json.zst")],
-        key=lambda p: hashlib.sha256(p.relative_to(tmp_path).as_posix().encode()).hexdigest(),
+        key=lambda p: hashlib.sha256(
+            (tmp_path.name + "\0" + p.relative_to(tmp_path).as_posix()).encode()
+        ).hexdigest(),
     )
     assert list(first.paths()) == expected
     assert list(second.paths()) == expected
     assert manifest_digest(first) == manifest_digest(second)
+    assert all(entry.root_id == tmp_path.name for entry in first.files)
+    assert all(
+        entry.relpath == entry.path.relative_to(tmp_path).as_posix() for entry in first.files
+    )
 
 
 def test_manifest_digest_matches_canonical_oracle(tmp_path: Path) -> None:
@@ -138,7 +146,12 @@ def test_manifest_digest_matches_canonical_oracle(tmp_path: Path) -> None:
     oracle = (
         "sha256:"
         + hashlib.sha256(
-            canonical_bytes([{"bytes": e.bytes, "path": e.path.as_posix()} for e in manifest.files])
+            canonical_bytes(
+                [
+                    {"bytes": e.bytes, "path": e.relpath, "root_id": e.root_id}
+                    for e in manifest.files
+                ]
+            )
         ).hexdigest()
     )
     assert manifest_digest(manifest) == oracle
@@ -175,9 +188,12 @@ def test_snapshot_blob_restore_matches_refetch(tmp_path: Path) -> None:
     from hydra2.data.stream_iter import GameStream
     from hydra2.data.stream_manifest import write_reservoir_blob
 
-    for index in range(3):
+    # Dates picked so all three `tmpname|tmpname|<date>` groups draw train
+    # under the namespaced scheme (tmp leaf is session-stable; a scheme
+    # change fails the length assert below, loudly).
+    for index, day in enumerate((1, 4, 7)):
         _write(
-            _tenhou_name(tmp_path, f"202401010{index}gm-00a9-0000-9000000{index}"),
+            _tenhou_name(tmp_path, f"202401{day:02d}00gm-00a9-0000-9000000{index}"),
             [_game_bytes(f"snap{index}g{j}", n_mid=2) for j in range(3)],
         )
     manifest = build_manifest(tmp_path)
@@ -236,12 +252,11 @@ def test_snapshot_hit_seeks_past_primed_games(tmp_path: Path) -> None:
     then restores through the full GameStream path and asserts the emitted
     tail matches the un-snapshotted continuation exactly.
     """
-    from hydra2.data.stream_iter import GameStream
-    from hydra2.data.stream_read import StreamCursor
-
-    for index in range(3):
+    # Dates picked so all three groups draw train under the namespaced
+    # scheme (same session-stable tmp-leaf reasoning as the blob test).
+    for index, day in enumerate((1, 4, 5)):
         _write(
-            _tenhou_name(tmp_path, f"202401010{index}gm-00a9-0000-9000000{index}"),
+            _tenhou_name(tmp_path, f"202401{day:02d}00gm-00a9-0000-9000000{index}"),
             [_game_bytes(f"seek{index}g{j}", n_mid=2) for j in range(6)],
         )
     manifest = build_manifest(tmp_path)
@@ -414,7 +429,8 @@ def test_wall_null_corpus_and_disjoint_predicate(tmp_path: Path) -> None:
     walled_only = [game for game in walled_games if game.wall_hash is not None]
     assert len(walled_only) == 1
     assert compute_wall_hash(walled_only[0].game) == walled_only[0].wall_hash
-    flipped = dataclasses.replace(walled_only[0], split="validation")
+    other = "validation" if walled_only[0].split == "train" else "train"
+    flipped = dataclasses.replace(walled_only[0], split=other)
     with pytest.raises(ContractError):
         check_wall_disjoint([walled_only[0], flipped])
 
@@ -521,7 +537,7 @@ def test_throughput_informational(tmp_path: Path) -> None:
 
 def test_scan_cache_round_trip_and_corrupt_miss(tmp_path: Path) -> None:
     """Manifest/split cache reloads on exact key, misses on stale/corrupt."""
-    from hydra2.data.stream_manifest import load_scan_cache, save_scan_cache
+    from hydra2.data.stream_manifest import HOLDOUT_SPEC, load_scan_cache, save_scan_cache
 
     for index in range(3):
         _write(
@@ -530,9 +546,11 @@ def test_scan_cache_round_trip_and_corrupt_miss(tmp_path: Path) -> None:
         )
     manifest = build_manifest(tmp_path)
     digest = manifest_digest(manifest)
+    roots = [(rid, base) for rid, base in manifest.roots]
     scan = {
         "train_walls": ["sha256:" + "a" * 64],
         "val_walls": ["sha256:" + "b" * 64],
+        "root_games": [[tmp_path.name, 2, 1]],
         "train_games": 2,
         "val_games": 1,
         "train_sim_games": 0,
@@ -550,6 +568,8 @@ def test_scan_cache_round_trip_and_corrupt_miss(tmp_path: Path) -> None:
         ratios=dict(_RATIOS),
         train_split="train",
         val_split="validation",
+        roots=roots,
+        holdout=HOLDOUT_SPEC,
         scan=scan,
     )
     hit = load_scan_cache(
@@ -559,68 +579,42 @@ def test_scan_cache_round_trip_and_corrupt_miss(tmp_path: Path) -> None:
         ratios=dict(_RATIOS),
         train_split="train",
         val_split="validation",
+        roots=roots,
+        holdout=HOLDOUT_SPEC,
     )
     assert hit is not None
     assert hit["train_games"] == 2
-    # Stale digest, seed, ratios, splits all miss (fail closed to full scan).
+    assert hit["root_games"] == [[tmp_path.name, 2, 1]]
+    # Stale digest, seed, ratios, splits, roots, holdout all miss.
+    miss_kwargs = {
+        "manifest_digest": digest,
+        "seed": _SEED,
+        "ratios": dict(_RATIOS),
+        "train_split": "train",
+        "val_split": "validation",
+        "roots": roots,
+        "holdout": HOLDOUT_SPEC,
+    }
     assert (
-        load_scan_cache(
-            cache,
-            manifest_digest="sha256:" + "0" * 64,
-            seed=_SEED,
-            ratios=dict(_RATIOS),
-            train_split="train",
-            val_split="validation",
-        )
+        load_scan_cache(cache, **{**miss_kwargs, "manifest_digest": "sha256:" + "0" * 64}) is None
+    )
+    assert load_scan_cache(cache, **{**miss_kwargs, "seed": _SEED + 1}) is None
+    assert (
+        load_scan_cache(cache, **{**miss_kwargs, "ratios": {"train": 0.5, "validation": 0.5}})
         is None
     )
+    assert load_scan_cache(cache, **{**miss_kwargs, "roots": [("other", "/mnt/x")]}) is None
     assert (
         load_scan_cache(
-            cache,
-            manifest_digest=digest,
-            seed=_SEED + 1,
-            ratios=dict(_RATIOS),
-            train_split="train",
-            val_split="validation",
-        )
-        is None
-    )
-    assert (
-        load_scan_cache(
-            cache,
-            manifest_digest=digest,
-            seed=_SEED,
-            ratios={"train": 0.5, "validation": 0.5},
-            train_split="train",
-            val_split="validation",
+            cache, **{**miss_kwargs, "holdout": {"mechanism": "other", "val_roots": []}}
         )
         is None
     )
     # Corrupt file misses (never raises).
     cache.write_text("{not-json", encoding="utf-8")
-    assert (
-        load_scan_cache(
-            cache,
-            manifest_digest=digest,
-            seed=_SEED,
-            ratios=dict(_RATIOS),
-            train_split="train",
-            val_split="validation",
-        )
-        is None
-    )
+    assert load_scan_cache(cache, **miss_kwargs) is None
     cache.write_text(json.dumps({"version": 999, "manifest_digest": digest}), encoding="utf-8")
-    assert (
-        load_scan_cache(
-            cache,
-            manifest_digest=digest,
-            seed=_SEED,
-            ratios=dict(_RATIOS),
-            train_split="train",
-            val_split="validation",
-        )
-        is None
-    )
+    assert load_scan_cache(cache, **miss_kwargs) is None
 
 
 def test_shuffle_rng_round_trip_and_tamper() -> None:

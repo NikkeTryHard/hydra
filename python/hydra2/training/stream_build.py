@@ -57,14 +57,20 @@ __all__ = [
 
 
 def _build_model(config: RunConfig) -> Any:
-    """Real baseline model bound to the config (config-driven, fail closed)."""
-    from hydra2.models.model import Hydra2BaselineModel
+    """Real model bound to the config (config-driven, fail closed).
+
+    The architecture id selects the default width row (baseline vs big
+    trunk); explicit ``model.parameters`` overlay the row, so a big-arch run
+    without dims gets big widths (never silent baseline widths) and a
+    baseline run without dims is byte-identical to before.
+    """
+    from hydra2.models.model import _ARCH_DEFAULTS, Hydra2BaselineModel
     from hydra2.models.schema import BASELINE_ACTION_COUNT
 
-    if config.model.architecture_id != "hydra2_baseline_transformer_v1":
+    arch_id = config.model.architecture_id
+    if arch_id not in _ARCH_DEFAULTS:
         raise ContractError(
-            f"stream training supports architecture "
-            f"'hydra2_baseline_transformer_v1', got {config.model.architecture_id!r}"
+            f"stream training supports architectures {sorted(_ARCH_DEFAULTS)}, got {arch_id!r}"
         )
     if config.model.action_count != BASELINE_ACTION_COUNT:
         raise ContractError(
@@ -83,7 +89,17 @@ def _build_model(config: RunConfig) -> Any:
         or not 0.0 <= float(params["dropout"]) < 1.0
     ):
         raise ContractError("model.parameters['dropout'] must lie in [0, 1)")
-    return Hydra2BaselineModel(action_count=config.model.action_count, **params)
+    dims: dict[str, Any] = dict(_ARCH_DEFAULTS[arch_id])
+    dims.update(params)
+    return Hydra2BaselineModel(
+        action_count=config.model.action_count,
+        architecture_id=arch_id,
+        d_model=int(dims["d_model"]),
+        n_layers=int(dims["n_layers"]),
+        n_heads=int(dims["n_heads"]),
+        d_ff=int(dims["d_ff"]),
+        dropout=float(dims["dropout"]),
+    )
 
 
 _POLICY_HEAD_PREFIX = "policy_head."
@@ -444,10 +460,13 @@ def _verify_rng_anchors(payload_rng: Any, anchors: Any, *, ckpt: Path) -> None:
     if payload_cuda is None or expected_cuda is None:
         raise ContractError(f"checkpoint RNG state mismatch (torch cuda): {ckpt}")
     cuda_states: list[bytes] = payload_cuda
+    # Mirror the mint side (`_rng_anchors` hashes `bytes(s)` per state):
+    # payload states load back as ByteTensors, never raw bytes, so hash
+    # `bytes(s)` here too. Any byte divergence still mismatches by design.
     actual_list: list[str] | str = (
-        [sha256_digest(s) for s in cuda_states]  # pyrefly: ignore[unknown-argument-type] # payload CUDA states dynamic; sha256 owns the bytes gate
+        [sha256_digest(bytes(s)) for s in cuda_states]  # pyrefly: ignore[unknown-argument-type] # payload CUDA states dynamic; sha256 owns the bytes gate
         if isinstance(payload_cuda, list)
-        else sha256_digest(payload_cuda)  # pyrefly: ignore[unknown-argument-type] # payload CUDA state dynamic; sha256 owns the bytes gate
+        else sha256_digest(bytes(payload_cuda))  # pyrefly: ignore[unknown-argument-type] # payload CUDA state dynamic; sha256 owns the bytes gate
     )
     if actual_list != expected_cuda:
         raise ContractError(f"checkpoint RNG state mismatch (torch cuda): {ckpt}")

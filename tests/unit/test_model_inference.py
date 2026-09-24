@@ -916,3 +916,91 @@ def test_fused_forward_matches_contract_shapes() -> None:
         assert batch.legal_mask[row, idx].item() is True
     assert int(out.diagnostics["history_length"][0].item()) == 5
     assert int(out.diagnostics["history_length"][1].item()) == 0
+
+
+def test_big_trunk_param_count_and_dims() -> None:
+    """Mortal-class trunk: 8x256x8/d_ff1024 is exactly 9914166 params."""
+    from hydra2.models.model import _ARCH_DEFAULTS
+
+    model = Hydra2BaselineModel(
+        architecture_id="hydra2_big_transformer_v1",
+        d_model=256,
+        n_heads=8,
+        n_layers=8,
+        d_ff=1024,
+        dropout=0.0,
+    )
+    assert model.d_model == 256
+    assert model.n_heads == 8
+    assert model.n_layers == 8
+    assert model.d_ff == 1024
+    assert len(model.layers) == 8
+    assert sum(p.numel() for p in model.parameters()) == 9914166
+    assert _ARCH_DEFAULTS["hydra2_big_transformer_v1"]["d_model"] == 256
+    # Unknown arch ids fail closed (never a silent baseline fallback).
+    with pytest.raises(ContractError):
+        Hydra2BaselineModel(architecture_id="hydra2_huge_transformer_v99")
+
+
+def test_big_trunk_identity_binds_arch_and_dff() -> None:
+    """Identity pins the arch id and the true d_ff (never the default)."""
+    base = Hydra2BaselineModel()
+    big = Hydra2BaselineModel(
+        architecture_id="hydra2_big_transformer_v1",
+        d_model=256,
+        n_heads=8,
+        n_layers=8,
+        d_ff=1024,
+        dropout=0.0,
+    )
+    assert base.model_identity != big.model_identity
+    assert big.model_spec()["architecture_id"] == "hydra2_big_transformer_v1"
+    assert big.model_spec()["architecture_parameters"]["d_ff"] == 1024
+    assert base.model_spec()["architecture_parameters"]["d_ff"] == 256
+
+
+def test_big_trunk_forward_contract_shapes() -> None:
+    """Big trunk forward keeps every contract shape (heads scale with D)."""
+    torch.manual_seed(0)
+    model = Hydra2BaselineModel(
+        architecture_id="hydra2_big_transformer_v1",
+        d_model=256,
+        n_heads=8,
+        n_layers=8,
+        d_ff=1024,
+        dropout=0.0,
+    )
+    model.eval()
+    assert model.policy_head.in_features == 2 * 256
+    batch = encode_observations([_make_observation(history=_history_of_length(5))])
+    out = model.evaluate(batch)
+    assert out.policy_logits.shape == (1, BASELINE_ACTION_COUNT)
+    assert out.placement_logits.shape == (1, 4, 4)
+    assert out.value_vector.shape == (1, 4)
+    assert torch.isfinite(out.policy_logits).all()
+
+
+def test_build_model_selects_arch_defaults() -> None:
+    """_build_model: big id gets big widths; explicit params win; unknown fails."""
+    from types import SimpleNamespace
+
+    from hydra2.training.stream_build import _build_model
+
+    def _config(arch_id: str, parameters: dict) -> Any:
+        return SimpleNamespace(
+            model=SimpleNamespace(
+                architecture_id=arch_id,
+                action_count=BASELINE_ACTION_COUNT,
+                parameters=parameters,
+            )
+        )
+
+    big = _build_model(_config("hydra2_big_transformer_v1", {}))
+    assert (big.d_model, big.n_heads, big.n_layers, big.d_ff) == (256, 8, 8, 1024)
+    assert sum(p.numel() for p in big.parameters()) == 9914166
+    narrow = _build_model(_config("hydra2_big_transformer_v1", {"d_model": 128, "n_heads": 4}))
+    assert (narrow.d_model, narrow.n_heads, narrow.n_layers) == (128, 4, 8)
+    baseline = _build_model(_config("hydra2_baseline_transformer_v1", {}))
+    assert (baseline.d_model, baseline.n_layers) == (128, 2)
+    with pytest.raises(ContractError):
+        _build_model(_config("hydra2_huge_transformer_v99", {}))

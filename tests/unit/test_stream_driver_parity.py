@@ -19,7 +19,8 @@ wall-clock, no ``random`` module, no ``torch.manual_seed``.
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
 
 import pytest
 import zstandard as zstd
@@ -31,9 +32,6 @@ from hydra2.data.stream_iter import GameStream
 from hydra2.data.stream_manifest import build_manifest
 from hydra2.data.stream_read import StreamCursor
 from hydra2.training import stream_train as driver
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 pytestmark = pytest.mark.contract_package("WP-14")
 
@@ -49,23 +47,38 @@ _WALL = list(range(136))
 _WALL_HASH = "sha256:87ef3e03a99fdd08632d1e74dda2c6287b549293c6d781c0693789f1095ae25c"
 
 _STEMS = [
-    "2024030100gm-00a9-0000-0000001",
-    "2024030200gm-00a9-0000-0000002",
-    "2024030600gm-00a9-0000-0000006",
-    "2024030800gm-00a9-0000-0000008",
-    "2024030900gm-00a9-0000-0000009",
-    "2024031000gm-00a9-0000-0000010",
+    "2024030200gm-00a9-0000-0000001",
+    "2024030300gm-00a9-0000-0000002",
+    "2024030400gm-00a9-0000-0000006",
+    "2024030500gm-00a9-0000-0000008",
+    "2024030600gm-00a9-0000-0000009",
+    "2024030700gm-00a9-0000-0000010",
 ]
 
-#: Manifest order: sha256-hex of the relative path (oracle-frozen).
+#: Manifest order: sha256-hex of `root-id + NUL + relpath` (oracle-frozen).
+#: The corpus root is the fixed ``tenhou`` leaf, so order is session-stable.
+#: All six dates draw train under the namespaced scheme (picked, then pinned
+#: by ``test_stems_all_draw_train`` — a scheme change fails there, loudly).
+
 _MANIFEST_ORDER = [
-    "2024030900gm-00a9-0000-0000009.mjai.json.zst",
-    "2024030800gm-00a9-0000-0000008.mjai.json.zst",
-    "2024030100gm-00a9-0000-0000001.mjai.json.zst",
-    "2024031000gm-00a9-0000-0000010.mjai.json.zst",
-    "2024030200gm-00a9-0000-0000002.mjai.json.zst",
-    "2024030600gm-00a9-0000-0000006.mjai.json.zst",
+    "2024030200gm-00a9-0000-0000001.mjai.json.zst",
+    "2024030400gm-00a9-0000-0000006.mjai.json.zst",
+    "2024030300gm-00a9-0000-0000002.mjai.json.zst",
+    "2024030700gm-00a9-0000-0000010.mjai.json.zst",
+    "2024030600gm-00a9-0000-0000009.mjai.json.zst",
+    "2024030500gm-00a9-0000-0000008.mjai.json.zst",
 ]
+
+
+def test_stems_all_draw_train() -> None:
+    """All six parity dates draw train under the namespaced scheme."""
+    from hydra2.data.stream_read import assign_split, group_key_for_entry
+
+    for stem in _STEMS:
+        probe = Path("rx") / "tenhou" / f"{stem}.mjai.json.zst"
+        key = group_key_for_entry(root_id="tenhou", path=probe)
+        assert assign_split(group_key=key, seed=_DATA_SEED, ratios=dict(_RATIOS)) == "train"
+
 
 _TEHAIS = [
     ["1m", "1m", "1m", "1m", "5mr", "5m", "5m", "5m", "9m", "9m", "9m", "9m", "4p"],
@@ -75,7 +88,37 @@ _TEHAIS = [
 ]
 
 #: (game_id, raw_bytes_sha256, wall_hash, validation_hash, raw_len); offsets all 0.
+#: File order under the namespaced scheme is games [0, 2, 1, 5, 4, 3];
+#: per-game rows are content-derived and unchanged, only reordered.
 _EMISSION = [
+    (
+        "parity-game-0",
+        "sha256:751ba61a40fe618934b9ace50237a8f108f9719424631546845f4ceb337f77df",
+        None,
+        "sha256:7f7955de4fd28b5ae1258ef1f4487903f1e64ac7092726a4d7630190bbf6f70f",
+        937,
+    ),
+    (
+        "parity-game-2",
+        "sha256:d59b1a6ec92de2be850ba61657f8af7bc8cb2a42cffc576cc9cad879bbce0f0e",
+        None,
+        "sha256:928c7e9a06b07d2f25dfc22e45cb114f8d40cf9df1843a84550d6694bb830acf",
+        937,
+    ),
+    (
+        "parity-game-1",
+        "sha256:b399015a35ac7216c049ed925a6220d92ff2aec65fad401f0288fbe0c26478a2",
+        _WALL_HASH,
+        "sha256:0d68a37fed606301eed5b776727f91690e7dde2b14aededba46cfb1b10fc6cc4",
+        1517,
+    ),
+    (
+        "parity-game-5",
+        "sha256:c562b0472df58388ecea755e0a4d8f9c5f13b531194f22af11431367a139ff40",
+        _WALL_HASH,
+        "sha256:1be35b44020366be946b813e3c4ced88c0ee0a5c18e605c213d9d5467ba40c70",
+        1517,
+    ),
     (
         "parity-game-4",
         "sha256:e8489095a18547ad7ed300bdf2a03e6ac0152880d148a5c6ed820d6a8a5155db",
@@ -90,84 +133,56 @@ _EMISSION = [
         "sha256:248cbd1a1c69896c7cb3671b05fe1ac0be5eb2b599063949adc13447275b42f0",
         1517,
     ),
-    (
-        "parity-game-0",
-        "sha256:751ba61a40fe618934b9ace50237a8f108f9719424631546845f4ceb337f77df",
-        None,
-        "sha256:7f7955de4fd28b5ae1258ef1f4487903f1e64ac7092726a4d7630190bbf6f70f",
-        937,
-    ),
-    (
-        "parity-game-5",
-        "sha256:c562b0472df58388ecea755e0a4d8f9c5f13b531194f22af11431367a139ff40",
-        _WALL_HASH,
-        "sha256:1be35b44020366be946b813e3c4ced88c0ee0a5c18e605c213d9d5467ba40c70",
-        1517,
-    ),
-    (
-        "parity-game-1",
-        "sha256:b399015a35ac7216c049ed925a6220d92ff2aec65fad401f0288fbe0c26478a2",
-        _WALL_HASH,
-        "sha256:0d68a37fed606301eed5b776727f91690e7dde2b14aededba46cfb1b10fc6cc4",
-        1517,
-    ),
-    (
-        "parity-game-2",
-        "sha256:d59b1a6ec92de2be850ba61657f8af7bc8cb2a42cffc576cc9cad879bbce0f0e",
-        None,
-        "sha256:928c7e9a06b07d2f25dfc22e45cb114f8d40cf9df1843a84550d6694bb830acf",
-        937,
-    ),
 ]
 
 _FULL_IDS = [
-    "parity-game-4:d0000",
-    "parity-game-4:d0001",
-    "parity-game-4:d0002",
-    "parity-game-3:d0000",
-    "parity-game-3:d0001",
-    "parity-game-3:d0002",
     "parity-game-0:d0000",
     "parity-game-0:d0001",
     "parity-game-0:d0002",
-    "parity-game-5:d0000",
-    "parity-game-5:d0001",
-    "parity-game-5:d0002",
-    "parity-game-1:d0000",
-    "parity-game-1:d0001",
-    "parity-game-1:d0002",
     "parity-game-2:d0000",
     "parity-game-2:d0001",
     "parity-game-2:d0002",
-]
-
-_CHOSEN = [192, 193, 193, 192, 193, 194, 192, 193, 193, 192, 193, 194, 192, 193, 194, 192, 193, 193]
-
-_TAKE1 = [
+    "parity-game-1:d0000",
+    "parity-game-1:d0001",
+    "parity-game-1:d0002",
+    "parity-game-5:d0000",
+    "parity-game-5:d0001",
+    "parity-game-5:d0002",
     "parity-game-4:d0000",
     "parity-game-4:d0001",
     "parity-game-4:d0002",
     "parity-game-3:d0000",
     "parity-game-3:d0001",
-]
-_TAKE2 = [
     "parity-game-3:d0002",
+]
+
+_CHOSEN = [192, 193, 193, 192, 193, 193, 192, 193, 194, 192, 193, 194, 192, 193, 193, 192, 193, 194]
+
+_TAKE1 = [
     "parity-game-0:d0000",
     "parity-game-0:d0001",
     "parity-game-0:d0002",
+    "parity-game-2:d0000",
+    "parity-game-2:d0001",
+]
+_TAKE2 = [
+    "parity-game-2:d0002",
+    "parity-game-1:d0000",
+    "parity-game-1:d0001",
+    "parity-game-1:d0002",
     "parity-game-5:d0000",
 ]
 _TAKE3 = [
     "parity-game-5:d0001",
     "parity-game-5:d0002",
-    "parity-game-1:d0000",
-    "parity-game-1:d0001",
-    "parity-game-1:d0002",
+    "parity-game-4:d0000",
+    "parity-game-4:d0001",
+    "parity-game-4:d0002",
 ]
-_TAKE4 = ["parity-game-2:d0000", "parity-game-2:d0001", "parity-game-2:d0002"]
+_TAKE4 = ["parity-game-3:d0000", "parity-game-3:d0001", "parity-game-3:d0002"]
 
-_HASH15 = "sha256:f8854a248e523d920222eb1f0735968a2ec5e44117b81add588777c570ebae64"
-_HASH18 = "sha256:d968986d5da0a51547e2a26bf989fa56f5be088f65d34531fbd30fb49ed0992e"
+_HASH15 = "sha256:2c1ebfdac7d87b83e8b4abb3c88d4f2e5ce4a5e15c470fe3de645582bd851d36"
+_HASH18 = "sha256:3f0dcedd14437064cf05691e0f2224467f09264e3e8d7811cde5d6aab6823ca9"
 
 _SEEK_AFTER_15 = {
     "byte_offset": 1517,
@@ -176,7 +191,13 @@ _SEEK_AFTER_15 = {
     "games_seen": 5,
     "shuffle_pos": 5,
 }
-_CURSOR_FINAL = {"byte_offset": 937, "epoch": 0, "file_index": 5, "games_seen": 6, "shuffle_pos": 6}
+_CURSOR_FINAL = {
+    "byte_offset": 1517,
+    "epoch": 0,
+    "file_index": 5,
+    "games_seen": 6,
+    "shuffle_pos": 6,
+}
 
 
 def _key() -> Any:
@@ -233,12 +254,12 @@ def _corpus(tmp_path: Path) -> Path:
     return corpus
 
 
-def _stream(manifest: Any, seed: int, *, start: Any = None) -> GameStream:
+def _stream(manifest: Any, seed: int, *, start: Any = None, epoch: int = 0) -> GameStream:
     return GameStream(
         manifest,
         seed=seed,
         ratios=dict(_RATIOS),
-        epoch=0,
+        epoch=epoch,
         split="train",
         shuffle_buffer=0,
         start=start,
@@ -247,7 +268,7 @@ def _stream(manifest: Any, seed: int, *, start: Any = None) -> GameStream:
 
 def _dataset(manifest: Any, seed: int, *, start: Any = None) -> Any:
     return driver._StreamDataset(
-        stream_factory=lambda: _stream(manifest, seed, start=start),
+        stream_factory=lambda epoch=0: _stream(manifest, seed, start=start, epoch=epoch),
         num_actions=6792,
         feature_dim=64,
         seed=seed,
@@ -412,19 +433,19 @@ def test_actor_firewall_pinned(tmp_path: Path) -> None:
     games = list(_stream(manifest, _DATA_SEED))
     assert actor_payload(games[0]) == {
         "event_count": 9,
-        "game_id": "parity-game-4",
-        "source_object_id": "2024030900gm-00a9-0000-0000009",
+        "game_id": "parity-game-0",
+        "source_object_id": "2024030200gm-00a9-0000-0000001",
         "split": "train",
         "validation_hash": _EMISSION[0][3],
         "wall_hash": None,
     }
     assert actor_payload(games[1]) == {
         "event_count": 9,
-        "game_id": "parity-game-3",
-        "source_object_id": "2024030800gm-00a9-0000-0000008",
+        "game_id": "parity-game-2",
+        "source_object_id": "2024030400gm-00a9-0000-0000006",
         "split": "train",
         "validation_hash": _EMISSION[1][3],
-        "wall_hash": _WALL_HASH,
+        "wall_hash": None,
     }
     for game in games:
         verify_no_privileged_leakage(actor_payload(game))
@@ -533,7 +554,7 @@ def test_driver_takes_match_oracle_pinned(rust_extension: Any, tmp_path: Path) -
         # same take content, different live windows — each pins its own hash.
         assert snap.row_hash == _HASH15
         assert oracle.buffered_row_hash() == _HASH18
-        assert (int(snap.replayed), int(snap.sim_replayed)) == (3, 2)
+        assert (int(snap.replayed), int(snap.sim_replayed)) == (2, 3)
         assert (oracle.replayed, oracle.sim_replayed) == (3, 3)
         oracle_take4 = oracle._consume_microbatch(3)
         assert [row["decision_id"] for row in oracle_take4] == _TAKE4

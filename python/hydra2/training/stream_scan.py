@@ -20,10 +20,13 @@ from hydra2.artifacts.digest import sha256_digest as sha256_digest
 from hydra2.contracts.common import ContractError as ContractError
 from hydra2.contracts.common import CorruptArtifactError as CorruptArtifactError
 from hydra2.data.stream_iter import GameStream as GameStream
+from hydra2.data.stream_manifest import HOLDOUT_SPEC as HOLDOUT_SPEC
 from hydra2.data.stream_manifest import load_scan_cache as load_scan_cache
+from hydra2.data.stream_manifest import resolve_root_id as resolve_root_id
 from hydra2.data.stream_manifest import save_scan_cache as save_scan_cache
 from hydra2.data.stream_manifest import scan_cache_path as scan_cache_path
 from hydra2.data.stream_read import assign_split as assign_split
+from hydra2.data.stream_read import group_key_for_entry as group_key_for_entry
 from hydra2.data.stream_read import group_key_for_path as group_key_for_path
 from hydra2.data.stream_read import stem_of as stem_of
 from hydra2.training.stream_expand import _pool_worker_init as _pool_worker_init
@@ -57,6 +60,10 @@ class _ScanReport:
     emitted: int
     quarantined: int
     duplicates: int
+    #: Per-root game tallies in manifest-root order:
+    #: ``((root-id, train-games, val-games), ...)``. Feeds the sidecar
+    #: source-mix table; tallied during the scan, never a second pass.
+    root_games: tuple[tuple[str, int, int], ...] = ()
 
 
 def _require_columnar_scan() -> Any:
@@ -134,15 +141,25 @@ def _scan_corpus(
     val_games = 0
     train_sim_games = 0
     val_sim_games = 0
+    tallies: dict[str, list[int]] = {rid: [0, 0] for rid, _ in manifest.roots}
+    last_path: Path | None = None
+    last_rid = ""
     for game in stream:
+        # File-boundary root tracking: games stream in manifest file order,
+        # so the root resolves once per file (never per game).
+        if game.path != last_path:
+            last_path = game.path
+            last_rid = resolve_root_id(manifest.roots, game.path)
         if game.split == config.data.train_split:
             train_games += 1
+            tallies[last_rid][0] += 1
             if game.wall_hash is not None:
                 train_walls.add(game.wall_hash)
             if game.game.wall_tiles is None:
                 train_sim_games += 1
         elif game.split == config.data.val_split:
             val_games += 1
+            tallies[last_rid][1] += 1
             if game.wall_hash is not None:
                 val_walls.add(game.wall_hash)
             if game.game.wall_tiles is None:
@@ -160,6 +177,7 @@ def _scan_corpus(
         stats.emitted,
         stats.quarantined,
         stats.duplicates,
+        tuple((rid, tallies[rid][0], tallies[rid][1]) for rid, _ in manifest.roots),
     )
 
 
@@ -175,6 +193,7 @@ def _scan_report(
     emitted: int,
     quarantined: int,
     duplicates: int,
+    root_games: tuple[tuple[str, int, int], ...] = (),
 ) -> _ScanReport:
     """Shared scan tail: wall-disjoint gate plus the report record.
 
@@ -213,6 +232,7 @@ def _scan_report(
         emitted=emitted,
         quarantined=quarantined,
         duplicates=duplicates,
+        root_games=root_games,
     )
 
 
@@ -228,7 +248,7 @@ def _scan_corpus_parallel(
     (:func:`assign_split`), so parallel decode cannot change partitions.
     """
     paths = [str(entry.path) for entry in manifest.files]
-    keys = [group_key_for_path(entry.path) for entry in manifest.files]
+    keys = [group_key_for_entry(root_id=entry.root_id, path=entry.path) for entry in manifest.files]
     train_walls: set[str] = set()
     val_walls: set[str] = set()
     train_games = 0
@@ -239,6 +259,7 @@ def _scan_corpus_parallel(
     emitted = 0
     quarantined = 0
     duplicates = 0
+    tallies: dict[str, list[int]] = {rid: [0, 0] for rid, _ in manifest.roots}
     hashes: set[str] = set()
     # Spawn (never fork): the parent has torch OMP threads alive and
     # fork-with-threads deadlocks racily; spawn re-imports clean workers.
@@ -252,6 +273,7 @@ def _scan_corpus_parallel(
     ) as pool:
         for file_index, games in enumerate(pool.map(_scan_file_games, paths, chunksize=32)):
             group_key = keys[file_index]
+            file_rid = manifest.files[file_index].root_id
             for item in games:
                 framed += 1
                 if item is None:
@@ -269,12 +291,14 @@ def _scan_corpus_parallel(
                 emitted += 1
                 if assigned == config.data.train_split:
                     train_games += 1
+                    tallies[file_rid][0] += 1
                     if wall_hash is not None:
                         train_walls.add(wall_hash)
                     if is_sim:
                         train_sim_games += 1
                 elif assigned == config.data.val_split:
                     val_games += 1
+                    tallies[file_rid][1] += 1
                     if wall_hash is not None:
                         val_walls.add(wall_hash)
                     if is_sim:
@@ -291,6 +315,7 @@ def _scan_corpus_parallel(
         emitted,
         quarantined,
         duplicates,
+        tuple((rid, tallies[rid][0], tallies[rid][1]) for rid, _ in manifest.roots),
     )
 
 
@@ -308,9 +333,10 @@ def _shared_scan_cache_path(
     The run-dir copy stays authoritative for audit/resume; this path only
     avoids re-scanning an immutable corpus on every fresh run_dir. Keyed by
     the identical fields ``load_scan_cache`` re-validates plus a per-file
-    ``(path, size, mtime_ns)`` fingerprint, so any add/remove/resize/touch
-    misses to a full scan (same staleness semantics as ``make``). Override
-    the directory with ``HYDRA2_SCAN_CACHE_DIR`` (never inside a data root).
+    ``(root-id, relpath, size, mtime_ns)`` fingerprint, so any add/remove/
+    resize/touch misses to a full scan (same staleness semantics as
+    ``make``). Override the directory with ``HYDRA2_SCAN_CACHE_DIR`` (never
+    inside a data root).
     """
     from hydra2.data.stream_manifest import SCAN_CACHE_VERSION
 
@@ -329,13 +355,22 @@ def _shared_scan_cache_path(
             stamp = f"{fingerprint_stat.st_size}:{fingerprint_stat.st_mtime_ns}"
         except OSError:
             stamp = "missing"
-        stamps.append(f"{entry.path.as_posix()}:{stamp}\n".encode())
+        stamps.append(f"{entry.root_id}\0{entry.relpath}:{stamp}\n".encode())
     # Same bytes the retired incremental ``hashlib.sha256`` covered; the
     # digest is minted by the hard-Rust digest owner (fail closed with a
     # ``build-ext`` hint when the extension is not built).
     files_hex = str(sha256_digest(b"".join(stamps))).removeprefix("sha256:")
     fingerprint = repr(
-        (SCAN_CACHE_VERSION, stream_digest, seed, sorted(ratios.items()), train_split, val_split)
+        (
+            SCAN_CACHE_VERSION,
+            stream_digest,
+            seed,
+            sorted(ratios.items()),
+            train_split,
+            val_split,
+            list(manifest.roots),
+            HOLDOUT_SPEC,
+        )
     )
     key = str(sha256_digest((fingerprint + files_hex).encode())).removeprefix("sha256:")[:32]
     return Path(base_raw) / f"scan-{key}.json"
@@ -350,10 +385,12 @@ def _scan_corpus_cached(
     run_dir: Path,
 ) -> _ScanReport:
     """Pre-train scan with content-hash cache (miss → full scan + save).
-    Cache key is ``(manifest digest, seed, ratios, split names)``; reload
-    re-verifies the digest and wall-disjointness. Stale/corrupt entries fail
-    closed to a full scan (never raise, never partial).
+    Cache key is ``(manifest digest, seed, ratios, split names, roots,
+    holdout)``; reload re-verifies the digest and wall-disjointness.
+    Stale/corrupt entries fail closed to a full scan (never raise, never
+    partial).
     """
+    roots = list(config.data.roots)
     cache_file = scan_cache_path(run_dir)
     shared = _shared_scan_cache_path(
         manifest=manifest,
@@ -370,6 +407,8 @@ def _scan_corpus_cached(
         ratios=ratios,
         train_split=config.data.train_split,
         val_split=config.data.val_split,
+        roots=roots,
+        holdout=HOLDOUT_SPEC,
     )
     if cached is None:
         cached = load_scan_cache(
@@ -379,6 +418,8 @@ def _scan_corpus_cached(
             ratios=ratios,
             train_split=config.data.train_split,
             val_split=config.data.val_split,
+            roots=roots,
+            holdout=HOLDOUT_SPEC,
         )
         if cached is not None:
             print("phase: scan-cache shared hit", flush=True)
@@ -389,10 +430,18 @@ def _scan_corpus_cached(
                 ratios=ratios,
                 train_split=config.data.train_split,
                 val_split=config.data.val_split,
+                roots=roots,
+                holdout=HOLDOUT_SPEC,
                 scan=dict(cached),
             )
     if cached is not None:
         try:
+            cached_games = cached["root_games"]
+            assert isinstance(cached_games, list)
+            root_games = tuple(
+                (str(row[0]), int(row[1]), int(row[2]))  # type: ignore[index]
+                for row in cached_games
+            )
             return _scan_report(
                 config,
                 set(cached["train_walls"]),  # type: ignore[arg-type]
@@ -405,10 +454,24 @@ def _scan_corpus_cached(
                 int(cached["emitted"]),  # type: ignore[arg-type]
                 int(cached["quarantined"]),  # type: ignore[arg-type]
                 int(cached["duplicates"]),  # type: ignore[arg-type]
+                root_games,
             )
-        except (ContractError, ValueError, TypeError, KeyError, AttributeError):
+        except (ContractError, ValueError, TypeError, KeyError, AttributeError, AssertionError):
             pass
     report = _scan_corpus(manifest, config=config, ratios=ratios)
+    scan = {
+        "train_walls": sorted(report.train_walls),
+        "val_walls": sorted(report.val_walls),
+        "root_games": [list(row) for row in report.root_games],
+        "train_games": report.train_games,
+        "val_games": report.val_games,
+        "train_sim_games": report.train_sim_games,
+        "val_sim_games": report.val_sim_games,
+        "framed": report.framed,
+        "emitted": report.emitted,
+        "quarantined": report.quarantined,
+        "duplicates": report.duplicates,
+    }
     save_scan_cache(
         cache_file,
         manifest_digest=stream_digest,
@@ -416,18 +479,9 @@ def _scan_corpus_cached(
         ratios=ratios,
         train_split=config.data.train_split,
         val_split=config.data.val_split,
-        scan={
-            "train_walls": sorted(report.train_walls),
-            "val_walls": sorted(report.val_walls),
-            "train_games": report.train_games,
-            "val_games": report.val_games,
-            "train_sim_games": report.train_sim_games,
-            "val_sim_games": report.val_sim_games,
-            "framed": report.framed,
-            "emitted": report.emitted,
-            "quarantined": report.quarantined,
-            "duplicates": report.duplicates,
-        },
+        roots=roots,
+        holdout=HOLDOUT_SPEC,
+        scan=scan,
     )
     save_scan_cache(
         shared,
@@ -436,17 +490,8 @@ def _scan_corpus_cached(
         ratios=ratios,
         train_split=config.data.train_split,
         val_split=config.data.val_split,
-        scan={
-            "train_walls": sorted(report.train_walls),
-            "val_walls": sorted(report.val_walls),
-            "train_games": report.train_games,
-            "val_games": report.val_games,
-            "train_sim_games": report.train_sim_games,
-            "val_sim_games": report.val_sim_games,
-            "framed": report.framed,
-            "emitted": report.emitted,
-            "quarantined": report.quarantined,
-            "duplicates": report.duplicates,
-        },
+        roots=roots,
+        holdout=HOLDOUT_SPEC,
+        scan=scan,
     )
     return report

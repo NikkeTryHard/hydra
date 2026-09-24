@@ -51,13 +51,13 @@ class TestBufferCompaction:
         corpus.mkdir(parents=True, exist_ok=True)
         for index, stem in enumerate(train_stems):
             _write_game(corpus / f"{stem}.mjai.json.zst", f"compact-game-{index}")
-        manifest = build_manifest(corpus)
+        manifest = build_manifest(corpus.parent)
         return driver._StreamDataset(
-            stream_factory=lambda: GameStream(
+            stream_factory=lambda epoch=0: GameStream(
                 manifest,
                 seed=DATA_SEED,
                 ratios=dict(_RATIOS),
-                epoch=0,
+                epoch=epoch,
                 split="train",
                 shuffle_buffer=0,
             ),
@@ -179,7 +179,7 @@ class TestSeekResume:
             _totals(continued["loss_history"]), _totals(fresh["loss_history"])
         )
         assert cache.is_file()
-        assert json.loads(cache.read_text(encoding="utf-8"))["version"] == 1
+        assert json.loads(cache.read_text(encoding="utf-8"))["version"] == 2
 
     def test_dataset_buffer_round_trip_verbatim(self, tmp_path: Path) -> None:
         """Dataset tail re-expansion is verbatim (rows + hash + counters)."""
@@ -192,14 +192,14 @@ class TestSeekResume:
         corpus.mkdir(parents=True, exist_ok=True)
         for index, stem in enumerate(train_stems):
             _write_game(corpus / f"{stem}.mjai.json.zst", f"roundtrip-game-{index}")
-        manifest = build_manifest(corpus)
+        manifest = build_manifest(corpus.parent)
 
-        def _factory() -> Any:
+        def _factory(epoch: int = 0) -> Any:
             return GameStream(
                 manifest,
                 seed=DATA_SEED,
                 ratios=dict(_RATIOS),
-                epoch=0,
+                epoch=epoch,
                 split="train",
                 shuffle_buffer=0,
             )
@@ -511,7 +511,7 @@ class TestHomogeneousBuckets:
     def _dataset(self, **kwargs: Any) -> Any:
         import hydra2.training.stream_train as driver
 
-        def _never_pull() -> Any:
+        def _never_pull(epoch: int = 0) -> Any:
             raise AssertionError("grouped-take test pre-buffers rows; no pulls expected")
 
         return driver._StreamDataset(
@@ -572,7 +572,7 @@ class TestHomogeneousBuckets:
         corpus.mkdir(parents=True, exist_ok=True)
         for index, stem in enumerate(train_stems):
             _write_long_game(corpus / f"{stem}.mjai.json.zst", f"homog-long-{index}")
-        return build_manifest(corpus)
+        return build_manifest(corpus.parent)
 
     def _long_dataset(self, manifest: Any, **kwargs: Any) -> Any:
         import hydra2.training.stream_train as driver
@@ -582,11 +582,11 @@ class TestHomogeneousBuckets:
         # visible_history key path is exercised end to end over histories
         # spanning buckets 32/64/128.
         return driver._StreamDataset(
-            stream_factory=lambda: GameStream(
+            stream_factory=lambda epoch=0: GameStream(
                 manifest,
                 seed=DATA_SEED,
                 ratios=dict(_RATIOS),
-                epoch=0,
+                epoch=epoch,
                 split="train",
                 shuffle_buffer=0,
             ),
@@ -716,3 +716,149 @@ class TestHomogeneousBuckets:
         bad["row_order"] = [1, 2, 3]
         with pytest.raises(ContractError, match="row_order"):
             _parse_dataset_buffer_sidecar(bad, ckpt=ckpt)
+
+
+@pytest.mark.serial
+class TestEpochWrap:
+    """Multi-epoch wrap: exhaustion rolls the epoch, resume crosses it, gates hold."""
+
+    def _corpus(self, tmp_path: Path, *, games: int, tag: str) -> Any:
+        from hydra2.data.stream_manifest import build_manifest
+
+        train_stems, _ = _pick_stems(need_train=games, need_val=0)
+        corpus = tmp_path / "corpus" / "tenhou"
+        corpus.mkdir(parents=True, exist_ok=True)
+        for index, stem in enumerate(train_stems):
+            _write_game(corpus / f"{stem}.mjai.json.zst", f"{tag}-{index}")
+        return build_manifest(corpus.parent)
+
+    def _dataset(self, manifest: Any) -> Any:
+        import hydra2.training.stream_train as driver
+        from hydra2.data.stream_iter import GameStream
+
+        return driver._StreamDataset(
+            stream_factory=lambda epoch=0: GameStream(
+                manifest,
+                seed=DATA_SEED,
+                ratios=dict(_RATIOS),
+                epoch=epoch,
+                split="train",
+                shuffle_buffer=0,
+            ),
+            num_actions=6792,
+            feature_dim=64,
+            seed=DATA_SEED,
+            drop_last=True,
+            need_privileged=False,
+        )
+
+    def test_roll_continues_past_exhaustion_with_same_multiset(self, tmp_path: Path) -> None:
+        """Past-supply takes roll the epoch and replay the corpus (no stall, no tail dup)."""
+        from hydra2.training.stream_checkpoint import _epoch_seed
+
+        manifest = self._corpus(tmp_path, games=4, tag="wrap-game")
+        probe = self._dataset(manifest)
+        try:
+            while probe._pull_game():
+                pass
+            epoch0_ids = [str(row["decision_id"]) for row in probe._rows]
+        finally:
+            probe.close()
+        assert len(epoch0_ids) > 0
+        # The shuffle seed is epoch-parameterized (rotation is structural, not hoped for).
+        assert _epoch_seed(data_seed=DATA_SEED, epoch=0) != _epoch_seed(
+            data_seed=DATA_SEED, epoch=1
+        )
+        # Single-row takes are epoch-pure: a take pops exactly one row, so the
+        # live epoch observed after the take is that row's epoch (a take that
+        # triggers the roll fills from the new epoch before popping).
+        by_epoch: dict[int, list[str]] = {}
+        live = self._dataset(manifest)
+        try:
+            for _ in range(10**6):
+                rows = live._consume_microbatch(1)
+                assert len(rows) == 1
+                by_epoch.setdefault(live.epoch, []).append(str(rows[0]["decision_id"]))
+                if live.epoch >= 2:
+                    break
+            else:
+                raise AssertionError("epoch never rolled twice past exhaustion")
+        finally:
+            live.close()
+        assert live.epoch == 2
+        assert by_epoch[0] == epoch0_ids
+        assert by_epoch[1] == epoch0_ids
+
+    def test_resume_from_post_roll_checkpoint(self, tmp_path: Path) -> None:
+        """A checkpoint written in epoch 1 resumes to a bit-identical finish."""
+        fresh, config = TestSeekResume._run_fresh(self, tmp_path, max_updates=10)
+        fresh_dir = Path(fresh["run_dir"])
+        epochs = {
+            name: int(
+                json.loads((fresh_dir / "checkpoints" / name).read_text(encoding="utf-8"))[
+                    "stream_epoch"
+                ]
+            )
+            for name in sorted((fresh_dir / "checkpoints").glob("ckpt-*.json"))
+        }
+        assert max(epochs.values()) >= 1, f"no post-roll checkpoint: {epochs}"
+        # Crash after update 9 (epoch-1 territory): resume must finish identically.
+        (fresh_dir / "checkpoints" / "ckpt-000010.pt").unlink()
+        (fresh_dir / "checkpoints" / "ckpt-000010.json").unlink()
+        resume = resolve_resume_plan(fresh_dir, which=fresh_dir / "checkpoints" / "ckpt-000009.pt")
+        continued = run_stream_training(config, resume)
+        torch.testing.assert_close(
+            _totals(continued["loss_history"]), _totals(fresh["loss_history"])
+        )
+        assert continued["end_update"] == 10
+        updates = [
+            int(row["global_update"])
+            for line in (fresh_dir / "logs" / "metrics.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+            if line.strip()
+            for row in [json.loads(line)]
+        ]
+        assert sorted(updates) == list(range(1, 11))
+
+    def test_prefoll_short_run_is_bit_identical(self, tmp_path: Path) -> None:
+        """The wrap changes nothing pre-exhaustion: two short runs agree row-for-row."""
+        first, _ = TestSeekResume._run_fresh(
+            self, tmp_path / "a", max_updates=3, run_id=RUN_ID + "-parity-a"
+        )
+        second, _ = TestSeekResume._run_fresh(
+            self, tmp_path / "b", max_updates=3, run_id=RUN_ID + "-parity-b"
+        )
+        torch.testing.assert_close(_totals(first["loss_history"]), _totals(second["loss_history"]))
+        assert first["end_update"] == second["end_update"] == 3
+
+    def test_tampered_stream_epoch_fails_closed(self, tmp_path: Path) -> None:
+        """A forged stream epoch never resumes silently (stream/cursor mismatch)."""
+        fresh, config = TestSeekResume._run_fresh(self, tmp_path, max_updates=2)
+        fresh_dir = Path(fresh["run_dir"])
+        (fresh_dir / "checkpoints" / "ckpt-000002.pt").unlink()
+        (fresh_dir / "checkpoints" / "ckpt-000002.json").unlink()
+        sidecar_path = fresh_dir / "checkpoints" / "ckpt-000001.json"
+        sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        assert int(sidecar["stream_epoch"]) == 0
+        sidecar["stream_epoch"] = 5
+        sidecar_path.write_text(json.dumps(sidecar, indent=2, sort_keys=True), encoding="utf-8")
+        resume = resolve_resume_plan(fresh_dir, which=fresh_dir / "checkpoints" / "ckpt-000001.pt")
+        with pytest.raises(ContractError, match="mismatch"):
+            run_stream_training(config, resume)
+
+    def test_forged_shuffle_seed_fails_closed(self, tmp_path: Path) -> None:
+        """A forged shuffle epoch seed never resumes silently (seed tripwire)."""
+        fresh, config = TestSeekResume._run_fresh(self, tmp_path, max_updates=2)
+        fresh_dir = Path(fresh["run_dir"])
+        (fresh_dir / "checkpoints" / "ckpt-000002.pt").unlink()
+        (fresh_dir / "checkpoints" / "ckpt-000002.json").unlink()
+        sidecar_path = fresh_dir / "checkpoints" / "ckpt-000001.json"
+        sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        assert isinstance(sidecar.get("shuffle"), dict)
+        assert isinstance(sidecar["shuffle"].get("epoch_seed"), int)
+        sidecar["shuffle"]["epoch_seed"] = int(sidecar["shuffle"]["epoch_seed"]) + 999
+        sidecar_path.write_text(json.dumps(sidecar, indent=2, sort_keys=True), encoding="utf-8")
+        resume = resolve_resume_plan(fresh_dir, which=fresh_dir / "checkpoints" / "ckpt-000001.pt")
+        with pytest.raises(ContractError, match="epoch_seed"):
+            run_stream_training(config, resume)

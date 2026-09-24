@@ -1,6 +1,6 @@
 """Streaming-first supervised training driver: stream → expand → encode → loop.
 
-Consumes ``.mjai.json.zst`` straight from ``data.root`` (no parquet shards)
+Consumes ``.mjai.json.zst`` straight from ``data.roots`` (no parquet shards)
 yet carries the identical contracts as the materialized path: strict decode,
 validate-then-quarantine, actor/privileged split, wall-disjoint manifests plus
 the leakage check, counter-based RNG, and ``(5,)`` dora.
@@ -60,6 +60,9 @@ from hydra2.data.stream_decode import PrefetchGameStream
 from hydra2.data.stream_iter import GameStream
 from hydra2.data.stream_manifest import build_manifest, manifest_digest
 from hydra2.data.stream_read import StreamCursor as DataStreamCursor
+from hydra2.runtime.checkpoint_publish import (
+    _BackgroundCheckpointWriter as _BackgroundCheckpointWriter,
+)
 from hydra2.training._rc_digest import create_run_layout, run_config_digest
 from hydra2.training._stream_resume_prime import _capture_prime_snapshot as _capture_prime_snapshot
 from hydra2.training._stream_resume_prime import _load_prime_snapshot as _load_prime_snapshot
@@ -175,7 +178,7 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
     # for fp32 GEMMs, the cudnn flags mirror it, and benchmark off removes
     # timing-dependent algorithm choice. Set directly (never suppressed:
     # silent numerics misconfiguration is worse than a version error).
-    # TORCHINDUCTOR_CACHE_DIR setdefault mirrors tests/conftest.py
+    # TORCHINDUCTOR_CACHE_DIR claim below mirrors tests/conftest.py
     # (explicit env wins; version-keyed so torch/triton upgrades cannot
     # poison the cache).
     torch.set_float32_matmul_precision("highest")
@@ -190,10 +193,47 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
         if _inductor_base is not None
         else os.path.join(os.path.expanduser("~"), ".cache")
     )
-    _ = os.environ.setdefault(
-        "TORCHINDUCTOR_CACHE_DIR",
-        os.path.join(_inductor_root, "hydra2", f"inductor-torch{_inductor_ver}"),
+    _inductor_want: str = os.path.join(_inductor_root, "hydra2", f"inductor-torch{_inductor_ver}")
+    # Claim the version-keyed dir unless the user explicitly set one:
+    # inductor's cache_dir() writes the default (/tmp/...) back into the
+    # env on first import-time touch, so a plain setdefault here is inert
+    # (the key already exists, locked to the default) and every run would
+    # share one un-versioned cache. Overwrite only the unset-or-default
+    # case; any other value is an explicit choice and wins.
+    _inductor_have: str | None = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
+    try:
+        from torch._inductor.runtime.cache_dir_utils import (
+            default_cache_dir as _inductor_default_dir,
+        )
+
+        _inductor_fallback: str = _inductor_default_dir()
+    except Exception:  # fail-open: fall back to setdefault semantics
+        _inductor_fallback = ""
+    if _inductor_have is None or os.path.abspath(_inductor_have) == os.path.abspath(
+        _inductor_fallback
+    ):
+        os.environ["TORCHINDUCTOR_CACHE_DIR"] = _inductor_want
+    print(
+        f"phase: inductor-cache-dir {os.environ.get('TORCHINDUCTOR_CACHE_DIR')}",
+        flush=True,
     )
+    # Pin inductor's pool pre-warm (upstream default is already 1: the pool
+    # warms on first compile. This setdefault only documents intent and
+    # guards against an ambient 0; the real pre-spawn is the explicit warm
+    # call below, which moves worker spawn out of the timed train segment).
+    _ = os.environ.setdefault("TORCH_WARM_POOL", "1")
+    # TORCH_CACHING_PRECOMPILE stays OFF (default): its load path hard-crashes
+    # on our frames (cached install pollutes f_globals, then a guard miss
+    # re-traces into AssertionError '__builtins_dict___N already exists in
+    # scope' — measured, not theoretical). The inductor FX/autotune disk
+    # caches already deliver fast warm runs; revisit only on new upstream
+    # evidence, never on theory.
+    try:
+        from torch._inductor.async_compile import maybe_warm_pool as _maybe_warm_pool
+
+        _maybe_warm_pool()
+    except Exception as exc:  # fail-open: first compile warms lazily (status quo)
+        print(f"phase: compile-pool pre-warm skipped ({exc})", flush=True)
     run_digest = run_config_digest(config)
     if resume is not None:
         # Verify-before-mutate: every identity gate BEFORE layout/stream/loop.
@@ -214,12 +254,18 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
             raise ContractError(f"resume checkpoint missing: {resume.checkpoint}")
 
     run_dir = create_run_layout(config)
+    # Stage-span sink (observer-only wall-clock spans for save/eval/drain;
+    # logging-only rows in logs/stage-spans.jsonl — never hashed, never in
+    # payloads or digests, so resume identity is untouched).
+    from hydra2.tracking.stage_spans import StageSpanSink as _StageSpanSink
+
+    _span_sink = _StageSpanSink(run_dir / "logs")
     _t_launch = time.perf_counter()
-    manifest = build_manifest(config.data.root)
+    manifest = build_manifest(config.data.roots)
     _dt = time.perf_counter() - _t_launch
     print(f"phase: manifest files={len(manifest)} t={_dt:.1f}s", flush=True)
     if len(manifest) == 0:
-        raise ContractError(f"stream manifest empty under {config.data.root}")
+        raise ContractError(f"stream manifest empty under {config.data.roots}")
     stream_digest = manifest_digest(manifest)
     pinned = config.data.dataset_manifest_hash
     if pinned is not None and pinned != stream_digest:
@@ -265,9 +311,11 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
         )
 
     need_privileged = _needs_privileged_labels(config)
-    # Single seek path (single-pass, epoch pinned 0): fresh runs start at the
+    # Epoch-aware seek path (multi-epoch wrap): fresh runs start at the
     # origin; resumes seek to the recorded frontier with verbatim shuffle
-    # buffer + RNG + dedup-prefix restore. No prefix replay, no epoch wrap.
+    # buffer + RNG + dedup-prefix restore at the recorded epoch. No prefix
+    # replay, no re-roll on resume.
+    resume_epoch = 0
     seek_start: DataStreamCursor | None = None
     seek_entries: list[dict[str, Any]] | None = None
     seek_rng: dict[str, Any] | None = None
@@ -279,21 +327,18 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
                 f"checkpoint lacks seek state (dataset_buffer): {resume.checkpoint} "
                 "(pre-simplification sidecars cannot resume; re-run from a fresh id)"
             )
-        if envelope.start_epoch != 0:
+        if envelope.start_epoch != resume.cursor.epoch:
             raise ContractError(
-                f"checkpoint stream epoch {envelope.start_epoch} != 0: {resume.checkpoint} "
-                "(single-pass pins epoch 0)"
+                f"checkpoint stream epoch {envelope.start_epoch} != cursor epoch "
+                f"{resume.cursor.epoch}: {resume.checkpoint} (stream/cursor mismatch)"
             )
-        if resume.cursor.epoch != 0:
-            raise ContractError(
-                f"resume cursor epoch {resume.cursor.epoch} != 0: {resume.checkpoint}"
-            )
+        resume_epoch = envelope.start_epoch
         seek_start = DataStreamCursor(
             file_index=resume.cursor.file_index,
             byte_offset=resume.cursor.byte_offset,
             games_seen=resume.cursor.games_seen,
             seed=resume.cursor.seed,
-            epoch=0,
+            epoch=resume.cursor.epoch,
             shuffle_pos=int(envelope.sidecar.get("stream_shuffle_pos", 0)),
         )
         shuffle_raw = envelope.sidecar.get("shuffle")
@@ -345,33 +390,38 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
             seek_start = _prime_hit["stream_cursor"]
             seek_prefix = _prime_hit["prefix_hashes"]
 
-    def _train_stream_factory() -> GameStream:
+    def _train_stream_factory(epoch: int) -> GameStream:
+        # Seek state applies only at the resume epoch; later epochs start
+        # from the origin (fresh shuffle order, empty dedup set) so the wrap
+        # never replays the resume prefix.
+        at_resume_epoch = epoch == resume_epoch
         common: dict[str, Any] = {
             "seed": config.seeds.data_seed,
             "ratios": ratios,
-            "epoch": 0,
+            "epoch": epoch,
             "split": config.data.train_split,
             "shuffle_buffer": config.data.shuffle_buffer_size,
         }
-        if config.data.num_workers > 0:
-            return PrefetchGameStream(
-                manifest,
-                **common,
-                start=seek_start,
-                shuffle_restore_entries=seek_entries,  # type: ignore[arg-type]
-                shuffle_restore_rng=seek_rng,  # type: ignore[arg-type]
-                shuffle_restore_prefix_hashes=seek_prefix,  # type: ignore[arg-type]
-                snapshot_blob=seek_blob,
-            )
-        return GameStream(
-            manifest,
-            **common,
-            start=seek_start,
-            shuffle_restore_entries=seek_entries,  # type: ignore[arg-type]
-            shuffle_restore_rng=seek_rng,  # type: ignore[arg-type]
-            shuffle_restore_prefix_hashes=seek_prefix,  # type: ignore[arg-type]
-            snapshot_blob=seek_blob,
+        restore: dict[str, Any] = (
+            {
+                "start": seek_start,
+                "shuffle_restore_entries": seek_entries,  # type: ignore[dict-item]
+                "shuffle_restore_rng": seek_rng,  # type: ignore[dict-item]
+                "shuffle_restore_prefix_hashes": seek_prefix,  # type: ignore[dict-item]
+                "snapshot_blob": seek_blob,
+            }
+            if at_resume_epoch
+            else {
+                "start": None,
+                "shuffle_restore_entries": None,
+                "shuffle_restore_rng": None,
+                "shuffle_restore_prefix_hashes": None,
+                "snapshot_blob": None,
+            }
         )
+        if config.data.num_workers > 0:
+            return PrefetchGameStream(manifest, **common, **restore)  # type: ignore[arg-type]
+        return GameStream(manifest, **common, **restore)  # type: ignore[arg-type]
 
     # Game-pull expansion: the dataset owns one GameStream and expands per
     # game to Rust plane blobs (same order/shuffle/sidecar, tensor-native
@@ -391,6 +441,7 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
         expand_workers=config.data.num_workers,
         expand_batch_games=config.data.expand_batch_games,
         homogeneous_buckets=config.data.homogeneous_buckets,
+        pack_histories=config.loop.pack_histories,
     )
     payload: Any = None
     if resume is not None and envelope is not None:
@@ -401,14 +452,15 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
         payload_rng: Any = payload.get("rng_state")
         _verify_rng_anchors(payload_rng, resume.rng_state, ckpt=resume.checkpoint)
         assert seek_start is not None
-        # Verbatim tail rebuild (O(buffer) re-expansions), never the epoch.
+        # Verbatim tail rebuild (O(buffer) re-expansions) at the recorded epoch.
         _verify_fast_snapshots(sidecar=envelope.sidecar, payload=payload, ckpt=resume.checkpoint)
         parsed_snapshot = _parse_dataset_buffer_sidecar(
             envelope.sidecar.get("dataset_buffer"), ckpt=resume.checkpoint
         )
-        if int(parsed_snapshot["epoch"]) != 0:
+        if int(parsed_snapshot["epoch"]) != envelope.start_epoch:
             raise ContractError(
-                f"checkpoint dataset epoch {parsed_snapshot['epoch']} != 0: {resume.checkpoint}"
+                f"checkpoint dataset epoch {parsed_snapshot['epoch']} != stream epoch "
+                f"{envelope.start_epoch}: {resume.checkpoint}"
             )
         if int(parsed_snapshot["microbatches_in_epoch"]) != envelope.drain_microbatches:
             raise ContractError(f"checkpoint microbatch count mismatch: {resume.checkpoint}")
@@ -416,14 +468,15 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
         assert isinstance(shuffle_raw, dict)
         shuffle_map: dict[str, Any] = shuffle_raw
         seed_val: int = int(shuffle_map.get("epoch_seed", -1))
-        if seed_val != _epoch_seed(data_seed=config.seeds.data_seed, epoch=dataset.epoch):
+        if seed_val != _epoch_seed(data_seed=config.seeds.data_seed, epoch=envelope.start_epoch):
             raise ContractError(f"checkpoint shuffle epoch_seed mismatch: {resume.checkpoint}")
         size_val: int = int(shuffle_map.get("buffer_size", -1))
         if size_val != config.data.shuffle_buffer_size:
             raise ContractError(f"checkpoint shuffle buffer_size mismatch: {resume.checkpoint}")
         dataset.restore_buffer(parsed_snapshot)
-        # Seek the live stream to the recorded frontier (no prefix drain).
-        dataset._stream = dataset._factory()  # type: ignore[attr-defined]
+        # Seek the live stream to the recorded frontier at the recorded epoch
+        # (no prefix drain).
+        dataset._stream = dataset._factory(dataset._epoch)  # type: ignore[attr-defined]
         dataset._iter = iter(dataset._stream)  # type: ignore[attr-defined]
         drained = dataset.stream_cursor()
         if drained != seek_start:
@@ -535,6 +588,10 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
             "precision": config.loop.precision,
         },
     )
+    # Observer run header must exist before checkpoint-gated log_update calls;
+    # without start_run the mirror stays task-less and drops every file record.
+    # NullMirror no-ops, so disabled runs are unaffected.
+    mirror.start_run()
     from hydra2.tracking.mlflow_mirror import make_mirror as make_mlflow_mirror
 
     # MLflow quiet mirror (default-on; Null under HYDRA2_MLFLOW_DISABLED in
@@ -569,16 +626,21 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
         with contextlib.suppress(Exception):
             mlflow_id_file.parent.mkdir(parents=True, exist_ok=True)
             _ = mlflow_id_file.write_text(started_mlflow_run, encoding="utf-8")
-    # Gated overlap feed (caller-owned): one depth-3 CUDA PinnedRing over the
-    # fixed max-bucket-T schema layout (B=microbatch, A=action_count). Depth 3
-    # covers fetch+compute+H2D overlap with one spare slot (~19MB per slot at
-    # B2048/T256, so +~20MB vs depth 2). The probe workload buckets every
-    # full microbatch at T=256, so the ring shape-matches every batch exactly
-    # (byte-identical); off-bucket batches fall back to the sync move inside
-    # the feed. None on CPU or when CUDA/pinned is unavailable (sync
-    # fallback, CPU-safe); the loop never opens or closes the handle.
+    # Gated overlap feed (caller-owned): one CUDA PinnedRing over the fixed
+    # max-bucket-T schema layout (B=microbatch, A=action_count). Depth covers
+    # one accumulation window plus one spare overlap slot
+    # (accumulation_steps + 2; ~19MB per slot at B2048/T256, so depth 6 costs
+    # ~60MB over the historical 3). Accum 1 keeps depth 3 exactly. The probe
+    # workload buckets every full microbatch at T=256, so the ring
+    # shape-matches every batch exactly (byte-identical); off-bucket batches
+    # fall back to the sync move inside the feed. None on CPU or when
+    # CUDA/pinned is unavailable (sync fallback, CPU-safe); the loop never
+    # opens or closes the handle.
     feed = _open_gated_feed(
-        microbatch=microbatch, action_count=config.model.action_count, device=handle.device
+        microbatch=microbatch,
+        action_count=config.model.action_count,
+        device=handle.device,
+        depth=config.loop.accumulation_steps + 2,
     )
     # The ring stages the H2D copy from its own pinned slots: encode-side
     # page-locking would only duplicate that work. Sync fallback (feed None)
@@ -601,6 +663,15 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
         runtime_spec=spec,
         feed=feed,
     )
+    # Background checkpoint publish (one single-worker writer for the whole
+    # run: both the loop-manifest save and the streaming ckpt publish submit
+    # here, so generations land in order while training continues). Attach
+    # before the resume apply: resume drains pending saves first, which is
+    # a no-op on this fresh writer but keeps the invariant (never load a
+    # file still being written) at every resume site by construction.
+    _ckpt_writer = _BackgroundCheckpointWriter()
+    loop.attach_checkpoint_writer(_ckpt_writer, span_sink=_span_sink)
+    _ckpt_writer.poll()
     if resume is not None:
         # Payload identity fully verified above; now mutate live objects.
         # Join the eager fill first: _apply_resume_payload snapshots dataset
@@ -623,7 +694,7 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
         _ = telemetry_path.write_text("", encoding="utf-8")
     # Verbose GPU/CPU sampler (opt-in; default off). Run-scoped rows under
     # logs/; resume appends. Never touches train state or RNG.
-    from hydra2.tracking.verbose_sampler import make_verbose_sampler
+    from hydra2.tracking.verbose_sampler_factory import make_verbose_sampler
 
     _sampled_loop = loop
     sampler = make_verbose_sampler(
@@ -695,8 +766,14 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
             with open(telemetry_path, "a", encoding="utf-8") as sink:
                 for record in loop.telemetry_records:
                     logged: dict[str, Any] = record.to_dict()
+                    # Wall stamp at write time only (logging-only: the
+                    # in-memory record stays hash-clean for any consumer).
+                    logged["t_wall_s"] = time.time()
                     _ = sink.write(json.dumps(logged, sort_keys=True) + "\n")
-            # intentionally discarded: checkpoint path unneeded, manifest tracks
+            # The streaming publish snapshots live state and submits the
+            # serialization to the background writer (returns the reserved
+            # path immediately). intentionally discarded: checkpoint path
+            # unneeded, manifest tracks
             _ = _write_streaming_checkpoint(
                 run_dir=run_dir,
                 update=loop.state.global_update,
@@ -706,12 +783,26 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
                 loop=loop,
                 dataset=dataset,
                 batch_size=microbatch,
+                writer=_ckpt_writer,
+                span_sink=_span_sink,
             )
             # intentionally discarded: appended count unneeded
             _ = _append_new_history(run_dir, loop.loss_history)
             _prune_checkpoints(run_dir, keep=config.loop.keep_last_checkpoints)
             update = loop.state.global_update
             if eval_every > 0 and update % eval_every == 0:
+                # Drain before eval-at-end: the held-out eval must observe
+                # the finished generation's files, and this also fires any
+                # mirror announcements still queued behind the write.
+                _drain_t0 = time.perf_counter()
+                _drain_wall = time.time()
+                _ckpt_writer.drain()
+                _span_sink.emit(
+                    stage="drain",
+                    dur_ms=(time.perf_counter() - _drain_t0) * 1000.0,
+                    update=update,
+                    t_start_s=_drain_wall,
+                )
                 report = _run_holdout_eval(
                     manifest=manifest,
                     ratios=ratios,
@@ -719,21 +810,38 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
                     loop=loop,
                     run_dir=run_dir,
                     update=update,
+                    span_sink=_span_sink,
                 )
                 if report is not None:
                     evals.append(report)
     finally:
-        # Training pulled its last row: stop the sampler first (so it never
-        # races the summary write), close the quiet mirror, then release
-        # expansion workers (no-op serial) and the caller-owned ring.
-        with contextlib.suppress(Exception):
-            sampler.stop()
-        with contextlib.suppress(Exception):
-            mlflow_mirror.close()
-        dataset.close()
-        if feed is not None:
+        # Land every pending generation before process exit: close drains
+        # (raising a worker error instead of dropping it) and shuts the
+        # worker down. The inner try/finally keeps the existing cleanup
+        # (sampler, mirrors, dataset, feed) running even if a failed save
+        # raises here — the worker error still propagates, fail closed.
+        try:
+            _close_t0 = time.perf_counter()
+            _close_wall = time.time()
+            _ckpt_writer.close()
+            _span_sink.emit(
+                stage="close",
+                dur_ms=(time.perf_counter() - _close_t0) * 1000.0,
+                update=None,
+                t_start_s=_close_wall,
+            )
+        finally:
+            # Training pulled its last row: stop the sampler first (so it never
+            # races the summary write), close the quiet mirror, then release
+            # expansion workers (no-op serial) and the caller-owned ring.
             with contextlib.suppress(Exception):
-                feed.close()
+                sampler.stop()
+            with contextlib.suppress(Exception):
+                mlflow_mirror.close()
+            dataset.close()
+            if feed is not None:
+                with contextlib.suppress(Exception):
+                    feed.close()
     telemetry_summary: dict[str, Any] = {
         "kind": "summary",
         "microbatches": len(telemetry_all),

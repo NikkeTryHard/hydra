@@ -70,7 +70,15 @@ def _parse_data(raw: Any) -> DataConfig:
         fields: dict[str, Any] = _require_rc_bridge().rc_parse_data(raw)
     except (ValueError, TypeError) as exc:
         raise ContractError(str(exc)) from exc
-    root: str = fields["root"]
+    roots_raw: object = fields["roots"]
+    if not isinstance(roots_raw, list) or not all(
+        isinstance(pair, (list, tuple))
+        and len(pair) == 2
+        and all(isinstance(part, str) for part in pair)
+        for pair in roots_raw
+    ):
+        raise ContractError("data.roots must be a list of [id, path] string pairs")
+    roots: tuple[tuple[str, str], ...] = tuple((str(pair[0]), str(pair[1])) for pair in roots_raw)
     scope: str = fields["scope"]
     train_split: str = fields["train_split"]
     val_split: str = fields["val_split"]
@@ -84,7 +92,7 @@ def _parse_data(raw: Any) -> DataConfig:
     expand_batch_games: int = fields["expand_batch_games"]
     homogeneous_buckets: bool = fields["homogeneous_buckets"]
     return DataConfig(
-        root=root,
+        roots=roots,
         scope=scope,
         train_split=train_split,
         val_split=val_split,
@@ -255,6 +263,7 @@ def _parse_loop(raw: Any) -> LoopConfig:
     log_per_type_metrics: bool = fields["log_per_type_metrics"]
     fit_temperature: bool = fields["fit_temperature"]
     fetch_prefetch_depth: int = fields["fetch_prefetch_depth"]
+    pack_histories: bool = fields["pack_histories"]
     return LoopConfig(
         microbatch_size=microbatch_size,
         accumulation_steps=accumulation_steps,
@@ -268,4 +277,5 @@ def _parse_loop(raw: Any) -> LoopConfig:
         log_per_type_metrics=log_per_type_metrics,
         fit_temperature=fit_temperature,
         fetch_prefetch_depth=fetch_prefetch_depth,
+        pack_histories=pack_histories,
     )

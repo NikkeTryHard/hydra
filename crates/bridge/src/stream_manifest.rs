@@ -72,22 +72,27 @@ use pyo3::prelude::*;
 ///
 /// Thin wrapper over `hydra_feed::manifest::manifest_digest` (ASCII fast-path
 /// with fail-closed canon cross-check, feed-owned). `files` are
-/// `(POSIX path, compressed bytes)` pairs in MANIFEST order (the feed hashes
-/// them exactly as given — no sha-sort here; the hash binds, never splits or
-/// orders). Paths ride verbatim: empty and absolute paths hash (unlike
-/// `packet_decode.manifest_digest`, which rejects both attached). `root` is
-/// provenance display only and does not enter the digest (pinned empty).
+/// `(root-id, POSIX path, compressed bytes)` triples in MANIFEST order (the
+/// feed hashes them exactly as given — no sha-sort here; the hash binds,
+/// never splits or orders). Paths ride verbatim: empty and absolute paths
+/// hash (unlike `packet_decode.manifest_digest`, which rejects both
+/// attached). `root` is provenance display only and does not enter the
+/// digest (pinned empty).
 ///
 /// Returns the `sha256:<hex>` digest (shape-gated attached, never defaulted).
 #[pyfunction]
 #[pyo3(signature = (files,))]
-fn stream_manifest_digest(py: Python<'_>, files: Vec<(String, u64)>) -> PyResult<String> {
+fn stream_manifest_digest(py: Python<'_>, files: Vec<(String, String, u64)>) -> PyResult<String> {
     let digest = py
         .detach(move || {
             let manifest = hydra_feed::manifest::StreamManifest {
                 files: files
                     .into_iter()
-                    .map(|(path, bytes)| hydra_feed::manifest::FileEntry { path, bytes })
+                    .map(|(root_id, path, bytes)| hydra_feed::manifest::FileEntry {
+                        path,
+                        root_id,
+                        bytes,
+                    })
                     .collect(),
                 root: String::new(),
             };
@@ -118,43 +123,69 @@ mod stream_manifest_tests {
     fn digest_byte_exact_vectors_from_head_oracle() {
         Python::initialize();
         Python::attach(|py| {
-            // Hand-derived from HEAD (`python/hydra2/data/stream_manifest.py`
-            // via the pre-port oracle probe): empty binds `b"[]"`; the ASCII
-            // singleton binds the raw-interpolated fast bytes; escaped paths
-            // (quote, backslash, non-ASCII) take the element-wise canon path
-            // to the same digest the oracle returns.
-            let empty: Vec<(String, u64)> = Vec::new();
+            // Hand-derived for the `(root-id, path, bytes)` triple element
+            // `{"bytes":N,"path":"P","root_id":"R"}`: empty binds `b"[]"`;
+            // the ASCII singletons bind the raw-interpolated fast bytes;
+            // escaped paths (quote, backslash, non-ASCII) take the
+            // element-wise canon path to the same digest the oracle
+            // returns (independently verified in
+            // `test_manifest_digest_matches_canonical_oracle`).
+            let empty: Vec<(String, String, u64)> = Vec::new();
             assert_eq!(
                 stream_manifest_digest(py, empty).unwrap(),
                 "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
             );
             assert_eq!(
-                stream_manifest_digest(py, vec![("a.mjai.json.zst".to_string(), 10u64)]).unwrap(),
-                "sha256:f4df2d38e8c35b5a918f2f2877585dce83667de127ae470d8ab408a84ee60937",
+                stream_manifest_digest(
+                    py,
+                    vec![("ryu".to_string(), "a.mjai.json.zst".to_string(), 10u64)]
+                )
+                .unwrap(),
+                "sha256:7eef540635dc37dd0bff95df9e391e57d808b447a6d6b159ccefa737aa940bc3",
             );
             assert_eq!(
-                stream_manifest_digest(py, vec![("z.mjai.json.zst".to_string(), 0u64)]).unwrap(),
-                "sha256:e91b6209b4502d7475e75c5f43bb8ad0b8f0b79d53df60577c55c2e271e577bb",
+                stream_manifest_digest(
+                    py,
+                    vec![("ryu".to_string(), "z.mjai.json.zst".to_string(), 0u64)]
+                )
+                .unwrap(),
+                "sha256:c551bff0c13e468abd92887395f9bd67729a98e2aa01bc8482c4eb736e57737d",
             );
             // Absolute paths hash verbatim (no gate here — the deliberate
             // fork from `packet_decode.manifest_digest`, which rejects).
             assert_eq!(
-                stream_manifest_digest(py, vec![("/abs/x".to_string(), 1u64)]).unwrap(),
-                "sha256:fcfff48e77e6698642f3452c2c282546a9083e864f3aef92ba243803b8de26a1",
+                stream_manifest_digest(py, vec![("ryu".to_string(), "/abs/x".to_string(), 1u64)])
+                    .unwrap(),
+                "sha256:852930b7532cd176bbfc1bf1732ff010409d9d1b702b4234352a05cac6f7cfaf",
             );
             // Escaped paths (canon path) are byte-exact against the oracle.
             assert_eq!(
-                stream_manifest_digest(py, vec![("a\"b.mjai.json.zst".to_string(), 3u64)]).unwrap(),
-                "sha256:a83960919c83a6dad94ce7f8a89b9490adf88389498844378719ba655be6c697",
+                stream_manifest_digest(
+                    py,
+                    vec![("ryu".to_string(), "a\"b.mjai.json.zst".to_string(), 3u64)]
+                )
+                .unwrap(),
+                "sha256:278c61e19de75e0aa89a72c8a9900b32addc3a1adc58d644203089413cd6d825",
             );
             assert_eq!(
-                stream_manifest_digest(py, vec![("a\\b.mjai.json.zst".to_string(), 5u64)]).unwrap(),
-                "sha256:d3ae50ef4d7316cc3c4f36ec916f94bdfce8634884cbd86fdd0624ed6d7c188a",
+                stream_manifest_digest(
+                    py,
+                    vec![("ryu".to_string(), "a\\b.mjai.json.zst".to_string(), 5u64)]
+                )
+                .unwrap(),
+                "sha256:9c02860b1e6ca6af16f3c9a6e4fe3240bd5aee1f5f72e31ac5cb537e4e2f5831",
             );
             assert_eq!(
-                stream_manifest_digest(py, vec![("t\u{e9}nou/x.mjai.json.zst".to_string(), 7u64)])
-                    .unwrap(),
-                "sha256:f988753f21c0d7ab19860f17a95316a4109369e59ba23b31ad775b8ef68b3ab4",
+                stream_manifest_digest(
+                    py,
+                    vec![(
+                        "ryu".to_string(),
+                        "t\u{e9}nou/x.mjai.json.zst".to_string(),
+                        7u64
+                    )]
+                )
+                .unwrap(),
+                "sha256:ee3e41138f517972f21aca114a2d1b3f5dc7f3171c137dae0a387033d3836de0",
             );
         });
     }
@@ -167,35 +198,35 @@ mod stream_manifest_tests {
             // input order is the digest order, exactly like the oracle
             // (`manifest_digest` hashes `manifest.files` as stored).
             let forward = vec![
-                ("a.mjai.json.zst".to_string(), 10u64),
-                ("b.mjai.json.zst".to_string(), 20u64),
+                ("ryu".to_string(), "a.mjai.json.zst".to_string(), 10u64),
+                ("ryu".to_string(), "b.mjai.json.zst".to_string(), 20u64),
             ];
             let backward = vec![
-                ("b.mjai.json.zst".to_string(), 20u64),
-                ("a.mjai.json.zst".to_string(), 10u64),
+                ("ryu".to_string(), "b.mjai.json.zst".to_string(), 20u64),
+                ("ryu".to_string(), "a.mjai.json.zst".to_string(), 10u64),
             ];
             assert_eq!(
                 stream_manifest_digest(py, forward).unwrap(),
-                "sha256:a36c893ca6d0dd37dc8a07f40e3b046276b60da0eb04ffaa38339f026e6e692e",
+                "sha256:142d30ce7713578e4ab126d87e4a78f24fe52d9111a94711e274a72a039e2db8",
             );
             assert_eq!(
                 stream_manifest_digest(py, backward).unwrap(),
-                "sha256:c1fbb8167409c05cbf22aecd5f2b9b5e20bb4c8e58177920beae766bfe0bb1ad",
+                "sha256:b3d97971446694039d12b3b4d479099514f3a5ee217f977a21bf7761353841b1",
             );
             assert_ne!(
                 stream_manifest_digest(
                     py,
                     vec![
-                        ("a.mjai.json.zst".to_string(), 10u64),
-                        ("b.mjai.json.zst".to_string(), 20u64),
+                        ("ryu".to_string(), "a.mjai.json.zst".to_string(), 10u64),
+                        ("ryu".to_string(), "b.mjai.json.zst".to_string(), 20u64),
                     ]
                 )
                 .unwrap(),
                 stream_manifest_digest(
                     py,
                     vec![
-                        ("b.mjai.json.zst".to_string(), 20u64),
-                        ("a.mjai.json.zst".to_string(), 10u64),
+                        ("ryu".to_string(), "b.mjai.json.zst".to_string(), 20u64),
+                        ("ryu".to_string(), "a.mjai.json.zst".to_string(), 10u64),
                     ]
                 )
                 .unwrap(),
@@ -209,12 +240,16 @@ mod stream_manifest_tests {
         Python::attach(|py| {
             let digest = stream_manifest_digest(
                 py,
-                vec![("big.mjai.json.zst".to_string(), 9_007_199_254_740_991u64)],
+                vec![(
+                    "ryu".to_string(),
+                    "big.mjai.json.zst".to_string(),
+                    9_007_199_254_740_991u64,
+                )],
             )
             .unwrap();
             assert_eq!(
                 digest,
-                "sha256:b6b66144064e859b33cfe97befdc99d943392050d5f18d0965a12fe67af1eb69",
+                "sha256:d1a44dc7434d7fc431cd5a1a29d6abb9ac557375dfd32e152399817bb254d087",
             );
             assert!(hydra_feed::partition::is_digest_text(&digest));
         });

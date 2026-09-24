@@ -225,6 +225,17 @@ pub fn group_key_for_source_time(source: &str, time: &str) -> String {
     format!("{source}|{time}")
 }
 
+/// `(root-id, source, time)` group key for multi-root streams.
+///
+/// The single join definition for the namespaced stream path: the root id
+/// leads so per-root draws stay independent even when two roots share a
+/// relpath (identical `(source, time)` would otherwise draw identically and
+/// could split duplicate games across partitions). Identical to
+/// `stream_read.group_key_for_entry`.
+pub fn group_key_for_root(root_id: &str, source: &str, time: &str) -> String {
+    format!("{root_id}|{source}|{time}")
+}
+
 /// Corpus grouping key for one identity under `grouping_keys`.
 ///
 /// Mirrors `partition.py:141-156`: `source` → `source_id`,

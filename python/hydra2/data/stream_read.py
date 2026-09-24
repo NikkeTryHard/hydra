@@ -34,6 +34,7 @@ __all__ = [
     "compute_wall_hash",
     "fetch_game_at",
     "group_key_for",
+    "group_key_for_entry",
     "group_key_for_path",
     "stem_of",
 ]
@@ -101,6 +102,7 @@ def fetch_game_at(
     seed: int,
     ratios: Mapping[str, float],
     expected_sha: str | None = None,
+    root_id: str | None = None,
 ) -> StreamGame:
     """Fetch one game by decompressed-byte ``game_offset`` (fail-closed).
 
@@ -108,7 +110,10 @@ def fetch_game_at(
     verbatim file bytes with ``base=0``; byte-exact with the
     :class:`ZstdLineStream` oracle). Verifies ``expected_sha``
     (raw_bytes_sha256) when given; split assignment uses ``seed``/``ratios``
-    identically to the live stream.
+    identically to the live stream. ``root_id`` selects the namespaced
+    ``(root-id, source, time)`` group (manifest entries always pass it);
+    ad-hoc callers without a root id keep the legacy ``(source, time)``
+    group, which matches only single-context corpora.
     """
     from hydra2.data.decode import decode_game_object as _decode
     from hydra2.data.validate import validate_game as _validate
@@ -148,7 +153,12 @@ def fetch_game_at(
     if expected_sha is not None and game.raw_bytes_sha256 != expected_sha:
         raise ContractError(f"buffered game key mismatch at {fpath}:{game_offset}")
     wall_hash = compute_wall_hash(game)
-    assigned = assign_split(group_key=group_key_for_path(fpath), seed=seed, ratios=ratios)
+    group_key = (
+        group_key_for_entry(root_id=root_id, path=fpath)
+        if root_id is not None
+        else group_key_for_path(fpath)
+    )
+    assigned = assign_split(group_key=group_key, seed=seed, ratios=ratios)
     return StreamGame(
         path=fpath,
         offset=game_offset,
@@ -198,6 +208,22 @@ def group_key_for_path(path: Path) -> str:
     packet = _require_packet()
     path_key: str = packet.group_key_for_path(path.parent.name, path.name)
     return path_key
+
+
+def group_key_for_entry(*, root_id: str, path: Path) -> str:
+    """Derive the ``(root-id, source, time)`` group for a manifest entry.
+
+    Thin delegate over the ``packet`` bridge
+    (``packet.group_key_for_path_with_root`` over the manifest root id, the
+    parent directory name, and the file name). The multi-root stream/scan
+    path calls this with ``entry.root_id`` so per-root draws stay
+    independent even when two roots share a relpath; the root id leads the
+    key, so a renamed root reassigns (fail-closed via the digest pin, never
+    silently). ``ImportError`` fails closed with a ``build-ext`` hint.
+    """
+    packet = _require_packet()
+    entry_key: str = packet.group_key_for_path_with_root(root_id, path.parent.name, path.name)
+    return entry_key
 
 
 def compute_wall_hash(game: GameRecord) -> str | None:

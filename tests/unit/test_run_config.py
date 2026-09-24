@@ -134,7 +134,7 @@ class TestInterpolation:
         config = load_run_config(
             _write_yaml(tmp_path, "run.yaml", mapping), environ={"HOME": str(tmp_path)}
         )
-        assert config.data.root == str(tmp_path / "corpus")
+        assert config.data.roots == (("corpus", str(tmp_path / "corpus")),)
 
     def test_non_allowlisted_var_raises(self, tmp_path: Path) -> None:
         mapping = _minimal_mapping(tmp_path)
@@ -149,6 +149,35 @@ class TestInterpolation:
         mapping = _minimal_mapping(tmp_path)
         mapping["data"] = {"root": "${HYDRA2_DATA_ROOT}/corpus"}
         with pytest.raises(ContractError, match="unset or empty"):
+            load_run_config(_write_yaml(tmp_path, "run.yaml", mapping), environ={})
+
+
+class TestDataRoots:
+    def test_roots_pairs_load(self, tmp_path: Path) -> None:
+        mapping = _minimal_mapping(tmp_path)
+        mapping["data"] = {"roots": [["houou", str(tmp_path / "a")], ["jade", str(tmp_path / "b")]]}
+        config = load_run_config(_write_yaml(tmp_path, "run.yaml", mapping), environ={})
+        assert config.data.roots == (
+            ("houou", str(tmp_path / "a")),
+            ("jade", str(tmp_path / "b")),
+        )
+
+    def test_root_and_roots_mutually_exclusive(self, tmp_path: Path) -> None:
+        mapping = _minimal_mapping(tmp_path)
+        mapping["data"] = {"root": str(tmp_path), "roots": [["x", str(tmp_path)]]}
+        with pytest.raises(ContractError, match="mutually exclusive"):
+            load_run_config(_write_yaml(tmp_path, "run.yaml", mapping), environ={})
+
+    def test_roots_duplicate_id_raises(self, tmp_path: Path) -> None:
+        mapping = _minimal_mapping(tmp_path)
+        mapping["data"] = {"roots": [["x", str(tmp_path / "a")], ["x", str(tmp_path / "b")]]}
+        with pytest.raises(ContractError, match="duplicate root id"):
+            load_run_config(_write_yaml(tmp_path, "run.yaml", mapping), environ={})
+
+    def test_roots_relative_path_raises(self, tmp_path: Path) -> None:
+        mapping = _minimal_mapping(tmp_path)
+        mapping["data"] = {"roots": [["x", "rel/path"]]}
+        with pytest.raises(ContractError, match="absolute path"):
             load_run_config(_write_yaml(tmp_path, "run.yaml", mapping), environ={})
 
 

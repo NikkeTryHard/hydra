@@ -24,7 +24,7 @@ from hydra2.contracts.common import ContractError
 from hydra2.data.stream_decode import PrefetchGameStream
 from hydra2.data.stream_iter import GameStream
 from hydra2.data.stream_manifest import build_manifest
-from hydra2.data.stream_read import assign_split, group_key_for_path
+from hydra2.data.stream_read import assign_split, group_key_for_entry
 from hydra2.training import stream_train as driver
 from hydra2.training.stream_train import SPLIT_RATIOS
 
@@ -90,8 +90,12 @@ def _write_events(path: Path, events: list[dict[str, object]]) -> None:
 
 
 def _split_of(stem: str) -> str:
-    probe = Path("tenhou") / f"{stem}.mjai.json.zst"
-    return assign_split(group_key=group_key_for_path(probe), seed=DATA_SEED, ratios=_RATIOS)
+    probe = Path("corpus") / "tenhou" / f"{stem}.mjai.json.zst"
+    return assign_split(
+        group_key=group_key_for_entry(root_id="tenhou", path=probe),
+        seed=DATA_SEED,
+        ratios=_RATIOS,
+    )
 
 
 def _pick_train_stems(need_train: int) -> list[str]:
@@ -125,10 +129,14 @@ def _write_parity_corpus(corpus: Path) -> None:
 
 
 def _drain(dataset: Any, *, batch_size: int = 2) -> None:
-    """Consume every buffered row; stream end must fail closed with the drain message."""
-    with pytest.raises(ContractError, match="stream exhausted"):
-        while True:
-            dataset._consume_microbatch(batch_size)
+    """Consume to corpus exhaustion; the epoch must roll (post-roll flow is asserted elsewhere)."""
+    start_epoch = dataset.epoch
+    for _ in range(10**6):
+        dataset._consume_microbatch(batch_size)
+        if dataset.epoch != start_epoch:
+            break
+    else:
+        raise AssertionError("epoch never rolled past exhaustion")
 
 
 def _snapshot_state(dataset: Any) -> dict[str, Any]:
@@ -153,11 +161,11 @@ class TestSerialParallelParity:
         manifest = build_manifest(corpus)
 
         serial = driver._StreamDataset(
-            stream_factory=lambda: GameStream(
+            stream_factory=lambda epoch=0: GameStream(
                 manifest,
                 seed=DATA_SEED,
                 ratios=dict(_RATIOS),
-                epoch=0,
+                epoch=epoch,
                 split="train",
                 shuffle_buffer=0,
             ),
@@ -170,11 +178,11 @@ class TestSerialParallelParity:
         )
         # Production shape: prefetch decode plus the bounded expansion pool.
         parallel = driver._StreamDataset(
-            stream_factory=lambda: PrefetchGameStream(
+            stream_factory=lambda epoch=0: PrefetchGameStream(
                 manifest,
                 seed=DATA_SEED,
                 ratios=dict(_RATIOS),
-                epoch=0,
+                epoch=epoch,
                 split="train",
                 shuffle_buffer=0,
                 prefetch=8,
@@ -201,7 +209,8 @@ class TestSerialParallelParity:
             serial.close()
             parallel.close()
         # Quarantine-bearing fixtures must actually fire (else the test is vacuous).
-        assert serial_state["expand_quarantined"] == 3
+        # Lower bound, not exact: the flipping take already expands epoch-1 games.
+        assert serial_state["expand_quarantined"] >= 3
         assert len(serial_state["reasons"]) == 2
         assert serial_state["replayed"] > 0 and serial_state["sim_replayed"] > 0
         assert len(serial_state["rows"]) > 0
@@ -216,11 +225,11 @@ class TestSerialParallelParity:
         manifest = build_manifest(corpus)
 
         serial = driver._StreamDataset(
-            stream_factory=lambda: GameStream(
+            stream_factory=lambda epoch=0: GameStream(
                 manifest,
                 seed=DATA_SEED,
                 ratios=dict(_RATIOS),
-                epoch=0,
+                epoch=epoch,
                 split="train",
                 shuffle_buffer=0,
             ),
@@ -232,11 +241,11 @@ class TestSerialParallelParity:
             replay_backend="rust",
         )
         parallel = driver._StreamDataset(
-            stream_factory=lambda: PrefetchGameStream(
+            stream_factory=lambda epoch=0: PrefetchGameStream(
                 manifest,
                 seed=DATA_SEED,
                 ratios=dict(_RATIOS),
-                epoch=0,
+                epoch=epoch,
                 split="train",
                 shuffle_buffer=0,
                 prefetch=8,
@@ -261,7 +270,7 @@ class TestSerialParallelParity:
         finally:
             serial.close()
             parallel.close()
-        assert serial_state["expand_quarantined"] == 3
+        assert serial_state["expand_quarantined"] >= 3
         assert len(serial_state["reasons"]) == 2
         assert serial_state["replayed"] > 0 and serial_state["sim_replayed"] > 0
         assert len(serial_state["rows"]) > 0
@@ -277,11 +286,11 @@ class TestParallelGuards:
         for bad in (True, -1, "4", 2.0, None):
             with pytest.raises(ContractError, match="expand_workers"):
                 driver._StreamDataset(
-                    stream_factory=lambda: GameStream(
+                    stream_factory=lambda epoch=0: GameStream(
                         manifest,
                         seed=DATA_SEED,
                         ratios=dict(_RATIOS),
-                        epoch=0,
+                        epoch=epoch,
                         split="train",
                         shuffle_buffer=0,
                     ),
@@ -298,11 +307,11 @@ class TestParallelGuards:
         corpus.mkdir(parents=True, exist_ok=True)
         manifest = build_manifest(corpus)
         dataset = driver._StreamDataset(
-            stream_factory=lambda: GameStream(
+            stream_factory=lambda epoch=0: GameStream(
                 manifest,
                 seed=DATA_SEED,
                 ratios=dict(_RATIOS),
-                epoch=0,
+                epoch=epoch,
                 split="train",
                 shuffle_buffer=0,
             ),
@@ -324,11 +333,11 @@ class TestParallelGuards:
         corpus.mkdir(parents=True, exist_ok=True)
         manifest = build_manifest(corpus)
         dataset = driver._StreamDataset(
-            stream_factory=lambda: GameStream(
+            stream_factory=lambda epoch=0: GameStream(
                 manifest,
                 seed=DATA_SEED,
                 ratios=dict(_RATIOS),
-                epoch=0,
+                epoch=epoch,
                 split="train",
                 shuffle_buffer=0,
             ),
@@ -350,11 +359,11 @@ class TestParallelGuards:
         corpus.mkdir(parents=True, exist_ok=True)
         manifest = build_manifest(corpus)
         dataset = driver._StreamDataset(
-            stream_factory=lambda: GameStream(
+            stream_factory=lambda epoch=0: GameStream(
                 manifest,
                 seed=DATA_SEED,
                 ratios=dict(_RATIOS),
-                epoch=0,
+                epoch=epoch,
                 split="train",
                 shuffle_buffer=0,
             ),
@@ -373,11 +382,11 @@ class TestParallelGuards:
 class TestPoolHygiene:
     def _parallel_dataset(self, manifest: Any) -> Any:
         return driver._StreamDataset(
-            stream_factory=lambda: GameStream(
+            stream_factory=lambda epoch=0: GameStream(
                 manifest,
                 seed=DATA_SEED,
                 ratios=dict(_RATIOS),
-                epoch=0,
+                epoch=epoch,
                 split="train",
                 shuffle_buffer=0,
             ),

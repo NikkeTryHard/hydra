@@ -97,11 +97,9 @@ pub fn decode_zstd_verified(
     let mut out: Vec<u8> = Vec::new();
     let mut chunk = vec![0u8; CHUNK];
     loop {
-        let n = decoder
-            .read(&mut chunk)
-            .map_err(|e| FramerError::Decode {
-                detail: format!("zstd decode failed: {e}"),
-            })?;
+        let n = decoder.read(&mut chunk).map_err(|e| FramerError::Decode {
+            detail: format!("zstd decode failed: {e}"),
+        })?;
         if n == 0 {
             break;
         }
@@ -200,7 +198,9 @@ fn contains_needle(haystack: &[u8], needle: &[u8]) -> bool {
         return false;
     }
     for start in memchr::memchr_iter(needle[0], haystack) {
-        if haystack.len() - start >= needle.len() && haystack[start..start + needle.len()] == *needle {
+        if haystack.len() - start >= needle.len()
+            && haystack[start..start + needle.len()] == *needle
+        {
             return true;
         }
     }
@@ -481,7 +481,12 @@ fn frame_decompressed(text: &[u8], file_idx: u32, base: u64) -> Vec<Frame> {
 /// (`:77-101`) belong to the decode/validate/partition siblings — this
 /// returns the framed bytes so those stages see the same input the stream
 /// would have emitted.
-pub fn fetch_game_at(compressed: &[u8], file_idx: u32, base: u64, offset: u64) -> Result<Frame, FramerError> {
+pub fn fetch_game_at(
+    compressed: &[u8],
+    file_idx: u32,
+    base: u64,
+    offset: u64,
+) -> Result<Frame, FramerError> {
     if offset < base {
         return Err(FramerError::Offset {
             detail: format!("game offset {offset} below base {base}"),
@@ -530,12 +535,11 @@ pub fn group_key_for(source: &str, time: &str) -> String {
     crate::partition::group_key_for_source_time(source, time)
 }
 
-/// Derive the `(source, time)` group from a corpus path
-/// (`stream_read.py:118-128`): source is the parent directory name
-/// (mount-independent; empty/`.` → `"unknown"`), time is the leading digit
-/// run of the stem (`_DIGIT_RUN.match`, Tenhou `YYYYMMDDHH...`), else
-/// `"unknown"`.
-pub fn group_key_for_path(parent_dir: &str, file_name: &str) -> String {
+/// Split a corpus path into `(source, time)`: source is the parent directory
+/// name (mount-independent; empty/`.` → `"unknown"`), time is the leading
+/// digit run of the stem (`_DIGIT_RUN.match`, Tenhou `YYYYMMDDHH...`), else
+/// `"unknown"`. ONE derivation shared by both group-key paths below.
+fn split_source_time<'a>(parent_dir: &'a str, file_name: &str) -> (&'a str, String) {
     let source = if parent_dir.is_empty() || parent_dir == "." {
         "unknown"
     } else {
@@ -543,8 +547,28 @@ pub fn group_key_for_path(parent_dir: &str, file_name: &str) -> String {
     };
     let stem = stem_of(file_name);
     let digits: String = stem.chars().take_while(|c| c.is_ascii_digit()).collect();
-    let time = if digits.is_empty() { "unknown" } else { digits.as_str() };
-    group_key_for(source, time)
+    let time = if digits.is_empty() {
+        "unknown".to_string()
+    } else {
+        digits
+    };
+    (source, time)
+}
+
+/// Derive the `(root-id, source, time)` group from a corpus path plus its
+/// manifest root id (`stream_read.group_key_for_entry`): the multi-root
+/// stream/scan path. Root leads so per-root draws stay independent.
+pub fn group_key_for_path_with_root(root_id: &str, parent_dir: &str, file_name: &str) -> String {
+    let (source, time) = split_source_time(parent_dir, file_name);
+    crate::partition::group_key_for_root(root_id, source, &time)
+}
+
+/// Derive the `(source, time)` group from a corpus path
+/// (`stream_read.py:118-128`): legacy single-context path (ad-hoc fetch,
+/// tests, and callers without a manifest root id).
+pub fn group_key_for_path(parent_dir: &str, file_name: &str) -> String {
+    let (source, time) = split_source_time(parent_dir, file_name);
+    group_key_for(source, &time)
 }
 
 /// Wall hash identical to the partition identity (`stream_read.py:131-138`):
@@ -671,10 +695,7 @@ mod tests {
     fn assign_one_alias_agrees_with_partition() {
         // Contract: this ONE-fn alias returns exactly what the partition
         // owner computes for the same (group, seed, ratios).
-        let ratios = BTreeMap::from([
-            ("train".to_string(), 0.8),
-            ("validation".to_string(), 0.2),
-        ]);
+        let ratios = BTreeMap::from([("train".to_string(), 0.8), ("validation".to_string(), 0.2)]);
         for group in ["s|20240101", "t|unknown"] {
             assert_eq!(
                 assign_one(group, 7, &ratios).unwrap(),
@@ -710,8 +731,22 @@ mod tests {
         assert_eq!(stem_of("2024010112.mjai.json.zst"), "2024010112");
         assert_eq!(stem_of("g.mjai.json"), "g");
         assert_eq!(stem_of("g.zst"), "g");
-        assert_eq!(group_key_for_path("lobby", "2024010112.mjai.json.zst"), "lobby|2024010112");
-        assert_eq!(group_key_for_path("", "anon.mjai.json.zst"), "unknown|unknown");
+        assert_eq!(
+            group_key_for_path("lobby", "2024010112.mjai.json.zst"),
+            "lobby|2024010112"
+        );
+        assert_eq!(
+            group_key_for_path("", "anon.mjai.json.zst"),
+            "unknown|unknown"
+        );
+        assert_eq!(
+            group_key_for_path_with_root("ryu", "lobby", "2024010112.mjai.json.zst"),
+            "ryu|lobby|2024010112"
+        );
+        assert_eq!(
+            group_key_for_path_with_root("ryu", "", "anon.mjai.json.zst"),
+            "ryu|unknown|unknown"
+        );
     }
 
     #[test]

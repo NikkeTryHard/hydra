@@ -152,6 +152,21 @@ fn group_key_for_path(py: Python<'_>, parent_dir: String, file_name: String) -> 
     py.detach(|| hydra_feed::framer::group_key_for_path(&parent_dir, &file_name))
 }
 
+/// Derive the `(root-id, source, time)` group from a corpus path plus its
+/// manifest root id: the multi-root stream/scan path. Thin alias over the
+/// framer owner (the namespaced join lives in `hydra-feed` only).
+#[pyfunction]
+fn group_key_for_path_with_root(
+    py: Python<'_>,
+    root_id: String,
+    parent_dir: String,
+    file_name: String,
+) -> String {
+    py.detach(|| {
+        hydra_feed::framer::group_key_for_path_with_root(&root_id, &parent_dir, &file_name)
+    })
+}
+
 /// Wall hash identical to the partition identity: `None` when no wall, else
 /// `sha256:` over the canon bytes of the 136-entry wall list. Shape checked
 /// attached (`Some` must hold exactly 136 entries, fail-closed); the digest
@@ -207,6 +222,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     sub.add_function(wrap_pyfunction!(stem_of, &sub)?)?;
     sub.add_function(wrap_pyfunction!(group_key_for, &sub)?)?;
     sub.add_function(wrap_pyfunction!(group_key_for_path, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(group_key_for_path_with_root, &sub)?)?;
     sub.add_function(wrap_pyfunction!(wall_hash, &sub)?)?;
     sub.add_function(wrap_pyfunction!(assign_one, &sub)?)?;
     m.add_submodule(&sub)?;
@@ -319,6 +335,19 @@ mod packet_tests {
                     "2024010112.mjai.json.zst".to_string()
                 ),
                 hydra_feed::framer::group_key_for_path("lobby", "2024010112.mjai.json.zst")
+            );
+            assert_eq!(
+                group_key_for_path_with_root(
+                    py,
+                    "ryu".to_string(),
+                    "lobby".to_string(),
+                    "2024010112.mjai.json.zst".to_string()
+                ),
+                hydra_feed::framer::group_key_for_path_with_root(
+                    "ryu",
+                    "lobby",
+                    "2024010112.mjai.json.zst"
+                )
             );
             assert_eq!(wall_hash(py, None).unwrap(), None);
             let wall: Vec<u32> = (0..136).collect();

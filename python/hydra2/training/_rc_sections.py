@@ -109,10 +109,12 @@ class RunMeta:
 
 @dataclass(frozen=True, slots=True)
 class DataConfig:
-    """``data`` section: streaming source root plus contract flags.
+    """``data`` section: streaming source roots plus contract flags.
 
-    ``root`` MUST interpolate to an absolute path (via ``${HYDRA2_DATA_ROOT}``;
-    never a literal mount). ``scope`` is Tenhou-only in v1. The contract
+    ``roots`` is the ordered ``((root-id, absolute path), ...)`` tuple
+    (paths interpolate via ``${HYDRA2_DATA_ROOT}``; never a literal mount;
+    ids default to the leaf-dir basename for legacy single-``root``
+    configs). ``scope`` is Tenhou-only in v1. The contract
     flags mirror the ephemeral-row obligations: wall-disjoint manifests,
     leakage checks, ``(5,)`` dora, and the actor/privileged split. Any flag
     that weakens them fails closed.
@@ -121,7 +123,7 @@ class DataConfig:
     first game is consumed (v1 ``manifest_input`` provenance, mechanism
     replaced by in-memory manifest hashes plus the validation hash — no
     shard files). v1's manifest-vs-raw-dirs exclusivity is parked: the
-    supervised stream root is the single v1 source; the rollout side
+    supervised stream roots are the v1 sources; the rollout side
     arrives with ``run.kind=rl`` (deferred, top-level ``rl`` must be null).
     Stream mechanics (ResumeExactPlan handoff): ``shuffle_buffer_size`` pins
     the shuffle buffer capacity (buffer persists verbatim as row KEYS, never
@@ -132,7 +134,7 @@ class DataConfig:
     this config owns the pins.
     """
 
-    root: str = ""
+    roots: tuple[tuple[str, str], ...] = ()
     scope: str = _TENHOU_SCOPE
     train_split: str = "train"
     val_split: str = "validation"
@@ -295,6 +297,11 @@ class LoopConfig:
     #: Fit post-hoc temperature on eval reports (default ``True``).
     #: Validation-only, never touches training.
     fit_temperature: bool = True
+    #: Variable-length history packing: concatenate per-row real prefixes
+    #: with boundary arrays instead of padding to bucket widths, so attention
+    #: computes only real pairs (default ``False``: buckets stay the path
+    #: until the packed branch qualifies behind this flag).
+    pack_histories: bool = False
 
     @property
     def optimizer_minibatch_size(self) -> int:

@@ -21,7 +21,7 @@ import yaml
 import zstandard as zstd
 
 from hydra2.contracts.common import ContractError
-from hydra2.data.stream_read import assign_split, group_key_for_path
+from hydra2.data.stream_read import assign_split
 from hydra2.training._rc_digest import run_dir_for
 from hydra2.training._rc_resume import resolve_resume_plan
 from hydra2.training._rc_root import load_run_config
@@ -142,18 +142,35 @@ def _write_invalid(path: Path) -> None:
     path.write_bytes(zstd.ZstdCompressor().compress(b'{"type": "nope"}\n'))
 
 
-def _split_of(stem: str) -> str:
-    probe = Path("tenhou") / f"{stem}.mjai.json.zst"
-    return assign_split(group_key=group_key_for_path(probe), seed=DATA_SEED, ratios=_RATIOS)
+def _split_of(stem: str, *, root_id: str = "corpus", source: str = "tenhou") -> str:
+    """Predict a stem's split exactly as the stream assigns it.
+
+    Mirrors production (:func:`group_key_for_entry` over the manifest root
+    id plus the file's parent directory): run fixtures stage files under
+    ``<root>/tenhou/`` (root id ``corpus``), dataset fixtures build the
+    manifest one level down (root id ``tenhou``). A stale prediction puts
+    same-wall games across splits and trips the wall gate, so the layout
+    rides along with the stem.
+    """
+    from hydra2.data.stream_read import group_key_for_entry
+
+    probe = Path("rx") / source / f"{stem}.mjai.json.zst"
+    return assign_split(
+        group_key=group_key_for_entry(root_id=root_id, path=probe),
+        seed=DATA_SEED,
+        ratios=_RATIOS,
+    )
 
 
-def _pick_stems(*, need_train: int, need_val: int) -> tuple[list[str], list[str]]:
+def _pick_stems(
+    *, need_train: int, need_val: int, root_id: str = "corpus", source: str = "tenhou"
+) -> tuple[list[str], list[str]]:
     """Deterministic filename stems with the required split coverage."""
     train: list[str] = []
     val: list[str] = []
     for day in range(1, 32):
         stem = f"202401{day:02d}00gm-00a9-0000-{day:07d}"
-        split = _split_of(stem)
+        split = _split_of(stem, root_id=root_id, source=source)
         if split == "train" and len(train) < need_train:
             train.append(stem)
         elif split == "validation" and len(val) < need_val:
