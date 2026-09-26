@@ -700,6 +700,21 @@ def _pass(
     return counts[0], counts[1], counts[2], counts[3], counts[4]
 
 
+def _task_init_kwargs(run_id: str, args: Any) -> dict[str, Any]:
+    """Task.init kwargs: explicit --task-id continues with history intact.
+
+    Without --task-id the SDK reuses by name and WIPES previous outputs
+    (overwrite, not continue) — so resumes that must not fragment history
+    pass the exact id. ``False`` preserves the legacy default exactly.
+    """
+    return {
+        "project_name": args.project,
+        "task_name": run_id,
+        "tags": args.tags,
+        "continue_last_task": args.task_id if args.task_id else False,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Report run JSONL to ClearML.")
     parser.add_argument("--run-dir", required=True, help="runs/<id>/ directory")
@@ -710,6 +725,12 @@ def main() -> None:
     parser.add_argument("--follow-interval", type=float, default=30.0)
     parser.add_argument("--follow-timeout", type=float, default=57600.0)
     parser.add_argument("--upload-artifacts", action="store_true")
+    parser.add_argument(
+        "--task-id",
+        default=None,
+        help="continue this exact ClearML task (history intact). Without it "
+        "Task.init reuses by name and WIPES previous outputs.",
+    )
     args = parser.parse_args()
 
     # ClearML import lives here only; training modules never import the SDK.
@@ -733,11 +754,13 @@ def main() -> None:
     except OSError:
         print("sidecar: already running", file=sys.stderr)
         raise SystemExit(42)
-
     if not args.online:
         Task.set_offline(True)
-    task = Task.init(project_name=args.project, task_name=run_id, tags=args.tags)
+    task = Task.init(**_task_init_kwargs(run_id, args))
     logger = Logger.current_logger()
+    if args.task_id is not None and task.id != args.task_id:
+        print(f"sidecar: task mismatch {task.id} != {args.task_id}", file=sys.stderr)
+        raise SystemExit(3)
 
     offsets = _load_offsets(run_dir)
     total_m = total_e = total_f = total_v = total_s = 0

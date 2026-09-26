@@ -179,3 +179,19 @@ def test_report_eval_row_maps_se_and_discard() -> None:
     assert got[("loss-vs-eval", "eval_discard_nll")] == 2.4
     assert got[("eval-support", "masked_nll_se")] == 0.01
     assert any("discard_nll=2.4000" in text for text in logger.texts)
+
+
+def test_task_init_kwargs_continues_exact_id() -> None:
+    """--task-id continues with history intact; absent preserves legacy default."""
+    import types
+
+    module = _load_sidecar()
+    with_id = types.SimpleNamespace(project="p", tags=[], task_id="abc123")
+    assert module._task_init_kwargs("run", with_id) == {
+        "project_name": "p",
+        "task_name": "run",
+        "tags": [],
+        "continue_last_task": "abc123",
+    }
+    without = types.SimpleNamespace(project="p", tags=[], task_id=None)
+    assert module._task_init_kwargs("run", without)["continue_last_task"] is False
