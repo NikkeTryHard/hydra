@@ -340,11 +340,14 @@ class SupervisedLoopTrainMixin(SupervisedLoopEngineMixin, SupervisedLoopLossMixi
                 # Per-update writer poll: cheap when idle; fail closed on error.
                 self._poll_checkpoint_writer()
                 continue
-            if self.config.gradient_clip_norm is not None:
+            _clip_every = self.config.gradient_clip_norm
+            # Skip the second norm pass when the fused probe already proves a
+            # no-op (pre<=clip rescales by exactly 1.0): identical weights,
+            # one fewer full-grad pass and device sync per update. Fires only
+            # when grads actually exceed the clip, same as before.
+            if _clip_every is not None and _grad_norm > _clip_every:
                 model_params: Any = self.model.parameters()
-                _clipped: torch.Tensor = torch.nn.utils.clip_grad_norm_(
-                    model_params, self.config.gradient_clip_norm
-                )
+                _clipped: torch.Tensor = torch.nn.utils.clip_grad_norm_(model_params, _clip_every)
 
             _t_clip = time.perf_counter()
             self.optimizer.step()
@@ -421,6 +424,8 @@ class SupervisedLoopTrainMixin(SupervisedLoopEngineMixin, SupervisedLoopLossMixi
                 metrics = {
                     "masked_nll": avg_loss,
                     "top1": 0.0,
+                    "top3": 0.0,
+                    "top5": 0.0,
                 }
 
             entry: dict[str, float] = {
@@ -433,6 +438,8 @@ class SupervisedLoopTrainMixin(SupervisedLoopEngineMixin, SupervisedLoopLossMixi
                 "belief": avg_belief,
                 "masked_nll": metrics.get("masked_nll", avg_loss),
                 "top1": metrics.get("top1", 0.0),
+                "top3": metrics.get("top3", 0.0),
+                "top5": metrics.get("top5", 0.0),
                 "skipped_updates": float(self.state.skipped_updates),
                 "skipped_this_update": 0.0,
             }

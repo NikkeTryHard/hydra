@@ -862,3 +862,83 @@ class TestEpochWrap:
         resume = resolve_resume_plan(fresh_dir, which=fresh_dir / "checkpoints" / "ckpt-000001.pt")
         with pytest.raises(ContractError, match="epoch_seed"):
             run_stream_training(config, resume)
+
+
+@pytest.mark.serial
+@pytest.mark.gpu
+class TestEagerCompileMode:
+    """Loop honors compile_mode=eager: no inductor anywhere (CUDA-only)."""
+
+    def _loop(self, tmp_path: Path, *, compile_mode: str) -> Any:
+        from types import SimpleNamespace
+
+        import torch.nn as nn
+
+        from hydra2.training.loop_state import TrainingLoopConfig
+        from hydra2.training.loop_train import SupervisedLoop
+        from tests.unit._manifest_helpers import make_test_manifest_hashes
+
+        torch.manual_seed(0)
+        model = nn.Sequential(nn.Linear(8, 8))
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+        spec = SimpleNamespace(
+            adapter_id="plain_pytorch",
+            precision="fp32",
+            compile_mode=compile_mode,
+            device="cuda",
+        )
+        config = TrainingLoopConfig(
+            microbatch_size=4,
+            accumulation_steps=2,
+            gradient_clip_norm=None,
+            max_updates=2,
+            checkpoint_frequency_updates=100,
+            seed=0,
+        )
+        # The autouse deterministic-algorithms fixture would gate off every
+        # compile (loop skips compiling under determinism), making both legs
+        # vacuous. Construction runs zero numerics, so lifting the flag here
+        # is determinism-neutral; the fixture restores it afterwards.
+        torch.use_deterministic_algorithms(False)
+        try:
+            return SupervisedLoop(
+                model=model,
+                optimizer=optimizer,
+                dataset=_StubDataset(),
+                config=config,
+                checkpoint_dir=tmp_path / "checkpoints",
+                manifest_hashes=make_test_manifest_hashes(),
+                runtime_spec=spec,
+                device="cuda",
+            )
+        finally:
+            torch.use_deterministic_algorithms(True)
+
+    def test_eager_mode_skips_compile(self, tmp_path: Path) -> None:
+        """compile_mode=eager leaves model and loss uncompiled on CUDA."""
+        from hydra2.training.objectives_loss import compute_supervised_loss
+
+        loop = self._loop(tmp_path, compile_mode="eager")
+        assert not hasattr(loop.model, "_orig_mod")
+        assert loop._compiled_loss is compute_supervised_loss
+
+    def test_default_mode_still_compiles(self, tmp_path: Path) -> None:
+        """Control: a compiled mode still compiles (the eager leg is real)."""
+        loop = self._loop(tmp_path, compile_mode="max-autotune-no-cudagraphs")
+        assert hasattr(loop.model, "_orig_mod")
+
+
+class _StubDataset:
+    """Minimal dataset stand-in (construction only; never trained)."""
+
+    def next_batch(self, n: int) -> dict[str, torch.Tensor]:
+        raise AssertionError("construction-only stub must never pull")
+
+    def get_sampler_state(self) -> dict[str, Any]:
+        return {"offset": 0, "seed": 0, "total": 0, "epoch": 0}
+
+    def set_sampler_state(self, state: Any) -> None:
+        _ = state
+
+    def __len__(self) -> int:
+        return 0

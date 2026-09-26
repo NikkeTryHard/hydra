@@ -136,8 +136,10 @@ def test_masked_ce_cpu_dispatch_matches_reference() -> None:
     ref = -((0.9) * log_prob[batch_idx, targets] + smooth * legal_logp_sum).mean()
     assert torch.equal(got, ref)
     hot = compute_hot_scalars(logits, targets, legal_mask)
-    assert set(hot.keys()) == {"masked_nll", "top1"}
+    assert set(hot.keys()) == {"masked_nll", "top1", "top3", "top5"}
     assert math.isfinite(hot["masked_nll"]) and 0.0 <= hot["top1"] <= 1.0
+    assert 0.0 <= hot["top3"] <= 1.0 and 0.0 <= hot["top5"] <= 1.0
+    assert hot["top1"] <= hot["top3"] <= hot["top5"]
 
     torch.manual_seed(0)
     logits = torch.randn(2, 8)

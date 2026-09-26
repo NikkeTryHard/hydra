@@ -534,3 +534,82 @@ def test_assemble_slim_batch_rejects_over_bucket_cap() -> None:
             ],
             action_count=BASELINE_ACTION_COUNT,
         )
+
+
+def test_assemble_slim_batch_grouped_order_stays_aligned() -> None:
+    """Grouped takes never misalign planes and identity.
+
+    Homogeneous bucketing reorders the take, so same-blob neighbors are
+    routinely non-consecutive decisions (seq 0 then 2). Merging those as one
+    [start, start+count) slice silently pairs decision 2's identity/labels
+    with decision 1's planes (production pack cross-check caught staged 3
+    vs mask 34 on exactly this shape). Every position's planes, chosen
+    action, and decision id must follow the taken rows, and the packed
+    length check must accept the same take.
+    """
+    import numpy as np
+
+    from hydra2.models.schema import BASELINE_ACTION_COUNT
+    from hydra2.training.rust_batch import assemble_slim_batch
+    from hydra2.training.rust_stream import _HOT_PLANES
+
+    n, t_len = 4, 32
+    live = [5, 12, 21, 30]
+    chosen_ids = [5, 9, 14, 20]
+    blob: dict[str, bytes] = {}
+    for name, cols, dtype in _HOT_PLANES:
+        if name == "legal_packed":
+            continue
+        if cols == "T":
+            if name == "history_event_kind":
+                arr = np.zeros((n, t_len), dtype=np.int64)
+                for i in range(n):
+                    arr[i, :] = i
+            else:
+                arr = np.zeros((n, t_len), dtype=np.bool_)
+                for i in range(n):
+                    arr[i, : live[i]] = True
+        elif cols is None:
+            if name == "chosen_action_id":
+                arr = np.array(chosen_ids, dtype=np.int64)
+            elif dtype == "bool":
+                arr = np.zeros((n,), dtype=np.bool_)
+            elif dtype == "int32":
+                arr = np.zeros((n,), dtype=np.int32)
+            else:
+                arr = np.zeros((n,), dtype=np.int64)
+        else:
+            arr = np.zeros((n, cols), dtype=np.dtype(dtype))
+        blob[name] = arr.tobytes()
+    legal_ids = np.zeros((n, 32), dtype=np.int32)
+    for i in range(n):
+        legal_ids[i, 0] = chosen_ids[i]
+    blob["legal_ids"] = legal_ids.tobytes()
+    blob["legal_len"] = np.ones((n,), dtype=np.int64).tobytes()
+    all_rows = [
+        {
+            "decision_id": f"g:d{i:04d}",
+            "chosen_action_id": chosen_ids[i],
+            "action_kind": "play",
+            "_planes": blob,
+            "_row": i,
+            "_t_len": t_len,
+            "_hist_len": live[i],
+        }
+        for i in range(n)
+    ]
+    # Grouped-order take: same-blob neighbors seq 0 then 2 (non-consecutive),
+    # followed by seq 3 (consecutive with 2, still merges correctly).
+    taken = [all_rows[0], all_rows[2], all_rows[3]]
+    have = assemble_slim_batch(taken, action_count=BASELINE_ACTION_COUNT)
+    assert have["chosen_action_id"].tolist() == [5, 14, 20]
+    mask = have["actor_batch"].features["history_mask"]
+    assert [int(mask[i].sum()) for i in range(3)] == [5, 21, 30]
+    kind = have["actor_batch"].features["history_event_kind"]
+    assert [int(kind[i, 0]) for i in range(3)] == [0, 2, 3]
+    assert have["_decision_ids"] == ["g:d0000", "g:d0002", "g:d0003"]
+    packed = assemble_slim_batch(taken, action_count=BASELINE_ACTION_COUNT, pack_histories=True)[
+        "actor_batch"
+    ].packed
+    assert packed is not None
+    assert list(packed.row_lengths) == [5, 21, 30]

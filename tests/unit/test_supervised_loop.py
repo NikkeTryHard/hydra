@@ -61,7 +61,13 @@ FEATURE_DIM = 16
 
 
 def test_hot_entry_always_lean(tmp_path: Path, actor_parquet_factory) -> None:
-    """Hot entries carry masked_nll/top1 only; rich metrics ride the eval report."""
+    """Hot entries carry masked_nll/top1/top3/top5; rich metrics ride eval.
+
+    Top-3/5 join history deliberately (ranking quality moves before top-1;
+    same top-k family already paid for top-1, marginal cost only). Uniform,
+    ECE, and support stay eval-only: they cost full-vocab passes the hot
+    path must never pay per update.
+    """
     import dataclasses
 
     parquet_dir = actor_parquet_factory(num_rows=16)
@@ -75,13 +81,13 @@ def test_hot_entry_always_lean(tmp_path: Path, actor_parquet_factory) -> None:
             "policy",
             "masked_nll",
             "top1",
+            "top3",
+            "top5",
             "grad_norm_pre",
             "grad_norm_post",
             "lr_now",
         )
         dropped = (
-            "top3",
-            "top5",
             "calibration_ece",
             "legal_uniform_nll",
             "legal_uniform_gap",

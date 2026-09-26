@@ -143,16 +143,20 @@ def compute_hot_scalars(
     targets: torch.Tensor,
     legal_mask: torch.Tensor,
 ) -> dict[str, float]:
-    """Per-update hot metrics: masked NLL + top-1 only (2 host syncs).
+    """Per-update hot metrics: masked NLL + top-1/3/5 (4 host syncs).
 
     No validation (the batch was pre-validated this microbatch) and no
-    uniform/top-k/ECE/support/per-type work — those ride the eval report
+    uniform/ECE/support/per-type work — those ride the eval report
     (:func:`compute_metrics`). Keys mirror the :func:`compute_metrics`
-    subset so hot entries keep ``masked_nll``/``top1`` continuity.
+    subset so hot entries keep ``masked_nll``/``top1`` continuity; top-3/5
+    show ranking quality moving before top-1 does. The fused path still
+    mints exact NLL + top1 in one Triton op; top-3/5 always come from the
+    eager top-k on fp32 logits (same math both paths, parity-tested).
     """
     # Fused reporting fast path (exact NLL + top1, one Triton op; see
-    # fused_ce.py): CUDA + triton + bf16/fp32 only. Same 2 host syncs, same
-    # keys; the eager fallback below is unchanged for all other cases.
+    # fused_ce.py): CUDA + triton + bf16/fp32 only. The eager fallback below
+    # is unchanged for all other cases; top-3/5 ride eager top-k either way.
+    fused: dict[str, float] | None = None
     if logits.is_cuda and logits.dtype in (torch.bfloat16, torch.float32):
         from hydra2.training.fused_ce import TRITON_AVAILABLE, fused_hot_scalars
 
@@ -163,15 +167,27 @@ def compute_hot_scalars(
             nll_vec, ok_vec = fused_hot_scalars(logits, legal_mask, targets_long)
             nll_mean: float = nll_vec.mean().item()  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # reporting fast path; alternative loses metric. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
             top1_mean: float = ok_vec.float().mean().item()  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # reporting fast path; alternative loses metric. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
-            return {"masked_nll": nll_mean, "top1": top1_mean}
+            fused = {"masked_nll": nll_mean, "top1": top1_mean}
     logits_fp32 = logits.to(torch.float32)
     masked_logits = logits_fp32.masked_fill(~legal_mask, _MASKED_LOGIT_NEG)
     log_prob = F.log_softmax(masked_logits, dim=-1)
     targets_long = targets.long() if targets.dtype != torch.long else targets
     batch_idx = torch.arange(targets_long.shape[0], device=targets_long.device)
-    nll = -log_prob[batch_idx, targets_long].mean().item()  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for metric; alternative loses metric. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
-    top1 = masked_topk_accuracy(logits_fp32, targets_long, legal_mask, k=1)
-    return {"masked_nll": float(nll), "top1": top1}
+    if fused is not None:
+        out = dict(fused)
+    else:
+        nll = -log_prob[batch_idx, targets_long].mean().item()  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for metric; alternative loses metric. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
+        out = {
+            "masked_nll": float(nll),
+            "top1": masked_topk_accuracy(logits_fp32, targets_long, legal_mask, k=1),
+        }
+    out["top3"] = masked_topk_accuracy(
+        logits_fp32, targets_long, legal_mask, k=min(3, logits_fp32.shape[1])
+    )
+    out["top5"] = masked_topk_accuracy(
+        logits_fp32, targets_long, legal_mask, k=min(5, logits_fp32.shape[1])
+    )
+    return out
 
 
 def _ece_from_confidence(confidences: torch.Tensor, accuracies: torch.Tensor) -> float:

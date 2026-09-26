@@ -420,14 +420,29 @@ def assemble_slim_batch(
     # shape-matches more often. Values on the real prefix are identical and
     # padding is model-masked, matching the encoder path exactly.
     t_pad = bucket_for_length(t_max)
+    # Slice groups key on exact _row continuity, never blob adjacency: the
+    # homogeneous-bucket take reorders rows, so same-blob neighbors in take
+    # order are routinely non-consecutive decisions (e.g. seq 5 then 17).
+    # Merging those as [start, start+count) silently pairs decision 17's
+    # identity/labels with decision 5's planes (packed cross-check caught
+    # staged 3 vs mask 34 on exactly this shape). Per-row slices on any
+    # mismatch are always correct; slicing is zero-copy views, padding copies
+    # dominate either way.
     groups: list[tuple[dict[str, bytes], int, int, int]] = []
     for row in rows:
         blob: dict[str, bytes] = row["_planes"]
-        if len(groups) > 0 and groups[-1][0] is blob:
+        row_start = int(row["_row"])
+        row_t = int(row["_t_len"])
+        if (
+            len(groups) > 0
+            and groups[-1][0] is blob
+            and groups[-1][3] == row_t
+            and row_start == groups[-1][1] + groups[-1][2]
+        ):
             start, count, t_len = groups[-1][1], groups[-1][2], groups[-1][3]
             groups[-1] = (blob, start, count + 1, t_len)
         else:
-            groups.append((blob, int(row["_row"]), 1, int(row["_t_len"])))
+            groups.append((blob, row_start, 1, row_t))
     parts: list[dict[str, torch.Tensor]] = [
         _slice_game_planes(blob, start, count, t_len, t_pad, names, schema)
         for blob, start, count, t_len in groups

@@ -12,6 +12,7 @@ closed explicitly via try/finally (never left to interpreter exit).
 
 import json
 import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -23,7 +24,7 @@ import zstandard as zstd
 from hydra2.contracts.common import ContractError
 from hydra2.data.stream_decode import PrefetchGameStream
 from hydra2.data.stream_iter import GameStream
-from hydra2.data.stream_manifest import build_manifest
+from hydra2.data.stream_manifest import build_manifest, manifest_digest
 from hydra2.data.stream_read import assign_split, group_key_for_entry
 from hydra2.training import stream_train as driver
 from hydra2.training.stream_train import SPLIT_RATIOS
@@ -458,3 +459,40 @@ class TestPoolHygiene:
         serial = driver._scan_corpus(manifest, config=serial_cfg, ratios=dict(_RATIOS))
         parallel = driver._scan_corpus(manifest, config=parallel_cfg, ratios=dict(_RATIOS))
         assert parallel == serial
+
+    def test_scan_cache_hit_skips_decode(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Second scan off the cache returns equal aggregates without decoding.
+
+        The wall clock is the defect signal: a hit must return in seconds
+        (cached walls/counts only), proving repeat launches never re-pay
+        the full decode before training starts.
+        """
+        monkeypatch.setenv("HYDRA2_SCAN_CACHE_DIR", str(tmp_path / "shared"))
+        corpus = tmp_path / "corpus" / "tenhou"
+        _write_parity_corpus(corpus)
+        manifest = build_manifest(corpus)
+        cfg = SimpleNamespace(
+            seeds=SimpleNamespace(data_seed=DATA_SEED),
+            data=SimpleNamespace(
+                num_workers=0,
+                train_split="train",
+                val_split="validation",
+                roots=list(manifest.roots),
+            ),
+        )
+        digest = manifest_digest(manifest)
+        run_dir = tmp_path / "run"
+        first = driver._scan_corpus_cached(
+            manifest, config=cfg, ratios=dict(_RATIOS), stream_digest=digest, run_dir=run_dir
+        )
+        begun = time.perf_counter()
+        second = driver._scan_corpus_cached(
+            manifest, config=cfg, ratios=dict(_RATIOS), stream_digest=digest, run_dir=run_dir
+        )
+        elapsed = time.perf_counter() - begun
+        assert second.train_games == first.train_games
+        assert second.quarantined == first.quarantined
+        assert second.train_walls == first.train_walls
+        assert elapsed < 5.0

@@ -493,3 +493,106 @@ class TestWallLessNoScoresTrains:
         assert summary["sim_replayed"] == 1
         assert summary["privileged_labels"] == "skipped-no-auxiliary-weights"
         assert math.isfinite(float(summary["loss_history"][0]["total"]))
+
+
+def test_pace_line_full_and_partial() -> None:
+    """Pace medians show iff record windows cover the segment exactly.
+
+    Microbatch rows stamp the pre-increment counter, so their window runs
+    one behind the update window (the production probe printed agg=partial
+    on every segment until this shift was honored). Gapped records degrade
+    to a marked partial line instead of mislabeled medians.
+    """
+    from hydra2.training.loop_batch import MicrobatchTelemetry, UpdateTelemetry
+    from hydra2.training.stream_train import _pace_line
+
+    updates = [
+        UpdateTelemetry(global_update=5, optimizer_ms=10.0, logging_ms=0.5),
+        UpdateTelemetry(global_update=6, optimizer_ms=12.0, logging_ms=0.6),
+    ]
+    micros = [
+        MicrobatchTelemetry(
+            microstep=i,
+            global_update=4 + (i // 2),
+            queue_wait_ms=1.0,
+            fetch_decode_ms=2.0,
+            h2d_ms=0.1,
+            compute_ms=5.0,
+        )
+        for i in range(4)
+    ]
+    line = _pace_line(
+        first_update=5,
+        last_update=6,
+        rows=512,
+        wall_s=0.2,
+        updates=updates,
+        microbatches=micros,
+    )
+    assert "agg=partial" not in line
+    assert "opt_ms=11.0" in line
+    assert "rows/s=2560" in line
+    short = _pace_line(
+        first_update=5,
+        last_update=6,
+        rows=512,
+        wall_s=0.2,
+        updates=updates,
+        microbatches=micros[1:],
+    )
+    assert short.endswith("agg=partial")
+
+
+def test_pace_line_eta_tail() -> None:
+    """ETA tail shows progress and remaining wall at the segment rate."""
+    from hydra2.training.loop_batch import MicrobatchTelemetry, UpdateTelemetry
+    from hydra2.training.stream_train import _pace_line
+
+    updates = [
+        UpdateTelemetry(global_update=5, optimizer_ms=10.0, logging_ms=0.5),
+        UpdateTelemetry(global_update=6, optimizer_ms=12.0, logging_ms=0.6),
+    ]
+    micros = [
+        MicrobatchTelemetry(
+            microstep=i,
+            global_update=4 + (i // 2),
+            queue_wait_ms=1.0,
+            fetch_decode_ms=2.0,
+            h2d_ms=0.1,
+            compute_ms=5.0,
+        )
+        for i in range(4)
+    ]
+    # Legacy call (no horizon) keeps the exact old line: no ETA tail.
+    legacy = _pace_line(
+        first_update=5,
+        last_update=6,
+        rows=512,
+        wall_s=0.2,
+        updates=updates,
+        microbatches=micros,
+    )
+    assert "eta=" not in legacy and "progress=" not in legacy
+    # 2 updates in 0.2s, horizon 100006: 100000 left at 10/s = 10000s.
+    line = _pace_line(
+        first_update=5,
+        last_update=6,
+        rows=512,
+        wall_s=0.2,
+        updates=updates,
+        microbatches=micros,
+        max_updates=100006,
+    )
+    assert "progress=0.0%" in line
+    assert "eta=2h46m" in line
+    # Horizon reached: no tail rather than a negative clock.
+    done = _pace_line(
+        first_update=5,
+        last_update=6,
+        rows=512,
+        wall_s=0.2,
+        updates=updates,
+        microbatches=micros,
+        max_updates=6,
+    )
+    assert "eta=" not in done

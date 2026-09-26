@@ -115,9 +115,10 @@ class _StreamDatasetBufferMixin(_StreamDatasetCore):
     def _next_batch_planes(self, taken: list[dict[str, Any]]) -> dict[str, Any]:
         """Assemble one microbatch from Rust plane blobs (no encoder).
 
-        Groups consecutive rows sharing one game blob (buffer order is game
-        order), slices zero-copy plane views, concats across games, and
-        finishes through :func:`assemble_slim_batch` (shared with eval).
+        Take order is grouped (not game order) when homogeneous buckets are
+        on, so same-blob neighbors are often non-consecutive decisions;
+        :func:`assemble_slim_batch` splits slice groups on exact ``_row``
+        continuity, keeping every position's planes/labels/identity aligned.
         Decision ids, kinds, and epoch ride the slim rows, so scorecards
         and joins behave identically to the encoder path.
         """

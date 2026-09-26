@@ -157,6 +157,85 @@ def test_manifest_digest_matches_canonical_oracle(tmp_path: Path) -> None:
     assert manifest_digest(manifest) == oracle
 
 
+def test_manifest_artifact_hit_is_byte_identical(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Second build off the artifact is byte-identical with zero re-hash."""
+    art = tmp_path / "art"
+    monkeypatch.setenv("HYDRA2_MANIFEST_ARTIFACT_DIR", str(art))
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    for name in ("b.mjai.json.zst", "a.mjai.json.zst", "c.mjai.json.zst"):
+        _write(corpus / name, [_game_bytes(name)])
+    first = build_manifest(corpus)
+    digest = manifest_digest(first)
+    assert len(list(art.glob("manifest-*.jsonl.zst"))) == 1
+    second = build_manifest(corpus)
+    assert [(e.root_id, e.relpath, e.bytes) for e in second.files] == [
+        (e.root_id, e.relpath, e.bytes) for e in first.files
+    ]
+    assert manifest_digest(second) == digest
+    # The attestation proves the hit path engaged (not a same-answer rebuild).
+    assert second._stored_digest == digest
+
+
+def test_manifest_artifact_invalidates_on_new_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A new file misses (dir-mtime fingerprint) and matches a cold build."""
+    art = tmp_path / "art"
+    monkeypatch.setenv("HYDRA2_MANIFEST_ARTIFACT_DIR", str(art))
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    _write(corpus / "a.mjai.json.zst", [_game_bytes("a")])
+    digest = manifest_digest(build_manifest(corpus))
+    _write(corpus / "b.mjai.json.zst", [_game_bytes("b")])
+    rebuilt = build_manifest(corpus)
+    assert manifest_digest(rebuilt) != digest
+    assert "b.mjai.json.zst" in [e.relpath for e in rebuilt.files]
+    monkeypatch.setenv("HYDRA2_MANIFEST_ARTIFACT_DIR", str(tmp_path / "cold"))
+    cold = build_manifest(corpus)
+    assert [(e.root_id, e.relpath, e.bytes) for e in cold.files] == [
+        (e.root_id, e.relpath, e.bytes) for e in rebuilt.files
+    ]
+    assert manifest_digest(cold) == manifest_digest(rebuilt)
+
+
+def test_manifest_artifact_corrupt_recovers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Garbage artifact bytes fall through to the cold path (miss, never raise)."""
+    art = tmp_path / "art"
+    monkeypatch.setenv("HYDRA2_MANIFEST_ARTIFACT_DIR", str(art))
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    _write(corpus / "a.mjai.json.zst", [_game_bytes("a")])
+    digest = manifest_digest(build_manifest(corpus))
+    (artifact,) = list(art.glob("manifest-*.jsonl.zst"))
+    artifact.write_bytes(b"not a manifest artifact, never parsed")
+    rebuilt = build_manifest(corpus)
+    assert manifest_digest(rebuilt) == digest
+    assert [e.relpath for e in rebuilt.files] == ["a.mjai.json.zst"]
+
+
+def test_epoch_trajectories_diverge_same_manifest(tmp_path: Path) -> None:
+    """Per-epoch variety needs no file hashing: seed+epoch drives the buffer."""
+    for index in range(4):
+        _write(
+            tmp_path / f"s{index}.mjai.json.zst",
+            [_game_bytes(f"s{index}g{j}") for j in range(4)],
+        )
+    manifest = build_manifest(tmp_path)
+    kwargs = {"seed": _SEED, "ratios": dict(_RATIOS), "split": None, "shuffle_buffer": 4}
+    epoch0_a = _ids(GameStream(manifest, epoch=0, **kwargs))  # type: ignore[arg-type]
+    epoch0_b = _ids(GameStream(manifest, epoch=0, **kwargs))  # type: ignore[arg-type]
+    epoch1 = _ids(GameStream(manifest, epoch=1, **kwargs))  # type: ignore[arg-type]
+    assert epoch0_a == epoch0_b
+    assert len(epoch0_a) == 16
+    assert epoch1 != epoch0_a
+    assert sorted(epoch1) == sorted(epoch0_a)
+
+
 def test_reservoir_blob_round_trip_and_corrupt_miss(tmp_path: Path) -> None:
     """Blob holds buffer-order raw bytes; any corruption fails closed."""
     from hydra2.contracts.common import ContractError

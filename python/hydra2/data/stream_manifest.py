@@ -10,9 +10,11 @@ byte-identical across checkpoints and scan caches lives here.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import struct
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -50,6 +52,7 @@ if TYPE_CHECKING:
 __all__ = [
     "DEFAULT_GROUPING_KEYS",
     "HOLDOUT_SPEC",
+    "MANIFEST_ARTIFACT_VERSION",
     "PARTITION_ORDER",
     "RESERVOIR_BLOB_VERSION",
     "SCAN_CACHE_VERSION",
@@ -57,11 +60,13 @@ __all__ = [
     "SplitName",
     "StreamManifest",
     "build_manifest",
+    "load_manifest_artifact",
     "load_scan_cache",
     "manifest_digest",
     "parse_shuffle_rng",
     "read_reservoir_blob",
     "resolve_root_id",
+    "save_manifest_artifact",
     "save_scan_cache",
     "scan_cache_path",
     "serialize_shuffle_rng",
@@ -166,6 +171,16 @@ class StreamManifest:
 
     files: tuple[FileEntry, ...]
     roots: tuple[tuple[str, str], ...] = ()
+    #: Artifact-load attestation only (constructor-rejected via ``init=False``,
+    #: attached by ``object.__setattr__`` after the bridge re-verify in
+    #: ``load_manifest_artifact`` — no caller can forge it through normal
+    #: construction): the digest pinned in the manifest-artifact header,
+    #: verified byte-equal to a fresh bridge digest at load time. Lets
+    #: ``manifest_digest`` skip re-hashing on warm launches. Excluded from
+    #: equality (``compare=False``) so stored and fresh manifests compare by
+    #: file list; a non-``None`` value that is not a ``sha256:`` string fails
+    #: closed in ``manifest_digest`` instead of returning.
+    _stored_digest: str | None = field(init=False, default=None, compare=False, repr=False)
 
     def __len__(self) -> int:
         return len(self.files)
@@ -227,8 +242,31 @@ def build_manifest(
     (``ImportError`` with a ``build-ext`` hint when the extension is not
     built — NO oracle fallback); duplicate relpaths under different roots
     order and split independently, never colliding.
+
+    A stored manifest artifact short-circuits the walk/hash/sort below on
+    repeat launches with unchanged roots (same digest, zero hashing); any
+    fingerprint drift or digest mismatch falls through to this exact cold
+    path, so a hit can never serve a stale order.
     """
     normalized = _normalize_roots(roots)
+    root_pairs = [(rid, str(base)) for rid, base in normalized]
+    artifact_path: Path | None = None
+    fingerprints: list[list[int]] | None = None
+    try:
+        marks: list[list[int]] = []
+        for _, base in normalized:
+            stamp = base.stat()
+            marks.append([stamp.st_mtime_ns, stamp.st_size])
+        fingerprints = marks
+        artifact_path = _manifest_artifact_path(roots=root_pairs, pattern=pattern)
+        hit = load_manifest_artifact(
+            artifact_path, roots=root_pairs, pattern=pattern, fingerprints=marks
+        )
+        if hit is not None:
+            return hit
+    except OSError:
+        artifact_path = None
+        fingerprints = None
     found: list[tuple[str, Path, str]] = []
     for rid, base in normalized:
         for path in base.rglob(pattern):
@@ -247,7 +285,20 @@ def build_manifest(
         FileEntry(path=path, bytes=path.stat().st_size, root_id=rid, relpath=rel)
         for _, (rid, path, rel) in keyed
     )
-    return StreamManifest(files=entries, roots=tuple((rid, str(base)) for rid, base in normalized))
+    manifest = StreamManifest(files=entries, roots=tuple(root_pairs))
+    if artifact_path is not None and fingerprints is not None:
+        # Digest failure stays loud (a broken cold path must raise); the
+        # artifact write itself is best-effort inside `save_manifest_artifact`.
+        digest = manifest_digest(manifest)
+        save_manifest_artifact(
+            artifact_path,
+            manifest=manifest,
+            digest=digest,
+            roots=root_pairs,
+            pattern=pattern,
+            fingerprints=fingerprints,
+        )
+    return manifest
 
 
 def manifest_digest(manifest: StreamManifest) -> str:
@@ -267,7 +318,16 @@ def manifest_digest(manifest: StreamManifest) -> str:
 
     Stays off ``packet_decode.manifest_digest`` (sha-sort fork): order here
     is the stored manifest order, never re-sorted.
+
+    A manifest carrying a verified ``_stored_digest`` (artifact-load only,
+    digest re-verified at load) returns it without calling the bridge; any
+    other non-``None`` shape raises instead of returning.
     """
+    stored = manifest._stored_digest
+    if stored is not None:
+        if not isinstance(stored, str) or not stored.startswith("sha256:"):
+            raise ContractError(f"manifest stored digest is not a sha256 binding: {stored!r}")
+        return stored
     columnar = _require_columnar()
     try:
         digest_text: str = columnar.stream_manifest_digest(
@@ -276,6 +336,158 @@ def manifest_digest(manifest: StreamManifest) -> str:
         return digest_text
     except (ValueError, OverflowError, TypeError) as exc:
         raise ContractError(str(exc)) from exc
+
+
+#: Manifest-artifact layout version (bump on format change; mismatch → miss,
+#: never coerce: the stored order must stay byte-identical to a fresh build
+#: or scan-cache keys and resume cursors silently reinterpret).
+MANIFEST_ARTIFACT_VERSION = 1
+
+
+def _manifest_artifact_path(*, roots: Sequence[tuple[str, str]], pattern: str) -> Path:
+    """Artifact file for one root-list + pattern pair (read path never mkdirs).
+
+    One file per root-list hash, so concurrent runs never share a target:
+    worst case is a redundant rebuild, never corruption (writers publish
+    via tmp+replace). Override the directory with
+    ``HYDRA2_MANIFEST_ARTIFACT_DIR`` for tests (never inside a data root);
+    default mirrors the scan-cache family under ``XDG_CACHE_HOME``.
+    """
+    cache_dir: str | None = os.environ.get("HYDRA2_MANIFEST_ARTIFACT_DIR")
+    base_raw: str = (
+        cache_dir
+        if cache_dir is not None
+        else os.path.join(
+            os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")),
+            "hydra2",
+            "manifest",
+        )
+    )
+    key = hashlib.sha256(repr((list(roots), pattern)).encode()).hexdigest()[:16]
+    return Path(base_raw) / f"manifest-{key}.jsonl.zst"
+
+
+def save_manifest_artifact(
+    path: Path | str,
+    *,
+    manifest: StreamManifest,
+    digest: str,
+    roots: Sequence[tuple[str, str]],
+    pattern: str,
+    fingerprints: Sequence[Sequence[int]],
+) -> None:
+    """Best-effort artifact write (never fails training on I/O error).
+
+    Payload: one JSON header line (version, digest, roots, pattern,
+    per-root ``[mtime_ns, size]`` fingerprints, row count) then the
+    zstd-compressed JSONL body, one ``[root_id, relpath, bytes]`` array per
+    line in stored order. tmp+replace publishes atomically: a crash leaves
+    old or new, never torn. Deletion is always safe (absence is a miss).
+    """
+    try:
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        header = {
+            "version": MANIFEST_ARTIFACT_VERSION,
+            "digest": digest,
+            "roots": [[rid, base] for rid, base in roots],
+            "pattern": pattern,
+            "fingerprints": [list(fp) for fp in fingerprints],
+            "count": len(manifest.files),
+        }
+        body = "\n".join(
+            json.dumps([entry.root_id, entry.relpath, entry.bytes]) for entry in manifest.files
+        ).encode("utf-8")
+        compressed = zstd.ZstdCompressor(level=1).compress(body)
+        tmp = target.with_suffix(".tmp")
+        # Atomic artifact publish is the effect; byte count discarded.
+        _ = tmp.write_bytes(json.dumps(header, sort_keys=True).encode("utf-8") + b"\n" + compressed)
+        _ = tmp.replace(target)
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, zstd.ZstdError):
+        return
+
+
+def load_manifest_artifact(
+    path: Path | str,
+    *,
+    roots: Sequence[tuple[str, str]],
+    pattern: str,
+    fingerprints: Sequence[Sequence[int]],
+) -> StreamManifest | None:
+    """Rebuild the stored file order on exact header match, else ``None`` (miss).
+
+    Two-tier validation: cheap per-root ``[mtime_ns, size]`` fingerprints
+    reject drifted trees before reading the body, then the rebuilt order is
+    re-hashed through the bridge and must equal the pinned digest (sound
+    hit even for nested roots: content drift fails the digest, not the
+    fingerprint). The returned manifest carries the verified digest, so
+    ``manifest_digest`` skips re-hashing. Any error — short read, header
+    mismatch, zstd/JSON failure, row-shape mismatch, unknown root id, row
+    count drift, digest inequality — is a miss, never partial, never raise
+    (a missing bridge propagates ``ImportError`` like the cold path, since
+    no manifest of any kind is buildable without it).
+    """
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return None
+    try:
+        header_raw, body = data.split(b"\n", 1)
+        header = json.loads(header_raw.decode("utf-8"))
+        if not isinstance(header, dict):
+            return None
+        if header.get("version") != MANIFEST_ARTIFACT_VERSION:
+            return None
+        digest = header.get("digest")
+        if not isinstance(digest, str) or not digest.startswith("sha256:"):
+            return None
+        if header.get("pattern") != pattern:
+            return None
+        if header.get("roots") != [[rid, base] for rid, base in roots]:
+            return None
+        if header.get("fingerprints") != [list(fp) for fp in fingerprints]:
+            return None
+        count = header.get("count")
+        raw_body = zstd.ZstdDecompressor().decompress(body)
+        rows: list[tuple[str, str, int]] = []
+        for line in raw_body.decode("utf-8").split("\n"):
+            if not line:
+                continue
+            row = json.loads(line)
+            rid, rel, size = row
+            if (
+                not isinstance(rid, str)
+                or not isinstance(rel, str)
+                or not isinstance(size, int)
+                or isinstance(size, bool)
+            ):
+                return None
+            rows.append((rid, rel, size))
+        if not isinstance(count, int) or isinstance(count, bool) or len(rows) != count:
+            return None
+        bases = {rid: Path(base) for rid, base in roots}
+        stored_roots = tuple((rid, str(bases[rid])) for rid, _ in roots)
+        entries = tuple(
+            FileEntry(path=bases[rid] / rel, bytes=size, root_id=rid, relpath=rel)
+            for rid, rel, size in rows
+        )
+        manifest = StreamManifest(files=entries, roots=stored_roots)
+        if manifest_digest(manifest) != digest:
+            return None
+        # Declared slot, so `object.__setattr__` lands despite frozenness;
+        # unreachable before the re-verify above (any mismatch returned).
+        object.__setattr__(manifest, "_stored_digest", digest)
+        return manifest
+    except (
+        OSError,
+        ValueError,
+        TypeError,
+        KeyError,
+        AttributeError,
+        zstd.ZstdError,
+        ContractError,
+    ):
+        return None
 
 
 #: Reservoir-blob layout version (bump on format change; mismatch → miss).

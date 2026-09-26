@@ -49,6 +49,7 @@ import gc
 import io
 import json
 import os
+import statistics
 import threading
 import time
 from typing import TYPE_CHECKING, Any, cast
@@ -154,6 +155,85 @@ if TYPE_CHECKING:
     from hydra2.training._rc_sections import ResumePlan, RunConfig
 
 __all__ = ["SPLIT_RATIOS", "run_stream_training"]
+
+
+def _emit_phase(run_dir: Path, msg: str) -> None:
+    """Mirror one phase line to stdout and train.log (observer-only).
+
+    Stdout keeps the harness-grepped console stream; the file copy lets a
+    later reader follow startup staging without replaying console output.
+    Appends only, one small write per training stage (never per microbatch),
+    so the hot path never touches it. I/O failure is suppressed: logging
+    must never abort training.
+    """
+    print(msg, flush=True)
+    _log_path = run_dir / "logs" / "train.log"
+    with contextlib.suppress(Exception), _log_path.open("a", encoding="utf-8") as handle:
+        _ = handle.write(msg + "\n")
+
+
+def _pace_line(
+    *,
+    first_update: int,
+    last_update: int,
+    rows: int,
+    wall_s: float,
+    updates: list[Any],
+    microbatches: list[Any],
+    max_updates: int | None = None,
+) -> str:
+    """One-line segment pace summary from already-recorded telemetry.
+
+    Medians come from the in-memory per-update/per-microbatch records, so
+    this adds no host syncs and one line per segment (never per
+    microbatch). Profiler-split segments keep only the tail call's records;
+    range mismatch degrades to wall+rows/s marked partial instead of
+    mislabeled medians. Fail-open throughout: logging must never break
+    training, so any surprise degrades the line rather than raising.
+    ``max_updates`` adds a progress/ETA tail (remaining updates at the
+    segment rate, humanized); ``None`` keeps the legacy line exactly.
+    """
+    wall = wall_s if wall_s > 0 else 1e-9
+    n_updates = last_update - first_update + 1
+    base = (
+        f"pace: updates={first_update:06d}->{last_update:06d} "
+        f"rows/s={rows / wall:.0f} upd_ms={wall * 1000.0 / max(n_updates, 1):.1f}"
+    )
+    if max_updates is not None and max_updates > last_update:
+        remaining = max_updates - last_update
+        eta_s = remaining * wall / max(n_updates, 1)
+        eta_h, rem = divmod(int(eta_s), 3600)
+        eta_m = rem // 60
+        base += f" progress={last_update * 100.0 / max_updates:.1f}% eta={eta_h}h{eta_m:02d}m"
+    try:
+        n_mb = len(microbatches)
+        full = (
+            len(updates) == n_updates
+            and len(updates) > 0
+            and int(updates[0].global_update) == first_update
+            and int(updates[-1].global_update) == last_update
+            # Microbatch rows stamp the pre-increment counter (recorded
+            # mid-update, before global_update += 1), so their window runs
+            # one behind the update window they belong to.
+            and n_mb > 0
+            and n_mb % max(n_updates, 1) == 0
+            and int(microbatches[0].global_update) == first_update - 1
+            and int(microbatches[-1].global_update) == last_update - 1
+        )
+        if not full:
+            return base + " agg=partial"
+        opt = statistics.median(float(u.optimizer_ms) for u in updates)
+        log = statistics.median(float(u.logging_ms) for u in updates)
+        fetch = statistics.median(float(m.fetch_decode_ms) for m in microbatches)
+        comp = statistics.median(float(m.compute_ms) for m in microbatches)
+        qw = statistics.median(float(m.queue_wait_ms) for m in microbatches)
+        h2d = statistics.median(float(m.h2d_ms) for m in microbatches)
+    except Exception:
+        return base + " agg=partial"
+    return (
+        f"{base} opt_ms={opt:.1f} log_ms={log:.2f} "
+        f"fetch_ms={fetch:.1f} comp_ms={comp:.1f} qw_ms={qw:.1f} h2d_ms={h2d:.2f}"
+    )
 
 
 def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> dict[str, Any]:
@@ -263,7 +343,7 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
     _t_launch = time.perf_counter()
     manifest = build_manifest(config.data.roots)
     _dt = time.perf_counter() - _t_launch
-    print(f"phase: manifest files={len(manifest)} t={_dt:.1f}s", flush=True)
+    _emit_phase(run_dir, f"phase: manifest files={len(manifest)} t={_dt:.1f}s")
     if len(manifest) == 0:
         raise ContractError(f"stream manifest empty under {config.data.roots}")
     stream_digest = manifest_digest(manifest)
@@ -280,9 +360,9 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
     scan = _scan_corpus_cached(
         manifest, config=config, ratios=ratios, stream_digest=stream_digest, run_dir=run_dir
     )
-    print(
+    _emit_phase(
+        run_dir,
         f"phase: scan train_games={scan.train_games} elapsed={time.perf_counter() - _t_scan:.1f}s",
-        flush=True,
     )
     if scan.train_games == 0:
         raise ContractError(f"train split empty: no games in {config.data.train_split!r}")
@@ -294,6 +374,21 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
         )
     remaining = config.loop.max_updates - start_update
     microbatch = config.loop.microbatch_size
+
+    # Identity echo (observer-only): everything needed to name this run
+    # without opening the yaml. Emitted once, after the manifest gates pass.
+    _roots = len(config.data.roots)
+    _emit_phase(
+        run_dir,
+        f"config: id={config.run.run_id} digest={run_digest} stream={stream_digest} "
+        f"trunk={config.model.architecture_id} micro={config.loop.microbatch_size} "
+        f"accum={config.loop.accumulation_steps} workers={config.data.num_workers} "
+        f"roots={_roots} max={config.loop.max_updates} "
+        f"ckpt={config.loop.checkpoint_frequency_updates} "
+        f"eval={config.eval.frequency_updates}x{config.eval.num_batches} "
+        f"seeds={config.seeds.data_seed}/{config.seeds.train_seed}/"
+        f"{config.seeds.selection_seed} start={start_update}",
+    )
 
     # Deterministic roots: counter-based seeds only, never wall-clock.
     _ = torch.manual_seed(config.seeds.train_seed)
@@ -512,7 +607,13 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
         _eager_thread.join()
         if len(_eager_fill_error) > 0:
             raise _eager_fill_error[0]
-        print(f"phase: eager-fill joined t={time.perf_counter() - _t_eager:.1f}s", flush=True)
+        # Joined-time emit (inside the closure): at function level this line
+        # executes at definition, before the thread's work, so a fast main
+        # thread would log t≈0s and mask fill stalls.
+        _emit_phase(
+            run_dir,
+            f"phase: eager-fill joined t={time.perf_counter() - _t_eager:.1f}s",
+        )
 
     model = _build_model(config)
     optimizer = _build_optimizer(config, model)
@@ -706,7 +807,8 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
         counters_fn=lambda: (_sampled_loop.state.global_update, 0),
     )
     _ = sampler.start()
-    print(f"phase: runtime-ready elapsed={time.perf_counter() - _t_launch:.1f}s", flush=True)
+    _t_ready = time.perf_counter()
+    _emit_phase(run_dir, f"phase: runtime-ready elapsed={_t_ready - _t_launch:.1f}s")
     # Profiler captures: first K checkpoint boundaries past warmup (compile
     # noise), bounded by the run window. Each captures exactly one update.
     profile_updates: set[int] = set()
@@ -741,14 +843,52 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
             stream_digest=stream_digest,
             buffer_size=config.data.shuffle_buffer_size,
         )
-        print(f"phase: reservoir-capture t={time.perf_counter() - _t_capture:.1f}s", flush=True)
+        _emit_phase(
+            run_dir,
+            f"phase: reservoir-capture t={time.perf_counter() - _t_capture:.1f}s",
+        )
     with contextlib.suppress(Exception):  # why-broad: freeze must never fail training
         _ = gc.collect()
         _ = gc.freeze()
+
+    def _drain_telemetry() -> None:
+        """Move this train() call's records into run-level sinks (observer-only)."""
+        telemetry_all.extend(loop.telemetry_records)
+        telemetry_updates.extend(loop.update_records)
+        with open(telemetry_path, "a", encoding="utf-8") as sink:
+            for record in loop.telemetry_records:
+                logged: dict[str, Any] = record.to_dict()
+                # Wall stamp at write time only (logging-only: the
+                # in-memory record stays hash-clean for any consumer).
+                logged["t_wall_s"] = time.time()
+                _ = sink.write(json.dumps(logged, sort_keys=True) + "\n")
+
     try:
         _t_first = time.perf_counter()
+        _first_seg = True
         while done < remaining:
             step = min(ckpt_every, remaining - done)
+            if _first_seg:
+                # First segment keeps its exact old boundaries (checkpoints and
+                # evals stay pinned); only observability branches here. A lone
+                # first update gets its compile wall timed, longer first
+                # segments get a stall warning up front instead.
+                _first_seg = False
+                if step == 1:
+                    _timed_first = True
+                else:
+                    _timed_first = False
+                    _emit_phase(
+                        run_dir,
+                        "training: warming first update (inductor compile+autotune runs "
+                        "inside; no update lines until it lands; if the log sits here, "
+                        "check GPU power (high = autotuning, idle = stuck); "
+                        "deeper: TORCH_LOGS=recompiles,guards)",
+                    )
+            else:
+                _timed_first = False
+            _abs0 = loop.state.global_update
+            _t_seg = time.perf_counter()
             done = _train_segment(
                 loop=loop,
                 done=done,
@@ -758,23 +898,38 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
                 train_log=run_dir / "logs" / "train.log",
                 cuda_ok=_profile_cuda,
             )
+            _seg_wall = time.perf_counter() - _t_seg
+            _abs1 = loop.state.global_update
+            if _timed_first:
+                _since_ready = time.perf_counter() - _t_ready
+                _resumed = " (resume graph rebuild inside)" if resume is not None else ""
+                _emit_phase(
+                    run_dir,
+                    f"first-update: update={_abs1:06d} t={_since_ready:.1f}s since "
+                    f"runtime-ready (inductor compile+autotune inside{_resumed}; "
+                    "deeper: TORCH_LOGS=recompiles,guards)",
+                )
+            _emit_phase(
+                run_dir,
+                _pace_line(
+                    first_update=_abs0 + 1,
+                    last_update=_abs1,
+                    rows=(_abs1 - _abs0) * config.loop.optimizer_minibatch_size,
+                    wall_s=_seg_wall,
+                    updates=list(loop.update_records),
+                    microbatches=list(loop.telemetry_records),
+                    max_updates=config.loop.max_updates,
+                ),
+            )
             if done <= ckpt_every:
                 _dt = time.perf_counter() - _t_first
-                print(f"phase: seg updates={done} t={_dt:.1f}s", flush=True)
-            telemetry_all.extend(loop.telemetry_records)
-            telemetry_updates.extend(loop.update_records)
-            with open(telemetry_path, "a", encoding="utf-8") as sink:
-                for record in loop.telemetry_records:
-                    logged: dict[str, Any] = record.to_dict()
-                    # Wall stamp at write time only (logging-only: the
-                    # in-memory record stays hash-clean for any consumer).
-                    logged["t_wall_s"] = time.time()
-                    _ = sink.write(json.dumps(logged, sort_keys=True) + "\n")
+                _emit_phase(run_dir, f"phase: seg updates={done} t={_dt:.1f}s")
+            _drain_telemetry()
             # The streaming publish snapshots live state and submits the
             # serialization to the background writer (returns the reserved
             # path immediately). intentionally discarded: checkpoint path
             # unneeded, manifest tracks
-            _ = _write_streaming_checkpoint(
+            _ckpt_reserved = _write_streaming_checkpoint(
                 run_dir=run_dir,
                 update=loop.state.global_update,
                 run_digest=run_digest,
@@ -785,6 +940,11 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
                 batch_size=microbatch,
                 writer=_ckpt_writer,
                 span_sink=_span_sink,
+            )
+            _emit_phase(
+                run_dir,
+                f"ckpt: update={loop.state.global_update:06d} submitted={_ckpt_reserved.name} "
+                "(bytes land async; landed line confirms)",
             )
             # intentionally discarded: appended count unneeded
             _ = _append_new_history(run_dir, loop.loss_history)
@@ -814,6 +974,20 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
                 )
                 if report is not None:
                     evals.append(report)
+            try:
+                _landed = sorted((run_dir / "checkpoints").glob("*.pt"))
+                _landed_b = sum(p.stat().st_size for p in _landed)
+                _landed_u = max(int(p.stem.rsplit("-", 1)[1]) for p in _landed)
+            except Exception:
+                _landed = []
+                _landed_b = 0
+                _landed_u = -1
+            _landed_msg = (
+                f"ckpt: updates<={update} landed={len(_landed)} files bytes={_landed_b / 1e6:.0f}MB"
+            )
+            if _landed_u >= 0:
+                _landed_msg += f" max_update={_landed_u:06d}"
+            _emit_phase(run_dir, _landed_msg)
     finally:
         # Land every pending generation before process exit: close drains
         # (raising a worker error instead of dropping it) and shuts the

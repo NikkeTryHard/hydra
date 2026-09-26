@@ -258,7 +258,13 @@ class SupervisedLoopEngineMixin(SupervisedLoopCheckpointMixin):
         # (compile_once semantics, torch 2.13 compatible).
         # dynamic=True + fullgraph=False keeps bucket invariance
         # 32/64/128/256 (SDPA bool mask).
-        if self.device.type == "cuda":
+        # "eager" is a supported compile mode: a config selecting it must run
+        # uncompiled (inductor codegen is shape/arch-sensitive — observed a
+        # device-assert miscompile plus a CantSplit codegen failure on dynamic
+        # shapes at 8 heads — so silently compiling anyway would defeat the
+        # mode). Any other mode (or no spec) compiles exactly as before.
+        _eager_requested = getattr(self.runtime_spec, "compile_mode", None) == "eager"
+        if self.device.type == "cuda" and not _eager_requested:
             try:
                 _is_compiling = torch.compiler.is_compiling()
             except Exception:
@@ -301,7 +307,7 @@ class SupervisedLoopEngineMixin(SupervisedLoopCheckpointMixin):
         # holds zero host syncs. Eager fallback stays the validating public
         # fn (replay/tests/direct callers unchanged).
         self._compiled_loss: Any = compute_supervised_loss
-        if self.device.type == "cuda":
+        if self.device.type == "cuda" and not _eager_requested:
             try:
                 _loss_compiling = torch.compiler.is_compiling()
             except Exception:

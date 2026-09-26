@@ -1,0 +1,158 @@
+# Big trunk on the RTX 5070 (12GB): same 9.91M Mortal-class trunk as
+# big-pretrain-v1 (8x256x8 behind hydra2_big_transformer_v1, empty parameters
+# = arch defaults), resized for local VRAM. Sizing: baseline 2.07M holds
+# 8.1GB at mb2048 (measured); trunk activations scale ~8x here (2x width,
+# 4x depth), so mb256 targets the same ~8GB envelope with headroom — the
+# run's own reserved_mb telemetry is the gate, adjust on evidence only.
+# Effective batch drops 8192 -> 2048 (mb256 x accum8); LR stays 0.0003 like
+# every run so far ( deviation is explicit here; retune on loss evidence,
+# never by formula). 24-root shelf, 200k updates, ckpt/1000 keep-all,
+# eval/2k per-type with eval micro scaled to 256 (same trunk OOMs at 2048).
+# compile_mode=eager: inductor codegen is unreliable on this trunk (device-
+# assert miscompile + CantSplit on dynamic shapes at 8 heads, both observed
+# 2026-09-25); eager is proven correct on all probe legs. Throughput cost
+# accepted; revisit compile only on new per-shape evidence.
+run:
+  id: local-big-rtx5070-sat-eager
+  kind: supervised
+  description: 'Big trunk saturated locally eager (inductor bypass): 9.91M x 200k updates multi-root, mb256x8, ckpt/1000 keep-all, eval/2k per-type.'
+data:
+  roots:
+  - - tenhou-houou-2010
+    - ${HYDRA2_DATA_ROOT}/tenhou-houou-2010
+  - - tenhou-houou-2011
+    - ${HYDRA2_DATA_ROOT}/tenhou-houou-2011
+  - - tenhou-houou-2012
+    - ${HYDRA2_DATA_ROOT}/tenhou-houou-2012
+  - - tenhou-houou-2013
+    - ${HYDRA2_DATA_ROOT}/tenhou-houou-2013
+  - - tenhou-houou-2014
+    - ${HYDRA2_DATA_ROOT}/tenhou-houou-2014
+  - - tenhou-houou-2015
+    - ${HYDRA2_DATA_ROOT}/tenhou-houou-2015
+  - - tenhou-houou-2016
+    - ${HYDRA2_DATA_ROOT}/tenhou-houou-2016
+  - - tenhou-houou-2017
+    - ${HYDRA2_DATA_ROOT}/tenhou-houou-2017
+  - - tenhou-houou-2018
+    - ${HYDRA2_DATA_ROOT}/tenhou-houou-2018
+  - - tenhou-houou-2019
+    - ${HYDRA2_DATA_ROOT}/tenhou-houou-2019
+  - - tenhou-houou-2020
+    - ${HYDRA2_DATA_ROOT}/tenhou-houou-2020
+  - - tenhou-houou-2021
+    - ${HYDRA2_DATA_ROOT}/tenhou-houou-2021
+  - - tenhou-houou-2022
+    - ${HYDRA2_DATA_ROOT}/tenhou-houou-2022
+  - - tenhou-houou-2023
+    - ${HYDRA2_DATA_ROOT}/tenhou-houou-2023
+  - - tenhou-houou-2024
+    - ${HYDRA2_DATA_ROOT}/tenhou-houou-2024
+  - - majsoul-jade-2020
+    - ${HYDRA2_DATA_ROOT}/majsoul-jade-2020
+  - - majsoul-jade-2021
+    - ${HYDRA2_DATA_ROOT}/majsoul-jade-2021
+  - - majsoul-jade-2022
+    - ${HYDRA2_DATA_ROOT}/majsoul-jade-2022
+  - - majsoul-jade-2023
+    - ${HYDRA2_DATA_ROOT}/majsoul-jade-2023
+  - - majsoul-jade-2024
+    - ${HYDRA2_DATA_ROOT}/majsoul-jade-2024
+  - - majsoul-throne-2020
+    - ${HYDRA2_DATA_ROOT}/majsoul-throne-2020
+  - - majsoul-throne-2021
+    - ${HYDRA2_DATA_ROOT}/majsoul-throne-2021
+  - - majsoul-throne-2022
+    - ${HYDRA2_DATA_ROOT}/majsoul-throne-2022
+  - - majsoul-throne-2023
+    - ${HYDRA2_DATA_ROOT}/majsoul-throne-2023
+  scope: tenhou-4p-hanchan
+  train_split: train
+  val_split: validation
+  wall_disjoint: true
+  leakage_check: true
+  dora_width: 5
+  actor_privileged_split: true
+  dataset_manifest_hash: null
+  shuffle_buffer_size: 50000
+  drop_last: true
+  num_workers: 16
+  world_size: 1
+  replay_backend: rust
+  decode_prefetch: 64
+  expand_batch_games: 64
+  homogeneous_buckets: true
+model:
+  architecture_id: hydra2_big_transformer_v1
+  action_count: 6792
+  parameters: {}
+weights:
+  w_policy: 1.0
+  w_placement: 0.0
+  w_value: 0.0
+  w_event: null
+  w_belief: null
+  privileged_source_hash: null
+  label_smoothing: 0.03
+optimizer:
+  id: adamw
+  lr: 0.0003
+  betas:
+  - 0.9
+  - 0.999
+  weight_decay: 0.01
+scheduler:
+  id: cosine
+  warmup_updates: 2000
+  parameters: {}
+runtime:
+  adapter_id: plain_pytorch
+  device: cuda
+  precision: bf16_mixed
+  compile_mode: eager
+loop:
+  microbatch_size: 256
+  accumulation_steps: 8
+  gradient_clip_norm: 1.0
+  max_updates: 200000
+  checkpoint_frequency_updates: 1000
+  precision: bf16_mixed
+  keep_last_checkpoints: null
+  log_per_type_metrics: true
+  fetch_prefetch_depth: 10
+  pack_histories: false
+seeds:
+  data_seed: 0
+  train_seed: 0
+  selection_seed: 0
+selection:
+  N: 30
+  pilot_s: 1.5
+  delta: 0.5
+  alpha: 0.05
+  beta: 0.2
+  design: fixed_n
+  declared_peeks:
+  - 30
+  margin: 0.0
+  resamples: 2000
+  seed: 0
+mirror:
+  enabled: false
+  project: hydra2-tenhou-4p
+  task_name: null
+  offline_dir: null
+eval:
+  frequency_updates: 2000
+  num_batches: 10
+  walls_dir: null
+  microbatch_size: 256
+output:
+  artifact_root: null
+  run_id: null
+rl: null
+telemetry:
+  mlflow_enabled: true
+  verbose_enabled: true
+  verbose_interval_ms: 50
+  profiler_captures: 1

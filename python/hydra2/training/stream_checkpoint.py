@@ -380,7 +380,9 @@ def _append_new_history(run_dir: Path, history: list[dict[str, float]]) -> int:
             _ = log_handle.write(  # intentionally discarded: byte count unneeded
                 f"update={update:06d} total={entry.get('total', 0.0):.6f} "
                 f"policy={entry.get('policy', 0.0):.6f} "
-                f"top1={entry.get('top1', 0.0):.4f}\n"
+                f"top1={entry.get('top1', 0.0):.4f} "
+                f"top3={entry.get('top3', 0.0):.4f} "
+                f"top5={entry.get('top5', 0.0):.4f}\n"
             )
             logged.add(update)
             appended += 1
@@ -503,9 +505,12 @@ def _run_holdout_eval(
             _ = handle.write(
                 f"eval:update={update:06d} nll={float(report.get('masked_nll', 0.0)):.6f} "
                 f"top1={float(report.get('top1', 0.0)):.4f} "
+                f"top3={float(report.get('top3', 0.0)):.4f} "
+                f"top5={float(report.get('top5', 0.0)):.4f} "
                 f"ece={float(report.get('calibration_ece', 0.0)):.6f} "
                 f"batches={int(report.get('num_eval_batches', 0))} "
-                f"games={games_touched} expand_s={expand_wall:.2f} encode_s={encode_wall:.2f}\n"
+                f"games={games_touched} expand_s={expand_wall:.2f} encode_s={encode_wall:.2f} "
+                f"wall_s={expand_wall + encode_wall + report_ms / 1000.0:.1f}\n"
             )
         return entry
     except Exception as exc:

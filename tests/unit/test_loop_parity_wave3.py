@@ -245,4 +245,6 @@ def test_hot_scalars_envelope_golden() -> None:
     assert compute_hot_scalars(logits, targets, legal) == {
         "masked_nll": 0.8463250994682312,
         "top1": 1.0,
+        "top3": 1.0,
+        "top5": 1.0,
     }

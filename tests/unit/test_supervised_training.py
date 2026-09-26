@@ -110,7 +110,8 @@ def test_fused_hot_scalars_matches_eager(monkeypatch: pytest.MonkeyPatch) -> Non
     """Fused reporting NLL/top1 agrees with the eager path.
 
     Guards the compute_hot_scalars CUDA branch: identical NLL (tight),
-    exactly equal top1. Fails without the fused kernel and on formula
+    exactly equal top1. Top-3/5 ride eager top-k on both paths, so they
+    agree exactly too. Fails without the fused kernel and on formula
     drift; ties are excluded (argmax/first-max order documented).
     """
     torch = pytest.importorskip("torch")
@@ -137,6 +138,8 @@ def test_fused_hot_scalars_matches_eager(monkeypatch: pytest.MonkeyPatch) -> Non
     fused = compute_hot_scalars(logits.detach(), targets, legal)
     assert abs(eager["masked_nll"] - fused["masked_nll"]) < 1e-4, (eager, fused)
     assert eager["top1"] == fused["top1"]
+    assert eager["top3"] == fused["top3"]
+    assert eager["top5"] == fused["top5"]
 
 
 # ---------------------------------------------------------------------------

@@ -21,10 +21,36 @@ import contextlib
 import fcntl
 import json
 import os
+import signal
 import sys
 import time
 from pathlib import Path
 from typing import Any
+
+
+def _install_termination_flush(logger: Any, task: Any, *, argv0: str = "sidecar") -> None:
+    """Flush + close the task on SIGTERM/SIGINT instead of dying buffered.
+
+    The SDK batches scalar reports; a killed follower used to take up to a
+    full pass of buffered rows to the grave while the offset file already
+    called them consumed (offsets advance per pass, uploads lag behind).
+    The handler flushes, closes (final server push), then re-raises the
+    signal's default disposition so the exit code still signals termination.
+    Install once in follow mode; one-shot exits via ``task.close()`` below.
+    """
+
+    def _handle(signum: int, _frame: Any) -> None:
+        with contextlib.suppress(Exception):
+            logger.flush()
+        with contextlib.suppress(Exception):
+            task.close()
+        print(f"{argv0}: terminated by signal {signum} after flush", flush=True)
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+    signal.signal(signal.SIGTERM, _handle)
+    signal.signal(signal.SIGINT, _handle)
+
 
 OFFSET_NAME = ".sidecar-offset"
 DONE_NAME = ".sidecar-done"
@@ -234,6 +260,8 @@ def _report_feed_row(logger: Any, row: dict[str, Any], fallback: int) -> None:
         value = _as_float(row.get(series))
         if value is not None:
             logger.report_scalar(title="feed-gc", series=series, value=value, iteration=iteration)
+
+
 def _report_verbose_row(
     logger: Any, row: dict[str, Any], fallback: int, prev: dict[str, float]
 ) -> None:
@@ -255,6 +283,13 @@ def _report_verbose_row(
         value = _as_float(gpu.get(series))
         if value is not None:
             logger.report_scalar(title="gpu", series=series, value=value, iteration=iteration)
+    # Latest GPU state for the follow-mode heartbeat (observer-only copy).
+    util = _as_float(gpu.get("util_gpu_pct"))
+    mem = _as_float(gpu.get("mem_used_mb"))
+    if util is not None:
+        prev["gpu_util"] = util
+    if mem is not None:
+        prev["gpu_mem_mb"] = mem
     for series in ("allocated_mb", "reserved_mb", "ooms", "alloc_retries"):
         value = _as_float(torch_sec.get(series))
         if value is not None:
@@ -336,9 +371,7 @@ def _report_eval_tables(logger: Any, row: dict[str, Any]) -> None:
                 ]
             )
         with contextlib.suppress(Exception):
-            logger.report_table(
-                title="eval-per-type", series=f"update-{update}", table_plot=table
-            )
+            logger.report_table(title="eval-per-type", series=f"update-{update}", table_plot=table)
     cal_keys = (
         "calibration_ece",
         "temperature",
@@ -489,7 +522,6 @@ def _report_checkpoint_text(logger: Any, run_dir: Path, offsets: dict[str, Any])
     return count
 
 
-
 def _offset_path(run_dir: Path) -> Path:
     return run_dir / "logs" / OFFSET_NAME
 
@@ -552,10 +584,18 @@ def _upload_artifacts(task: Any, run_dir: Path) -> list[str]:
 
 
 def _pass(
-    logger: Any, run_dir: Path, offsets: dict[str, Any], verbose_prev: dict[str, float] | None = None
+    logger: Any,
+    run_dir: Path,
+    offsets: dict[str, Any],
+    verbose_prev: dict[str, float] | None = None,
 ) -> tuple[int, int, int, int, int]:
     """Report every unseen row; persist offsets; return (metrics, eval, feed, verbose, spans)."""
     counts = [0, 0, 0, 0, 0]
+    # Rollback point for the flush gate at the end: offsets mutate in place
+    # throughout the pass, so a failed flush must restore (not just skip the
+    # save) or the rows are skipped anyway. Shallow copy suffices: every
+    # mutation below rebinds keys, never mutates a shared value in place.
+    _offsets_snapshot = dict(offsets)
     best_train = offsets.get("best_train_nll")
     best_eval = offsets.get("best_eval_nll")
     if not isinstance(best_train, (int, float)):
@@ -633,6 +673,19 @@ def _pass(
         offsets["best_train_nll"] = best_train
     if best_eval is not None:
         offsets["best_eval_nll"] = best_eval
+    try:
+        logger.flush()
+    except Exception as exc:
+        # Durability ordering: offsets advance only past server-confirmed
+        # rows. A failed flush rolls the in-memory offsets back so the next
+        # pass re-reports the same rows (harmless duplicates) instead of
+        # losing them while claiming them consumed. A kill between report
+        # and flush loses at most one pass; the SIGTERM handler closes that
+        # window.
+        print(f"sidecar: logger.flush failed, offsets held: {exc}", flush=True)
+        offsets.clear()
+        offsets.update(_offsets_snapshot)
+        return counts[0], counts[1], counts[2], counts[3], counts[4]
     _save_offsets(run_dir, offsets)
     return counts[0], counts[1], counts[2], counts[3], counts[4]
 
@@ -702,6 +755,7 @@ def main() -> None:
 
     mode = "follow" if args.follow else "oneshot"
     if args.follow:
+        _install_termination_flush(logger, task)
         deadline = time.monotonic() + args.follow_timeout
         while True:
             m, e, f, v, s = _pass(logger, run_dir, offsets, verbose_prev)
@@ -710,8 +764,24 @@ def main() -> None:
             total_f += f
             total_v += v
             total_s += s
-            with contextlib.suppress(Exception):
+            try:
                 logger.flush()
+            except Exception as exc:
+                # Flush failures used to vanish inside suppress while offsets
+                # kept advancing: rows marked consumed that never reached the
+                # server. Loud now; the rows stay reported-or-retried.
+                print(f"sidecar: logger.flush failed: {exc}", flush=True)
+            # Heartbeat: wall-clock proof of forward motion every pass (the
+            # training log only moves per segment; a silent follower used to
+            # look dead). Observer-only; never touches training state.
+            print(
+                f"watch: update={verbose_prev.get('update')} "
+                f"t_wall_s={verbose_prev.get('wall')} "
+                f"gpu_util={verbose_prev.get('gpu_util')} "
+                f"gpu_mem_mb={verbose_prev.get('gpu_mem_mb')} "
+                f"passed(m/e/f/v/s)={m}/{e}/{f}/{v}/{s}",
+                flush=True,
+            )
             done_sentinel = (run_dir / "logs" / DONE_NAME).exists()
             if done_sentinel and (m + e + f + v + s) == 0:
                 mode = "follow-complete"
