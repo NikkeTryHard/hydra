@@ -282,11 +282,15 @@ def main() -> int:
                 live = live_evals[update]
                 dn = abs(sum(parity["nll"]) / len(parity["nll"]) - live["masked_nll"])
                 dt = abs(sum(parity["top1"]) / len(parity["top1"]) - live["top1"])
-                entry["parity"] = {"d_nll": dn, "d_top1": dt}
+                entry["parity"] = {"d_nll": dn, "d_top1": dt, "state": "checked"}
                 if dn > _PARITY_TOL or dt > _PARITY_TOL:
                     raise ContractError(
                         f"parity failed at update={update}: d_nll={dn:.4f} d_top1={dt:.4f}"
                     )
+            elif parity is not None:
+                # No live row at this update (e.g. future/observer-only
+                # checkpoint): parity unchecked, never a failure.
+                entry["parity"] = {"d_nll": None, "d_top1": None, "state": "unchecked"}
         v, t = entry[val_split], entry[train_split]
         gap = v["nll"] - t["nll"]
         gap_se = math.sqrt(v["nll_se"] ** 2 + t["nll_se"] ** 2)
