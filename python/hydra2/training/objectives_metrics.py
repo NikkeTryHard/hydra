@@ -31,6 +31,7 @@ __all__ = [
     "compute_per_type_metrics",
     "fit_temperature_scaling",
     "masked_topk_accuracy",
+    "row_eval_primitives",
 ]
 
 # ECE bins — 10 equal-width bins over ``[0,1]`` confidence; frozen for
@@ -188,6 +189,43 @@ def compute_hot_scalars(
         logits_fp32, targets_long, legal_mask, k=min(5, logits_fp32.shape[1])
     )
     return out
+
+
+def row_eval_primitives(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    legal_mask: torch.Tensor,
+) -> dict[str, torch.Tensor]:
+    """Per-row eval primitives on CPU (streaming-observer support).
+
+    Same validation + fp32 upcast as :func:`compute_metrics`, but returns
+    per-row CPU tensors (``row_nll``, ``hit1``/``hit3``/``hit5``, ``conf``)
+    instead of pooled means, so an observer can accumulate exact pooled
+    means, standard errors, and pooled ECE over shards far larger than one
+    batch without ever pooling full logits (rows x 6792 fp32 per batch
+    would OOM a CPU observer). Row means of these primitives reproduce the
+    :func:`compute_metrics` headline values exactly (pinned by test); pooled
+    ECE still needs the frozen-bin pass over pooled ``conf``/``hit1``.
+    """
+    _, masked_logits, log_prob, targets_long = _validate_metric_inputs(
+        logits, targets, legal_mask
+    )
+    batch_idx = torch.arange(targets_long.shape[0], device=targets_long.device)
+    row_nll = -log_prob[batch_idx, targets_long]
+    probs = F.softmax(masked_logits, dim=-1)
+    conf, _ = probs.max(dim=1)
+    top5 = torch.topk(masked_logits, k=min(5, masked_logits.shape[1]), dim=1).indices
+    expanded = targets_long.unsqueeze(1)
+    hit1 = (top5[:, :1] == expanded).any(dim=1).float()
+    hit3 = (top5[:, : min(3, top5.shape[1])] == expanded).any(dim=1).float()
+    hit5 = (top5 == expanded).any(dim=1).float()
+    return {
+        "row_nll": row_nll.detach().to("cpu"),
+        "hit1": hit1.detach().to("cpu"),
+        "hit3": hit3.detach().to("cpu"),
+        "hit5": hit5.detach().to("cpu"),
+        "conf": conf.detach().to("cpu"),
+    }
 
 
 def _ece_from_confidence(confidences: torch.Tensor, accuracies: torch.Tensor) -> float:

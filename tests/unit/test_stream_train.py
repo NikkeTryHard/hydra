@@ -315,6 +315,10 @@ class TestEndToEnd:
             assert 0.0 <= float(row["top1"]) <= 1.0
             assert math.isfinite(float(row["calibration_ece"]))
             assert int(row["num_eval_batches"]) == 1
+            assert math.isfinite(float(row["masked_nll_se"]))
+            assert float(row["masked_nll_se"]) >= 0.0
+            assert math.isfinite(float(row["top1_se"]))
+            assert float(row["num_eval_rows"]) > 0.0
         log_text = (run_dir / "logs" / "train.log").read_text(encoding="utf-8")
         assert log_text.count("eval:update=") == 2
         assert len(summary["evals"]) == 2

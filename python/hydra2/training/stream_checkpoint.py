@@ -504,6 +504,9 @@ def _run_holdout_eval(
         with train_log.open("a", encoding="utf-8") as handle:
             _ = handle.write(
                 f"eval:update={update:06d} nll={float(report.get('masked_nll', 0.0)):.6f} "
+                f"±{float(report.get('masked_nll_se', 0.0)):.6f} "
+                f"disc={float(report.get('discard_nll', float('nan'))):.6f} "
+                f"(n={float(report.get('discard_n', 0)):,.0f}) "
                 f"top1={float(report.get('top1', 0.0)):.4f} "
                 f"top3={float(report.get('top3', 0.0)):.4f} "
                 f"top5={float(report.get('top5', 0.0)):.4f} "

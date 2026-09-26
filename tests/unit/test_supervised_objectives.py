@@ -28,6 +28,8 @@ from hydra2.training.objectives_loss import (
 )
 from hydra2.training.objectives_metrics import (
     compute_hot_scalars,
+    compute_metrics,
+    row_eval_primitives,
 )
 
 if TYPE_CHECKING:
@@ -629,3 +631,27 @@ def test_aux_losses_fp32_output() -> None:
         functional.softmax(dist_logits.to(torch.float32), dim=-1), dist_target.float()
     )
     assert torch.allclose(dist_losses["placement"], dist_ref, atol=1e-6, rtol=1e-5)
+
+
+def test_row_eval_primitives_reproduce_headline_means() -> None:
+    """Row means of primitives equal compute_metrics NLL/top-k (exact pooling)."""
+    gen = torch.Generator().manual_seed(20260926)
+    batch, width = 48, 16
+    logits = torch.randn(batch, width, generator=gen)
+    targets = torch.randint(0, width, (batch,), generator=gen)
+    legal = torch.ones(batch, width, dtype=torch.bool)
+    legal[torch.randn(batch, generator=gen) < -1.0, :] = False
+    legal[torch.arange(batch), targets] = True
+    legal[:, 0] = True
+    prim = row_eval_primitives(logits, targets, legal)
+    assert set(prim.keys()) == {"row_nll", "hit1", "hit3", "hit5", "conf"}
+    for key in ("row_nll", "hit1", "hit3", "hit5", "conf"):
+        assert prim[key].device.type == "cpu"
+        assert prim[key].shape == (batch,)
+        assert torch.isfinite(prim[key]).all()
+    ref = compute_metrics(logits, targets, legal)
+    assert prim["row_nll"].mean().item() == pytest.approx(ref["masked_nll"])
+    assert prim["hit1"].mean().item() == pytest.approx(ref["top1"])
+    assert prim["hit3"].mean().item() == pytest.approx(ref["top3"])
+    assert prim["hit5"].mean().item() == pytest.approx(ref["top5"])
+    assert ((prim["conf"] >= 0.0) & (prim["conf"] <= 1.0)).all()

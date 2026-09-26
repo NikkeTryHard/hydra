@@ -190,6 +190,7 @@ def _report_eval_row(logger: Any, row: dict[str, Any]) -> None:
     # U-turn overlay: eval NLL family shares loss-vs-eval with train.
     for series in (
         "masked_nll",
+        "discard_nll",
         "top1",
         "top3",
         "top5",
@@ -204,7 +205,15 @@ def _report_eval_row(logger: Any, row: dict[str, Any]) -> None:
                 title="loss-vs-eval", series=f"eval_{series}", value=value, iteration=iteration
             )
     # Support shape under its own title (keeps eval/* small).
-    for series in ("support_min", "support_max", "strata", "num_eval_batches"):
+    for series in (
+        "support_min",
+        "support_max",
+        "strata",
+        "num_eval_batches",
+        "num_eval_rows",
+        "masked_nll_se",
+        "top1_se",
+    ):
         value = _as_float(row.get(series))
         if value is not None:
             logger.report_scalar(
@@ -215,6 +224,7 @@ def _report_eval_row(logger: Any, row: dict[str, Any]) -> None:
         logger.report_text(
             f"eval update={iteration} "
             f"masked_nll={float(row.get('masked_nll', float('nan'))):.4f} "
+            f"discard_nll={float(row.get('discard_nll', float('nan'))):.4f} "
             f"top1={float(row.get('top1', float('nan'))):.4f} "
             f"ece={float(row.get('calibration_ece', float('nan'))):.4f}"
         )

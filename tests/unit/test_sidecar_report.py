@@ -32,11 +32,15 @@ def _load_sidecar() -> Any:
 class _FakeLogger:
     def __init__(self) -> None:
         self.scalars: list[tuple[str, str, float, int]] = []
+        self.texts: list[str] = []
         self.flushed = 0
         self.fail_flush = False
 
     def report_scalar(self, *, title: str, series: str, value: float, iteration: int) -> None:
         self.scalars.append((title, series, value, iteration))
+
+    def report_text(self, text: str) -> None:
+        self.texts.append(text)
 
     def flush(self) -> None:
         self.flushed += 1
@@ -147,3 +151,31 @@ def test_pass_advances_offsets_when_flush_succeeds(tmp_path: Path) -> None:
     counts = module._pass(logger, tmp_path, offsets, {})
     assert counts[0] == 2
     assert offsets["metrics"] == (tmp_path / "logs" / "metrics.jsonl").stat().st_size
+
+
+def test_report_eval_row_maps_se_and_discard() -> None:
+    """New eval keys (SEs, discard primary, row count) reach scalars undropped."""
+    module = _load_sidecar()
+    logger = _FakeLogger()
+    row = {
+        "update": 2000,
+        "masked_nll": 1.65,
+        "masked_nll_se": 0.01,
+        "top1": 0.48,
+        "top1_se": 0.005,
+        "discard_nll": 2.4,
+        "discard_n": 1476.0,
+        "discard_top1": 0.3,
+        "num_eval_batches": 10.0,
+        "num_eval_rows": 2560.0,
+        "calibration_ece": 0.05,
+    }
+    module._report_eval_row(logger, row)
+    got = {(title, series): v for title, series, v, _ in logger.scalars}
+    assert got[("eval", "masked_nll_se")] == 0.01
+    assert got[("eval", "top1_se")] == 0.005
+    assert got[("eval", "discard_nll")] == 2.4
+    assert got[("eval", "num_eval_rows")] == 2560.0
+    assert got[("loss-vs-eval", "eval_discard_nll")] == 2.4
+    assert got[("eval-support", "masked_nll_se")] == 0.01
+    assert any("discard_nll=2.4000" in text for text in logger.texts)

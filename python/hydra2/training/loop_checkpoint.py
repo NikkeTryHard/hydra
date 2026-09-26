@@ -378,7 +378,9 @@ class SupervisedLoopCheckpointMixin:
     ) -> dict[str, Any]:
         """Compute report over eval batches (no grad) with the frozen model.
 
-        Returns dict with keys: ``masked_nll``, ``top1``/``top3``/``top5``,
+        Returns dict with keys: ``masked_nll`` (+``masked_nll_se`` batch-mean
+        standard error), ``top1``/``top3``/``top5`` (+``top1_se``),
+        ``num_eval_batches``/``num_eval_rows``,
         ``calibration_ece``, ``support_min``/``max``,
         ``legal_uniform_nll``/``legal_uniform_gap``,
         ``legal_uniform_comparison`` (checklist alias),
@@ -386,7 +388,9 @@ class SupervisedLoopCheckpointMixin:
         and ``confusion`` (legacy ``0.0``), plus flattened
         ``per_type/<kind>/{n,nll,top1,top3,ece,recall,low_support}`` when kinds
         are complete (``recall`` equals ``top1`` by construction;
-        ``low_support`` flags ``n<30``, report-only),
+        ``low_support`` flags ``n<30``, report-only), first-class
+        ``discard_nll``/``discard_n``/``discard_top1`` (the real game: most
+        rows, hardest kind; absent when kinds are incomplete),
         and post-hoc ``temperature``/``calibrated_nll``/``calibrated_ece``
         fit on the pooled eval rows (validation-only, never training).
         """
@@ -407,6 +411,12 @@ class SupervisedLoopCheckpointMixin:
         pooled_masks: list[torch.Tensor] = []
         pooled_kinds: list[str] = []
         kinds_complete = True
+        # Batch-mean lists for headline standard errors (mean-of-batch-means
+        # SE: batch means are iid draws under the fixed eval set, so
+        # std/sqrt(n) is the honest error bar on the reported mean).
+        batch_nlls: list[float] = []
+        batch_top1s: list[float] = []
+        total_rows = 0
 
         # eval_batches may be iterable of batch dicts or a dataset with iter_batches
         if hasattr(eval_batches, "iter_batches"):
@@ -435,6 +445,9 @@ class SupervisedLoopCheckpointMixin:
                 total_ece += metrics["calibration_ece"]
                 total_uniform_nll += metrics["legal_uniform_nll"]
                 total_uniform_gap += metrics["legal_uniform_gap"]
+                batch_nlls.append(metrics["masked_nll"])
+                batch_top1s.append(metrics["top1"])
+                total_rows += int(eval_targets.shape[0])
                 n += 1
                 pooled_logits.append(eval_logits.detach().to("cpu"))
                 pooled_targets.append(eval_targets.detach().to("cpu"))
@@ -448,6 +461,17 @@ class SupervisedLoopCheckpointMixin:
         if n == 0:
             raise ContractError("evaluate_report requires at least one eval batch")
 
+        # Standard errors of the headline means (sample std, ddof=1; 0.0
+        # for a single batch — no variance to measure, never NaN).
+        def _mean_se(values: list[float]) -> tuple[float, float]:
+            mean = sum(values) / len(values)
+            if len(values) < 2:
+                return mean, 0.0
+            var = sum((v - mean) ** 2 for v in values) / (len(values) - 1)
+            return mean, math.sqrt(var / len(values))
+
+        _, nll_se = _mean_se(batch_nlls)
+        _, top1_se = _mean_se(batch_top1s)
         report: dict[str, Any] = {
             "masked_nll": total_nll / n,
             "top1": total_top1 / n,
@@ -462,6 +486,9 @@ class SupervisedLoopCheckpointMixin:
             "strata": 0.0,
             "legal_uniform_comparison": total_nll / n,  # alias for checklist
             "num_eval_batches": float(n),
+            "num_eval_rows": float(total_rows),
+            "masked_nll_se": float(nll_se),
+            "top1_se": float(top1_se),
         }
         # Pooled per-type scorecards + post-hoc temperature (logging only;
         # failures degrade to legacy keys, never fail the report).
@@ -495,6 +522,15 @@ class SupervisedLoopCheckpointMixin:
                     report[f"per_type/{_kind}/recall"] = _km["recall"]
                     report[f"per_type/{_kind}/low_support"] = _km["low_support"]
                 report["strata"] = float(len(per_type))
+                # Discard-primary surface: discards are most decisions and the
+                # hardest kind, so the headline mean (flattered by trivial
+                # chi/pon/ron calls) gets a first-class counterpart here.
+                # Absent when kinds are incomplete: sidecar no-ops on absence.
+                _disc = per_type.get("discard")
+                if isinstance(_disc, dict):
+                    report["discard_nll"] = float(_disc.get("nll", float("nan")))
+                    report["discard_n"] = float(_disc.get("n", 0))
+                    report["discard_top1"] = float(_disc.get("top1", float("nan")))
             if self.config.fit_temperature:
                 temp = fit_temperature_scaling(flat_logits, flat_targets, flat_masks)
                 report["temperature"] = temp["temperature"]
