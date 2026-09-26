@@ -249,9 +249,9 @@ def main() -> int:
             if line.strip():
                 row = json.loads(line)
                 live_evals[int(row["update"])] = row
-    print("observer: manifest build (warm artifact expected) ...", flush=True)
+    _log("observer: manifest build (warm artifact expected) ...")
     manifest = build_manifest([(r[0], r[1]) for r in cfg["data"]["roots"]])
-    print(f"observer: manifest files={len(manifest)}", flush=True)
+    _log(f"observer: manifest files={len(manifest)}")
 
     model = _build_model(
         action_count, cfg["model"]["architecture_id"], cfg["model"].get("parameters", {})
@@ -260,7 +260,7 @@ def main() -> int:
     ckpt_dir = run_dir / "checkpoints"
     landed = sorted(int(p.stem.rsplit("-", 1)[1]) for p in ckpt_dir.glob("checkpoint-*.pt"))
     updates = args.updates or landed
-    print(f"observer: updates={updates} batches={args.batches} rows={need_rows}", flush=True)
+    _log(f"observer: updates={updates} batches={args.batches} rows={need_rows}")
 
     out_path = out_dir / "offline-eval.jsonl"
     for update in updates:
@@ -306,14 +306,13 @@ def main() -> int:
         d = v["per_type"].get("discard", {})
         d_nll = d.get("nll", float("nan"))
         d_se = d.get("nll_se", float("nan"))
-        print(
+        _log(
             f"observer: update={update:06d} val_nll={v['nll']:.4f}±{v['nll_se']:.4f} "
             f"discard={d_nll:.4f}±{d_se:.4f}(n={d.get('n', 0)}) "
             f"train_nll={t['nll']:.4f}±{t['nll_se']:.4f} gap={gap:+.4f}±{gap_se:.4f} "
-            f"games={v['games']} wall_s={v['wall_s']}",
-            flush=True,
+            f"games={v['games']} wall_s={v['wall_s']}"
         )
-    print(f"observer: wrote {out_path}", flush=True)
+    _log(f"observer: wrote {out_path}")
     return 0
 
 
