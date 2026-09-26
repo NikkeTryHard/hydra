@@ -6,6 +6,10 @@ records with the sha256-hex ordering builder, the byte-identical manifest
 digest, the reservoir-blob snapshot format, the scan-cache envelope, the
 shuffle-RNG codec, and the partition/identity math. Anything that must stay
 byte-identical across checkpoints and scan caches lives here.
+
+Split note: the scan-cache envelope lives in
+``python/hydra2/data/stream_scan_cache.py`` (LOC gate); this module
+re-exports its public names so existing import sites keep working.
 """
 
 from __future__ import annotations
@@ -13,15 +17,24 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import struct
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 import zstandard as zstd
 
-from hydra2.artifacts.digest import sha256_file
 from hydra2.contracts.common import ContractError
+from hydra2.data.stream_reservoir import RESERVOIR_BLOB_VERSION as RESERVOIR_BLOB_VERSION
+from hydra2.data.stream_reservoir import read_reservoir_blob as read_reservoir_blob
+from hydra2.data.stream_reservoir import write_reservoir_blob as write_reservoir_blob
+from hydra2.data.stream_scan_cache import SCAN_CACHE_VERSION as SCAN_CACHE_VERSION
+from hydra2.data.stream_scan_cache import _holdout_match as _holdout_match
+from hydra2.data.stream_scan_cache import _ratios_match as _ratios_match
+from hydra2.data.stream_scan_cache import _root_games_match as _root_games_match
+from hydra2.data.stream_scan_cache import _roots_match as _roots_match
+from hydra2.data.stream_scan_cache import load_scan_cache as load_scan_cache
+from hydra2.data.stream_scan_cache import save_scan_cache as save_scan_cache
+from hydra2.data.stream_scan_cache import scan_cache_path as scan_cache_path
 
 
 def _contracts_fn(name: str) -> Any | None:
@@ -46,7 +59,7 @@ def _contracts_const(name: str, fallback: object) -> Any:
 
 if TYPE_CHECKING:
     import random
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Sequence
 
 
 __all__ = [
@@ -490,74 +503,6 @@ def load_manifest_artifact(
         return None
 
 
-#: Reservoir-blob layout version (bump on format change; mismatch → miss).
-RESERVOIR_BLOB_VERSION = 1
-_RESERVOIR_MAGIC = b"HYDRARS1"
-
-
-def write_reservoir_blob(
-    raws: list[bytes], path: Path | str, *, level: int = 1
-) -> dict[str, object]:
-    """Write length-prefixed per-game zstd frames for a shuffle buffer.
-
-    Layout: magic(8) + version u32le + count u32le, then per game
-    ``[u32le frame-len][frame]`` in buffer order. Returns the index record
-    ``{version, count, uncompressed_bytes, blob_sha256}``. Corrupt/truncated
-    blobs fail closed in :func:`read_reservoir_blob` (miss, never partial).
-
-    Framing stays the v1 Python writer (byte-identical frames); the blob
-    digest is minted by the hard-Rust digest owner (``sha256_file`` over
-    the emitted file — ``ImportError`` with a ``build-ext`` hint when the
-    extension is not built, NO oracle fallback). Stays off
-    ``resume.encode_reservoir``: the bridge writer emits generation v2
-    with different zstd frames, which would change blob bytes, the index
-    ``blob_sha256``, and the ``reservoir-v1`` sidecar contract.
-    """
-    out_path = Path(path)
-    cctx = zstd.ZstdCompressor(level=level)
-    uncompressed = 0
-    with open(out_path, "wb") as fh:
-        header = _RESERVOIR_MAGIC + struct.pack("<II", RESERVOIR_BLOB_VERSION, len(raws))
-        _ = fh.write(header)
-        for raw in raws:
-            frame = cctx.compress(raw)
-            _ = fh.write(struct.pack("<I", len(frame)))
-            _ = fh.write(frame)
-            uncompressed += len(raw)
-    return {
-        "version": RESERVOIR_BLOB_VERSION,
-        "count": len(raws),
-        "uncompressed_bytes": uncompressed,
-        "blob_sha256": str(sha256_file(out_path)),
-    }
-
-
-def read_reservoir_blob(path: Path | str) -> list[bytes]:
-    """Read + decompress a reservoir blob into per-game raw bytes (in order).
-
-    Raises :class:`ContractError` on any corruption (callers treat as a
-    snapshot miss and fall back to the normal fill). Transient peak is the
-    decompressed buffer (~600MB for a full 10k prime); freed after decode.
-
-    Decode runs through ``resume.decode_reservoir`` (``ImportError`` with
-    a ``build-ext`` hint when the extension is not built, NO oracle
-    fallback); bridge rejects (``ValueError`` → :class:`ContractError`
-    here) on bad magic, unknown version, truncated frames, and trailing
-    bytes. The bridge dual-reads v1+v2 generations while this module
-    still writes v1 only.
-    """
-    try:
-        data = Path(path).read_bytes()
-    except OSError as exc:
-        raise ContractError(f"reservoir blob unreadable: {path} ({exc})") from exc
-    resume = _require_resume()
-    try:
-        raws: list[bytes] = resume.decode_reservoir(data)
-    except ValueError as exc:
-        raise ContractError(f"reservoir blob corrupt: {path} ({exc})") from exc
-    return list(raws)
-
-
 def resolve_root_id(roots: Sequence[tuple[str, str]], path: Path) -> str:
     """Resolve the manifest root id owning an absolute corpus path.
 
@@ -578,228 +523,6 @@ def resolve_root_id(roots: Sequence[tuple[str, str]], path: Path) -> str:
     if best is None:
         raise ContractError(f"path outside every manifest root: {path}")
     return best
-
-
-#: Scan-cache envelope version (bump on schema change; mismatch → miss).
-#: v2 adds the `roots` + `holdout` + `root_games` keys; v1 envelopes miss,
-#: never coerce (a v1 cache predates namespaced digests, so its pin could
-#: never match a v2 digest anyway).
-SCAN_CACHE_VERSION = 2
-
-
-def _roots_match(cached: object, expected: Sequence[tuple[str, str]]) -> bool:
-    """Exact root-list comparison (order matters; fail-closed to miss).
-
-    JSON round-trips pairs as 2-lists; tuples coerce element-wise. A changed
-    root list changes the manifest digest already, so this is belt-and-braces
-    provenance (the envelope names its corpus even when the digest is read
-    out of band).
-    """
-    if not isinstance(cached, list):
-        return False
-    want = [[rid, base] for rid, base in expected]
-    if len(cached) != len(want):
-        return False
-    for have, need in zip(cached, want, strict=True):
-        if not isinstance(have, list) or have != need:
-            return False
-    return True
-
-
-def _holdout_match(cached: object, expected: Mapping[str, object]) -> bool:
-    """Exact holdout-spec comparison (fail-closed to miss)."""
-    if not isinstance(cached, dict):
-        return False
-    return dict(cached) == dict(expected)
-
-
-def _root_games_match(cached: object) -> list[list[object]] | None:
-    """Validate the cached per-root game tallies, else ``None`` (miss).
-
-    Shape is ``[[root-id, train-games, val-games], ...]`` with true ints;
-    bool excluded (bool is an int subclass). Counts re-derive from the scan
-    on a miss, never defaulted.
-    """
-    if not isinstance(cached, list):
-        return None
-    out: list[list[object]] = []
-    for row in cached:
-        if not isinstance(row, list) or len(row) != 3:
-            return None
-        rid, train_games, val_games = row
-        if not isinstance(rid, str) or rid == "":
-            return None
-        for value in (train_games, val_games):
-            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-                return None
-        out.append([rid, train_games, val_games])
-    return out
-
-
-def scan_cache_path(run_dir: Path | str) -> Path:
-    """Cache file for the manifest/split pre-scan under ``run_dir``."""
-    return Path(run_dir) / "cache" / "scan-cache.json"
-
-
-def _ratios_match(cached: object, expected: Mapping[str, float]) -> bool:
-    """Exact-ish ratio comparison (JSON round-trip safe, fail-closed to miss).
-
-    1e-9 tolerates JSON round-trip without admitting a different split;
-    bool is excluded because bool is an int subclass (True == 1 would pass
-    a count check).
-    """
-    if not isinstance(cached, dict):
-        return False
-    if set(cached) != set(expected):
-        return False
-    for key, value in expected.items():
-        raw = cached.get(key)
-        if not isinstance(raw, (int, float)) or isinstance(raw, bool):
-            return False
-        try:
-            if abs(float(raw) - value) > 1e-9:
-                return False
-        except (TypeError, ValueError):
-            return False
-    return True
-
-
-def load_scan_cache(
-    path: Path | str,
-    *,
-    manifest_digest: str,
-    seed: int,
-    ratios: Mapping[str, float],
-    train_split: str,
-    val_split: str,
-    roots: Sequence[tuple[str, str]],
-    holdout: Mapping[str, object],
-) -> dict[str, object] | None:
-    """Load a cached scan report on exact key match, else ``None`` (miss).
-    Corrupt/stale entries fail closed to miss (full scan), never raise.
-    """
-    try:
-        raw_text = Path(path).read_text(encoding="utf-8")
-    except OSError:
-        return None
-    try:
-        raw: object = json.loads(raw_text)
-    except ValueError:
-        return None
-    if not isinstance(raw, dict):
-        return None
-    try:
-        version: object = raw.get("version", -1)
-        if version != SCAN_CACHE_VERSION:
-            return None
-        if raw.get("manifest_digest") != manifest_digest:
-            return None
-        if raw.get("data_seed") != seed:
-            return None
-        if raw.get("train_split") != train_split or raw.get("val_split") != val_split:
-            return None
-        if not _ratios_match(raw.get("ratios"), ratios):
-            return None
-        if not _roots_match(raw.get("roots"), roots):
-            return None
-        if not _holdout_match(raw.get("holdout"), holdout):
-            return None
-        scan = raw.get("scan")
-        if not isinstance(scan, dict):
-            return None
-        train_walls = scan.get("train_walls")
-        val_walls = scan.get("val_walls")
-        if not isinstance(train_walls, list) or not isinstance(val_walls, list):
-            return None
-        if any(not isinstance(w, str) for w in train_walls):
-            return None
-        if any(not isinstance(w, str) for w in val_walls):
-            return None
-        # Re-checks disjointness on load: a cache written before a wall fix
-        # must not resurrect cross-split walls — fail closed to miss.
-        if len(set(train_walls) & set(val_walls)) > 0:
-            return None
-        counts: dict[str, object] = {}
-        for key in (
-            "train_games",
-            "val_games",
-            "train_sim_games",
-            "val_sim_games",
-            "framed",
-            "emitted",
-            "quarantined",
-            "duplicates",
-        ):
-            value = scan.get(key)
-            # bool excluded (isinstance(True, int)): counts are true ints.
-            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-                return None
-            counts[key] = value
-        root_games = _root_games_match(scan.get("root_games"))
-        if root_games is None:
-            return None
-        return {
-            "train_walls": sorted(train_walls),
-            "val_walls": sorted(val_walls),
-            "root_games": root_games,
-            **counts,
-        }
-    except (TypeError, ValueError, AttributeError):
-        return None
-
-
-def save_scan_cache(
-    path: Path | str,
-    *,
-    manifest_digest: str,
-    seed: int,
-    ratios: Mapping[str, float],
-    train_split: str,
-    val_split: str,
-    roots: Sequence[tuple[str, str]],
-    holdout: Mapping[str, object],
-    scan: Mapping[str, object],
-) -> None:
-    """Best-effort atomic cache write (never fails training on I/O error).
-
-    tmp+replace publishes atomically: a crash leaves old or new, never
-    torn. Sorted walls make the payload deterministic; every failure
-    returns silently because cache is advisory.
-    """
-    try:
-        target = Path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "version": SCAN_CACHE_VERSION,
-            "manifest_digest": manifest_digest,
-            "data_seed": seed,
-            "ratios": dict(ratios),
-            "train_split": train_split,
-            "val_split": val_split,
-            "roots": [[rid, base] for rid, base in roots],
-            "holdout": dict(holdout),
-            "scan": {
-                # reason: type arg-type on scan payload object; sorted/int
-                # re-validated by isinstance guards on load, fail-closed miss.
-                "train_walls": sorted(scan["train_walls"]),  # type: ignore[arg-type]
-                "val_walls": sorted(scan["val_walls"]),  # type: ignore[arg-type]
-                "root_games": [list(row) for row in scan["root_games"]],  # type: ignore[arg-type]
-                "train_games": int(scan["train_games"]),  # type: ignore[arg-type]
-                "val_games": int(scan["val_games"]),  # type: ignore[arg-type]
-                "train_sim_games": int(scan["train_sim_games"]),  # type: ignore[arg-type]
-                "val_sim_games": int(scan["val_sim_games"]),  # type: ignore[arg-type]
-                "framed": int(scan["framed"]),  # type: ignore[arg-type]
-                "emitted": int(scan["emitted"]),  # type: ignore[arg-type]
-                "quarantined": int(scan["quarantined"]),  # type: ignore[arg-type]
-                "duplicates": int(scan["duplicates"]),  # type: ignore[arg-type]
-            },
-        }
-        tmp = target.with_suffix(".tmp")
-        # Atomic cache write/publish is the effect; counts/paths discarded.
-        _ = tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        _ = tmp.replace(target)
-    except (OSError, ValueError, TypeError, KeyError, AttributeError):
-        return
 
 
 def serialize_shuffle_rng(rng: random.Random) -> dict[str, object]:

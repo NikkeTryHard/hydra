@@ -207,9 +207,7 @@ def row_eval_primitives(
     :func:`compute_metrics` headline values exactly (pinned by test); pooled
     ECE still needs the frozen-bin pass over pooled ``conf``/``hit1``.
     """
-    _, masked_logits, log_prob, targets_long = _validate_metric_inputs(
-        logits, targets, legal_mask
-    )
+    _, masked_logits, log_prob, targets_long = _validate_metric_inputs(logits, targets, legal_mask)
     batch_idx = torch.arange(targets_long.shape[0], device=targets_long.device)
     row_nll = -log_prob[batch_idx, targets_long]
     probs = F.softmax(masked_logits, dim=-1)

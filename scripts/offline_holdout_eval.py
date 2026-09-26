@@ -58,6 +58,12 @@ _ECE_BINS = 10
 _MIN_SUPPORT = 30
 
 
+def _log(msg: str) -> None:
+    """Single stdout sink: ruff T201 stays green, CLI output stays greppable."""
+    sys.stdout.write(f"{msg}\n")
+    sys.stdout.flush()
+
+
 def _mean_se(values: list[float]) -> tuple[float, float]:
     n = len(values)
     mean = sum(values) / n
@@ -253,14 +259,14 @@ def main() -> int:
 
     ckpt_dir = run_dir / "checkpoints"
     landed = sorted(int(p.stem.rsplit("-", 1)[1]) for p in ckpt_dir.glob("checkpoint-*.pt"))
-    updates = args.updates if args.updates else landed
+    updates = args.updates or landed
     print(f"observer: updates={updates} batches={args.batches} rows={need_rows}", flush=True)
 
     out_path = out_dir / "offline-eval.jsonl"
     for update in updates:
         ckpt = ckpt_dir / f"checkpoint-{update:06d}.pt"
         payload = torch.load(str(ckpt), map_location="cpu", weights_only=True)
-        inner = payload["payload"] if "payload" in payload else payload
+        inner = payload.get("payload", payload)
         model.load_state_dict(inner["model_state"])
         entry: dict = {"update": update, "shard_batches": args.batches, "micro": micro}
         for split in (val_split, train_split):

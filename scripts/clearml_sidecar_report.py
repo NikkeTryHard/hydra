@@ -220,7 +220,7 @@ def _report_eval_row(logger: Any, row: dict[str, Any]) -> None:
                 title="eval-support", series=series, value=value, iteration=iteration
             )
     # CONSOLE marker (never SCALARS): one line per eval row.
-    try:
+    with contextlib.suppress(TypeError, ValueError):
         logger.report_text(
             f"eval update={iteration} "
             f"masked_nll={float(row.get('masked_nll', float('nan'))):.4f} "
@@ -228,8 +228,6 @@ def _report_eval_row(logger: Any, row: dict[str, Any]) -> None:
             f"top1={float(row.get('top1', float('nan'))):.4f} "
             f"ece={float(row.get('calibration_ece', float('nan'))):.4f}"
         )
-    except (TypeError, ValueError):
-        pass
 
 
 def _report_feed_row(logger: Any, row: dict[str, Any], fallback: int) -> None:
@@ -392,9 +390,7 @@ def _report_eval_tables(logger: Any, row: dict[str, Any]) -> None:
     )
     if any(k in row for k in cal_keys):
         cal_table: list[list[Any]] = [["metric", "value"]]
-        for k in cal_keys:
-            if k in row:
-                cal_table.append([k, row[k]])
+        cal_table.extend([k, row[k]] for k in cal_keys if k in row)
         with contextlib.suppress(Exception):
             logger.report_table(
                 title="eval-calibration", series=f"update-{update}", table_plot=cal_table
@@ -711,7 +707,7 @@ def _task_init_kwargs(run_id: str, args: Any) -> dict[str, Any]:
         "project_name": args.project,
         "task_name": run_id,
         "tags": args.tags,
-        "continue_last_task": args.task_id if args.task_id else False,
+        "continue_last_task": args.task_id or False,
     }
 
 
@@ -747,13 +743,13 @@ def main() -> None:
     lock_fd = None
     try:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        lock_fd = open(lock_path, "w", encoding="utf-8")
+        lock_fd = open(lock_path, "w", encoding="utf-8")  # noqa: SIM115
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         lock_fd.write(str(os.getpid() if hasattr(os, "getpid") else "sidecar"))
         lock_fd.flush()
-    except OSError:
+    except OSError as exc:
         print("sidecar: already running", file=sys.stderr)
-        raise SystemExit(42)
+        raise SystemExit(42) from exc
     if not args.online:
         Task.set_offline(True)
     task = Task.init(**_task_init_kwargs(run_id, args))
