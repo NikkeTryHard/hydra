@@ -38,6 +38,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="'latest' for the latest compatible checkpoint in the run dir, or a path to ckpt-*.pt",
     )
     _ = train.add_argument(
+        "--initial-checkpoint",
+        type=Path,
+        default=None,
+        help="RL weight source locator; its immutable manifest ID must match the configured pin",
+    )
+    _ = train.add_argument(
         "--mlflow",
         dest="mlflow",
         action=argparse.BooleanOptionalAction,
@@ -51,12 +57,33 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="override YAML telemetry.verbose_enabled (default: honor YAML)",
     )
+    packages = subparsers.add_parser(
+        "work-package", help="verify canonical work-package completion evidence"
+    )
+    package_commands = packages.add_subparsers(dest="work_package_command", required=True)
+    verify = package_commands.add_parser(
+        "verify", help="verify a completion record and dependencies"
+    )
+    _ = verify.add_argument("work_package", help="work-package ID, for example WP-11")
+    _ = verify.add_argument("--artifact-root", required=True, help="absolute artifact root")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "work-package":
+        import json
+
+        from hydra2.artifacts.package_verify import verify
+
+        try:
+            receipt = verify(args.work_package, args.artifact_root)
+        except Hydra2Error as exc:
+            print(f"error[{type(exc).__name__}]: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(receipt, sort_keys=True))
+        return 0 if receipt["verdict"] == "passed" else 1
 
     if args.command == "train":
         from hydra2.training._rc_digest import create_run_layout, run_dir_for
@@ -78,6 +105,29 @@ def main(argv: list[str] | None = None) -> int:
             if args.verbose_telemetry is not None:
                 telemetry = _dc_replace(telemetry, verbose_enabled=args.verbose_telemetry)
             config = _dc_replace(config, telemetry=telemetry)
+        if config.run.kind == "rl":
+            from hydra2.training.rl_loop import run_rl_training
+
+            if args.resume not in (None, "latest"):
+                parser.error(
+                    "RL resume uses the latest committed control tip, not an ordinary checkpoint"
+                )
+            print(format_plan(config, rl_resume=args.resume is not None), end="")
+            if args.dry_run:
+                return 0
+            try:
+                create_run_layout(config)
+                summary = run_rl_training(
+                    config,
+                    args.resume,
+                    initial_checkpoint=args.initial_checkpoint,
+                )
+            except Hydra2Error as exc:
+                print(f"error[{type(exc).__name__}]: {exc}", file=sys.stderr)
+                return 2
+            print(f"train: updates {summary['start_update']} -> {summary['end_update']}")
+            print(f"  checkpoints: {', '.join(summary['checkpoints'])}")
+            return 0
         # Dry-run reads no data and mutates nothing: the plan is pure
         # config resolution (operator edits YAML by hand when it is wrong).
         if args.dry_run:

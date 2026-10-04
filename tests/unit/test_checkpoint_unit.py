@@ -20,6 +20,7 @@ from hydra2.runtime.checkpoint import (
     build_manifest,
     hash_state_tree,
     load_checkpoint,
+    load_model_weights_only,
     manifest_from_json,
     manifest_to_json,
     resume_checkpoint,
@@ -443,3 +444,64 @@ class TestBackgroundPublish:
         payload["training_state"] = {"opaque": object()}
         with pytest.raises(CorruptArtifactError):
             _snapshot_payload_to_cpu(payload)
+
+
+class TestWeightOnlyInitialization:
+    @pytest.mark.contract_package("WP-11")
+    def test_verified_weights_do_not_restore_supervised_rng_or_moments(self, tmp_path):
+        payload = sample_payload()
+        manifest = make_manifest(payload)
+        destination = tmp_path / "initial.pt"
+        save_checkpoint(destination=destination, manifest=manifest, payload=payload)
+        before_rng = torch.get_rng_state().clone()
+        actual_manifest, weights = load_model_weights_only(
+            source=destination,
+            expected_run_spec_hash=D,
+            expected_source_hash="sha256:" + "c" * 64,
+            expected_model_spec_hash=D,
+            expected_rules_hash=D,
+            expected_utility_manifest_hash=D,
+            expected_action_schema_hash=D,
+            expected_observation_schema_hash=D,
+        )
+        assert torch.equal(torch.get_rng_state(), before_rng)
+        assert actual_manifest == manifest
+        model = torch.nn.Sequential(torch.nn.Linear(3, 4))
+        model.load_state_dict(
+            {"0.weight": weights["net.0.weight"], "0.bias": weights["net.0.bias"]}
+        )
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5)
+        assert optimizer.state == {}
+        actual = model(torch.ones((1, 3)))
+        expected = (
+            payload["model_state"]["net.0.weight"].sum(dim=1) + payload["model_state"]["net.0.bias"]
+        )
+        assert torch.allclose(actual.squeeze(0), expected, atol=1e-6, rtol=1e-5)
+
+    @pytest.mark.contract_package("WP-11")
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "model_spec_hash",
+            "rules_hash",
+            "utility_manifest_hash",
+            "action_schema_hash",
+            "observation_schema_hash",
+        ],
+    )
+    def test_incompatible_weight_source_is_rejected_before_application(self, tmp_path, field):
+        payload = sample_payload()
+        destination = tmp_path / "initial.pt"
+        save_checkpoint(destination=destination, manifest=make_manifest(payload), payload=payload)
+        expectations = {
+            "expected_run_spec_hash": D,
+            "expected_source_hash": "sha256:" + "c" * 64,
+            "expected_model_spec_hash": D,
+            "expected_rules_hash": D,
+            "expected_utility_manifest_hash": D,
+            "expected_action_schema_hash": D,
+            "expected_observation_schema_hash": D,
+        }
+        expectations[f"expected_{field}"] = "sha256:" + "d" * 64
+        with pytest.raises(DigestMismatchError):
+            load_model_weights_only(source=destination, **expectations)

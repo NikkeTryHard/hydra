@@ -41,8 +41,11 @@ const CONFIG_SECTIONS: [&str; 14] = [
     "output",
 ];
 
-/// Run kinds accepted by the streaming-first v1 surface (`_rc_sections.py:79`).
-const RUN_KINDS: [&str; 1] = ["supervised"];
+/// Run kinds for the discriminated source union (`_rc_sections.py:63-67`):
+/// `supervised`/`distill` require dataset roots; `rl` forbids dataset
+/// roots/source and requires the explicit `rl` section (parsed by
+/// `rc_parse::rc_parse_rl`, gated by `rc_cross_validate::rc_cross_validate_rl`).
+const RUN_KINDS: [&str; 3] = ["supervised", "distill", "rl"];
 
 /// Env vars allowed inside `${VAR}` interpolation (`_rc_sections.py:84-91`).
 const INTERPOLATION_ALLOWLIST: [&str; 4] = [
@@ -64,11 +67,12 @@ const ADAPTER_IDS: [&str; 1] = ["plain_pytorch"];
 /// Runtime precisions (`_rc_sections.py:101`).
 const RUNTIME_PRECISIONS: [&str; 2] = ["fp32", "bf16_mixed"];
 /// Compile modes (`_rc_sections.py:102-107`).
-const COMPILE_MODES: [&str; 4] = [
+const COMPILE_MODES: [&str; 5] = [
     "eager",
     "default",
     "max-autotune-no-cudagraphs",
     "max-autotune",
+    "cuda_graph_replay",
 ];
 /// Selection designs (`_rc_sections.py:108`).
 const SELECTION_DESIGNS: [&str; 2] = ["fixed_n", "time_uniform_cs"];
@@ -272,7 +276,7 @@ mod tests {
             ]
         );
         assert_eq!(CONFIG_SECTIONS.len(), 14);
-        assert_eq!(RUN_KINDS, ["supervised"]);
+        assert_eq!(RUN_KINDS, ["supervised", "distill", "rl"]);
         assert_eq!(
             INTERPOLATION_ALLOWLIST,
             [
@@ -294,6 +298,7 @@ mod tests {
                 "default",
                 "max-autotune-no-cudagraphs",
                 "max-autotune",
+                "cuda_graph_replay",
             ]
         );
         assert_eq!(SELECTION_DESIGNS, ["fixed_n", "time_uniform_cs"]);

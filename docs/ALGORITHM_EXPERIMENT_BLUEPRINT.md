@@ -685,17 +685,17 @@ with pilot standard deviation `s`, or a predeclared time-uniform confidence sequ
 
 `gameplay_5s`: 5,000 ms own-turn hard deadline. CandidateSpec freezes synchronization, planner overhead, fallback margin/policy, and timeout accounting. `ponder`: computation only between actor-visible packets; commit requires a transition-correct child and valid belief epoch/provenance. `analysis`: separately frozen larger finite deadline/resource cap; same actor observation, rules, utility, models, legal set, and estimator semantics.
 
-RTX 5070 is the default optimization and formal single-device target. Standalone Lightning Fabric 2.6.5 may be used only as a thin device/precision/backward adapter around project-owned loops; it does not own simulator semantics, objectives, optimizer policy, accumulation, schedules, evaluation, or checkpoints. Every arm retains a plain-PyTorch single-device fallback with identical tensors, state, seeds, and gates. Runtime identity records `fabric_2.6.5` or `plain_pytorch`, and adapter equivalence is measured rather than assumed.
+RTX 5070 is the default optimization and formal single-device target. The authorized continuous-RL implementation uses the existing `plain_pytorch` single-device runtime; Lightning, pytorch-lightning, and lightning-fabric remain absent. Rust owns simulation, visibility, action mapping, RNG, encoding, trajectory storage, validation, canonical IO, replay, and control state. Python remains only where Torch model/autograd/optimizer/CUDA events or another required SDK/POSIX edge forces it, with thin batched FFI elsewhere. Device-specific correctness, memory, determinism, and actual useful-work timing must be measured rather than assumed.
 
 A100 access is a transactional reserve, not a second rank. Before each allocation, atomically append a ledger entry with request ID, local RTX 5070 bottleneck evidence, hypothesis, frozen arm/corpus, requested hours, transfer/data-loader cost, compile-amortization plan, and approval. On completion append actual start/stop, charged GPU-hours, retries/failures, artifact hashes, and disposition, then atomically decrement the 2,000 GPU-hour balance; failed and aborted runs are charged. Never infer distributed execution or NVLink from a local RTX 5070 plus a separately reserved A100. Device-specific kernels, results, compile caches, and artifacts remain separate absent explicit compatibility proof.
 
-### 16.3 PyTorch 2.13 Performance Qualification
+### 16.3 PyTorch 2.14 Performance Qualification
 
-PyTorch 2.13.x is the semantic authority. These are qualification experiments, not free-speed claims. Published kernel results motivate probes only; they are not Hydra2, RTX 5070, or A100 promises.
+The Pixi-locked PyTorch 2.14.0 environment is the semantic authority. These are qualification experiments, not free-speed claims. Published kernel results motivate probes only; they are not Hydra2, RTX 5070, or A100 promises. The authorized continuous-RL recipe is eager BF16 with no new compile/attention arm; its >=95% sustained useful-work acceptance target requires a real collector/learner timeline, not SM utilization or CUDA enqueue spans.
 
-#### 16.3.1 Eager simulator, tensor boundary, and Fabric
+#### 16.3.1 Eager simulator and tensor boundary
 
-The exact simulator, actor visibility, legal-action computation, decoding, control flow, objectives, and loops stay eager. Only actor-visible pure tensor encodings enter a compiled model. Fabric is optional and standalone; plain PyTorch is mandatory fallback. For compiled AMP, the `backward_pass_autocast="off"` patch spans both initial compilation and Fabric's setup-time unwrap/reapplication because Fabric does not capture that global compiler configuration.
+The exact simulator, actor visibility, legal-action computation, decoding, and control flow stay eager and native where possible. Only actor-visible pure tensor inputs enter the Torch model. Plain PyTorch owns the required tensor/autograd/optimizer boundary; Fabric is forbidden. For any separately qualified compiled AMP arm, `backward_pass_autocast="off"` spans initial compilation. Compilation remains outside simulator and native control logic.
 
 ```python
 def build_runtime(adapter, model, optimizer, precision, device, compile_mode,
@@ -707,17 +707,14 @@ def build_runtime(adapter, model, optimizer, precision, device, compile_mode,
                              fullgraph=True, dynamic=None)
 
     def setup_adapter(model, optimizer):
-        if adapter == "fabric_2.6.5":
-            fabric = Fabric(accelerator="cuda", devices=1, precision=precision)
-            model, optimizer = fabric.setup(model, optimizer)
-            return model, optimizer, fabric.backward, fabric.device
         if adapter == "plain_pytorch":
             model = model.to(device)
             return model, optimizer, lambda loss: loss.backward(), device
         raise ValueError(adapter)
 
     if compiled_amp and compile_mode is not None:
-        # Keep the patch active if Fabric unwraps and reapplies compilation.
+        # Compiled backward must use the qualified autocast policy; changing
+        # it invalidates the compiled graph and requires fresh parity evidence.
         with torch._functorch.config.patch(backward_pass_autocast="off"):
             model = compile_model(model)
             return setup_adapter(model, optimizer)

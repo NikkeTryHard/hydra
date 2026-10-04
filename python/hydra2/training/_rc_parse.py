@@ -1,7 +1,7 @@
-"""Run-config core section parsers: run/data/model/weights/optimizer/scheduler/runtime/loop.
+"""Run-config core section parsers: run/data/model/weights/optimizer/scheduler/runtime/loop/rl.
 
 Owns the strict per-section constructors for the eight training-plane
-sections. The six observer-side sections live in
+sections plus the closed RL profile. The six observer-side sections live in
 :mod:`hydra2.training._rc_parse_aux`; root assembly lives in
 :mod:`hydra2.training._rc_root`.
 """
@@ -15,6 +15,7 @@ from hydra2.training._rc_sections import DataConfig as DataConfig
 from hydra2.training._rc_sections import LoopConfig as LoopConfig
 from hydra2.training._rc_sections import ModelConfig as ModelConfig
 from hydra2.training._rc_sections import OptimizerConfig as OptimizerConfig
+from hydra2.training._rc_sections import RlConfig as RlConfig
 from hydra2.training._rc_sections import RunMeta as RunMeta
 from hydra2.training._rc_sections import RuntimeConfig as RuntimeConfig
 from hydra2.training._rc_sections import SchedulerConfig as SchedulerConfig
@@ -41,6 +42,7 @@ __all__ = [
     "_parse_loop",
     "_parse_model",
     "_parse_optimizer",
+    "_parse_rl",
     "_parse_run",
     "_parse_runtime",
     "_parse_scheduler",
@@ -70,15 +72,10 @@ def _parse_data(raw: Any) -> DataConfig:
         fields: dict[str, Any] = _require_rc_bridge().rc_parse_data(raw)
     except (ValueError, TypeError) as exc:
         raise ContractError(str(exc)) from exc
-    roots_raw: object = fields["roots"]
-    if not isinstance(roots_raw, list) or not all(
-        isinstance(pair, (list, tuple))
-        and len(pair) == 2
-        and all(isinstance(part, str) for part in pair)
-        for pair in roots_raw
-    ):
-        raise ContractError("data.roots must be a list of [id, path] string pairs")
-    roots: tuple[tuple[str, str], ...] = tuple((str(pair[0]), str(pair[1])) for pair in roots_raw)
+    # `rc_parse_data` owns the roots shape (a list of [id, path] string
+    # pairs); translate the trusted structure without revalidating it here.
+    roots_raw: Any = fields["roots"]
+    roots: tuple[tuple[str, str], ...] = tuple((pair[0], pair[1]) for pair in roots_raw)
     scope: str = fields["scope"]
     train_split: str = fields["train_split"]
     val_split: str = fields["val_split"]
@@ -278,4 +275,67 @@ def _parse_loop(raw: Any) -> LoopConfig:
         fit_temperature=fit_temperature,
         fetch_prefetch_depth=fetch_prefetch_depth,
         pack_histories=pack_histories,
+    )
+
+
+def _parse_rl(raw: Any) -> RlConfig:
+    """Thin bridge delegate: ``hydra2._native.contracts.rc_parse_rl`` decides."""
+    try:
+        fields: dict[str, Any] = _require_rc_bridge().rc_parse_rl(raw)
+    except (ValueError, TypeError) as exc:
+        raise ContractError(str(exc)) from exc
+    return RlConfig(
+        schema_version=fields["schema_version"],
+        initial_checkpoint_id=fields["initial_checkpoint_id"],
+        initial_model_spec_hash=fields["initial_model_spec_hash"],
+        master_seed_hex=fields["master_seed_hex"],
+        experiment_id=fields["experiment_id"],
+        split_scope=fields["split_scope"],
+        replicate_id=fields["replicate_id"],
+        attempt_id=fields["attempt_id"],
+        generations=fields["generations"],
+        games_per_generation=fields["games_per_generation"],
+        native_workers=fields["native_workers"],
+        env_slots=fields["env_slots"],
+        max_lookahead=fields["max_lookahead"],
+        inference_cap=fields["inference_cap"],
+        microbatch_cap=fields["microbatch_cap"],
+        accumulation_cap=fields["accumulation_cap"],
+        optimizer_minibatch_cap=fields["optimizer_minibatch_cap"],
+        epochs=fields["epochs"],
+        row_cap=fields["row_cap"],
+        decision_cap_per_game=fields["decision_cap_per_game"],
+        max_updates_per_generation=fields["max_updates_per_generation"],
+        compressed_byte_cap=fields["compressed_byte_cap"],
+        min_free_disk_bytes=fields["min_free_disk_bytes"],
+        host_byte_budget=fields["host_byte_budget"],
+        gpu_cache_byte_budget=fields["gpu_cache_byte_budget"],
+        clip_eps=fields["clip_eps"],
+        eps_std=fields["eps_std"],
+        w_value=fields["w_value"],
+        w_bc=fields["w_bc"],
+        ppo_alpha=fields["ppo_alpha"],
+        gamma=fields["gamma"],
+        lam=fields["lam"],
+        optimizer_lr=fields["optimizer_lr"],
+        optimizer_beta1=fields["optimizer_beta1"],
+        optimizer_beta2=fields["optimizer_beta2"],
+        optimizer_weight_decay=fields["optimizer_weight_decay"],
+        head_lr_mult=fields["head_lr_mult"],
+        gradient_clip_norm=fields["gradient_clip_norm"],
+        warmup_updates=fields["warmup_updates"],
+        rules_hash=fields["rules_hash"],
+        utility_hash=fields["utility_hash"],
+        action_table_hash=fields["action_table_hash"],
+        event_schema_hash=fields["event_schema_hash"],
+        observation_schema_hash=fields["observation_schema_hash"],
+        packet_boundary_hash=fields["packet_boundary_hash"],
+        input_schema_hash=fields["input_schema_hash"],
+        wall_ledger_hash=fields["wall_ledger_hash"],
+        opponent_catalog_hash=fields["opponent_catalog_hash"],
+        wall_recipe_hash=fields["wall_recipe_hash"],
+        sampling_recipe_hash=fields["sampling_recipe_hash"],
+        return_recipe_hash=fields["return_recipe_hash"],
+        shuffle_recipe_hash=fields["shuffle_recipe_hash"],
+        core_revision=fields["core_revision"],
     )

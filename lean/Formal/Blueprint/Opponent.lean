@@ -84,6 +84,22 @@ theorem condWorldGivenTheta_sum_one
   rw [← Finset.sum_div, h]
   exact div_self hne
 
+/-- Conditional is bounded by one: each world's share of the type's mass
+never exceeds the whole — the finite reason per-world beliefs read as
+fractions, so the belief display and the packet-mass ledger agree.
+Pair with `condWorldGivenTheta_nonneg` (shares nonneg): together the
+conditional is a genuine distribution slice per type. -/
+theorem condWorldGivenTheta_le_one
+    (p : JointThetaWorld Theta World) (K : World → World → Theta → ℝ)
+    (t : Theta) (hne : nextMarginalTheta p K t ≠ 0) (x' : World)
+    (hK_nonneg : ∀ x x' t, 0 ≤ K x x' t) :
+    condWorldGivenTheta p K t hne x' ≤ 1 := by
+  have hnn : ∀ y ∈ (Finset.univ : Finset World), 0 ≤ condWorldGivenTheta p K t hne y :=
+    fun y _ => condWorldGivenTheta_nonneg p K t hne y hK_nonneg
+  have hle := Finset.single_le_sum hnn (Finset.mem_univ x')
+  have h1 := condWorldGivenTheta_sum_one p K t hne
+  linarith
+
 /-- Type-posterior Bayes update (BPR Eq.1-2, Rosman et al. 2016 Sec 2.9,
   arXiv:1505.00284:
   `β^t(τ) = P(σ^t|τ,π^t)β^{t-1}(τ) / Σ_{τ'} P(σ^t|τ',π^t)β^{t-1}(τ')`,
@@ -105,6 +121,123 @@ theorem typePosterior_sum_one
   unfold typePosterior
   rw [← Finset.sum_div]
   exact div_self hne
+
+/-- Flat likelihood falls back to the normalized prior: an uninformative
+packet leaves the posterior at `beta / ∑ beta` — the finite reason the BPR
+router has a principled default when the packet carries no signal: skip
+the likelihood, route on prior alone. Pairs `typePosterior_mono_likelihood`
+(informative packets move the posterior): together the router interpolates
+between prior-only (flat) and evidence-driven (peaked) with no special
+case. -/
+theorem typePosterior_const_likelihood (beta : Theta → ℝ) (c : ℝ)
+    (hc : 0 < c) (t : Theta) :
+    typePosterior (Theta:=Theta) beta (fun _ => c) t
+      = beta t / ∑ t' : Theta, beta t' := by
+  unfold typePosterior
+  simp only
+  have hden : (∑ t' : Theta, c * beta t') = c * ∑ t' : Theta, beta t' :=
+    (Finset.mul_sum _ _ _).symm
+  rw [hden, mul_div_mul_left _ _ (ne_of_gt hc)]
+
+/-- Posterior is scale-invariant in likelihood: multiplying every
+likelihood by nonzero `c` leaves the posterior unchanged — the finite
+reason the BPR router never needs likelihood normalization: raw scores,
+temperature-scaled logits, and per-mille probabilities all route
+identically, so the packet pipeline can skip a normalization pass.
+Pairs `typePosterior_const_likelihood` (flat likelihood = prior):
+together level (flat) AND scale (uniform multiple) both factor out. -/
+theorem typePosterior_scale_likelihood (beta L : Theta → ℝ) (c : ℝ)
+    (hc : c ≠ 0) (t : Theta) :
+    typePosterior (Theta:=Theta) beta (fun t' => c * L t') t
+      = typePosterior (Theta:=Theta) beta L t := by
+  unfold typePosterior
+  simp only
+  have hden : (∑ t' : Theta, (c * L t') * beta t')
+      = c * ∑ t' : Theta, L t' * beta t' := by
+    rw [Finset.mul_sum]
+    apply Finset.sum_congr rfl
+    intro x _
+    ring
+  have hnum : c * L t * beta t = c * (L t * beta t) :=
+    mul_assoc _ _ _
+  rw [hnum, hden, mul_div_mul_left _ _ hc]
+
+/-- Posterior is scale-invariant in the prior too: multiplying every
+prior mass by nonzero `c` leaves the posterior unchanged — the mirror
+of `typePosterior_scale_likelihood` (likelihood scaling). Together
+neither input needs normalization: unnormalized priors (raw counts,
+logit-shifted masses) route identically to normalized ones, so the
+BPR router skips both normalization passes. -/
+theorem typePosterior_scale_prior (beta L : Theta → ℝ) (c : ℝ)
+    (hc : c ≠ 0) (t : Theta) :
+    typePosterior (Theta:=Theta) (fun t' => c * beta t') L t
+      = typePosterior (Theta:=Theta) beta L t := by
+  unfold typePosterior
+  simp only
+  have hden : (∑ t' : Theta, L t' * (c * beta t'))
+      = c * ∑ t' : Theta, L t' * beta t' := by
+    rw [Finset.mul_sum]
+    apply Finset.sum_congr rfl
+    intro x _
+    ring
+  have hnum : L t * (c * beta t) = c * (L t * beta t) := by
+    ring
+  rw [hnum, hden, mul_div_mul_left _ _ hc]
+
+/-- Posterior shares are bounded by one: no type ever claims more than the
+whole posterior mass — the finite reason the BPR router's argmax is always
+a valid selection, so the belief-weighted shortlist never needs
+renormalization before use. Pair with `typePosterior_sum_one` (masses sum
+to 1): together the posterior is a genuine distribution slice per packet. -/
+theorem typePosterior_le_one (beta L : Theta → ℝ) (t : Theta)
+    (hnn : ∀ t' : Theta, 0 ≤ L t' * beta t')
+    (hpos : 0 < ∑ t' : Theta, L t' * beta t') :
+    typePosterior (Theta:=Theta) beta L t ≤ 1 := by
+  unfold typePosterior
+  rw [div_le_one hpos]
+  exact Finset.single_le_sum (fun y _ => hnn y) (Finset.mem_univ t)
+
+/-- Posterior is likelihood-monotone at fixed prior mass: if type `a`
+weakly dominates type `b` in likelihood (`L a ≥ L b`) with equal prior
+mass, the posterior preserves the order. Finite core behind BPR-EI
+routing: stronger packet evidence for a type can only raise its posterior
+share at fixed priors — the router never inverts the evidence.
+Posterior weights are nonneg under nonneg likelihood and prior: each
+type's share is a valid mass — the finite reason the BPR router's argmax
+is always a legitimate selection. Pair with `typePosterior_le_one`
+(shares bounded by one): together the posterior is a genuine distribution
+slice per packet, so the belief-weighted shortlist never needs
+renormalization before use. -/
+theorem typePosterior_nonneg (beta L : Theta → ℝ) (t : Theta)
+    (hL : 0 ≤ L t) (hβ : 0 ≤ beta t)
+    (hpos : 0 < ∑ t' : Theta, L t' * beta t') :
+    0 ≤ typePosterior (Theta:=Theta) beta L t := by
+  unfold typePosterior
+  exact div_nonneg (mul_nonneg hL hβ) (le_of_lt hpos)
+
+theorem typePosterior_mono_likelihood {beta L : Theta → ℝ} {a b : Theta}
+    (hβ : beta a = beta b) (hL : L b ≤ L a)
+    (hβnn : 0 ≤ beta b)
+    (hpos : 0 < ∑ t' : Theta, L t' * beta t') :
+    typePosterior (Theta:=Theta) beta L b ≤ typePosterior (Theta:=Theta) beta L a := by
+  unfold typePosterior
+  rw [div_le_div_iff_of_pos_right hpos, hβ]
+  exact mul_le_mul_of_nonneg_right hL hβnn
+
+/-- Posterior is prior-monotone at fixed likelihood: if type `a` weakly
+dominates type `b` in prior mass with equal likelihood, the posterior
+preserves the order. Mirror of `typePosterior_mono_likelihood`; together
+they say the router never inverts EITHER evidence channel — packet
+likelihood or table-history prior. Failure mode killed: a strong prior
+being silently overridden by a tie likelihood. -/
+theorem typePosterior_mono_prior {beta L : Theta → ℝ} {a b : Theta}
+    (hL : L a = L b) (hβ : beta b ≤ beta a)
+    (hLnn : 0 ≤ L b)
+    (hpos : 0 < ∑ t' : Theta, L t' * beta t') :
+    typePosterior (Theta:=Theta) beta L b ≤ typePosterior (Theta:=Theta) beta L a := by
+  unfold typePosterior
+  rw [div_le_div_iff_of_pos_right hpos, hL]
+  exact mul_le_mul_of_nonneg_left hβ hLnn
 
 /-- Non-factorization: `p_next(θ,x') ≠ p_next(θ)·b(x')` in general because `x` correlates
 `θ` and the world via the joint and `K`. The marginal-only update `p_next(θ) ∝ p(θ)·something`
@@ -473,6 +606,32 @@ theorem robustRadius_nonneg (n : ℕ) (C : ℝ) :
   unfold robustRadius
   exact Real.sqrt_nonneg _
 
+/-- Zero constant collapses the radius: with no log-term mass the ambiguity
+ball is a point at any visit count — the finite reason the robust hedge
+costs nothing when the concentration bound has no slack. Pair with
+`robustRadius_antitone_n` (more visits tighten) and
+`robustRadius_le_of_many_visits` (radius vanishes in the visit limit):
+together the radius is pinned at three points — zero at C=0, shrinking in
+n, vanishing at infinity. -/
+theorem robustRadius_zero_C (n : ℕ) : robustRadius n 0 = 0 := by
+  unfold robustRadius
+  simp
+
+/-- Radius is monotone in slack: more concentration slack never tightens
+the ball — the finite reason the S2 gate's uncertainty bonus grows with
+the log term, so looser bounds explore more, never less. Pairs
+`robustRadius_antitone_n` (tighter in visits): together the radius moves
+the right way in EACH argument, and the router can trade visits against
+slack monotonically. -/
+theorem robustRadius_mono_C (n : ℕ) (C₁ C₂ : ℝ) (h : C₁ ≤ C₂)
+    (hn : 0 < n) :
+    robustRadius n C₁ ≤ robustRadius n C₂ := by
+  unfold robustRadius
+  apply Real.sqrt_le_sqrt
+  have h12 : 2 * C₁ ≤ 2 * C₂ := by linarith
+  have hn_pos : (0 : ℝ) < (n : ℝ) := Nat.cast_pos.mpr hn
+  exact div_le_div_of_nonneg_right h12 hn_pos.le
+
 theorem robustRadius_antitone_n (n1 n2 : ℕ) (C : ℝ) (hC : 0 ≤ C)
     (hn1 : 0 < n1) (h_le : n1 ≤ n2) :
     robustRadius n2 C ≤ robustRadius n1 C := by
@@ -483,12 +642,92 @@ theorem robustRadius_antitone_n (n1 n2 : ℕ) (C : ℝ) (hC : 0 ≤ C)
   have hn1_pos : (0 : ℝ) < (n1 : ℝ) := Nat.cast_pos.mpr hn1
   exact div_le_div_of_nonneg_left h1 hn1_pos h2
 
+/-- Doubling visits shrinks the radius by √2: `ρ(2n) = ρ(n)/√2` up to the
+    cast. Practical core: table-history has DIMINISHING returns — the first
+    doubling buys ~29% radius reduction, so budget visits where the hedge
+    is widest instead of grinding one matchup. Limited-compute lemma. -/
+theorem robustRadius_double_visits (n : ℕ) (C : ℝ) (hC : 0 ≤ C) (hn : 0 < n) :
+    robustRadius (2 * n) C ^ 2 = (robustRadius n C ^ 2) / 2 := by
+  unfold robustRadius
+  have hcast : ((2 * n : ℕ) : ℝ) = 2 * (n : ℝ) := by push_cast; ring
+  have h2 : (0 : ℝ) ≤ (2 * C) / (n : ℝ) := by positivity
+  have h1 : (0 : ℝ) ≤ (2 * C) / (2 * (n : ℝ)) := by positivity
+  calc (Real.sqrt ((2 * C) / ((2 * n : ℕ) : ℝ))) ^ 2
+      = (Real.sqrt ((2 * C) / (2 * (n : ℝ)))) ^ 2 := by rw [hcast]
+    _ = (2 * C) / (2 * (n : ℝ)) := Real.sq_sqrt h1
+    _ = ((Real.sqrt ((2 * C) / (n : ℝ))) ^ 2) / 2 := by
+        rw [Real.sq_sqrt h2]
+        ring
+
 /-- Hidden-hand marginalization: `p_next(x') = ∑_θ p_next(θ,x')` integrates out `θ`
 for root's world belief, but the full joint is needed for next update. -/
 theorem marginal_world_from_joint
     (p : JointThetaWorld Theta World) (K : World → World → Theta → ℝ) (x' : World) :
     (∑ t : Theta, nextJoint p K t x') = ∑ t : Theta, ∑ x : World, p.prob t x * K x x' t := by
   unfold nextJoint; rfl
+
+/-- Marginal preserves nonnegativity: the world-marginal of a nonnegative
+joint-kernel product is nonneg — the finite reason the root belief stays
+a valid weight vector after integrating out opponent types. Pair with
+`joint_determines_marginals_but_not_converse` (marginals forget
+correlation): together marginalize freely for the root decision, but
+never feed the marginal back as the next update's joint. -/
+theorem marginal_world_nonneg
+    (p : JointThetaWorld Theta World) (K : World → World → Theta → ℝ)
+    (hK : ∀ x x' t, 0 ≤ K x x' t) (x' : World) :
+    0 ≤ ∑ t : Theta, nextJoint p K t x' := by
+  apply Finset.sum_nonneg
+  intro t _
+  unfold nextJoint
+  apply Finset.sum_nonneg
+  intro x _
+  exact mul_nonneg (p.nonneg t x) (hK x x' t)
+
+/-- Type-marginal preserves nonnegativity: the symmetric direction —
+integrating out worlds leaves valid type weights. Pairs
+`marginal_world_nonneg` (integrate out types): together BOTH
+marginal directions stay valid, so the router can collapse either
+axis for its decision without leaving weight-space. -/
+theorem marginal_theta_nonneg
+    (p : JointThetaWorld Theta World) (K : World → World → Theta → ℝ)
+    (hK : ∀ x x' t, 0 ≤ K x x' t) (t : Theta) :
+    0 ≤ ∑ x' : World, nextJoint p K t x' := by
+  apply Finset.sum_nonneg
+  intro x' _
+  unfold nextJoint
+  apply Finset.sum_nonneg
+  intro x _
+  exact mul_nonneg (p.nonneg t x) (hK x x' t)
+
+/-- Robust radius vanishes with infinite visits: as `n → ∞` (modelled as
+    `n ≥ (2C)/ε²`), the ambiguity ball shrinks below any `ε > 0` — the
+    finite core behind opponent-model convergence: enough table history
+    and the robust set collapses to the nominal, so the minimax hedge
+    costs nothing in the limit. Limited-compute reading: visits are the
+    currency; the bound prices exactly how many table observations buy
+    a given robustness radius. -/
+theorem robustRadius_le_of_many_visits (n : ℕ) (C ε : ℝ)
+    (hC : 0 ≤ C) (hε : 0 < ε) (hn : (2 * C) / (ε ^ 2) ≤ (n : ℝ)) :
+    robustRadius n C ≤ ε := by
+  unfold robustRadius
+  have hε2 : (0 : ℝ) < ε ^ 2 := sq_pos_of_pos hε
+  have hbound : (2 * C) / (n : ℝ) ≤ ε ^ 2 := by
+    rcases Nat.eq_zero_or_pos n with rfl | hn_pos_n
+    · have hC0 : C = 0 := by
+        have hle : (2 * C) / (ε ^ 2) ≤ 0 := by simpa only [Nat.cast_zero] using hn
+        have hmul : 2 * C ≤ 0 * ε ^ 2 := (div_le_iff₀ hε2).mp hle
+        simp at hmul
+        linarith
+      subst hC0
+      rw [mul_zero, zero_div]
+      exact le_of_lt hε2
+    · have hn_pos : (0 : ℝ) < (n : ℝ) := Nat.cast_pos.mpr hn_pos_n
+      rw [div_le_iff₀ hn_pos]
+      have hmp := (div_le_iff₀ hε2).mp hn
+      linarith
+  calc Real.sqrt ((2 * C) / (n : ℝ)) ≤ Real.sqrt (ε ^ 2) :=
+        Real.sqrt_le_sqrt hbound
+    _ = ε := Real.sqrt_sq (le_of_lt hε)
 
 end JointPosterior
 

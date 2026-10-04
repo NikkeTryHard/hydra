@@ -1,10 +1,11 @@
 """Run-config section records: frozen YAML sections plus resume state.
 
-Owns the fourteen validated section dataclasses bound into the frozen
-:class:`RunConfig` surface, the vocabulary constants every parser below
-validates against, and the resumable stream-reader state records
-(:class:`StreamCursor` plus shuffle/accum/worker/resume plans) that the
-digest, layout, and resume paths consume.
+Owns the fourteen validated section dataclasses plus the closed RL profile
+(:class:`RlConfig`, present exactly when ``run.kind == "rl"``) bound into
+the frozen :class:`RunConfig` surface, the vocabulary constants every
+parser below validates against, and the resumable stream-reader state
+records (:class:`StreamCursor` plus shuffle/accum/worker/resume plans) that
+the digest, layout, and resume paths consume.
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ __all__ = [
     "OptimizerConfig",
     "OutputConfig",
     "ResumePlan",
+    "RlConfig",
     "RunConfig",
     "RunMeta",
     "RuntimeConfig",
@@ -56,13 +58,15 @@ __all__ = [
 ]
 
 #: The fourteen RunSpec YAML sections, in canonical order. Unknown top-level
-#: keys are rejected (strict loader).
+#: keys are rejected (strict loader). The closed RL profile (``rl``) rides
+#: alongside as the discriminated-source fifteenth key: supervised/distill
+#: runs must omit it, ``run.kind=rl`` runs require it (see :mod:`hydra2.training.rl_config`).
 _RC_CONFIG_SECTIONS: list[str] = _bridge_contracts.RC_CONFIG_SECTIONS
 CONFIG_SECTIONS: tuple[str, ...] = tuple(_RC_CONFIG_SECTIONS)
 
-#: Run kinds accepted by the streaming-first v1 surface. ``distill`` / ``rl``
-#: are deferred to later waves (recorded, not silent-picked): requesting
-#: them raises :class:`ContractError`.
+#: Run kinds of the discriminated source union: ``supervised``/``distill``
+#: require dataset roots; ``rl`` forbids dataset roots/source and requires
+#: the explicit ``rl`` section (no dummy DataConfig fallback).
 _RC_RUN_KINDS: list[str] = _bridge_contracts.RC_RUN_KINDS
 RUN_KINDS: tuple[str, ...] = tuple(_RC_RUN_KINDS)
 
@@ -407,11 +411,88 @@ class OutputConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class RlConfig:
+    """``rl`` section: closed continuous-RL profile (discriminated source arm).
+
+    Present exactly when ``run.kind == "rl"`` (``None`` otherwise); RL runs
+    carry ``data=None`` (dataset roots forbidden) instead of a dummy
+    :class:`DataConfig`. All values are validated natively by
+    ``hydra2._native.contracts.rc_parse_rl``: exact frozen pilot recipe
+    (plan §3), lineage/seeds, cohort/resource guards, exact PPO numerics
+    with ``eps_std`` INSIDE the square root (SPEC §20.1: ``(A-mean) /
+    sqrt(var + eps)``, shared with :mod:`hydra2.training.rl_objective`
+    ``PpoParameters``/``prepare_advantages``), and content identities
+    (plan §14). Resource knobs are admission caps; exact per-update counts
+    (including short tails) are runtime facts recorded by the sealer/loop,
+    never config. No arbitrary dynamic imports, no default source.
+    """
+
+    schema_version: str = "1.0.0"
+    initial_checkpoint_id: str = ""
+    initial_model_spec_hash: str = ""
+    master_seed_hex: str = ""
+    experiment_id: str = ""
+    split_scope: str = "selection_training"
+    replicate_id: int = 0
+    attempt_id: int = 0
+    generations: int = 8
+    games_per_generation: int = 128
+    native_workers: int = 16
+    env_slots: int = 128
+    max_lookahead: int = 1
+    inference_cap: int = 128
+    microbatch_cap: int = 128
+    accumulation_cap: int = 32
+    optimizer_minibatch_cap: int = 4096
+    epochs: int = 1
+    row_cap: int = 262144
+    decision_cap_per_game: int = 9000
+    max_updates_per_generation: int = 67
+    compressed_byte_cap: int = 8589934592
+    min_free_disk_bytes: int = 21474836480
+    host_byte_budget: int = 12884901888
+    gpu_cache_byte_budget: int = 1073741824
+    clip_eps: float = 0.2
+    eps_std: float = 1e-8
+    w_value: float = 0.005
+    w_bc: float = 0.0
+    ppo_alpha: float = 0.01
+    gamma: float = 1.0
+    lam: float = 1.0
+    optimizer_lr: float = 1e-5
+    optimizer_beta1: float = 0.9
+    optimizer_beta2: float = 0.999
+    optimizer_weight_decay: float = 0.01
+    head_lr_mult: float = 1.0
+    gradient_clip_norm: float = 1.0
+    warmup_updates: int = 0
+    rules_hash: str = ""
+    utility_hash: str = ""
+    action_table_hash: str = ""
+    event_schema_hash: str = ""
+    observation_schema_hash: str = ""
+    packet_boundary_hash: str = ""
+    input_schema_hash: str = ""
+    wall_ledger_hash: str = ""
+    opponent_catalog_hash: str = ""
+    wall_recipe_hash: str = ""
+    sampling_recipe_hash: str = ""
+    return_recipe_hash: str = ""
+    shuffle_recipe_hash: str = ""
+    core_revision: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class RunConfig:
-    """Frozen, fully-validated training run configuration (YAML authority)."""
+    """Frozen, fully-validated training run configuration (YAML authority).
+
+    Discriminated source union: ``supervised``/``distill`` runs carry a
+    validated :class:`DataConfig` and ``rl=None``; ``rl`` runs carry
+    ``data=None`` (dataset roots forbidden) and a validated :class:`RlConfig`.
+    """
 
     run: RunMeta = field(default_factory=RunMeta)
-    data: DataConfig = field(default_factory=DataConfig)
+    data: DataConfig | None = field(default_factory=DataConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     weights: WeightsConfig = field(default_factory=WeightsConfig)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
@@ -424,6 +505,7 @@ class RunConfig:
     telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
     eval: EvalConfig = field(default_factory=EvalConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
+    rl: RlConfig | None = None
 
 
 @dataclass(frozen=True, slots=True)

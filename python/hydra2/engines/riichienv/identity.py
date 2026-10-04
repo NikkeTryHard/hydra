@@ -27,7 +27,7 @@ __all__ = [
 ENGINE_NAME = "riichienv"
 #: Exact engine-build pin; 0.4.10 is the only reference build the adapter maps.
 RIICHENV_VERSION_PIN = "0.4.10"
-ADAPTER_VERSION = make_schema_version(SchemaVersion("1.0.0"))
+ADAPTER_VERSION = make_schema_version(SchemaVersion("2.0.0"))
 
 
 def _source_revision() -> str | None:

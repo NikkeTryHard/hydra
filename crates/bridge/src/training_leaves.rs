@@ -31,11 +31,6 @@
 //! - const `REPLAY_FORBIDDEN_BATCH_KEYS` <- `FORBIDDEN_REPLAY_KEYS`
 //!   (`replay_state.py:23-37`: 11 entries; the loop 9-tuple stays owned by
 //!   `loop_state.rs:58-69`).
-//! - `scheduler_lr_factor` <- NEW pure projection of `_build_scheduler`
-//!   (`stream_build.py:209-259`): warmup `LinearLR` + `cosine` / `constant` /
-//!   `linear` decay as a closed-form `f64` multiplier of one step int (torch
-//!   construction itself stays Python). Unknown-parameter-key and
-//!   `end_factor`-range failures raise the oracle-identical texts.
 //! - `prefix_hashes_name` <- `_prefix_hashes_name` (`stream_build.py:372-374`:
 //!   `f"prefix-hashes-{update:06d}.txt"`).
 //! - `backward_autocast_for` <- `_backward_pass_autocast_for`
@@ -105,11 +100,8 @@
 //! `bool` first exactly like the oracle's `isinstance(..., bool)` head
 //! (per `contracts.rs:69-74`).
 //!
-//! Tolerances: int/string gates are bit-exact (repr-staged messages);
-//! `scheduler_lr_factor` is float-bit parity CLAIMED at `1e-12` absolute vs
-//! the torch `LinearLR`/`CosineAnnealingLR`/`SequentialLR` composition and vs
-//! the Python fallback closed form (same formula, `math.cos`); NaN inputs
-//! fail closed, never propagate.
+//! Tolerances: int/string gates are bit-exact (repr-staged messages); NaN
+//! inputs fail closed, never propagate.
 //!
 //! Single-cdylib tree: registers on the shared `hydra2._native.contracts`
 //! submodule via `register` (mirrors `loop_state.rs:132-144` — there is NO
@@ -122,7 +114,6 @@
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyModule, PyTuple};
-use std::f64::consts::PI;
 
 /// Replay backends (`stream_expand.py:103`, frozen order).
 pub const TRAINING_REPLAY_BACKENDS: [&str; 1] = ["rust"];
@@ -266,68 +257,6 @@ fn sha_shape_ok(text: &str) -> bool {
 /// Oracle-identical error text (`loop_state.py:53`, `replay_state.py:56`).
 fn require_message(name: &str, repr: &str) -> String {
     format!("{name} must be sha256:<64 hex>, got {repr}")
-}
-
-/// Pure math core: linear ramp from `start` to `end` over `total` steps
-/// (torch `LinearLR` factor semantics; `step` clamped into `[0, total]`).
-fn linear_ramp(step: i64, start: f64, end: f64, total: i64) -> f64 {
-    if total <= 0 {
-        return end;
-    }
-    // proof: `total > 0` (checked above) and `clamped` in [0,total]; small step counts (< 2^53), exact; ramp tolerates 1ulp.
-    #[allow(clippy::cast_precision_loss)]
-    let clamped_f: f64 = step.clamp(0, total) as f64;
-    #[allow(clippy::cast_precision_loss)]
-    let total_f: f64 = total as f64;
-    let clamped = clamped_f / total_f;
-    start + (end - start) * clamped
-}
-
-/// Pure math core: cosine decay from `1.0` to `final_factor` over `t_max`
-/// steps (torch `CosineAnnealingLR` factor semantics, peak normalised to
-/// `1.0`; at/past `t_max` the factor rests at `final_factor`).
-fn cosine_decay(step: i64, t_max: i64, final_factor: f64) -> f64 {
-    if t_max <= 0 {
-        return final_factor;
-    }
-    let clamped = step.clamp(0, t_max);
-    if clamped >= t_max {
-        return final_factor;
-    }
-    // proof: `clamped` in [0,t_max] and `t_max > 0` (checked above); small step counts (< 2^53), exact; cosine tolerates 1ulp.
-    #[allow(clippy::cast_precision_loss)]
-    let clamped_f: f64 = clamped as f64;
-    #[allow(clippy::cast_precision_loss)]
-    let t_max_f: f64 = t_max as f64;
-    final_factor + (1.0 - final_factor) * 0.5 * (1.0 + (PI * clamped_f / t_max_f).cos())
-}
-
-/// Pure closed form: warmup ramp + main decay selector. `t_max_resolved`
-/// and `end_resolved` are already defaulted (`main_span` / `final_factor`);
-/// `span` is the warmup-adjusted horizon (`max(1, horizon - warmup)`).
-fn lr_factor_impl(
-    scheduler: &str,
-    step: i64,
-    warmup: i64,
-    horizon: i64,
-    final_factor: f64,
-    warmup_start: f64,
-    span: i64,
-    t_max_resolved: i64,
-    end_resolved: f64,
-) -> f64 {
-    if warmup > 0 && warmup >= horizon {
-        return linear_ramp(step, warmup_start, 1.0, horizon);
-    }
-    if warmup > 0 && step < warmup {
-        return linear_ramp(step, warmup_start, 1.0, warmup);
-    }
-    let after = if warmup > 0 { step - warmup } else { step };
-    match scheduler {
-        "cosine" => cosine_decay(after, t_max_resolved, final_factor),
-        "linear" => linear_ramp(after, 1.0, end_resolved, span),
-        _ => 1.0,
-    }
 }
 
 /// Validated minibatch product (`loop_state.py:210-212`,
@@ -484,176 +413,6 @@ fn replay_require_sha256(
     }
 }
 
-/// Scheduler closed-form factor: pure projection of `_build_scheduler`
-/// (`stream_build.py:209-259`) onto one step int. `param_keys` carries
-/// `list(parameters)` so the unknown-key gates stay Rust-side with the
-/// oracle-identical text; `t_max`/`end_factor` are `None` when the oracle
-/// would default (`main_span` / `final_factor`). NaN factors fail closed.
-/// Compute runs detached; tolerance `1e-12` absolute vs torch/`math.cos`.
-#[pyfunction]
-#[pyo3(signature = (scheduler, step, warmup_updates, max_updates, final_factor, warmup_start_factor, param_keys, t_max, end_factor))]
-#[allow(clippy::too_many_arguments)]
-fn scheduler_lr_factor(
-    py: Python<'_>,
-    scheduler: Bound<'_, PyAny>,
-    step: Bound<'_, PyAny>,
-    warmup_updates: Bound<'_, PyAny>,
-    max_updates: Bound<'_, PyAny>,
-    final_factor: Bound<'_, PyAny>,
-    warmup_start_factor: Bound<'_, PyAny>,
-    param_keys: Bound<'_, PyAny>,
-    t_max: Bound<'_, PyAny>,
-    end_factor: Bound<'_, PyAny>,
-) -> PyResult<f64> {
-    let (_sched_repr, sched) = stage_str(&scheduler)?;
-    let (step_repr, step_val) = stage_int(&step)?;
-    let (warm_repr, warm_val) = stage_int(&warmup_updates)?;
-    let (horizon_repr, horizon_val) = stage_int(&max_updates)?;
-    let (final_repr, final_val) = (py_repr(&final_factor)?, final_factor.extract::<f64>().ok());
-    let (wstart_repr, wstart_val) = (
-        py_repr(&warmup_start_factor)?,
-        warmup_start_factor.extract::<f64>().ok(),
-    );
-    let keys_repr = py_repr(&param_keys)?;
-    let staged_keys: Option<Vec<String>> = param_keys.extract().ok();
-    let (tmax_repr, tmax_val) = (py_repr(&t_max)?, t_max.extract::<i64>().ok());
-    let tmax_is_none = t_max.is_none();
-    let (end_repr, end_val) = (py_repr(&end_factor)?, end_factor.extract::<f64>().ok());
-    let end_is_none = end_factor.is_none();
-    // Attached validation that needs Python-rendered reprs; the closed-form
-    // math itself runs detached below.
-    let sched_text = match sched {
-        Some(s) if ["cosine", "constant", "linear"].contains(&s.as_str()) => s,
-        _ => {
-            return Err(PyValueError::new_err(
-                "scheduler.id must be one of ['cosine', 'constant', 'linear']".to_owned(),
-            ));
-        }
-    };
-    let (Some(step), Some(warm), Some(horizon)) = (step_val, warm_val, horizon_val) else {
-        let bad = if step_val.is_none() {
-            step_repr
-        } else if warm_val.is_none() {
-            warm_repr
-        } else {
-            horizon_repr
-        };
-        return Err(PyValueError::new_err(format!(
-            "scheduler step/warmup_updates/max_updates must be ints, got {bad}"
-        )));
-    };
-    if step < 0 {
-        return Err(PyValueError::new_err(format!(
-            "scheduler step must be a non-negative int, got {step_repr}"
-        )));
-    }
-    if warm < 0 {
-        return Err(PyValueError::new_err(format!(
-            "scheduler warmup_updates must be a non-negative int, got {warm_repr}"
-        )));
-    }
-    if horizon <= 0 {
-        return Err(PyValueError::new_err(format!(
-            "scheduler max_updates must be a positive int, got {horizon_repr}"
-        )));
-    }
-    let (Some(final_factor), Some(warmup_start)) = (final_val, wstart_val) else {
-        let bad = if final_val.is_none() {
-            final_repr
-        } else {
-            wstart_repr
-        };
-        return Err(PyValueError::new_err(format!(
-            "scheduler final_factor/warmup_start_factor must be numbers, got {bad}"
-        )));
-    };
-    if !final_factor.is_finite() || !warmup_start.is_finite() {
-        return Err(PyValueError::new_err(
-            "scheduler final_factor/warmup_start_factor must be finite".to_owned(),
-        ));
-    }
-    let keys = match staged_keys {
-        Some(keys) => keys,
-        None => {
-            return Err(PyValueError::new_err(format!(
-                "scheduler.parameters must be a string-key list, got {keys_repr}"
-            )));
-        }
-    };
-    let mut unknown: Vec<String> = match sched_text.as_str() {
-        "cosine" => keys.into_iter().filter(|k| k != "T_max").collect(),
-        "linear" => keys.into_iter().filter(|k| k != "end_factor").collect(),
-        _ => keys,
-    };
-    unknown.sort();
-    if !unknown.is_empty() {
-        return Err(PyValueError::new_err(format!(
-            "scheduler.parameters unknown keys {}",
-            py_str_list_repr(&unknown)
-        )));
-    }
-    // `T_max` is read only by the cosine branch (`parameters.get("T_max",
-    // main_span)` at `stream_build.py:234`) and `end_factor` only by the
-    // linear branch (`stream_build.py:246`); other schedulers ignore them
-    // exactly like the oracle.
-    if sched_text == "cosine" {
-        if !tmax_is_none && tmax_val.is_none() {
-            return Err(PyValueError::new_err(format!(
-                "scheduler T_max must be a positive int or none, got {tmax_repr}"
-            )));
-        }
-        if let Some(t) = tmax_val
-            && t <= 0
-        {
-            return Err(PyValueError::new_err(format!(
-                "scheduler T_max must be a positive int or none, got {tmax_repr}"
-            )));
-        }
-    }
-    if sched_text == "linear" {
-        if !end_is_none && end_val.is_none() {
-            return Err(PyValueError::new_err(format!(
-                "scheduler end_factor must lie in [0, 1], got {end_repr}"
-            )));
-        }
-        if let Some(e) = end_val
-            && !(0.0..=1.0).contains(&e)
-        {
-            return Err(PyValueError::new_err(format!(
-                "scheduler end_factor must lie in [0, 1], got {}",
-                py_float_str(e)
-            )));
-        }
-    }
-    let span = if warm < horizon {
-        (horizon - warm).max(1)
-    } else {
-        horizon
-    };
-    let t_max_resolved = tmax_val.unwrap_or(span);
-    let end_resolved = end_val.unwrap_or(final_factor);
-    let owned_name = sched_text.clone();
-    let factor = py.detach(|| {
-        lr_factor_impl(
-            &owned_name,
-            step,
-            warm,
-            horizon,
-            final_factor,
-            warmup_start,
-            span,
-            t_max_resolved,
-            end_resolved,
-        )
-    });
-    if !factor.is_finite() {
-        return Err(PyValueError::new_err(
-            "scheduler lr factor is non-finite".to_owned(),
-        ));
-    }
-    Ok(factor)
-}
-
 /// Prefix-hash filename (`stream_build.py:372-374`:
 /// `f"prefix-hashes-{update:06d}.txt"`; Rust `{:06}` pads identically,
 /// including the `-00001` negative shape).
@@ -749,7 +508,6 @@ pub fn register(sub: &Bound<'_, PyModule>) -> PyResult<()> {
     sub.add_function(wrap_pyfunction!(loop_precision_gate, sub)?)?;
     sub.add_function(wrap_pyfunction!(replay_precision_gate, sub)?)?;
     sub.add_function(wrap_pyfunction!(replay_require_sha256, sub)?)?;
-    sub.add_function(wrap_pyfunction!(scheduler_lr_factor, sub)?)?;
     sub.add_function(wrap_pyfunction!(prefix_hashes_name, sub)?)?;
     sub.add_function(wrap_pyfunction!(backward_autocast_for, sub)?)?;
     sub.add_function(wrap_pyfunction!(require_replay_backend, sub)?)?;
@@ -849,22 +607,7 @@ mod tests {
     }
 
     #[test]
-    fn lr_closed_forms_match_torch_shapes() {
-        // Warmup ramp endpoints: step 0 rests at warmup_start, the warmup
-        // boundary hands 1.0 to the decay tail.
-        assert!((lr_factor_impl("cosine", 0, 5, 10, 0.0, 0.1, 5, 5, 0.0) - 0.1).abs() < 1e-12);
-        assert!((lr_factor_impl("cosine", 5, 5, 10, 0.0, 0.1, 5, 5, 0.0) - 1.0).abs() < 1e-12);
-        // Cosine tail: midpoint is the half-cosine (0.5), horizon rests at final.
-        assert!((cosine_decay(0, 4, 0.0) - 1.0).abs() < 1e-12);
-        assert!((cosine_decay(2, 4, 0.0) - 0.5).abs() < 1e-12);
-        assert!((cosine_decay(4, 4, 0.0) - 0.0).abs() < 1e-12);
-        assert!((cosine_decay(9, 4, 0.0) - 0.0).abs() < 1e-12);
-        // Linear tail endpoints and constant unity.
-        assert!((linear_ramp(0, 1.0, 0.2, 5) - 1.0).abs() < 1e-12);
-        assert!((linear_ramp(5, 1.0, 0.2, 5) - 0.2).abs() < 1e-12);
-        assert!((lr_factor_impl("constant", 7, 0, 10, 0.0, 1.0, 10, 10, 0.0) - 1.0).abs() < 1e-12);
-        // Whole-horizon warmup: single ramp, no decay tail.
-        assert!((lr_factor_impl("linear", 10, 10, 10, 0.0, 0.5, 10, 10, 0.0) - 1.0).abs() < 1e-12);
+    fn prefix_render_matches_oracle() {
         // Prefix render incl. the negative `-00001` shape.
         assert_eq!(
             format!("prefix-hashes-{:06}.txt", 7),

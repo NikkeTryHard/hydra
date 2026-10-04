@@ -375,6 +375,42 @@ def load_checkpoint(
     return manifest, payload
 
 
+def load_model_weights_only(
+    *,
+    source: Path,
+    expected_run_spec_hash: str,
+    expected_source_hash: str,
+    expected_model_spec_hash: str,
+    expected_rules_hash: str,
+    expected_utility_manifest_hash: str,
+    expected_action_schema_hash: str,
+    expected_observation_schema_hash: str,
+) -> tuple[CheckpointManifest, Mapping[str, Any]]:
+    """Verify the complete source container, returning only its model weights.
+
+    Optimizer, scheduler, and RNG sections are integrity-checked but never
+    applied; importing supervised moments would change a fresh RL trajectory.
+    """
+    manifest, payload = load_checkpoint(
+        source=source,
+        expected_run_spec_hash=expected_run_spec_hash,
+        expected_source_hash=expected_source_hash,
+    )
+    for subject, expected, actual in (
+        ("model_spec_hash", expected_model_spec_hash, manifest.model_spec_hash),
+        ("rules_hash", expected_rules_hash, manifest.rules_hash),
+        ("utility_manifest_hash", expected_utility_manifest_hash, manifest.utility_manifest_hash),
+        ("action_schema_hash", expected_action_schema_hash, manifest.action_schema_hash),
+        (
+            "observation_schema_hash",
+            expected_observation_schema_hash,
+            manifest.observation_schema_hash,
+        ),
+    ):
+        require_digest_match(recorded=expected, recomputed=actual, subject=subject)
+    return manifest, cast("Mapping[str, Any]", payload["model_state"])
+
+
 def apply_checkpoint(
     payload: Mapping[str, Any],
     *,

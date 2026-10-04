@@ -224,6 +224,14 @@ class TestBindingGates:
         with pytest.raises(ContractError, match="CUDA device"):
             load_run_config(_write_yaml(tmp_path, "run.yaml", mapping), environ={})
 
+    def test_replay_arm_rejected_on_supervised(self, tmp_path: Path) -> None:
+        # The RL-only replay arm parses as vocabulary but the supervised
+        # coherence gate rejects it: never torch.compile, never eager.
+        mapping = _minimal_mapping(tmp_path)
+        mapping["runtime"] = {"compile_mode": "cuda_graph_replay"}
+        with pytest.raises(ContractError, match="RL-only"):
+            load_run_config(_write_yaml(tmp_path, "run.yaml", mapping), environ={})
+
 
 class TestLayout:
     def test_layout_creation_and_idempotent_recreate(self, tmp_path: Path) -> None:

@@ -36,32 +36,94 @@ __all__ = [
 def run_config_to_dict(config: RunConfig) -> dict[str, Any]:
     """Resolved config as a plain YAML/JSON-serializable mapping (run.yaml)."""
     selection = config.selection
-    return {
+    data = config.data
+    data_dict: dict[str, Any] | None = None
+    if data is not None:
+        data_dict = {
+            "roots": [[rid, base] for rid, base in data.roots],
+            "holdout": dict(HOLDOUT_SPEC),
+            "scope": data.scope,
+            "train_split": data.train_split,
+            "val_split": data.val_split,
+            "wall_disjoint": data.wall_disjoint,
+            "leakage_check": data.leakage_check,
+            "dora_width": data.dora_width,
+            "actor_privileged_split": data.actor_privileged_split,
+            "dataset_manifest_hash": data.dataset_manifest_hash,
+            "shuffle_buffer_size": data.shuffle_buffer_size,
+            "drop_last": data.drop_last,
+            "num_workers": data.num_workers,
+            "world_size": data.world_size,
+            "replay_backend": data.replay_backend,
+            "decode_prefetch": data.decode_prefetch,
+            "expand_batch_games": data.expand_batch_games,
+            "homogeneous_buckets": data.homogeneous_buckets,
+        }
+    rl = config.rl
+    rl_dict: dict[str, Any] | None = None
+    if rl is not None:
+        rl_dict = {
+            "schema_version": rl.schema_version,
+            "initial_checkpoint_id": rl.initial_checkpoint_id,
+            "initial_model_spec_hash": rl.initial_model_spec_hash,
+            "master_seed_hex": rl.master_seed_hex,
+            "experiment_id": rl.experiment_id,
+            "split_scope": rl.split_scope,
+            "replicate_id": rl.replicate_id,
+            "attempt_id": rl.attempt_id,
+            "generations": rl.generations,
+            "games_per_generation": rl.games_per_generation,
+            "native_workers": rl.native_workers,
+            "env_slots": rl.env_slots,
+            "max_lookahead": rl.max_lookahead,
+            "inference_cap": rl.inference_cap,
+            "microbatch_cap": rl.microbatch_cap,
+            "accumulation_cap": rl.accumulation_cap,
+            "optimizer_minibatch_cap": rl.optimizer_minibatch_cap,
+            "epochs": rl.epochs,
+            "row_cap": rl.row_cap,
+            "decision_cap_per_game": rl.decision_cap_per_game,
+            "max_updates_per_generation": rl.max_updates_per_generation,
+            "compressed_byte_cap": rl.compressed_byte_cap,
+            "min_free_disk_bytes": rl.min_free_disk_bytes,
+            "host_byte_budget": rl.host_byte_budget,
+            "gpu_cache_byte_budget": rl.gpu_cache_byte_budget,
+            "clip_eps": rl.clip_eps,
+            "eps_std": rl.eps_std,
+            "w_value": rl.w_value,
+            "w_bc": rl.w_bc,
+            "ppo_alpha": rl.ppo_alpha,
+            "gamma": rl.gamma,
+            "lam": rl.lam,
+            "optimizer_lr": rl.optimizer_lr,
+            "optimizer_beta1": rl.optimizer_beta1,
+            "optimizer_beta2": rl.optimizer_beta2,
+            "optimizer_weight_decay": rl.optimizer_weight_decay,
+            "head_lr_mult": rl.head_lr_mult,
+            "gradient_clip_norm": rl.gradient_clip_norm,
+            "warmup_updates": rl.warmup_updates,
+            "rules_hash": rl.rules_hash,
+            "utility_hash": rl.utility_hash,
+            "action_table_hash": rl.action_table_hash,
+            "event_schema_hash": rl.event_schema_hash,
+            "observation_schema_hash": rl.observation_schema_hash,
+            "packet_boundary_hash": rl.packet_boundary_hash,
+            "input_schema_hash": rl.input_schema_hash,
+            "wall_ledger_hash": rl.wall_ledger_hash,
+            "opponent_catalog_hash": rl.opponent_catalog_hash,
+            "wall_recipe_hash": rl.wall_recipe_hash,
+            "sampling_recipe_hash": rl.sampling_recipe_hash,
+            "return_recipe_hash": rl.return_recipe_hash,
+            "shuffle_recipe_hash": rl.shuffle_recipe_hash,
+            "core_revision": rl.core_revision,
+        }
+    resolved: dict[str, Any] = {
         "run": {
             "id": config.run.run_id,
             "kind": config.run.kind,
             "description": config.run.description,
         },
-        "data": {
-            "roots": [[rid, base] for rid, base in config.data.roots],
-            "holdout": dict(HOLDOUT_SPEC),
-            "scope": config.data.scope,
-            "train_split": config.data.train_split,
-            "val_split": config.data.val_split,
-            "wall_disjoint": config.data.wall_disjoint,
-            "leakage_check": config.data.leakage_check,
-            "dora_width": config.data.dora_width,
-            "actor_privileged_split": config.data.actor_privileged_split,
-            "dataset_manifest_hash": config.data.dataset_manifest_hash,
-            "shuffle_buffer_size": config.data.shuffle_buffer_size,
-            "drop_last": config.data.drop_last,
-            "num_workers": config.data.num_workers,
-            "world_size": config.data.world_size,
-            "replay_backend": config.data.replay_backend,
-            "decode_prefetch": config.data.decode_prefetch,
-            "expand_batch_games": config.data.expand_batch_games,
-            "homogeneous_buckets": config.data.homogeneous_buckets,
-        },
+        "data": data_dict,
         "model": {
             "architecture_id": config.model.architecture_id,
             "action_count": config.model.action_count,
@@ -147,6 +209,11 @@ def run_config_to_dict(config: RunConfig) -> dict[str, Any]:
             "run_id": config.output.run_id,
         },
     }
+    # Supervised/distill dicts carry no ``rl`` key (digest-stable); RL runs
+    # pin ``data: null`` plus the validated ``rl`` profile.
+    if rl_dict is not None:
+        resolved["rl"] = rl_dict
+    return resolved
 
 
 def run_config_digest(config: RunConfig) -> str:

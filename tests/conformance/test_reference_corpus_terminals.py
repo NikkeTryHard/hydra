@@ -225,10 +225,81 @@ def test_wp04a_14a_all_last_dealer_tenpai_stop_yame(runner=None) -> None:
         dealers = [int(e.payload.actor) for e in starts]
         if dealers != [0, 1, 2, 3, 0, 1, 2, 3]:
             return f"dealer rotation must run E1..S4 without renchan, got {dealers}"
+        ordinals = [int(e.payload.round_index) for e in starts]
+        if ordinals != list(range(len(starts))):
+            return f"hand ordinals must be dense 0..N-1, got {ordinals}"
         last = starts[-1]
-        # Adapter hand ordinals double-count reopened boundaries (0,2,..,14).
-        if int(last.payload.round_index) != 14:
-            return f"S4 adapter ordinal must be 14, got {last.payload.round_index}"
+        if int(last.payload.round_index) != len(starts) - 1:
+            return (
+                f"final hand ordinal must be N-1={len(starts) - 1}, got {last.payload.round_index}"
+            )
+        if int(sim._hand_index) != int(last.payload.round_index):
+            return f"open ordinal {int(sim._hand_index)} != emitted {int(last.payload.round_index)}"
+        # Wall/seed/open/emitted unity: both named streams are keyed by the
+        # same ordinal the adapter opened and emitted.
+        import hashlib as _hashlib
+
+        from hydra2.engines.riichienv.walls import WALL_STREAM_NAME as _WALL_STREAM
+        from hydra2.engines.riichienv.walls import derive_hand_wall as _derive_wall
+
+        for idx in ordinals:
+            material = "|".join(
+                (
+                    _WALL_STREAM,
+                    str(sim._schedule_id),
+                    str(sim._schedule_digest).removeprefix("sha256:"),
+                    f"rng:{idx}",
+                )
+            ).encode("utf-8")
+            expected_seed = int.from_bytes(_hashlib.sha256(material).digest()[:8], "big")
+            if int(sim._hand_rng_seed(idx)) != expected_seed:
+                return f"seed scope must equal ordinal {idx}"
+            wall = _derive_wall(
+                schedule_digest=str(sim._schedule_digest),
+                schedule_id=str(sim._schedule_id),
+                hand_index=idx,
+            )
+            if idx == 0:
+                if tuple(wall) != ():
+                    return "hand 0 must use the schedule tiles directly"
+            elif sorted(int(t) for t in wall) != list(range(136)):
+                return f"hand {idx} wall must permute 0..135"
+        ends = [e for e in events if e.kind == "round_end"]
+        end_ordinals = [int(e.payload.round_index) for e in ends]
+        if end_ordinals != ordinals:
+            return f"round_end ordinals {end_ordinals} must match round_start {ordinals}"
+        for entry in ends:
+            for delta in entry.public_delta:
+                if tuple(delta.path) == ("round_index",):
+                    return (
+                        "round_end must not carry a speculative round_index delta, "
+                        f"got {delta.value!r}"
+                    )
+        game_ends = [e for e in events if e.kind == "game_end"]
+        if len(game_ends) != 1 or int(game_ends[0].payload.round_index) != ordinals[-1]:
+            got = [int(e.payload.round_index) for e in game_ends]
+            return f"game_end must retain the final ordinal {ordinals[-1]}, got {got}"
+        # Repeat replay under the explicit ordinal: snapshot restore and clone
+        # must reproduce the same dense ordinals and terminal ordinal.
+        snapshot = sim.snapshot()
+        restored = type(sim)()
+        restored.restore(snapshot)
+        restored_ordinals = [
+            int(e.payload.round_index) for e in restored._events if e.kind == "round_start"
+        ]
+        if restored_ordinals != ordinals:
+            return f"restored ordinals {restored_ordinals} != live {ordinals}"
+        if int(restored._hand_index) != int(sim._hand_index):
+            return "restored open ordinal must match live open ordinal"
+        restored_ends = [e for e in restored._events if e.kind == "game_end"]
+        if len(restored_ends) != 1 or int(restored_ends[0].payload.round_index) != ordinals[-1]:
+            return "restored game_end must retain the final ordinal"
+        cloned = sim.clone()
+        cloned_ordinals = [
+            int(e.payload.round_index) for e in cloned._events if e.kind == "round_start"
+        ]
+        if cloned_ordinals != ordinals or int(cloned._hand_index) != int(sim._hand_index):
+            return "cloned ordinals must match live dense ordinals"
         if tuple(int(s) for s in last.payload.scores) != (25000, 17000, 25000, 33000):
             return (
                 "S4 entry scores must be mangan-shifted (25000,17000,25000,33000), got "

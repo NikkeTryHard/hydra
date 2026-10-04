@@ -308,8 +308,11 @@ def _needs_privileged_labels(config: RunConfig) -> bool:
 
 def _split_ratios(config: RunConfig) -> dict[str, float]:
     """Concrete split fractions with the config's split names bound."""
-    train_split = config.data.train_split
-    val_split = config.data.val_split
+    data = config.data
+    if data is None:
+        raise ContractError("split ratios require a data section (rl runs carry data=None)")
+    train_split = data.train_split
+    val_split = data.val_split
     if train_split == val_split:
         raise ContractError(f"data.train_split and data.val_split must differ, got {train_split!r}")
     return {train_split: SPLIT_RATIOS["train"], val_split: SPLIT_RATIOS["validation"]}
@@ -343,7 +346,10 @@ def _action_kind_for_id(chosen_id: int) -> str:
             payload: dict[str, Any] = raw.get("payload", {})
             actions: list[Any] = payload.get("actions", [])
             cached = [
-                str(a.get("kind", "unknown")) if isinstance(a, dict) else "unknown"  # pyrefly: ignore[unknown-argument-type] # JSON action entries dynamic; str owns the kind
+                # JSON action entries dynamic; str owns the kind
+                str(a.get("kind", "unknown"))  # pyrefly: ignore[unknown-argument-type]
+                if isinstance(a, dict)
+                else "unknown"
                 for a in actions
             ]
             if len(cached) == 0:

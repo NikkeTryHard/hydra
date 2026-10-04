@@ -22,6 +22,7 @@ from hydra2.training._rc_parse import _parse_data as _parse_data
 from hydra2.training._rc_parse import _parse_loop as _parse_loop
 from hydra2.training._rc_parse import _parse_model as _parse_model
 from hydra2.training._rc_parse import _parse_optimizer as _parse_optimizer
+from hydra2.training._rc_parse import _parse_rl as _parse_rl
 from hydra2.training._rc_parse import _parse_run as _parse_run
 from hydra2.training._rc_parse import _parse_runtime as _parse_runtime
 from hydra2.training._rc_parse import _parse_scheduler as _parse_scheduler
@@ -56,21 +57,57 @@ def _require_root_bridge() -> Any:
 
 
 def _cross_validate(config: RunConfig) -> None:
-    """Thin bridge delegate: ``hydra2._native.contracts.rc_cross_validate`` decides."""
+    """Thin bridge delegate: coherence gate per discriminated source kind.
+
+    ``supervised``/``distill`` use ``rc_cross_validate`` (which rejects the
+    RL-only replay arm); ``rl`` uses ``rc_cross_validate_rl`` (source union
+    plus the frozen RL recipe: rollout source, no dataset roots, AdamW
+    1e-5/constant/caps, shared ``w_value`` 0.005; privileged labels bind via
+    the artifact, so the supervised manifest-pin gate does not apply).
+    """
     weights = config.weights
     try:
-        _require_root_bridge().rc_cross_validate(
-            config.runtime.precision,
-            config.loop.precision,
-            config.runtime.device,
-            config.output.run_id,
-            config.run.run_id,
-            weights.w_placement,
-            weights.w_value,
-            list(weights.w_event.values()) if weights.w_event is not None else [],
-            list(weights.w_belief.values()) if weights.w_belief is not None else [],
-            weights.privileged_source_hash is not None,
-        )
+        if config.run.kind == "rl":
+            data = config.data
+            _require_root_bridge().rc_cross_validate_rl(
+                config.run.kind,
+                data is not None and len(data.roots) > 0,
+                config.rl is not None,
+                config.optimizer.name,
+                config.optimizer.lr,
+                config.optimizer.betas[0],
+                config.optimizer.betas[1],
+                config.optimizer.weight_decay,
+                config.optimizer.head_lr_mult,
+                config.scheduler.name,
+                config.scheduler.warmup_updates,
+                config.loop.microbatch_size,
+                config.loop.accumulation_steps,
+                config.loop.max_updates,
+                config.loop.stratified_sampling,
+                config.loop.gradient_clip_norm,
+                weights.w_value,
+                config.runtime.precision,
+                config.loop.precision,
+                config.runtime.device,
+                config.output.run_id,
+                config.run.run_id,
+                config.runtime.compile_mode,
+            )
+        else:
+            _require_root_bridge().rc_cross_validate(
+                config.runtime.precision,
+                config.loop.precision,
+                config.runtime.device,
+                config.output.run_id,
+                config.run.run_id,
+                weights.w_placement,
+                weights.w_value,
+                list(weights.w_event.values()) if weights.w_event is not None else [],
+                list(weights.w_belief.values()) if weights.w_belief is not None else [],
+                weights.privileged_source_hash is not None,
+                config.runtime.compile_mode,
+            )
     except (ValueError, TypeError) as exc:
         raise ContractError(str(exc)) from exc
 
@@ -79,6 +116,7 @@ __all__ = [
     "_SECTION_PARSERS",
     "_cross_validate",
     "_parse_root",
+    "_parse_section",
     "_read_yaml_mapping",
     "load_run_config",
 ]
@@ -101,30 +139,68 @@ _SECTION_PARSERS: dict[str, Any] = {
 }
 
 
+def _parse_section(fields: dict[str, Any], section: str) -> Any:
+    """Parse one closed section (unknown keys reject inside the parser)."""
+    raw_section: Any = fields.get(section, {})
+    if not isinstance(raw_section, dict):
+        raise ContractError(f"{section} must be a mapping, got {type(raw_section).__name__}")
+    parser: Callable[[dict[str, Any]], Any] = _SECTION_PARSERS[section]
+    return parser(raw_section)
+
+
 def _parse_root(mapping: Any) -> RunConfig:
     if not isinstance(mapping, dict):
         raise ContractError(f"run-config top level must be a mapping, got {type(mapping).__name__}")
-    parked_rl = mapping.get("rl")
-    if parked_rl is not None:
-        raise ContractError(
-            "top-level 'rl' is parked in streaming-first v1 (must be null); "
-            "RL rollout sources arrive with run.kind=rl in a later wave"
-        )
     fields = _reject_unknown(
         {key: value for key, value in mapping.items() if key != "rl"},
         CONFIG_SECTIONS,
         where="run-config",
     )
+    # Kind first: the discriminated source union decides which sections parse.
+    # `data` is parsed only for supervised/distill (rc_parse_data requires
+    # dataset roots); RL skips it after the empty-check and sets data=None.
+    run = _parse_section(fields, "run")
+    kind: str = run.kind
+    raw_rl = mapping.get("rl")
+    if kind in ("supervised", "distill"):
+        if raw_rl is not None:
+            raise ContractError(
+                "top-level 'rl' is parked for supervised/distill runs (must be null); "
+                "an explicit 'rl' section requires run.kind 'rl'"
+            )
+        rl = None
+        data = _parse_section(fields, "data")
+    else:
+        if raw_rl is None:
+            raise ContractError(
+                "run.kind 'rl' requires an explicit 'rl' section (no dummy DataConfig fallback)"
+            )
+        if not isinstance(raw_rl, dict):
+            raise ContractError(f"rl must be a mapping, got {type(raw_rl).__name__}")
+        data_raw: Any = fields.get("data", {})
+        if data_raw is None:
+            data_raw = {}
+        if not isinstance(data_raw, dict):
+            raise ContractError(f"data must be a mapping, got {type(data_raw).__name__}")
+        if "root" in data_raw or "roots" in data_raw:
+            raise ContractError(
+                "run.kind 'rl' forbids dataset roots/source: omit data.root/data.roots "
+                "(rollout source is the immutable artifact ledger)"
+            )
+        if len(data_raw) > 0:
+            raise ContractError(
+                "run.kind 'rl' must omit the data section (rollout source replaces it)"
+            )
+        data = None
+        rl = _parse_rl(raw_rl)
     parsed: dict[str, Any] = {}
     for section in CONFIG_SECTIONS:
-        raw_section: dict[str, Any] = fields.get(section, {})
-        if not isinstance(raw_section, dict):
-            raise ContractError(f"{section} must be a mapping, got {type(raw_section).__name__}")
-        parser: Callable[[dict[str, Any]], Any] = _SECTION_PARSERS[section]
-        parsed[section] = parser(raw_section)
+        if section in ("run", "data"):
+            continue
+        parsed[section] = _parse_section(fields, section)
     config = RunConfig(
-        run=parsed["run"],
-        data=parsed["data"],
+        run=run,
+        data=data,
         model=parsed["model"],
         weights=parsed["weights"],
         optimizer=parsed["optimizer"],
@@ -137,6 +213,7 @@ def _parse_root(mapping: Any) -> RunConfig:
         telemetry=parsed["telemetry"],
         eval=parsed["eval"],
         output=parsed["output"],
+        rl=rl,
     )
     _cross_validate(config)
     return config

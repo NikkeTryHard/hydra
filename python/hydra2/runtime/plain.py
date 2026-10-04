@@ -16,6 +16,15 @@ from hydra2.runtime.protocol import (
 )
 
 
+def configure_torch_matmul() -> None:
+    """Pin FP32 matmul and convolution choices; inherited TF32 changes parity."""
+    import torch
+
+    torch.set_float32_matmul_precision("highest")
+    torch.backends.cudnn.allow_tf32 = False
+    torch.backends.cudnn.benchmark = False
+
+
 def _is_accelerator_available() -> bool:
     """Unified accelerator availability — torch.accelerator with cuda fallback.
 

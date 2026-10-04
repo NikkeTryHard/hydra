@@ -121,6 +121,8 @@ struct CrossValidateView {
     w_event: Vec<f64>,
     w_belief: Vec<f64>,
     has_privileged_source_hash: bool,
+    runtime_compile_mode: String,
+    runtime_compile_mode_repr: String,
 }
 
 /// Effective run id plus its staged repr (oracle `_rc_root.py:115-118`:
@@ -134,9 +136,18 @@ fn effective_id(view: &CrossValidateView) -> (&str, &str) {
 }
 
 /// The four coherence checks in oracle statement order (never reordered:
-/// multi-violation inputs surface the earliest gate). Owned plain data only,
-/// zero Python API.
+/// multi-violation inputs surface the earliest gate), preceded by the RL-only
+/// replay rejection. Owned plain data only, zero Python API.
 fn check_cross_validate(view: &CrossValidateView) -> Result<(), String> {
+    // The RL-only replay arm fails before any other coherence text: a
+    // supervised/distill run selecting it must never surface a misleading
+    // downstream gate, reach torch.compile, or fall back to eager.
+    if view.runtime_compile_mode == "cuda_graph_replay" {
+        return Err(format!(
+            "runtime.compile_mode {} is RL-only (owned RL CUDA replay route); supervised/distill runs must use 'eager' or a torch.compile mode",
+            view.runtime_compile_mode_repr,
+        ));
+    }
     let expected_loop = if view.runtime_precision == "fp32" {
         "fp32"
     } else {
@@ -180,8 +191,9 @@ fn check_cross_validate(view: &CrossValidateView) -> Result<(), String> {
 /// precisions (`runtime_precision`, `loop_precision`), device
 /// (`runtime_device`), run ids (`output_run_id` nullable, `run_run_id`),
 /// weights (`w_placement`, `w_value`, `w_event`/`w_belief` value lists),
-/// `has_privileged_source_hash` last; the accept/reject decision runs
-/// detached.
+/// `has_privileged_source_hash`, then `runtime_compile_mode` (the RL-only
+/// replay arm rejects here, never in section parsing); the accept/reject
+/// decision runs detached.
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 fn rc_cross_validate(
@@ -196,6 +208,7 @@ fn rc_cross_validate(
     w_event: Vec<f64>,
     w_belief: Vec<f64>,
     has_privileged_source_hash: bool,
+    runtime_compile_mode: Bound<'_, PyAny>,
 ) -> PyResult<()> {
     let (runtime_precision_text, runtime_precision_repr) =
         stage_str(runtime_precision, "runtime.precision")?;
@@ -208,6 +221,7 @@ fn rc_cross_validate(
         }
     };
     let (run_text, run_repr) = stage_str(run_run_id, "run.run_id")?;
+    let (compile_text, compile_repr) = stage_str(runtime_compile_mode, "runtime.compile_mode")?;
     let view = CrossValidateView {
         runtime_precision: runtime_precision_text,
         runtime_precision_repr,
@@ -223,16 +237,274 @@ fn rc_cross_validate(
         w_event,
         w_belief,
         has_privileged_source_hash,
+        runtime_compile_mode: compile_text,
+        runtime_compile_mode_repr: compile_repr,
     };
     py.detach(|| check_cross_validate(&view))
         .map_err(PyValueError::new_err)
 }
 
-/// Register the cross-section coherence gate on the shared `contracts`
+/// Owned plain-data projection for the RL coherence gate. The translator
+/// fills every field positionally from live dataclass attributes plus the
+/// resolved `rl` presence/source flags; shared-section values are checked
+/// against the same frozen literals `rc_parse::rc_parse_rl` pins in the
+/// `rl` section, so both authorities agree without a cross-module edge.
+struct CrossValidateRlView {
+    run_kind: String,
+    run_kind_repr: String,
+    data_has_roots: bool,
+    rl_present: bool,
+    optimizer_name: String,
+    optimizer_name_repr: String,
+    optimizer_lr: f64,
+    optimizer_beta1: f64,
+    optimizer_beta2: f64,
+    optimizer_weight_decay: f64,
+    optimizer_head_lr_mult: f64,
+    scheduler_name: String,
+    scheduler_name_repr: String,
+    scheduler_warmup_updates: i64,
+    loop_microbatch_size: i64,
+    loop_accumulation_steps: i64,
+    loop_max_updates: i64,
+    loop_stratified_sampling: bool,
+    loop_gradient_clip_norm: Option<f64>,
+    weights_w_value: f64,
+    runtime_precision: String,
+    runtime_precision_repr: String,
+    loop_precision: String,
+    loop_precision_repr: String,
+    runtime_device: String,
+    output_run_id: Option<String>,
+    output_run_id_repr: Option<String>,
+    run_run_id: String,
+    run_run_id_repr: String,
+    runtime_compile_mode: String,
+    runtime_compile_mode_repr: String,
+}
+
+/// The RL coherence checks in gate order (never reordered: multi-violation
+/// inputs surface the earliest gate). Owned plain data only, zero Python API.
+/// Precision/run-id/bf16 gates reuse the supervised texts verbatim; the
+/// privileged-binding gate is intentionally absent (rollout artifacts bind
+/// privileged labels; a supervised manifest pin must not be required).
+fn check_cross_validate_rl(view: &CrossValidateRlView) -> Result<(), String> {
+    if view.run_kind != "rl" {
+        if view.rl_present {
+            return Err(format!(
+                "top-level 'rl' requires run.kind 'rl' (got {}); supervised/distill runs must omit it",
+                view.run_kind_repr,
+            ));
+        }
+        return Ok(());
+    }
+    if !view.rl_present {
+        return Err(
+            "run.kind 'rl' requires an explicit 'rl' section (no dummy DataConfig fallback)".to_owned(),
+        );
+    }
+    if view.data_has_roots {
+        return Err(
+            "run.kind 'rl' forbids dataset roots/source: omit data.root/data.roots (rollout source is the immutable artifact ledger)".to_owned(),
+        );
+    }
+    // The owned RL route keeps the CURRENT Torch numerics: bf16 forward
+    // autocast with fp32 master weights (rl_gpu/rl_learner hardcode the
+    // BF16 path; no FP32 arm exists). Any other precision fails here
+    // rather than being relabeled into a loop agreement.
+    if view.runtime_precision != "bf16_mixed" {
+        return Err(format!(
+            "runtime.precision {} unsupported for rl (want 'bf16_mixed'; the owned RL route is bf16-only, precisions are never silently relabeled)",
+            view.runtime_precision_repr,
+        ));
+    }
+    if view.loop_precision != "bf16_mixed" {
+        return Err(format!(
+            "loop.precision {} disagrees with runtime.precision {} (expected 'bf16_mixed'); autocast scope must match",
+            view.loop_precision_repr, view.runtime_precision_repr,
+        ));
+    }
+    let (effective_text, effective_repr) = match (&view.output_run_id, &view.output_run_id_repr) {
+        (Some(text), Some(repr)) if !text.is_empty() => (text.as_str(), repr.as_str()),
+        _ => (view.run_run_id.as_str(), view.run_run_id_repr.as_str()),
+    };
+    if !is_run_id_shape(effective_text) {
+        return Err(format!("effective run id invalid: {effective_repr}"));
+    }
+    // Owned RL requires the configured CUDA device (rl_gpu requires CUDA;
+    // replay never runs on CPU either). No silent CPU fallback.
+    if view.runtime_device == "cpu" {
+        return Err(
+            "runtime.device 'cpu' unsupported for rl (want a CUDA device; owned RL requires CUDA, never silent CPU fallback; device availability itself is checked at bind time via require_device_available)"
+                .to_owned(),
+        );
+    }
+    // The owned RL route permits only eager or the exact replay arm:
+    // torch.compile modes never apply here (CUDA already gated above).
+    if view.runtime_compile_mode != "eager" && view.runtime_compile_mode != "cuda_graph_replay" {
+        return Err(format!(
+            "runtime.compile_mode {} unsupported for rl (want 'eager' or 'cuda_graph_replay'; torch.compile modes never apply to the owned RL route)",
+            view.runtime_compile_mode_repr,
+        ));
+    }
+    // Frozen RL recipe mirrors the `rl` section literals: AdamW 1e-5,
+    // betas [0.9, 0.999], decay 0.01, head_mult 1.0, constant scheduler with
+    // zero warmup, micro/accum caps, at most 67 updates/generation, no
+    // stratification (tails are trained, never dropped), clip 1.0, and the
+    // shared w_value 0.005 binding the PPO value weight.
+    if view.optimizer_name != "adamw" {
+        return Err(format!(
+            "rl optimizer must be 'adamw', got {}",
+            view.optimizer_name_repr,
+        ));
+    }
+    for (key, actual, expected) in [
+        ("optimizer.lr", view.optimizer_lr, 1e-5f64),
+        ("optimizer.beta1", view.optimizer_beta1, 0.9f64),
+        ("optimizer.beta2", view.optimizer_beta2, 0.999f64),
+        ("optimizer.weight_decay", view.optimizer_weight_decay, 0.01f64),
+        ("optimizer.head_lr_mult", view.optimizer_head_lr_mult, 1.0f64),
+        ("weights.w_value", view.weights_w_value, 0.005f64),
+    ] {
+        if actual != expected {
+            return Err(format!("rl {key} must be exactly {expected}, got {actual}"));
+        }
+    }
+    if view.scheduler_name != "constant" {
+        return Err(format!(
+            "rl scheduler must be 'constant', got {}",
+            view.scheduler_name_repr,
+        ));
+    }
+    if view.scheduler_warmup_updates != 0 {
+        return Err(format!(
+            "rl scheduler.warmup_updates must be exactly 0, got {}",
+            view.scheduler_warmup_updates,
+        ));
+    }
+    for (key, actual, cap) in [
+        ("loop.microbatch_size", view.loop_microbatch_size, 128i64),
+        ("loop.accumulation_steps", view.loop_accumulation_steps, 32i64),
+        ("loop.max_updates", view.loop_max_updates, 67i64),
+    ] {
+        if actual < 1 || actual > cap {
+            return Err(format!(
+                "rl {key} must be a positive int <= {cap}, got {actual}"
+            ));
+        }
+    }
+    if view.loop_microbatch_size * view.loop_accumulation_steps > 4096 {
+        return Err(format!(
+            "rl optimizer minibatch (microbatch_size * accumulation_steps) must fit cap 4096, got {}",
+            view.loop_microbatch_size * view.loop_accumulation_steps,
+        ));
+    }
+    if view.loop_stratified_sampling {
+        return Err(
+            "rl loop.stratified_sampling must stay false (one epoch over ALL rows including tails)".to_owned(),
+        );
+    }
+    if view.loop_gradient_clip_norm != Some(1.0) {
+        return Err(
+            "rl loop.gradient_clip_norm must be exactly 1.0 (null disables clipping: refused)".to_owned(),
+        );
+    }
+    Ok(())
+}
+
+/// `rc_cross_validate_rl` gate: the translator passes projected dataclass
+/// fields positionally in this exact order — kind, source flags, optimizer
+/// (name + lr + betas + decay + head mult), scheduler (name + warmup),
+/// loop (micro + accum + max_updates + stratified + clip), weights w_value,
+/// runtime/loop precisions, device, run ids (nullable output id), then
+/// `runtime_compile_mode` (owned RL permits only eager or the exact replay
+/// arm); the accept/reject decision runs detached.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn rc_cross_validate_rl(
+    py: Python<'_>,
+    run_kind: Bound<'_, PyAny>,
+    data_has_roots: bool,
+    rl_present: bool,
+    optimizer_name: Bound<'_, PyAny>,
+    optimizer_lr: f64,
+    optimizer_beta1: f64,
+    optimizer_beta2: f64,
+    optimizer_weight_decay: f64,
+    optimizer_head_lr_mult: f64,
+    scheduler_name: Bound<'_, PyAny>,
+    scheduler_warmup_updates: i64,
+    loop_microbatch_size: i64,
+    loop_accumulation_steps: i64,
+    loop_max_updates: i64,
+    loop_stratified_sampling: bool,
+    loop_gradient_clip_norm: Option<f64>,
+    weights_w_value: f64,
+    runtime_precision: Bound<'_, PyAny>,
+    loop_precision: Bound<'_, PyAny>,
+    runtime_device: String,
+    output_run_id: Option<Bound<'_, PyAny>>,
+    run_run_id: Bound<'_, PyAny>,
+    runtime_compile_mode: Bound<'_, PyAny>,
+) -> PyResult<()> {
+    let (run_kind_text, run_kind_repr) = stage_str(run_kind, "run.kind")?;
+    let (optimizer_name_text, optimizer_name_repr) = stage_str(optimizer_name, "optimizer.id")?;
+    let (scheduler_name_text, scheduler_name_repr) = stage_str(scheduler_name, "scheduler.id")?;
+    let (runtime_precision_text, runtime_precision_repr) =
+        stage_str(runtime_precision, "runtime.precision")?;
+    let (loop_precision_text, loop_precision_repr) = stage_str(loop_precision, "loop.precision")?;
+    let (output_text, output_repr) = match output_run_id {
+        None => (None, None),
+        Some(obj) => {
+            let (text, repr) = stage_str(obj, "output.run_id")?;
+            (Some(text), Some(repr))
+        }
+    };
+    let (run_text, run_repr) = stage_str(run_run_id, "run.run_id")?;
+    let (compile_text, compile_repr) = stage_str(runtime_compile_mode, "runtime.compile_mode")?;
+    let view = CrossValidateRlView {
+        run_kind: run_kind_text,
+        run_kind_repr,
+        data_has_roots,
+        rl_present,
+        optimizer_name: optimizer_name_text,
+        optimizer_name_repr,
+        optimizer_lr,
+        optimizer_beta1,
+        optimizer_beta2,
+        optimizer_weight_decay,
+        optimizer_head_lr_mult,
+        scheduler_name: scheduler_name_text,
+        scheduler_name_repr,
+        scheduler_warmup_updates,
+        loop_microbatch_size,
+        loop_accumulation_steps,
+        loop_max_updates,
+        loop_stratified_sampling,
+        loop_gradient_clip_norm,
+        weights_w_value,
+        runtime_precision: runtime_precision_text,
+        runtime_precision_repr,
+        loop_precision: loop_precision_text,
+        loop_precision_repr,
+        runtime_device,
+        output_run_id: output_text,
+        output_run_id_repr: output_repr,
+        run_run_id: run_text,
+        run_run_id_repr: run_repr,
+        runtime_compile_mode: compile_text,
+        runtime_compile_mode_repr: compile_repr,
+    };
+    py.detach(|| check_cross_validate_rl(&view))
+        .map_err(PyValueError::new_err)
+}
+
+/// Register the cross-section coherence gates on the shared `contracts`
 /// submodule (mirrors the `sub.add_function(wrap_pyfunction!(..., sub)?)?`
 /// shape at `rc_resume.rs:174`; no new submodule, no new entry point).
 pub fn register(sub: &Bound<'_, PyModule>) -> PyResult<()> {
     sub.add_function(wrap_pyfunction!(rc_cross_validate, sub)?)?;
+    sub.add_function(wrap_pyfunction!(rc_cross_validate_rl, sub)?)?;
     Ok(())
 }
 
@@ -258,12 +530,38 @@ mod tests {
             w_event: Vec::new(),
             w_belief: Vec::new(),
             has_privileged_source_hash: false,
+            runtime_compile_mode: "eager".to_owned(),
+            runtime_compile_mode_repr: "'eager'".to_owned(),
         }
     }
 
     #[test]
     fn accepts_coherent_config() {
         assert!(check_cross_validate(&base()).is_ok());
+    }
+
+    #[test]
+    fn replay_arm_rejected_on_supervised() {
+        // The RL-only literal fails here with its own text, never a
+        // downstream gate, and never reaches torch.compile.
+        let mut faulty = base();
+        faulty.runtime_compile_mode = "cuda_graph_replay".to_owned();
+        faulty.runtime_compile_mode_repr = "'cuda_graph_replay'".to_owned();
+        assert_eq!(
+            check_cross_validate(&faulty).unwrap_err(),
+            "runtime.compile_mode 'cuda_graph_replay' is RL-only (owned RL CUDA replay route); supervised/distill runs must use 'eager' or a torch.compile mode",
+        );
+        // First-gate order: replay plus a run-id fault still reports replay.
+        let mut both = base();
+        both.runtime_compile_mode = "cuda_graph_replay".to_owned();
+        both.runtime_compile_mode_repr = "'cuda_graph_replay'".to_owned();
+        both.run_run_id = "has space".to_owned();
+        both.run_run_id_repr = "'has space'".to_owned();
+        assert!(
+            check_cross_validate(&both)
+                .unwrap_err()
+                .contains("is RL-only")
+        );
     }
 
     /// Hand-derived oracle bytes (`_rc_root.py:105-141` at port time, equals
@@ -384,5 +682,190 @@ mod tests {
         assert!(!is_run_id_shape(""));
         assert!(!is_run_id_shape("-lead"));
         assert!(!is_run_id_shape("has space"));
+    }
+
+    /// Frozen RL base: kind rl with an explicit `rl` section, no dataset
+    /// roots, AdamW 1e-5 recipe, constant scheduler, capped loop, bf16 on
+    /// CUDA with matching loop precision, and the shared w_value 0.005.
+    fn rl_base() -> CrossValidateRlView {
+        CrossValidateRlView {
+            run_kind: "rl".to_owned(),
+            run_kind_repr: "'rl'".to_owned(),
+            data_has_roots: false,
+            rl_present: true,
+            optimizer_name: "adamw".to_owned(),
+            optimizer_name_repr: "'adamw'".to_owned(),
+            optimizer_lr: 1e-5,
+            optimizer_beta1: 0.9,
+            optimizer_beta2: 0.999,
+            optimizer_weight_decay: 0.01,
+            optimizer_head_lr_mult: 1.0,
+            scheduler_name: "constant".to_owned(),
+            scheduler_name_repr: "'constant'".to_owned(),
+            scheduler_warmup_updates: 0,
+            loop_microbatch_size: 128,
+            loop_accumulation_steps: 32,
+            loop_max_updates: 67,
+            loop_stratified_sampling: false,
+            loop_gradient_clip_norm: Some(1.0),
+            weights_w_value: 0.005,
+            runtime_precision: "bf16_mixed".to_owned(),
+            runtime_precision_repr: "'bf16_mixed'".to_owned(),
+            loop_precision: "bf16_mixed".to_owned(),
+            loop_precision_repr: "'bf16_mixed'".to_owned(),
+            runtime_device: "cuda".to_owned(),
+            output_run_id: None,
+            output_run_id_repr: None,
+            run_run_id: "rl-pilot-001".to_owned(),
+            run_run_id_repr: "'rl-pilot-001'".to_owned(),
+            runtime_compile_mode: "eager".to_owned(),
+            runtime_compile_mode_repr: "'eager'".to_owned(),
+        }
+    }
+
+    #[test]
+    fn rl_gate_accepts_frozen_recipe() {
+        assert!(check_cross_validate_rl(&rl_base()).is_ok());
+    }
+
+    #[test]
+    fn rl_gate_accepts_replay_on_cuda() {
+        // The exact replay arm parses on the owned RL route with the
+        // configured CUDA device and current bf16 numerics.
+        let mut replay = rl_base();
+        replay.runtime_compile_mode = "cuda_graph_replay".to_owned();
+        replay.runtime_compile_mode_repr = "'cuda_graph_replay'".to_owned();
+        assert!(check_cross_validate_rl(&replay).is_ok());
+    }
+
+    #[test]
+    fn rl_gate_rejects_compile_and_precision_violations() {
+        // torch.compile modes never apply to the owned RL route.
+        let mut faulty = rl_base();
+        faulty.runtime_compile_mode = "default".to_owned();
+        faulty.runtime_compile_mode_repr = "'default'".to_owned();
+        assert_eq!(
+            check_cross_validate_rl(&faulty).unwrap_err(),
+            "runtime.compile_mode 'default' unsupported for rl (want 'eager' or 'cuda_graph_replay'; torch.compile modes never apply to the owned RL route)",
+        );
+        // Any CPU device fails closed for the whole RL route (rl_gpu
+        // requires CUDA; replay never runs on CPU either).
+        let mut faulty = rl_base();
+        faulty.runtime_device = "cpu".to_owned();
+        assert!(
+            check_cross_validate_rl(&faulty)
+                .unwrap_err()
+                .contains("unsupported for rl (want a CUDA device")
+        );
+        // fp32 fails closed for owned RL, eager and replay alike: the
+        // services hardcode the BF16 path, so no FP32 arm exists.
+        for mode in ["eager", "cuda_graph_replay"] {
+            let mut faulty = rl_base();
+            faulty.runtime_precision = "fp32".to_owned();
+            faulty.runtime_precision_repr = "'fp32'".to_owned();
+            faulty.loop_precision = "fp32".to_owned();
+            faulty.loop_precision_repr = "'fp32'".to_owned();
+            faulty.runtime_compile_mode = mode.to_owned();
+            faulty.runtime_compile_mode_repr = format!("'{mode}'");
+            assert_eq!(
+                check_cross_validate_rl(&faulty).unwrap_err(),
+                "runtime.precision 'fp32' unsupported for rl (want 'bf16_mixed'; the owned RL route is bf16-only, precisions are never silently relabeled)",
+            );
+        }
+        // Unsupported precision fails instead of relabeling into bf16.
+        let mut faulty = rl_base();
+        faulty.runtime_precision = "fp16_mixed".to_owned();
+        faulty.runtime_precision_repr = "'fp16_mixed'".to_owned();
+        assert_eq!(
+            check_cross_validate_rl(&faulty).unwrap_err(),
+            "runtime.precision 'fp16_mixed' unsupported for rl (want 'bf16_mixed'; the owned RL route is bf16-only, precisions are never silently relabeled)",
+        );
+    }
+
+    #[test]
+    fn rl_gate_rejects_source_and_recipe_violations() {
+        // Missing `rl` section on an rl run.
+        let mut faulty = rl_base();
+        faulty.rl_present = false;
+        assert!(
+            check_cross_validate_rl(&faulty)
+                .unwrap_err()
+                .contains("requires an explicit 'rl' section")
+        );
+        // Dataset roots on an rl run.
+        let mut faulty = rl_base();
+        faulty.data_has_roots = true;
+        assert!(
+            check_cross_validate_rl(&faulty)
+                .unwrap_err()
+                .contains("forbids dataset roots")
+        );
+        // `rl` section on a supervised run passes through (root assembly
+        // rejects it there with the parked text; the gate stays total).
+        let mut supervised = rl_base();
+        supervised.run_kind = "supervised".to_owned();
+        supervised.run_kind_repr = "'supervised'".to_owned();
+        assert!(
+            check_cross_validate_rl(&supervised)
+                .unwrap_err()
+                .contains("requires run.kind 'rl'")
+        );
+        let mut supervised = rl_base();
+        supervised.run_kind = "supervised".to_owned();
+        supervised.run_kind_repr = "'supervised'".to_owned();
+        supervised.rl_present = false;
+        supervised.data_has_roots = true;
+        assert!(check_cross_validate_rl(&supervised).is_ok());
+        // Recipe deviations each surface their own gate.
+        let mut faulty = rl_base();
+        faulty.optimizer_lr = 3e-4;
+        assert_eq!(
+            check_cross_validate_rl(&faulty).unwrap_err(),
+            "rl optimizer.lr must be exactly 0.00001, got 0.0003"
+        );
+        let mut faulty = rl_base();
+        faulty.scheduler_name = "cosine".to_owned();
+        faulty.scheduler_name_repr = "'cosine'".to_owned();
+        assert!(
+            check_cross_validate_rl(&faulty)
+                .unwrap_err()
+                .contains("rl scheduler must be 'constant'")
+        );
+        let mut faulty = rl_base();
+        faulty.loop_microbatch_size = 256;
+        assert!(
+            check_cross_validate_rl(&faulty)
+                .unwrap_err()
+                .contains("rl loop.microbatch_size must be a positive int <= 128")
+        );
+        let mut faulty = rl_base();
+        faulty.loop_microbatch_size = 128;
+        faulty.loop_accumulation_steps = 33;
+        assert!(
+            check_cross_validate_rl(&faulty)
+                .unwrap_err()
+                .contains("rl loop.accumulation_steps must be a positive int <= 32")
+        );
+        let mut faulty = rl_base();
+        faulty.loop_stratified_sampling = true;
+        assert!(
+            check_cross_validate_rl(&faulty)
+                .unwrap_err()
+                .contains("must stay false")
+        );
+        let mut faulty = rl_base();
+        faulty.loop_gradient_clip_norm = None;
+        assert!(
+            check_cross_validate_rl(&faulty)
+                .unwrap_err()
+                .contains("must be exactly 1.0")
+        );
+        let mut faulty = rl_base();
+        faulty.weights_w_value = 0.0;
+        assert!(
+            check_cross_validate_rl(&faulty)
+                .unwrap_err()
+                .contains("rl weights.w_value must be exactly 0.005")
+        );
     }
 }

@@ -180,6 +180,11 @@ def _write_streaming_checkpoint(
     poll/drain (fail closed); the returned path is reserved, never a
     promise that bytes already landed.
     """
+    data = config.data
+    if data is None:
+        raise ContractError(
+            "streaming checkpoint requires a data section (rl runs carry data=None)"
+        )
     checkpoint_dir = run_dir / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     import time as _time
@@ -194,7 +199,7 @@ def _write_streaming_checkpoint(
     shuffle_entries: list[dict[str, Any]] = []
     shuffle_rng: dict[str, Any] = {}
     shuffle_keys: list[str] = []
-    if config.data.shuffle_buffer_size > 0 and dataset._stream is not None:
+    if data.shuffle_buffer_size > 0 and dataset._stream is not None:
         snap = dataset._stream.shuffle_snapshot()
         if snap is not None:
             entries, rng_state = snap
@@ -229,7 +234,7 @@ def _write_streaming_checkpoint(
             "buffer_entries": shuffle_entries,
             "buffer_rng_state": shuffle_rng,
             "epoch_seed": _epoch_seed(data_seed=config.seeds.data_seed, epoch=dataset.epoch),
-            "buffer_size": config.data.shuffle_buffer_size,
+            "buffer_size": data.shuffle_buffer_size,
             "prefix_hashes": prefix_record,
         },
     }
@@ -261,7 +266,7 @@ def _write_streaming_checkpoint(
         "shuffle": {
             "buffer_keys": shuffle_keys,
             "epoch_seed": _epoch_seed(data_seed=config.seeds.data_seed, epoch=dataset.epoch),
-            "buffer_size": config.data.shuffle_buffer_size,
+            "buffer_size": data.shuffle_buffer_size,
             "buffer_rng_state": shuffle_rng,
             "buffer_entries": shuffle_entries,
             "prefix_hashes": prefix_record,
@@ -269,8 +274,8 @@ def _write_streaming_checkpoint(
         "dataset_buffer": dataset_snapshot,
         "accum": {"yielded_batches": update, "micro_in_update": 0},
         "worker_plan": {
-            "num_workers": config.data.num_workers,
-            "world_size": config.data.world_size,
+            "num_workers": data.num_workers,
+            "world_size": data.world_size,
             "rank": _SINGLETON_RANK,
         },
         "manifests": {
@@ -358,7 +363,9 @@ def _append_new_history(run_dir: Path, history: list[dict[str, float]]) -> int:
             if line.strip() == "":
                 continue
             try:
-                logged.add(int(json.loads(line).get("global_update", -1)))  # pyrefly: ignore[unknown-argument-type] # JSON line mapping dynamic; int owns the gate
+                # JSON line mapping dynamic; int owns the gate
+                raw_global = json.loads(line).get("global_update", -1)
+                logged.add(int(raw_global))  # pyrefly: ignore[unknown-argument-type]
             except (ValueError, AttributeError):
                 continue
     appended = 0
@@ -409,6 +416,9 @@ def _run_holdout_eval(
     eval never aborts training. Resume-safe: fully stateless, and
     already-recorded updates are skipped, never duplicated.
     """
+    data = config.data
+    if data is None:
+        raise ContractError("holdout eval requires a data section (rl runs carry data=None)")
     eval_path: Path = run_dir / "eval" / "eval.jsonl"
     train_log: Path = run_dir / "logs" / "train.log"
     try:
@@ -418,7 +428,9 @@ def _run_holdout_eval(
                 if line.strip() == "":
                     continue
                 try:
-                    recorded.add(int(json.loads(line).get("update", -1)))  # pyrefly: ignore[unknown-argument-type] # JSON line mapping dynamic; int owns the gate
+                    # JSON line mapping dynamic; int owns the gate
+                    raw_update = json.loads(line).get("update", -1)
+                    recorded.add(int(raw_update))  # pyrefly: ignore[unknown-argument-type]
                 except (ValueError, AttributeError):
                     continue
         if update in recorded:
@@ -436,7 +448,7 @@ def _run_holdout_eval(
             seed=config.seeds.data_seed,
             ratios=ratios,
             epoch=0,
-            split=config.data.val_split,
+            split=data.val_split,
             shuffle_buffer=0,
         )
         rows: list[dict[str, Any]] = []

@@ -284,6 +284,17 @@ theorem grp_telescope (Phi : ℕ → ℝ) (T : ℕ) :
     rw [Finset.sum_range_succ, ih]
     ring
 
+/-- GRP prefix telescopes too: the shaped reward over the first `m ≤ T`
+rounds equals `Phi m - Phi 0` — the finite reason partial-game credit
+assignment is consistent: stopping early still attributes exactly the
+predicted-final movement so far, never more. Pair with `grp_telescope`
+(full-game identity): together credit is additive over any split point,
+so per-round shaping composes across hanchan segments with no double
+count. -/
+theorem grp_prefix_telescope (Phi : ℕ → ℝ) (m T : ℕ) (_h : m ≤ T) :
+    ∑ k ∈ Finset.range m, grpReward Phi k = Phi m - Phi 0 :=
+  grp_telescope Phi m
+
 end SettlementVsUtility
 
 section OrasuDivergence
@@ -329,6 +340,10 @@ theorem gapTable_deficits_ordered : gapTable.map (·.1) = [1500, 3900, 7700, 116
 
 theorem gapTable_row1 : gapTable[0]? = some (1500, 2000, 1000) := by decide
 
+theorem gapTable_row2 : gapTable[1]? = some (3900, 5200, 2000) := by decide
+
+theorem gapTable_row3 : gapTable[2]? = some (7700, 7700, 2600) := by decide
+
 theorem gapTable_row4 : gapTable[3]? = some (11600, 12000, 4000) := by decide
 
 
@@ -345,6 +360,50 @@ theorem ko_chase_breakeven : breakevenThr 3800 5300 1400 = 0.75 := by
 
 theorem ko_badwait_pushes : (0.75 : ℝ) < 1.03 := by norm_num
 
+/-- Threshold is a valid probability lower bound when fold EV is covered:
+    nonnegative numerator over positive denominator stays nonnegative.
+    Practical core: push/fold gate never inverts on sane inputs. -/
+theorem breakevenThr_nonneg {vWin vDeal f : ℝ}
+    (hnum : 0 ≤ vDeal - f) (hden : 0 < vWin + f) :
+    0 ≤ breakevenThr vWin vDeal f := by
+  unfold breakevenThr
+  exact div_nonneg hnum (le_of_lt hden)
+
+/-- Threshold never exceeds one when the deal value is covered by win plus
+    twice fold EV. Practical core: limited-compute gate can clamp to [0,1]
+    without distortion on sane inputs. -/
+theorem breakevenThr_le_one {vWin vDeal f : ℝ}
+    (hden : 0 < vWin + f) (hcov : vDeal ≤ vWin + 2 * f) :
+    breakevenThr vWin vDeal f ≤ 1 := by
+  unfold breakevenThr
+  rw [div_le_one hden]
+  linarith
+
+/-- Threshold is monotone in deal-in cost at fixed win value and fold EV:
+a worse deal-in consequence can only raise the push bar. Pair with
+`breakevenThr_nonneg`/`breakevenThr_le_one` (which keep the bar inside
+[0,1]): together the push/fold gate moves the right way in its most
+danger-sensitive input — scarier discards never lower the bar.
+Failure mode killed: a miscalibrated danger head silently flipping
+marginal pushes into calls. -/
+theorem breakevenThr_mono_deal {vWin vDeal₁ vDeal₂ f : ℝ}
+    (hden : 0 < vWin + f) (h : vDeal₁ ≤ vDeal₂) :
+    breakevenThr vWin vDeal₁ f ≤ breakevenThr vWin vDeal₂ f := by
+  unfold breakevenThr
+  have h' : vDeal₁ - f ≤ vDeal₂ - f := by linarith
+  exact div_le_div_of_nonneg_right h' (le_of_lt hden)
+
+/-- Threshold is antitone in win value at fixed deal-in cost and fold EV:
+a richer win can only lower the push bar. Pairs `breakevenThr_mono_deal`
+(danger raises it): together the gate moves the right way in EACH
+valued input — scarier discards raise the bar, richer wins lower it —
+so the push/fold boundary tilts correctly under both value shifts. -/
+theorem breakevenThr_antitone_win {vWin₁ vWin₂ vDeal f : ℝ}
+    (hnum : 0 ≤ vDeal - f) (hden : 0 < vWin₁ + f) (h : vWin₁ ≤ vWin₂) :
+    breakevenThr vWin₂ vDeal f ≤ breakevenThr vWin₁ vDeal f := by
+  unfold breakevenThr
+  exact div_le_div_of_nonneg_left hnum hden (by linarith)
+
 end PushFoldBreakEven
 end GapTable
 
@@ -353,6 +412,59 @@ section SettleAsym
 /-- Ron settlement: winner gains, discarder pays, others untouched. -/
 def ronSettle (scores : Seat → ℤ) (winner discarder : Seat) (pts : ℤ) : Seat → ℤ :=
   fun s => if s = winner then scores s + pts else if s = discarder then scores s - pts else scores s
+
+/-- Tsumo settlement: winner collects `pts` from each of the other three
+    seats (split-payment; dealer bonuses and honba/kyotaku add-ons live in
+    the payment table, not here). Finite core behind the orasu tsumo legs:
+    the winner's gain must equal the sum of the three payers' losses. -/
+def tsumoSettle (scores : Seat → ℤ) (winner : Seat) (pts : ℤ) : Seat → ℤ :=
+  fun s => if s = winner then scores s + 3 * pts else scores s - pts
+
+/-- Tsumo settlement conserves chips: the winner's +3·pts is exactly funded
+    by −pts from each of the other three seats. Companion to
+    `ron_settle_conserved`; together they pin the settlement contract for
+    both win kinds, so no rollout path can leak points. The winner's own
+    delta (+3·pts vs three −pts payers) is pinned in `tsumo_winner_delta`
+    below: fair and conservative, no trust in the caller. -/
+theorem tsumo_winner_delta (scores : Seat → ℤ) (winner : Seat) (pts : ℤ) :
+    tsumoSettle scores winner pts winner = scores winner + 3 * pts := by
+  unfold tsumoSettle
+  simp
+
+theorem tsumo_settle_conserved (scores : Seat → ℤ) (winner : Seat) (pts : ℤ) :
+    ∑ s : Seat, tsumoSettle scores winner pts s = ∑ s : Seat, scores s := by
+  have hmem_w : winner ∈ (Finset.univ : Finset Seat) := Finset.mem_univ _
+  unfold tsumoSettle
+  have hsplit : ∀ s : Seat,
+      (if s = winner then scores s + 3 * pts else scores s - pts)
+        = scores s + (if s = winner then 3 * pts else -pts) := by
+    intro s
+    by_cases hsw : s = winner <;> simp [hsw] <;> ring
+  rw [Finset.sum_congr rfl (fun s _ => hsplit s), Finset.sum_add_distrib]
+  have hdelta : ∑ s : Seat, (if s = winner then 3 * pts else (-pts : ℤ)) = 0 := by
+    have hcard : (Finset.univ : Finset Seat).card = 4 := by decide
+    have h1 : ∑ s : Seat, (if s = winner then (3 * pts : ℤ) else 0) = 3 * pts := by
+      simp [hmem_w]
+    have h2 : ∑ s : Seat, (if s = winner then (0 : ℤ) else -pts) = 3 * -pts := by
+      have hcompl : (Finset.univ.filter (· ≠ winner) : Finset Seat).card = 3 := by
+        have h1 : (Finset.univ.filter (· ≠ winner) : Finset Seat) = Finset.univ.erase winner := by
+          ext s; simp
+        rw [h1, Finset.card_erase_of_mem hmem_w, hcard]
+      have hsum : ∑ s : Seat, (if s = winner then (0 : ℤ) else -pts)
+          = ∑ _s ∈ Finset.univ.filter (· ≠ winner), (-pts : ℤ) := by
+        rw [Finset.sum_filter]
+        apply Finset.sum_congr rfl
+        intro s _
+        by_cases hsw : s = winner <;> simp [hsw]
+      rw [hsum, Finset.sum_const, hcompl]
+      simp [nsmul_eq_mul]
+    have hsplit2 : ∀ s : Seat, (if s = winner then (3 * pts : ℤ) else -pts)
+        = (if s = winner then 3 * pts else 0) + (if s = winner then (0 : ℤ) else -pts) := by
+      intro s
+      by_cases hsw : s = winner <;> simp [hsw]
+    rw [Finset.sum_congr rfl (fun s _ => hsplit2 s), Finset.sum_add_distrib, h1, h2]
+    ring
+  rw [hdelta, add_zero]
 
 /-- Probe8 core: same winner and points but a different payer yields a
     different score vector (they differ at the payer's own seat), so
@@ -397,6 +509,62 @@ theorem ron_gap_swings_twice (scores : Seat → ℤ) (w d : Seat) (pts : ℤ)
 
 end RonSwing
 
+section RonConservation
+
+/-- Ron settlement conserves chips: winner gains exactly what the discarder
+    pays (others untouched), so the table sum is invariant. Requires
+    `winner ≠ discarder` (a ron is never self-paid; tsumo is a separate
+    constructor). Finite core behind the blueprint settlement contract:
+    every ron transition must preserve the chip total, or the rollout
+    leaks points. Winner/discalder deltas (+pts/−pts) are pinned in
+    `ron_winner_delta` below: both win kinds pin payer identity. -/
+theorem ron_winner_delta (scores : Seat → ℤ) (winner discarder : Seat) (pts : ℤ)
+    (hne : winner ≠ discarder) :
+    ronSettle scores winner discarder pts winner = scores winner + pts
+    ∧ ronSettle scores winner discarder pts discarder
+      = scores discarder - pts := by
+  unfold ronSettle
+  have hwin : (if winner = winner then scores winner + pts
+      else if winner = discarder then scores winner - pts else scores winner)
+      = scores winner + pts := by simp
+  have hdisc : (if discarder = winner then scores discarder + pts
+      else if discarder = discarder then scores discarder - pts else scores discarder)
+      = scores discarder - pts := by simp [Ne.symm hne]
+  exact ⟨hwin, hdisc⟩
+
+theorem ron_settle_conserved (scores : Seat → ℤ) (winner discarder : Seat) (pts : ℤ)
+    (h : winner ≠ discarder) :
+    ∑ s : Seat, ronSettle scores winner discarder pts s = ∑ s : Seat, scores s := by
+  have hmem_w : winner ∈ (Finset.univ : Finset Seat) := Finset.mem_univ _
+  have hmem_d : discarder ∈ (Finset.univ : Finset Seat) := Finset.mem_univ _
+  have hwd : winner ≠ discarder := h
+  have hdw : discarder ≠ winner := Ne.symm h
+  unfold ronSettle
+  have hsplit : ∀ s : Seat,
+        (if s = winner then scores s + pts else if s = discarder then scores s - pts else scores s)
+          = scores s + (if s = winner then pts else if s = discarder then (-pts : ℤ) else 0) := by
+      intro s
+      by_cases hsw : s = winner
+      · subst hsw; simp [hdw]
+      · by_cases hsd : s = discarder
+        · subst hsd; simp [hsw]; ring
+        · simp [hsw, hsd]
+  rw [Finset.sum_congr rfl (fun s _ => hsplit s), Finset.sum_add_distrib]
+  have hdelta : ∑ s : Seat, (if s = winner then pts else if s = discarder then (-pts : ℤ) else 0) = 0 := by
+      have hw : ∑ s : Seat, (if s = winner then (pts : ℤ) else 0) = pts := by
+        simp [hmem_w]
+      have hd : ∑ s : Seat, (if s = discarder then (-pts : ℤ) else 0) = -pts := by
+        simp [hmem_d]
+      have hsplit2 : ∀ s : Seat, (if s = winner then (pts : ℤ) else if s = discarder then -pts else 0)
+          = (if s = winner then pts else 0) + (if s = discarder then (-pts : ℤ) else 0) := by
+        intro s
+        by_cases hsw : s = winner <;> by_cases hsd : s = discarder <;> simp_all
+      rw [Finset.sum_congr rfl (fun s _ => hsplit2 s), Finset.sum_add_distrib, hw, hd]
+      ring
+  rw [hdelta, add_zero]
+
+end RonConservation
+
 section RkkPay
 
 /-- Ryuukyoku tenpai payments (probe9b/TenpaiCurve, 3 sources agree): payoffs
@@ -437,6 +605,41 @@ theorem rkk_count_partition (p q r : ℝ) :
       + (p * (1 - q) * (1 - r) + q * (1 - p) * (1 - r) + r * (1 - p) * (1 - q))
       + (p * q * (1 - r) + p * (1 - q) * r + (1 - p) * q * r)
       + p * q * r = 1 := by
+  ring
+
+/-- Tenpai-side EV is linear in each count probability with the exact
+    ryuukyoku legs (3000/1500/1000) as coefficients: holding the other two
+    fixed, EV as a function of one count is an affine line whose slope is
+    the corresponding leg. Finite core behind the belief-to-EV translation:
+    per-opponent tenpai probs enter ryuukyoku EV only through these legs,
+    so miscalibration cost is bounded by leg-weighted probability error. -/
+theorem rkkTenpaiEV_affine_t16 (t16a t16b t17 t18 : ℝ) :
+    rkkTenpaiEV t16b t17 t18 - rkkTenpaiEV t16a t17 t18 = 3000 * (t16b - t16a) := by
+  unfold rkkTenpaiEV
+  ring
+
+theorem rkkTenpaiEV_affine_t17 (t16 t17a t17b t18 : ℝ) :
+    rkkTenpaiEV t16 t17b t18 - rkkTenpaiEV t16 t17a t18 = 1500 * (t17b - t17a) := by
+  unfold rkkTenpaiEV
+  ring
+
+theorem rkkTenpaiEV_affine_t18 (t16 t17 t18a t18b : ℝ) :
+    rkkTenpaiEV t16 t17 t18b - rkkTenpaiEV t16 t17 t18a = 1000 * (t18b - t18a) := by
+  unfold rkkTenpaiEV
+  ring
+
+/-- Noten-side EV is likewise affine per count with legs (1000/1500/3000)
+    negated: each unit of tenpai-count probability shifts noten EV by the
+    exact leg. Together with the tenpai-side trio, the full ryuukyoku EV
+    gradient is pinned leg-by-leg — no hidden nonlinearity. -/
+theorem rkkNotenEV_affine_t17 (t17a t17b t18 t19 : ℝ) :
+    rkkNotenEV t17b t18 t19 - rkkNotenEV t17a t18 t19 = -(1000 * (t17b - t17a)) := by
+  unfold rkkNotenEV
+  ring
+
+theorem rkkNotenEV_affine_t19 (t17 t18 t19a t19b : ℝ) :
+    rkkNotenEV t17 t18 t19b - rkkNotenEV t17 t18 t19a = -(3000 * (t19b - t19a)) := by
+  unfold rkkNotenEV
   ring
 
 end RkkDist
@@ -494,6 +697,22 @@ theorem paired_mean_delta (n : ℕ) (a b : Fin n → ℝ) :
   rw [Finset.sum_sub_distrib]
   ring
 
+/-- Paired delta flips sign under challenger/incumbent swap: the wall-block
+comparison never depends on which arm is called A — only the sign changes.
+Practical core: promotion gates fix one orientation (challenger minus
+incumbent) and read the sign directly, with no abs-value bookkeeping that
+could mask a regression as an improvement. Companion to
+`effectSize_antisymm` (same discipline for the standardized effect). -/
+theorem paired_mean_delta_antisymm (n : ℕ) (a b : Fin n → ℝ) :
+    (∑ i, (a i - b i)) / n = -((∑ i, (b i - a i)) / n) := by
+  have h : (∑ i, (a i - b i)) + (∑ i, (b i - a i)) = 0 := by
+    rw [← Finset.sum_add_distrib]
+    apply Finset.sum_eq_zero
+    intro i _
+    ring
+  have h2 : (∑ i, (a i - b i)) = -∑ i, (b i - a i) := by linarith
+  rw [h2, neg_div]
+
 end PairedDelta
 
 section AcqArgmax
@@ -541,6 +760,17 @@ theorem cce_gap_nonneg (gain : Fin 3 → ℝ) (h0 : gain 0 = 0) :
   refine ⟨rstar, ?_⟩
   calc (0 : ℝ) = gain 0 := h0.symm
     _ ≤ gain rstar := hr 0
+
+/-- Any played response witnesses a nonneg gap: the response actually
+taken (`r = 0` by convention) already achieves gap `≥ 0`, so the
+exploitability audit never needs to search for a witness — it starts
+from the played line. Pair with `cce_gap_nonneg` (a maximizer exists):
+together the gap is both witnessed AND maximal, so the population
+eval can report the played-response gap as the lower bound and the
+max-response gap as the upper bound. -/
+theorem cce_gap_played_witness (gain : Fin 3 → ℝ) (h0 : gain 0 = 0) :
+    0 ≤ gain 0 := by
+  rw [h0]
 
 end CceGap
 

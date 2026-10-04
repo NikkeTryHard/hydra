@@ -232,13 +232,12 @@ class AdapterEventsBMixin:
 
     def _on_end_kyoku(self, event: Any, following: Any) -> None:
         del event
+        assert self._hand_index >= 0
         final_scores: tuple[int, int, int, int] = self._to_canonical_scores(self._engine.scores())
-        next_round_index = self._hand_index + (1 if following is not None else 0)
         deltas = [
             make_delta(("scores",), "set", list(final_scores)),
             *(make_delta(("riichi_states", seat), "set", "none") for seat in range(4)),
         ]
-        deltas.insert(1, make_delta(("round_index",), "set", next_round_index))
         if following is not None and str(cast("Any", following.get("type"))) == "start_kyoku":
             deltas.append(make_delta(("honba",), "set", int(cast("Any", following["honba"]))))
             deltas.append(
@@ -263,6 +262,7 @@ class AdapterEventsBMixin:
 
     def _on_end_game(self, event: Any) -> None:
         del event
+        assert self._hand_index >= 0
         end_scores: tuple[int, int, int, int] = self._to_canonical_scores(self._engine.scores())
         self._emit(
             make_envelope(
@@ -272,7 +272,7 @@ class AdapterEventsBMixin:
                 visibility="public",
                 rules_hash=self._rules_hash,
                 schema_hash=self._event_schema_hash,
-                round_index=max(0, self._hand_index),
+                round_index=self._hand_index,
                 scores=tuple(end_scores),
                 reason="hanchan_complete",
                 public_delta=(make_delta(("scores",), "set", list(end_scores)),),
@@ -293,17 +293,18 @@ class AdapterEventsBMixin:
 
     def _reopen_hand(self, carry: Any) -> None:
         assert self._rules is not None
-        hand_index = self._hand_index + 1
+        assert self._hand_index >= 0
+        nxt = self._hand_index + 1
         derived = derive_hand_wall(
             schedule_digest=self._schedule_digest,
             schedule_id=self._schedule_id,
-            hand_index=hand_index,
+            hand_index=nxt,
         )
-        tiles = self._schedule_tiles if hand_index == 0 else derived
+        tiles = self._schedule_tiles if nxt == 0 else derived
         wind_letter = {"E": 0, "S": 1, "W": 2, "N": 3}[str(cast("Any", carry["bakaze"]))]
-        self._hand_index = hand_index
         self._open_hand(
             tiles,
+            hand_index=nxt,
             oya_engine=int(cast("Any", carry["oya"])),
             honba=int(cast("Any", carry["honba"])),
             kyotaku=int(cast("Any", carry["kyotaku"])),

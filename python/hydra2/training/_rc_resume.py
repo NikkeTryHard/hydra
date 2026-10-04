@@ -58,6 +58,7 @@ __all__ = [
     "_Sidecar",
     "_check_compat",
     "_iter_structural_candidates",
+    "_iter_structural_candidates_with_sidecars",
     "_parse_accum",
     "_parse_shuffle",
     "_parse_sidecar_manifests",
@@ -186,12 +187,20 @@ def _read_sidecar(ckpt_path: Path) -> _Sidecar:
     )
 
 
-def _iter_structural_candidates(run_dir: str | Path) -> list[tuple[int, Path]]:
-    """Checkpoints with a structurally valid sidecar, newest first (read-only)."""
+def _iter_structural_candidates_with_sidecars(
+    run_dir: str | Path,
+) -> list[tuple[int, Path, _Sidecar]]:
+    """Checkpoints with a structurally valid sidecar, newest first (read-only).
+
+    Same scan as :func:`_iter_structural_candidates`, but carries the already
+    parsed sidecar so one resolution call reads each sidecar once. The parsed
+    bytes are that resolution's coherent observation; later calls rescan, so
+    newly published checkpoints stay visible. No persistent cache.
+    """
     checkpoint_dir = Path(run_dir) / "checkpoints"
     if not checkpoint_dir.is_dir():
         return []
-    found: list[tuple[int, Path]] = []
+    found: list[tuple[int, Path, _Sidecar]] = []
     for candidate in sorted(checkpoint_dir.glob("ckpt-*.pt")):
         match = _CKPT_STEM_RE.fullmatch(candidate.stem)
         if match is None or not candidate.is_file():
@@ -203,9 +212,16 @@ def _iter_structural_candidates(run_dir: str | Path) -> list[tuple[int, Path]]:
         file_update = int(match.group(1))
         if parsed.global_update != file_update:
             continue
-        found.append((parsed.global_update, candidate))
+        found.append((parsed.global_update, candidate, parsed))
     found.sort(key=lambda item: item[0], reverse=True)
     return found
+
+
+def _iter_structural_candidates(run_dir: str | Path) -> list[tuple[int, Path]]:
+    """Checkpoints with a structurally valid sidecar, newest first (read-only)."""
+    return [
+        (update, path) for update, path, _ in _iter_structural_candidates_with_sidecars(run_dir)
+    ]
 
 
 def find_latest_checkpoint(run_dir: str | Path) -> Path | None:
@@ -226,21 +242,29 @@ def find_latest_checkpoint(run_dir: str | Path) -> Path | None:
 
 def _check_compat(config: RunConfig, expected_digest: str, parsed: _Sidecar, ckpt: Path) -> None:
     """Compatibility gates: digest, worker plan, batch, seed (all hard errors)."""
+    if config.run.kind == "rl":
+        raise ContractError(
+            "run.kind 'rl' resume is owned by the control-snapshot path (rl_resume); "
+            "ordinary sidecar compat does not apply"
+        )
+    data = config.data
+    if data is None:
+        raise ContractError("ordinary resume requires a data section (rl runs carry data=None)")
     try:
         _require_rc_bridge().rc_check_compat(
             expected_digest,
             parsed.run_digest,
             parsed.worker_plan.num_workers,
-            config.data.num_workers,
+            data.num_workers,
             parsed.worker_plan.world_size,
-            config.data.world_size,
+            data.world_size,
             parsed.cursor.seed,
             config.seeds.data_seed,
             parsed.accum.micro_in_update,
             config.loop.accumulation_steps,
             len(parsed.shuffle.buffer_keys),
-            config.data.shuffle_buffer_size,
-            config.data.dataset_manifest_hash,
+            data.shuffle_buffer_size,
+            data.dataset_manifest_hash,
             parsed.manifests.get("dataset_manifest_hash"),
             str(ckpt),
         )
@@ -266,12 +290,11 @@ def resolve_resume_plan(run_dir: str | Path, *, which: str | Path | None = None)
     config = load_run_config(run_yaml)
     expected_digest = run_config_digest(config)
     if which is None or (isinstance(which, str) and which == "latest"):
-        candidates = _iter_structural_candidates(directory)
+        candidates = _iter_structural_candidates_with_sidecars(directory)
         if len(candidates) == 0:
             raise ContractError(f"no valid checkpoint in {directory / 'checkpoints'}")
         failures: list[str] = []
-        for _, candidate in candidates:
-            parsed = _read_sidecar(candidate)
+        for _, candidate, parsed in candidates:
             try:
                 _check_compat(config, expected_digest, parsed, candidate)
             except ContractError as exc:
@@ -320,6 +343,7 @@ def format_plan(
     *,
     artifact_root: Path | str | None = None,
     resume: ResumePlan | None = None,
+    rl_resume: bool = False,
 ) -> str:
     """Resolved plan summary: ids, paths, sizes, seeds, and resume point."""
     run_dir = run_dir_for(config, artifact_root=artifact_root)
@@ -330,14 +354,21 @@ def format_plan(
         eval_micro = eval_micro_raw
     else:
         eval_micro = config.loop.microbatch_size
+    data = config.data
+    if data is None:
+        data_line = "data: rollout (immutable artifact ledger; no dataset roots)"
+    else:
+        data_line = (
+            f"data: roots={len(data.roots)} scope={data.scope} "
+            f"train={data.train_split} val={data.val_split} "
+            f"wall_disjoint={data.wall_disjoint} buffer={data.shuffle_buffer_size} "
+            f"workers={data.num_workers}x{data.world_size}"
+        )
     lines = [
         f"run: {effective_run_id(config)} (kind={config.run.kind})",
         f"digest: {digest}",
         f"run_dir: {run_dir}",
-        f"data: roots={len(config.data.roots)} scope={config.data.scope} "
-        f"train={config.data.train_split} val={config.data.val_split} "
-        f"wall_disjoint={config.data.wall_disjoint} buffer={config.data.shuffle_buffer_size} "
-        f"workers={config.data.num_workers}x{config.data.world_size}",
+        data_line,
         f"model: {config.model.architecture_id} actions={config.model.action_count}",
         f"weights: policy={config.weights.w_policy} placement={config.weights.w_placement} "
         f"value={config.weights.w_value} smoothing={config.weights.label_smoothing}",
@@ -367,6 +398,17 @@ def format_plan(
         f"eval: every={config.eval.frequency_updates} batches={config.eval.num_batches} "
         f"micro={eval_micro}",
     ]
+    rl = config.rl
+    if rl is not None:
+        lines.append(
+            f"rl: experiment={rl.experiment_id} "
+            f"cohort={rl.generations}x{rl.games_per_generation} epochs={rl.epochs} "
+            f"workers={rl.native_workers} slots={rl.env_slots} "
+            f"caps=infer{rl.inference_cap}/micro{rl.microbatch_cap}/"
+            f"accum{rl.accumulation_cap}/mb{rl.optimizer_minibatch_cap} "
+            f"ppo=({rl.clip_eps},{rl.eps_std},{rl.w_value},{rl.w_bc},{rl.ppo_alpha}) "
+            f"ret=({rl.gamma},{rl.lam}) guards=row{rl.row_cap}/upd{rl.max_updates_per_generation}"
+        )
     if resume is not None:
         cursor = resume.cursor
         lines.append(
@@ -382,6 +424,8 @@ def format_plan(
             f"workers={resume.worker_plan.num_workers}x{resume.worker_plan.world_size} "
             f"rank={resume.worker_plan.rank}"
         )
+    elif rl_resume:
+        lines.append("resume: latest committed RL control tip (runtime/pointer.json)")
     else:
         lines.append("resume: fresh start (no --resume)")
     return "\n".join(lines) + "\n"

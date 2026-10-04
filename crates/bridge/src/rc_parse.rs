@@ -10,9 +10,10 @@
 //! `python/hydra2/training/_rc_parse.py` map to `ContractError` with
 //! byte-identical messages).
 //!
-//! TABLE ported here — the 8 core section parsers, oracle
-//! `src/hydra2/training/_rc_parse.py:60-425` (HEAD md5 `23f1974e…`, equals
-//! worktree `python/hydra2/training/_rc_parse.py` at port time; pure rename):
+//! TABLE ported here — the 8 core section parsers plus the closed RL profile
+//! parser, oracle `src/hydra2/training/_rc_parse.py:60-425` (HEAD md5
+//! `23f1974e…`, equals worktree `python/hydra2/training/_rc_parse.py` at port
+//! time; pure rename) and `python/hydra2/training/rl_config.py` (RL profile):
 //! - `rc_parse_run` ← `_parse_run` (:60-71)
 //! - `rc_parse_data` ← `_parse_data` (:74-162)
 //! - `rc_parse_model` ← `_parse_model` (:165-193; registry + baseline stay Python)
@@ -21,6 +22,9 @@
 //! - `rc_parse_scheduler` ← `_parse_scheduler` (:285-314)
 //! - `rc_parse_runtime` ← `_parse_runtime` (:317-360; protocol check stays Python)
 //! - `rc_parse_loop` ← `_parse_loop` (:363-425)
+//! - `rc_parse_rl` ← `rl_config.parse_rl_section` (closed RL profile: frozen
+//!   pilot recipe, lineage/seeds, cohort/guards, exact PPO numerics, content
+//!   identities; the `RlConfig` dataclass stays Python in `_rc_sections.py`)
 //!
 //! Each pyfn takes the raw section mapping positionally and returns a plain
 //! validated dict the Python translator builds a dataclass from; unknown keys
@@ -58,17 +62,18 @@ use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyModule, PyString};
 /// Frozen section vocabulary, restating `rc_sections.rs:45-72` (single-sourced
 /// there; repeated here so each section renders its own `one of [...]` list
 /// without a cross-module edge — shared modules are MAIN-owned).
-pub(crate) const RUN_KINDS: [&str; 1] = ["supervised"];
+pub(crate) const RUN_KINDS: [&str; 3] = ["supervised", "distill", "rl"];
 pub(crate) const TENHOU_SCOPE: &str = "tenhou-4p-hanchan";
 pub(crate) const OPTIMIZER_IDS: [&str; 3] = ["adamw", "adam", "sgd"];
 pub(crate) const SCHEDULER_IDS: [&str; 3] = ["cosine", "constant", "linear"];
 pub(crate) const ADAPTER_IDS: [&str; 1] = ["plain_pytorch"];
 pub(crate) const RUNTIME_PRECISIONS: [&str; 2] = ["fp32", "bf16_mixed"];
-pub(crate) const COMPILE_MODES: [&str; 4] = [
+pub(crate) const COMPILE_MODES: [&str; 5] = [
     "eager",
     "default",
     "max-autotune-no-cudagraphs",
     "max-autotune",
+    "cuda_graph_replay",
 ];
 const REPLAY_BACKENDS: [&str; 1] = ["rust"];
 
@@ -1842,15 +1847,462 @@ fn check_loop_present(key: &str, slot: &IntSlot) -> Result<Option<HugeInt>, Stri
     Ok(Some(slot.view.as_i64))
 }
 
-/// Register the eight run-config core section parsers on the shared
-/// `contracts` submodule (mirrors `validate.rs:111-127`); MAIN calls this
-/// from `contracts::register` — no new submodule, no new entry point.
+// ---------------------------------------------------------------------------
+// rl — closed continuous-RL profile (discriminated source union arm)
+// ---------------------------------------------------------------------------
+
+/// Closed `rl` section keys: frozen pilot recipe (plan §3), lineage/seeds,
+/// cohort/resource guards, exact PPO/numeric recipe (§20.1, epsilon INSIDE
+/// sqrt), and content identities (plan §14). No arbitrary dynamic imports,
+/// no default source, no dummy dataset roots — unknown keys reject.
+pub(crate) const RL_ALLOWED: [&str; 53] = [
+    "schema_version",
+    "initial_checkpoint_id",
+    "initial_model_spec_hash",
+    "master_seed_hex",
+    "experiment_id",
+    "split_scope",
+    "replicate_id",
+    "attempt_id",
+    "generations",
+    "games_per_generation",
+    "native_workers",
+    "env_slots",
+    "max_lookahead",
+    "inference_cap",
+    "microbatch_cap",
+    "accumulation_cap",
+    "optimizer_minibatch_cap",
+    "epochs",
+    "row_cap",
+    "decision_cap_per_game",
+    "max_updates_per_generation",
+    "compressed_byte_cap",
+    "min_free_disk_bytes",
+    "host_byte_budget",
+    "gpu_cache_byte_budget",
+    "clip_eps",
+    "eps_std",
+    "w_value",
+    "w_bc",
+    "ppo_alpha",
+    "gamma",
+    "lam",
+    "optimizer_lr",
+    "optimizer_beta1",
+    "optimizer_beta2",
+    "optimizer_weight_decay",
+    "head_lr_mult",
+    "gradient_clip_norm",
+    "warmup_updates",
+    "rules_hash",
+    "utility_hash",
+    "action_table_hash",
+    "event_schema_hash",
+    "observation_schema_hash",
+    "packet_boundary_hash",
+    "input_schema_hash",
+    "wall_ledger_hash",
+    "opponent_catalog_hash",
+    "wall_recipe_hash",
+    "sampling_recipe_hash",
+    "return_recipe_hash",
+    "shuffle_recipe_hash",
+    "core_revision",
+];
+
+/// Required identity digests inside the `rl` section (all `sha256:<64 hex>`).
+const RL_DIGEST_KEYS: [&str; 14] = [
+    "initial_checkpoint_id",
+    "initial_model_spec_hash",
+    "rules_hash",
+    "utility_hash",
+    "action_table_hash",
+    "event_schema_hash",
+    "observation_schema_hash",
+    "packet_boundary_hash",
+    "input_schema_hash",
+    "wall_ledger_hash",
+    "opponent_catalog_hash",
+    "wall_recipe_hash",
+    "sampling_recipe_hash",
+    "return_recipe_hash",
+];
+
+/// Staged required string: missing/non-str stages its repr for the detached
+/// error (mirrors `stage_opt_str` without a default).
+fn stage_req_str(slot: Option<Bound<'_, PyAny>>) -> PyResult<OptStr> {
+    match slot {
+        None => Ok(OptStr {
+            repr: "None".to_owned(),
+            text: None,
+        }),
+        Some(obj) if obj.is_instance_of::<PyString>() => {
+            let text: String = obj.extract().map_err(|e| {
+                PyValueError::new_err(format!("contracts rc_parse_rl field unreadable: {e}"))
+            })?;
+            Ok(OptStr {
+                repr: py_repr(&obj)?,
+                text: Some(text),
+            })
+        }
+        Some(obj) => Ok(OptStr {
+            repr: py_repr(&obj)?,
+            text: None,
+        }),
+    }
+}
+
+/// Staged required number: missing/null stages `None` for the detached
+/// error; huge ints keep the stage-time `OverflowError` exactly where the
+/// oracle's `float(value)` raises (mirrors `stage_num`).
+fn stage_req_num(slot: Option<Bound<'_, PyAny>>) -> PyResult<NumView> {
+    match slot {
+        None => Ok(NumView {
+            repr: "None".to_owned(),
+            number: None,
+        }),
+        Some(obj) if obj.is_none() => Ok(NumView {
+            repr: "None".to_owned(),
+            number: None,
+        }),
+        Some(obj) => stage_num(&obj),
+    }
+}
+
+struct RlStaged {
+    unknown: UnknownView,
+    schema_version: OptStr,
+    digests: Vec<PinStage>,
+    shuffle_recipe_hash: PinStage,
+    master_seed_hex: OptStr,
+    experiment_id: OptStr,
+    split_scope: OptStr,
+    replicate_id: IntSlot,
+    attempt_id: IntSlot,
+    core_revision: OptStr,
+    generations: IntSlot,
+    games_per_generation: IntSlot,
+    native_workers: IntSlot,
+    env_slots: IntSlot,
+    max_lookahead: IntSlot,
+    inference_cap: IntSlot,
+    microbatch_cap: IntSlot,
+    accumulation_cap: IntSlot,
+    optimizer_minibatch_cap: IntSlot,
+    epochs: IntSlot,
+    row_cap: IntSlot,
+    decision_cap_per_game: IntSlot,
+    max_updates_per_generation: IntSlot,
+    compressed_byte_cap: IntSlot,
+    min_free_disk_bytes: IntSlot,
+    host_byte_budget: IntSlot,
+    gpu_cache_byte_budget: IntSlot,
+    warmup_updates: IntSlot,
+    clip_eps: NumView,
+    eps_std: NumView,
+    w_value: NumView,
+    w_bc: NumView,
+    ppo_alpha: NumView,
+    gamma: NumView,
+    lam: NumView,
+    optimizer_lr: NumView,
+    optimizer_beta1: NumView,
+    optimizer_beta2: NumView,
+    optimizer_weight_decay: NumView,
+    head_lr_mult: NumView,
+    gradient_clip_norm: NumView,
+}
+
+/// `_parse_rl`: closed continuous-RL profile. Every key is required except
+/// `replicate_id`/`attempt_id` (nonnegative-int semantic scopes per SPEC §13
+/// `RandomStreamKey`, absent reads 0); exact recipe values reject anything
+/// else, resource knobs are upper-bound caps.
+#[pyfunction]
+#[allow(clippy::too_many_lines)]
+fn rc_parse_rl(py: Python<'_>, raw: Bound<'_, PyAny>) -> PyResult<Py<PyDict>> {
+    let dict = section_dict(&raw, "rl")?;
+    let unknown = stage_unknown(&dict, &RL_ALLOWED, "rl")?;
+    let tag = "rc_parse_rl";
+    let mut digests = Vec::with_capacity(RL_DIGEST_KEYS.len());
+    for key in RL_DIGEST_KEYS {
+        digests.push(stage_pin(field_slot(&dict, key, tag)?)?);
+    }
+    let shuffle_recipe_hash = stage_pin(field_slot(&dict, "shuffle_recipe_hash", tag)?)?;
+    let staged = RlStaged {
+        unknown,
+        schema_version: stage_req_str(field_slot(&dict, "schema_version", tag)?)?,
+        digests,
+        shuffle_recipe_hash,
+        master_seed_hex: stage_req_str(field_slot(&dict, "master_seed_hex", tag)?)?,
+        experiment_id: stage_req_str(field_slot(&dict, "experiment_id", tag)?)?,
+        split_scope: stage_req_str(field_slot(&dict, "split_scope", tag)?)?,
+        replicate_id: stage_int_slot(py, field_slot(&dict, "replicate_id", tag)?)?,
+        attempt_id: stage_int_slot(py, field_slot(&dict, "attempt_id", tag)?)?,
+        core_revision: stage_req_str(field_slot(&dict, "core_revision", tag)?)?,
+        generations: stage_int_slot(py, field_slot(&dict, "generations", tag)?)?,
+        games_per_generation: stage_int_slot(py, field_slot(&dict, "games_per_generation", tag)?)?,
+        native_workers: stage_int_slot(py, field_slot(&dict, "native_workers", tag)?)?,
+        env_slots: stage_int_slot(py, field_slot(&dict, "env_slots", tag)?)?,
+        max_lookahead: stage_int_slot(py, field_slot(&dict, "max_lookahead", tag)?)?,
+        inference_cap: stage_int_slot(py, field_slot(&dict, "inference_cap", tag)?)?,
+        microbatch_cap: stage_int_slot(py, field_slot(&dict, "microbatch_cap", tag)?)?,
+        accumulation_cap: stage_int_slot(py, field_slot(&dict, "accumulation_cap", tag)?)?,
+        optimizer_minibatch_cap: stage_int_slot(
+            py,
+            field_slot(&dict, "optimizer_minibatch_cap", tag)?,
+        )?,
+        epochs: stage_int_slot(py, field_slot(&dict, "epochs", tag)?)?,
+        row_cap: stage_int_slot(py, field_slot(&dict, "row_cap", tag)?)?,
+        decision_cap_per_game: stage_int_slot(py, field_slot(&dict, "decision_cap_per_game", tag)?)?,
+        max_updates_per_generation: stage_int_slot(
+            py,
+            field_slot(&dict, "max_updates_per_generation", tag)?,
+        )?,
+        compressed_byte_cap: stage_int_slot(py, field_slot(&dict, "compressed_byte_cap", tag)?)?,
+        min_free_disk_bytes: stage_int_slot(py, field_slot(&dict, "min_free_disk_bytes", tag)?)?,
+        host_byte_budget: stage_int_slot(py, field_slot(&dict, "host_byte_budget", tag)?)?,
+        gpu_cache_byte_budget: stage_int_slot(py, field_slot(&dict, "gpu_cache_byte_budget", tag)?)?,
+        warmup_updates: stage_int_slot(py, field_slot(&dict, "warmup_updates", tag)?)?,
+        clip_eps: stage_req_num(field_slot(&dict, "clip_eps", tag)?)?,
+        eps_std: stage_req_num(field_slot(&dict, "eps_std", tag)?)?,
+        w_value: stage_req_num(field_slot(&dict, "w_value", tag)?)?,
+        w_bc: stage_req_num(field_slot(&dict, "w_bc", tag)?)?,
+        ppo_alpha: stage_req_num(field_slot(&dict, "ppo_alpha", tag)?)?,
+        gamma: stage_req_num(field_slot(&dict, "gamma", tag)?)?,
+        lam: stage_req_num(field_slot(&dict, "lam", tag)?)?,
+        optimizer_lr: stage_req_num(field_slot(&dict, "optimizer_lr", tag)?)?,
+        optimizer_beta1: stage_req_num(field_slot(&dict, "optimizer_beta1", tag)?)?,
+        optimizer_beta2: stage_req_num(field_slot(&dict, "optimizer_beta2", tag)?)?,
+        optimizer_weight_decay: stage_req_num(field_slot(&dict, "optimizer_weight_decay", tag)?)?,
+        head_lr_mult: stage_req_num(field_slot(&dict, "head_lr_mult", tag)?)?,
+        gradient_clip_norm: stage_req_num(field_slot(&dict, "gradient_clip_norm", tag)?)?,
+    };
+    let valid = py
+        .detach(|| validate_rl(&staged))
+        .map_err(PyValueError::new_err)?;
+    let out = PyDict::new(py);
+    out.set_item("schema_version", valid.schema_version)?;
+    for (key, value) in &valid.digests {
+        out.set_item(key, value)?;
+    }
+    out.set_item("master_seed_hex", valid.master_seed_hex)?;
+    out.set_item("experiment_id", valid.experiment_id)?;
+    out.set_item("split_scope", valid.split_scope)?;
+    out.set_item("core_revision", valid.core_revision)?;
+    for (key, value) in &valid.ints {
+        out.set_item(key, *value)?;
+    }
+    for (key, value) in &valid.floats {
+        out.set_item(key, *value)?;
+    }
+    Ok(out.unbind())
+}
+
+struct RlValid {
+    schema_version: String,
+    digests: Vec<(String, String)>,
+    master_seed_hex: String,
+    experiment_id: String,
+    split_scope: String,
+    core_revision: String,
+    ints: Vec<(String, i64)>,
+    floats: Vec<(String, f64)>,
+}
+
+/// Detached `rl` checks over owned data only (zero Python API). Exact recipe
+/// values pin the frozen pilot; resource knobs are admission caps so a
+/// predeclared calibration profile validates without mutating a live RunSpec.
+#[allow(clippy::too_many_lines)]
+fn validate_rl(staged: &RlStaged) -> Result<RlValid, String> {
+    check_unknown(&staged.unknown)?;
+    // String identities first (constructor order follows `RL_ALLOWED`).
+    match &staged.schema_version.text {
+        Some(text) if text == "1.0.0" => {}
+        _ => {
+            return Err(format!(
+                "rl.schema_version must be '1.0.0', got {}",
+                staged.schema_version.repr
+            ));
+        }
+    }
+    let mut valid = RlValid {
+        schema_version: "1.0.0".to_owned(),
+        digests: Vec::with_capacity(RL_DIGEST_KEYS.len() + 1),
+        master_seed_hex: String::new(),
+        experiment_id: String::new(),
+        split_scope: String::new(),
+        core_revision: String::new(),
+        ints: Vec::with_capacity(20),
+        floats: Vec::with_capacity(13),
+    };
+    for (key, pin) in RL_DIGEST_KEYS.iter().zip(staged.digests.iter()) {
+        match check_pin("rl", key, pin)? {
+            Some(text) => valid.digests.push(((*key).to_owned(), text)),
+            None => {
+                return Err(format!("rl.{key} is required (sha256:<64 hex>), got None"));
+            }
+        }
+    }
+    match check_pin("rl", "shuffle_recipe_hash", &staged.shuffle_recipe_hash)? {
+        Some(text) => valid.digests.push(("shuffle_recipe_hash".to_owned(), text)),
+        None => {
+            return Err("rl.shuffle_recipe_hash is required (sha256:<64 hex>), got None".to_owned());
+        }
+    }
+    let hex_ok = |text: &str, len: usize| {
+        text.len() == len
+            && text.bytes().all(|b| b.is_ascii_digit() || matches!(b, b'a'..=b'f'))
+    };
+    match &staged.master_seed_hex.text {
+        Some(text) if hex_ok(text, 64) => valid.master_seed_hex = text.clone(),
+        _ => {
+            return Err(format!(
+                "rl.master_seed_hex must be 64 lowercase hex chars, got {}",
+                staged.master_seed_hex.repr
+            ));
+        }
+    }
+    match &staged.experiment_id.text {
+        Some(text) if run_id_ok(text) => valid.experiment_id = text.clone(),
+        _ => {
+            return Err(format!(
+                "rl.experiment_id must match [A-Za-z0-9][A-Za-z0-9_-]*, got {}",
+                staged.experiment_id.repr
+            ));
+        }
+    }
+    match &staged.split_scope.text {
+        Some(text) if text == "selection_training" => {
+            valid.split_scope = text.clone();
+        }
+        _ => {
+            return Err(format!(
+                "rl.split_scope must be 'selection_training', got {}",
+                staged.split_scope.repr
+            ));
+        }
+    }
+    // Semantic scopes (SPEC §13 `RandomStreamKey`): nonnegative integers,
+    // absent reads 0; bool is excluded before the int gate (it subclasses
+    // `int`), so `True`/`False` reject here rather than aliasing 1/0.
+    for (key, slot) in [
+        ("replicate_id", &staged.replicate_id),
+        ("attempt_id", &staged.attempt_id),
+    ] {
+        if !slot.present {
+            valid.ints.push((key.to_owned(), 0));
+            continue;
+        }
+        check_nonnegative_int("rl", key, &slot.view)?;
+        match slot.view.as_i64 {
+            Some(value) => valid.ints.push((key.to_owned(), value)),
+            None => {
+                return Err(format!(
+                    "rl.{key} must be a non-negative int, got {}",
+                    slot.view.repr
+                ));
+            }
+        }
+    }
+    match &staged.core_revision.text {
+        Some(text) if hex_ok(text, 40) => valid.core_revision = text.clone(),
+        _ => {
+            return Err(format!(
+                "rl.core_revision must be 40 lowercase hex chars (pinned riichienv-core rev), got {}",
+                staged.core_revision.repr
+            ));
+        }
+    }
+    // Exact cohort/guard integers.
+    for (key, slot, expected) in [
+        ("generations", &staged.generations, 8i64),
+        ("games_per_generation", &staged.games_per_generation, 128),
+        ("max_lookahead", &staged.max_lookahead, 1),
+        ("epochs", &staged.epochs, 1),
+        ("row_cap", &staged.row_cap, 262144),
+        ("decision_cap_per_game", &staged.decision_cap_per_game, 9000),
+        ("warmup_updates", &staged.warmup_updates, 0),
+        ("compressed_byte_cap", &staged.compressed_byte_cap, 8589934592),
+        ("min_free_disk_bytes", &staged.min_free_disk_bytes, 21474836480),
+        ("host_byte_budget", &staged.host_byte_budget, 12884901888),
+        ("gpu_cache_byte_budget", &staged.gpu_cache_byte_budget, 1073741824),
+    ] {
+        match slot.view.as_i64 {
+            Some(value) if slot.view.is_int && value == expected => {
+                valid.ints.push((key.to_owned(), value));
+            }
+            _ => {
+                return Err(format!(
+                    "rl.{key} must be exactly {expected}, got {}",
+                    slot.view.repr
+                ));
+            }
+        }
+    }
+    // Upper-bound resource caps (a predeclared calibration profile admits
+    // below-cap values; exact per-update counts are runtime facts, not config).
+    for (key, slot, cap) in [
+        ("native_workers", &staged.native_workers, 20i64),
+        ("env_slots", &staged.env_slots, 256),
+        ("inference_cap", &staged.inference_cap, 128),
+        ("microbatch_cap", &staged.microbatch_cap, 128),
+        ("accumulation_cap", &staged.accumulation_cap, 32),
+        ("optimizer_minibatch_cap", &staged.optimizer_minibatch_cap, 4096),
+        ("max_updates_per_generation", &staged.max_updates_per_generation, 67),
+    ] {
+        match slot.view.as_i64 {
+            Some(value) if slot.view.is_int && 1 <= value && value <= cap => {
+                valid.ints.push((key.to_owned(), value));
+            }
+            _ => {
+                return Err(format!(
+                    "rl.{key} must be a positive int <= {cap}, got {}",
+                    slot.view.repr
+                ));
+            }
+        }
+    }
+    // Exact frozen numerics (§20.1: eps_std sits INSIDE the sqrt).
+    for (key, view, expected, display) in [
+        ("clip_eps", &staged.clip_eps, 0.2f64, "0.2"),
+        ("eps_std", &staged.eps_std, 1e-8f64, "1e-08"),
+        ("w_value", &staged.w_value, 0.005f64, "0.005"),
+        ("w_bc", &staged.w_bc, 0.0f64, "0.0"),
+        ("ppo_alpha", &staged.ppo_alpha, 0.01f64, "0.01"),
+        ("gamma", &staged.gamma, 1.0f64, "1.0"),
+        ("lam", &staged.lam, 1.0f64, "1.0"),
+        ("optimizer_lr", &staged.optimizer_lr, 1e-5f64, "1e-05"),
+        ("optimizer_beta1", &staged.optimizer_beta1, 0.9f64, "0.9"),
+        ("optimizer_beta2", &staged.optimizer_beta2, 0.999f64, "0.999"),
+        ("optimizer_weight_decay", &staged.optimizer_weight_decay, 0.01f64, "0.01"),
+        ("head_lr_mult", &staged.head_lr_mult, 1.0f64, "1.0"),
+        ("gradient_clip_norm", &staged.gradient_clip_norm, 1.0f64, "1.0"),
+    ] {
+        match view.number {
+            Some(value) if value == expected => {
+                valid.floats.push((key.to_owned(), value));
+            }
+            _ => {
+                return Err(format!(
+                    "rl.{key} must be exactly {display}, got {}",
+                    view.repr
+                ));
+            }
+        }
+    }
+    Ok(valid)
+}
+/// Register the run-config core section parsers plus the closed RL profile
+/// parser on the shared `contracts` submodule (mirrors `validate.rs:111-127`);
+/// MAIN calls this from `contracts::register` — no new submodule, no new entry point.
 pub fn register(sub: &Bound<'_, PyModule>) -> PyResult<()> {
     sub.add_function(wrap_pyfunction!(rc_parse_run, sub)?)?;
     sub.add_function(wrap_pyfunction!(rc_parse_data, sub)?)?;
     sub.add_function(wrap_pyfunction!(rc_parse_model, sub)?)?;
     crate::rc_parse_train::register_train(sub)?;
     sub.add_function(wrap_pyfunction!(rc_parse_loop, sub)?)?;
+    sub.add_function(wrap_pyfunction!(rc_parse_rl, sub)?)?;
     Ok(())
 }
 
@@ -1872,7 +2324,9 @@ mod tests {
         assert_eq!(WEIGHTS_ALLOWED.len(), 7);
         assert_eq!(OPTIMIZER_ALLOWED.len(), 5);
         assert_eq!(LOOP_ALLOWED.len(), 13);
-        assert_eq!(RUN_KINDS, ["supervised"]);
+        assert_eq!(RL_ALLOWED.len(), 53);
+        assert_eq!(RL_DIGEST_KEYS.len(), 14);
+        assert_eq!(RUN_KINDS, ["supervised", "distill", "rl"]);
         assert_eq!(TENHOU_SCOPE, "tenhou-4p-hanchan");
         assert_eq!(OPTIMIZER_IDS, ["adamw", "adam", "sgd"]);
         assert_eq!(SCHEDULER_IDS, ["cosine", "constant", "linear"]);
@@ -1884,7 +2338,8 @@ mod tests {
                 "eager",
                 "default",
                 "max-autotune-no-cudagraphs",
-                "max-autotune"
+                "max-autotune",
+                "cuda_graph_replay"
             ]
         );
     }
@@ -1908,11 +2363,14 @@ mod tests {
         assert!(!cuda_device_ok("CUDA"));
         assert!(is_digest_shape(&format!("sha256:{}", "ab".repeat(32))));
         assert!(!is_digest_shape(&format!("SHA256:{}", "AB".repeat(32))));
-        assert_eq!(one_of_list(&RUN_KINDS), "['supervised']");
+        assert_eq!(
+            one_of_list(&RUN_KINDS),
+            "['supervised', 'distill', 'rl']"
+        );
         assert_eq!(one_of_list(&OPTIMIZER_IDS), "['adamw', 'adam', 'sgd']");
         assert_eq!(
             one_of_list(&COMPILE_MODES),
-            "['eager', 'default', 'max-autotune-no-cudagraphs', 'max-autotune']"
+            "['eager', 'default', 'max-autotune-no-cudagraphs', 'max-autotune', 'cuda_graph_replay']"
         );
     }
 

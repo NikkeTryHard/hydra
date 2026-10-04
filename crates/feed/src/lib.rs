@@ -30,6 +30,7 @@ pub mod fixed;
 pub mod framer;
 pub mod gate;
 pub mod ingest;
+pub mod json_projection;
 pub mod ledger;
 pub mod manifest;
 pub mod partition;

@@ -30,6 +30,10 @@ pyo3 = { version = "0.29.2", features = [] }
 reqwest = { version = "=0.12.28", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 arrow-array = { version = "=59.3.0", features = ["ffi"] }
 arrow-schema = { version = "=59.3.0", features = ["ffi"] }
+# The pinned eager rules core preserves reference transitions; enabling optional
+# Python bindings or automatic wall shuffling would break native replay parity.
+riichienv-core = { git = "https://github.com/smly/RiichiEnv", rev = "479c1faeb33d082965eef8198f63261a79c0fce3", default-features = false }
+zstd = "=0.14.0"
 
 [lib]
 name = "_native"

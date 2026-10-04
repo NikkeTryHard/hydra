@@ -149,16 +149,19 @@ class AdapterStepMixin(AdapterEventsAMixin, AdapterEventsBMixin):
         self,
         tiles: Sequence[TileId],
         *,
+        hand_index: int,
         oya_engine: int,
         honba: int,
         kyotaku: int,
         scores_engine: Sequence[int],
         round_wind_int: int,
     ) -> None:
+        assert hand_index >= 0
+        self._hand_index = hand_index
         env = riichienv.RiichiEnv(
             game_mode=riichienv.GameType.YON_HANCHAN,
             rule=riichienv.GameRule.default_tenhou(),
-            seed=self._hand_rng_seed(max(0, self._hand_index)),
+            seed=self._hand_rng_seed(hand_index),
         )
         _ = env.reset(
             oya=oya_engine,
@@ -212,11 +215,12 @@ class AdapterStepMixin(AdapterEventsAMixin, AdapterEventsBMixin):
         self, *, phase: str | None = None, turn_actor: int | None = None
     ) -> None:
         assert self._builder is not None and self._env is not None and self._rules is not None
+        assert self._hand_index >= 0
         dealer = self._inv[self._env.oya]
         wind_letter = {0: "E", 1: "S", 2: "W", 3: "N"}[self._env.round_wind]
         fields = {
             "decision_id": f"{self._game_id}:{len(self._events)}",
-            "round_index": max(0, self._hand_index),
+            "round_index": self._hand_index,
             "round_wind": _BAKAZE_TO_TILE_TYPE[wind_letter],
             "hand_number": self._env.kyoku_idx + 1,
             "seat_winds": seat_winds_for_dealer(dealer),
@@ -341,9 +345,8 @@ class AdapterStepMixin(AdapterEventsAMixin, AdapterEventsBMixin):
         )
 
     def _state_digest(self) -> str:
-        return str(
-            state_digest(self._env, hand_index=max(0, self._hand_index), permutation=self._perm)
-        )
+        assert self._hand_index >= 0
+        return str(state_digest(self._env, hand_index=self._hand_index, permutation=self._perm))
 
     def _process_until_decision(self) -> None:
         while True:

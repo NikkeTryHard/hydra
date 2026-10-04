@@ -19,7 +19,13 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 PrecisionId = Literal["fp32", "fp16_mixed", "bf16_mixed"]
-CompileMode = Literal["eager", "default", "max-autotune-no-cudagraphs", "max-autotune"]
+CompileMode = Literal[
+    "eager",
+    "default",
+    "max-autotune-no-cudagraphs",
+    "max-autotune",
+    "cuda_graph_replay",
+]
 
 PRECISION_IDS: tuple[PrecisionId, ...] = ("fp32", "fp16_mixed", "bf16_mixed")
 COMPILE_MODES: tuple[CompileMode, ...] = (
@@ -27,6 +33,10 @@ COMPILE_MODES: tuple[CompileMode, ...] = (
     "default",
     "max-autotune-no-cudagraphs",
     "max-autotune",
+    # RL-only exact replay arm (owned RL CUDA route): recognized by the
+    # format validators so RL configs parse and hash, but never accepted
+    # by build_runtime and never forwarded to torch.compile.
+    "cuda_graph_replay",
 )
 SUPPORTED_ADAPTER_IDS: tuple[str, ...] = ("plain_pytorch",)
 
@@ -153,9 +163,19 @@ def build_runtime(
     MUST be 'off' and the functorch patch stays active around BOTH the
     compile call and ``adapter.setup`` (Fabric may unwrap/reapply compile
     inside setup).
+
+    The RL-only ``cuda_graph_replay`` arm is rejected here even though the
+    format validators recognize it: generic construction never forwards it
+    to torch.compile and never silently falls back to eager (MAIN owns the
+    actor/learner replay route that consumes it).
     """
     validate_runtime_spec(spec)
     require_device_available(spec.device)
+    if spec.compile_mode == "cuda_graph_replay":
+        raise ContractError(
+            "compile_mode 'cuda_graph_replay' is RL-only (owned RL CUDA replay route); "
+            "generic build_runtime never forwards it to torch.compile nor falls back to eager"
+        )
 
     def compile_once(m: object) -> object:
         if spec.compile_mode == "eager":

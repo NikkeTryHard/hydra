@@ -92,6 +92,15 @@ theorem impossible_packet_joint_zero (b : Belief World) (K : TransKernel World P
   have hle0 : jointP b K x' e ≤ 0 := by linarith
   exact le_antisymm hle0 hge
 
+/-- Evidence is always fully explained: the joint mass over all successor
+worlds equals the packet's evidence mass — `∑_{x'} jointP = Ze` by
+definition, so conditioning divides by exactly the available mass with
+nothing left over. Pair with `successorBelief_sum_one` (the posterior
+normalizes): together update-then-renormalize is lossless — no evidence
+mass vanishes between the joint and the posterior. -/
+theorem jointP_sum_eq_Ze (b : Belief World) (K : TransKernel World Packet) (e : Packet) :
+    ∑ x' : World, jointP b K x' e = Ze b K e := rfl
+
 /-- Posterior packaged as a lawful `Belief`, so updates iterate without leaving
 the structure. -/
 noncomputable def successorBeliefPackaged (b : Belief World) (K : TransKernel World Packet)
@@ -386,6 +395,112 @@ theorem duplicate_packet_would_overcount (b : Belief World) (K : TransKernel Wor
           _ ≤ ∑ e : Packet, Ze b K e := Finset.sum_le_sum_of_subset_of_nonneg hpair (fun e _ _ => Ze_nonneg b K e)
     _ = 1 := total
 
+/-- Packet mass is monotone in the subset: extending the covered packet set
+can only add evidence mass. Practical core: commit/squash bookkeeping that
+drops packets must track the dropped mass — extending coverage never hides
+it. Limited-compute lemma: budget packet enumeration by mass covered. -/
+theorem Ze_subset_mono (b : Belief World) (K : TransKernel World Packet)
+    (S T : Finset Packet) (h : S ⊆ T) :
+    ∑ e ∈ S, Ze b K e ≤ ∑ e ∈ T, Ze b K e :=
+  Finset.sum_le_sum_of_subset_of_nonneg h (fun e _ _ => Ze_nonneg b K e)
+
+/-- Empty coverage holds zero mass: the commit ledger starts at zero —
+the finite reason coverage growth (`Ze_subset_mono`) is growth FROM
+zero, so the first committed packet's mass is exactly its Ze, with no
+baseline offset to subtract. Pairs `Ze_complement_empty` (the
+dropped side of nothing is everything): together both sides of the
+empty boundary are pinned. -/
+theorem Ze_empty_set (b : Belief World) (K : TransKernel World Packet) :
+    ∑ e ∈ (∅ : Finset Packet), Ze b K e = 0 :=
+  Finset.sum_empty
+
+/-- Singleton coverage holds exactly its packet's mass: no more, no
+less — the mirror of `Ze_empty_set` (empty holds zero). Together the
+ledger is pinned at both extremes, so single-packet commits read off
+directly with no sum to compute: the commit fast-path for
+one-packet evidence needs no aggregation pass. -/
+theorem Ze_singleton (b : Belief World) (K : TransKernel World Packet) (e : Packet) :
+    ∑ e' ∈ ({e} : Finset Packet), Ze b K e' = Ze b K e :=
+  Finset.sum_singleton (Ze b K) e
+
+/-- Covered mass splits additively at any boundary: `∑ over (S ∪ T)` is
+the union-side sum when disjoint — the finite reason the commit/squash
+ledger can merge two disjoint packet batches by adding their masses
+with no overlap correction. Pairs `Ze_subset_mono` (monotone growth):
+together coverage grows monotonically AND disjoint merges add exactly. -/
+theorem Ze_disjoint_union (b : Belief World) (K : TransKernel World Packet)
+    (S T : Finset Packet) (h : Disjoint S T) :
+    ∑ e ∈ S ∪ T, Ze b K e
+      = (∑ e ∈ S, Ze b K e) + ∑ e ∈ T, Ze b K e :=
+  Finset.sum_union h
+
+/-- Dropped-packet mass is exactly accounted: the mass outside the covered
+set is `1 −` the mass inside — conservation with no leak term. Companion to
+`Ze_subset_mono` (which bounds the inside): together they let commit/squash
+bookkeeping price a dropped packet set precisely. Failure mode killed: an
+unaccounted mass gap silently biasing the successor belief. -/
+theorem Ze_complement_mass (b : Belief World) (K : TransKernel World Packet)
+    (S : Finset Packet) :
+    ∑ e ∈ Sᶜ, Ze b K e = 1 - ∑ e ∈ S, Ze b K e := by
+  have total := packet_partition_Z_sum_one b K
+  have hsplit := Finset.sum_compl_add_sum S (fun e => Ze b K e)
+  linarith
+
+/-- Dropped mass is antitone in coverage: extending the covered set can
+only shrink what is dropped — the finite reason commit/squash passes
+that cover more packets account for less dropped mass, monotonically.
+Chains `Ze_complement_mass` with `Ze_subset_mono`: the inside grows
+while the outside shrinks, so the ledger balances at every step. -/
+theorem Ze_complement_antitone (b : Belief World) (K : TransKernel World Packet)
+    (S T : Finset Packet) (h : S ⊆ T) :
+    ∑ e ∈ Tᶜ, Ze b K e ≤ ∑ e ∈ Sᶜ, Ze b K e := by
+  have h1 := Ze_complement_mass b K S
+  have h2 := Ze_complement_mass b K T
+  have hle := Ze_subset_mono b K S T h
+  linarith
+
+/-- Full coverage drops nothing: when every packet is covered the complement
+mass is zero — the finite reason a complete packet enumeration needs no
+drop accounting at all. Pair with `Ze_complement_mass` (which prices the
+general case): together the commit/squash ledger distinguishes free
+completeness from priced partiality. -/
+theorem Ze_complement_univ (b : Belief World) (K : TransKernel World Packet) :
+    ∑ e ∈ (Finset.univ : Finset Packet)ᶜ, Ze b K e = 0 := by
+  simp
+
+/-- Complement-univ by mass accounting: the zero-drop fact also follows
+from `Ze_complement_mass` with `S = univ` — the finite reason the ledger
+has two independent paths to free completeness (direct simp, or mass
+arithmetic), so a refactor breaking one leaves the other. Cross-checks
+`Ze_complement_univ` exactly. -/
+theorem Ze_complement_univ_via_mass (b : Belief World) (K : TransKernel World Packet) :
+    ∑ e ∈ (Finset.univ : Finset Packet)ᶜ, Ze b K e = 0 := by
+  have h := Ze_complement_mass b K Finset.univ
+  simpa using h
+
+/-- Empty complement by mass accounting: the full-unit fact also follows
+from `Ze_complement_mass` with `S = ∅` — the mirror of
+`Ze_complement_univ_via_mass` (full coverage via mass). Together both
+coverage extremes have two independent paths (direct and arithmetic),
+so the ledger's endpoints survive any single-proof refactor. -/
+theorem Ze_complement_empty_via_mass (b : Belief World) (K : TransKernel World Packet) :
+    ∑ e ∈ (∅ : Finset Packet)ᶜ, Ze b K e = 1 := by
+  have h := Ze_complement_mass b K ∅
+  simpa using h
+
+/-- Empty coverage explains nothing: with no packets covered the complement
+carries the full unit mass — the finite reason a commit/squash pass that
+drops everything must account for mass 1, never 0. Pair with
+`Ze_complement_univ` (full coverage drops nothing): together the ledger
+is pinned at both coverage extremes, so partial coverage interpolates
+between free completeness and full accountability. -/
+theorem Ze_complement_empty (b : Belief World) (K : TransKernel World Packet) :
+    ∑ e ∈ (∅ : Finset Packet)ᶜ, Ze b K e = 1 := by
+  have total := packet_partition_Z_sum_one b K
+  have hcompl : (∅ : Finset Packet)ᶜ = Finset.univ := Finset.compl_empty
+  rw [hcompl]
+  simpa using total
+
 end SuccessorBelief
 
 section InformationSet
@@ -423,6 +538,40 @@ variable {Outcome : Type} [Fintype Outcome] [DecidableEq Outcome]
 noncomputable def confirmationDelta (prob : World → ℝ) (kernels : Fin 2 → World → Outcome → ℝ) (utility : Outcome → Hydra2.Blueprint.Objective.UtilityVector) (seat : Hydra2.Blueprint.Objective.Seat) : ℝ :=
   ∑ x : World, prob x * ((∑ o : Outcome, kernels 0 x o * Hydra2.Blueprint.Objective.rootScalar (utility o) seat) - (∑ o : Outcome, kernels 1 x o * Hydra2.Blueprint.Objective.rootScalar (utility o) seat))
 
+/-- Confirmation is linear in belief scale: reweighting every world's mass
+by `c` scales the delta by `c` — the finite reason the S5 gate prices
+unnormalized beliefs directly: rescaling the belief rescales the answer
+with no re-derivation, so partial-mass beliefs (post-drop) read off the
+full-mass price. Pairs `confirmationDelta_zero_weight_drop` (support
+restriction): together scale and support both factor cleanly. -/
+theorem confirmationDelta_scale (c : ℝ) (prob : World → ℝ)
+    (kernels : Fin 2 → World → Outcome → ℝ)
+    (utility : Outcome → Hydra2.Blueprint.Objective.UtilityVector) (seat : Hydra2.Blueprint.Objective.Seat) :
+    confirmationDelta (fun x => c * prob x) kernels utility seat
+      = c * confirmationDelta prob kernels utility seat := by
+  unfold confirmationDelta
+  rw [Finset.mul_sum]
+  apply Finset.sum_congr rfl
+  intro x _
+  ring
+
+/-- Confirmation is additive in belief: the delta over a summed belief is
+the sum of the deltas — with `confirmationDelta_scale` (homogeneity)
+this makes confirmation fully linear in belief. The finite reason split
+beliefs (per-packet posteriors, per-seat subpopulations) compose by
+addition: confirm each slice separately, add the answers. -/
+theorem confirmationDelta_add (p₁ p₂ : World → ℝ)
+    (kernels : Fin 2 → World → Outcome → ℝ)
+    (utility : Outcome → Hydra2.Blueprint.Objective.UtilityVector) (seat : Hydra2.Blueprint.Objective.Seat) :
+    confirmationDelta (fun x => p₁ x + p₂ x) kernels utility seat
+      = confirmationDelta p₁ kernels utility seat
+        + confirmationDelta p₂ kernels utility seat := by
+  unfold confirmationDelta
+  rw [← Finset.sum_add_distrib]
+  apply Finset.sum_congr rfl
+  intro x _
+  ring
+
 theorem confirmation_estimator_unbiased_for_delta (prob : World → ℝ) (kernels : Fin 2 → World → Outcome → ℝ) (utility : Outcome → Hydra2.Blueprint.Objective.UtilityVector) (seat : Hydra2.Blueprint.Objective.Seat) :
     confirmationDelta prob kernels utility seat =
     (∑ x : World, ∑ o : Outcome, prob x * kernels 0 x o * Hydra2.Blueprint.Objective.rootScalar (utility o) seat) - (∑ x : World, ∑ o : Outcome, prob x * kernels 1 x o * Hydra2.Blueprint.Objective.rootScalar (utility o) seat) := by
@@ -432,6 +581,107 @@ theorem confirmation_estimator_unbiased_for_delta (prob : World → ℝ) (kernel
       = (∑ o : Outcome, prob x * kernels 0 x o * Hydra2.Blueprint.Objective.rootScalar (utility o) seat) - (∑ o : Outcome, prob x * kernels 1 x o * Hydra2.Blueprint.Objective.rootScalar (utility o) seat) := by
     intro x; rw [mul_sub, Finset.mul_sum, Finset.mul_sum]; congr 1 <;> (congr 1; ext o; ring)
   simp_rw [expand, Finset.sum_sub_distrib]
+
+/-- Identical continuations prove nothing: when both candidate kernels agree
+    everywhere, the confirmation delta is exactly zero. Practical core: never
+    spend confirmation sims comparing two actions whose continuations are the
+    same rollout — the S5 gate skips identical-continuation pairs outright.
+    Limited-compute lemma: confirmation budget flows only to genuinely
+    divergent futures. Swapping the candidate kernels flips the sign
+    (proved below): orientation is exact, degenerate comparisons vanish. -/
+theorem confirmationDelta_swap (prob : World → ℝ)
+    (k0 k1 : World → Outcome → ℝ)
+    (utility : Outcome → Hydra2.Blueprint.Objective.UtilityVector) (seat : Hydra2.Blueprint.Objective.Seat) :
+    confirmationDelta prob ![k1, k0] utility seat
+      = -confirmationDelta prob ![k0, k1] utility seat := by
+  unfold confirmationDelta
+  rw [← Finset.sum_neg_distrib]
+  apply Finset.sum_congr rfl
+  intro x _
+  simp
+  ring
+
+theorem confirmationDelta_zero_of_same_kernel (prob : World → ℝ)
+    (kernels : Fin 2 → World → Outcome → ℝ)
+    (utility : Outcome → Hydra2.Blueprint.Objective.UtilityVector) (seat : Hydra2.Blueprint.Objective.Seat)
+    (h : ∀ x o, kernels 0 x o = kernels 1 x o) :
+    confirmationDelta prob kernels utility seat = 0 := by
+  unfold confirmationDelta
+  have hsub : ∀ x : World,
+      (∑ o : Outcome, kernels 0 x o * Hydra2.Blueprint.Objective.rootScalar (utility o) seat)
+      - (∑ o : Outcome, kernels 1 x o * Hydra2.Blueprint.Objective.rootScalar (utility o) seat) = 0 := by
+    intro x
+    have : (∑ o : Outcome, kernels 0 x o * Hydra2.Blueprint.Objective.rootScalar (utility o) seat)
+        = (∑ o : Outcome, kernels 1 x o * Hydra2.Blueprint.Objective.rootScalar (utility o) seat) :=
+      Finset.sum_congr rfl fun o _ => by rw [h x o]
+    linarith
+  calc ∑ x : World, prob x * ((∑ o : Outcome, kernels 0 x o * Hydra2.Blueprint.Objective.rootScalar (utility o) seat) - (∑ o : Outcome, kernels 1 x o * Hydra2.Blueprint.Objective.rootScalar (utility o) seat))
+      = ∑ x : World, prob x * 0 := Finset.sum_congr rfl fun x _ => by rw [hsub x]
+    _ = 0 := by simp
+
+/-- Zero belief weights contribute nothing: worlds with `prob x = 0` drop
+out of the confirmation sum — the finite reason sparse beliefs price only
+their support, so the S5 gate enumerates live worlds instead of the full
+wall. Pair with `confirmationDelta_point_mass` (single-world support is
+free): together support size prices confirmation, from zero (empty) to
+one (point mass) to full. -/
+theorem confirmationDelta_zero_weight_drop (prob : World → ℝ)
+    (kernels : Fin 2 → World → Outcome → ℝ)
+    (utility : Outcome → Hydra2.Blueprint.Objective.UtilityVector) (seat : Hydra2.Blueprint.Objective.Seat)
+    (S : Finset World) (h0 : ∀ x ∉ S, prob x = 0) :
+    confirmationDelta prob kernels utility seat
+      = ∑ x ∈ S, prob x * ((∑ o : Outcome, kernels 0 x o * Hydra2.Blueprint.Objective.rootScalar (utility o) seat) - (∑ o : Outcome, kernels 1 x o * Hydra2.Blueprint.Objective.rootScalar (utility o) seat)) := by
+  unfold confirmationDelta
+  rw [Finset.sum_subset (Finset.subset_univ S) (fun x _ hx => by rw [h0 x hx, zero_mul])]
+
+/-- Empty support kills confirmation: with no live worlds the delta is
+zero — the mirror of `confirmationDelta_point_mass` (singleton support
+is the analytic gap). Together the S5 gate's support-size ladder reads
+0 → gap → full sum, so confirmation pricing bottoms at exactly zero,
+never at a sampling floor. -/
+theorem confirmationDelta_empty_support (prob : World → ℝ)
+    (kernels : Fin 2 → World → Outcome → ℝ)
+    (utility : Outcome → Hydra2.Blueprint.Objective.UtilityVector) (seat : Hydra2.Blueprint.Objective.Seat)
+    (h0 : ∀ x, prob x = 0) : confirmationDelta prob kernels utility seat = 0 := by
+  have h := confirmationDelta_zero_weight_drop prob kernels utility seat ∅ (by simpa using h0)
+  simpa using h
+
+/-- Null models contribute nothing: with both kernels identically zero
+the delta is zero at ANY belief — the mirror of the zero-belief
+corner (null belief, live models). Together both degeneracies are
+pinned, so the S5 gate short-circuits either side without sampling:
+dead models and dead beliefs alike are free. -/
+theorem confirmationDelta_zero_kernels (prob : World → ℝ)
+    (utility : Outcome → Hydra2.Blueprint.Objective.UtilityVector) (seat : Hydra2.Blueprint.Objective.Seat) :
+    confirmationDelta prob (fun _ _ _ => 0) utility seat = 0 := by
+  unfold confirmationDelta
+  simp
+
+/-- Point-mass beliefs need zero sims: on a degenerate belief concentrated at
+    one world, the confirmation delta IS the single-world utility gap — read
+    it directly, never sample. Practical core: the S5 gate short-circuits
+    collapsed beliefs (ESS ≈ 1) to the analytic gap instead of burning
+    confirmation rollouts. Limited-compute lemma: degenerate beliefs are free. -/
+theorem confirmationDelta_point_mass (x₀ : World)
+    (kernels : Fin 2 → World → Outcome → ℝ)
+    (utility : Outcome → Hydra2.Blueprint.Objective.UtilityVector) (seat : Hydra2.Blueprint.Objective.Seat) :
+    confirmationDelta (fun x => if x = x₀ then (1 : ℝ) else 0) kernels utility seat
+      = (∑ o : Outcome, kernels 0 x₀ o * Hydra2.Blueprint.Objective.rootScalar (utility o) seat)
+      - (∑ o : Outcome, kernels 1 x₀ o * Hydra2.Blueprint.Objective.rootScalar (utility o) seat) := by
+  unfold confirmationDelta
+  have hpoint : ∀ x : World, (if x = x₀ then (1 : ℝ) else (0 : ℝ))
+        * ((∑ o : Outcome, kernels 0 x o * Hydra2.Blueprint.Objective.rootScalar (utility o) seat)
+        - (∑ o : Outcome, kernels 1 x o * Hydra2.Blueprint.Objective.rootScalar (utility o) seat))
+      = (if x = x₀ then
+          ((∑ o : Outcome, kernels 0 x₀ o * Hydra2.Blueprint.Objective.rootScalar (utility o) seat)
+          - (∑ o : Outcome, kernels 1 x₀ o * Hydra2.Blueprint.Objective.rootScalar (utility o) seat))
+        else 0) := by
+    intro x
+    by_cases hx : x = x₀
+    · subst hx; simp
+    · simp [hx]
+  rw [Finset.sum_congr rfl (fun x _ => hpoint x)]
+  simp
 
 end Confirmation
 

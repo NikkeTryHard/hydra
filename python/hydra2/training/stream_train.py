@@ -90,7 +90,6 @@ from hydra2.training.stream_build import _load_prefix_hashes as _load_prefix_has
 from hydra2.training.stream_build import _manifest_hashes_for_loop as _manifest_hashes_for_loop
 from hydra2.training.stream_build import _optimizer_fused_kwargs as _optimizer_fused_kwargs
 from hydra2.training.stream_build import _optimizer_param_groups as _optimizer_param_groups
-from hydra2.training.stream_build import _prefix_hashes_name as _prefix_hashes_name
 from hydra2.training.stream_build import _rng_anchors as _rng_anchors
 from hydra2.training.stream_build import _sidecar_cursor as _sidecar_cursor
 from hydra2.training.stream_build import _verify_rng_anchors as _verify_rng_anchors
@@ -248,9 +247,12 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
     """
     if config.run.kind != "supervised":
         raise ContractError(f"stream training supports kind 'supervised', got {config.run.kind!r}")
-    if config.data.world_size != _SINGLETON_WORLD:
+    data = config.data
+    if data is None:
+        raise ContractError("stream training requires a data section (rl runs carry data=None)")
+    if data.world_size != _SINGLETON_WORLD:
         raise ContractError(
-            f"stream training is single-process v1 (world_size 1), got {config.data.world_size}"
+            f"stream training is single-process v1 (world_size 1), got {data.world_size}"
         )
     # Deterministic matmul pins (idempotent process locks): the bf16 path
     # must never inherit a tf32 accident-of-default. These touch
@@ -261,9 +263,9 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
     # TORCHINDUCTOR_CACHE_DIR claim below mirrors tests/conftest.py
     # (explicit env wins; version-keyed so torch/triton upgrades cannot
     # poison the cache).
-    torch.set_float32_matmul_precision("highest")
-    torch.backends.cudnn.allow_tf32 = False
-    torch.backends.cudnn.benchmark = False
+    from hydra2.runtime.plain import configure_torch_matmul
+
+    configure_torch_matmul()
     _inductor_ver = "".join(
         c if (c.isalnum() or c in "._-") else "_" for c in str(torch.__version__)
     )
@@ -326,9 +328,9 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
                 f"resume cursor seed={resume.cursor.seed} != "
                 f"config seeds.data_seed={config.seeds.data_seed}"
             )
-        if resume.worker_plan.num_workers != config.data.num_workers:
+        if resume.worker_plan.num_workers != data.num_workers:
             raise ContractError("resume worker_plan.num_workers != config data.num_workers")
-        if resume.worker_plan.world_size != config.data.world_size:
+        if resume.worker_plan.world_size != data.world_size:
             raise ContractError("resume worker_plan.world_size != config data.world_size")
         if not resume.checkpoint.is_file():
             raise ContractError(f"resume checkpoint missing: {resume.checkpoint}")
@@ -341,13 +343,13 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
 
     _span_sink = _StageSpanSink(run_dir / "logs")
     _t_launch = time.perf_counter()
-    manifest = build_manifest(config.data.roots)
+    manifest = build_manifest(data.roots)
     _dt = time.perf_counter() - _t_launch
     _emit_phase(run_dir, f"phase: manifest files={len(manifest)} t={_dt:.1f}s")
     if len(manifest) == 0:
-        raise ContractError(f"stream manifest empty under {config.data.roots}")
+        raise ContractError(f"stream manifest empty under {data.roots}")
     stream_digest = manifest_digest(manifest)
-    pinned = config.data.dataset_manifest_hash
+    pinned = data.dataset_manifest_hash
     if pinned is not None and pinned != stream_digest:
         raise ContractError(
             f"stream manifest {stream_digest} != config dataset_manifest_hash pin {pinned}"
@@ -365,7 +367,7 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
         f"phase: scan train_games={scan.train_games} elapsed={time.perf_counter() - _t_scan:.1f}s",
     )
     if scan.train_games == 0:
-        raise ContractError(f"train split empty: no games in {config.data.train_split!r}")
+        raise ContractError(f"train split empty: no games in {data.train_split!r}")
 
     start_update = resume.global_update if resume is not None else 0
     if start_update > config.loop.max_updates:
@@ -377,12 +379,12 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
 
     # Identity echo (observer-only): everything needed to name this run
     # without opening the yaml. Emitted once, after the manifest gates pass.
-    _roots = len(config.data.roots)
+    _roots = len(data.roots)
     _emit_phase(
         run_dir,
         f"config: id={config.run.run_id} digest={run_digest} stream={stream_digest} "
         f"trunk={config.model.architecture_id} micro={config.loop.microbatch_size} "
-        f"accum={config.loop.accumulation_steps} workers={config.data.num_workers} "
+        f"accum={config.loop.accumulation_steps} workers={data.num_workers} "
         f"roots={_roots} max={config.loop.max_updates} "
         f"ckpt={config.loop.checkpoint_frequency_updates} "
         f"eval={config.eval.frequency_updates}x{config.eval.num_batches} "
@@ -445,7 +447,7 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
         seek_prefix = _load_prefix_hashes(
             resume.checkpoint.parent, prefix_rec, ckpt=resume.checkpoint
         )
-        if config.data.shuffle_buffer_size > 0:
+        if data.shuffle_buffer_size > 0:
             entries: list[Any] = shuffle_raw.get("buffer_entries", [])
             rng_state: dict[str, Any] = shuffle_raw.get("buffer_rng_state", {})
             if not isinstance(entries, list) or not isinstance(rng_state, dict):
@@ -467,15 +469,15 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
     _prime_index: Path | None = None
     _prime_hit: dict[str, Any] | None = None
     _prime_hit_enabled = os.environ.get("HYDRA2_RESERVOIR_SNAPSHOT", "").strip() == "1"
-    if resume is None and config.data.shuffle_buffer_size > 0 and _prime_hit_enabled:
+    if resume is None and data.shuffle_buffer_size > 0 and _prime_hit_enabled:
         _prime_index = _prime_cache_path(
             manifest=manifest,
             stream_digest=stream_digest,
             seed=config.seeds.data_seed,
             ratios=ratios,
-            train_split=config.data.train_split,
-            val_split=config.data.val_split,
-            buffer_size=config.data.shuffle_buffer_size,
+            train_split=data.train_split,
+            val_split=data.val_split,
+            buffer_size=data.shuffle_buffer_size,
         )
         _prime_hit = _load_prime_snapshot(path=_prime_index, stream_digest=stream_digest)
         if _prime_hit is not None:
@@ -494,8 +496,8 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
             "seed": config.seeds.data_seed,
             "ratios": ratios,
             "epoch": epoch,
-            "split": config.data.train_split,
-            "shuffle_buffer": config.data.shuffle_buffer_size,
+            "split": data.train_split,
+            "shuffle_buffer": data.shuffle_buffer_size,
         }
         restore: dict[str, Any] = (
             {
@@ -514,7 +516,7 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
                 "snapshot_blob": None,
             }
         )
-        if config.data.num_workers > 0:
+        if data.num_workers > 0:
             return PrefetchGameStream(manifest, **common, **restore)  # type: ignore[arg-type]
         return GameStream(manifest, **common, **restore)  # type: ignore[arg-type]
 
@@ -527,15 +529,15 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
         num_actions=config.model.action_count,
         feature_dim=_FEATURE_FOLD_DIM,
         seed=config.seeds.data_seed,
-        drop_last=config.data.drop_last,
+        drop_last=data.drop_last,
         need_privileged=need_privileged,
-        replay_backend=config.data.replay_backend,
+        replay_backend=data.replay_backend,
         # Parallel game expansion rides the existing prefetch/parallel path:
         # num_workers > 0 selects PrefetchGameStream above (decode parallelism)
         # and sizes the bounded (16-max) expansion pool.
-        expand_workers=config.data.num_workers,
-        expand_batch_games=config.data.expand_batch_games,
-        homogeneous_buckets=config.data.homogeneous_buckets,
+        expand_workers=data.num_workers,
+        expand_batch_games=data.expand_batch_games,
+        homogeneous_buckets=data.homogeneous_buckets,
         pack_histories=config.loop.pack_histories,
     )
     payload: Any = None
@@ -566,7 +568,7 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
         if seed_val != _epoch_seed(data_seed=config.seeds.data_seed, epoch=envelope.start_epoch):
             raise ContractError(f"checkpoint shuffle epoch_seed mismatch: {resume.checkpoint}")
         size_val: int = int(shuffle_map.get("buffer_size", -1))
-        if size_val != config.data.shuffle_buffer_size:
+        if size_val != data.shuffle_buffer_size:
             raise ContractError(f"checkpoint shuffle buffer_size mismatch: {resume.checkpoint}")
         dataset.restore_buffer(parsed_snapshot)
         # Seek the live stream to the recorded frontier at the recorded epoch
@@ -841,7 +843,7 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
             dataset=dataset,
             index_path=_prime_index,
             stream_digest=stream_digest,
-            buffer_size=config.data.shuffle_buffer_size,
+            buffer_size=data.shuffle_buffer_size,
         )
         _emit_phase(
             run_dir,

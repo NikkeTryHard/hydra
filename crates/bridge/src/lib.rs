@@ -13,6 +13,10 @@
 //! `PyHydraStream` surface plus `canon_rng`/`columnar`/`search` submodules
 //! (single cdylib, one `#[pymodule]`).
 
+// Full captured-row JSON has 46 fields; serde's macro expansion exceeds
+// the default depth even though the serialized document is shallow.
+#![recursion_limit = "256"]
+
 pub mod action_artifact;
 pub mod action_model;
 pub mod analysis_leaves2;
@@ -82,6 +86,7 @@ pub mod record_leaves;
 pub mod replay;
 pub mod resume;
 pub mod ring;
+pub mod rl;
 pub mod rows_seal;
 pub mod sampled_kernel;
 pub mod script_leaves;
@@ -116,6 +121,7 @@ pub fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     canon_rng::register(m)?;
     resume::register(m)?;
     ring::register(m)?;
+    rl::register(m)?;
     encoder::register(m)?;
     columnar::register(m)?;
     contracts::register(m)?;

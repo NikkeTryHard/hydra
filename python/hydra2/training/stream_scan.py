@@ -125,7 +125,10 @@ def _scan_corpus(
     attached, then partitions by the config split names. Raises before any
     training state exists when one wall lands in both splits.
     """
-    if config.data.num_workers > 0:
+    data = config.data
+    if data is None:
+        raise ContractError("corpus scan requires a data section (rl runs carry data=None)")
+    if data.num_workers > 0:
         return _scan_corpus_parallel(manifest, config=config, ratios=ratios)
     common: dict[str, Any] = {
         "seed": config.seeds.data_seed,
@@ -150,14 +153,14 @@ def _scan_corpus(
         if game.path != last_path:
             last_path = game.path
             last_rid = resolve_root_id(manifest.roots, game.path)
-        if game.split == config.data.train_split:
+        if game.split == data.train_split:
             train_games += 1
             tallies[last_rid][0] += 1
             if game.wall_hash is not None:
                 train_walls.add(game.wall_hash)
             if game.game.wall_tiles is None:
                 train_sim_games += 1
-        elif game.split == config.data.val_split:
+        elif game.split == data.val_split:
             val_games += 1
             tallies[last_rid][1] += 1
             if game.wall_hash is not None:
@@ -201,8 +204,11 @@ def _scan_report(
     decides detached over staged wall-id lists; this function keeps the
     ``ContractError`` shaping and the stale-.so fallback (byte-identical oracle inline).
     """
-    train_split = config.data.train_split
-    val_split = config.data.val_split
+    data = config.data
+    if data is None:
+        raise ContractError("scan report requires a data section (rl runs carry data=None)")
+    train_split = data.train_split
+    val_split = data.val_split
     try:
         from hydra2 import _native as _ext  # pyrefly: ignore[missing-import]
     except ImportError:
@@ -247,6 +253,9 @@ def _scan_corpus_parallel(
     first-seen-wins). Split assignment is pure per game
     (:func:`assign_split`), so parallel decode cannot change partitions.
     """
+    data = config.data
+    if data is None:
+        raise ContractError("parallel scan requires a data section (rl runs carry data=None)")
     paths = [str(entry.path) for entry in manifest.files]
     keys = [group_key_for_entry(root_id=entry.root_id, path=entry.path) for entry in manifest.files]
     train_walls: set[str] = set()
@@ -269,7 +278,7 @@ def _scan_corpus_parallel(
     # _PARALLEL_EXPAND_MAX_WORKERS).
     ctx = _mp_get_context("spawn")
     with ProcessPoolExecutor(
-        max_workers=config.data.num_workers, mp_context=ctx, initializer=_pool_worker_init
+        max_workers=data.num_workers, mp_context=ctx, initializer=_pool_worker_init
     ) as pool:
         for file_index, games in enumerate(pool.map(_scan_file_games, paths, chunksize=32)):
             group_key = keys[file_index]
@@ -289,14 +298,14 @@ def _scan_corpus_parallel(
                     group_key=group_key, seed=config.seeds.data_seed, ratios=ratios
                 )
                 emitted += 1
-                if assigned == config.data.train_split:
+                if assigned == data.train_split:
                     train_games += 1
                     tallies[file_rid][0] += 1
                     if wall_hash is not None:
                         train_walls.add(wall_hash)
                     if is_sim:
                         train_sim_games += 1
-                elif assigned == config.data.val_split:
+                elif assigned == data.val_split:
                     val_games += 1
                     tallies[file_rid][1] += 1
                     if wall_hash is not None:
@@ -390,23 +399,26 @@ def _scan_corpus_cached(
     Stale/corrupt entries fail closed to a full scan (never raise, never
     partial).
     """
-    roots = list(config.data.roots)
+    data = config.data
+    if data is None:
+        raise ContractError("cached scan requires a data section (rl runs carry data=None)")
+    roots = list(data.roots)
     cache_file = scan_cache_path(run_dir)
     shared = _shared_scan_cache_path(
         manifest=manifest,
         stream_digest=stream_digest,
         seed=config.seeds.data_seed,
         ratios=ratios,
-        train_split=config.data.train_split,
-        val_split=config.data.val_split,
+        train_split=data.train_split,
+        val_split=data.val_split,
     )
     cached = load_scan_cache(
         cache_file,
         manifest_digest=stream_digest,
         seed=config.seeds.data_seed,
         ratios=ratios,
-        train_split=config.data.train_split,
-        val_split=config.data.val_split,
+        train_split=data.train_split,
+        val_split=data.val_split,
         roots=roots,
         holdout=HOLDOUT_SPEC,
     )
@@ -416,8 +428,8 @@ def _scan_corpus_cached(
             manifest_digest=stream_digest,
             seed=config.seeds.data_seed,
             ratios=ratios,
-            train_split=config.data.train_split,
-            val_split=config.data.val_split,
+            train_split=data.train_split,
+            val_split=data.val_split,
             roots=roots,
             holdout=HOLDOUT_SPEC,
         )
@@ -428,8 +440,8 @@ def _scan_corpus_cached(
                 manifest_digest=stream_digest,
                 seed=config.seeds.data_seed,
                 ratios=ratios,
-                train_split=config.data.train_split,
-                val_split=config.data.val_split,
+                train_split=data.train_split,
+                val_split=data.val_split,
                 roots=roots,
                 holdout=HOLDOUT_SPEC,
                 scan=dict(cached),
@@ -477,8 +489,8 @@ def _scan_corpus_cached(
         manifest_digest=stream_digest,
         seed=config.seeds.data_seed,
         ratios=ratios,
-        train_split=config.data.train_split,
-        val_split=config.data.val_split,
+        train_split=data.train_split,
+        val_split=data.val_split,
         roots=roots,
         holdout=HOLDOUT_SPEC,
         scan=scan,
@@ -488,8 +500,8 @@ def _scan_corpus_cached(
         manifest_digest=stream_digest,
         seed=config.seeds.data_seed,
         ratios=ratios,
-        train_split=config.data.train_split,
-        val_split=config.data.val_split,
+        train_split=data.train_split,
+        val_split=data.val_split,
         roots=roots,
         holdout=HOLDOUT_SPEC,
         scan=scan,

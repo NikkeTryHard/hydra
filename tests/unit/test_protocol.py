@@ -140,6 +140,11 @@ class TestRuntimeIdentity:
         value = runtime_identity(base_spec())
         assert value == _bridge_contracts.make_digest_text(value)
 
+    def test_replay_arm_hashes_and_differs_from_eager(self):
+        replay = runtime_identity(base_spec(compile_mode="cuda_graph_replay"))
+        assert replay == _bridge_contracts.make_digest_text(replay)
+        assert replay != runtime_identity(base_spec())
+
 
 class TestBuildOrder:
     def test_eager_fp32_compiles_not_and_patches_not(self, stub_compile):
@@ -214,6 +219,20 @@ class TestBuildOrder:
         )
         assert len(stub_compile) == 1
         assert adapter.events[0][1]["patch_value"] != "off"
+
+    def test_replay_arm_rejected_before_compile_or_setup(self, stub_compile):
+        # RL-only arm never reaches torch.compile and never falls back to
+        # eager setup: the adapter sees nothing and no compile is recorded.
+        adapter = RecordingAdapter()
+        with pytest.raises(ContractError, match="RL-only"):
+            build_runtime(
+                adapter=adapter,
+                model=torch.nn.Linear(4, 4),
+                optimizer=None,
+                spec=base_spec(compile_mode="cuda_graph_replay"),
+            )
+        assert adapter.events == []
+        assert stub_compile == []
 
     def test_handle_is_frozen_slots(self):
         handle_fields = {f.name for f in dataclasses.fields(RuntimeHandle)}

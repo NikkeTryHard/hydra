@@ -120,7 +120,7 @@ class RiichiEnvExactSimulator(AdapterStepMixin):  # type: ignore[misc]
         self._schedule_tiles: tuple[TileId, ...] = ()
         self._env: riichienv.RiichiEnv | None = None
         self._cursor = 0
-        self._hand_index = -1
+        self._hand_index = 0
         self._events: list[EventEnvelope] = []
         self._seq = 0
         self._applied: list[CanonicalAction] = []
@@ -207,7 +207,6 @@ class RiichiEnvExactSimulator(AdapterStepMixin):  # type: ignore[misc]
         self._raw_outcome = None
         self._settlements = []
         self._schedule_tiles = tuple(wall.physical_tiles)
-        self._hand_index = -1
         self._last_masks = {}
         self._stamp_id = None
         self._pre_step_hands = {}
@@ -224,6 +223,7 @@ class RiichiEnvExactSimulator(AdapterStepMixin):  # type: ignore[misc]
         self._starting_scores = starting
         self._open_hand(
             wall.physical_tiles,
+            hand_index=0,
             oya_engine=int(perm[0]),
             honba=0,
             kyotaku=0,

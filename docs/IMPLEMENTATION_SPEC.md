@@ -1575,7 +1575,7 @@ class MatchedObjectiveGroup:
     ach_run_spec_hash: DigestText
 ```
 
-Exactly one training source applies: supervised/distill runs require `dataset_manifest_hash` and no rollout; RL requires `rollout_artifact_hash`, behavior checkpoint, and no mutable dataset source. BC reference is required exactly when objective `w_bc > 0`. `optimizer_minibatch_size = microbatch_size * accumulation_steps`; all sizes, update counts, and checkpoint frequency are positive. `minibatch_order_hash` binds the complete ordered row-ID batches for every update. Registered optimizer/scheduler/objective/selection/scaler IDs have closed parameter schemas; unknown or extra keys fail validation. Stopping rule is finite and closed by `run_kind`; RL matched-objective runs MUST use the same rule without adaptive metric peeking. Runtime and resource reservation exist before launch. Actual result records bind RunSpec, runtime, and reconciled resource-ledger hashes.
+Exactly one training source applies: supervised/distill runs require `dataset_manifest_hash` and no rollout; RL requires `rollout_artifact_hash`, behavior checkpoint, and no mutable dataset source. BC reference is required exactly when objective `w_bc > 0`. For supervised/distill, `optimizer_minibatch_size = microbatch_size * accumulation_steps`. For RL these fields are capacities with the same equality: every frozen optimizer batch additionally records its exact positive row count and ordered microbatch counts, including short tails; their sum equals the true optimizer count, none exceeds its capacity, and no row is dropped or duplicated. All sizes, update counts, and checkpoint frequency are positive. `minibatch_order_hash` binds the complete ordered row-ID batches and exact counts for every update. Registered optimizer/scheduler/objective/selection/scaler IDs have closed parameter schemas; unknown or extra keys fail validation. Stopping rule is finite and closed by `run_kind`; RL matched-objective runs MUST use the same rule without adaptive metric peeking. Runtime and resource reservation exist before launch. Actual result records bind RunSpec, runtime, and reconciled resource-ledger hashes.
 Matched PPO/ACH RunSpecs MUST have byte-identical canonical values for every field except `objective_id`, objective-specific parameters, and `digest`. Shared objective parameters `w_value`, `w_bc`, and `alpha` MUST be present and byte-identical in both specs; both BC reference checkpoint hashes MUST equal the rollout rows when `w_bc > 0`. `shared_run_fields_hash` hashes all shared fields plus shared objective parameters and MUST match both specs. Any ModelSpec/RunSpec/RlRolloutArtifact field change invalidates dependent caches, checkpoints, exports, result tables, promotion records, and the matched-objective group.
 
 Supervised objective:
@@ -1617,6 +1617,8 @@ L_PPO       = -mean_batch(surrogate) + w_value * L_value + w_bc * L_bc
 ```
 
 Require `0 < clip_eps < 1`, `eps_std > 0`, and `w_value,w_bc,alpha >= 0`. `pi_bc` is legal softmax of the rollout's frozen BC logits; when `w_bc == 0`, BC fields MUST be absent and `L_bc=0`. PPO uses unclipped four-seat value MSE and no adaptive KL stop. Ratio, clip fraction, legal entropy, legal KL, value loss, finite loss/gradient, and explained variance by seat are reported.
+
+All PPO statistics and reductions use the complete true optimizer minibatch before microbatch splitting. Advantage normalization is exactly the equation above, with `eps_std` INSIDE the square root; a singleton or constant advantage batch normalizes to zero. Accumulated microsteps sum policy/entropy/BC numerators divided by the true row count and value squared-error numerators divided by four times that count. Illegal probability and illegal-logit gradients are exactly zero; entropy never multiplies zero probability by negative infinity. No dropped tails, duplicate fill rows, extra epochs for utilization, or adaptive stopping are permitted.
 
 ### 20.2 Optional direct-sampled ACH objective
 
@@ -1731,6 +1733,51 @@ Before changing any schema, rule, action ordering, visibility field, model tenso
 <critical>
 No builder discretion exists to weaken contracts for convenience. Unknown Tenhou value, absent authorization, unavailable dependency, missing pilot threshold, unsupported engine behavior, stale hash, or insufficient held-out data means `blocked`. It NEVER means use engine defaults, approximate a rule, expose hidden state, silently skip data, invent a threshold, claim neutrality, or ship partial behavior.
 </critical>
+
+### Authorized continuous-RL change record — 2026-09-30
+
+The user explicitly authorized the complete planned implementation, dependency/lock changes, and schema cutover. The accepted execution split is CPU simulation plus GPU inference/training, with measured sustained useful-work saturation of at least 95% as the acceptance target, not a guarantee or a fabricated result.
+
+- Reference adapter semantics become `2.0.0`: `_open_hand` exclusively assigns an explicit physical-hand ordinal; emitted start/end events, continuation-wall keys, and engine seeds use that ordinal. Legacy adapter identities, derived game/event/state/observation/transition hashes, snapshots, and dependent results are incompatible and must be regenerated without migration shims. Rules, action vocabulary, observation field geometry, and pretrained model weights remain unchanged.
+- Native rules dependency is `riichienv-core` from `https://github.com/smly/RiichiEnv`, revision `479c1faeb33d082965eef8198f63261a79c0fce3`, version `0.4.10`, `default-features=false`. The lockfile and environment/build identities change; the core remains eager and accelerator quarantine remains intact.
+- New closed `PipelineSpec`, `ControlSnapshot`, `NativeSnapshot`, and `ReplayIndex` artifacts use schema `1.0.0`, exact compatibility, RFC 8785 bytes, and SHA-256 identities excluding only their own digest. The complete field registration, numeric recipes, root-relative locators, and rejection rules must be published before their producers/consumers run. Their required semantic contents are specified in `RL_CONTINUOUS_PIPELINE_PLAN.md` sections 7 and 14; this authorization does not permit unknown fields or invented fallback semantics.
+- RL configuration is a discriminated source: an immutable rollout source and explicit RL section replace supervised data roots. Initial IL weights are loaded without supervised optimizer, scheduler, or RNG state. The ordinary checkpoint schema remains unchanged; every ordinary snapshot within a generation uses the fixed generation-initialization parent. Async native frontier/progress belongs only to the separately digested control snapshot and never seeds policy, wall, or shuffle identity.
+- The capacity/count amendment above supersedes the old exact-size interpretation for RL only. PPO normalization remains the authoritative section 20.1 equation, including epsilon placement; conflicting planning pseudocode must be corrected rather than silently changing the objective.
+- Fabric is absent and must not be reinstalled. Qualification uses the existing plain-PyTorch single-device path, corrected-reference differential parity, deterministic replay/resume, portable bridge value-plus-timing evidence, and the actual bounded pilot.
+- Implementation authorization is not WP-05C, WP-06, or WP-11 qualification. Existing entry records and the initial checkpoint must be verified or generated before a qualified pilot; absent records remain explicitly absent. No strength, throughput, saturation, or promotion claim follows from this change record.
+
+Registered schema payload identities (each excludes only its own `digest`; ordinary checkpoint manifest identity still hashes all nineteen fields):
+
+| Artifact schema | Exact registered payload identity |
+| --- | --- |
+| `configs/contracts/rl_pipeline_v2.json` | `sha256:f2ab01f57ac961c573a55572a93c93fc881cd1d9ee1337ee0fd2cfe695064301` |
+| `configs/contracts/rl_control_v1.json` | `sha256:fd684dd04d13d1ac4c8b420082638be6d1ad9b7f67f6035a9325a6ed9f2d849d` |
+| `configs/contracts/rl_native_snapshot_v1.json` | `sha256:639e83d5f2fe1f3bab2aea24b9979a8e5f8cfc346db8af9d0b91926608eac3e5` |
+| `configs/contracts/rl_replay_index_v1.json` | `sha256:025e9c11831053b7a172b88b2a187ed40095c6323c308d59ce6cccb7eb7e5ee3` |
+| `configs/contracts/rl_pipeline_v3.json` (native-live, 2026-10-04) | `sha256:4d83759c2d8e03672b3d28586ab40adbebe7567d77c3144d7fb20cbda2e1bf66` |
+These identities register the closed schemas, not successful qualification. Semantic `replicate_id` and `attempt_id` are nonnegative integers, matching the existing random-stream authority; string labels and bools are incompatible and rejected.
+
+### Authorized exact CUDA replay change record — 2026-10-01
+
+The user approved qualification of the `cuda_graph_replay` execution arm for the owned CUDA/BF16 continuous-RL route. This arm captures existing actor/sampler and PPO forward/backward operators, not the simulator, optimizer, scheduler, or a new numerical kernel. Generic supervised/runtime construction rejects this RL-only mode. Eager remains the comparator; qualification is required before performance or resume claims.
+
+PipelineSpec alone becomes schema `2.0.0`. Its required `resource_profile.execution_profile_hash` is the existing RFC 8785/SHA-256 identity of `{adapter_id, device, precision, compile_mode}`. Legacy pipeline envelopes are incompatible and rejected; control, native-snapshot, replay-index, and ordinary checkpoint schemas remain unchanged. Actual learner, event-arena, observation-identity, core/row/driver, and pool-fill source bytes now participate in existing derivation bindings; dependent old profiles must be regenerated, without changing C0 weights or wall seed keys.
+
+Actor capture uses each real `(B,T)` geometry without fake rows and retains live inputs, masks, reserved uniforms, and in-place published weights. Learner capture applies only to complete fixed-capacity batches; genuine short tails retain the exact eager true-count normalization and divisor. First-micro overwrite and later-micro accumulation preserve autograd-active parameter membership, including unused gradients remaining `None`. One compute stream serializes actor/learner work. Capture/warmup is overhead, never useful occupancy. Required evidence includes changed-input/weight/optimizer liveness, value/gradient/update parity, real tails, bounded memory, full-pipeline useful kernel-interval occupancy, and interrupted/resumed equivalence.
+
+
+
+### Authorized native-live RL change record — 2026-10-04
+
+The user approved the clean fast-live Mahjong RL cutover (`native-rl-handoff` plan): train directly from Rust-owned compact trajectories with in-memory frozen actor activation, without canonical rollout export, trajectory persistence, seal/materialization, or runtime-control publication gating learning or actor activation.
+
+1. Reason: remove the measured generation-boundary stall (seal wait, tape durability, control publication) from the GPU-owner path while preserving eight-generation, 128-complete-games-per-generation, one-epoch, one-future, exact rules/visibility, categorical sampling law, and PPO equations.
+2. Invalidated identities: RL pipeline envelope and every `pipeline_spec_id`-derived binding (shuffle `candidate_id`, collector profile/context bindings, run descriptor `pipeline_spec_id`). Old sealed-run control tips are not restart inputs for the new loop. Ordinary supervised checkpoint schema (19-field manifest, six payload sections) is unchanged; initial pretrained ordinary checkpoints remain valid for weight-only initialization. Control, native-snapshot, and replay-index archive schemas stay at their existing versions for archive/qualification consumers.
+3. Compatibility: exact RL-profile break. Pipeline schema becomes `3.0.0` with mandatory `training_source='native_live_v1'` and `recovery='generation_restart_v1'` const fields (`configs/contracts/rl_pipeline_v3.json`, payload digest `sha256:4d83759c2d8e03672b3d28586ab40adbebe7567d77c3144d7fb20cbda2e1bf66`). Production v2 envelopes reject on the new path; the historical v2 file is retained as a record, not a supported fallback. No old-versus-new trajectory identity claim is permitted: policy identity includes the pipeline/derivation recipe and therefore changes sampler/shuffle streams by design.
+4. Migration: rebuild pipeline envelopes through `prepare_run` (v3 live fields included before digest); per-generation live collector bindings via `open_live`/`drain_tape`; typed replay registration (`register_live_replay`) and slot fills (`fill_live_slab`) with no seal stamps or file round trips; generation restart containers (`hydra2.rl_restart/v1`) with atomic learner/actor pairing and `restart.json` pointer. No padding or semantic shim for incompatible data; no compatibility aliases.
+5. Document updates: this record, `docs/RL_CONTINUOUS_PIPELINE_PLAN.md` sections 5-7 (live source/recovery, removal of unsupported owner/counter claims), and `docs/BUILD_EXECUTION_PLAN.md` WP-11 acceptance. Project direction/algorithm documents unchanged except clauses mandating the replaced source/recovery behavior.
+6. Fixtures: old/new distinction proved by v2-reject and live-const gates (`pipeline_gate_rejects_old_version_and_missing_hash`), clone-export vs destructive-drain equivalence, direct-vs-sealed replay parity under identical shuffle key, restart capture/ordering/resume checks, and generation-restart smoke comparing the same v3 profile (never v2 bytes).
+7. Gates: `pixi run config-check`, portable `pixi run build-ext`, `cargo nextest -p hydra-bridge` scoped suites, `test-unit` files for pool/artifact/restart, `test-cpu` + `test-serial --package WP-11`, full `pixi run test` both lanes (shared contracts moved; supervised checkpoint/seed regression unchanged), then the fixed-workload eight-generation completion/latency proof.
 
 ## Status 2026-09-04
 

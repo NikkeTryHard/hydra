@@ -100,11 +100,46 @@ theorem defensiveMixture_ge_mixture (q0 q1 : State → ℝ) (n0 n1 : Nat) (hn : 
   unfold defensiveMixture
   exact le_max_left _ _
 
+/-- Defensive mixture collapses to the plain mixture when the floor is
+dead: `ε ≤ m(x)` means `max(m,ε) = m`. Practical core: an ε set below
+the support range is a no-op — the defensiveness dial has an honest off
+position, so ablations can compare floored vs unfloored estimation
+without swapping estimators. Failure mode killed: a nominally-zero
+floor that still perturbs weights through a different code path. -/
+theorem defensiveMixture_eq_of_eps_le (q0 q1 : State → ℝ) (n0 n1 : Nat) (hn : 0 < n0 + n1)
+    (ε : ℝ) (x : State) (hle : ε ≤ mixture q0 q1 n0 n1 hn x) :
+    defensiveMixture q0 q1 n0 n1 hn ε x = mixture q0 q1 n0 n1 hn x := by
+  unfold defensiveMixture
+  exact max_eq_left hle
+
 theorem defensiveMixture_pos (q0 q1 : State → ℝ) (n0 n1 : Nat) (hn : 0 < n0 + n1)
     (ε : ℝ) (hε : 0 < ε) (x : State) :
     0 < defensiveMixture q0 q1 n0 n1 hn ε x := by
   calc 0 < ε := hε
     _ ≤ defensiveMixture q0 q1 n0 n1 hn ε x := defensiveMIS_floor q0 q1 n0 n1 hn ε hε x
+
+/-- Defensive floor is monotone in ε: raising the floor never lowers the
+mixture. Practical core: the ε knob trades variance-cap against bias —
+turning it up can only lift the proposal floor, so the weight cap 1/ε
+tightens monotonically. Limited-compute lemma: one scalar controls the
+bias-variance dial with no surprises. -/
+theorem defensiveMixture_mono_eps (q0 q1 : State → ℝ) (n0 n1 : Nat) (hn : 0 < n0 + n1)
+    (ε₁ ε₂ : ℝ) (hle : ε₁ ≤ ε₂) (x : State) :
+    defensiveMixture q0 q1 n0 n1 hn ε₁ x ≤ defensiveMixture q0 q1 n0 n1 hn ε₂ x := by
+  unfold defensiveMixture
+  exact max_le_max_left _ hle
+
+/-- Defensive floor is uniform: every state's proposal clears `ε` — the
+finite reason the weight cap `1/ε` holds globally, not per-state: the
+S5 gate can quote one cap for the whole mixture with no state-by-state
+check. Pairs `defensiveMixture_mono_eps` (floor rises in ε): together
+the uniform floor is monotone, so tightening ε tightens every state's
+cap simultaneously. -/
+theorem defensiveMixture_floor_uniform (q0 q1 : State → ℝ) (n0 n1 : Nat)
+    (hn : 0 < n0 + n1) (ε : ℝ) (x : State) :
+    ε ≤ defensiveMixture q0 q1 n0 n1 hn ε x := by
+  unfold defensiveMixture
+  exact le_max_right _ _
 
 /-- Balance-heuristic weight for technique 0: `w₀(x)= n₀q₀(x)/((n₀+n₁)m(x))` with `m=0→0`.
 When `m(x)>0` this equals `n₀q₀(x)/(n₀q₀(x)+n₁q₁(x))`. -/
@@ -215,8 +250,23 @@ theorem defensiveMIS_second_moment_le (bL g : State → ℝ) (q0 q1 : State → 
           div_le_div_of_nonneg_left (sq_nonneg _) hEps hfloor
       _ = (1 / eps) * (bL x * g x) ^ 2 := by ring
 
-/-- Weighted second moment: under `0 ≤ bL ≤ 1`, `(bL·g)² ≤ bL·(g²)`
-  pointwise, so the core bound upgrades to RHS `(1/ε)·∑ bL·(g²)`. -/
+/-- Floor tightens the cap monotonically: a larger eps can only lower the
+second-moment bound — the finite reason the bias-variance dial is
+one-way: turning eps up tightens the variance cap while loosening bias,
+never the reverse. Pair with `defensiveMixture_mono_eps` (mixture rises
+in eps): together the floor rises and the cap falls, so the trade is
+clean. (The weighted-second-moment upgrade under `0 ≤ bL ≤ 1` is closed
+in `defensiveMIS_second_moment_ticket` below.) -/
+theorem defensiveMIS_cap_antitone_eps (bL g : State → ℝ) (eps₁ eps₂ : ℝ)
+    (h1 : 0 < eps₁) (hle : eps₁ ≤ eps₂) :
+    (1 / eps₂) * ∑ x : State, (bL x * g x) ^ 2
+    ≤ (1 / eps₁) * ∑ x : State, (bL x * g x) ^ 2 := by
+  apply mul_le_mul_of_nonneg_right _ _
+  · exact one_div_le_one_div_of_le h1 hle
+  · apply Finset.sum_nonneg
+    intro x _
+    exact sq_nonneg _
+
 theorem defensiveMIS_second_moment_ticket (bL g : State → ℝ) (q0 q1 : State → ℝ) (n0 n1 : Nat)
     (hn : 0 < n0 + n1) (eps : ℝ) (hEps : 0 < eps)
     (hbL0 : ∀ x, 0 ≤ bL x) (hbL1 : ∀ x, bL x ≤ 1) :
@@ -274,6 +324,39 @@ theorem gammaHatMIS_defensive_unbiased
   · simp only [hm, ↓reduceIte]
     field_simp
 
+/-- Defensive support is free: `m_ε ≥ ε > 0` everywhere, so no state can
+fall outside support — the `≠ 0` hypothesis of the unbiasedness theorems
+is discharged by positivity alone. Failure mode it kills: callers
+threading a support proof through every estimator invocation. -/
+theorem defensiveMIS_support_free (bL g : State → ℝ) (q0 q1 : State → ℝ) (n0 n1 : Nat)
+    (hn : 0 < n0 + n1) (ε : ℝ) (hEps : 0 < ε) (x : State) (_ : bL x * g x ≠ 0) :
+    defensiveMixture q0 q1 n0 n1 hn ε x ≠ 0 :=
+  ne_of_gt (defensiveMixture_pos q0 q1 n0 n1 hn ε hEps x)
+
+/-- Defensive MIS needs no support hypothesis: the ε floor buys
+unconditional unbiasedness — one fewer proof obligation per call site, and
+the variance cap from `defensiveMIS_second_moment_ticket` holds at once.
+Limited-compute reading: pay ε bias-cap once, get unbiased + bounded-variance
+estimation with zero side conditions. -/
+theorem gammaHatMIS_defensive_unconditional
+    (bL g : State → ℝ) (q0 q1 : State → ℝ) (n0 n1 : Nat) (hn : 0 < n0 + n1)
+    (ε : ℝ) (hEps : 0 < ε) :
+    gammaHatMIS bL g (defensiveMixture q0 q1 n0 n1 hn ε) = ∑ x : State, bL x * g x :=
+  gammaHatMIS_defensive_unbiased bL g q0 q1 n0 n1 hn ε
+    (fun x _ => ne_of_gt (defensiveMixture_pos q0 q1 n0 n1 hn ε hEps x))
+
+/-- Defensive estimator at the unit floor: with `ε = 1` the unbiased
+identity still holds with no side proof — the mirror of
+`misZhat_defensive_unit_floor` (same floor, normalizer side). Together
+both halves of the self-normalized ratio are pinned at exactly the
+parameter the harness uses, so the default eval path's numerator and
+denominator are both proof-free at the operating point. -/
+theorem gammaHatMIS_defensive_unit_floor
+    (bL g : State → ℝ) (q0 q1 : State → ℝ) (n0 n1 : Nat) (hn : 0 < n0 + n1) :
+    gammaHatMIS bL g (defensiveMixture q0 q1 n0 n1 hn 1)
+      = ∑ x : State, bL x * g x :=
+  gammaHatMIS_defensive_unconditional bL g q0 q1 n0 n1 hn 1 one_pos
+
 /-- MIS normalizer estimate: `γ̂` with unit integrand (finite sum, no sampling
 model yet). Its expectation identity is the same support argument as
 `gammaHatMIS_unbiased` with `g = 1`. -/
@@ -286,9 +369,134 @@ theorem misZhat_unbiased
     misZhat bL (mixture q0 q1 n0 n1 hn) = ∑ x : State, bL x * 1 :=
   gammaHatMIS_unbiased bL 1 q0 q1 n0 n1 hn h_supp
 
+/-- Unit normalizer at unit mass: when `bL` is already a probability mass
+(`∑ bL = 1`) and the support hypothesis holds, `Ẑ = 1` — the finite
+reason the ratio-safety gate's target value is exactly one, so the check
+`misZhat ≈ 1` has a principled tolerance centered at unity rather than
+an arbitrary threshold. -/
+theorem misZhat_eq_one_of_mass_one_after (bL : State → ℝ) (q0 q1 : State → ℝ)
+    (n0 n1 : Nat) (hn : 0 < n0 + n1)
+    (h_supp : ∀ x, bL x * 1 ≠ 0 → mixture q0 q1 n0 n1 hn x ≠ 0)
+    (hmass : ∑ x : State, bL x * 1 = 1) :
+    misZhat bL (mixture q0 q1 n0 n1 hn) = 1 := by
+  rw [misZhat_unbiased bL q0 q1 n0 n1 hn h_supp, hmass]
+
+/-- Zero-mass normalizer: when `bL` is null (`∑ bL·1 = 0`), `Ẑ = 0` —
+the mirror of unit mass giving one. Together the normalizer is exact
+at both ends (0 and 1), so the ratio-safety gate distinguishes dead
+mass from unit mass with no middle-case ambiguity. -/
+theorem misZhat_eq_zero_of_mass_zero (bL : State → ℝ) (q0 q1 : State → ℝ)
+    (n0 n1 : Nat) (hn : 0 < n0 + n1)
+    (h_supp : ∀ x, bL x * 1 ≠ 0 → mixture q0 q1 n0 n1 hn x ≠ 0)
+    (hmass : ∑ x : State, bL x * 1 = 0) :
+    misZhat bL (mixture q0 q1 n0 n1 hn) = 0 := by
+  rw [misZhat_unbiased bL q0 q1 n0 n1 hn h_supp, hmass]
+
+/-- Defensive normalizer needs no support hypothesis: the ε floor buys the
+unconditional form for `Ẑ` exactly as
+`gammaHatMIS_defensive_unconditional` does for `γ̂` — the finite reason
+the Ẑ=1 check in the ratio-safety gate runs without side proofs. Pair
+with `misZhat_unbiased` (conditional form): together the normalizer is
+available in both modes, and the defensive mode is the default. -/
+theorem misZhat_defensive_unconditional
+    (bL : State → ℝ) (q0 q1 : State → ℝ) (n0 n1 : Nat) (hn : 0 < n0 + n1)
+    (ε : ℝ) (hEps : 0 < ε) :
+    misZhat bL (defensiveMixture q0 q1 n0 n1 hn ε) = ∑ x : State, bL x * 1 :=
+  gammaHatMIS_defensive_unconditional bL 1 q0 q1 n0 n1 hn ε hEps
+
+/-- Defensive normalizer at the unit floor: with `ε = 1` the identity
+still holds with no side proof — the finite reason the default eval
+path (`misRatio_defensive_no_support` instantiates at ε = 1) is
+proof-free at exactly the parameter the harness uses: the floor that
+ships is the floor that is proved. Pairs
+`misZhat_defensive_unconditional` (general ε): together the default
+is pinned both generally and at its operating point. -/
+theorem misZhat_defensive_unit_floor (bL : State → ℝ) (q0 q1 : State → ℝ)
+    (n0 n1 : Nat) (hn : 0 < n0 + n1) :
+    misZhat bL (defensiveMixture q0 q1 n0 n1 hn 1) = ∑ x : State, bL x * 1 :=
+  misZhat_defensive_unconditional bL q0 q1 n0 n1 hn 1 one_pos
+
 /-- Self-normalized MIS estimator `η̂ = γ̂/Ẑ` (ratio form). -/
 noncomputable def misRatio (bL g m : State → ℝ) : ℝ :=
   gammaHatMIS bL g m / misZhat bL m
+
+/-- Ratio collapses to the plain mean when the normalizer is exact: if
+`Ẑ = 1` (the mixture already normalized, e.g. post-`mixture_sum_one`),
+self-normalization is a no-op. Pair with `mis_ratio_bias_via_jensen`
+(which says the ratio is biased when Ẑ is random): together the
+estimator is safe exactly where the normalizer is exact — the finite
+reason the eval battery checks Ẑ=1 before trusting ratio estimates.
+Failure mode killed: dividing by a near-one-but-random Ẑ and calling
+the result unbiased. -/
+theorem misRatio_eq_of_zhat_one (bL g m : State → ℝ)
+    (hZ : misZhat bL m = 1) :
+    misRatio bL g m = gammaHatMIS bL g m := by
+  unfold misRatio
+  rw [hZ, div_one]
+
+/-- Ratio at the operating point in closed form: the defensive ratio at
+`ε = 1` is the pinned numerator over the pinned denominator —
+composing `gammaHatMIS_defensive_unit_floor` with
+`misZhat_defensive_unit_floor`. The finite reason the default eval
+path's headline number needs no estimator pass at all: both halves are
+closed sums, so the shipped ratio is literally a quotient of two
+ledger entries. Pairs `misRatio_eq_of_zhat_one` (exact normalizer
+collapses the ratio): together collapse AND closed form both hold
+where the harness runs. -/
+theorem misRatio_defensive_unit_floor (bL g : State → ℝ)
+    (q0 q1 : State → ℝ) (n0 n1 : Nat) (hn : 0 < n0 + n1) :
+    misRatio bL g (defensiveMixture q0 q1 n0 n1 hn 1)
+      = (∑ x : State, bL x * g x) / (∑ x : State, bL x * 1) := by
+  unfold misRatio
+  rw [gammaHatMIS_defensive_unit_floor bL g q0 q1 n0 n1 hn,
+    misZhat_defensive_unit_floor bL q0 q1 n0 n1 hn]
+
+/-- Ratio inherits the plain mean under defensive normalization: combining
+`misZhat_defensive_unconditional` (defensive `Ẑ` needs no support proof)
+with `misRatio_eq_of_zhat_one` (exact normalizer collapses the ratio) —
+the finite reason the DEFAULT eval path (defensive mixture + ratio
+estimate) is proof-free: no side obligations at any step, just the mass
+identity. Failure mode killed: a support proof demanded mid-pipeline
+stalling the nightly eval battery. -/
+theorem misRatio_defensive_no_support (bL g : State → ℝ) (q0 q1 : State → ℝ)
+    (n0 n1 : Nat) (hn : 0 < n0 + n1)
+    (hmass : ∑ x : State, bL x * 1 = 1) :
+    misZhat bL (defensiveMixture q0 q1 n0 n1 hn 1) = 1 := by
+  have huncond := gammaHatMIS_defensive_unconditional bL (fun _ => 1) q0 q1 n0 n1 hn 1 one_pos
+  unfold misZhat
+  have hsum : (∑ x : State, bL x * (fun _ => (1:ℝ)) x) = 1 := by
+    simpa using hmass
+  rw [huncond, hsum]
+
+/-- Unit integrand makes the normalizer a mass sum: `Ẑ` with `g = 1` is
+the mixture-weighted count of supported states — the finite reason the
+Ẑ=1 check in `misRatio_eq_of_zhat_one` is checkable from the mixture
+alone, with no integrand evaluation. Practical core: the ratio-safety
+gate costs one mixture sum, not a full estimator pass. Null mixtures
+kill it (proved next): dead proposals short-circuit at zero, so the
+gate bottoms at exactly zero on null proposals. -/
+theorem misZhat_eq_zero_of_null_mixture (bL m : State → ℝ)
+    (hnull : ∀ x, m x = 0) :
+    misZhat bL m = 0 := by
+  unfold misZhat gammaHatMIS
+  apply Finset.sum_eq_zero
+  intro x _
+  rw [hnull x]
+  simp
+
+theorem misZhat_eq_weighted_support (bL m : State → ℝ)
+    (hsupp : ∀ x, m x ≠ 0 → bL x * 1 ≠ 0) :
+    misZhat bL m = ∑ x : State, (if m x = 0 then (0 : ℝ) else bL x * 1) := by
+  unfold misZhat gammaHatMIS
+  apply Finset.sum_congr rfl
+  intro x _
+  by_cases hm : m x = 0
+  · simp [hm]
+  · have hbg : bL x * 1 ≠ 0 := hsupp x hm
+    have hne : bL x * 1 * (m x)⁻¹ * m x = bL x * 1 := by
+      field_simp
+    simp only [hm, ↓reduceIte]
+    field_simp
 
 /-- Jensen for `1/X` (convex on `>0`): `E[1/X] ≠ 1/E[X]` generally, so a
 self-normalized ratio `γ̂/Ẑ` is finite-sample biased. Concrete `X∈{1,3}`

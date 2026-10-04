@@ -147,8 +147,28 @@ theorem clippedRatio_mem_Icc (r clip_eps : ℝ) (h_eps_pos : 0 ≤ clip_eps) :
   · exact le_min (le_max_right _ _) (by linarith)
   · exact min_le_right _ _
 
+/-- Zero clip radius pins the ratio at 1: with `clip_eps = 0` the trust
+region collapses to a point — no ratio movement survives clipping.
+Practical core: the clip dial has an exact off-check — annealing
+epsilon to zero provably freezes the policy ratio, so the offline-to-
+online handoff can verify the freeze before switching objectives. -/
+theorem clippedRatio_zero_eps (r : ℝ) : clippedRatio r 0 = 1 := by
+  unfold clippedRatio
+  simp
+
 noncomputable def surrogate (r adv_std : ℝ) (clip_eps : ℝ) : ℝ :=
   min (r * adv_std) (clippedRatio r clip_eps * adv_std)
+
+/-- Zero advantage kills the surrogate: with `adv = 0` both arms vanish,
+so the pessimistic objective is exactly zero regardless of ratio or clip
+— the finite reason advantage normalization centers the update: zero-mean
+advantages contribute nothing, and only deviations move the policy.
+Failure mode killed: a nonzero update from a zero-advantage batch
+through a mis-scaled surrogate. -/
+theorem surrogate_zero_adv (r clip_eps : ℝ) :
+    surrogate r 0 clip_eps = 0 := by
+  unfold surrogate
+  simp
 
 theorem surrogate_le_unclipped (r adv_std clip_eps : ℝ) :
     surrogate r adv_std clip_eps ≤ r * adv_std :=
@@ -157,6 +177,34 @@ theorem surrogate_le_unclipped (r adv_std clip_eps : ℝ) :
 theorem surrogate_le_clipped (r adv_std clip_eps : ℝ) :
     surrogate r adv_std clip_eps ≤ clippedRatio r clip_eps * adv_std :=
   min_le_right _ _
+
+/-- Clipped surrogate is bounded above by the unclipped-best of both arms:
+    `min(r·A, clip·A) ≤ max(r·A, clip·A)` trivially, but the useful form is
+    that pessimism never exceeds EITHER arm — the min is below each.
+    Practical core: PPO pessimism can only under-claim, never over-claim
+    the update — limited-compute training never takes a step bigger than
+    both its estimates agree on. -/
+theorem surrogate_le_either_arm (r adv_std clip_eps : ℝ) :
+    surrogate r adv_std clip_eps ≤ r * adv_std
+    ∧ surrogate r adv_std clip_eps ≤ clippedRatio r clip_eps * adv_std :=
+  ⟨surrogate_le_unclipped r adv_std clip_eps,
+   surrogate_le_clipped r adv_std clip_eps⟩
+
+/-- Nonnegative advantage: the surrogate is monotone in the ratio arm — a
+    bigger ratio can't lower the pessimistic objective when advantage is
+    nonneg. Finite core behind trust-region monotonicity on the win side. -/
+theorem surrogate_mono_ratio_nonneg_adv (r₁ r₂ adv_std clip_eps : ℝ)
+    (hadv : 0 ≤ adv_std) (h : r₁ ≤ r₂) :
+    surrogate r₁ adv_std clip_eps ≤ max (r₂ * adv_std)
+      (clippedRatio r₂ clip_eps * adv_std) := by
+  unfold surrogate
+  have h1 : r₁ * adv_std ≤ r₂ * adv_std :=
+    mul_le_mul_of_nonneg_right h hadv
+  calc min (r₁ * adv_std) (clippedRatio r₁ clip_eps * adv_std)
+      ≤ r₁ * adv_std := min_le_left _ _
+    _ ≤ r₂ * adv_std := h1
+    _ ≤ max (r₂ * adv_std) (clippedRatio r₂ clip_eps * adv_std) :=
+        le_max_left _ _
 
 noncomputable def batchSurrogate (legal : LegalMask Action) (logits logits_old : Logits Action)
     (hexists : ∃ a, legal a = true) (adv : Action → ℝ) (clip_eps : ℝ) : ℝ :=
@@ -173,6 +221,23 @@ theorem batchSurrogate_ignores_illegal_adv (legal : LegalMask Action)
   intro a _
   by_cases ha : legal a = true
   · simp [ha, hagree a ha]
+  · simp [ha]
+
+/-- Zero advantages kill the batch surrogate: with every advantage zero,
+the masked sum vanishes regardless of logits or clip — chaining
+`surrogate_zero_adv` through the illegal mask. Together with
+`batchSurrogate_ignores_illegal_*` the surrogate is exactly zero on any
+batch whose legal advantages are all zero, so advantage normalization
+is load-bearing at batch level too, not just per-sample. -/
+theorem batchSurrogate_zero_adv (legal : LegalMask Action)
+    (logits logits_old : Logits Action) (hexists : ∃ a, legal a = true)
+    (clip_eps : ℝ) :
+    batchSurrogate legal logits logits_old hexists (fun _ => 0) clip_eps = 0 := by
+  unfold batchSurrogate
+  apply Finset.sum_eq_zero
+  intro a _
+  by_cases ha : legal a = true
+  · simp [ha, surrogate_zero_adv]
   · simp [ha]
 
 theorem batchSurrogate_ignores_illegal_logits (legal : LegalMask Action)
@@ -245,6 +310,16 @@ theorem valueLoss_zero_iff (v_target v_pred : ℝ) : valueLoss v_target v_pred =
     linarith
   · intro h; rw [h, sub_self, sq, mul_zero]
 
+/-- Value loss is symmetric in target and prediction: the squared error
+never cares which side is called truth. Practical core: teacher-student
+swaps (distilling search values into the net, then distilling the net
+back into search priors) measure the same loss in both directions — no
+orientation bookkeeping across the distill loop. -/
+theorem valueLoss_symm (v_target v_pred : ℝ) :
+    valueLoss v_target v_pred = valueLoss v_pred v_target := by
+  unfold valueLoss
+  rw [← neg_sub v_pred v_target, neg_sq]
+
 noncomputable def batchValueLoss (states : Finset State) (v_target v_pred : State → ℝ) : ℝ :=
   (∑ s ∈ states, valueLoss (v_target s) (v_pred s)) / (states.card : ℝ)
 
@@ -254,6 +329,43 @@ theorem batchValueLoss_nonneg (states : Finset State) (v_target v_pred : State �
   apply div_nonneg
   · apply Finset.sum_nonneg; intro s _; exact valueLoss_nonneg _ _
   · positivity
+
+/-- Batch value loss vanishes when every state agrees: pointwise zeros
+sum to zero — the finite reason a perfect critic scores exactly zero
+on any batch, so the batch objective has no irreducible floor hiding
+behind averaging. Pairs `valueLoss_zero_iff` (pointwise sharpness):
+together sharpness lifts from states to batches. -/
+theorem batchValueLoss_zero_of_all_zero (states : Finset State)
+    (v_target v_pred : State → ℝ)
+    (h : ∀ s ∈ states, valueLoss (v_target s) (v_pred s) = 0) :
+    batchValueLoss states v_target v_pred = 0 := by
+  unfold batchValueLoss
+  rw [Finset.sum_eq_zero h]
+  simp
+
+/-- Batch value loss is bounded by the worst state loss: the mean never
+exceeds the max. Practical core: the critic's batch error is gated by its
+worst state — cap the max per-state error and the batch follows, so
+limited-compute value training can early-stop on the max instead of the
+full batch mean. -/
+theorem batchValueLoss_le_max (states : Finset State) (hne : states.Nonempty)
+    (v_target v_pred : State → ℝ) :
+    batchValueLoss states v_target v_pred
+      ≤ states.sup' hne (fun s => valueLoss (v_target s) (v_pred s)) := by
+  unfold batchValueLoss
+  have hcard_pos : (0 : ℝ) < (states.card : ℝ) :=
+    Nat.cast_pos.mpr (Finset.card_pos.mpr hne)
+  rw [div_le_iff₀ hcard_pos]
+  have hsup : ∀ s ∈ states, valueLoss (v_target s) (v_pred s)
+      ≤ states.sup' hne (fun s => valueLoss (v_target s) (v_pred s)) :=
+    fun s hs => Finset.le_sup' (fun s => valueLoss (v_target s) (v_pred s)) hs
+  calc ∑ s ∈ states, valueLoss (v_target s) (v_pred s)
+      ≤ ∑ _s ∈ states, states.sup' hne (fun s => valueLoss (v_target s) (v_pred s)) :=
+        Finset.sum_le_sum hsup
+    _ = states.card • states.sup' hne (fun s => valueLoss (v_target s) (v_pred s)) := by
+        rw [Finset.sum_const]
+    _ = states.sup' hne (fun s => valueLoss (v_target s) (v_pred s)) * (states.card : ℝ) := by
+        rw [nsmul_eq_mul, mul_comm]
 
 end ValueLoss
 
@@ -282,6 +394,41 @@ theorem entropy_ignores_illegal_logits (legal : LegalMask Action)
     · simp [ha]
   rw [h_sum_eq]
 
+/-- Entropy is nonnegative: each legal term `p·log p ≤ 0` (log p ≤ 0 on
+    `(0,1]`), illegal actions contribute exactly 0. Practical core: the
+    entropy bonus coefficient sweeps a meaningful knob — entropy never goes
+    negative, so a positive bonus always rewards stochasticity and can never
+    invert into a determinism bonus. Limited-compute lemma: tune the bonus
+    sign with confidence. -/
+theorem entropy_nonneg (legal : LegalMask Action)
+    (logits : Logits Action) (hexists : ∃ a, legal a = true) :
+    0 ≤ entropy legal logits hexists := by
+  unfold entropy
+  have hle : ∀ a : Action, legalSoftmax legal logits hexists a ≤ 1 := by
+    intro a
+    have hnn : ∀ b ∈ (Finset.univ : Finset Action),
+        0 ≤ legalSoftmax legal logits hexists b :=
+      fun b _ => legalSoftmax_nonneg legal logits hexists b
+    have h1 := Finset.single_le_sum hnn (Finset.mem_univ a)
+    rw [legalSoftmax_sum_one legal logits hexists] at h1
+    exact h1
+  have hterm : ∀ a : Action, (if legal a = true
+      then legalSoftmax legal logits hexists a
+        * Real.log (legalSoftmax legal logits hexists a) else (0 : ℝ)) ≤ 0 := by
+    intro a
+    by_cases ha : legal a = true
+    · simp only [ha, if_true]
+      have h0 : 0 ≤ legalSoftmax legal logits hexists a :=
+        legalSoftmax_nonneg legal logits hexists a
+      have hlog : Real.log (legalSoftmax legal logits hexists a) ≤ 0 :=
+        Real.log_nonpos h0 (hle a)
+      exact mul_nonpos_of_nonneg_of_nonpos h0 hlog
+    · simp [ha]
+  have hsum : ∑ a : Action, (if legal a = true
+      then legalSoftmax legal logits hexists a
+        * Real.log (legalSoftmax legal logits hexists a) else (0 : ℝ)) ≤ 0 :=
+    Finset.sum_nonpos (fun a _ => hterm a)
+  linarith
 /-- Honest entropy gradient-zero (mirror of `maskedPPO_deriv_illegal_zero`):
 varying an illegal logit leaves `entropy` constant
 (by `entropy_ignores_illegal_logits`), so its `deriv` is `0`. -/
@@ -329,6 +476,47 @@ theorem ppoLoss_ignores_illegal_logits (legal : LegalMask Action)
   rw [maskedPPO_zero_grad_illegal_logits legal logits1 logits2 logits_old hexists adv clip_eps hagree,
       entropy_ignores_illegal_logits legal logits1 logits2 hexists hagree]
 
+/-- Zero entropy weight drops the bonus: at `w_entropy = 0` the loss is
+surrogate-plus-value only — the finite reason entropy annealing ends at
+a pure exploitation objective. Pair with `entropy_nonneg` (positive weight
+rewards stochasticity): together the sweep spans [pure-exploit, bonus]
+with the off position exact. -/
+theorem ppoLoss_zero_entropy_weight (legal : LegalMask Action)
+    (logits logits_old : Logits Action)
+    (hexists : ∃ a, legal a = true) (adv : Action → ℝ) (clip_eps w_value : ℝ)
+    (states : Finset Action) (v_target v_pred : Action → ℝ) :
+    ppoLoss legal logits logits_old hexists adv clip_eps w_value 0 states v_target v_pred =
+    - batchSurrogate legal logits logits_old hexists adv clip_eps
+    + w_value * batchValueLoss states v_target v_pred := by
+  unfold ppoLoss
+  ring
+
+/-- Zero value weight drops the critic term: at `w_value = 0` the loss is
+policy-plus-entropy only — the finite reason value-free policy sweeps
+measure pure policy gradient with no critic contamination. Mirror of
+`ppoLoss_zero_entropy_weight`: together each loss term has an exact off
+position, so ablations isolate terms cleanly. Zeroing BOTH auxiliaries
+leaves the policy term alone (proved next): pure-policy sweeps need no
+term bookkeeping. -/
+theorem ppoLoss_zero_aux_weights (legal : LegalMask Action)
+    (logits logits_old : Logits Action)
+    (hexists : ∃ a, legal a = true) (adv : Action → ℝ) (clip_eps : ℝ)
+    (states : Finset Action) (v_target v_pred : Action → ℝ) :
+    ppoLoss legal logits logits_old hexists adv clip_eps 0 0 states v_target v_pred =
+    - batchSurrogate legal logits logits_old hexists adv clip_eps := by
+  unfold ppoLoss
+  ring
+
+theorem ppoLoss_zero_value_weight (legal : LegalMask Action)
+    (logits logits_old : Logits Action)
+    (hexists : ∃ a, legal a = true) (adv : Action → ℝ) (clip_eps w_entropy : ℝ)
+    (states : Finset Action) (v_target v_pred : Action → ℝ) :
+    ppoLoss legal logits logits_old hexists adv clip_eps 0 w_entropy states v_target v_pred =
+    - batchSurrogate legal logits logits_old hexists adv clip_eps
+    - w_entropy * entropy legal logits hexists := by
+  unfold ppoLoss
+  ring
+
 end CombinedLoss
 
 section OracleGuiding
@@ -361,6 +549,22 @@ theorem oracleDropout_antitone (T : ℕ) (hT : 0 < T) {t1 t2 : ℕ} (h : t1 ≤ 
     div_le_div_of_nonneg_right hle (le_of_lt hT_pos)
   linarith
 
+/-- Strict version of `oracleDropout_antitone`: every later step keeps
+strictly less oracle — the finite reason the Suphx transit never stalls
+mid-schedule: no two distinct steps share a keep-prob, so the decay
+cannot plateau into a partially-oracular policy that trains against
+privileged features forever. Pairs `oracleDropout_at_terminal` (ends
+at zero): together the transit is strictly falling AND lands exactly. -/
+theorem oracleDropout_strict_antitone (T : ℕ) (hT : 0 < T) {t1 t2 : ℕ}
+    (h : t1 < t2) :
+    oracleDropout T t2 < oracleDropout T t1 := by
+  unfold oracleDropout
+  have hT_pos : (0 : ℝ) < (T : ℝ) := Nat.cast_pos.mpr hT
+  have hlt : (t1 : ℝ) < (t2 : ℝ) := Nat.cast_lt.mpr h
+  have hdiv : (t1 : ℝ) / (T : ℝ) < (t2 : ℝ) / (T : ℝ) :=
+    (div_lt_div_iff_of_pos_right hT_pos).mpr hlt
+  linarith
+
 theorem oracleDropout_mem_Icc (T : ℕ) (hT : 0 < T) (t : ℕ) (ht : t ≤ T) :
     oracleDropout T t ∈ Set.Icc (0 : ℝ) 1 := by
   have hT_pos : (0 : ℝ) < (T : ℝ) := Nat.cast_pos.mpr hT
@@ -369,6 +573,22 @@ theorem oracleDropout_mem_Icc (T : ℕ) (hT : 0 < T) (t : ℕ) (ht : t ≤ T) :
     rw [div_le_one hT_pos]; exact hle
   have hdiv_nn : 0 ≤ (t : ℝ) / (T : ℝ) := by positivity
   constructor <;> unfold oracleDropout <;> linarith
+
+/-- Oracle dropout is strictly positive before the terminal step: the student
+still sees privileged signal at every `t < T`. Companion to
+`oracleDropout_at_terminal` (which zeroes it at `t = T`): together they say
+the schedule interpolates strictly inside (0,1] until the final step — no
+early cutoff starves the student, and no late leak survives the deadline.
+Failure mode killed: an off-by-one ending guidance a step early. -/
+theorem oracleDropout_pos_before_terminal (T t : ℕ) (hT : 0 < T) (ht : t < T) :
+    0 < oracleDropout T t := by
+  unfold oracleDropout
+  have hT_pos : (0 : ℝ) < (T : ℝ) := Nat.cast_pos.mpr hT
+  have hle : (t : ℝ) < (T : ℝ) := Nat.cast_lt.mpr ht
+  have hdiv_lt : (t : ℝ) / (T : ℝ) < 1 := by
+    rw [div_lt_one hT_pos]; exact hle
+  have hdiv_nn : 0 ≤ (t : ℝ) / (T : ℝ) := by positivity
+  linarith
 
 end OracleGuiding
 
@@ -422,6 +642,19 @@ theorem vlog_elbo_split (rl logBeta kld : ℝ) :
 action-head KL nonneg is `ppo_kl_nonneg`; `exp` is always nonneg). -/
 theorem vlog_total_ge_rl (rl logBeta kld : ℝ) (hk : 0 ≤ kld) :
     rl ≤ vlogTotalLoss rl logBeta kld := by
+  unfold vlogTotalLoss
+  have h : 0 ≤ Real.exp logBeta * kld := mul_nonneg (Real.exp_nonneg _) hk
+  linarith
+
+/-- VLOG total is nonneg at nonneg RL and KL: the joint never goes
+negative — the finite reason the VLOG objective can't manufacture a
+spurious descent direction below zero: with real losses on both arms
+the total is a genuine cost. Pairs `vlog_total_ge_rl` (total covers
+RL): together the total sits above RL AND above zero, so the
+optimizer only ever descends real signal. -/
+theorem vlogTotalLoss_nonneg (rl logBeta kld : ℝ)
+    (hrl : 0 ≤ rl) (hk : 0 ≤ kld) :
+    0 ≤ vlogTotalLoss rl logBeta kld := by
   unfold vlogTotalLoss
   have h : 0 ≤ Real.exp logBeta * kld := mul_nonneg (Real.exp_nonneg _) hk
   linarith

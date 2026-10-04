@@ -31,7 +31,7 @@ from hydra2.models.schema import (
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from hydra2.models.encoder import ActorTensorBatch
+    from hydra2.models.encoder import ActorTensorBatch, PackedHistories
 
 _NUM_EVENT_KINDS = len(EVENT_KINDS)
 _DEFAULT_D_MODEL = 128
@@ -688,19 +688,28 @@ class Hydra2BaselineModel(nn.Module):
     def forward(self, batch: ActorTensorBatch) -> ModelOutput:  # type: ignore[override]  # reason: nn.Module forward signature narrow; intentional override. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.nn.Module.html
         return self.evaluate(batch)
 
-    def evaluate(self, batch: ActorTensorBatch) -> ModelOutput:
-        # Validate shapes / legal mask (eager only): compiled callers
-        # pre-validate via validate_actor_batch (see _model_forward) so the
-        # graph holds zero host syncs; direct eager callers keep identical errors.
-        if not torch.compiler.is_compiling():
-            validate_actor_batch(batch, self.action_count)
+    def tensor_forward(
+        self,
+        features: Mapping[str, torch.Tensor],
+        history_mask: torch.Tensor,
+        packed: PackedHistories | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Shared tensor entry: policy logits + full fused small-head logits.
 
-        batch_size: int = batch.history_mask.shape[0]
-        seq_len: int = batch.history_mask.shape[1]
-        history_kind: torch.Tensor = batch.features["history_event_kind"]  # [B,T]
-        history_mask: torch.Tensor = batch.history_mask  # [B,T] True=participate
-        packed: Any = getattr(batch, "packed", None)
-
+        Runs the exact dense/packed trunk, scalar branch, and head math that
+        :meth:`evaluate` uses — no copy of the plane mapping (``features``
+        is read in place), no new weights, no dropout-metadata or attention
+        change. Returns ``(policy_logits [B,A], small_out [B,20+2E])`` with
+        the fused layout ``[0:16) placement / [16:20) value /
+        [20:20+E) event / [20+E:20+2E) belief``; the value head is the view
+        ``small_out[..., 16:20]``. Gradient-enabled (no ``no_grad`` inside)
+        so supervised training and RL consumers share one forward. Native
+        consumers gate facts before calling; this entry takes no
+        observation hashes and fabricates none.
+        """
+        batch_size: int = history_mask.shape[0]
+        seq_len: int = history_mask.shape[1]
+        history_kind: torch.Tensor = features["history_event_kind"]  # [B,T]
         if packed is not None:
             # Packed branch shares the model/schema identity deliberately
             # (no new architecture id): it alters no frozen field (feature
@@ -722,16 +731,12 @@ class Hydra2BaselineModel(nn.Module):
             # device-resident, sliced via view).
             positions: torch.Tensor = self.pos_ids[:seq_len].unsqueeze(0).expand(batch_size, -1)
             hist_emb = hist_emb + self.pos_embedding(positions)
-
             # SDPA bool mask uses True=attend, so invert participate -> padding.
             key_padding_mask: torch.Tensor = ~history_mask  # [B,T] True where padding
-
             x: torch.Tensor = hist_emb
             for layer in self.layers:
                 x = layer(x, key_padding_mask)
-
             x = self.final_norm(x)
-
             # Masked mean pool over history — padded positions excluded. The mask
             # follows x.dtype (bf16 trunk under autocast, fp32 default identical).
             mask_f: torch.Tensor = history_mask.to(x.dtype).unsqueeze(-1)  # [B,T,1]
@@ -740,19 +745,32 @@ class Hydra2BaselineModel(nn.Module):
             pooled = (x * mask_f).sum(dim=1) / denom  # [B,D]
             x_dtype = x.dtype
         # Scalar branch — build 64-dim vector from actor-visible scalars.
-        scalar_vec: torch.Tensor = self._build_scalar_features(batch, dtype=x_dtype)  # [B,64]
+        scalar_vec: torch.Tensor = self._build_scalar_features(features, dtype=x_dtype)  # [B,64]
         scalar_emb: torch.Tensor = self.scalar_proj(scalar_vec)  # [B,D]
         trunk: torch.Tensor = torch.cat([pooled, scalar_emb], dim=-1)  # [B, 2D]
-
         policy_logits: torch.Tensor = self.policy_head(trunk)  # [B,A]
+        small_out: torch.Tensor = self.small_heads(trunk)  # [B,20+2E]
+        return policy_logits, small_out
+
+    def evaluate(self, batch: ActorTensorBatch) -> ModelOutput:
+        # Validate shapes / legal mask (eager only): compiled callers
+        # pre-validate via validate_actor_batch (see _model_forward) so the
+        # graph holds zero host syncs; direct eager callers keep identical errors.
+        if not torch.compiler.is_compiling():
+            validate_actor_batch(batch, self.action_count)
+
+        history_mask: torch.Tensor = batch.history_mask  # [B,T] True=participate
+        policy_logits, small_out = self.tensor_forward(
+            batch.features, history_mask, getattr(batch, "packed", None)
+        )
+        batch_size: int = history_mask.shape[0]
         # Fused small heads: slice restores the four outputs exactly. Bounds
         # from _NUM_EVENT_KINDS (trace-safe Python ints; inductor folds).
         # Placement slice needs .contiguous() before .view: slice stride
         # (62,1) breaks .view (131KB @B2048, negligible).
-        small_out: torch.Tensor = self.small_heads(trunk)  # [B,20+2E]
         _e: int = _NUM_EVENT_KINDS
         placement_logits: torch.Tensor = small_out[..., 0:16].contiguous().view(batch_size, 4, 4)
-        value_vector: torch.Tensor = small_out[..., 16:20]  # [B,4]
+        value_vector: torch.Tensor = small_out[..., 16:20]  # [B,4] view into small_out
         event_logits_single: torch.Tensor = small_out[..., 20 : 20 + _e]  # [B, E]
         belief_logits_single: torch.Tensor = small_out[..., 20 + _e : 20 + 2 * _e]
 
@@ -789,21 +807,21 @@ class Hydra2BaselineModel(nn.Module):
         )
 
     def _build_scalar_features(
-        self, batch: ActorTensorBatch, *, dtype: torch.dtype | None = None
+        self, features: Mapping[str, torch.Tensor], *, dtype: torch.dtype | None = None
     ) -> torch.Tensor:
         # Compose 64-dim scalar feature vector from actor-visible fields
         # (no wall order, hidden hands, or privileged labels). Normalizations
-        # follow the trunk dtype: evaluate passes x.dtype so bf16 autocast
-        # keeps the scalar branch in bf16 while the fp32 default is identical.
+        # follow the trunk dtype: tensor_forward passes pooled.dtype so bf16
+        # autocast keeps the scalar branch in bf16 while the fp32 default is
+        # identical. Reads the live plane mapping in place (no copy, no fake
+        # batch/hashes/legal mask).
         compute_dtype: torch.dtype = dtype if dtype is not None else torch.float32
         feats: list[torch.Tensor] = []
-
-        actor: torch.Tensor = batch.features["actor"]  # [B]
-        dealer: torch.Tensor = batch.features["dealer"]
-        turn_actor: torch.Tensor = batch.features["turn_actor"]
-        phase: torch.Tensor = batch.features["phase"]
-        actor_furiten: torch.Tensor = batch.features["actor_furiten"]
-
+        actor: torch.Tensor = features["actor"]  # [B]
+        dealer: torch.Tensor = features["dealer"]
+        turn_actor: torch.Tensor = features["turn_actor"]
+        phase: torch.Tensor = features["phase"]
+        actor_furiten: torch.Tensor = features["actor_furiten"]
         actor_feat: torch.Tensor = self.actor_emb(actor).to(compute_dtype)  # [B,8]
         feats.append(actor_feat)
         dealer_feat: torch.Tensor = self.actor_emb(dealer).to(compute_dtype)
@@ -814,69 +832,57 @@ class Hydra2BaselineModel(nn.Module):
         feats.append(phase_feat)
         furiten_feat: torch.Tensor = self.furiten_emb(actor_furiten.clamp(max=3)).to(compute_dtype)
         feats.append(furiten_feat)
-
         # Scores normalized / 30000, seat_winds embedding, etc.
-        scores: torch.Tensor = batch.features["scores"].to(compute_dtype) / 30000.0  # [B,4]
+        scores: torch.Tensor = features["scores"].to(compute_dtype) / 30000.0  # [B,4]
         feats.append(scores)  # 4
-
         # Round wind embedding
-        round_wind: torch.Tensor = batch.features["round_wind"]
+        round_wind: torch.Tensor = features["round_wind"]
         round_wind_feat: torch.Tensor = self.wind_emb(round_wind.clamp(max=3)).to(compute_dtype)
         feats.append(round_wind_feat)  # [B,4]
-
         # seat_winds flattened embedding sum
-        seat_winds: torch.Tensor = batch.features["seat_winds"]  # [B,4]
+        seat_winds: torch.Tensor = features["seat_winds"]  # [B,4]
         seat_emb: torch.Tensor = (
             self.wind_emb(seat_winds.clamp(max=3)).to(compute_dtype).view(scores.shape[0], -1)
         )  # [B,16]  # reason: single logical embedding reshape; splitting harms scan
         feats.append(seat_emb)
-
         # Scalar ints normalized
-        honba = batch.features["honba"].to(compute_dtype).unsqueeze(-1) / 10.0
-        riichi_sticks = batch.features["riichi_sticks"].to(compute_dtype).unsqueeze(-1) / 10.0
+        honba = features["honba"].to(compute_dtype).unsqueeze(-1) / 10.0
+        riichi_sticks = features["riichi_sticks"].to(compute_dtype).unsqueeze(-1) / 10.0
         # Live wall = undealt count (public), not wall contents/order.
-        live_wall = (
-            batch.features["live_wall_tiles_remaining"].to(compute_dtype).unsqueeze(-1) / 70.0
-        )
-        kan_count = batch.features["kan_count"].to(compute_dtype).unsqueeze(-1) / 4.0
-        round_index = batch.features["round_index"].to(compute_dtype).unsqueeze(-1) / 10.0
-        hand_number = batch.features["hand_number"].to(compute_dtype).unsqueeze(-1) / 10.0
+        live_wall = features["live_wall_tiles_remaining"].to(compute_dtype).unsqueeze(-1) / 70.0
+        kan_count = features["kan_count"].to(compute_dtype).unsqueeze(-1) / 4.0
+        round_index = features["round_index"].to(compute_dtype).unsqueeze(-1) / 10.0
+        hand_number = features["hand_number"].to(compute_dtype).unsqueeze(-1) / 10.0
         feats.extend([honba, riichi_sticks, live_wall, kan_count, round_index, hand_number])
-
         # Dora + own drawn tile, linearly scaled by tile id/136 (not one-hot).
-        dora = batch.features["dora_indicators"].to(compute_dtype) / 136.0  # [B,5]
+        dora = features["dora_indicators"].to(compute_dtype) / 136.0  # [B,5]
         feats.append(dora)
-        own_drawn = batch.features["own_drawn_tile"].to(compute_dtype).unsqueeze(-1) / 136.0
+        own_drawn = features["own_drawn_tile"].to(compute_dtype).unsqueeze(-1) / 136.0
         feats.append(own_drawn)
-
         # Concealed counts normalized: 34-dim counts reduced to mean+max per
         # side to bound the 64-dim budget.
-        concealed = batch.features["concealed_hand_counts"].to(compute_dtype) / 4.0
+        concealed = features["concealed_hand_counts"].to(compute_dtype) / 4.0
         concealed_mean = concealed.mean(dim=1, keepdim=True)  # [B,1]
         concealed_max = concealed.max(dim=1).values.unsqueeze(-1)  # [B,1]
         feats.extend([concealed_mean, concealed_max])
-
         # Visible discards counts reduced to mean+max, same budget rule.
-        vis_disc = batch.features["visible_discards_counts"].to(compute_dtype) / 4.0
+        vis_disc = features["visible_discards_counts"].to(compute_dtype) / 4.0
         vis_mean = vis_disc.mean(dim=1, keepdim=True)
         vis_max = vis_disc.max(dim=1).values.unsqueeze(-1)
         feats.extend([vis_mean, vis_max])
-
         # ippatsu_active sum, riichi_states
         ippatsu_sum = (
-            batch.features["ippatsu_active"].to(compute_dtype).sum(dim=1, keepdim=True) / 4.0
+            features["ippatsu_active"].to(compute_dtype).sum(dim=1, keepdim=True) / 4.0
         )  # [B,1]
         feats.append(ippatsu_sum)
         riichi_sum = (
-            batch.features["riichi_states"].to(compute_dtype).sum(dim=1, keepdim=True) / 8.0
+            features["riichi_states"].to(compute_dtype).sum(dim=1, keepdim=True) / 8.0
         )  # [B,1]
         feats.append(riichi_sum)
-
         # Bool actor_can
-        can_riichi = batch.features["actor_can_riichi"].to(compute_dtype).unsqueeze(-1)
-        can_tsumo = batch.features["actor_can_tsumo"].to(compute_dtype).unsqueeze(-1)
+        can_riichi = features["actor_can_riichi"].to(compute_dtype).unsqueeze(-1)
+        can_tsumo = features["actor_can_tsumo"].to(compute_dtype).unsqueeze(-1)
         feats.extend([can_riichi, can_tsumo])
-
         # Segment widths sum to 64; pad/truncate guards the concat boundary.
         concat = torch.cat(feats, dim=-1).to(compute_dtype)
         if concat.shape[-1] < 64:

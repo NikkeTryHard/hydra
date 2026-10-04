@@ -726,22 +726,29 @@ Exit Wave 9: full outcome registry for Candidates 0-6; rejected outcomes retaine
 
 **Entry:** WP-05C, WP-06. Start only when frozen baseline evidence justifies cost.
 
+Implementation authorization was granted on 2026-09-30 for the continuous CPU-native/GPU-inference-and-training cutover recorded in the specification's section 24. This permits development and generation of missing qualification evidence; it does not mark WP-05C/WP-06, this package, or a pilot as passed. Qualify the corrected adapter before native differential evidence, and verify baseline/cost entry records before a qualified pilot. The saturation acceptance target is measured at least 95% sustained useful-work GPU time, with cold start, barriers, tails, checkpointing, and starvation reported separately.
+
+Integration status (2026-10-04 native-live cutover; not package qualification): pipeline v3 (`training_source='native_live_v1'`, `recovery='generation_restart_v1'`) replaces sealed-source training. Production consumes Rust-owned typed trajectories (`drain_tape` → `register_live_replay` → `fill_live_slab`) with in-memory frozen actor activation; no canonical export, seal/materialization, tape/pool persistence, or runtime-control publication gates learning or activation. Policy lineage includes the pipeline/derivation recipe, intentionally changing shuffle streams; no old-vs-new trajectory identity claim. Recovery uses paired `restart-gNN.pt` + `restart.json` and redoes the unfinished generation. Fixed eight generations, 128 games, one epoch, one future, unchanged PPO math. Prior sealed-source notes below are history.
+
+Actual pilot execution exposed two additional reconstruction defects: added kan must replace its prior pon in place, preserving its called tile while clearing the source seat; actor-visible rivers must contain only current-hand published discard events, not engine state that may advance ahead of the event prefix. Both retain independent observation rehashing, with no history truncation or hash substitution. The kan transition now has a native regression checking exact meld metadata and document-versus-facts agreement.
+
 - [ ] Project-owned actor/learner/replay loop.
 - [ ] Exact simulator remains eager.
-- [ ] Fabric only device/precision/backward adapter.
+- [ ] Plain-PyTorch single-device precision/backward path; Lightning/Fabric packages stay absent.
 - [ ] Ordinary single-device checkpoint schema.
 - [ ] Historical opponent pool with immutable identities.
 - [ ] Rollout wall ledger prevents evaluation overlap.
 - [ ] Replay records actor-visible input and privileged labels separately.
-- [ ] Freeze one validated rollout artifact and run mandatory masked PPO on its rows, old-policy facts, advantages, returns, initialization, minibatch order, optimizer/scheduler, updates, and resource ledger.
-- [ ] Run rollout validation and PPO formula, legal-mask, finite-metric, optimizer-update, artifact/direct-call equality, and deterministic-resume fixtures.
+- [ ] Drain completed Rust-owned cohorts and run mandatory masked PPO on typed rows, old-policy facts, advantages, returns, initialization, minibatch order, optimizer/scheduler, updates, and resource ledger (no seal/materialization on the production path).
+- [ ] Run trajectory validation and PPO formula, legal-mask, finite-metric, optimizer-update, direct-vs-archive equality, and generation-restart fixtures.
 - [ ] If a pre-published ACH activation record exists, bind PPO and ACH RunSpecs in one `MatchedObjectiveGroup`, implement ACH per `IMPLEMENTATION_SPEC.md` §20.2, run ACH formula/selected/blocked-gradient/all-zero-advantage fixtures, and publish `promoted` or `rejected`; otherwise record `ach_not_activated`.
-- [ ] Deterministic small interrupted/resumed run.
-- [ ] Plain/Fabric semantic equivalence.
+- [ ] Deterministic small interrupted/resumed run via generation restart (redo unfinished generation from initial semantic counters).
+- [ ] Actor/learner tensor-boundary parity and deterministic generation-restart resume on the configured plain-PyTorch path.
+- [ ] Live: drain-vs-clone equivalence, direct-vs-sealed replay parity under identical shuffle key, restart capture/ordering/resume, generation-restart smoke on the same v3 profile, and fixed-workload completion/latency proof with honest handoff accounting.
 - [ ] Multi-seed duplicate-block comparison against frozen champion.
 - [ ] No FSDP2/torchcomms/DCP without real concurrent topology and new qualification package.
 
-Exit: plain/Fabric semantic equivalence, deterministic resume, rollout/PPO fixtures, replay/evaluation-wall isolation, and multi-seed PPO duplicate-block comparison pass. Activated ACH additionally requires its matched-group fixtures/comparison and a `promoted` or `rejected` disposition; PPO-only WP-11 completion records `ach_not_activated`. Commands: `pixi run test-training --package WP-11`; package verification command for WP-11.
+Exit: plain-PyTorch actor/learner tensor parity, generation-restart resume, trajectory/PPO fixtures, replay/evaluation-wall isolation, and multi-seed PPO duplicate-block comparison pass. Activated ACH additionally requires its matched-group fixtures/comparison and a `promoted` or `rejected` disposition; PPO-only WP-11 completion records `ach_not_activated`. Commands: `pixi run test-training --package WP-11` and `pixi run test-serial --package WP-11`; package verification command for WP-11.
 
 Dependency note: despite its milestone number, WP-12 executes before WP-10 teacher selection. Numeric milestone identity does not override the graph.
 

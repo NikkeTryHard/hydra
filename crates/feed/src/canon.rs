@@ -136,9 +136,105 @@ pub fn canonical_bytes_value(
     record: &str,
 ) -> Result<Vec<u8>, CanonError> {
     reject_unsafe_integers(value, record)?;
-    serde_jcs::to_vec(value).map_err(|e| jcs_err(e.to_string(), record))
+    let mut bytes = Vec::new();
+    emit_staged_value(value, &mut bytes).map_err(|e| jcs_err(e.to_string(), record))?;
+    Ok(bytes)
 }
 
+/// Canonicalize an object excluding one root key without cloning its subtrees.
+/// Retained values still pass the unsafe-integer guard and the same JCS emitter;
+/// nested keys with the same name remain part of the identity projection.
+pub fn canonical_object_without_key(
+    values: &serde_json::Map<String, serde_json::Value>,
+    excluded: &str,
+    record: &str,
+) -> Result<Vec<u8>, CanonError> {
+    let mut entries: Vec<_> = values.iter().filter(|(key, _)| key.as_str() != excluded).collect();
+    entries.sort_unstable_by(|(a, _), (b, _)| a.encode_utf16().cmp(b.encode_utf16()));
+    let mut bytes = vec![b'{'];
+    for (index, (key, value)) in entries.into_iter().enumerate() {
+        reject_unsafe_integers(value, record)?;
+        emit_staged_entry(index, key, value, &mut bytes)
+            .map_err(|e| jcs_err(e.to_string(), record))?;
+    }
+    bytes.push(b'}');
+    Ok(bytes)
+}
+
+// Staged values cannot contain non-finite numbers or invalid Unicode. Emitting
+// arrays directly avoids a boxed writer for every scalar and comma in dense
+// legal masks; numbers still use the pinned JCS formatter to preserve identity.
+fn emit_staged_value(
+    value: &serde_json::Value,
+    out: &mut Vec<u8>,
+) -> Result<(), serde_json::Error> {
+    use serde_json::Value;
+    match value {
+        Value::Null => out.extend_from_slice(b"null"),
+        Value::Bool(true) => out.extend_from_slice(b"true"),
+        Value::Bool(false) => out.extend_from_slice(b"false"),
+        Value::Number(number) => {
+            // Guarded integers are at most 2^53-1, below JCS's 1e21 exponent
+            // boundary. Decimal integer output is exact; floats still need
+            // the pinned JCS formatter for negative zero and exponent rules.
+            if number.is_i64() || number.is_u64() {
+                serde_json::to_writer(&mut *out, number)?;
+            } else {
+                serde_jcs::to_writer(&mut *out, number)?;
+            }
+        }
+        Value::String(text) => serde_json::to_writer(&mut *out, text)?,
+        Value::Array(values) => {
+            out.push(b'[');
+            for (index, value) in values.iter().enumerate() {
+                if index != 0 {
+                    out.push(b',');
+                }
+                emit_staged_value(value, out)?;
+            }
+            out.push(b']');
+        }
+        Value::Object(values) => {
+            out.push(b'{');
+            // UTF-8 map order differs from JCS UTF-16 order for supplementary
+            // keys. Already-canonical maps need no sorting allocation.
+            let mut previous: Option<&str> = None;
+            let sorted = values.keys().all(|key| {
+                let ordered =
+                    previous.is_none_or(|old| old.encode_utf16().cmp(key.encode_utf16()).is_le());
+                previous = Some(key);
+                ordered
+            });
+            if sorted {
+                for (index, (key, value)) in values.iter().enumerate() {
+                    emit_staged_entry(index, key, value, out)?;
+                }
+            } else {
+                let mut entries: Vec<_> = values.iter().collect();
+                entries.sort_unstable_by(|(a, _), (b, _)| a.encode_utf16().cmp(b.encode_utf16()));
+                for (index, (key, value)) in entries.into_iter().enumerate() {
+                    emit_staged_entry(index, key, value, out)?;
+                }
+            }
+            out.push(b'}');
+        }
+    }
+    Ok(())
+}
+
+fn emit_staged_entry(
+    index: usize,
+    key: &str,
+    value: &serde_json::Value,
+    out: &mut Vec<u8>,
+) -> Result<(), serde_json::Error> {
+    if index != 0 {
+        out.push(b',');
+    }
+    serde_json::to_writer(&mut *out, key)?;
+    out.push(b':');
+    emit_staged_value(value, out)
+}
 
 /// Largest magnitude exactly representable in an IEEE 754 double
 /// (`2**53 - 1`, mirrors `canonical.py:34` `MAX_SAFE_INTEGER`): Python `int`
@@ -166,14 +262,15 @@ fn reject_unsafe_integers(value: &serde_json::Value, record: &str) -> Result<(),
                     });
                 }
             } else if let Some(u) = n.as_u64()
-                && u > MAX_SAFE_INTEGER as u64 {
-                    return Err(CanonError::UnsafeNumber {
-                        record: record.to_string(),
-                        detail: format!(
-                            "integer {u} exceeds the IEEE 754 double-safe range (±{MAX_SAFE_INTEGER})"
-                        ),
-                    });
-                }
+                && u > MAX_SAFE_INTEGER as u64
+            {
+                return Err(CanonError::UnsafeNumber {
+                    record: record.to_string(),
+                    detail: format!(
+                        "integer {u} exceeds the IEEE 754 double-safe range (±{MAX_SAFE_INTEGER})"
+                    ),
+                });
+            }
             Ok(())
         }
         serde_json::Value::Array(items) => {
@@ -340,36 +437,39 @@ fn reject_text_domain(bytes: &[u8], record: &str) -> Result<Option<String>, Cano
             b'\\' => {
                 // Outside strings: verbatim the old lone-surrogate table
                 // (inside strings is covered by the `string_extent` arm).
-                if i + 1 < bytes.len() && bytes[i + 1] == b'u' && i + 6 <= bytes.len()
+                if i + 1 < bytes.len()
+                    && bytes[i + 1] == b'u'
+                    && i + 6 <= bytes.len()
                     && let Ok(hex) = core::str::from_utf8(&bytes[i + 2..i + 6])
-                        && let Ok(unit) = u16::from_str_radix(hex, 16) {
-                            if (0xD800..0xE000).contains(&unit) {
-                                let is_high = (0xD800..0xDC00).contains(&unit);
-                                if is_high {
-                                    let next = &bytes[i + 6..];
-                                    let paired = next.len() >= 6
-                                        && next[0] == b'\\'
-                                        && next[1] == b'u'
-                                        && core::str::from_utf8(&next[2..6])
-                                            .ok()
-                                            .and_then(|h| u16::from_str_radix(h, 16).ok())
-                                            .is_some_and(|u| (0xDC00..0xE000).contains(&u));
-                                    if !paired {
-                                        return Err(CanonError::LoneSurrogate {
-                                            record: record.to_string(),
-                                            detail: format!("lone surrogate escape \\u{hex}"),
-                                        });
-                                    }
-                                } else {
-                                    return Err(CanonError::LoneSurrogate {
-                                        record: record.to_string(),
-                                        detail: format!("lone surrogate escape \\u{hex}"),
-                                    });
-                                }
+                    && let Ok(unit) = u16::from_str_radix(hex, 16)
+                {
+                    if (0xD800..0xE000).contains(&unit) {
+                        let is_high = (0xD800..0xDC00).contains(&unit);
+                        if is_high {
+                            let next = &bytes[i + 6..];
+                            let paired = next.len() >= 6
+                                && next[0] == b'\\'
+                                && next[1] == b'u'
+                                && core::str::from_utf8(&next[2..6])
+                                    .ok()
+                                    .and_then(|h| u16::from_str_radix(h, 16).ok())
+                                    .is_some_and(|u| (0xDC00..0xE000).contains(&u));
+                            if !paired {
+                                return Err(CanonError::LoneSurrogate {
+                                    record: record.to_string(),
+                                    detail: format!("lone surrogate escape \\u{hex}"),
+                                });
                             }
-                            i += 6;
-                            continue;
+                        } else {
+                            return Err(CanonError::LoneSurrogate {
+                                record: record.to_string(),
+                                detail: format!("lone surrogate escape \\u{hex}"),
+                            });
                         }
+                    }
+                    i += 6;
+                    continue;
+                }
                 i += 1;
             }
             _ => {
@@ -442,7 +542,9 @@ fn scan_int_lexeme(bytes: &[u8], s: usize) -> (usize, Option<String>) {
         None => true,
     };
     if over {
-        let lex = core::str::from_utf8(&bytes[s..j]).unwrap_or("?").to_string();
+        let lex = core::str::from_utf8(&bytes[s..j])
+            .unwrap_or("?")
+            .to_string();
         return (j, Some(lex));
     }
     (j, None)
@@ -462,12 +564,7 @@ fn unsafe_number(record: &str, lex: &str) -> CanonError {
 /// Single bare-token probe at `i` (lead byte already dispatched): error iff
 /// the token matches here with non-token bytes on both sides, so `NaNfoo`,
 /// `Infinity2`, `1NaN` never count as bare tokens.
-fn check_bare_token(
-    bytes: &[u8],
-    i: usize,
-    tok: &[u8],
-    record: &str,
-) -> Result<(), CanonError> {
+fn check_bare_token(bytes: &[u8], i: usize, tok: &[u8], record: &str) -> Result<(), CanonError> {
     if bytes[i..].starts_with(tok) {
         let before_ok = i == 0 || !is_token_char(bytes[i - 1]);
         let after = i + tok.len();
@@ -488,7 +585,6 @@ fn check_bare_token(
 fn is_token_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_' || b == b'.'
 }
-
 
 /// Duplicate-key scan over the raw text: re-parse with a minimal scanner
 /// that tracks object scopes and fails on a repeated key in one scope.
@@ -529,9 +625,10 @@ fn reject_duplicate_keys_text(text: &str, record: &str) -> Result<(), CanonError
                 // A closed value completes the parent's value slot: the next
                 // string in a parent object is a key.
                 if is_obj.last().copied().unwrap_or(false)
-                    && let Some(ek) = expect_key.last_mut() {
-                        *ek = true;
-                    }
+                    && let Some(ek) = expect_key.last_mut()
+                {
+                    *ek = true;
+                }
             }
             b'"' => {
                 let in_object = is_obj.last().copied().unwrap_or(false);
@@ -539,11 +636,10 @@ fn reject_duplicate_keys_text(text: &str, record: &str) -> Result<(), CanonError
                 if in_object && want_key {
                     // Key position: full decode (unescaped compare, RFC 8785
                     // §3.2.3) — container logic below untouched.
-                    let (s, next) =
-                        scan_string(bytes, i).map_err(|d| CanonError::InvalidJson {
-                            record: record.to_string(),
-                            detail: d,
-                        })?;
+                    let (s, next) = scan_string(bytes, i).map_err(|d| CanonError::InvalidJson {
+                        record: record.to_string(),
+                        detail: d,
+                    })?;
                     let scope = scopes.last_mut().ok_or_else(|| CanonError::InvalidJson {
                         record: record.to_string(),
                         detail: "object key outside scope".to_string(),
@@ -564,15 +660,13 @@ fn reject_duplicate_keys_text(text: &str, record: &str) -> Result<(), CanonError
                     // unescape allocation. Extent accepts exactly what
                     // scan_string accepts, so the skip lands on the same
                     // offset; state update mirrors the old else-branch.
-                    let next =
-                        string_extent(bytes, i).map_err(|d| CanonError::InvalidJson {
-                            record: record.to_string(),
-                            detail: d,
-                        })?;
-                    if in_object
-                        && let Some(ek) = expect_key.last_mut() {
-                            *ek = true;
-                        }
+                    let next = string_extent(bytes, i).map_err(|d| CanonError::InvalidJson {
+                        record: record.to_string(),
+                        detail: d,
+                    })?;
+                    if in_object && let Some(ek) = expect_key.last_mut() {
+                        *ek = true;
+                    }
                     i = next;
                 }
             }
@@ -584,9 +678,10 @@ fn reject_duplicate_keys_text(text: &str, record: &str) -> Result<(), CanonError
                 // means the next string in the parent object is a key.
                 i = skip_scalar(bytes, i);
                 if is_obj.last().copied().unwrap_or(false)
-                    && let Some(ek) = expect_key.last_mut() {
-                        *ek = true;
-                    }
+                    && let Some(ek) = expect_key.last_mut()
+                {
+                    *ek = true;
+                }
             }
         }
     }
@@ -770,8 +865,7 @@ fn scan_string(bytes: &[u8], start: usize) -> Result<(String, usize), String> {
             b'\\' => {
                 if run_start < i {
                     out.push_str(
-                        core::str::from_utf8(&bytes[run_start..i])
-                            .map_err(|e| e.to_string())?,
+                        core::str::from_utf8(&bytes[run_start..i]).map_err(|e| e.to_string())?,
                     );
                 }
                 i += 1;
@@ -828,6 +922,47 @@ fn skip_scalar(bytes: &[u8], start: usize) -> usize {
 mod tests {
     use super::*;
 
+    #[test]
+    fn staged_identity_matches_jcs_for_nested_unicode_and_number_boundaries() {
+        let controls: String = (0u8..32).map(char::from).collect();
+        let value = serde_json::json!({
+            "\u{e000}": {"\u{10000}": [null, true, false, [], {}]},
+            "\u{10000}": [controls, "\"\\/é\u{2028}", -0.0, 1e-7, 1e-6,
+                1e20, 1e21, 333333333.3333333, MAX_SAFE_INTEGER, -MAX_SAFE_INTEGER],
+            "mask": (0..6792).map(|i| i % 17 == 0).collect::<Vec<_>>()
+        });
+        assert_eq!(
+            canonical_bytes_value(&value, "staged:identity").unwrap(),
+            serde_jcs::to_vec(&value).unwrap()
+        );
+        let unsafe_value = serde_json::json!({"nested": [MAX_SAFE_INTEGER + 1]});
+        assert!(matches!(
+            canonical_bytes_value(&unsafe_value, "staged:unsafe"),
+            Err(CanonError::UnsafeNumber { .. })
+        ));
+    }
+
+    #[test]
+    fn borrowed_projection_excludes_only_root_and_preserves_jcs_guards() {
+        let doc = serde_json::json!({
+            "observation_hash": "excluded",
+            "nested": {"observation_hash": "retained"},
+            "\u{e000}": [true, -0.0],
+            "\u{10000}": "supplementary sorts first"
+        });
+        let mut expected = doc.as_object().unwrap().clone();
+        expected.remove("observation_hash");
+        assert_eq!(
+            canonical_object_without_key(doc.as_object().unwrap(), "observation_hash", "test").unwrap(),
+            serde_jcs::to_vec(&serde_json::Value::Object(expected)).unwrap()
+        );
+        let unsafe_doc = serde_json::json!({"nested": [MAX_SAFE_INTEGER + 1]});
+        assert!(matches!(
+            canonical_object_without_key(unsafe_doc.as_object().unwrap(), "observation_hash", "test"),
+            Err(CanonError::UnsafeNumber { .. })
+        ));
+    }
+
     const HELLO_WORLD_SHA_SUFFIX: &str =
         "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
 
@@ -856,12 +991,21 @@ mod tests {
         assert_eq!(canonical_bytes(&v, "kat2:4.50").unwrap(), b"4.5");
         // € / é ride as raw UTF-8, never \uXXXX.
         let v = serde_json::Value::String("€".to_string());
-        assert_eq!(canonical_bytes(&v, "kat2:euro").unwrap(), "\"€\"".as_bytes());
+        assert_eq!(
+            canonical_bytes(&v, "kat2:euro").unwrap(),
+            "\"€\"".as_bytes()
+        );
         let v = serde_json::Value::String("é".to_string());
-        assert_eq!(canonical_bytes(&v, "kat2:e-acute").unwrap(), "\"é\"".as_bytes());
+        assert_eq!(
+            canonical_bytes(&v, "kat2:e-acute").unwrap(),
+            "\"é\"".as_bytes()
+        );
         // Short escapes \b \t \n \f \r (U+0008/0009/000A/000C/000D).
         let v = serde_json::Value::String("\u{08}\u{09}\u{0A}\u{0C}\u{0D}".to_string());
-        assert_eq!(canonical_bytes(&v, "kat2:escapes").unwrap(), b"\"\\b\\t\\n\\f\\r\"");
+        assert_eq!(
+            canonical_bytes(&v, "kat2:escapes").unwrap(),
+            b"\"\\b\\t\\n\\f\\r\""
+        );
         // RFC §3.2.4 hex sample prefix: `{` `"` `l` `i` == 7b 22 6c 69.
         let v = serde_json::json!({"li": 1});
         let bytes = canonical_bytes(&v, "kat2:hex-sample").unwrap();

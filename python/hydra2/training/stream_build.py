@@ -31,7 +31,7 @@ except ImportError:  # pragma: no cover - import-time signal, same text as call-
     _build_bridge = None  # type: ignore[assignment]
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Mapping
     from pathlib import Path
 
     from hydra2.data.stream_manifest import StreamManifest as StreamManifest
@@ -50,7 +50,6 @@ __all__ = [
     "_optimizer_param_groups",
     "_prefix_hashes_name",
     "_rng_anchors",
-    "_scheduler_lr_factor",
     "_sidecar_cursor",
     "_verify_rng_anchors",
 ]
@@ -283,82 +282,6 @@ def _build_scheduler(config: RunConfig, optimizer: Any) -> Any:
         return LinearLR(optimizer, start_factor=warmup_start, total_iters=horizon)
     warm = LinearLR(optimizer, start_factor=warmup_start, total_iters=warmup)
     return SequentialLR(optimizer, schedulers=[warm, main], milestones=[warmup])
-
-
-#: Bridge leaf for the scheduler closed form (single source:
-#: ``hydra2._native.contracts`` ``scheduler_lr_factor``; the stale-.so
-#: fallback is the byte-identical closed form below).
-_scheduler_lr_factor_bridge = getattr(_build_bridge, "scheduler_lr_factor", None)
-
-
-def _scheduler_lr_factor(
-    *,
-    scheduler: str,
-    step: int,
-    warmup_updates: int,
-    max_updates: int,
-    final_factor: float,
-    warmup_start_factor: float,
-    param_keys: Sequence[str],
-    t_max: int | None = None,
-    end_factor: float | None = None,
-) -> float:
-    """Closed-form LR multiplier for one step int (pure; no torch objects).
-
-    Same warmup ramp + ``cosine`` / ``constant`` / ``linear`` decay as
-    :func:`_build_scheduler`, projected to a float so planners can query the
-    curve without constructing an optimizer. Bridge-first; the fallback is
-    the identical formula (tolerance ``1e-12`` vs the bridge ``cos``).
-    """
-    if _scheduler_lr_factor_bridge is not None:
-        try:
-            factored: float = _scheduler_lr_factor_bridge(
-                scheduler,
-                step,
-                warmup_updates,
-                max_updates,
-                final_factor,
-                warmup_start_factor,
-                list(param_keys),
-                t_max,
-                end_factor,
-            )
-            return factored
-        except (ValueError, TypeError) as exc:
-            raise ContractError(str(exc)) from exc
-    import math
-
-    if scheduler == "cosine":
-        unknown = sorted(k for k in param_keys if k != "T_max")
-    elif scheduler == "linear":
-        unknown = sorted(k for k in param_keys if k != "end_factor")
-    elif scheduler == "constant":
-        unknown = sorted(param_keys)
-    else:
-        raise ContractError("scheduler.id must be one of ['cosine', 'constant', 'linear']")
-    if len(unknown) > 0:
-        raise ContractError(f"scheduler.parameters unknown keys {unknown}")
-    end: float = end_factor if end_factor is not None else final_factor
-    if scheduler == "linear" and not 0.0 <= end <= 1.0:
-        raise ContractError(f"scheduler end_factor must lie in [0, 1], got {end}")
-    span = max(1, max_updates - warmup_updates) if warmup_updates < max_updates else max_updates
-    if warmup_updates > 0 and warmup_updates >= max_updates:
-        frac = min(max(step, 0), max_updates) / max_updates
-        return warmup_start_factor + (1.0 - warmup_start_factor) * frac
-    if warmup_updates > 0 and step < warmup_updates:
-        return warmup_start_factor + (1.0 - warmup_start_factor) * (step / warmup_updates)
-    after = step - warmup_updates if warmup_updates > 0 else step
-    if scheduler == "cosine":
-        resolved = t_max if t_max is not None else span
-        clamped = min(max(after, 0), resolved)
-        if clamped >= resolved:
-            return final_factor
-        return final_factor + (1.0 - final_factor) * 0.5 * (
-            1.0 + math.cos(math.pi * clamped / resolved)
-        )
-    if scheduler == "linear":
-        return 1.0 + (end - 1.0) * (min(max(after, 0), span) / span)
-    return 1.0
 
 
 def _manifest_hashes_for_loop(

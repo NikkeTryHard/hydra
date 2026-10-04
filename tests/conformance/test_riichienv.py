@@ -117,6 +117,7 @@ def _event_fingerprint(sim: RiichiEnvExactSimulator) -> str:
 def test_engine_identity_pins_reference_build() -> None:
     assert ENGINE_IDENTITY.name == "riichienv"
     assert ENGINE_IDENTITY.version == RIICHENV_VERSION_PIN == "0.4.10"
+    assert str(ENGINE_IDENTITY.adapter_version) == "2.0.0"
     assert str(ENGINE_IDENTITY.environment_hash).startswith("sha256:")
 
 
@@ -358,3 +359,75 @@ def test_final_scores_equal_game_start_plus_delta_summation() -> None:
     assert outcome.point_deltas == tuple(
         s - int(_MANIFEST.starting_points) for s in outcome.final_scores
     )
+
+
+# ---------------------------------------------------------------------------
+# Explicit hand ordinal: dense 0..N-1 with wall/seed/open/emitted unity.
+# ---------------------------------------------------------------------------
+
+
+def test_complete_hanchan_emits_dense_ordinals_with_unified_scopes() -> None:
+    """Explicit-ordinal cutover (adapter 2.0.0): one assignment in _open_hand.
+
+    A complete generated-wall hanchan must emit dense round ordinals, keep
+    the wall/seed/open/emitted scopes unified on that ordinal, retain the
+    current ordinal on every boundary without a speculative delta, and
+    reproduce the same ordinals through snapshot restore and clone.
+    """
+    import hashlib
+
+    from hydra2.engines.riichienv.walls import WALL_STREAM_NAME, derive_hand_wall
+
+    sim = RiichiEnvExactSimulator()
+    sim.reset(
+        rules=_MANIFEST,
+        wall=_schedule(20260930, "wp03a-dense-ordinals"),
+        seat_permutation=seat_permutation_literal("identity"),
+    )
+    _drive_to_terminal(sim, policy_seed=777)
+
+    starts = [e for e in sim._events if e.kind == "round_start"]
+    assert starts, "a complete hanchan must open at least one hand"
+    ordinals = [int(e.payload.round_index) for e in starts]
+    assert ordinals == list(range(len(starts)))
+    assert int(sim._hand_index) == ordinals[-1]
+    for idx in ordinals:
+        material = "|".join(
+            (
+                WALL_STREAM_NAME,
+                str(sim._schedule_id),
+                str(sim._schedule_digest).removeprefix("sha256:"),
+                f"rng:{idx}",
+            )
+        ).encode("utf-8")
+        assert int(sim._hand_rng_seed(idx)) == int.from_bytes(
+            hashlib.sha256(material).digest()[:8], "big"
+        )
+        wall = derive_hand_wall(
+            schedule_digest=str(sim._schedule_digest),
+            schedule_id=str(sim._schedule_id),
+            hand_index=idx,
+        )
+        if idx == 0:
+            assert tuple(wall) == ()
+        else:
+            assert sorted(int(t) for t in wall) == list(range(136))
+    ends = [e for e in sim._events if e.kind == "round_end"]
+    assert [int(e.payload.round_index) for e in ends] == ordinals
+    for entry in ends:
+        assert all(tuple(d.path) != ("round_index",) for d in entry.public_delta)
+    game_ends = [e for e in sim._events if e.kind == "game_end"]
+    assert len(game_ends) == 1
+    assert int(game_ends[0].payload.round_index) == ordinals[-1]
+    snapshot = sim.snapshot()
+    restored = RiichiEnvExactSimulator()
+    restored.restore(snapshot)
+    assert [int(e.payload.round_index) for e in restored._events if e.kind == "round_start"] == (
+        ordinals
+    )
+    assert int(restored._hand_index) == int(sim._hand_index)
+    cloned = sim.clone()
+    assert [int(e.payload.round_index) for e in cloned._events if e.kind == "round_start"] == (
+        ordinals
+    )
+    assert int(cloned._hand_index) == int(sim._hand_index)
