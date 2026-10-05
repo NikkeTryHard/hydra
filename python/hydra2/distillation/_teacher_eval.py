@@ -1,4 +1,3 @@
-# ruff: noqa: E501  # reason: moved lines exceed 100 cols verbatim (leakage docstring, calibration KL row); pure-move split keeps them byte-identical per teacher.py:1 precedent.
 """WP-10 five-arm evaluation — wall-block comparison, leakage audits, frozen helpers.
 
 Owns the five-arm comparison over wall blocks, the split/wall/seed leakage
@@ -52,6 +51,9 @@ if TYPE_CHECKING:
     from hydra2.contracts.observation_actor import ActorObservation
     from hydra2.distillation._teacher_records import TrajectoryRecord
     from hydra2.eval.blocks import WallBlock
+
+#: Digest prefix for content hashes minted in this module.
+_SHA256_TAG = "sha256:"
 
 # ---------------------------------------------------------------------------
 # Five-arm comparison — pre-distill, student, teacher, teacher+search, student+search
@@ -196,6 +198,7 @@ def evaluate_five_arms(
                 legal_mask=mask,
             )
         except ContractError:
+            # Already-shaped contract failures propagate unchanged.
             raise
         except Exception as exc:
             raise ContractError(f"WP-10 blocked: teacher_policy_fn failed: {exc}") from exc
@@ -278,10 +281,10 @@ def evaluate_five_arms(
     }
     disposition = "promoted" if noninf_passed else "rejected"
     case_manifest_hash = (
-        "sha256:" + hashlib.sha256(canonical_bytes({"games": sorted(game_ids)})).hexdigest()
+        _SHA256_TAG + hashlib.sha256(canonical_bytes({"games": sorted(game_ids)})).hexdigest()
     )
     result_table_hash = (
-        "sha256:"
+        _SHA256_TAG
         + hashlib.sha256(canonical_bytes({arm: block_contrasts[arm] for arm in arms})).hexdigest()
     )
     promotion = make_promotion_record(
@@ -324,14 +327,14 @@ def evaluate_five_arms(
         from hydra2.eval.blocks import BlockAggregateResult
         from hydra2.eval.duplicate import confirmation_sidecar
 
-        _sidecar_means = []
+        sidecar_means = []
         for _block in blocks_by_arm["student"]:
             if len(_block.contrasts) == 0:
                 raise ContractError("WP-10 blocked: empty wall block in sidecar")
-            _sidecar_means.append((_block.wall_id, sum(_block.contrasts) / len(_block.contrasts)))
+            sidecar_means.append((_block.wall_id, sum(_block.contrasts) / len(_block.contrasts)))
         confirmation_sidecar_out = confirmation_sidecar(
             schedule=schedule,
-            blocks=BlockAggregateResult(valid=tuple(_sidecar_means), excluded=()),
+            blocks=BlockAggregateResult(valid=tuple(sidecar_means), excluded=()),
             telemetry_report=None,
             admission="not-run",
         )
@@ -371,7 +374,7 @@ def audit_leakage(
     train_seeds: tuple[int, ...] | list[int] | None = None,
     held_seeds: tuple[int, ...] | list[int] | None = None,
 ) -> dict[str, bool]:
-    """Run split/wall/seed leakage audits. Raises ContractError on any leak; returns all-True dict on pass."""
+    """Run split/wall/seed leakage audits; raise on any leak, return all-True on pass."""
     train_set = set(train_ids)
     held_set = set(held_ids)
     split_overlap = train_set & held_set
@@ -419,7 +422,7 @@ def check_teacher_replacement_invalidates(
     if dependent_justification_digest != old_digest:
         raise ContractError("dependent does not reference old justification — leak")
 
-    # True = invalidation required; caller must regenerate dependents.
+    # Invariant: True means dependents still pin the old digest and must be regenerated.
     if dependent_record_ids is None:
         raise ContractError("dependent_record_ids required")
     return len(dependent_record_ids) > 0
@@ -468,7 +471,7 @@ def student_plus_search_policy(
     mask_t = torch.tensor([list(mask)], dtype=torch.bool)
     with torch.no_grad():
         out: dict[str, torch.Tensor] = student(feats, legal_mask=mask_t)
-        logits: list[float] = out["policy_logits"][0].tolist()  # pyrefly: ignore[explicit-any]
+        logits: list[float] = out["policy_logits"][0].tolist()
     return _masked_softmax(tuple(logits), mask)
 
 
@@ -482,7 +485,7 @@ def frozen_split_manifest(
 ) -> dict[str, Any]:
     """Return {train, held, version} manifest plus its content digest."""
     payload = {"train": list(train_case_ids), "held": list(held_case_ids), "version": "1.0.0"}
-    digest = "sha256:" + hashlib.sha256(canonical_bytes(payload)).hexdigest()
+    digest = _SHA256_TAG + hashlib.sha256(canonical_bytes(payload)).hexdigest()
     return {"manifest": payload, "digest": digest}
 
 
@@ -493,7 +496,7 @@ def frozen_checkpoint_identity(*, model: StudentModel) -> str:
     buf = json.dumps(
         {k: v.cpu().tolist() for k, v in sorted(state.items())}, sort_keys=True
     ).encode()
-    return "sha256:" + hashlib.sha256(buf).hexdigest()
+    return _SHA256_TAG + hashlib.sha256(buf).hexdigest()
 
 
 def calibration_report(
@@ -502,9 +505,9 @@ def calibration_report(
     """Report teacher-student KL over records (ece=min(0.1, avg_kl*0.05))."""
     # Real calibration: teacher-student KL over records with REAL encoder features.
     total_kl = 0.0
-    for r in records:
-        feats = features_for_record(r).unsqueeze(0)
-        mask_t = torch.tensor([list(r.legal_mask)], dtype=torch.bool)
+    for record in records:
+        feats = features_for_record(record).unsqueeze(0)
+        mask_t = torch.tensor([list(record.legal_mask)], dtype=torch.bool)
         with torch.no_grad():
             out: dict[str, torch.Tensor] = student(feats, legal_mask=mask_t)
             logits: torch.Tensor = out["policy_logits"][0]
@@ -512,7 +515,7 @@ def calibration_report(
                 mask_t[0], logits, torch.tensor(float("-inf"), device=logits.device)
             )
             logp = F.log_softmax(masked, dim=-1)
-            teacher = torch.tensor(r.teacher_policy, dtype=torch.float32)
+            teacher = torch.tensor(record.teacher_policy, dtype=torch.float32)
             kl_terms = teacher * (torch.log(teacher.clamp_min(1e-12)) - logp)
             kl = torch.sum(torch.where(mask_t[0], kl_terms, torch.zeros_like(kl_terms))).item()  # pyrefly: ignore[pytorch-efficiency-lint-item-call]
             total_kl += float(kl)

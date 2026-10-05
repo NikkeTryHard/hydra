@@ -23,7 +23,9 @@ from hydra2._native import contracts as _bridge_contracts  # pyrefly: ignore[mis
 try:
     from hydra2._native import search as _gates_bridge  # pyrefly: ignore[missing-import]
 except ImportError:
-    _gates_bridge = None  # type: ignore[assignment]  # reason: analysis_leaves2 leaf lands with MAIN wiring; None/AttributeError fallback covers stale .so
+    # analysis_leaves2 leaf lands with MAIN wiring; None/AttributeError
+    # fallback covers stale .so.
+    _gates_bridge = None
 
 from hydra2.analysis._qual_gate_leaves import _gate_eligible as _gate_eligible
 from hydra2.analysis._qual_gate_leaves import _summarize_gates as _summarize_gates
@@ -214,8 +216,15 @@ def _make_gameplay_spec_for(candidate_id: str) -> Any:
         pass
     try:
         if candidate_id == "candidate4_core_control":
+            # Dangling factory name: hydra2.search.modules exports
+            # make_candidate4_spec and make_core_control_spec (there is no
+            # make_module_candidate_spec, and "control" is not a valid
+            # module_id), so this import always fails and candidate4
+            # resolves via the generic fallback below. Rewiring it changes
+            # gate digests and teacher-gate inputs; that needs an explicit
+            # qualification-contract decision first.
             from hydra2.search.modules import (
-                make_module_candidate_spec,  # type: ignore[import]  # reason: optional module factory may be absent in minimal env
+                make_module_candidate_spec,  # type: ignore[import]  # reason: dangling name, always ImportError until the contract decision lands
             )
 
             # Use control forest as representative for candidate4
@@ -224,8 +233,9 @@ def _make_gameplay_spec_for(candidate_id: str) -> Any:
         pass
     try:
         if candidate_id == "candidate5":
+            # Resolving factory may be absent in minimal env.
             from hydra2.search.local_spec import (
-                make_candidate5_spec as make_local_resolving_spec,  # type: ignore[import]  # reason: optional resolving factory may be absent in minimal env
+                make_candidate5_spec as make_local_resolving_spec,
             )
 
             return make_local_resolving_spec()
@@ -497,10 +507,7 @@ def generate_hashed_analysis_report(
     digest = str(of_canonical(report_payload))
     report_payload["digest"] = digest
 
-    # Atomic write to run-id directory and to latest. The first stamp is
-    # superseded by the canonical microsecond run_id (kept for ordering).
-    run_id = _utc_now().replace(":", "").replace("-", "")  # compact but still UTC-like
-    # Canonical microsecond run_id for uniqueness (supersedes the stamp above).
+    # Atomic write to a canonical microsecond run-id directory and to latest.
     from datetime import UTC, datetime
 
     run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")

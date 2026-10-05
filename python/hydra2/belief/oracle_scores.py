@@ -65,15 +65,15 @@ def brier_score(probs: torch.Tensor, targets: torch.Tensor) -> float:
         raise ContractError("targets shape mismatch for brier_score")
     if not bool(torch.all(torch.isfinite(probs)).item()):  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # explicit bool, sync intentional
         raise ContractError("probs non-finite in brier_score")
-    # Check row sums approx 1
+    # Rows must already sum to 1: unnormalized probs would skew the score.
     if not torch.allclose(
         probs.sum(dim=-1), torch.ones(probs.shape[0], device=probs.device), atol=1e-4, rtol=1e-4
     ):
         raise ContractError("probs rows must sum to 1 for Brier")
-    k = probs.shape[1]
-    if bool(torch.any(targets < 0).item()) or bool(torch.any(targets >= k).item()):  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # explicit bool, sync intentional
-        raise ContractError(f"targets out of range [0,{k})")
-    one_hot = F.one_hot(targets.long(), num_classes=k).float().to(probs.device)
+    num_classes = probs.shape[1]
+    if bool(torch.any(targets < 0).item()) or bool(torch.any(targets >= num_classes).item()):  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # explicit bool, sync intentional
+        raise ContractError(f"targets out of range [0,{num_classes})")
+    one_hot = F.one_hot(targets.long(), num_classes=num_classes).float().to(probs.device)
     brier = torch.mean(torch.sum((probs - one_hot) ** 2, dim=-1)).item()  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # metric sync intentional, outside training loop
     if not math.isfinite(brier) or not (0 <= brier <= 2):
         raise ContractError(f"Brier score out of range: {brier!r}")
@@ -94,11 +94,12 @@ def expected_calibration_error(
     accuracies = (predictions == targets.long().to(predictions.device)).float()
     ece = 0.0
     total = probs.shape[0]
-    for b in range(num_bins):
-        low = b / num_bins
-        high = (b + 1) / num_bins
-        mask = (confidences > low) & (confidences <= high) if b > 0 else (confidences <= high)
+    for bin_idx in range(num_bins):
+        low = bin_idx / num_bins
+        high = (bin_idx + 1) / num_bins
+        mask = (confidences > low) & (confidences <= high) if bin_idx > 0 else (confidences <= high)
         bin_count = int(mask.sum().item())  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # metric binning sync intentional
+        # Skip empty bins: no accuracy signal to accumulate.
         if bin_count == 0:
             continue
         bin_acc = accuracies[mask].mean().item()  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # metric sync intentional
@@ -221,10 +222,9 @@ def compare_duplicate_blocks(
         raise ContractError("compare_duplicate_blocks requires non-empty wall block lists")
     if not (len(wall_blocks_student) == len(wall_blocks_teacher) == len(wall_blocks_baseline)):
         raise ContractError("wall block lists must have equal length")
-    # Extract wall_ids and check disjointness across conditions? Actually within each
-    # condition wall_ids should be unique; across conditions they are same wall_ids duplicated.
-    # The check is that train vs held-out walls are disjoint — enforced outside.
-    # Here we verify no duplicate wall_id within one condition.
+    # Invariant: wall_ids unique within each condition; train/held-out split checked outside.
+    # Same wall_ids across conditions are expected duplicates, not leakage.
+    # Fail closed on any within-condition duplicate below.
     for name, blocks in [
         ("student", wall_blocks_student),
         ("teacher", wall_blocks_teacher),
@@ -250,13 +250,13 @@ def compare_duplicate_blocks(
                         raise ContractError("empty contrasts in wall block")
                     for v_any in c:
                         v: Any = v_any
-                        if not math.isfinite(float(v)):  # pyrefly: ignore[unknown-argument-type] # Any from wall block intentional
+                        if not math.isfinite(float(v)):  # Any from wall block intentional
                             raise ContractError(f"non-finite contrast {v!r}")
-                    vals.append(sum(c) / len(c))  # type: ignore[unknown-argument-type]  # Any sum intentional
+                    vals.append(sum(c) / len(c))  # Any sum intentional
                 else:
-                    vals.append(float(c))  # pyrefly: ignore[unknown-argument-type]  # Any from wall block intentional
+                    vals.append(float(c))  # Any from wall block intentional
             elif isinstance(b, (int, float)):
-                vals.append(float(b))  # pyrefly: ignore[unknown-argument-type]  # b is Any narrowed but explicit
+                vals.append(float(b))  # b is Any narrowed but explicit
             else:
                 # Try to interpret as dict
                 if isinstance(b, dict) and "contrasts" in b:
@@ -336,7 +336,7 @@ def hidden_permutation_invariance_check(
                     # Student must ignore privileged, so output should be identical
                     out: dict[str, torch.Tensor] = model(actor_features, legal_mask=legal_mask)
                     # Compare to base (actor only, so same)
-                    diff: torch.Tensor = (out["policy_logits"] - base_logits).abs().max()  # pyrefly: ignore[unknown-argument-type] # Tensor max
+                    diff: torch.Tensor = (out["policy_logits"] - base_logits).abs().max()
                     diff_val: float = float(diff.item())  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # metric sync intentional
                     if diff_val > 1e-6:
                         raise ContractError(
@@ -346,30 +346,30 @@ def hidden_permutation_invariance_check(
         if isinstance(model, OracleTeacher):
             # Teacher is expected to be SENSITIVE to hidden permutation
             base_out = model(actor_features, privileged_features, legal_mask=legal_mask)
-            base_logits = base_out["policy_logits"]  # type: ignore[assignment]  # explicit Tensor from dict
+            base_logits = base_out["policy_logits"]  # explicit Tensor from dict
             # Permuted privileged should change output
             gen = torch.Generator().manual_seed(seed + 999)
             perm = torch.randperm(privileged_features.shape[0], generator=gen)  # type: ignore[union-attr]
             perm_priv = privileged_features[perm]  # type: ignore[union-attr]
             perm_out = model(actor_features, perm_priv, legal_mask=legal_mask)
-            diff = (perm_out["policy_logits"] - base_logits).abs().max().item()  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # metric sync intentional
-            if diff < 1e-6:  # type: ignore[operator]  # diff is float comparison
+            diff = (perm_out["policy_logits"] - base_logits).abs().max().item()  # intentional sync
+            if diff < 1e-6:  # diff is float comparison
                 # Not a failure for teacher, but warn: expected sensitivity
                 pass
             return True
         # Generic model: just check consistency across repeated calls
         out1: dict[str, torch.Tensor] = (
-            model(actor_features, legal_mask)  # type: ignore[call-arg, operator]  # generic model call
+            model(actor_features, legal_mask)  # generic model call
             if privileged_features is None
-            else model(actor_features, privileged_features, legal_mask)  # type: ignore[call-arg, operator]  # generic
+            else model(actor_features, privileged_features, legal_mask)  # generic
         )
         out2: dict[str, torch.Tensor] = (
-            model(actor_features, legal_mask)  # type: ignore[call-arg, operator]
+            model(actor_features, legal_mask)
             if privileged_features is None
-            else model(actor_features, privileged_features, legal_mask)  # type: ignore[call-arg, operator]
+            else model(actor_features, privileged_features, legal_mask)
         )
         for k_any in out1:
-            k: str = k_any  # type: ignore[assignment]
+            k: str = k_any
             v1: torch.Tensor = out1[k]
             v2: torch.Tensor = out2[k]
             if not torch.allclose(v1.float(), v2.float(), atol=1e-6, rtol=1e-6):
@@ -397,6 +397,7 @@ def deterministic_distillation_step(
     _ = student.train()
     _ = teacher.eval()
     optimizer.zero_grad(set_to_none=True)
+    # Freeze teacher targets: student gradients must never reach privileged weights.
     # Teacher soft targets (no grad)
     with torch.no_grad():
         t_out: dict[str, torch.Tensor] = teacher(
@@ -487,7 +488,7 @@ def run_synthetic_distillation_for_metrics(
     held_logits = held_logits[: held_targets.shape[0]]
     # Use legal_mask for held-out? Build one that matches
     held_mask = torch.ones_like(held_logits, dtype=torch.bool)
-    # Ensure at least one illegal per row is masked to test proper handling; keep all legal  # noqa: E501
+    # Ensure at least one illegal per row is masked to test proper handling; keep all legal
     # In real use, we'd forward student over held-out actor_features
     scores = compute_proper_scores(held_logits, held_targets, legal_mask=held_mask)
     # ECE via probs

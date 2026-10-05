@@ -94,7 +94,7 @@ fn order_err(detail: String) -> TapeError {
 }
 
 fn decode_hex_even(text: &str) -> Result<Vec<u8>, TapeError> {
-    if text.is_empty() || text.len() % 2 != 0 {
+    if text.is_empty() || !text.len().is_multiple_of(2) {
         return Err(order_err("master seed hex must be nonempty even-length".to_string()));
     }
     let bytes = text.as_bytes();

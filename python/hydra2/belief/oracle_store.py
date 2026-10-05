@@ -65,6 +65,7 @@ class PrivilegedOracleLoader:
         self._rows: list[dict[str, Any]] = []
         self._wall_ids: set[str] = set()
         shards = _privileged_shard_paths(self.parquet_dir)
+        # No shards means synthetic-only mode; materialize an empty store below.
         if len(shards) == 0:
             # Synthetic fallback: if no privileged shards, treat as empty and rely on
             # actor parquet + synthetic privileged derivation (still split-checked)
@@ -92,6 +93,7 @@ class PrivilegedOracleLoader:
                 _wall_a: Any | None = raw.get("wall_id")
                 _wall_b: Any | None = raw.get("game_id")
                 _wall_tmp: Any | None = _wall_a if _wall_a is not None else _wall_b
+                # Fall back to label-internal provenance when top-level columns are absent.
                 if not isinstance(_wall_tmp, str) or _wall_tmp == "":
                     # Ranks-written shards carry wall provenance inside the opaque
                     # label dict (no Arrow schema break); fall back to it when
@@ -192,6 +194,7 @@ class PrivilegedOracleLoader:
         except (KeyError, TypeError):
             pass
         effective = self.allow_synthetic if allow_synthetic is None else allow_synthetic
+        # Missing ids synthesize only under explicit opt-in; otherwise fail closed.
         if not effective:
             raise ContractError(
                 f"oracle target missing for {decision_id!r} "

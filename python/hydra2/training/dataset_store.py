@@ -311,30 +311,32 @@ class AuthoritativeParquetDataset:
                                         f"privileged field {k!r} inside "
                                         f"actor_observation for {did!r}"
                                     )
-                            # dora shape check
-                            for dk in ("dora_indicators", "dora", "indicators"):
-                                v: Any = obs.get(dk)
-                                if isinstance(v, list) and len(v) == 4:
-                                    raise ContractError(
-                                        f"(4,) dora shim in actor_observation[{dk!r}] for {did!r}"
+                            # Invariant: 4-long dora lists are the legacy shim shape;
+                            for dora_key in ("dora_indicators", "dora", "indicators"):
+                                dora_value: Any = obs.get(dora_key)
+                                if isinstance(dora_value, list) and len(dora_value) == 4:
+                                    msg = (
+                                        f"(4,) dora shim in actor_observation[{dora_key!r}]"
+                                        f" for {did!r}"
                                     )
+                                    raise ContractError(msg)
                     self._rows.append(raw)
         if len(self._rows) == 0:
             raise ContractError("authoritative dataset contains zero rows after loading")
 
-        # Canonical order: sorted by decision_id lexicographically
-        def _sort_key(r: dict[str, Any]) -> str:
-            return str(r.get("decision_id", ""))
+        # Invariant: canonical order is decision_id-sorted; resume reseeds from it.
+        def _sort_key(row: dict[str, Any]) -> str:
+            return str(row.get("decision_id", ""))
 
         self._rows.sort(key=_sort_key)
-        # Preserve canonical order for deterministic reseeding on resume
+        # Invariant: canonical snapshot stays sorted so resume reseeds identically.
         self._canonical_rows: list[dict[str, Any]] = list(self._rows)
-        # Apply deterministic permutation if seed is not None
+        # Invariant: seeded permutation is the only order mutation; unseeded stays canonical.
         if self.seed is not None:
             gen = torch.Generator().manual_seed(self.seed)
             perm_any: Any = torch.randperm(len(self._rows), generator=gen).tolist()
-            perm: list[int] = [int(x) for x in perm_any]
-            self._rows = [self._canonical_rows[i] for i in perm]
+            perm: list[int] = [int(perm_entry) for perm_entry in perm_any]
+            self._rows = [self._canonical_rows[perm_entry] for perm_entry in perm]
         if not isinstance(stratified, bool):
             raise ContractError(f"stratified must be a bool, got {stratified!r}")
         self._stratified: bool = stratified
@@ -405,11 +407,11 @@ class AuthoritativeParquetDataset:
         reseeded = False
         if seed_raw is not None:
             try:
-                s_int = int(seed_raw)
+                seed_int = int(seed_raw)
             except Exception:
-                s_int = None
-            if s_int is not None:
-                new_seed: int | None = None if s_int == -1 else s_int
+                seed_int = None
+            if seed_int is not None:
+                new_seed: int | None = None if seed_int == -1 else seed_int
                 if new_seed != self.seed:
                     self.seed = new_seed
                     if self.seed is None:
@@ -419,8 +421,8 @@ class AuthoritativeParquetDataset:
                         perm_any: Any = torch.randperm(
                             len(self._canonical_rows), generator=gen
                         ).tolist()
-                        perm: list[int] = [int(x) for x in perm_any]
-                        self._rows = [self._canonical_rows[i] for i in perm]
+                        perm: list[int] = [int(perm_entry) for perm_entry in perm_any]
+                        self._rows = [self._canonical_rows[perm_entry] for perm_entry in perm]
                     reseeded = True
         if isinstance(state, dict):
             # Checkpoints written with stratification carry it; older states
@@ -476,17 +478,17 @@ class AuthoritativeParquetDataset:
         batch_features: list[torch.Tensor] = []
         batch_legal: list[torch.Tensor] = []
         batch_chosen: list[torch.Tensor] = []
-        for r in rows:
-            t = tensorize_actor_row(
-                r,
+        for row in rows:
+            row_tensors = tensorize_actor_row(
+                row,
                 num_actions=self.num_actions,
                 feature_dim=self.feature_dim,
                 seed=self.seed if self.seed is not None else 0,
                 allow_narrow=self.allow_narrow,
             )
-            batch_features.append(t["features"])
-            batch_legal.append(t["legal_mask"])
-            batch_chosen.append(t["chosen_action_id"])
+            batch_features.append(row_tensors["features"])
+            batch_legal.append(row_tensors["legal_mask"])
+            batch_chosen.append(row_tensors["chosen_action_id"])
         features = torch.stack(batch_features, dim=0)  # [B,F]
         legal_mask = torch.stack(batch_legal, dim=0)  # [B,A] bool
         chosen_action_id = torch.stack(batch_chosen, dim=0)  # [B] long

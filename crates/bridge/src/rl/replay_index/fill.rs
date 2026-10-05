@@ -690,7 +690,7 @@ fn slab_spec_doc(spec: &SlabSpec) -> Value {
         })
         .collect();
     let envelope: Value =
-        serde_json::from_slice(&spec.batch_envelope).map_or(Value::Null, |v| v);
+        serde_json::from_slice(&spec.batch_envelope).unwrap_or(Value::Null);
     serde_json::json!({
         "batch": spec.batch,
         "t": spec.t,

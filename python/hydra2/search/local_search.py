@@ -161,7 +161,7 @@ class LocalResolvingPlannerSearchMixin:
                 try:
                     cid = int(getattr(a, "action_id", a))  # type: ignore[arg-type]
                 except Exception:
-                    cid = int(a)  # type: ignore[arg-type]
+                    cid = int(a)
             legal_ids.append(cid)
         legal_ids_t = tuple(legal_ids)
         if len(legal_ids_t) == 0:
@@ -182,7 +182,7 @@ class LocalResolvingPlannerSearchMixin:
         # Prepare RNG
         if rng is None:
             seat = (
-                root_seat if root_seat is not None else int(getattr(root_observation, "actor", 0))  # type: ignore[arg-type]
+                root_seat if root_seat is not None else int(getattr(root_observation, "actor", 0))
             )
             rng = self._deterministic_rng(case_id, seat)
         # Strategy tables
@@ -280,7 +280,7 @@ class LocalResolvingPlannerSearchMixin:
                 try:
                     from hydra2.belief.world import world_actor_observation as _wao
 
-                    obs = _wao(w, actor=actor_idx)  # pyrefly: ignore[bad-argument-type]
+                    obs = _wao(w, actor=actor_idx)
                 except Exception:
                     slot_has_obs[(wid, actor_idx)] = False
                     continue
@@ -299,7 +299,7 @@ class LocalResolvingPlannerSearchMixin:
                     try:
                         from hydra2.belief.world import world_actor_observation as _wao
 
-                        obs = _wao(w, actor=actor_idx)  # pyrefly: ignore[bad-argument-type]
+                        obs = _wao(w, actor=actor_idx)
                         fresh.append(info_key_for_actor_observation(obs))
                     except Exception:
                         fresh.append(None)
@@ -488,10 +488,10 @@ class LocalResolvingPlannerSearchMixin:
             c for c, a in ab.concrete_to_abstract if a == selected_abstract and c in legal_ids_t
         ]
         if len(candidates_concrete) == 0:
-            # Fallback: smallest legal maps to selected_abstract via mod? Use first legal
+            # Empty mapping: fall back to first legal (keeps selection total).
             candidates_concrete = [legal_ids_t[0]]
         selected_concrete = min(candidates_concrete)
-        # Find concrete action object from legal_actions — handle CanonicalAction via same deterministic mapping
+        # Map back to concrete action; CanonicalAction uses same deterministic map.
         selected_action = None
         for idx, a in enumerate(legal_actions):
             if hasattr(a, "kind") and hasattr(a, "actor"):
@@ -504,6 +504,7 @@ class LocalResolvingPlannerSearchMixin:
             if cid == selected_concrete:
                 selected_action = a
                 break
+        # No deterministic map hit: fall back to first legal (total selection).
         if selected_action is None:
             selected_action = legal_actions[0]
         elapsed_ms = (time.monotonic_ns() - t0) / 1e6

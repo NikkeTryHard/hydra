@@ -306,13 +306,13 @@ def _write_streaming_checkpoint(
     if writer is not None:
         writer.submit(
             _publish,
-            generation=int(update),
+            generation=update,
             description=f"stream-ckpt-{update:06d}",
             span_sink=span_sink,
             main_spans=tuple(_main_spans),
         )
     else:
-        _publish()
+        _ = _publish()
     return ckpt_path
 
 

@@ -30,6 +30,7 @@ def _eval_fn(name: str) -> Any | None:
     try:
         from hydra2 import _native as _ext  # pyrefly: ignore[missing-import]
     except ImportError:
+        # Extension not built: callers fall back to the Python oracle.
         return None
     sub = getattr(_ext, "eval", None)
     return getattr(sub, name, None) if sub is not None else None
@@ -74,24 +75,24 @@ def make_eval_case(
     :class:`EvalCase` construction, and the ``__all__`` names.
     """
     try:
-        case_id: str = _bridge_contracts.eval_check_case_id(case_id)
+        checked_case_id: str = _bridge_contracts.eval_check_case_id(case_id)
     except (ValueError, TypeError) as exc:
         raise ContractError(str(exc)) from exc
     try:
-        arms: tuple[str, str] = _bridge_contracts.eval_check_arms(arms)
+        checked_arms: tuple[str, str] = _bridge_contracts.eval_check_arms(arms)
     except (ValueError, TypeError) as exc:
         raise ContractError(str(exc)) from exc
     try:
-        uncertainty_unit: str = _bridge_contracts.eval_check_uncertainty_unit(
+        checked_unit: str = _bridge_contracts.eval_check_uncertainty_unit(
             uncertainty_unit, diagnostic_only, list(UNCERTAINTY_UNITS)
         )
     except (ValueError, TypeError) as exc:
         raise ContractError(str(exc)) from exc
     return EvalCase(
-        case_id=case_id,
-        arms=(arms[0], arms[1]),
+        case_id=checked_case_id,
+        arms=(checked_arms[0], checked_arms[1]),
         primary_metric=PRIMARY_METRIC,
-        uncertainty_unit=uncertainty_unit,
+        uncertainty_unit=checked_unit,
         rules_hash=str(validate_digest(rules_hash)),
         diagnostic_only=diagnostic_only,
     )

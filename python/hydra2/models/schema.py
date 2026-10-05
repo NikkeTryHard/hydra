@@ -282,11 +282,11 @@ def _validate_json_value(value: Any, *, where: str) -> None:
     if isinstance(value, str):
         return
     if isinstance(value, (list, tuple)):
-        for i, item in enumerate(value):  # type: ignore[unknown-variable-type]
+        for i, item in enumerate(value):
             _validate_json_value(item, where=f"{where}[{i}]")  # pyrefly: ignore[unknown-argument-type]  # value is Any, item inferred as Any
         return
     if isinstance(value, Mapping):
-        for key, item in value.items():  # type: ignore[unknown-variable-type]
+        for key, item in value.items():
             if not isinstance(key, str):
                 raise ContractError(f"{where}: object keys must be strings")
             _validate_json_value(item, where=f"{where}.{key}")  # pyrefly: ignore[unknown-argument-type]  # Mapping value is Any
@@ -614,7 +614,7 @@ def model_spec_digest_document(spec: ModelSpec | Mapping[str, Any]) -> dict[str,
                         "parameters": dict(head.parameters),  # pyrefly: ignore[unknown-argument-type]  # head is Any from Mapping lookup
                     }
                 )
-        serialized_heads = sorted(serialized_heads, key=lambda h: h["head_id"])  # pyrefly: ignore[unknown-argument-type]  # h is dict[Any]
+        serialized_heads = sorted(serialized_heads, key=lambda h: h["head_id"])  # h is dict[Any]
     else:
         serialized_heads = head_specs
 

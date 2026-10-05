@@ -43,7 +43,7 @@ __all__ = [
 ]
 
 
-class AbstractMappingError(ContractError):  # type: ignore[misc]
+class AbstractMappingError(ContractError):
     """Abstraction maps concrete to invalid abstract or loses required coverage."""
 
 
@@ -489,7 +489,7 @@ def build_public_subgame(
     if isinstance(abstraction, LocalResolvingAbstraction):
         ab = abstraction
     else:
-        # Build mapping from abstraction arg; if mapping is incomplete for tiny domain, extend with identity
+        # Mapping from arg; extend incomplete tiny-domain mapping with identity.
         if isinstance(abstraction, dict):
             raw = abstraction
         elif isinstance(abstraction, tuple):
@@ -542,7 +542,7 @@ def build_public_subgame(
                         next_level.append(child_hash)
                     edges.append((parent, child_hash, aid))
             current_level = next_level
-            # Cap explosion: if nodes exceed 64, stop expanding deeper (still respect horizon for depth)
+            # Cap breadth: stop past 64 nodes; horizon still bounds depth.
             if len(nodes) > 64:
                 break
     subgame = PublicSubgame(

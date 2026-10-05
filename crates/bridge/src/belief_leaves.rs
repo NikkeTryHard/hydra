@@ -18,8 +18,8 @@
 //!   the caller prepares `canonical_bytes(identity_doc)` Python-side (canon
 //!   authority stays Python); Rust re-canonicalizes through the feed `canon`
 //!   owner and hashes through the feed `digest` owner, returning the
-//!   `sha256:`-prefixed text (the `packet_id_from_doc` precedent at
-//!   `contracts.rs:912-927`, prefix kept here per the oracle).
+//!   `sha256:`-prefixed text (re-canonicalize-then-hash via the feed
+//!   `canon`/`digest` owners; prefix kept here per the oracle).
 //! - `corpus_log_prob_for` <- `TinyCorpus.log_prob` (`corpus.py:55-59`):
 //!   scalars cross (`world_ids` + `probabilities` + target, never live
 //!   `FullWorld`s — the `PacketSuccessor` precedent); `zip` truncation
@@ -55,7 +55,7 @@
 //! `String`/`Vec`/`u32`/`f64` scalars) -> ONE `py.detach(|| ...)` over owned
 //! plain data with zero Python API inside (per `contracts.rs:434-437`,
 //! `rc_require.rs:827-844`) -> attached wrap as `PyValueError` (per
-//! `contracts.rs:117-123`, `ctr_block` at `contracts.rs:447-456`). Consts via
+//! `contracts::ctr_stream_bytes`). Consts via
 //! `sub.add` (per `contracts.rs:1153-1156`); nested tables via
 //! `Vec<Bound<'_, PyTuple>>` + `PyTuple::new` (per `contracts.rs:1281-1287`).
 //!
@@ -147,8 +147,8 @@ fn confirm_mix(val_raw: u32, random_draw: f64) -> f64 {
 /// (mirrors `compute_world_id` without the live `FullWorld`): the caller
 /// prepares `canonical_bytes(identity_doc)` (canon authority stays Python);
 /// Rust re-canonicalizes through the feed `canon` owner and hashes through
-/// the feed `digest` owner, returning `sha256:`-prefixed text (the
-/// `packet_id_from_doc` precedent at `contracts.rs:912-927`, prefix kept).
+/// the feed `digest` owner, returning `sha256:`-prefixed text
+/// (re-canonicalize-then-hash via the feed `canon`/`digest` owners).
 /// Compute runs detached with zero Python API inside; parse/canon failures
 /// are `PyValueError`, never a default. Counter-free deterministic, never
 /// wall-clock.

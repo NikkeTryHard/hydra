@@ -126,12 +126,12 @@ def find_exact_duplicates(wall_hashes: Mapping[str, str]) -> list[tuple[str, str
         raise ContractError("wall_hashes must be a mapping wall_id -> digest")
     payload = wall_hashes if type(wall_hashes) is dict else dict(wall_hashes)
     try:
-        out: list[tuple[str, str]] = _bridge_contracts.eval_find_exact_duplicates(payload)
+        pairs: list[tuple[str, str]] = _bridge_contracts.eval_find_exact_duplicates(payload)
     except (ValueError, TypeError) as exc:
         if str(exc) == "contracts digest_text must match sha256:<64 lowercase hex>":
             raise
         raise ContractError(str(exc)) from exc
-    return [(first, second) for first, second in out]
+    return [(first, second) for first, second in pairs]
 
 
 def find_near_duplicates(
@@ -146,14 +146,15 @@ def find_near_duplicates(
     if not isinstance(wall_tiles_by_id, Mapping):
         raise ContractError("wall_tiles_by_id must be mapping wall_id -> tiles")
     fingerprint_to_first: dict[str, str] = {}
-    dups: list[tuple[str, str]] = []
+    near_pairs: list[tuple[str, str]] = []
     for wall_id, tiles in wall_tiles_by_id.items():
         _ = _require_wall_id(wall_id)
         if not isinstance(tiles, Sequence):
             raise ContractError(f"tiles for {wall_id!r} must be a sequence")
         fingerprint = str(wall_fingerprint(tiles))
+        # First sighting records the owner; later sightings pair against it.
         if fingerprint in fingerprint_to_first:
-            dups.append((fingerprint_to_first[fingerprint], wall_id))
+            near_pairs.append((fingerprint_to_first[fingerprint], wall_id))
         else:
             fingerprint_to_first[fingerprint] = wall_id
-    return dups
+    return near_pairs

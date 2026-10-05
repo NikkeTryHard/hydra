@@ -56,9 +56,9 @@ def _receipt_of(blob: bytes) -> ArtifactReceipt:
     doc = _decode(blob, name="receipt")
     return ArtifactReceipt(
         artifact_digest=_require_digest(doc["artifact_digest"], name="artifact_digest"),
-        row_count=int(doc["row_count"]),
-        compressed_bytes=int(doc["compressed_bytes"]),
-        uncompressed_bytes=int(doc["uncompressed_bytes"]),
+        row_count=doc["row_count"],
+        compressed_bytes=doc["compressed_bytes"],
+        uncompressed_bytes=doc["uncompressed_bytes"],
     )
 
 
@@ -74,28 +74,28 @@ def seal_begin(
     """Admit one async seal job; poll with :func:`seal_poll` (never blocks)."""
     return int(
         _native_artifact.seal_begin(
-            int(tape_handle),
+            tape_handle,
             _encode(header),
             list(source_ledger),
             list(eval_ledger),
-            bool(expect_bc),
-            str(artifact_path),
-            str(metas_path),
+            expect_bc,
+            artifact_path,
+            metas_path,
         )
     )
 
 
 def seal_poll(job_id: int) -> dict:
     """Nonblocking seal status (`running`, or `done` with a receipt)."""
-    doc = _decode(_native_artifact.seal_poll(int(job_id)), name="poll")
+    doc = _decode(_native_artifact.seal_poll(job_id), name="poll")
     if doc.get("status") == "done":
-        _receipt_of(_encode(doc["receipt"]))
+        _ = _receipt_of(_encode(doc["receipt"]))
     return doc
 
 
 def seal_wait(job_id: int) -> ArtifactReceipt:
     """Block for one admitted seal (quiesce/drain only, never the hot loop)."""
-    return _receipt_of(_native_artifact.seal_wait(int(job_id)))
+    return _receipt_of(_native_artifact.seal_wait(job_id))
 
 
 def seal_sync(
@@ -110,13 +110,13 @@ def seal_sync(
     """Synchronous seal for quiesce/drain and single-threaded tooling."""
     return _receipt_of(
         _native_artifact.seal_sync(
-            int(tape_handle),
+            tape_handle,
             _encode(header),
             list(source_ledger),
             list(eval_ledger),
-            bool(expect_bc),
-            str(artifact_path),
-            str(metas_path),
+            expect_bc,
+            artifact_path,
+            metas_path,
         )
     )
 
@@ -144,21 +144,19 @@ def validate_artifact(
     """Streaming revalidation of a stored artifact against its metas."""
     return _receipt_of(
         _native_artifact.validate_artifact(
-            str(artifact_path),
-            str(metas_path),
+            artifact_path,
+            metas_path,
             _encode(header),
             list(source_ledger),
             list(eval_ledger),
-            bool(expect_bc),
+            expect_bc,
         )
     )
 
 
 def build_order(metas_path: str, shuffle_key: dict) -> tuple[dict, bytes]:
     """Frozen order plan: descriptor (counts/digests) plus opaque index."""
-    descriptor_blob, index_bytes = _native_artifact.build_order(
-        str(metas_path), _encode(shuffle_key)
-    )
+    descriptor_blob, index_bytes = _native_artifact.build_order(metas_path, _encode(shuffle_key))
     return _decode(descriptor_blob, name="order"), bytes(index_bytes)
 
 
@@ -170,12 +168,12 @@ def register_replay(index: bytes, metas_path: str) -> int:
     handle the production :func:`fill_slab` serves; release with
     :func:`drop_replay` at generation teardown.
     """
-    return int(_native_artifact.register_replay(bytes(index), str(metas_path)))
+    return int(_native_artifact.register_replay(index, metas_path))
 
 
 def drop_replay(replay_handle: int) -> None:
     """Release one frozen replay handle (unknown handles fail closed)."""
-    _native_artifact.drop_replay(int(replay_handle))
+    _native_artifact.drop_replay(replay_handle)
 
 
 def terminal_inputs(tape_handle: int) -> tuple[dict, bytes, bytes, bytes, bytes]:
@@ -187,7 +185,7 @@ def terminal_inputs(tape_handle: int) -> tuple[dict, bytes, bytes, bytes, bytes]
     :func:`freeze_terminal_advantages`.
     """
     descriptor_blob, actors, game_index, values, utilities = _native_artifact.terminal_inputs(
-        int(tape_handle)
+        tape_handle
     )
     return (
         _decode(descriptor_blob, name="terminal inputs"),
@@ -201,7 +199,7 @@ def terminal_inputs(tape_handle: int) -> tuple[dict, bytes, bytes, bytes, bytes]
 def freeze_terminal_advantages(tape_handle: int, rawa_f32: bytes) -> dict:
     """Freeze GPU-computed advantages immutably, exactly once pre-seal."""
     return _decode(
-        _native_artifact.freeze_terminal_advantages(int(tape_handle), bytes(rawa_f32)),
+        _native_artifact.freeze_terminal_advantages(tape_handle, rawa_f32),
         name="freeze receipt",
     )
 
@@ -239,9 +237,7 @@ def export_slab(
     tape_handle: int, index: bytes, metas_path: str, batch_idx: int
 ) -> tuple[SlabSpec, bytes, bytes, bytes, bytes, bytes, bytes, bytes, bytes]:
     """Cold export: one optimizer batch as owned tuples (gate fixtures)."""
-    out = _native_artifact.export_slab(
-        int(tape_handle), bytes(index), str(metas_path), int(batch_idx)
-    )
+    out = _native_artifact.export_slab(tape_handle, index, metas_path, batch_idx)
     if len(out) != 9:
         raise ContractError(f"rl_bridge slab export must carry 9 parts, got {len(out)}")
     (
@@ -270,7 +266,7 @@ def export_slab(
 
 def slab_geometry(bucket_t: int, capacity: int) -> tuple[int, int]:
     """Exact `(feature_bytes, fact_bytes)` slot spans for one lane."""
-    feature_bytes, fact_bytes = _native_artifact.slab_geometry(int(bucket_t), int(capacity))
+    feature_bytes, fact_bytes = _native_artifact.slab_geometry(bucket_t, capacity)
     return int(feature_bytes), int(fact_bytes)
 
 
@@ -312,9 +308,9 @@ def fill_slab(
     return _slab_spec_of(
         _decode(
             _native_artifact.fill_slab(
-                int(tape_handle),
-                int(replay_handle),
-                int(batch_idx),
+                tape_handle,
+                replay_handle,
+                batch_idx,
                 features_buffer,
                 facts_buffer,
             ),
@@ -333,9 +329,9 @@ def register_live_replay(
     stay native.
     """
     handle, descriptor_blob = _native_rl.register_live_replay(
-        tape_handle=int(tape_handle),
-        collector_spec_json=bytes(collector_spec),
-        run_descriptor_json=bytes(run_descriptor),
+        tape_handle=tape_handle,
+        collector_spec_json=collector_spec,
+        run_descriptor_json=run_descriptor,
     )
     return int(handle), _decode(descriptor_blob, name="live replay")
 
@@ -359,9 +355,9 @@ def fill_live_slab(
         raise ContractError("rl_bridge fill spans must be writable buffers")
     return _decode(
         _native_rl.fill_live_slab(
-            tape_handle=int(tape_handle),
-            replay_handle=int(replay_handle),
-            batch_idx=int(batch_idx),
+            tape_handle=tape_handle,
+            replay_handle=replay_handle,
+            batch_idx=batch_idx,
             features_buffer=features_buffer,
             facts_buffer=facts_buffer,
         ),
@@ -421,7 +417,7 @@ def materialize_slab(spec: SlabSpec, features: bytes, facts48: bytes) -> dict[st
 def checkpoint_receipt(root_dir: str, locator: str, manifest: dict) -> dict:
     """Cold receipt for one landed ordinary checkpoint (streams the file)."""
     return _decode(
-        _native_artifact.checkpoint_receipt(str(root_dir), str(locator), _encode(manifest)),
+        _native_artifact.checkpoint_receipt(root_dir, locator, _encode(manifest)),
         name="checkpoint receipt",
     )
 
@@ -436,7 +432,7 @@ def publish_control(
     """Atomic control publication; returns the committed tip document."""
     return _decode(
         _native_artifact.publish_control(
-            str(root_dir),
+            root_dir,
             _encode(control),
             [_encode(receipt) for receipt in receipts],
             expected_parent,
@@ -448,13 +444,13 @@ def publish_control(
 
 def read_tip(root_dir: str) -> dict:
     """Authoritative control document behind the last committed tip."""
-    return _decode(_native_artifact.read_tip(str(root_dir)), name="control")
+    return _decode(_native_artifact.read_tip(root_dir), name="control")
 
 
 def stage_native_snapshot(root_dir: str, game: dict) -> dict:
     """Content-addressed write of one per-game native snapshot envelope."""
     return _decode(
-        _native_artifact.stage_native_snapshot(str(root_dir), _encode(game)),
+        _native_artifact.stage_native_snapshot(root_dir, _encode(game)),
         name="native receipt",
     )
 
@@ -463,7 +459,7 @@ def read_native_snapshot(root_dir: str, game_id: str, digest: str) -> dict:
     """Digest-verified read of one staged native snapshot."""
     return _decode(
         _native_artifact.read_native_snapshot(
-            str(root_dir), str(game_id), _require_digest(digest, name="digest")
+            root_dir, game_id, _require_digest(digest, name="digest")
         ),
         name="native snapshot",
     )
@@ -471,4 +467,4 @@ def read_native_snapshot(root_dir: str, game_id: str, digest: str) -> dict:
 
 def commit_blob(path: str) -> None:
     """Durable blob step: fsync an immutable file plus its directory."""
-    _native_artifact.commit_blob(str(path))
+    _native_artifact.commit_blob(path)

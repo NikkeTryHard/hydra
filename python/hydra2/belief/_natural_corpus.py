@@ -1,4 +1,3 @@
-# ruff: noqa: E501
 """Natural tiny-corpus helpers (deterministic consistent worlds).
 
 Single home for `_validate_finite` plus `_build_tiny_corpus_for_epoch`.
@@ -42,15 +41,17 @@ def _build_tiny_corpus_for_epoch(
     lazily generate a deterministic tiny corpus of 4 worlds sharing the same
     root observation. This is used for uniform natural law.
     """
-    # Filter registry by observation_hash and rules_hash
+    # Invariant: only worlds matching epoch hashes count as consistent.
     consistent = [
-        w
-        for w in registry.values()
-        if w.observation_hash == epoch.observation_hash and w.rules_hash == epoch.rules_hash
+        candidate
+        for candidate in registry.values()
+        if candidate.observation_hash == epoch.observation_hash
+        and candidate.rules_hash == epoch.rules_hash
     ]
+    # Reuse stored corpus when the epoch already materialized one.
     if len(consistent) > 0:
-        # Deterministic order by world_id
-        consistent.sort(key=lambda w: w.world_id)
+        # Sort by world_id: deterministic order keeps sampling reproducible.
+        consistent.sort(key=lambda candidate: candidate.world_id)
         return consistent
     # No stored corpus: synthesize 4 worlds consistent by construction with
     # the same root hand, then bind their observation_hash to the epoch so
@@ -66,22 +67,22 @@ def _build_tiny_corpus_for_epoch(
     raw_wall: tuple[int, ...] = _bridge_contracts.TINY_CORPUS_WALL
     wall: tuple[int, ...] = raw_wall
     worlds: list[FullWorld] = []
-    for idx, hands in enumerate(base_hands_options):
-        # Deterministically perturb latent_state with idx to keep world_id unique even if hands repeat
+    for corpus_idx, hands in enumerate(base_hands_options):
+        # Vary latent_state by index: keeps world_id unique when hands repeat.
         from hydra2.belief.world import make_full_world
 
-        w = make_full_world(
+        world = make_full_world(
             concealed_hands=hands,
             live_wall=wall,
             dead_wall=(),
-            latent_state={"corpus_idx": idx},
+            latent_state={"corpus_idx": corpus_idx},
             rules_hash=epoch.rules_hash,
             observation_hash=epoch.observation_hash,
-            simulator_snapshot=f"tiny:{epoch.target_id}:{idx}",
+            simulator_snapshot=f"tiny:{epoch.target_id}:{corpus_idx}",
         )
-        worlds.append(w)
-    # Register them into provided dict (caller will extend)
-    for w in worlds:
-        registry[w.world_id] = w
-    worlds.sort(key=lambda w: w.world_id)
+        worlds.append(world)
+    # Invariant: registry owns world_ids; caller extends it with these worlds.
+    for world in worlds:
+        registry[world.world_id] = world
+    worlds.sort(key=lambda world: world.world_id)
     return worlds

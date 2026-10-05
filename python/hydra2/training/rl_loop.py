@@ -59,7 +59,7 @@ def run_rl_training(
     from hydra2._native import rl_artifact as artifacts  # pyrefly: ignore[missing-import]
     from hydra2.runtime.plain import configure_torch_matmul
 
-    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    _ = os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     configure_torch_matmul()
     torch.use_deterministic_algorithms(True)
     root = run_dir_for(config)
@@ -179,7 +179,7 @@ def run_rl_training(
         # frozen actor in memory, and admit the one future cohort. No CPU
         # tensor snapshot, checkpoint hash, fsync, or writer future gates
         # this activation. No further actor mutation until the next handoff.
-        gpu.drain(wait=True)
+        _ = gpu.drain(wait=True)
         mark(f"actor-copy-start-g{current_generation + 1}")
         gpu.copy_actor_at_boundary(cold.learner, cold.actor)
         mark(f"actor-copy-end-g{current_generation + 1}")
@@ -226,7 +226,7 @@ def run_rl_training(
     loop_error: BaseException | None = None
 
     def _write_spans(path: Path) -> None:
-        path.write_text(json.dumps([(event, t) for event, t in spans]))
+        _ = path.write_text(json.dumps([(event, t) for event, t in spans]))
 
     def _cleanup(stage: str, action: Any) -> None:
         nonlocal loop_error
@@ -257,12 +257,12 @@ def run_rl_training(
                 target.tape = collector.export()
                 mark(f"drain-end-g{target.spec['generation']}")
                 mark(f"freeze-start-g{target.spec['generation']}")
-                gpu.freeze_terminal_advantages(artifacts, target.tape)
+                _ = gpu.freeze_terminal_advantages(artifacts, target.tape)
                 mark(f"freeze-end-g{target.spec['generation']}")
                 mark(f"prep-begin-g{target.spec['generation']}")
                 target.prep = int(
                     native.begin_live_replay(
-                        tape_handle=int(target.tape),
+                        tape_handle=target.tape,
                         collector_spec_json=_encode(target.spec),
                         run_descriptor_json=_encode(descriptor),
                     )
@@ -285,7 +285,9 @@ def run_rl_training(
                     )
                 if prepared_slot is None:
                     mark(f"fill-start-g{current_generation}-b{batch_cursor}")
-                    learner.fill(active_slot, native, current.tape, current.replay, batch_cursor)
+                    _ = learner.fill(
+                        active_slot, native, current.tape, current.replay, batch_cursor
+                    )
                     mark(f"fill-end-g{current_generation}-b{batch_cursor}")
                     mark_once(f"first-learner-g{current_generation}")
                 else:
@@ -308,7 +310,7 @@ def run_rl_training(
                 finished = learner.microstep()
                 if prepared_slot is None and batch_cursor + 1 < batch_count:
                     prepared_slot = 1 - active_slot
-                    learner.fill(
+                    _ = learner.fill(
                         prepared_slot, native, current.tape, current.replay, batch_cursor + 1
                     )
                 if finished:
@@ -438,7 +440,7 @@ def run_rl_training(
         _cleanup("writer-close", writer.close)
     finally:
         for signum, handler in previous_handlers.items():
-            signal.signal(signum, handler)
+            _ = signal.signal(signum, handler)
     if loop_error is not None:
         raise loop_error
     return {

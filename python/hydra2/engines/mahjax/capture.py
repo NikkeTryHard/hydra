@@ -113,11 +113,11 @@ def _device_fingerprints(devices: tuple[Any, ...]) -> tuple[DeviceFingerprint, .
         capability: Any = getattr(device, "compute_capability", None)
         if isinstance(capability, tuple) and len(capability) == 2:
             cap_tuple: tuple[Any, Any] = cast("tuple[Any, Any]", capability)
-            capability_text: str | None = ".".join(str(cast("Any", part)) for part in cap_tuple)  # pyrefly: ignore[explicit-any]
+            capability_text: str | None = ".".join(str(cast("Any", part)) for part in cap_tuple)
         elif capability is None:
             capability_text: str | None = None
         else:
-            capability_text: str | None = str(cast("Any", capability))  # pyrefly: ignore[explicit-any]
+            capability_text: str | None = str(cast("Any", capability))
         fingerprints.append(
             DeviceFingerprint(
                 kind=str(getattr(device, "platform", "unknown")).lower(),

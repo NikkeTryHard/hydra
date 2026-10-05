@@ -55,7 +55,7 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 
-class PuctBaselinePlanner(Planner):  # type: ignore[misc]
+class PuctBaselinePlanner(Planner):
     """PUCT baseline for matched-resource comparison (candidate6 comparator).
 
     Uses same exact simulator and belief sampling as Gumbel, but selects via
@@ -429,7 +429,7 @@ class PuctBaselinePlanner(Planner):  # type: ignore[misc]
                         rules_hash=rules_digest,
                     )
                 )
-            spec_hash = _csh(request.candidate_spec)  # type: ignore[call-arg]
+            spec_hash = _csh(request.candidate_spec)
             telem = _mrt(
                 mode=str(getattr(request.candidate_spec.resource_budget, "mode", "gameplay_5s")),
                 wall_id=None,

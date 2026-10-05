@@ -55,7 +55,7 @@ __all__ = [
 
 
 @dataclass(slots=True)
-class JointTypeWorldPlanner(Planner):  # type: ignore[misc]
+class JointTypeWorldPlanner(Planner):
     """Candidate 8 planner — joint type/world with deterministic exact updates.
 
     - Prior: uniform over Theta x Worlds consistent with root observation.
@@ -132,7 +132,7 @@ class JointTypeWorldPlanner(Planner):  # type: ignore[misc]
                     return self._joint_posterior
             except Exception:
                 pass
-        # Build belief epoch and tiny corpus — real belief required; no synthetic fallback (fail closed).
+        # Real belief only; synthetic corpus would hide miss, so fail closed.
         _require_belief()
         try:
             from hydra2.belief.natural import NaturalBelief as _NB
@@ -151,7 +151,7 @@ class JointTypeWorldPlanner(Planner):  # type: ignore[misc]
                 _build_tiny_corpus_for_epoch,
             )
 
-            worlds = _build_tiny_corpus_for_epoch(epoch, registry={})  # pyrefly: ignore[unknown-argument-type] # Any belief epoch
+            worlds = _build_tiny_corpus_for_epoch(epoch, registry={})  # Any belief epoch
         except Exception as exc:
             raise ContractError(f"joint: belief corpus build failed: {exc}") from exc
         # Limit to max_particles // num_theta worlds
@@ -159,8 +159,8 @@ class JointTypeWorldPlanner(Planner):  # type: ignore[misc]
         worlds = worlds[:max_worlds]
         self._worlds_by_ref = {w.world_id: w for w in worlds}
         # Need target_id for particles (real epoch required)
-        target_id = str(getattr(epoch, "target_id", "sha256:" + "f" * 64))  # pyrefly: ignore[unknown-argument-type] # Any belief epoch
-        epoch_id = int(getattr(epoch, "epoch", 0))  # pyrefly: ignore[unknown-argument-type] # Any belief epoch
+        target_id = str(getattr(epoch, "target_id", "sha256:" + "f" * 64))  # Any belief epoch
+        epoch_id = int(getattr(epoch, "epoch", 0))  # Any belief epoch
         num_theta = len(self.config.theta_ids)
         num_world = len(worlds)
         total = num_theta * num_world
@@ -201,7 +201,7 @@ class JointTypeWorldPlanner(Planner):  # type: ignore[misc]
             try:
                 from hydra2.search.common import candidate_spec_hash as _csh
 
-                if _csh(request.candidate_spec) != _csh(self.candidate_spec):  # type: ignore[arg-type]
+                if _csh(request.candidate_spec) != _csh(self.candidate_spec):
                     raise ContractError("candidate_spec mismatch")
             except Exception:
                 if str(request.candidate_spec) != str(self.candidate_spec):
@@ -347,7 +347,7 @@ class JointTypeWorldPlanner(Planner):  # type: ignore[misc]
         except (AttributeError, ValueError, TypeError) as exc:
             raise ContractError(f"joint: rng jump_to failed: {exc}") from exc
         return _wrap_result(
-            out,  # pyrefly: ignore[unknown-argument-type] # native JointOut
+            out,  # native JointOut
             legal=legal,
             candidate_spec=cand_spec,
             start_ns=start_ns,

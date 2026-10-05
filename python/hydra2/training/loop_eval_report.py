@@ -131,7 +131,7 @@ def evaluate_report(
             total_uniform_gap += metrics["legal_uniform_gap"]
             batch_nlls.append(metrics["masked_nll"])
             batch_top1s.append(metrics["top1"])
-            total_rows += int(eval_targets.shape[0])
+            total_rows += eval_targets.shape[0]
             n += 1
             pooled_logits.append(eval_logits.detach().to("cpu"))
             pooled_targets.append(eval_targets.detach().to("cpu"))
@@ -162,8 +162,8 @@ def evaluate_report(
         "legal_uniform_comparison": total_nll / n,  # alias for checklist
         "num_eval_batches": float(n),
         "num_eval_rows": float(total_rows),
+        "top1_se": top1_se,
         "masked_nll_se": float(nll_se),
-        "top1_se": float(top1_se),
     }
     # Pooled per-type scorecards + post-hoc temperature (logging only;
     # failures degrade to legacy keys, never fail the report).

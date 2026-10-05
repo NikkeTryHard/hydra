@@ -70,7 +70,7 @@ from hydra2.models.schema import BASELINE_ACTION_COUNT, HISTORY_BUCKET_LENGTHS
 try:
     from hydra2._native import contracts as _shard_bridge  # pyrefly: ignore[missing-import]
 except ImportError:  # pragma: no cover - import-time signal, same text as call-site
-    _shard_bridge = None  # type: ignore[assignment]
+    _shard_bridge = None
 
 __all__ = [
     "MANIFEST_VERSION",
@@ -278,7 +278,7 @@ def _load_sidecar_list(shard_dir: Path, filename: str, rows: int, *, what: str) 
     if not isinstance(values, list) or len(values) != rows:
         raise CorruptArtifactError(f"sidecar {path} must be a list of {rows} {what}")
     typed: list[Any] = list(values)
-    return [str(v) for v in typed]
+    return [str(value) for value in typed]
 
 
 class ShardReader:
@@ -599,7 +599,7 @@ class ShardReader:
             ):
                 values = np.ascontiguousarray(values[:, :batch_bucket])
             if values.dtype.kind in ("S", "U", "O"):  # pyrefly: ignore[unknown-argument-type] # numpy dtype kind dynamic; branch owns the string decode
-                batch[name] = [str(v) for v in values.tolist()]
+                batch[name] = [str(value) for value in values.tolist()]
             else:
                 batch[name] = torch.from_numpy(np.ascontiguousarray(values))
         legal = batch.get("legal_mask")

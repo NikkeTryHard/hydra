@@ -266,7 +266,7 @@ class RustPlaneStream:
                 self._h2d_ms.append(elapsed)
         ptrs: list[int] = [t.data_ptr() for t in slot]
         byte_caps: list[int] = [t.nbytes for t in slot]
-        raw: Any = self._handle.next_into(ptrs, byte_caps)  # pyrefly: ignore[unknown-argument-type] # data_ptr/nbytes lists dynamic; native owns the gates
+        raw: Any = self._handle.next_into(ptrs, byte_caps)  # lists dynamic; native gates
         fill_rows: int = raw.rows
         fill_games: int = raw.games_consumed
         fill_quarantined: int = raw.games_quarantined

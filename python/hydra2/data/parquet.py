@@ -57,9 +57,8 @@ FORBIDDEN_IN_ACTOR = {
     "privileged",
     "full_world",
 }
-# Hoisted schema: avoid per-call pa.schema construction; reuse the const.
+# Hoisted: write_table reuses this schema (per-shard construction wasted CPU).
 # Evidence: https://arrow.apache.org/docs/python/generated/pyarrow.parquet.write_table.html
-# write_table schema is reused; constructing once saves CPU per shard.
 _ACTOR_SCHEMA = pa.schema(
     [
         ("game_id", pa.string()),
@@ -164,7 +163,6 @@ def _actor_observation_is_privileged_free(obs: dict[str, object]) -> None:
     for key in obs:
         if key in FORBIDDEN_IN_ACTOR:
             raise ContractError(f"privileged field leakage into actor observation: {key!r}")
-        # Nested check for hidden tiles
         if isinstance(obs[key], dict):
             for sub in obs[key]:  # type: ignore[union-attr]  # reason: obs values statically object; isinstance narrows dict but checker cannot narrow subscript
                 if sub in FORBIDDEN_IN_ACTOR:
@@ -175,7 +173,7 @@ def _actor_observation_is_privileged_free(obs: dict[str, object]) -> None:
         v = obs.get(k)
         if isinstance(v, list) and len(v) == 4:
             raise ContractError(f"actor observation has (4,) dora shim for {k!r}; expected (5,)")
-    # If dora_indicators present, ensure length 5
+    # No gate here: unexpected widths fail closed at write time, never here.
     di = obs.get("dora_indicators")
     if isinstance(di, list) and len(di) not in (0, 5):
         pass
@@ -191,7 +189,6 @@ def write_actor_shards(
     """Write actor-visible shards as Parquet; returns shard hashes."""
     if len(rows) == 0:
         raise ContractError("no actor rows to write")
-    # Validate no privileged leakage and dora shape
     for r in rows:
         _actor_observation_is_privileged_free(r.actor_observation)
         if r.actor_observation.get("dora_indicators") is not None:
@@ -223,10 +220,8 @@ def write_actor_shards(
     shard_hashes: dict[str, str] = {}
     for split in sorted(buckets):
         split_dict = buckets[split]
-        # Reuse hoisted const schema instead of per-shard pa.schema().
         split_table = pa.table(split_dict, schema=_ACTOR_SCHEMA)
         out_path = destination / f"actor-{split}.parquet"
-        # Explicit opts: zstd + dict (arrow write_table docs)
         # https://arrow.apache.org/docs/python/generated/pyarrow.parquet.write_table.html  # noqa: E501  # reason: evidence URL cannot wrap without breaking link; splitting harms copy-paste
         pq.write_table(
             split_table,
@@ -245,24 +240,21 @@ def write_actor_shards(
         # Evidence https://arrow.apache.org/docs/python/generated/pyarrow.parquet.ParquetFile.html
         try:
             pf = pq.ParquetFile(out_path)
-            # Prefer pf.schema.names (arrow) else metadata schema
             if hasattr(pf, "schema_arrow") and pf.schema_arrow is not None:
                 col_names = list(pf.schema_arrow.names)
             elif hasattr(pf, "schema") and hasattr(pf.schema, "names"):
-                col_names = list(pf.schema.names)  # type: ignore[attr-defined]  # reason: pyarrow ParquetFile.schema type varies by version; hasattr-guarded above, fallback covers
+                col_names = list(pf.schema.names)  # schema type varies; guarded above
             else:
-                # Fallback via metadata
                 md = pf.metadata
-                col_names = [md.schema.column(i).name for i in range(md.num_columns)]  # type: ignore[attr-defined]
+                col_names = [md.schema.column(i).name for i in range(md.num_columns)]
                 # reason: metadata schema dynamic pyarrow type; guarded fallback
         except Exception:  # why-broad: schema probe may fail on any backend;
             # fall back to schema-only read (no row data).
-            col_names = pq.read_schema(out_path).names  # type: ignore[attr-defined]
+            col_names = pq.read_schema(out_path).names
             # reason: read_schema returns dynamic Arrow Schema at runtime
         for col in col_names:
             if col in FORBIDDEN_IN_ACTOR:
                 raise ContractError(f"shard {out_path} leaks privileged column {col!r}")
-    # Write dataset-level manifest
     dora_shape: tuple[int, ...] = DORA_SHAPE
     manifest = {
         "dataset_hash": dataset_hash,
@@ -294,7 +286,6 @@ def write_privileged_shards(
             for r in rows
         ],
     }
-    # Reuse hoisted privileged schema instead of per-call construction.
     table = pa.table(table_dict, schema=_PRIVILEGED_SCHEMA)
     # Shard name must match the oracle loader glob (privileged-*.parquet,
     # mirroring actor-*.parquet sharding). The bare "privileged.parquet" name was
@@ -387,8 +378,7 @@ def verify_no_privileged_leakage(actor_parquet_path: Path) -> None:
             if idx < 0:
                 continue
             col = batch.column(idx)
-            # For string columns, to_pylist per-batch bounds Python object creation to batch size;
-            # for primitive columns one would use col.to_numpy(zero_copy_only=False).
+            # Per-batch to_pylist bounds Python object creation to the batch width.
             for obs_json in col.to_pylist():
                 try:
                     obs_raw: object = json.loads(obs_json) if isinstance(obs_json, str) else {}

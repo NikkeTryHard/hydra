@@ -232,7 +232,7 @@ def validate_packet_partition(successors: Any, *, tolerance: float = 1e-9) -> No
     if successors is None:
         raise PacketPartitionError("successors must be non-empty [PBRF_PARTITION_EMPTY]")
     try:
-        if len(successors) == 0:  # type: ignore[arg-type]
+        if len(successors) == 0:
             raise PacketPartitionError("successors must be non-empty [PBRF_PARTITION_EMPTY]")
     except TypeError:
         pass
@@ -377,7 +377,9 @@ def _scenario_seed_bytes(
         pass  # stale .so: fall through to the oracle below (same bytes)
     else:
         try:
-            return _seed_fn(candidate_id, case_id, scenario_idx, attempt_id)  # pyrefly: ignore[unknown-argument-type] # untyped bridge seed fn
+            return _seed_fn(
+                candidate_id, case_id, scenario_idx, attempt_id
+            )  # untyped bridge seed fn
         except (ValueError, TypeError) as exc:
             raise ContractError(str(exc)) from exc
     payload = canonical_bytes(
@@ -418,7 +420,7 @@ def _hash_tie_break(actions: tuple[Any, ...], candidate_id: str) -> Any:
     else:
         try:
             _cid = candidate_id if isinstance(candidate_id, str) else str(candidate_id)
-            _idx: int = _tie_fn(_cid, [str(aid(a)) for a in _items])  # pyrefly: ignore[unknown-argument-type] # untyped bridge tie fn
+            _idx: int = _tie_fn(_cid, [str(aid(a)) for a in _items])  # untyped bridge tie fn
         except (ValueError, TypeError) as exc:
             raise ContractError(str(exc)) from exc
         return _items[_idx]
@@ -443,7 +445,7 @@ class _DespotNode:
     """One DESPOT belief-action node (actor-visible)."""
 
     # Wave 2 bridge audit: kept Python — node tables stay Python (lower_value is a
-    # feasible-policy estimate, priority_proxy explicitly not an upper bound; no UCT/PUCT pyfn covers it).
+    # feasible-policy estimate; priority_proxy is not an upper bound (no UCT pyfn).
 
     node_id: str
     depth: int

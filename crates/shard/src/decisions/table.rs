@@ -1,3 +1,4 @@
+//! Published action-table templates for the decision walker (see super).
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------

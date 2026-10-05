@@ -29,7 +29,7 @@ from hydra2.contracts.common import ContractError, VisibilityViolationError
 try:
     from hydra2._native import search as _joint_types_bridge  # pyrefly: ignore[missing-import]
 except ImportError:  # pragma: no cover — bridge-less env keeps pure-Python oracles
-    _joint_types_bridge = None  # type: ignore[assignment]
+    _joint_types_bridge = None
 
 
 def _bridge_attr(name: str, default: Any) -> Any:
@@ -426,8 +426,8 @@ def validate_same_information_equality(
 
     obs = _wao(world, actor=opponent_seat)
     key1 = info_key_for_observation(obs)
-    # Perturb opponent hidden hand within same info set? Actually same info_key should give same dist
-    # Create second world with same opponent hand (so same I_j) but different other hidden (root's hidden perm)
+    # Same info_key must give same dist; perturb hidden hand within info set.
+    # Second world keeps opponent hand (same I_j), permutes other hidden only.
     # We keep opponent seat unchanged
     hands = tuple(tuple(int(t) for t in h) for h in world.concealed_hands)  # type: ignore[union-attr]
     # Build world2 where we swap tiles among non-opponent seats (still same I_j for opponent)

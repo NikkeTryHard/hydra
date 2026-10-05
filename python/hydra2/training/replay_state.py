@@ -23,7 +23,7 @@ from hydra2.models.model import validate_actor_batch
 try:
     from hydra2._native import contracts as _replay_bridge  # pyrefly: ignore[missing-import]
 except ImportError:  # pragma: no cover - import-time signal, same text as call-site
-    _replay_bridge = None  # type: ignore[assignment]
+    _replay_bridge = None
 
 #: Privileged replay fields (single source: ``hydra2._native.contracts``
 #: ``REPLAY_FORBIDDEN_BATCH_KEYS``; the stale-.so fallback is the byte-identical

@@ -311,7 +311,7 @@ def make_utility_manifest(**fields: Any) -> UtilityManifest:
             canonical_contract_json_bytes(utility_manifest_digest_document(fields))
         ).hexdigest()
     )
-    return UtilityManifest(digest=computed, **fields)  # pyrefly: ignore[unknown-argument-type] # fields honestly Any from JSON mapping; ctor validates each field
+    return UtilityManifest(digest=computed, **fields)  # Any fields; ctor validates
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

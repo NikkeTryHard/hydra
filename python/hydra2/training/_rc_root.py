@@ -43,7 +43,7 @@ from hydra2.training._rc_sections import RunConfig as RunConfig
 try:
     from hydra2._native import contracts as _root_bridge  # pyrefly: ignore[missing-import]
 except ImportError:  # pragma: no cover - import-time signal, same text as call-site
-    _root_bridge = None  # type: ignore[assignment]
+    _root_bridge = None
 
 
 def _require_root_bridge() -> Any:

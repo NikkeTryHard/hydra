@@ -22,7 +22,7 @@ from hydra2.search.candidate0_frozen import frozen_choice
 try:
     from hydra2._native import search as _candidate0_act_bridge  # pyrefly: ignore[missing-import]
 except ImportError:
-    _candidate0_act_bridge = None  # type: ignore[assignment]
+    _candidate0_act_bridge = None
 
 # Thin delegates onto ``hydra2._native.search`` (MAIN wiring lands the
 # ``candidate0_*`` leaves; a stale .so falls back to the HEAD oracle inline
@@ -68,9 +68,9 @@ def _action_context_from_obs(observation: Any) -> Any:
     # Visible melds: flatten all seats (codec filters by owner)
     flat_melds: list[Any] = []
     visible_melds_raw: Any = observation.visible_melds
-    for row in visible_melds_raw:
-        row_typed: Any = row
-        flat_melds.extend(row_typed)
+    for meld_row in visible_melds_raw:
+        meld_row_typed: Any = meld_row
+        flat_melds.extend(meld_row_typed)
     # Offered tile / source for claim phases — derive from phase. For
     # draw_decision phases no offer; for discard_response we expose the last
     # discard tile if available. Synthetic tests use draw_decision, so this
@@ -103,21 +103,21 @@ def _action_context_from_obs(observation: Any) -> Any:
                 offered_by = (int(actor_raw) + 3) % 4
             with contextlib.suppress(Exception):
                 turn_actor_raw: Any = observation.turn_actor
-                offered_by = int(turn_actor_raw)  # type: ignore[arg-type]
+                offered_by = int(turn_actor_raw)
         else:
             # Search visible_history for last discard
             visible_history_raw: Any = observation.visible_history
-            for ev in reversed(visible_history_raw):
-                ev_typed: Any = ev
-                payload_obj: Any = getattr(ev_typed, "payload", None)
+            for hist_event in reversed(visible_history_raw):
+                hist_event_typed: Any = hist_event
+                payload_obj: Any = getattr(hist_event_typed, "payload", None)
                 kind_from_payload: Any = (
                     getattr(payload_obj, "kind", None) if payload_obj is not None else None
                 )
-                kind_from_ev: Any = getattr(ev_typed, "kind", None)
+                kind_from_event: Any = getattr(hist_event_typed, "kind", None)
                 kind: Any = (
                     kind_from_payload
                     if kind_from_payload is not None and kind_from_payload != ""
-                    else kind_from_ev
+                    else kind_from_event
                 )
                 if kind == "discard":
                     tile_from_payload: Any = (
@@ -137,10 +137,10 @@ def _action_context_from_obs(observation: Any) -> Any:
     phase_for_ctx: Any = observation.phase
     return ActionContext(
         phase=phase_for_ctx,
-        actor=actor_for_ctx,  # type: ignore[arg-type]
-        action_table_hash=action_table_hash_raw,  # type: ignore[arg-type]
+        actor=actor_for_ctx,
+        action_table_hash=action_table_hash_raw,
         offered_tile=offered_tile,
-        offered_by=offered_by,  # type: ignore[arg-type]
+        offered_by=offered_by,
         own_concealed_tiles=concealed,
         visible_melds=tuple(flat_melds),
     )
@@ -169,7 +169,7 @@ def candidate0(
     spec: Any = request.candidate_spec
     obs: ActorObservation = request.observation
 
-    # ---- hash binding validation (observation/rules/action/observation/packet hashes must match the spec before search; mismatch raises ContractError) ----
+    # ---- hash gate: obs hashes must equal spec hashes; mismatch fails closed ----
     obs_rules_hash: Any = obs.rules_hash
     spec_rules_hash: Any = spec.rules_hash
     if str(obs_rules_hash) != str(spec_rules_hash):
@@ -250,7 +250,7 @@ def candidate0(
 
     # ---- decode to CanonicalAction ----
     context: Any = _action_context_from_obs(obs)
-    # Codec expects ActionId index aligned to table; validate that mask's true indices match table decode domain
+    # Codec needs ActionId aligned to table; mask true entries must fit decode.
     # Verify that selected action is legal per observation.legal_mask tuple
     legal_mask_obs: Any = obs.legal_mask
     legal_val: Any = legal_mask_obs[action_id]
@@ -264,14 +264,14 @@ def candidate0(
     elapsed_ns = time.monotonic_ns() - start_ns
     elapsed_ms = elapsed_ns / 1e6
     # Fallback margin: if elapsed would exceed deadline - margin, speculative timeout would fire.
-    # Since fallback is self, we never actually fallback to a different policy, but we record fallback_used if we
-    # would have exceeded the budget.
+    # Fallback is self (no policy switch); flag fallback_used only if over budget.
+    # Would-have-exceeded still records fallback_used for accounting.
     deadline_raw: Any = request.deadline_monotonic_ns
     deadline_ns: int = int(deadline_raw)
     now_ns = time.monotonic_ns()
-    # If deadline already passed at entry, mark timeout but still return completed result (fallback is self)
+    # Past-deadline entry still completes; timeout flagged, fallback stays self.
     timeout = now_ns > deadline_ns
-    # If model_calls would exceed budget, mark invalid but candidate0's budget is 1 so it never exceeds
+    # Budget is 1 call, so over-budget never fires; invariant holds by design.
     fallback_used = False
     if timeout:
         fallback_used = False  # fallback is self, so not counted as distinct fallback
@@ -419,7 +419,7 @@ class FrozenCandidate0:
 
     def observe(self, packet: Any) -> None:
         # Candidate 0 has no speculative belief state; observe is no-op but validates packet type
-        # Packet must be actor-visible; we accept any object with 'visibility' or is ActorVisiblePacket
+        # Actor-visible packet only; accept 'visibility' attr or ActorVisiblePacket.
         if packet is None:
             return
         # Stateless — append to local history for diagnostics only, never influences act()
@@ -429,5 +429,5 @@ class FrozenCandidate0:
             self._history = self._history[-_candidate0_history_limit:]
 
     def ponder(self, *, deadline_monotonic_ns: int) -> None:
-        # No particles/search/pondering — Candidate 0 is one cached model evaluation with no belief, particles, search, pondering, online learning, or hidden state, so ponder is explicitly a no-op
+        # Stateless single evaluation only, so ponder is an explicit no-op.
         return

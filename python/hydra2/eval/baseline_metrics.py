@@ -53,6 +53,9 @@ OVERFIT_TOP1_THRESHOLD = 0.90
 COMPILE_ORDER = ("eager", "default", "max-autotune-no-cudagraphs", "max-autotune")
 EAGER_ORACLE_ID = "eager_fp32"
 
+#: Masked-out logit for illegal actions; -inf yields exactly zero softmax mass.
+_NEG_INF = float("-inf")
+
 
 def _require_finite(value: float, name: str) -> float:
     if not isinstance(value, (int, float)) or not math.isfinite(float(value)):
@@ -97,9 +100,9 @@ def _require_targets(targets: torch.Tensor, legal_mask: torch.Tensor) -> torch.T
         torch._check_tensor_all(targets >= 0, lambda: "target out of range (negative)")
         torch._check_tensor_all(targets < legal_mask.shape[1], lambda: "target out of range (>= A)")
         # Indexing after range check is safe; gather legality via vectorized gather.
-        _ar = torch.arange(targets.shape[0], device=targets.device)
+        row_ids = torch.arange(targets.shape[0], device=targets.device)
         torch._check_tensor_all(
-            legal_mask[_ar, targets.to(torch.long)],
+            legal_mask[row_ids, targets.to(torch.long)],
             lambda: "target is illegal (masked)",
         )
     else:
@@ -147,13 +150,13 @@ def masked_cross_entropy(
 ) -> float:
     """Mean cross-entropy over legal actions only, target must be legal."""
     mask = _require_legal_mask(legal_mask)
-    t = _require_targets(targets, mask)
+    checked_targets = _require_targets(targets, mask)
     logits_v = _require_logits(logits, mask)
     # Mask illegal logits to -inf before log-softmax so they get zero prob.
-    masked: torch.Tensor = logits_v.masked_fill(~mask, float("-inf"))
+    masked: torch.Tensor = logits_v.masked_fill(~mask, _NEG_INF)
     log_probs: torch.Tensor = torch.log_softmax(masked, dim=-1)
     # Gather target log-prob; illegal targets already rejected.
-    per_row = -log_probs[torch.arange(logits_v.shape[0], device=logits_v.device), t]
+    per_row = -log_probs[torch.arange(logits_v.shape[0], device=logits_v.device), checked_targets]
     if torch.compiler.is_compiling():
         torch._check_tensor_all(
             torch.isfinite(per_row),
@@ -168,8 +171,7 @@ def legal_uniform_nll(targets: torch.Tensor, legal_mask: torch.Tensor) -> float:
     """NLL of the legal-uniform baseline: -log(1 / num_legal)."""
     mask = _require_legal_mask(legal_mask)
     _ = _require_targets(targets, mask)
-    # Uniform prob is 1 / num_legal per row; NLL = log(num_legal) independent of target choice
-    # as long as target is legal (already validated).
+    # Invariant: NLL is log(num_legal); the target is irrelevant once legality is validated.
     counts = mask.sum(dim=1).to(torch.float64)
     nll = torch.log(counts)
     return float(nll.mean().item())  # pyrefly: ignore[pytorch-efficiency-lint-item-call]  # reason: eager host sync for metric reporting; single scalar must cross host. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
@@ -182,14 +184,13 @@ def top_k_accuracy(
     if not isinstance(k, int) or k <= 0:
         raise ContractError(f"k must be positive int, got {k!r}")
     mask = _require_legal_mask(legal_mask)
-    t = _require_targets(targets, mask)
+    checked_targets = _require_targets(targets, mask)
     logits_v = _require_logits(logits, mask)
-    masked = logits_v.masked_fill(~mask, float("-inf"))
-    # Number of legal per row may be < k; then top-k is at most that many.
-    # torch.topk with k > A would error, so clamp k to A.
+    masked: torch.Tensor = logits_v.masked_fill(~mask, _NEG_INF)
+    # Invariant: clamp k to the action width; torch.topk errors when k exceeds it.
     k_clamped = min(k, logits_v.shape[1])
     _, topk_idx = torch.topk(masked, k=k_clamped, dim=-1)
-    hits = (topk_idx == t.unsqueeze(1)).any(dim=1).to(torch.float64)
+    hits = (topk_idx == checked_targets.unsqueeze(1)).any(dim=1).to(torch.float64)
     return float(hits.mean().item())  # pyrefly: ignore[pytorch-efficiency-lint-item-call]  # reason: eager host sync for metric reporting; single scalar must cross host. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
 
 
@@ -205,13 +206,13 @@ def expected_calibration_error(
     if not isinstance(num_bins, int) or num_bins <= 0:
         raise ContractError(f"num_bins must be positive int, got {num_bins!r}")
     mask = _require_legal_mask(legal_mask)
-    t = _require_targets(targets, mask)
+    checked_targets = _require_targets(targets, mask)
     logits_v = _require_logits(logits, mask)
-    masked = logits_v.masked_fill(~mask, float("-inf"))
+    masked = logits_v.masked_fill(~mask, _NEG_INF)
     probs = torch.softmax(masked, dim=-1)
     # Confidence = max prob among legal; prediction = argmax among legal.
     conf, pred = probs.max(dim=-1)
-    correct = (pred == t).to(torch.float64)
+    correct = (pred == checked_targets).to(torch.float64)
     conf_f = conf.to(torch.float64)
     ece = 0.0
     n = float(logits_v.shape[0])
@@ -350,7 +351,7 @@ def verify_held_out_disjoint(split: HeldOutSplit) -> None:
     try:
         from hydra2._native import eval as _eval_bridge  # pyrefly: ignore[missing-import]
     except ImportError:
-        _eval_bridge = None  # type: ignore[assignment]  # reason: stale import keeps fallback contract
+        _eval_bridge = None  # reason: stale import keeps fallback contract
     leaf = (
         getattr(_eval_bridge, "record_verify_held_out_disjoint", None)
         if _eval_bridge is not None
@@ -362,6 +363,7 @@ def verify_held_out_disjoint(split: HeldOutSplit) -> None:
         except ValueError as exc:
             raise ContractError(str(exc)) from exc
         except TypeError:
+            # Extraction-shape drift: fall through to the Python oracle below.
             pass
         else:
             return
@@ -401,7 +403,8 @@ def split_held_out(
     n = len(all_ids)
     held_n = max(1, min(n - 1, round(n * held_out_ratio)))
     generator = torch.Generator().manual_seed(seed)
-    perm: list[int] = torch.randperm(n, generator=generator).tolist()  # type: ignore[assignment]  # reason: tolist() statically Any; ints validated by construction
+    # tolist() is Any-typed; ints validated by construction.
+    perm: list[int] = torch.randperm(n, generator=generator).tolist()
     # Held-out is the first held_n of permuted order (deterministic choice).
     ids: list[str] = list(all_ids)
     held = tuple(ids[i] for i in perm[:held_n])

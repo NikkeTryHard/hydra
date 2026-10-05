@@ -338,10 +338,11 @@ impl super::NativeGame {
         // Retained per-seat draw (see `drawn_cache`): the live engine blanks
         // `drawn_tile` on discard, but responders still observe their tile.
         let drawn = self.drawn_cache[seat as usize];
-        if self.mode == Some(GameMode::Draw) && self.decision_seat == Some(seat) {
-            if let Some(d) = drawn {
-                hand.retain(|t| *t != d);
-            }
+        if self.mode == Some(GameMode::Draw)
+            && self.decision_seat == Some(seat)
+            && let Some(d) = drawn
+        {
+            hand.retain(|t| *t != d);
         }
         hand.sort_unstable();
         let (ordered, mask) = self.view_for(seat)?;
@@ -440,7 +441,7 @@ impl super::NativeGame {
         let stamp = canonical_id(action)
             .map_err(|e| CoreError(format!("action rejected by codec context: {e}")))?;
         if !ordered.iter().any(|(_, a)| a == action) {
-            let tile_mark = action.tile.map_or(255, |t| t);
+            let tile_mark = action.tile.unwrap_or(255);
             return Err(CoreError(format!(
                 "action {:?}:{tile_mark} is not in the legal mask slot set (id {stamp})",
                 action.kind,

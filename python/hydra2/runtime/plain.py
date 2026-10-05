@@ -82,18 +82,19 @@ class PlainPytorchAdapter:
                 "(loop-owned autocast is CUDA-only; never silent CPU fallback)"
             )
         require_device_available(spec.device)
-        device: Any = cast("Any", torch.device(spec.device))
-        model_any: Any = cast("Any", model.to(cast("Any", device)))
-        _move_optimizer_state(cast("Any", optimizer), cast("Any", device))
+        # Bind once; model and optimizer state follow to the same target.
+        target_device: Any = cast("Any", torch.device(spec.device))
+        moved_model: Any = cast("Any", model.to(cast("Any", target_device)))
+        _move_optimizer_state(cast("Any", optimizer), cast("Any", target_device))
 
         def backward(loss: Any) -> None:
             cast("Any", loss).backward()
 
         return RuntimeHandle(
-            model=cast("Any", model_any),
+            model=cast("Any", moved_model),
             optimizer=cast("Any", optimizer),
             backward=backward,
-            device=cast("Any", device),
+            device=cast("Any", target_device),
             runtime_identity=runtime_identity(spec),
         )
 
@@ -111,13 +112,15 @@ def _move_optimizer_state(optimizer: Any, device: Any) -> None:
     # device is CUDA; safe for pinned source memory.
     # Evidence: https://docs.pytorch.org/docs/2.13/generated/torch.Tensor.to.html
     #  (`non_blocking` flag) and https://docs.pytorch.org/docs/2.13/notes/cuda.html#pinned-memory
-    state_values: Any = cast("Any", optimizer.state.values())
+    optimizer_states: Any = cast("Any", optimizer.state.values())
     # Detect CUDA device portably (handles torch.device("cuda") and str "cuda:0").
-    is_cuda = getattr(device, "type", "") == "cuda" or str(device).startswith("cuda")
-    for state in state_values:
-        state_dict: dict[Any, Any] = cast("dict[Any, Any]", state)
-        for key, value in list(cast("list[tuple[Any, Any]]", state_dict.items())):
-            value_any: Any = cast("Any", value)
-            if hasattr(value_any, "to"):
-                moved: Any = cast("Any", value_any).to(cast("Any", device), non_blocking=is_cuda)
-                state_dict[key] = cast("Any", moved)
+    on_cuda = getattr(device, "type", "") == "cuda" or str(device).startswith("cuda")
+    # Every per-parameter state dict moves in place; non-tensor entries stay.
+    for per_param_state in optimizer_states:
+        param_state_dict: dict[Any, Any] = cast("dict[Any, Any]", per_param_state)
+        for state_key, state_value in list(cast("list[tuple[Any, Any]]", param_state_dict.items())):
+            candidate: Any = cast("Any", state_value)
+            # Tensors follow the model; other state entries have no device.
+            if hasattr(candidate, "to"):
+                moved: Any = cast("Any", candidate).to(cast("Any", device), non_blocking=on_cuda)
+                param_state_dict[state_key] = cast("Any", moved)

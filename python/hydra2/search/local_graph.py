@@ -15,7 +15,7 @@ __all__ = [
 ]
 
 
-class CycleDetectedError(ContractError):  # type: ignore[misc]
+class CycleDetectedError(ContractError):
     """Public-history graph contains a cycle — subgame invalid."""
 
 
@@ -43,32 +43,34 @@ def detect_cycle(subgame: PublicSubgame) -> None:
     to same hash can introduce cycles, which must be rejected.
     """
     bridge = _graph_bridge()
-    detect = None
+    bridge_detect = None
     if bridge is not None:
-        detect = getattr(bridge, "local_graph_detect_cycle", None)
-    if detect is not None:
+        # Bridge owns the fast path when available; else use the oracle below.
+        bridge_detect = getattr(bridge, "local_graph_detect_cycle", None)
+    if bridge_detect is not None:
         try:
-            detect(subgame.nodes, subgame.edges)
+            bridge_detect(subgame.nodes, subgame.edges)
         except ValueError as exc:
             raise CycleDetectedError(str(exc)) from exc
         return
     # Fallback oracle (bridge absent/stale): identical DFS, identical text.
-    # Build adjacency
-    adj: dict[str, list[str]] = {n: [] for n in subgame.nodes}
-    for fr, to, _ in subgame.edges:
-        adj[fr].append(to)
+    # Adjacency keyed by node; missing keys mean no outgoing edges.
+    adjacency: dict[str, list[str]] = {node: [] for node in subgame.nodes}
+    for source, target, _edge_payload in subgame.edges:
+        adjacency[source].append(target)
     WHITE, GRAY, BLACK = 0, 1, 2  # noqa: N806
     color: dict[str, int] = dict.fromkeys(subgame.nodes, WHITE)
 
-    def dfs(u: str) -> None:
-        color[u] = GRAY
-        for v in adj.get(u, []):
-            if color[v] == GRAY:
-                raise CycleDetectedError(f"cycle detected: {u} -> {v} closes loop")
-            if color[v] == WHITE:
-                dfs(v)
-        color[u] = BLACK
+    def dfs(node_id: str) -> None:
+        # GRAY marks the current DFS path; re-entry means a directed cycle.
+        color[node_id] = GRAY
+        for neighbor in adjacency.get(node_id, []):
+            if color[neighbor] == GRAY:
+                raise CycleDetectedError(f"cycle detected: {node_id} -> {neighbor} closes loop")
+            if color[neighbor] == WHITE:
+                dfs(neighbor)
+        color[node_id] = BLACK
 
-    for n in subgame.nodes:
-        if color[n] == WHITE:
-            dfs(n)
+    for start_node in subgame.nodes:
+        if color[start_node] == WHITE:
+            dfs(start_node)

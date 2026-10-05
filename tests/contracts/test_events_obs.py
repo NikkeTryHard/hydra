@@ -78,7 +78,7 @@ _OBS_SCHEMA_HASH = DigestText("sha256:" + "0b" * 32)
 _PACKET_BOUNDARY_HASH = DigestText("sha256:" + "ee" * 32)
 
 # Physical ids used by the scripted round (tile // 4 = logical type).
-_T_DISCARD_0 = 99  # type 24; chi consumes 30/34? no - chi claims 99 from seat 0
+_T_DISCARD_0 = 99  # type 24; chi claims tile 99 from seat 0
 _T_DRAW_1 = 52  # seat 1 draw (type 13)
 _T_KAN_BASE = 108  # East honors; ankan consumes 108..111
 _T_DORA = 12  # revealed indicator

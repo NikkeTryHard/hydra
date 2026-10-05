@@ -115,6 +115,7 @@ def fixed_n_samples(*, s: float, delta: float, alpha: float, beta: float) -> int
     try:
         leaf = _bridge_search.eval_stats_fixed_n_samples  # type: ignore[attr-defined]  # reason: eval_stats leaf lands with MAIN wiring; AttributeError fallback covers stale .so
     except AttributeError:
+        # Stale bridge without the leaf: fall through to the Python oracle below.
         pass
     else:
         try:
@@ -143,6 +144,7 @@ def _bootstrap_percentile_indexes(alpha: float, resamples: int) -> tuple[int, in
     try:
         leaf = _bridge_search.eval_stats_percentile_indexes  # type: ignore[attr-defined]  # reason: eval_stats leaf lands with MAIN wiring; AttributeError fallback covers stale .so
     except AttributeError:
+        # Stale bridge without the leaf: fall through to the Python oracle below.
         pass
     else:
         try:
@@ -187,8 +189,7 @@ def bootstrap_blocks(
     values = _validate_blocks(block_values)
     _validate_alpha_resamples(alpha, resamples)
     count = len(values)
-    # Seed derives from the stream (consumes 8 bytes); the numpy PCG64
-    # Generator then draws resample indices reproducibly.
+    # Invariant: the stream seeds PCG64 once; resample draws are then reproducible.
     seed = int.from_bytes(stream.get_bytes(8), "big")
     rng = np.random.default_rng(seed)
     arr = np.asarray(values, dtype=np.float64)
@@ -225,9 +226,9 @@ def sign_flip_interval(
     seed = int.from_bytes(stream.get_bytes(8), "big")
     rng = np.random.default_rng(seed)
     arr = np.asarray(values, dtype=np.float64)
-    # Rademacher: random_below(2)!=0 -> -1 else +1. Use integers 0/1 then map.
-    rands = rng.integers(0, 2, size=(resamples, count), dtype=np.int8)
-    signs = np.where(rands == 0, 1.0, -1.0)
+    # Invariant: integers 0/1 map to Rademacher +1/-1 signs.
+    coin_flips = rng.integers(0, 2, size=(resamples, count), dtype=np.int8)
+    signs = np.where(coin_flips == 0, 1.0, -1.0)
     # Broadcast arr (count,) across rows (resamples, count)
     stats = (signs * arr).mean(axis=1)
     stats.sort()
@@ -244,6 +245,7 @@ def ci_covers(bounds: tuple[float, float], truth: float) -> bool:
     try:
         leaf = _bridge_search.eval_stats_ci_covers  # type: ignore[attr-defined]  # reason: eval_stats leaf lands with MAIN wiring; AttributeError fallback covers stale .so
     except AttributeError:
+        # Stale bridge without the leaf: fall through to the Python oracle below.
         pass
     else:
         covers: bool = leaf(bounds[0], bounds[1], truth)
@@ -290,7 +292,7 @@ def hedged_cs_path(
     low, high = bounds
     if not (math.isfinite(low) and math.isfinite(high) and high > low):
         raise ContractError("bounds must be finite with high > low")
-    clean: list[float] = []
+    finite_values: list[float] = []
     for value in values:
         if (
             isinstance(value, bool)
@@ -298,10 +300,10 @@ def hedged_cs_path(
             or not math.isfinite(float(value))
         ):
             raise ContractError(f"value must be finite, got {value!r}")
-        clean.append(float(value))
+        finite_values.append(float(value))
     if peek_times is not None:
         peeks = list(peek_times)
-        count = len(clean)
+        count = len(finite_values)
         for moment in peeks:
             if isinstance(moment, bool) or not isinstance(moment, int) or not 1 <= moment <= count:
                 raise ContractError(f"peek times must be ints in [1, {count}]")
@@ -309,7 +311,7 @@ def hedged_cs_path(
         peeks = None
     try:
         out: list[tuple[float, float]] = _require_eval_bridge().hedged_cs_path(
-            clean, alpha, low, high, grid_size, peeks
+            finite_values, alpha, low, high, grid_size, peeks
         )
     except ImportError:
         raise
@@ -341,6 +343,7 @@ def sequential_design_guard(
     try:
         leaf = _bridge_search.eval_stats_sequential_design_guard  # type: ignore[attr-defined]  # reason: eval_stats leaf lands with MAIN wiring; AttributeError fallback covers stale .so
     except AttributeError:
+        # Stale bridge without the leaf: fall through to the Python oracle below.
         pass
     else:
         try:

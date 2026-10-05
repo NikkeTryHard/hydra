@@ -2,8 +2,8 @@
 //!
 //! DAG: this module depends on the search crate + pyo3 ONLY (the bridge's
 //! arena edge; the `hydra-search` path dep + workspace member are
-//! Arena-owned — see ASSUMPTION-MANIFEST; this file MUST NOT compile until
-//! they land; DO NOT guess-fix signatures locally). FORBIDS: selection math,
+//! Arena-owned and landed in this workspace — see crates/search/src/arena.rs.
+//! DO NOT guess-fix sibling-owned signatures locally). FORBIDS: selection math,
 //! node storage, RNG streams, belief sampling, digest bytes — arg-check +
 //! detach + tuple return only. All arena tables/selection live search-side;
 //! all bytes/hash math lives `feed::canon/digest` (canon-wins B3 — search
@@ -44,10 +44,8 @@
 //!
 //! Single-cdylib tree: this module registers as the `hydra2._native.search`
 //! submodule via `register`, mirroring `canon_rng::register` / `columnar::register`.
-//! bridge's `hydra-search = { path = "../search" }` edge; this file
-//! MUST NOT compile until applied; DO NOT guess-fix locally): workspace
-//! `members += "search"`; bridge deps gain the path edge (no
-//! features, no pyo3 inside `hydra-search` — pyclasses live bridge-side
+//! The `hydra-search` path edge is applied (bridge dep + workspace member,
+//! no features, no pyo3 inside `hydra-search` — pyclasses live bridge-side
 //! only).
 //!
 //! SIBLING-OWNED SEARCH API (Phase4SearchArena-confirmed contract — names

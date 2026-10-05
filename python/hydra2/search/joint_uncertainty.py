@@ -188,10 +188,10 @@ def preserve_correlation_check(prior: JointPosterior, posterior: JointPosterior)
     Check: exists theta where p(x|theta) differs across theta for same world set.
     For our uniform tiny case we compare conditional distributions.
     """
-    # If prior had any world where conditional differs across theta, posterior should retain difference
+    # Posterior must retain any prior conditional difference across theta.
     # Simple check: compute conditionals and see they are not all equal to marginal product
-    # For exact oracle, the easiest correlation proof is that joint != product of marginals when policy differs by theta
-    # Compare posterior joint vs product of its own marginals: if policy_theta differing, they differ
+    # Oracle proof: joint != product of marginals when policy varies by theta.
+    # Compare posterior joint vs its marginals product; differing policy splits.
     # Compute world marginal
     world_marginal: dict[str, float] = {}
     for p in posterior.particles:
@@ -210,7 +210,7 @@ def preserve_correlation_check(prior: JointPosterior, posterior: JointPosterior)
     for key in joint:
         if not math.isclose(joint[key], product.get(key, 0.0), rel_tol=0.05, abs_tol=0.01):
             return True
-    # If policy was uniform across theta, product would equal joint — but our tight/loose differ, so we expect True
+    # Uniform policy would factorize; tight/loose differ, so expect correlation.
     # Return True if any joint entry differs from product
     return False  # fallback: if no difference, correlation not demonstrated
 
@@ -366,7 +366,7 @@ class UncertaintySet:
         # Divergence of nominal to itself is 0
         if self.rho + 1e-9 < 0.0:
             return False
-        # Mixture representation: r = nominal gives q = nominal when epsilon any; so nominal always in set
+        # Epsilon mixture with r=nominal reproduces nominal, so it stays feasible.
         # Check that nominal respects legal mask and same-info (by construction it does)
         for theta, pol in self.nominal_policy.items():
             try:
@@ -586,7 +586,7 @@ def make_joint_type_world_candidate_spec(
         continuation_policy_hashes=(),
         proposal_spec_hash=None,
         case_manifest_hash=case_manifest_hash,
-        resource_budget=budget,  # type: ignore[arg-type]
+        resource_budget=budget,
         fallback_candidate_id="candidate0",
         tie_break="greedy",
         rng_protocol_hash="sha256:" + "1" * 64,

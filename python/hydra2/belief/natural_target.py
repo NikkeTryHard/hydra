@@ -45,9 +45,7 @@ def _target_id_for(
         event_model_hash=event_model_hash,
         proposal_spec_hash=proposal_spec_hash,
     )
-    # Digest line via the canon bridge (byte-identical to the retired
-    # hashlib-over-canonical_bytes loop; ImportError with build-ext hint,
-    # no oracle fallback). Math/doc shape untouched.
+    # Invariant: single digest path via canon bridge; rejects raise, never silent.
     return of_canonical(doc)
 
 
@@ -62,6 +60,7 @@ def _target_ids_for(
     line (Python-framed + bridge-hashed). Empty input returns ``[]`` without
     touching the bridge. Bridge rejects raise, never silent.
     """
+    # Empty input needs no bridge call; avoids FFI overhead and spurious errors.
     if len(docs) == 0:
         return []
     blobs = canonical_bytes_batch([dict(doc) for doc in docs])

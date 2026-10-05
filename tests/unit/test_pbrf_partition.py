@@ -93,8 +93,10 @@ def test_exhaustively_enumerate_immediate_disjoint_packet_kernel_per_parent_acti
         # With 4 parents, each packet's Z_hat ~0.5, sum 1
         assert len(pids) == 2
         assert sum(z_hats) == pytest.approx(1.0, abs=cfg.kernel_tolerance)
-        # Exhaustive: each parent appears exactly once per packet partition across packets for this action
-        # Count total raw_weight contributions for this action should be 1 (since each parent's 1/N * prob sum 1)
+        # Exhaustive: each parent appears exactly once per packet partition across packets for this
+        # action
+        # Count total raw_weight contributions for this action should be 1 (since each parent's 1/N
+        # * prob sum 1)
         # Already checked sum z_hats ==1
 
 
@@ -284,7 +286,8 @@ def test_freeze_candidates_before_natural_confirmation() -> None:
         config=cfg,
     )
     frozen_before = forest.frozen_candidates
-    # Simulate natural confirmation runner (fresh natural after freeze) — must not mutate frozen candidates
+    # Simulate natural confirmation runner (fresh natural after freeze) — must not mutate frozen
+    # candidates
     from hydra2.belief.confirmation import ConfirmationCase, NaturalConfirmationRunner
 
     runner = NaturalConfirmationRunner()
@@ -348,8 +351,10 @@ def test_stale_child_is_hard_failure() -> None:
         rng=RandomStream(b"stale2"),
         config=cfg,
     )
-    # Try to commit forest2 using packet from forest (cross-epoch) — should result in miss_rebuild (stale)
-    # Use forest2's action/packet but try to commit forest (epoch mismatch) should produce stale detection and rebuild
+    # Try to commit forest2 using packet from forest (cross-epoch) — should result in miss_rebuild
+    # (stale)
+    # Use forest2's action/packet but try to commit forest (epoch mismatch) should produce stale
+    # detection and rebuild
     # Instead test that rekey_and_verify rejects tampered delta
     from hydra2.search.pbrf_commit import rekey_and_verify
 
@@ -392,7 +397,8 @@ def test_confirmation_reversal_is_hard_failure() -> None:
         rng=RandomStream(b"rev"),
         config=cfg,
     )
-    # Simulate search picking max scalar (deterministic) vs confirmation that would pick different if not frozen
+    # Simulate search picking max scalar (deterministic) vs confirmation that would pick different
+    # if not frozen
     # For our deterministic value function, frozen selection is stable across repeats
     from hydra2.search.pbrf_act import PbrfPlanner
 
@@ -413,7 +419,8 @@ def test_confirmation_reversal_is_hard_failure() -> None:
     )
     r1 = planner.act(req)
     r2 = planner.act(req)
-    # Confirmation reversal would mean r1 != r2 due to unfrozen randomness — our frozen planner must be deterministic
+    # Confirmation reversal would mean r1 != r2 due to unfrozen randomness — our frozen planner must
+    # be deterministic
     assert r1.selected_action == r2.selected_action
     assert r1.value_vectors == r2.value_vectors
 

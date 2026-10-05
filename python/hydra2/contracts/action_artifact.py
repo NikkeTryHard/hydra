@@ -193,7 +193,7 @@ def _table_from_document(document: object, *, origin: str) -> ActionTable:
     templates = tuple(
         _template_from_json(entry, origin=origin)  # pyrefly: ignore[unknown-argument-type]  # reason: raw_actions list-checked above; element type unchecked until _template_from_json validates
         for entry in raw_actions
-    )  # type: ignore[attr-defined]  # reason: raw_actions isinstance-checked as list above; checker cannot narrow object
+    )  # reason: raw_actions isinstance-checked as list above; checker cannot narrow object
     recomputed = compute_table_digest(templates, make_schema_version(envelope_version))
     if not hmac.compare_digest(str(recomputed), declared_digest):
         raise DigestMismatchError(
@@ -212,19 +212,20 @@ def _template_from_json(entry: object, *, origin: str) -> CanonicalActionTemplat
         raise ContractError(
             f"{origin}: template entries must hold exactly {list(_TEMPLATE_JSON_FIELDS)}"
         )
-    consumed_raw: object = entry["consumed_tiles"]  # type: ignore[index]  # reason: entry Mapping-checked above; checker cannot narrow object index
+    # entry is Mapping-checked above; the checker cannot narrow object index.
+    consumed_raw: object = entry["consumed_tiles"]
     if not isinstance(consumed_raw, list) or not all(
         isinstance(v, int) and not isinstance(v, bool) for v in consumed_raw
     ):
         raise ContractError(f"{origin}: consumed_tiles must be an array of ints")
     for name in ("tile", "called_tile"):
-        value: object = entry[name]  # type: ignore[index]  # reason: entry Mapping-checked above; checker cannot narrow object index
+        value: object = entry[name]
         if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
             raise ContractError(f"{origin}: {name} must be null or int")
-    offset: object = entry["source_offset"]  # type: ignore[index]  # reason: entry Mapping-checked above; checker cannot narrow object index
-    if offset is not None and (isinstance(offset, bool) or offset not in (-1, 0, 1, 2)):  # pyrefly: ignore[unknown-argument-type]  # reason: offset None/bool-filtered here; membership check is the validation
+    offset: object = entry["source_offset"]
+    if offset is not None and (isinstance(offset, bool) or offset not in (-1, 0, 1, 2)):
         raise ContractError(f"{origin}: source_offset invalid: {offset!r}")
-    kind: object = entry["kind"]  # type: ignore[index]  # reason: entry Mapping-checked above; checker cannot narrow object index
+    kind: object = entry["kind"]
     if not isinstance(kind, str) or kind not in ACTION_KIND_ORDINALS:
         raise ContractError(f"{origin}: unknown template kind {kind!r}")
     for name in ("declares_riichi", "meld_ref_required"):
@@ -234,8 +235,8 @@ def _template_from_json(entry: object, *, origin: str) -> CanonicalActionTemplat
         kind=kind,  # type: ignore[arg-type]  # reason: kind isinstance-checked as str against ACTION_KIND_ORDINALS above
         tile=entry["tile"],  # type: ignore[arg-type]  # reason: null-or-int checked above; ctor re-validates
         called_tile=entry["called_tile"],  # type: ignore[arg-type]  # reason: null-or-int checked above; ctor re-validates
-        consumed_tiles=tuple(consumed_raw),  # type: ignore[arg-type]  # reason: list-of-ints checked above
-        source_offset=offset,  # type: ignore[arg-type]  # reason: offset range-checked above
+        consumed_tiles=tuple(consumed_raw),  # reason: list-of-ints checked above
+        source_offset=offset,  # reason: offset range-checked above
         declares_riichi=entry["declares_riichi"],  # pyrefly: ignore[unknown-argument-type]  # reason: bool-checked in the loop above; ctor re-validates
         meld_ref_required=entry["meld_ref_required"],  # pyrefly: ignore[unknown-argument-type]  # reason: bool-checked in the loop above; ctor re-validates
     )

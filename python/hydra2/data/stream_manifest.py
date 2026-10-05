@@ -237,7 +237,7 @@ def _normalize_roots(
         if rid in seen:
             raise ContractError(f"manifest duplicate root id {rid!r}")
         seen.add(rid)
-        base = raw_base if isinstance(raw_base, Path) else Path(str(raw_base))
+        base = raw_base if isinstance(raw_base, Path) else Path(raw_base)
         if not base.is_dir():
             raise ContractError(f"stream root not a directory: {base}")
         normalized.append((rid, base))
@@ -464,7 +464,7 @@ def load_manifest_artifact(
         raw_body = zstd.ZstdDecompressor().decompress(body)
         rows: list[tuple[str, str, int]] = []
         for line in raw_body.decode("utf-8").split("\n"):
-            if not line:
+            if line == "":
                 continue
             row = json.loads(line)
             rid, rel, size = row

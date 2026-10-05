@@ -547,7 +547,8 @@ def test_continuation_walls_match_oracle_with_timing_tripwire() -> None:
     for wall in native_walls:
         assert sorted(wall) == list(range(136))
     print(
-        f"\nwall hot path per 8-hand batch: python={python_dt * 1e3:.2f}ms native={native_dt * 1e3:.2f}ms"
+        f"\nwall hot path per 8-hand batch: python={python_dt * 1e3:.2f}ms "
+        f"native={native_dt * 1e3:.2f}ms"
     )
     assert native_dt <= 4 * python_dt + 0.5, "native wall path regressed past the tripwire"
 

@@ -94,8 +94,8 @@
 //!   fail here as `ValueError`; the oracle's canonical owner rejects the
 //!   same inputs (both sides refuse, never digest).
 //! - Budget/provenance cross as canonical-doc bytes the translator prepares
-//!   with the Python `canonical_bytes` (canon authority stays Python — the
-//!   `packet_id_from_doc` precedent at `contracts.rs:903-907`); Rust
+//!   with the Python `canonical_bytes` (canon authority stays Python;
+//!   re-canonicalize-then-hash via the feed `canon`/`digest` owners); Rust
 //!   re-parses through the feed I-JSON boundary and embeds, so parity holds
 //!   by construction and exotic budget values fail with the oracle's own
 //!   canonical text before the bridge is reached.

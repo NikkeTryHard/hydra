@@ -1,13 +1,14 @@
-"""RiichiEnv outcomes and exact tiles — dispatcher, hora, helpers.
+"""RiichiEnv outcomes and exact tiles — hora/ryukyoku/end handlers, helpers.
 
 Owns the second translation half of :class:`RiichiEnvExactSimulator`:
-the batch dispatcher with hora-run merging, hora and draw outcomes,
-hand and game boundaries, window resolution, stamp and claim-id
-helpers, and the exact physical-tile resolvers. The round and call
-handlers live in :mod:`hydra2.engines.riichienv.adapter_events_a`, the
-decision driver in :mod:`hydra2.engines.riichienv.adapter_step`, and
-the public API in :mod:`hydra2.engines.riichienv.adapter_core`, so each
-file stays inside the review-size ceiling.
+hora, ryukyoku, and end-of-hand/game outcomes, hand reopening and
+window-flush resolution, stamp and claim-id helpers, and the exact
+physical-tile resolvers. The batch dispatcher with hora-run merging
+and the round/call handlers live in
+:mod:`hydra2.engines.riichienv.adapter_events_a`, the decision driver
+in :mod:`hydra2.engines.riichienv.adapter_step`, and the public API in
+:mod:`hydra2.engines.riichienv.adapter_core`, so each file stays
+inside the review-size ceiling.
 """
 
 from __future__ import annotations

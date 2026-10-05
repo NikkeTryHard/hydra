@@ -202,10 +202,9 @@ def _encode_batch(
                     bucket_t=bucket_t,
                 )
             else:
-                features = {
-                    name: tensor.pin_memory()  # type: ignore[attr-defined]  # reason: custom-bucket test probe skips the frozen Ring judge; pageable fallback still owns unpinnable
-                    for name, tensor in features.items()
-                }
+                # Custom-bucket test probe skips the frozen Ring judge;
+                # pageable fallback still owns unpinnable.
+                features = {name: tensor.pin_memory() for name, tensor in features.items()}
             history_mask = features["history_mask"]
             legal_mask = features["legal_mask"]
             actor_seats = features["actor_seats"]
@@ -426,7 +425,7 @@ def _stage_pinned_batch(
             # Shape precondition, not a bridge mismatch: strided views pin
             # via torch directly (byte-identical either way).
             return {
-                name: tensor.pin_memory()  # type: ignore[attr-defined]  # reason: CPU Tensor.pin_memory; stubs miss
+                name: tensor.pin_memory()  # reason: CPU Tensor.pin_memory; stubs miss
                 for name, tensor in mapping.items()
             }
     # Resource alloc stays outside the Rust try: OOM/RuntimeError propagates

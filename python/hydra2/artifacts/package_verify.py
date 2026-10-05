@@ -18,9 +18,9 @@ __all__ = ["verify"]
 
 def verify(work_package: str, artifact_root: str) -> dict:
     """Verify one work-package completion record; return the native receipt."""
-    if not isinstance(work_package, str) or not work_package:
+    if not isinstance(work_package, str) or work_package == "":
         raise ContractError("package_verify work_package must be a nonempty str")
-    if not isinstance(artifact_root, str) or not artifact_root:
+    if not isinstance(artifact_root, str) or artifact_root == "":
         raise ContractError("package_verify artifact_root must be a nonempty str")
     try:
         blob = _native_rl.verify_work_package(

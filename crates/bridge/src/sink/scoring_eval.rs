@@ -1,3 +1,4 @@
+//! Closed-shape hora scoring evaluation over the sink tables (see super).
 use super::scoring_tables::{
     HAN_YAKUMAN, HanFu, HoraInput, MeldKind, OpenMeld, Payment, TILE_E, TILE_HAKU, TILE_N,
     WaitKind, WinKind, is_honor, is_simple, is_terminal_type,

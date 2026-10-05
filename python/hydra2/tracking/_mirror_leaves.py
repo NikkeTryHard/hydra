@@ -21,7 +21,7 @@ from typing import Any
 try:
     from hydra2._native import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 except ImportError:  # pragma: no cover
-    _bridge_contracts = None  # type: ignore[assignment]
+    _bridge_contracts = None
 
 
 #: ClearML project name (auto-created server-side on first use). Single

@@ -59,8 +59,8 @@
 //! - A NaN/+-inf draw flows through the same `<` chain as the oracle (`NaN`
 //!   and `+inf` land on `K - 1`, `-inf` on `0`); draws are never validated.
 //!
-//! Shape per fn: arg-check attached (the `ctr_block` seed-gate precedent at
-//! `contracts.rs:447-456`), compute under ONE `py.detach(|| ...)` with zero
+//! Shape per fn: arg-check attached (the `contracts::ctr_stream_bytes`
+//! seed-gate precedent), compute under ONE `py.detach(|| ...)` with zero
 //! Python API inside (the `world_id_from_doc` precedent at
 //! `belief_leaves.rs:155-160`), errors wrapped attached as `PyValueError`.
 //! Consts via `sub.add` (per `contracts.rs:1153-1156`).

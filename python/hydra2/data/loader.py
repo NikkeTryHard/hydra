@@ -38,7 +38,7 @@ def _load_manifest(manifest_path: Path) -> DatasetManifest:
     if not isinstance(dataset_hash_raw, str):
         raise ContractError("manifest dataset_hash must be str")
     dataset_hash: str = dataset_hash_raw
-    # shards: prefer actor_shards, fallback to shards
+    # Manifest compat: actor_shards is canonical; bare shards is the legacy key.
     shards_raw: object = raw.get("actor_shards")
     if shards_raw is None:
         shards_raw = raw.get("shards", {})
@@ -133,20 +133,15 @@ def verify_and_load_batch(
     """
     if not actor_parquet.is_file():
         raise CorruptArtifactError(f"actor shard missing: {actor_parquet}")
-    # Verify manifest hashes exist
     if not dataset_manifest.is_file():
         raise CorruptArtifactError(f"dataset manifest missing: {dataset_manifest}")
     manifest = _load_manifest(dataset_manifest)
-    # Verify shard hash matches manifest — cache per path to avoid duplicate
-    # hashing when multiple splits fallback to same actor_parquet file.
+    # Per-path hash cache: splits often share one file; hash once.
     actual_by_path: dict[Path, str] = {}
     for split, recorded_hash in manifest.shards.items():
-        # Find shard file for this split (actor-{split}.parquet or actor shard itself)
         shard_path = actor_parquet.parent / f"actor-{split}.parquet"
         if not shard_path.is_file():
-            # Single shard case: actor_parquet itself
             shard_path = actor_parquet
-        # Resolve to canonical path for cache key (avoid duplicate hashing)
         cache_key = shard_path.resolve() if shard_path.is_file() else shard_path
         actual = actual_by_path.get(cache_key)
         if actual is None:
@@ -160,7 +155,6 @@ def verify_and_load_batch(
                 f"shard hash mismatch for {split}: recorded {recorded_hash} "
                 f"vs actual {actual} (corrupt shard not ignored)"
             )
-    # Verify schema hashes
     if manifest.schema_hash != "" and manifest.schema_hash != expected_schema_hash:
         raise ContractError(
             f"schema hash mismatch: {manifest.schema_hash} != {expected_schema_hash}"
@@ -173,30 +167,20 @@ def verify_and_load_batch(
             f"action_table hash mismatch: {manifest.action_table_hash} "
             f"!= {expected_action_table_hash}"
         )
-    # Load parquet; any corrupt parquet raises
-    # Zero-copy: memory_map + pre_buffer coalesces reads, use_threads decodes in parallel.
     try:
         table = pq.read_table(actor_parquet, memory_map=True, pre_buffer=True, use_threads=True)
     except Exception as exc:
         raise CorruptArtifactError(f"corrupt parquet shard {actor_parquet}: {exc}") from exc
 
-    # Verify row count
+    # Row-count gate lives with the caller for multi-shard; nothing to enforce here.
     if manifest.row_count != 0 and table.num_rows != manifest.row_count:
-        # For multi-shard, total will be checked by caller; for single shard we enforce
         pass
 
-    # Verify legal masks and dora shape per row; also check no privileged leakage
     rows: list[dict[str, object]] = []
-    # Slice to batch_size to avoid materializing full table's Python objects.
-    # Evidence: pq.read_table memory_map + slice + to_batches avoids per-cell as_py.
     n_rows = min(batch_size, table.num_rows)
     if n_rows == 0:
         raise CorruptArtifactError("loader produced empty batch: corrupt or empty shard")
     batch_table = table.slice(0, n_rows)
-    # IPC-mmap-first: record batches stream zero-copy slices over the mmap
-    # (bounded to the batch width) instead of per-cell as_py pulls; the
-    # batched pydict is the fallback only, never first (arrow issue 50326:
-    # to_pylist 2.5-10x slower per row — both produce the same cols mapping).
     cols: dict[str, list[object]] = {}
     try:
         for batch in batch_table.to_batches(max_chunksize=n_rows):
@@ -205,16 +189,14 @@ def verify_and_load_batch(
                 col_vals = batch.column(idx).to_pylist()
                 cols.setdefault(col_name, []).extend(col_vals)
     except Exception:
-        # Broad fallback only: identical mapping via one batched pydict pull.
+        # Fallback yields the identical mapping when batch iteration fails.
         cols = batch_table.to_pydict()
-    # Expect columns: decision_id, legal_mask? In actor schema, legal_mask
-    # is embedded in observation? For now, check actor_observation contains it.
+    # legal_mask rides inside actor_observation in the actor schema.
     for idx in range(n_rows):
         row_dict: dict[str, object] = {name: vals[idx] for name, vals in cols.items()}
-        # Check privileged leakage hard failure
         if any(k in row_dict for k in ("hidden_tiles", "wall", "privileged")):
             raise ContractError("privileged field leakage in actor row")
-        # Single JSON parse per row; reuse for dora, legal_mask, phase.
+        # Parse once per row; dora/legal/phase reuse this object.
         obs_json = row_dict.get("actor_observation")
         obs: dict[str, object] = {}
         obs_parsed = False
@@ -226,7 +208,6 @@ def verify_and_load_batch(
             except json.JSONDecodeError:
                 obs = {}
                 obs_parsed = False
-            # dora check reuses obs
             _dora_raw: object = obs.get("dora_indicators")
             if _dora_raw is None:
                 _dora_raw = obs.get("dora")
@@ -235,7 +216,7 @@ def verify_and_load_batch(
                 raise ContractError(
                     "(4,) dora shim detected in actor observation (loader hard failure)"
                 )
-        # Check legal_mask: if present, must have at least one True at nonterminal
+        # Nonterminal rows must offer at least one legal action.
         legal_mask: object | None = None
         if "legal_mask" in row_dict:
             legal_mask = row_dict["legal_mask"]
@@ -256,8 +237,6 @@ def verify_and_load_batch(
                     "(narrow test masks require allow_narrow=True)"
                 )
             if not any(legal_mask):
-                # At nonterminal, all-false is hard error
-                # Determine if terminal phase: check observation phase (reuse obs)
                 phase = ""
                 if obs_parsed:
                     phase_raw = obs.get("phase", "")
@@ -267,18 +246,16 @@ def verify_and_load_batch(
                     raise ContractError(
                         f"legal_mask all False at nonterminal row {idx} (must be hard error)"
                     )
-            # Chosen action must be legal
-            chosen = row_dict.get("chosen_action_id")
+            chosen_id = row_dict.get("chosen_action_id")
             if (
-                isinstance(chosen, int)
+                isinstance(chosen_id, int)
                 and isinstance(legal_mask, list)
-                and 0 <= chosen < len(legal_mask)
-                and not legal_mask[chosen]
+                and 0 <= chosen_id < len(legal_mask)
+                and not legal_mask[chosen_id]
             ):
-                raise ContractError(f"chosen_action_id {chosen} not legal at row {idx}")
+                raise ContractError(f"chosen_action_id {chosen_id} not legal at row {idx}")
         rows.append(row_dict)
 
-    # Verify batch not empty
     if len(rows) == 0:
         raise CorruptArtifactError("loader produced empty batch: corrupt or empty shard")
 

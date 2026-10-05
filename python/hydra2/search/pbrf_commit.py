@@ -125,7 +125,7 @@ def rekey_and_verify(
         raise ContractError("matching child must be non-empty")
     # Verify provenance target and epoch
     for e in matching:
-        # Target must have been forest's target (already checked), but now authoritative epoch is incremented
+        # Target already checked; now verify authoritative epoch increment.
         # We verify epoch increment
         try:
             if int(e.epoch) + 1 != int(authoritative_epoch.epoch):  # type: ignore[attr-defined,arg-type]
@@ -180,8 +180,8 @@ def rekey_and_verify(
                     f"delta reconstruction failed for parent {e.parent_id[:12]} [PBRF_DIGEST_DELTA]"
                 )
 
-    # Return rekeyed entries with authoritative epoch (but keep same target? authoritative target may differ)
-    # For PBRF, rekey means entries now belong to new epoch: we update epoch field to authoritative epoch
+    # Rekeyed entries carry authoritative epoch; target may differ, epoch wins.
+    # Rekey moves entries to new epoch; update epoch field to authoritative.
     rekeyed: list[ChildEntry] = []
     for e in matching:
         rekeyed.append(
@@ -283,9 +283,9 @@ def commit(
     # All sibling-specific values/visits/posteriors are discarded
     # Build promoted forest: its parents are successor worlds of matching entries (one per entry)
     # For stub, we convert each ChildEntry's successor_world_ref into a synthetic parent particle
-    # This promoted forest's epoch is authoritative_epoch, candidates remain same (or filtered to action?), children empty?
-    # Per spec, promoted,CommitDisposition("hit_commit") returns promoted forest that will be used for next decision
-    # Its parents are the successor worlds; its children are initially empty (will be rebuilt on next build)
+    # Promoted forest uses authoritative epoch; candidates unchanged, children reset.
+    # Hit-commit returns promoted forest for the next decision (per spec).
+    # Parents are successor worlds; children rebuild on next build (empty now).
     # We construct promoted parents as synthetic particles with same target as authoritative epoch
 
     # Synthesize promoted parents from rekeyed entries.
@@ -332,10 +332,10 @@ def commit(
         )
         promoted_parents.append(obj)
 
-    # For promoted forest, we keep same candidates and config, but children are subset: only matching child remains as historical?
-    # Spec says squash_all_sibling_values_visits_posteriors_pairings(forest) — so promoted forest's children should be cleared (no siblings)
-    # We'll set children to contain only the matching key with rekeyed entries, and allocations accordingly
-    # But promoted forest's epoch is incremented, so we need to adjust ChildEntry epoch to authoritative epoch (already done)
+    # Keep candidates/config; children keep only matching entry as history.
+    # Squash siblings per spec; promoted children hold no sibling stats.
+    # Children hold only matching key with rekeyed entries; realloc budget.
+    # ChildEntry epochs already adjusted to authoritative epoch above.
     promoted_key = (_action_id(action), pid)
     promoted_children: dict[tuple[int, str], tuple[ChildEntry, ...]] = {
         promoted_key: tuple(rekeyed)

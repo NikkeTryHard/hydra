@@ -45,7 +45,6 @@ __all__ = [
     "assemble_training_batch",
     "build_packed_batch",
     "expand_game_batch",
-    "replay_game_planes",
 ]
 
 
@@ -329,14 +328,14 @@ def build_packed_batch(
         mask: torch.Tensor = actor.history_mask
     except (KeyError, AttributeError) as exc:
         raise ContractError(f"packed batch needs assembled history planes: {exc}") from exc
-    batch_size = int(mask.shape[0])
+    batch_size = mask.shape[0]
     if len(rows) != batch_size:
         raise ContractError(
             f"packed rows {len(rows)} != batch rows {batch_size} (order is determinism)"
         )
     if kind.shape != mask.shape:
         raise ContractError(f"packed kind {tuple(kind.shape)} != mask {tuple(mask.shape)}")
-    pad_width = int(mask.shape[1])
+    pad_width = mask.shape[1]
     # Vectorized lengths: one popcount kernel, one host transfer (CPU
     # planes, so no device syncs) — never a per-row Python loop.
     lengths_t: torch.Tensor = mask.sum(dim=1).to(torch.int32)
@@ -351,7 +350,7 @@ def build_packed_batch(
             raise ContractError(
                 f"packed row {pos} lacks staged _hist_len (grouping never masks errors)"
             )
-        staged.append(int(stamp))
+        staged.append(stamp)
     staged_t: torch.Tensor = torch.tensor(staged)
     if bool((lengths_t != staged_t).any().item()):
         bad = int((lengths_t != staged_t).nonzero()[0].item())
@@ -447,10 +446,11 @@ def assemble_slim_batch(
         _slice_game_planes(blob, start, count, t_len, t_pad, names, schema)
         for blob, start, count, t_len in groups
     ]
+    # Part slices are dynamic; cat owns the stacking.
     if len(parts) == 1:
         planes = parts[0]
     else:
-        planes = {name: torch.cat([part[name] for part in parts], dim=0) for name in names}  # pyrefly: ignore[unknown-argument-type] # part slices dynamic; cat owns the stacking
+        planes = {name: torch.cat([part[name] for part in parts], dim=0) for name in names}
     batch = assemble_training_batch(planes, action_count=action_count)
     batch["_decision_ids"] = [str(row["decision_id"]) for row in rows]
     batch["_action_kinds"] = [str(row["action_kind"]) for row in rows]
@@ -460,32 +460,6 @@ def assemble_slim_batch(
         packed = build_packed_batch(rows, batch)
         batch["actor_batch"] = dataclasses.replace(batch["actor_batch"], packed=packed)
     return batch
-
-
-def replay_game_planes(
-    events: bytes, game_idx: int
-) -> tuple[dict[str, bytes], int, int, bool, str, int]:
-    """Frame + gate + walk one game in Rust; serve staged planes.
-
-    Bridge-plane consume (already wired — no new surfaces this slice):
-    ``replay_game_planes`` serves the staged planes the file fill commits
-    (feed 172 green); only argument/host failures raise.
-
-    ``events`` is the raw game bytes (newline-separated mjai lines, trailing
-    ``torch.frombuffer`` wrap. Walled regime follows wall content, exactly
-    like the file fill. Quarantine is data (``quarantined=True`` + feed
-    reason string); only argument/host failures raise.
-    """
-    ext = _load_extension()
-    try:
-        out: tuple[dict[str, bytes], int, int, bool, str, int] = ext.replay_game_planes(
-            events, game_idx
-        )
-    except Exception as exc:
-        raise ContractError(f"rust game walk failed: {exc}") from exc
-    staged: tuple[dict[str, bytes], int, int, bool, str, int] = out
-    planes, rows, t_len, quarantined, reason, event_idx = staged
-    return (dict(planes), rows, t_len, quarantined, reason, event_idx)
 
 
 def expand_game_batch(

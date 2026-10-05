@@ -16,7 +16,7 @@ from hydra2.contracts.common import ContractError
 try:
     from hydra2._native import rl as _native_rl  # pyrefly: ignore[missing-import]
 except ImportError:  # pragma: no cover - import-time signal, same text as call-site
-    _native_rl = None  # type: ignore[assignment]
+    _native_rl = None
 
 
 def _require_native_rl() -> Any:
@@ -38,7 +38,7 @@ def _encode(document: Any) -> bytes:
 
 def _decode(blob: bytes, *, name: str) -> dict[str, Any]:
     try:
-        value = json.loads(bytes(blob).decode("utf-8"))
+        value = json.loads(blob.decode("utf-8"))
     except (ValueError, UnicodeDecodeError) as exc:
         raise ContractError(f"rl_checkpoint {name} not JSON: {exc}") from exc
     if not isinstance(value, dict):
@@ -58,10 +58,10 @@ def build_run_config_json(
     return json.dumps(
         {
             "resolved": dict(resolved),
-            "adapter_version": str(adapter_version),
+            "adapter_version": adapter_version,
             "utility": dict(utility),
             "opponent_catalog": list(opponent_catalog),
-            "environment_hash": str(environment_hash),
+            "environment_hash": environment_hash,
         }
     )
 
@@ -89,11 +89,11 @@ def native_cold_init_seed(
     try:
         blob = bytes(
             bridge.cold_init_seed(
-                master_seed_hex=str(master_seed_hex),
-                experiment_id=str(experiment_id),
-                replicate_id=int(replicate_id),
-                attempt_id=int(attempt_id),
-                initial_checkpoint_id=str(initial_checkpoint_id),
+                master_seed_hex=master_seed_hex,
+                experiment_id=experiment_id,
+                replicate_id=replicate_id,
+                attempt_id=attempt_id,
+                initial_checkpoint_id=initial_checkpoint_id,
             )
         )
     except ValueError as exc:
@@ -111,10 +111,10 @@ def native_prepare_run(
     try:
         blob = bytes(
             bridge.prepare_run(
-                run_config_json=str(run_config_json),
-                initial_manifest_json=str(initial_manifest_json),
-                root_dir=str(root_dir),
-                repo_dir=str(repo_dir),
+                run_config_json=run_config_json,
+                initial_manifest_json=initial_manifest_json,
+                root_dir=root_dir,
+                repo_dir=repo_dir,
             )
         )
     except ValueError as exc:
@@ -131,8 +131,8 @@ def live_collector_spec(
         blob = bytes(
             bridge.live_collector_spec(
                 run_descriptor_json=_encode(run_descriptor),
-                generation=int(generation),
-                policy_id=str(policy_id),
+                generation=generation,
+                policy_id=policy_id,
             )
         )
     except ValueError as exc:
@@ -149,8 +149,8 @@ def policy_identity(
         return str(
             bridge.policy_identity(
                 run_descriptor_json=_encode(run_descriptor),
-                generation=int(generation),
-                parent_policy_id=str(parent_policy_id),
+                generation=generation,
+                parent_policy_id=parent_policy_id,
             )
         )
     except ValueError as exc:
@@ -164,9 +164,9 @@ def native_choose_work(
     bridge = _require_native_rl()
     try:
         kind, nxt = bridge.choose_work(
-            preferred_inference=bool(preferred_inference),
-            inference_eligible=bool(inference_eligible),
-            learner_eligible=bool(learner_eligible),
+            preferred_inference=preferred_inference,
+            inference_eligible=inference_eligible,
+            learner_eligible=learner_eligible,
         )
     except ValueError as exc:
         raise ContractError(str(exc)) from exc
@@ -179,7 +179,7 @@ def native_ppo_report(*, count: int, stats: list[float]) -> dict[str, Any]:
     if len(stats) != 23:
         raise ContractError(f"rl_checkpoint ppo_report needs 23 scalars, got {len(stats)}")
     try:
-        blob = bytes(bridge.ppo_report(count=int(count), stats=[float(s) for s in stats]))
+        blob = bytes(bridge.ppo_report(count=count, stats=list(stats)))
     except ValueError as exc:
         raise ContractError(str(exc)) from exc
     return _decode(blob, name="ppo report")

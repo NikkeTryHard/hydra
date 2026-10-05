@@ -93,7 +93,7 @@ def _validate_metric_inputs(
         raise ContractError("nonterminal all-false legal row is hard error (SPEC 11.1)")
     elif (
         bool((targets < 0).any().item()) is True  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for range check; alternative loses validation. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
-        or bool(  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for range check; alternative loses validation. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
+        or bool(  # intentional host sync for range check; alternative loses validation. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
             (targets >= num_actions).any().item()  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for range check; alternative loses validation. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
         )
         is True
@@ -166,8 +166,8 @@ def compute_hot_scalars(
             nll_vec: torch.Tensor
             ok_vec: torch.Tensor
             nll_vec, ok_vec = fused_hot_scalars(logits, legal_mask, targets_long)
-            nll_mean: float = nll_vec.mean().item()  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # reporting fast path; alternative loses metric. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
-            top1_mean: float = ok_vec.float().mean().item()  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # reporting fast path; alternative loses metric. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
+            nll_mean: float = nll_vec.mean().item()  # fast path; .item() crosses host
+            top1_mean: float = ok_vec.float().mean().item()  # fast path; .item() crosses host
             fused = {"masked_nll": nll_mean, "top1": top1_mean}
     logits_fp32 = logits.to(torch.float32)
     masked_logits = logits_fp32.masked_fill(~legal_mask, _MASKED_LOGIT_NEG)
@@ -230,12 +230,12 @@ def _ece_from_confidence(confidences: torch.Tensor, accuracies: torch.Tensor) ->
     """Frozen 10-bin ECE over confidence (max softmax prob)."""
     ece = 0.0
     num_bins = _ECE_NUM_BINS
-    for b in range(num_bins):
-        lo = b / num_bins
-        hi = (b + 1) / num_bins
+    for bin_index in range(num_bins):
+        lo = bin_index / num_bins
+        hi = (bin_index + 1) / num_bins
         mask = (
             (confidences >= lo) & (confidences < hi)
-            if b < num_bins - 1
+            if bin_index < num_bins - 1
             else (confidences >= lo) & (confidences <= hi)
         )
         if bool(mask.any().item()) is True:  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for bin check; alternative loses metric. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
@@ -250,9 +250,9 @@ def _support_min_max(predictions: torch.Tensor) -> tuple[int, int]:
     pred_counts: dict[int, int] = {}
     # Note: predictions already legal due to masking
     pred_list: Any = predictions.tolist()
-    for p_any in pred_list:
-        p: int = int(p_any)
-        pred_counts[p] = pred_counts.get(p, 0) + 1
+    for pred_any in pred_list:
+        pred_class: int = int(pred_any)
+        pred_counts[pred_class] = pred_counts.get(pred_class, 0) + 1
     if len(pred_counts) > 0:
         return min(pred_counts.values()), max(pred_counts.values())
     return 0, 0
@@ -285,22 +285,22 @@ def _per_type_breakdown(
     accuracies = (predictions == targets_long).float()
     out: dict[str, dict[str, float]] = {}
     for kind in sorted(set(kinds)):
-        idx = [i for i, k in enumerate(kinds) if k == kind]
+        idx = [row_index for row_index, row_kind in enumerate(kinds) if row_kind == kind]
         sel = torch.tensor(idx, dtype=torch.long, device=logits_fp32.device)
-        n = len(idx)
+        kind_count = len(idx)
         nll = float(-log_prob[sel, targets_long[sel]].mean().item())  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for metric; alternative loses metric. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
         top1 = masked_topk_accuracy(logits_fp32[sel], targets_long[sel], legal_mask[sel], k=1)
-        k3 = masked_topk_accuracy(
+        top3 = masked_topk_accuracy(
             logits_fp32[sel], targets_long[sel], legal_mask[sel], k=min(3, logits_fp32.shape[1])
         )
         ece = _ece_from_confidence(confidences[sel], accuracies[sel])
         recall = top1  # by construction: kinds label the target, so kind recall == kind top1
-        low_support = 1.0 if n < _PER_TYPE_MIN_N else 0.0
+        low_support = 1.0 if kind_count < _PER_TYPE_MIN_N else 0.0
         out[kind] = {
-            "n": float(n),
+            "n": float(kind_count),
             "nll": nll,
             "top1": top1,
-            "top3": k3,
+            "top3": top3,
             "ece": ece,
             "recall": recall,
             "low_support": low_support,

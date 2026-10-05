@@ -234,6 +234,7 @@ def _latency_draw(master_seed: bytes, key: RandomStreamKey) -> int:
     try:
         leaf = _bridge_contracts.eval_schedule_latency_draw  # type: ignore[attr-defined]  # reason: eval_schedule leaf lands with MAIN wiring; AttributeError fallback covers stale .so
     except AttributeError:
+        # Stale bridge without the leaf: the %3 oracle below is authoritative.
         return oracle_index
     try:
         bridged_index: int = leaf(master_seed, key.experiment_id, key.split_id, key.replicate_id)

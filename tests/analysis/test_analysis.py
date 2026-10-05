@@ -359,7 +359,8 @@ def test_deterministic_replay_across_modes() -> None:
             case_id=f"{cid}_replay",
         )
         assert a1 == a2
-        # Different modes produce different hashes (mode is part of payload) — proves mode label is charged
+        # Different modes produce different hashes (mode is part of payload) — proves mode label is
+        # charged
         assert h1 != a1
         # Legal set ordering must not affect hash (sorted aids)
         rev = tuple(reversed(legal))
@@ -485,7 +486,8 @@ def test_compare_actions_values_fallback() -> None:
             assert isinstance(v, float) and -1.5 <= v <= 1.5
         # Action ids must be legal
         legal_ids = {int(getattr(a, "action_id", 0) or 0) for a in legal}
-        # If legal actions have no action_id (stub), skip check; else ensure picked ids are in legal set via aid fallback
+        # If legal actions have no action_id (stub), skip check; else ensure picked ids are in legal
+        # set via aid fallback
         # We check that comparison's action ids are ints
         assert isinstance(comp["gameplay_action_id"], int)
         assert isinstance(comp["analysis_action_id"], int)
@@ -670,7 +672,7 @@ def test_reject_uncharged_work() -> None:
 
     small = ResourceBudget(
         mode="analysis",
-        deadline_ms=6000,  # still >5000 but smaller than frozen 30000 — would be allowed? but we test reduction below gameplay for caps
+        deadline_ms=6000,  # below the frozen 30000 cap: exercises deadline reduction
         fallback_margin_ms=200,
         max_model_calls=1,  # smaller than gameplay 64 -> should be rejected
         max_transitions=16,
@@ -862,6 +864,7 @@ def test_analysis_report_canonical_json_identity() -> None:
     from hydra2.artifacts.digest import sha256_file
 
     file_hash = str(sha256_file(path))
-    # file_hash is sha256 over raw bytes; digest is over canonical payload without digest field — different but both valid digests
+    # file_hash is sha256 over raw bytes; digest is over canonical payload without digest field —
+    # different but both valid digests
     _bridge_contracts.make_digest_text(file_hash)
     _bridge_contracts.make_digest_text(digest)

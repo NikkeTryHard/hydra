@@ -124,7 +124,8 @@ def test_local_resolving_candidate_build_subgame() -> None:
 
 
 def test_same_information_strategy_keying() -> None:
-    # Two worlds with same root hand but swapped opponent hidden tiles -> same root info_key, different other
+    # Two worlds with same root hand but swapped opponent hidden tiles -> same root info_key,
+    # different other
     w1 = make_full_world(
         concealed_hands=((0, 1), (2, 3), (4, 5), (6, 7)),
         live_wall=(8, 9, 10, 11),
@@ -217,7 +218,8 @@ def test_settlement_utility_vector_preservation() -> None:
         assert all(math.isfinite(float(x)) for x in vec)
         # settlement conservation: zero-sum (re-centered) sums to ~0
         assert abs(sum(vec)) < 1e-9, f"vector {vec} not zero-sum re-centered"
-    # utility schema: candidate spec utility hash bound; vectors finite in [value_min,value_max] style
+    # utility schema: candidate spec utility hash bound; vectors finite in [value_min,value_max]
+    # style
     spec = make_candidate5_spec(config=config)
     assert spec.utility_manifest_hash.startswith("sha256:")
     assert spec.utility_id == "expected_final_placement_tenhou_4p_hanchan_v1"
@@ -292,8 +294,10 @@ def test_cycle_detection() -> None:
     )
     with pytest.raises(CycleDetectedError):
         detect_cycle(cyc)
-    # also planner building with horizon that aliases via abstraction should still detect?
-    # we force a subgame with duplicate node hashes to trigger cycle — building via build_public_subgame with artificial public_history_seed collision is valid DAG, so only manual injection triggers
+    # A planner-built horizon that aliases via abstraction must still detect the cycle.
+    # we force a subgame with duplicate node hashes to trigger cycle — building via
+    # build_public_subgame with artificial public_history_seed collision is valid DAG, so only
+    # manual injection triggers
     # Verify planner aborts on cycle via direct PublicSubgame validation
     with pytest.raises((CycleDetectedError, ContractError)):
         # duplicate nodes should be rejected as not distinct
@@ -341,7 +345,8 @@ def test_invalid_abstraction_mappings() -> None:
         w, obs = _world_and_obs()
         belief, epoch = _belief_epoch(obs)
         # use pair_merge for 0..3 but legal only 0,1 — still valid
-        # invalid: try to map 0->99 not in abstract_ids but construction would include 99, so we test edge with illegal abstract
+        # invalid: try to map 0->99 not in abstract_ids but construction would include 99, so we
+        # test edge with illegal abstract
         bad_ab = LocalResolvingAbstraction(
             name="custom", concrete_to_abstract=((0, 99), (1, 99)), abstract_ids=(99,)
         )
@@ -442,7 +447,8 @@ def test_exhaustive_tiny_game() -> None:
     # telemetry counts
     assert res["telemetry"]["iterations"] == 8
     assert res["telemetry"]["horizon"] == 2
-    # vectors from exhaustive and resolver should be consistent distribution (not equal but same domain)
+    # vectors from exhaustive and resolver should be consistent distribution (not equal but same
+    # domain)
     for vec in res["vectors"]:
         assert len(vec) == 4
     # Second exhaustive with pair_merge abstraction gives different branching but still exhaustive
@@ -543,9 +549,11 @@ def test_pbrf_warm_start_comparison() -> None:
     assert spec_warm.parameters["warm_start"] is True
     assert res_cold["telemetry"]["warm_start"] is False
     assert res_warm["telemetry"]["warm_start"] is True
-    # Both use same update/averaging semantics but different initialization — neither claims equilibrium
+    # Both use same update/averaging semantics but different initialization — neither claims
+    # equilibrium
     assert is_equilibrium_claimed() is False
-    # Root strategies should be valid distributions even if they converge; we just verify they are both valid and telemetry differs in warm flag
+    # Root strategies should be valid distributions even if they converge; we just verify they are
+    # both valid and telemetry differs in warm flag
     assert len(res_cold["root_avg"]) == 2 and len(res_warm["root_avg"]) == 2
     assert abs(sum(res_cold["root_avg"]) - 1.0) < 1e-9
     assert abs(sum(res_warm["root_avg"]) - 1.0) < 1e-9
@@ -600,7 +608,8 @@ def test_determinism() -> None:
     t2 = {k: v for k, v in res2["telemetry"].items() if k != "elapsed_ms"}
     assert t1 == t2
     assert res1["avg_tables"].table == res2["avg_tables"].table
-    # different case_id must give deterministic but possibly different result (still deterministic per case_id)
+    # different case_id must give deterministic but possibly different result (still deterministic
+    # per case_id)
     res3 = planner1.search(
         epoch=epoch,
         root_observation=obs,
@@ -778,7 +787,8 @@ def test_report_and_candidate_spec_binding() -> None:
         vals = vec.values if hasattr(vec, "values") else vec  # type: ignore[attr-defined]
         assert len(vals) == 4
         assert all(math.isfinite(float(v)) for v in vals)
-    # tie_break frozen before cases: changing tie_break changes hash and result distribution may change but remains deterministic
+    # tie_break frozen before cases: changing tie_break changes hash and result distribution may
+    # change but remains deterministic
     spec_greedy = make_candidate5_spec(config=LocalResolvingConfig(tie_break="greedy"))
     spec_tb = make_candidate5_spec(config=LocalResolvingConfig(tie_break="temperature_0.5"))
     assert candidate_spec_hash(spec_greedy) != candidate_spec_hash(spec_tb)

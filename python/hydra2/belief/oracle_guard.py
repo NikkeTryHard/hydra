@@ -41,14 +41,14 @@ def validate_actor_batch_no_privileged(batch: dict[str, Any]) -> None:
     Inference encoders MUST call this before encoding. It checks both top-level
     keys and nested ``actor_observation`` dict keys for leakage.
     """
-    # Nested observation dict
-    _obs_a: Any | None = batch.get("actor_observation")
-    _obs_b: Any | None = batch.get("observation")
-    _obs_c: Any | None = batch.get("obs")
-    obs: Any | None = _obs_a if _obs_a is not None else (_obs_b if _obs_b is not None else _obs_c)
+    # Check all three observation key spellings: any may carry the nested dict.
+    obs_a: Any | None = batch.get("actor_observation")
+    obs_b: Any | None = batch.get("observation")
+    obs_c: Any | None = batch.get("obs")
+    merged: Any | None = obs_a if obs_a is not None else (obs_b if obs_b is not None else obs_c)
     try:
         _bridge_contracts.guard_validate_actor_batch(
-            list(batch.keys()), list(obs.keys()) if isinstance(obs, dict) else []
+            list(batch.keys()), list(merged.keys()) if isinstance(merged, dict) else []
         )
     except (ValueError, TypeError) as exc:
         raise ContractError(str(exc)) from exc
@@ -60,6 +60,7 @@ def assert_no_privileged_leakage_in_actor_row(row: dict[str, Any]) -> None:
         if bad in row:
             raise ContractError(f"privileged field {bad!r} in actor row {row.get('decision_id')!r}")
     obs_raw = row.get("actor_observation")
+    # JSON string form needs parsing first; dict form checks directly below.
     if isinstance(obs_raw, str):
         try:
             obs = json.loads(obs_raw)
@@ -69,14 +70,15 @@ def assert_no_privileged_leakage_in_actor_row(row: dict[str, Any]) -> None:
             ) from exc
         if isinstance(obs, dict):
             for k_any in obs:
-                k2: str = k_any  # type: ignore[assignment]  # reason: dict key statically Any; str validated by membership check
+                k2: str = k_any  # reason: Any key; str by membership check
                 if k2 in FORBIDDEN_IN_ACTOR_KEYS:
                     raise ContractError(
                         f"privileged field {k2!r} inside actor_observation for {row.get('decision_id')!r}"  # noqa: E501  # reason: contract string single logical; splitting harms grep
                     )
+    # Dict form skips parsing: check keys directly for the same firewall.
     elif isinstance(obs_raw, dict):
         for k_any in obs_raw:
-            k3: str = k_any  # type: ignore[assignment]  # reason: dict key statically Any; str validated by membership check
+            k3: str = k_any  # reason: Any key; str by membership check
             if k3 in FORBIDDEN_IN_ACTOR_KEYS:
                 raise ContractError(
                     f"privileged field {k3!r} inside actor_observation dict for {row.get('decision_id')!r}"  # noqa: E501  # reason: contract string single logical; splitting harms grep

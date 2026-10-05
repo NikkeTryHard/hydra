@@ -151,18 +151,18 @@ def fabricate_test_only_token(
         )
         if isinstance(device, DeviceFingerprint)
         else cast("DeviceFingerprintToken", device)
-        for device in cast("Any", capture.devices)  # pyrefly: ignore[explicit-any]
+        for device in cast("Any", capture.devices)
     )
-    mahjax_commit_id: str = cast("str", capture.mahjax_commit_id)  # pyrefly: ignore[explicit-any]
-    pixi_lock_sha256: str = str(cast("Any", capture.pixi_lock_sha256))  # pyrefly: ignore[explicit-any]
-    jax_version: str = cast("str", capture.jax_version)  # pyrefly: ignore[explicit-any]
-    jaxlib_version: str = cast("str", capture.jaxlib_version)  # pyrefly: ignore[explicit-any]
-    backend_platform: str = cast("str", capture.backend_platform)  # pyrefly: ignore[explicit-any]
+    mahjax_commit_id: str = cast("str", capture.mahjax_commit_id)
+    pixi_lock_sha256: str = str(cast("Any", capture.pixi_lock_sha256))
+    jax_version: str = cast("str", capture.jax_version)
+    jaxlib_version: str = cast("str", capture.jaxlib_version)
+    backend_platform: str = cast("str", capture.backend_platform)
     xla_flags: tuple[tuple[str, str], ...] = cast(
         "tuple[tuple[str, str], ...]", tuple(cast("Any", capture.xla_flags))
-    )  # pyrefly: ignore[explicit-any]
-    python_implementation: str = cast("str", capture.python_implementation)  # pyrefly: ignore[explicit-any]
-    python_version: str = cast("str", capture.python_version)  # pyrefly: ignore[explicit-any]
+    )
+    python_implementation: str = cast("str", capture.python_implementation)
+    python_version: str = cast("str", capture.python_version)
     return QualificationToken(
         adapter_version=adapter_version,
         rules_id=rules_id,

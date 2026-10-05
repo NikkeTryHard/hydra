@@ -455,7 +455,8 @@ def _build_f2(corpus_dir: Path, *, level: int) -> dict[str, object]:
         "zstd_level": level,
         "zstd_version": _zstd_version(),
         "seed": _F2_SEED,
-        "note": "scales test_stream _game_bytes; stream leg only (turn_advance is not expand vocab)",
+        "note": "scales test_stream _game_bytes; stream leg only "
+        "(turn_advance is not expand vocab)",
     }
 
 
@@ -635,7 +636,8 @@ def _build_f11(corpus_dir: Path, *, level: int) -> list[dict[str, object]]:
                 "builder_hash": builder_hash,
                 "template_sha256": template_shas,
                 "zstd_level": level,
-                "note": "saturated 64x12 decision-primary; file-unique game_id stamps keep exact-hash dedup at 768 games",
+                "note": "saturated 64x12 decision-primary; file-unique game_id "
+                "stamps keep exact-hash dedup at 768 games",
             }
         )
     return entries
@@ -1048,7 +1050,9 @@ def _update_pass(corpus_subdir: Path, *, seed: int, config_path: str) -> dict[st
     def _bucket_of(row: dict[str, object]) -> int:
         obs: object = row["actor_observation"]
         hist: object = (
-            obs.visible_history if hasattr(obs, "visible_history") else obs.get("visible_history")  # type: ignore[union-attr]
+            obs.visible_history
+            if hasattr(obs, "visible_history")
+            else obs.get("visible_history")  # type: ignore[union-attr]
         )
         n = len(hist) if hist is not None else 0  # type: ignore[arg-type]
         for b in buckets:
@@ -1113,9 +1117,13 @@ def _update_pass(corpus_subdir: Path, *, seed: int, config_path: str) -> dict[st
             else state["nullcontext"]()  # type: ignore[operator]
         )
         with autocast:
-            model_out = model_output_to_loss_dict(state["model"](actor_dev))  # type: ignore[operator]
+            model_out = model_output_to_loss_dict(
+                state["model"](actor_dev)  # type: ignore[operator]
+            )
             validate_supervised_inputs(model_out, loss_batch, state["weights"])
-            losses = state["compiled_loss"](model_out, loss_batch, state["weights"])  # type: ignore[operator]
+            losses = state["compiled_loss"](  # type: ignore[operator]
+                model_out, loss_batch, state["weights"]
+            )
             _check_total_finite(losses["total"])
         total = losses["total"]
         state["handle"].backward(total)  # type: ignore[union-attr]

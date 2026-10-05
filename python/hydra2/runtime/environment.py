@@ -44,17 +44,18 @@ def _pixi_lock_hash() -> str:
     raises instead of degrading.
     """
     try:
-        lock = repo_root() / "pixi.lock"
+        lock_path = repo_root() / "pixi.lock"
     except Exception:
-        lock = None  # repo_root marker walk failed (e.g., installed wheel)
-    if lock is None or not lock.is_file():
+        lock_path = None  # repo_root marker walk failed (e.g., installed wheel)
+    # Missing lock degrades to a sentinel unless strict mode requires proof.
+    if lock_path is None or not lock_path.is_file():
         if os.environ.get("HYDRA2_REQUIRE_PIXI_LOCK") == "1":
             raise FileNotFoundError(
-                f"pixi.lock not found at {lock}; environment is unproven "
+                f"pixi.lock not found at {lock_path}; environment is unproven "
                 "(set HYDRA2_REQUIRE_PIXI_LOCK=1 to require)"
             )
         return "MISSING: pixi.lock not found (set HYDRA2_REQUIRE_PIXI_LOCK=1 to require)"
-    return sha256_file(lock)
+    return sha256_file(lock_path)
 
 
 def _nvidia_smi_gpus() -> list[dict[str, Any]]:
@@ -63,13 +64,14 @@ def _nvidia_smi_gpus() -> list[dict[str, Any]]:
     Return [] when the binary is absent or the query fails, never
     raise; a 5s timeout keeps capture responsive.
     """
-    binary = shutil.which("nvidia-smi")
-    if binary is None:
+    smi_binary = shutil.which("nvidia-smi")
+    # Absent binary means no GPU table; callers record empty, never an error.
+    if smi_binary is None:
         return []
     try:
-        proc = subprocess.run(
+        smi_result = subprocess.run(
             [
-                binary,
+                smi_binary,
                 "--query-gpu=index,name,driver_version,compute_cap",
                 "--format=csv,noheader,nounits",
             ],
@@ -81,29 +83,30 @@ def _nvidia_smi_gpus() -> list[dict[str, Any]]:
     except (subprocess.SubprocessError, OSError, RuntimeError) as exc:
         warnings.warn(f"nvidia-smi query failed (degraded to []): {exc}", stacklevel=2)
         return []
-    gpus: list[dict[str, Any]] = []
-    for line in proc.stdout.strip().splitlines():
-        if line.strip() == "":
+    gpu_entries: list[dict[str, Any]] = []
+    for output_line in smi_result.stdout.strip().splitlines():
+        if output_line.strip() == "":
             continue
-        parts = [part.strip() for part in line.split(",")]
-        if len(parts) != 4:
-            warnings.warn(f"nvidia-smi unexpected line (skipped): {line!r}", stacklevel=2)
+        line_parts = [part.strip() for part in output_line.split(",")]
+        # Malformed lines are skipped with a warning; one bad GPU never fails capture.
+        if len(line_parts) != 4:
+            warnings.warn(f"nvidia-smi unexpected line (skipped): {output_line!r}", stacklevel=2)
             continue
-        index, name, driver_version, compute_cap = parts
+        index_text, gpu_name, driver_version, compute_cap = line_parts
         try:
-            idx = int(index)
+            gpu_index = int(index_text)
         except ValueError:
-            warnings.warn(f"nvidia-smi bad index (skipped): {line!r}", stacklevel=2)
+            warnings.warn(f"nvidia-smi bad index (skipped): {output_line!r}", stacklevel=2)
             continue
-        gpus.append(
+        gpu_entries.append(
             {
-                "index": idx,
-                "name": name,
+                "index": gpu_index,
+                "name": gpu_name,
                 "driver_version": driver_version,
                 "compute_capability": compute_cap,
             }
         )
-    return gpus
+    return gpu_entries
 
 
 def capture_environment_manifest() -> tuple[dict[str, Any], str]:
@@ -112,15 +115,17 @@ def capture_environment_manifest() -> tuple[dict[str, Any], str]:
 
     import torch
 
-    arch_list = list(torch.cuda.get_arch_list()) if torch.cuda.is_available() else []
+    # Empty when CUDA is absent; torch reports the compiled arch list only.
+    cuda_arch_list = list(torch.cuda.get_arch_list()) if torch.cuda.is_available() else []
 
     def dist_version(name: str) -> str:
         try:
             return md.version(name)
         except md.PackageNotFoundError:
+            # Absent optional dependency degrades to a sentinel, never an error.
             return "MISSING"
 
-    manifest = {
+    env_manifest = {
         "artifact_type": ENV_MANIFEST_ARTIFACT_TYPE,
         "schema_version": ENV_MANIFEST_SCHEMA_VERSION,
         "pixi_lock_sha256": _pixi_lock_hash(),
@@ -132,7 +137,7 @@ def capture_environment_manifest() -> tuple[dict[str, Any], str]:
             "version": torch.__version__,
             "cuda": torch.version.cuda,
             "cudnn": torch.backends.cudnn.version(),
-            "arch_list": arch_list,
+            "arch_list": cuda_arch_list,
         },
         "driver": {
             "nvidia_smi_available": shutil.which("nvidia-smi") is not None,
@@ -146,22 +151,22 @@ def capture_environment_manifest() -> tuple[dict[str, Any], str]:
             "jax": dist_version("jax"),
         },
     }
-    return manifest, of_canonical(manifest)
+    return env_manifest, of_canonical(env_manifest)
 
 
 def write_environment_manifest(destination: Path) -> tuple[Path, str]:
     """Capture and atomically publish the manifest; returns (path, sha256)."""
-    manifest, digest = capture_environment_manifest()
-    atomic_replace_bytes(Path(destination), canonical_bytes(manifest))
-    return Path(destination), digest
+    env_manifest, manifest_digest = capture_environment_manifest()
+    atomic_replace_bytes(Path(destination), canonical_bytes(env_manifest))
+    return Path(destination), manifest_digest
 
 
 def main() -> int:
     from hydra2.config import artifact_root
 
-    destination_dir = artifact_root() / "environment"
-    path, digest = write_environment_manifest(destination_dir / "environment-manifest.json")
-    print(json.dumps({"path": str(path), "sha256": digest}, sort_keys=True))
+    env_dir = artifact_root() / "environment"
+    env_path, env_digest = write_environment_manifest(env_dir / "environment-manifest.json")
+    print(json.dumps({"path": str(env_path), "sha256": env_digest}, sort_keys=True))
     return 0
 
 

@@ -26,7 +26,7 @@ from hydra2.contracts.common import ContractError
 try:
     from hydra2._native import contracts as _distill_bridge  # pyrefly: ignore[missing-import]
 except ImportError:  # pragma: no cover - import-time signal; probes below decide
-    _distill_bridge = None  # type: ignore[assignment]
+    _distill_bridge = None
 
 if TYPE_CHECKING:
     from hydra2.search.common import CandidateSpec
@@ -109,11 +109,11 @@ def _load_action_table_num_actions() -> int:
             # Portable package-data fallback (https://docs.python.org/3/library/importlib.resources.html)
             # Try importlib.resources as secondary resolver for installed package data.
             try:
-                from importlib.resources import files as _files  # pyrefly: ignore[import-error]
+                from importlib.resources import files as _files
 
                 cand = _files("hydra2").joinpath("../../../configs/contracts/action_table_v1.json")
                 try:  # why-broad: package-data probe — any layout failure falls through
-                    if cand.is_file():  # type: ignore[attr-defined]
+                    if cand.is_file():
                         p = Path(str(cand))
                 except Exception:
                     pass
@@ -136,8 +136,8 @@ def _load_action_table_num_actions() -> int:
             actions_val: Any = cast("dict[str, Any]", data).get("actions")  # pyrefly: ignore[explicit-any]
             if isinstance(actions_val, list):
                 return len(actions_val)
-            return len(cast("list[Any]", actions_val))  # pyrefly: ignore[explicit-any]
-        # fallback: try keys
+            return len(cast("list[Any]", actions_val))
+        # Invariant: unknown envelopes resolve via num_actions; this probe never raises.
         dict_data: dict[str, Any] = cast("dict[str, Any]", data)  # pyrefly: ignore[explicit-any]
         num_val: Any = dict_data.get("num_actions", _DEFAULT_NUM_ACTIONS)  # pyrefly: ignore[explicit-any]
         if isinstance(num_val, int):
@@ -304,8 +304,8 @@ class TeacherJustification:
         kinds = tuple(k for k, _ in self.gate_hashes)
         if tuple(sorted(kinds)) != tuple(sorted(_GATE_KINDS)):
             raise ContractError(f"gate kinds must be {_GATE_KINDS}, got {kinds}")
-        for _k, v in self.gate_hashes:
-            _ = _require_sha256(f"gate_hash:{_k}", v)
+        for kind, digest in self.gate_hashes:
+            _ = _require_sha256(f"gate_hash:{kind}", digest)
         _ = _require_sha256("digest", self.digest)
         # validate digest matches canonical
         payload = {
@@ -354,21 +354,21 @@ def select_teacher(
             f"WP-10 blocked for {candidate_id!r}: factory CandidateSpec digest "
             f"{spec_hash} != WP-12 gameplay_spec_hash {gate['gameplay_spec_hash']} (stale)"
         )
-    gates: dict[str, str] = {}
+    hashes_by_kind: dict[str, str] = {}
     for kind in _GATE_KINDS:
-        gates[kind] = _gate_hash_for_kind(
+        hashes_by_kind[kind] = _gate_hash_for_kind(
             kind,
             candidate_spec_hash=spec_hash,
             gate=gate,
         )
-    sorted_gates = tuple(sorted(gates.items()))
-    ts = selected_at_utc if selected_at_utc is not None else _now_utc()
+    sorted_gates = tuple(sorted(hashes_by_kind.items()))
+    stamp = selected_at_utc if selected_at_utc is not None else _now_utc()
     payload = {
         "teacher_candidate_id": candidate_id,
         "candidate_spec_hash": spec_hash,
         "gate_hashes": dict(sorted_gates),
         "justification_text": justification_text,
-        "selected_at_utc": ts,
+        "selected_at_utc": stamp,
     }
     digest = "sha256:" + hashlib.sha256(canonical_bytes(payload)).hexdigest()
     return TeacherJustification(
@@ -376,7 +376,7 @@ def select_teacher(
         candidate_spec_hash=spec_hash,
         gate_hashes=sorted_gates,
         justification_text=justification_text,
-        selected_at_utc=ts,
+        selected_at_utc=stamp,
         digest=digest,
     )
 

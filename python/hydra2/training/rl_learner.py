@@ -148,7 +148,7 @@ class LearnerService:
         # Completed updates no longer need the previous bucket's private
         # autograd pool. Retaining all buckets accumulates full activation
         # pools and exhausts VRAM when actor collection overlaps learning.
-        if self.graphs:
+        if len(self.graphs) > 0:
             self.compute_stream.synchronize()
             self.optimizer.zero_grad(set_to_none=True)
             self.graphs.clear()
@@ -170,7 +170,7 @@ class LearnerService:
         with torch.cuda.stream(warm):
             for _ in range(3):
                 self.optimizer.zero_grad(set_to_none=True)
-                terms().loss.backward()
+                _ = terms().loss.backward()
             done = torch.cuda.Event(blocking=True)
             done.record(warm)
         done.synchronize()
@@ -180,16 +180,16 @@ class LearnerService:
         # parameters at None prevents AdamW from decaying unused heads.
         with torch.cuda.graph(first, stream=warm):
             first_terms = terms()
-            first_terms.loss.backward()
+            _ = first_terms.loss.backward()
             metrics = [tensor.detach() for tensor in first_terms]
         gradients = [parameter.grad for parameter in self.model.parameters()]
         # Shared storage is replayed only FIRST then ACCUM*, so live gradients
         # and metrics cannot be overwritten by a different history geometry.
         with torch.cuda.graph(accumulate, pool=first.pool(), stream=warm):
             parts = terms()
-            parts.loss.backward()
+            _ = parts.loss.backward()
             for total, part in zip(metrics, parts, strict=True):
-                total.add_(part.detach())
+                _ = total.add_(part.detach())
         result = _LearnerGraph(
             planes,
             selected,
@@ -222,9 +222,9 @@ class LearnerService:
 
         spec = json.loads(
             native.fill_live_slab(
-                tape_handle=int(tape),
-                replay_handle=int(replay),
-                batch_idx=int(batch_index),
+                tape_handle=tape,
+                replay_handle=replay,
+                batch_idx=batch_index,
                 features_buffer=slot.feature_exporter,
                 facts_buffer=slot.fact_exporter,
             )
@@ -246,10 +246,12 @@ class LearnerService:
             raise ContractError("native replay descriptor exceeds registered cache capacity")
         slot.count, slot.bucket_t = count, int(spec["t"])
         with torch.cuda.stream(self.copy_stream):
-            slot.device_features[:feature_bytes].copy_(
+            _ = slot.device_features[:feature_bytes].copy_(
                 slot.host_features[:feature_bytes], non_blocking=True
             )
-            slot.device_facts[:fact_bytes].copy_(slot.host_facts[:fact_bytes], non_blocking=True)
+            _ = slot.device_facts[:fact_bytes].copy_(
+                slot.host_facts[:fact_bytes], non_blocking=True
+            )
             slot.ready = torch.cuda.Event()
             slot.ready.record(self.copy_stream)
         planes = {}
@@ -295,8 +297,8 @@ class LearnerService:
                     slot.normalized_advantage = torch.empty_like(normalized)
                     slot.float_returns = torch.empty_like(returns)
                 assert slot.float_returns is not None
-                slot.normalized_advantage.copy_(normalized)
-                slot.float_returns.copy_(returns)
+                _ = slot.normalized_advantage.copy_(normalized)
+                _ = slot.float_returns.copy_(returns)
                 slot.advantage, slot.returns = slot.normalized_advantage, slot.float_returns
             else:
                 slot.advantage, slot.returns = normalized, returns
@@ -338,7 +340,7 @@ class LearnerService:
                     # offset-keyed transfers cannot read another batch's facts.
                     with torch.cuda.graph(transfer, stream=captured.capture_stream):
                         for name, tensor in captured.planes.items():
-                            tensor.copy_(planes[name])
+                            _ = tensor.copy_(planes[name])
                         for target, source in zip(
                             (
                                 captured.selected,
@@ -349,7 +351,7 @@ class LearnerService:
                             (slot.selected, slot.old_logp, slot.advantage, slot.returns),
                             strict=True,
                         ):
-                            target.copy_(source[span])
+                            _ = target.copy_(source[span])
                     captured.transfers[transfer_key] = transfer
                 transfer.replay()
                 if self.offset == 0:
@@ -370,13 +372,13 @@ class LearnerService:
                     slot.returns[span],
                     slot.count,
                 )
-                terms.loss.backward()
+                _ = terms.loss.backward()
                 detached = [tensor.detach() for tensor in terms]
                 if self.metrics is None:
                     self.metrics = detached
                 else:
                     for total, part in zip(self.metrics, detached, strict=True):
-                        total.add_(part)
+                        _ = total.add_(part)
         self.offset = end
         return end == slot.count
 
@@ -385,7 +387,7 @@ class LearnerService:
         if slot is None or self.offset != slot.count or self.metrics is None:
             raise ContractError("optimizer update cannot commit a partial accumulation")
         with torch.cuda.stream(self.compute_stream):
-            torch.nn.utils.clip_grad_norm_(
+            _ = torch.nn.utils.clip_grad_norm_(
                 self.model.parameters(),
                 self.gradient_clip_norm,
                 error_if_nonfinite=True,

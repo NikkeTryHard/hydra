@@ -214,6 +214,7 @@ class NaturalBelief:
     def _require_epoch(self, epoch: BeliefEpoch) -> BeliefEpoch:
         eid = int(epoch.epoch)
         stored = self._epochs.get(eid)
+        # Unknown or mismatched epoch means stale belief; fail closed here.
         if stored is None or stored != epoch:
             raise StaleBeliefError(f"stale epoch {eid}: not found or mismatched [PBRF_STALE_EPOCH]")
         # Target check is part of epoch equality, but also ensure target_id matches
@@ -225,11 +226,13 @@ class NaturalBelief:
         # Particle's epoch and target must match a stored epoch
         eid = int(particle.epoch)
         stored = self._epochs.get(eid)
+        # Stale target would mix laws across epochs; fail closed here.
         if stored is None or stored.target_id != particle.target_id:
             raise StaleBeliefError(
                 f"stale particle provenance epoch={eid} target mismatch [PBRF_STALE_PROVENANCE]"
             )
         # Also check that world_ref exists
+        # Unknown ref has no density law; fail closed before sampling.
         if particle.world_ref not in self._worlds:
             raise StaleBeliefError(
                 f"unknown world_ref {particle.world_ref!r} [PBRF_STALE_WORLDREF]"
@@ -282,6 +285,7 @@ class NaturalBelief:
         _ = self._require_epoch(epoch)
         corpus = _build_tiny_corpus_for_epoch(epoch, registry=self._worlds)
         K = len(corpus)
+        # Empty corpus has no target law; fail closed before the bridge call.
         if K == 0:
             raise ContractError("empty corpus for epoch")
         try:
@@ -289,10 +293,8 @@ class NaturalBelief:
         except (ValueError, OverflowError, TypeError) as exc:
             raise ContractError("empty corpus for epoch") from exc
         _checked_log: float = _validate_finite(log_prob, name="log_target_density")
-        # Draws via the search bridge (CTR-exact, including the K==1
-        # no-consume rule). Cursor replay: seed/cursor in, end_cursor out,
-        # rng jumped so the stream continues exactly (checkpoint/jump_to
-        # shape). ImportError with build-ext hint, no oracle fallback.
+        # Invariant: CTR-exact draws via bridge (K==1 consumes nothing).
+        # Cursor replay keeps the stream exact; rejects raise, never fallback.
         seed, cursor = _ctr_seed_cursor(rng)
         search_mod = _require_search_bridge(need="natural_indices", purpose="sampling belief")
         try:
@@ -314,19 +316,20 @@ class NaturalBelief:
             raise ContractError(
                 f"natural_indices bridge returned {len(idx_list)} indices, expected {count}"
             )
-        out: list[Particle] = []
+        particles: list[Particle] = []
         for raw_idx in idx_list:
             idx: int = raw_idx
+            # Reject out-of-range bridge index: prevents silent corpus mismatch.
             if idx < 0 or idx >= K:
                 raise ContractError(f"bridge index {idx!r} out of range for K={K}")
             world = corpus[idx]
-            # For natural, log_target == log_proposal, ratio 1
-            pid = make_parent_id(
+            # Invariant: natural density has ratio 1 (log_target == log_proposal).
+            parent_id_val = make_parent_id(
                 world.world_id.split(":")[1][:16] if ":" in world.world_id else world.world_id[:16]
             )
-            # Use world_id as world_ref opaque
+            # world_id doubles as the opaque world_ref; never dereferenced here.
             particle = Particle(
-                parent_id=pid,
+                parent_id=parent_id_val,
                 world_ref=world.world_id,
                 epoch=epoch.epoch,
                 target_id=epoch.target_id,
@@ -344,8 +347,8 @@ class NaturalBelief:
             )
             if particle.log_target_density != particle.log_proposal_density:
                 raise ContractError("natural sample requires log_target == log_proposal")
-            out.append(particle)
-        return tuple(out)
+            particles.append(particle)
+        return tuple(particles)
 
     def sample_proposal(
         self, epoch: BeliefEpoch, *, proposal: ProposalSpec, count: int, rng: RandomStream
@@ -367,6 +370,7 @@ class NaturalBelief:
         except (ValueError, OverflowError, TypeError) as exc:
             raise ContractError("empty corpus") from exc
         # Validate support: every target-positive (all K) must have proposal>0
+        # Zero proposal mass on a live world would divide by zero later.
         for p in proposal_probs:
             if p <= 0.0 or not math.isfinite(p):
                 raise ProposalSupportError(
@@ -495,6 +499,7 @@ class NaturalBelief:
         if not isinstance(packet, ActorVisiblePacket):
             raise ContractError("packet must be ActorVisiblePacket")
         # Packet actor_view must equal the epoch root actor.
+        # Mismatched view would bind the next epoch to another actor's observation.
         packet_view: int = packet.actor_view
         epoch_root: int = epoch.root_actor
         if packet_view != epoch_root:

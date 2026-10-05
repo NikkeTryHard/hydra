@@ -107,7 +107,10 @@ def _real_teacher_policy_fn(teacher_id: str = "candidate6", seed: int = 0):  # t
 def _justification(candidate: str = "candidate6") -> TeacherJustification:
     return select_teacher(
         candidate_id=candidate,
-        justification_text=f"teacher {candidate} passed all five gates with compute-only analysis; deterministic replay verified; selected for distillation",
+        justification_text=(
+            f"teacher {candidate} passed all five gates with compute-only "
+            "analysis; deterministic replay verified; selected for distillation"
+        ),
         selected_at_utc="2026-09-01T00:00:00Z",
     )
 
@@ -533,7 +536,8 @@ def test_teacher_replacement_invalidates() -> None:
         )
         is True
     )
-    # If dependent already regenerated with new digest, check should fail because old vs dependent mismatch
+    # If dependent already regenerated with new digest, check should fail because old vs dependent
+    # mismatch
     with pytest.raises(ContractError):
         check_teacher_replacement_invalidates(
             old_justification=j_old,

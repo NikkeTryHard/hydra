@@ -150,7 +150,7 @@ def _build_abstraction_from_config(
         mapping = {}
         for idx, c in enumerate(sorted_ids):
             mapping[c] = idx // 2
-        # also need to cover any concrete ids in 0..3 for subgame nodes even if not legal — for graph
+        # Also cover 0..3 for subgame nodes even when illegal (graph needs them).
         for c in (0, 1, 2, 3):
             if c not in mapping:
                 mapping[c] = c // 2
@@ -213,7 +213,7 @@ def _load_default_hashes() -> dict[str, str]:
             try:
                 from hydra2.contracts.rules_manifest import rules_manifest_from_payload
 
-                manifest = rules_manifest_from_payload(payload)  # type: ignore[no-untyped-call]
+                manifest = rules_manifest_from_payload(payload)
                 # RulesManifest has no digest attr — use file hash (avoids missing-attribute)
                 _ = manifest  # silence unused
                 out["rules_hash"] = _file_sha256(p)
@@ -243,16 +243,18 @@ def _model_hash_from_identity(model: Any | None) -> str:
     try:
         from hydra2.search.candidate0_frozen import _model_hash_from_identity as _c0_hash
 
-        return _c0_hash(model)  # pyrefly: ignore[unknown-argument-type] # untyped candidate0 hash
+        return _c0_hash(model)  # untyped candidate0 hash
     except (ImportError, AttributeError, ValueError, TypeError, OSError) as exc:
         logger.debug("local_resolving: candidate0 model-hash import fallback", exc_info=exc)
     if model is not None:
         ident: Any = getattr(model, "model_identity", None)
         if ident is not None:
-            return _bridge_contracts.make_digest_text(str(ident))  # pyrefly: ignore[unknown-argument-type] # untyped bridge digest
+            return _bridge_contracts.make_digest_text(str(ident))  # untyped bridge digest
     from hydra2.models.model import Hydra2BaselineModel
 
-    return _bridge_contracts.make_digest_text(str(Hydra2BaselineModel().model_identity))  # pyrefly: ignore[unknown-argument-type] # untyped bridge digest
+    return _bridge_contracts.make_digest_text(
+        str(Hydra2BaselineModel().model_identity)
+    )  # untyped bridge digest
 
 
 def _derive_utility_manifest_hash(model: Any | None) -> str:
@@ -262,7 +264,7 @@ def _derive_utility_manifest_hash(model: Any | None) -> str:
 
         probe: Any = Hydra2BaselineModel() if model is None else model
         manifest_raw: object = probe.utility_manifest_hash
-        return _bridge_contracts.make_digest_text(str(manifest_raw))  # pyrefly: ignore[unknown-argument-type] # untyped bridge digest
+        return _bridge_contracts.make_digest_text(str(manifest_raw))  # untyped bridge digest
     except (ImportError, AttributeError, ValueError, TypeError, OSError) as exc:
         logger.debug("local_resolving: utility_manifest_hash derivation failed", exc_info=exc)
         raise ContractError(
@@ -362,8 +364,8 @@ def make_candidate5_spec(
                 payload: Any = doc.get("payload", {})
                 from hydra2.contracts.rules_manifest import rules_manifest_from_payload
 
-                manifest = rules_manifest_from_payload(payload)  # type: ignore[no-untyped-call]
-                # RulesManifest has no digest attr; synthesize via file hash (avoids missing-attribute)
+                manifest = rules_manifest_from_payload(payload)
+                # No digest attr on manifest; file hash preserves binding without it.
                 _ = manifest  # silence unused
                 rules_hash = _file_sha256(p)
         except (

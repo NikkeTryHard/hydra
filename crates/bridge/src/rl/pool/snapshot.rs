@@ -1,4 +1,4 @@
-//! rl/pool/snapshot: Main descriptors, tape handoff, snapshot/restore.
+//! rl/pool/snapshot: MAIN descriptors, tape handoff, snapshot/restore.
 //!
 //! Invariant: snapshots carry applied action prefixes + digests + per-seat
 //! sampler counters + FULL captured rows (LP/value/selected/cursors/hashes)
@@ -21,7 +21,7 @@ use super::super::{events, observation, trajectory};
 use super::state::{FilledRow, Slot, slot_mut, slot_ref};
 use super::{Lease, NativePool, PoolError, PoolProfile, SlotPhase, buffer_geometry, json_str};
 
-/// Owner-visible pool status (the Main seal loop detects collection
+/// Owner-visible pool status (the MAIN seal loop detects collection
 /// completion here: `captured_rows`/`terminal_games`/`retained_ready_rows`
 /// plus `last_tape_handle` after `export_tape`).
 #[derive(Debug, Clone)]

@@ -64,35 +64,37 @@ def backend_health(
     No warnings (``debug=False``); use the harness table for the record.
     Keys are ``flash`` / ``efficient`` / ``cudnn`` / ``math``.
     """
-    params = torch.backends.cuda.SDPAParams(
+    # Bundle exact-shaped inputs once; each backend probe reads the same params.
+    sdpa_params = torch.backends.cuda.SDPAParams(
         query, key, value, attn_mask, dropout_p, is_causal, False
     )
     return {
-        "flash": torch.backends.cuda.can_use_flash_attention(params),
-        "efficient": torch.backends.cuda.can_use_efficient_attention(params),
-        "cudnn": torch.backends.cuda.can_use_cudnn_attention(params),
+        "flash": torch.backends.cuda.can_use_flash_attention(sdpa_params),
+        "efficient": torch.backends.cuda.can_use_efficient_attention(sdpa_params),
+        "cudnn": torch.backends.cuda.can_use_cudnn_attention(sdpa_params),
         "math": True,
     }
 
 
 def describe_sdpa_runtime() -> dict[str, str | bool | None]:
     """Identify this run's SDPA runtime (arch labels derived, never hardcoded)."""
-    cuda = torch.cuda.is_available()
+    has_cuda = torch.cuda.is_available()
     capability: str | None = None
     device_name: str | None = None
-    if cuda:
-        major, minor = torch.cuda.get_device_capability()
-        capability = f"sm_{major}{minor}"
+    # Device properties exist only when CUDA is present; otherwise keep Nones.
+    if has_cuda:
+        arch_major, arch_minor = torch.cuda.get_device_capability()
+        capability = f"sm_{arch_major}{arch_minor}"
         device_name = torch.cuda.get_device_name(0)
     return {
         "torch": torch.__version__,
-        "cuda_available": cuda,
+        "cuda_available": has_cuda,
         "device_name": device_name,
         "capability": capability,
-        "flash_enabled": torch.backends.cuda.flash_sdp_enabled() if cuda else None,
-        "efficient_enabled": torch.backends.cuda.mem_efficient_sdp_enabled() if cuda else None,
-        "math_enabled": torch.backends.cuda.math_sdp_enabled() if cuda else None,
-        "cudnn_enabled": torch.backends.cuda.cudnn_sdp_enabled() if cuda else None,
+        "flash_enabled": torch.backends.cuda.flash_sdp_enabled() if has_cuda else None,
+        "efficient_enabled": torch.backends.cuda.mem_efficient_sdp_enabled() if has_cuda else None,
+        "math_enabled": torch.backends.cuda.math_sdp_enabled() if has_cuda else None,
+        "cudnn_enabled": torch.backends.cuda.cudnn_sdp_enabled() if has_cuda else None,
         "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
         "cudnn_deterministic": torch.backends.cudnn.deterministic,
         "cudnn_benchmark": torch.backends.cudnn.benchmark,

@@ -91,7 +91,7 @@ def _bridge_transform(
     ``voc_allocation`` normalizes list -> tuple at the single return site.
     """
     try:
-        from hydra2._native import search as _mod_bridge
+        from hydra2._native import search as _mod_bridge  # pyrefly: ignore[missing-import]
     except ImportError:
         return None
     import json as _json
@@ -112,7 +112,7 @@ def _bridge_transform(
         raise ContractError(f"module {module_id} rejected: {exc}") from exc
     updates: dict[str, Any] = dict(_json.loads(out[4]))
     if "voc_allocation" in updates and not isinstance(updates["voc_allocation"], tuple):
-        updates["voc_allocation"] = tuple(updates["voc_allocation"])  # pyrefly: ignore[unknown-argument-type] # Any JSON allocation
+        updates["voc_allocation"] = tuple(updates["voc_allocation"])  # Any JSON allocation
     return PbrfContext(
         candidate_id=context.candidate_id,
         case_id=context.case_id,
@@ -240,7 +240,7 @@ class RaoBlackwellModule(_BaseModule):
     def tiny_oracle(self) -> dict[str, Any]:
         """Two-state, two-draw exact enumerated expectation vs sampled."""
         # States: X in {0.0, 1.0} uniform, Y in {0,1} with P(Y=0|X)=0.6, P(Y=1|X)=0.4
-        # g(X,Y): X+Y*0.5 . Exact E[g]= E_X[E_Y[g|X]] = 0.5 + 0.2 = 0.7? Compute: E[g|X=0]=0.2, E[g|X=1]=1.2, avg=0.7
+        # g=X+Y*0.5; exact E[g]=0.7 (E[g|X=0]=0.2, E[g|X=1]=1.2).
         # Sampled: draw (X,Y) via enumeration seeded; RB: use E_Y per X.
         # Verify both have same expectation over many replicates.
         n_trials = 2000
@@ -346,7 +346,7 @@ class StructuralCRNModule(_BaseModule):
         # Map each u to branch outcomes and encode covariance signal
         za = [0 if u < 0.5 else 1 for u in us]
         zb = [0 if u < 0.3 else 1 for u in us]
-        # Covariance proxy: mean za*zb - mean za mean zb >0 for common uniforms => structural coupling retained
+        # Positive covariance proxy shows common uniforms couple branches.
         mean_a = sum(za) / len(za) if len(za) > 0 else 0
         mean_b = sum(zb) / len(zb) if len(zb) > 0 else 0
         cov = (
@@ -486,7 +486,7 @@ class RQMCModule(_BaseModule):
         )
 
     def tiny_oracle(self) -> dict[str, Any]:
-        # Across scrambles, categorical frequencies converge to 0.7/0.3; one-scramble IID interval fails
+        # Frequencies converge to 0.7/0.3 across scrambles; one scramble is dependent.
         freqs = []
         for s in range(16):
             seed = _semantic_seed("candidate4_rqmc", f"oracle_{s}", self.module_id, "tiny")

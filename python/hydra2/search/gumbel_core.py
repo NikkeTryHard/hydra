@@ -172,8 +172,8 @@ def _require_search_bridge() -> Any:
 
 
 # ---------------------------------------------------------------------------
-# Deterministic Gumbel helpers — Candidate 6 root Gumbels derive deterministically from
-# (case_id, root_seat, candidate_id, action_id); sequential-halving rounds and visit allocations are spec-supplied. No global RNG.
+# Deterministic Gumbel helpers — Candidate 6 roots derive from key tuple below.
+# (case_id, root_seat, candidate_id, action_id); halving visits spec-supplied, no RNG.
 # ---------------------------------------------------------------------------
 
 
@@ -363,7 +363,7 @@ def _actor_to_move(world: Any) -> int:
         latent: Any = _latent_raw if _latent_raw is not None else {}
         if isinstance(latent, dict) and "turn" in latent:
             _turn_val: Any = latent["turn"]
-            t: int = int(_turn_val)  # type: ignore[explicit-any]
+            t: int = int(_turn_val)
             if 0 <= t < 4:
                 return t
         step: int = int(latent.get("step", 0)) if isinstance(latent, dict) else 0  # type: ignore[explicit-any]

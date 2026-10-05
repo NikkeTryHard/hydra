@@ -33,7 +33,7 @@ from hydra2.contracts.common import (
 try:
     from hydra2._native import search as _pbrf_bridge  # pyrefly: ignore[missing-import]
 except ImportError:  # pragma: no cover — bridge-less env keeps pure-Python oracles
-    _pbrf_bridge = None  # type: ignore[assignment]
+    _pbrf_bridge = None
 
 from hydra2.search.pbrf_partition import (
     ChildEntry as ChildEntry,
@@ -311,8 +311,8 @@ def _is_target_compatible(
                     proposal_spec_hash=_bridge_contracts.make_digest_text(str(proposal_raw)),  # pyrefly: ignore[unknown-argument-type] # untyped bridge digest
                 )
                 if _bridge_contracts.make_digest_text(
-                    expected  # pyrefly: ignore[unknown-argument-type] # untyped bridge digest
-                ) != _bridge_contracts.make_digest_text(str(target_raw)):  # pyrefly: ignore[unknown-argument-type] # untyped bridge digest
+                    expected  # untyped bridge digest
+                ) != _bridge_contracts.make_digest_text(str(target_raw)):  # untyped bridge digest
                     return False
         except Exception:
             pass
@@ -521,7 +521,7 @@ def build_pbrf(
             if getattr(parent, "target_id", epoch.target_id) != epoch.target_id:  # type: ignore[attr-defined]
                 raise StaleBeliefError("stale particle target for kernel [PBRF_STALE_TARGET]")
             # Wave 2 bridge audit: kept Python — needs full ActorVisiblePacket objects
-            # (bridge packet_successors returns digest-only PacketSuccessor; PBRF keys on packet.packet_id + actor_view).
+            # Bridge returns digest-only successors; PBRF keys on packet_id+actor_view.
             successors = kernel.enumerate_next(
                 epoch=epoch, particle=parent, action=action, policy_set=policy_set
             )
@@ -577,11 +577,11 @@ def build_pbrf(
         k: tuple(v) for k, v in children_accum.items()
     }
 
-    # Verify pairwise disjoint by packet identity already ensured by key uniqueness; extra check across parents:
+    # Disjointness follows from key uniqueness; cross-parent check below.
     for action in frozen_candidates:
         aid = _action_id(action)
-        # Ensure no two distinct packets alias (already distinct by key, but check across parents that same packet_id not merged incorrectly)
-        # Disjointness already enforced per kernel call; cross-parent merging under same key is expected.
+        # No two packets may alias; verify same packet_id not merged across parents.
+        # Per-kernel disjointness holds; same-key cross-parent merge is expected.
         pass
 
     # Allocate fixed search batches deterministically

@@ -35,8 +35,11 @@ class Collector:
                 "behavior_policy_id": spec["policy_id"],
             }
         ).encode("utf-8")
-        profile, context = json.dumps(spec["profile"]), json.dumps(spec["context"])
-        opened = native.PyNativePool.open_live(profile, context, derivation, self._live_binding)
+        profile: str = json.dumps(spec["profile"])
+        context: str = json.dumps(spec["context"])
+        opened: Any = native.PyNativePool.open_live(
+            profile, context, derivation, self._live_binding
+        )
         self.pool = opened
         try:
             if gpu is None:
@@ -75,7 +78,7 @@ class Collector:
                     self.ready_slots.add(self.filling)
                 self.filling = None
         if self.filling is None:
-            self.gpu.drain()
+            _ = self.gpu.drain()
         self.last_status = self.pool.poll()
         if self.last_status["poison"]:
             raise ContractError(f"native collector poisoned: {self.last_status['poison']}")
@@ -85,7 +88,7 @@ class Collector:
             and self.last_status["pending_applies"] == 0
             and self.last_status["live_leases"] == 0
             and self.filling is None
-            and not self.gpu.flights
+            and len(self.gpu.flights) == 0
         ):
             self.complete = True
             return False
@@ -113,7 +116,7 @@ class Collector:
         self.gpu.flush_outputs(keep_latest=True)
 
     def flush_if_no_next_ticket(self) -> None:
-        if self.pending_lease is None and not self.ready_slots:
+        if self.pending_lease is None and len(self.ready_slots) == 0:
             self.gpu.flush_outputs()
 
     def wait(self) -> None:
@@ -124,7 +127,7 @@ class Collector:
             if ticket["n_valid"]:
                 self.ready_slots.add(self.filling)
             self.filling = None
-        elif self.gpu.flights:
+        elif len(self.gpu.flights) > 0:
             self.gpu.wait_for_cuda_progress()
         else:
             self.pool.wait_for_progress()

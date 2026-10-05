@@ -324,10 +324,12 @@ def test_p_retain_and_ponder_only_in_window() -> None:
     # after observe, no further ponder without next act
     # next ponder with no forest should be no-op
     planner.ponder(deadline_monotonic_ns=time.monotonic_ns() + 100_000_000)
-    # Since forest after hit still exists but represents committed branch,
-    # ponder without new act should still add? Actually spec says ponder only between action and packet.
-    # Our planner allows ponder after observe but it will increment again; we check that ponder after act diff
-    # To enforce window, ponder after observe should still count if forest non-empty; but second act will clear.
+    # The committed branch keeps its forest, so ponder without a new act still
+    # counts; the spec window spans action to packet.
+    # Our planner allows ponder after observe but it will increment again; we check that ponder
+    # after act diff
+    # To enforce window, ponder after observe should still count if forest non-empty; but second act
+    # will clear.
     # Test that ponder before first act does nothing
     planner2 = PersistencePlanner(arm=arm, candidate_spec=cand)
     planner2.ponder(deadline_monotonic_ns=time.monotonic_ns() + 100_000_000)

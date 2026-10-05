@@ -267,10 +267,12 @@ def parse_event_schema(raw_bytes: bytes) -> dict[str, object]:
         raise ContractError(f"artifact_type must be {EVENT_SCHEMA_ARTIFACT_TYPE!r}")
     if document["compatibility"] != "exact":
         raise ContractError("event_schema compatibility must be exact")
-    payload: object = document["payload"]  # type: ignore[index]  # reason: document Mapping-checked above; checker cannot narrow object index
-    if not isinstance(payload, Mapping) or "digest" not in payload:  # type: ignore[attr-defined, operator]  # reason: isinstance-narrowed Mapping; checker flags 'in' on bare Mapping
+    # document/payload are Mapping-narrowed above; the checker flags
+    # object index, 'in', and .items on bare Mapping.
+    payload: object = document["payload"]
+    if not isinstance(payload, Mapping) or "digest" not in payload:
         raise ContractError("event_schema payload missing digest")
-    expected = compute_event_schema_digest({k: v for k, v in payload.items() if k != "digest"})  # type: ignore[attr-defined]  # reason: payload Mapping-narrowed above; checker flags .items on bare Mapping
+    expected = compute_event_schema_digest({k: v for k, v in payload.items() if k != "digest"})
     recorded: DigestText = _bridge_contracts.make_digest_text(str(payload["digest"]))  # pyrefly: ignore[unknown-argument-type] # reason: payload Mapping-narrowed above; str() coerces; Any intentional for raw dict  # type: ignore[index] # reason: payload Mapping-narrowed above; index on bare Mapping
     if not hmac.compare_digest(str(recorded), str(expected)):
         from hydra2.contracts.common import DigestMismatchError

@@ -64,7 +64,7 @@ class PbrfPlannerSearchMixin:
                 ):
                     params: dict[str, Any] = {}
                 else:
-                    params = _params_raw  # type: ignore[assignment]
+                    params = _params_raw
                 _pc_raw: Any = params.get("parent_count", 16)
                 _kt_raw: Any = params.get("kernel_tolerance", 1e-9)
                 _mb_raw: Any = params.get("max_search_batches", 64)
@@ -282,7 +282,7 @@ class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
         except Exception:
             self._last_blob = None
         result = _wrap_result(
-            out,  # pyrefly: ignore[unknown-argument-type] # native PbrfOut
+            out,  # native PbrfOut
             legal=legal,
             candidate_spec=cand_spec,
             start_ns=start_ns,
@@ -315,7 +315,7 @@ class PbrfPlannerActMixin(PbrfPlannerSearchMixin):
         return
 
 
-class PbrfPlanner(  # type: ignore[misc]
+class PbrfPlanner(
     PbrfPlannerActMixin,
     Planner,
 ):

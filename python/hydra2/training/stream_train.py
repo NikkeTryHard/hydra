@@ -221,17 +221,19 @@ def _pace_line(
         )
         if not full:
             return base + " agg=partial"
-        opt = statistics.median(float(u.optimizer_ms) for u in updates)
-        log = statistics.median(float(u.logging_ms) for u in updates)
-        fetch = statistics.median(float(m.fetch_decode_ms) for m in microbatches)
-        comp = statistics.median(float(m.compute_ms) for m in microbatches)
-        qw = statistics.median(float(m.queue_wait_ms) for m in microbatches)
-        h2d = statistics.median(float(m.h2d_ms) for m in microbatches)
+        optimizer_med = statistics.median(float(update.optimizer_ms) for update in updates)
+        logging_med = statistics.median(float(update.logging_ms) for update in updates)
+        fetch_med = statistics.median(float(batch.fetch_decode_ms) for batch in microbatches)
+        compute_med = statistics.median(float(batch.compute_ms) for batch in microbatches)
+        queue_med = statistics.median(float(batch.queue_wait_ms) for batch in microbatches)
+        h2d_med = statistics.median(float(batch.h2d_ms) for batch in microbatches)
     except Exception:
+        # Intent: pace telemetry never fails training; surprises degrade to partial.
         return base + " agg=partial"
     return (
-        f"{base} opt_ms={opt:.1f} log_ms={log:.2f} "
-        f"fetch_ms={fetch:.1f} comp_ms={comp:.1f} qw_ms={qw:.1f} h2d_ms={h2d:.2f}"
+        f"{base} opt_ms={optimizer_med:.1f} log_ms={logging_med:.2f} "
+        f"fetch_ms={fetch_med:.1f} comp_ms={compute_med:.1f} qw_ms={queue_med:.1f} "
+        f"h2d_ms={h2d_med:.2f}"
     )
 
 
@@ -453,8 +455,9 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
             if not isinstance(entries, list) or not isinstance(rng_state, dict):
                 raise ContractError(f"checkpoint shuffle restore malformed: {resume.checkpoint}")
             # Keys must mirror entries (tamper → raise, never silent refill).
+            # Shuffle entries are dynamic; str owns the key compare.
             keys: list[str] = shuffle_raw.get("buffer_keys", [])
-            if [str(e.get("key")) for e in entries if isinstance(e, dict)] != list(keys):  # pyrefly: ignore[unknown-argument-type] # shuffle entries dynamic; str owns the key compare
+            if [str(e.get("key")) for e in entries if isinstance(e, dict)] != list(keys):
                 raise ContractError(
                     f"checkpoint shuffle keys/entries mismatch: {resume.checkpoint}"
                 )
@@ -502,9 +505,9 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
         restore: dict[str, Any] = (
             {
                 "start": seek_start,
-                "shuffle_restore_entries": seek_entries,  # type: ignore[dict-item]
-                "shuffle_restore_rng": seek_rng,  # type: ignore[dict-item]
-                "shuffle_restore_prefix_hashes": seek_prefix,  # type: ignore[dict-item]
+                "shuffle_restore_entries": seek_entries,
+                "shuffle_restore_rng": seek_rng,
+                "shuffle_restore_prefix_hashes": seek_prefix,
                 "snapshot_blob": seek_blob,
             }
             if at_resume_epoch
@@ -517,8 +520,8 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
             }
         )
         if data.num_workers > 0:
-            return PrefetchGameStream(manifest, **common, **restore)  # type: ignore[arg-type]
-        return GameStream(manifest, **common, **restore)  # type: ignore[arg-type]
+            return PrefetchGameStream(manifest, **common, **restore)
+        return GameStream(manifest, **common, **restore)
 
     # Game-pull expansion: the dataset owns one GameStream and expands per
     # game to Rust plane blobs (same order/shuffle/sidecar, tensor-native
@@ -573,8 +576,8 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
         dataset.restore_buffer(parsed_snapshot)
         # Seek the live stream to the recorded frontier at the recorded epoch
         # (no prefix drain).
-        dataset._stream = dataset._factory(dataset._epoch)  # type: ignore[attr-defined]
-        dataset._iter = iter(dataset._stream)  # type: ignore[attr-defined]
+        dataset._stream = dataset._factory(dataset._epoch)
+        dataset._iter = iter(dataset._stream)
         drained = dataset.stream_cursor()
         if drained != seek_start:
             raise ContractError(
@@ -633,7 +636,7 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
     # _backward_pass_autocast_for); eager and fp32 paths keep None, so
     # existing runtime identities are unchanged.
     spec = RuntimeSpec(
-        adapter_id=config.runtime.adapter_id,  # type: ignore[arg-type]
+        adapter_id=config.runtime.adapter_id,
         device=config.runtime.device,
         precision=config.loop.precision,  # type: ignore[arg-type]
         compile_mode=config.runtime.compile_mode,  # type: ignore[arg-type]
@@ -694,7 +697,7 @@ def run_stream_training(config: RunConfig, resume: ResumePlan | None = None) -> 
     # Observer run header must exist before checkpoint-gated log_update calls;
     # without start_run the mirror stays task-less and drops every file record.
     # NullMirror no-ops, so disabled runs are unaffected.
-    mirror.start_run()
+    _ = mirror.start_run()
     from hydra2.tracking.mlflow_mirror import make_mirror as make_mlflow_mirror
 
     # MLflow quiet mirror (default-on; Null under HYDRA2_MLFLOW_DISABLED in

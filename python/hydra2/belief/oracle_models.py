@@ -120,17 +120,18 @@ class OracleTeacher(nn.Module):
             raise ContractError("actor_features and privileged_features must be [B, D]")
         if actor_features.shape[0] != privileged_features.shape[0]:
             raise ContractError("batch size mismatch between actor and privileged")
-        x: torch.Tensor = torch.cat([actor_features, privileged_features], dim=-1)
-        h: torch.Tensor = self.net(x)
+        concat_input: torch.Tensor = torch.cat([actor_features, privileged_features], dim=-1)
+        hidden: torch.Tensor = self.net(concat_input)
         out: dict[str, torch.Tensor] = {
-            "belief_logits": self.belief_head(h),
-            "value_logits": self.value_head(h),
-            "event_logits": self.event_head(h),
-            "policy_logits": self.policy_head(h),
+            "belief_logits": self.belief_head(hidden),
+            "value_logits": self.value_head(hidden),
+            "event_logits": self.event_head(hidden),
+            "policy_logits": self.policy_head(hidden),
         }
+        # Mask illegal policy logits: keeps softmax inference-correct.
         if legal_mask is not None:
-            _legal_shape: torch.Size = legal_mask.shape  # type: ignore[assignment]
-            _policy_shape: torch.Size = out["policy_logits"].shape  # type: ignore[assignment]
+            _legal_shape: torch.Size = legal_mask.shape
+            _policy_shape: torch.Size = out["policy_logits"].shape
             if _legal_shape != _policy_shape:
                 raise ContractError(
                     f"legal_mask shape {tuple(_legal_shape)} != policy_logits {tuple(_policy_shape)}"  # noqa: E501
@@ -145,7 +146,7 @@ class OracleTeacher(nn.Module):
             out["policy_logits"] = torch.where(
                 legal_mask,
                 _policy_logits,
-                torch.tensor(float("-inf"), device=_policy_logits.device),  # pyrefly: ignore[unknown-argument-type] # Tensor device known
+                torch.tensor(float("-inf"), device=_policy_logits.device),  # Tensor device known
             )
         return out
 
@@ -203,8 +204,8 @@ class StudentBeliefModel(nn.Module):
             "policy_logits": logits,
         }
         if legal_mask is not None:
-            _legal_shape2: torch.Size = legal_mask.shape  # type: ignore[assignment]
-            _logits_shape: torch.Size = logits.shape  # type: ignore[assignment]
+            _legal_shape2: torch.Size = legal_mask.shape
+            _logits_shape: torch.Size = logits.shape
             if _legal_shape2 != _logits_shape:
                 raise ContractError(
                     f"legal_mask shape {tuple(_legal_shape2)} != logits {tuple(_logits_shape)}"
@@ -217,7 +218,7 @@ class StudentBeliefModel(nn.Module):
             masked: torch.Tensor = torch.where(
                 legal_mask,
                 logits,
-                torch.tensor(float("-inf"), device=logits.device),  # pyrefly: ignore[unknown-argument-type] # device known
+                torch.tensor(float("-inf"), device=logits.device),  # device known
             )
             out["policy_logits"] = masked
         return out
@@ -245,10 +246,10 @@ def distillation_loss(
     """
     losses: dict[str, torch.Tensor] = {}
     total = torch.tensor(0.0, dtype=torch.float32, device=next(iter(student_out.values())).device)
-    temp = config.temperature
-    # Belief KL: teacher belief_probs (34) vs student belief_logits
+    temperature = config.temperature
+    # Belief KL: teacher belief_probs (34) vs student belief_logits.
     if config.w_belief > 0:
-        s_logits = student_out["belief_logits"] / temp
+        s_logits = student_out["belief_logits"] / temperature
         t_probs = teacher_probs["belief_probs"]
         if s_logits.shape != t_probs.shape:
             raise ContractError(
@@ -265,7 +266,7 @@ def distillation_loss(
         total = total + config.w_belief * kl
     # Value: MSE between softmax probs (or direct)
     if config.w_value > 0:
-        s_logits = student_out["value_logits"] / temp
+        s_logits = student_out["value_logits"] / temperature
         t_probs = teacher_probs["value_probs"]
         if s_logits.shape != t_probs.shape:
             raise ContractError(
@@ -279,7 +280,7 @@ def distillation_loss(
         total = total + config.w_value * mse
     # Policy KL with legal masking
     if config.w_policy > 0:
-        s_logits = student_out["policy_logits"] / temp
+        s_logits = student_out["policy_logits"] / temperature
         t_probs = teacher_probs["policy_probs"]
         if s_logits.shape != t_probs.shape:
             raise ContractError(

@@ -552,11 +552,13 @@ def test_hidden_permutation_and_split_wall_leakage() -> None:
         is True
     )
 
-    # Teacher sensitivity: permuting privileged should change teacher output (at least not identical)
+    # Teacher sensitivity: permuting privileged should change teacher output (at least not
+    # identical)
     from hydra2.belief.oracle_models import OracleTeacher
 
     teacher = OracleTeacher(feature_dim=8, privileged_dim=4, hidden_dim=16, num_actions=8)
-    # Teacher invariance check is actually sensitivity check; we just ensure no crash and returns True
+    # Teacher invariance check is actually sensitivity check; we just ensure no crash and returns
+    # True
     assert (
         hidden_permutation_invariance_check(teacher, actor, legal, privileged_features=priv, seed=1)
         is True
@@ -703,7 +705,8 @@ def test_end_to_end_synthetic_split_deterministic_and_no_leakage(tmp_path: Path)
     from hydra2.belief.oracle_store import PrivilegedOracleLoader
 
     # Create synthetic actor shards for train and held_out (actor only)
-    # We use the real data/parquet helper to write actor shards, then verify leakage checks on wall_ids
+    # We use the real data/parquet helper to write actor shards, then verify leakage checks on
+    # wall_ids
     from hydra2.data.parquet import DecisionRow, write_actor_shards
 
     train_rows = [

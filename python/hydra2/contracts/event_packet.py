@@ -45,7 +45,7 @@ from hydra2.contracts.packet_chain import (
 try:
     from hydra2._native import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 except ImportError:  # pragma: no cover - import-time signal, same text as call-site
-    _bridge_contracts = None  # type: ignore[assignment]
+    _bridge_contracts = None
 
 
 def _require_packet_bridge() -> Any:
@@ -132,7 +132,8 @@ class PacketBoundarySpec:
             ):
                 raise ContractError(f"{group} must be a non-empty sequence")
             for kind in kinds:
-                _ = _require_enum(cast("Any", kind), name=f"{group} entry", allowed=EVENT_KINDS)  # pyrefly: ignore[explicit-any]  # reason: deliberate Any for dynamic kind sequence; _require_enum validates
+                # Kinds are dynamic; the cast is deliberate, _require_enum validates.
+                _ = _require_enum(cast("Any", kind), name=f"{group} entry", allowed=EVENT_KINDS)
             object.__setattr__(self, group, tuple(kind for kind in kinds))
         order = self.claim_priority_order
         if tuple(sorted(order)) != ("chi", "daiminkan", "pon", "ron"):
@@ -240,13 +241,14 @@ def _spec_from_payload(payload: Mapping[str, object]) -> PacketBoundarySpec:
     grouping = payload.get("call_pass_grouping")
     if not isinstance(grouping, Mapping):
         raise ContractError("call_pass_grouping missing")
+    # Grouping entries are dynamic; casts deliberate, tuple() coerces at runtime.
     return PacketBoundarySpec(
         root_actor=payload.get("root_actor"),  # type: ignore[arg-type]  # reason: Mapping.get yields object; PacketBoundarySpec validates on construction
         start_boundary_kind=str(payload.get("start_boundary", {}).get("event_kind")),  # type: ignore[union-attr]  # reason: chained .get on object-typed value; str() coerces at runtime
         decision_boundary_kind=str(payload.get("decision_boundary", {}).get("event_kind")),  # type: ignore[union-attr]  # reason: chained .get on object-typed value; str() coerces at runtime
         update_boundary_kinds=tuple(payload.get("update_boundary", {}).get("event_kinds", ())),  # type: ignore[union-attr]  # reason: chained .get on object-typed value; tuple() coerces at runtime
-        call_group_kinds=tuple(cast("Any", grouping.get("group_kinds", ()))),  # pyrefly: ignore[explicit-any]  # reason: deliberate Any for dynamic grouping; tuple() coerces at runtime
-        claim_priority_order=tuple(cast("Any", grouping.get("claim_priority_order", ()))),  # pyrefly: ignore[explicit-any]  # reason: deliberate Any for dynamic grouping; tuple() coerces at runtime
+        call_group_kinds=tuple(cast("Any", grouping.get("group_kinds", ()))),
+        claim_priority_order=tuple(cast("Any", grouping.get("claim_priority_order", ()))),
         terminal_boundary_kinds=tuple(payload.get("terminal_boundary", {}).get("event_kinds", ())),  # type: ignore[union-attr]  # reason: chained .get on object-typed value; tuple() coerces at runtime
     )
 
@@ -429,7 +431,7 @@ def validate_packet_partition(packets: Sequence[ActorVisiblePacket]) -> None:
     views = {int(packet.actor_view) for packet in packets}
     for view in views:
         view_packets = [p for p in packets if int(p.actor_view) == view]
-        view_packets.sort(key=lambda p: int(cast("Any", p.source_sequence_start)))  # pyrefly: ignore[explicit-any]  # reason: deliberate Any for packet sequence field; int() coerces at runtime
+        view_packets.sort(key=lambda p: int(cast("Any", p.source_sequence_start)))
         seen_sequences: set[int] = set()
         for packet in view_packets:
             for event in packet.events:
@@ -449,7 +451,7 @@ def validate_packet_partition(packets: Sequence[ActorVisiblePacket]) -> None:
         for p in packets
     ]
     try:
-        _bridge_contracts.validate_packet_spans(spans)  # type: ignore[attr-defined]
+        _bridge_contracts.validate_packet_spans(spans)
     except (ValueError, TypeError) as exc:
         raise ContractError(f"packet partition rejected: {exc}") from exc
 
@@ -543,9 +545,9 @@ def partition_actor_packets(
                 events=tuple(segment),
                 public_state_hash_before=prefixes[start],
                 public_state_hash_after=prefixes[end],
-                observation_hash_after=cast(  # pyrefly: ignore[explicit-any]  # reason: deliberate Any passthrough; digest produced by observation_hash_of
+                observation_hash_after=cast(  # Any passthrough below
                     "Any",
-                    observation_hash_of(view, int(segment[-1].sequence)),  # pyrefly: ignore[unknown-argument-type]  # reason: segments hold validated envelopes; int() coerces the sequence
+                    observation_hash_of(view, int(segment[-1].sequence)),
                 ),
             )
         )

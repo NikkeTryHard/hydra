@@ -83,13 +83,13 @@ def _visible_meld_from_json(raw: Any, *, where: str) -> VisibleMeld:
         raise ContractError(f"unparseable visible_meld for {where!r}: not a mapping")
     try:
         tiles_raw: Any = raw.get("tiles", ())
-        tiles: tuple[int, ...] = tuple(int(t) for t in tiles_raw)  # type: ignore[union-attr]
+        tiles: tuple[int, ...] = tuple(int(t) for t in tiles_raw)
         return VisibleMeld(
-            meld_id=raw.get("meld_id"),  # type: ignore[arg-type]
+            meld_id=raw.get("meld_id"),
             kind=raw.get("kind"),  # type: ignore[arg-type]
             owner=raw.get("owner"),  # type: ignore[arg-type]
-            source_seat=raw.get("source_seat"),  # type: ignore[arg-type]
-            called_tile=raw.get("called_tile"),  # type: ignore[arg-type]
+            source_seat=raw.get("source_seat"),
+            called_tile=raw.get("called_tile"),
             tiles=tiles,  # type: ignore[arg-type]
         )
     except ContractError:
@@ -103,9 +103,9 @@ def _delta_from_json(raw: Any, *, where: str) -> PublicStateDelta:
         raise ContractError(f"unparseable public_delta for {where!r}: not a mapping")
     try:
         path_raw: Any = raw.get("path", [])
-        path: tuple[str | int, ...] = tuple(path_raw)  # type: ignore[arg-type]
+        path: tuple[str | int, ...] = tuple(path_raw)
         return PublicStateDelta(
-            path=path,  # type: ignore[arg-type]
+            path=path,
             operation=raw.get("operation"),  # type: ignore[arg-type]
             value=raw.get("value"),
         )
@@ -125,16 +125,16 @@ def _payload_from_json(raw: Any, *, where: str) -> EventPayload:
         )
         return EventPayload(
             kind=raw.get("kind"),  # type: ignore[arg-type]
-            actor=raw.get("actor"),  # type: ignore[arg-type]
-            tile=raw.get("tile"),  # type: ignore[arg-type]
-            action_id=raw.get("action_id"),  # type: ignore[arg-type]
-            source_seat=raw.get("source_seat"),  # type: ignore[arg-type]
+            actor=raw.get("actor"),
+            tile=raw.get("tile"),
+            action_id=raw.get("action_id"),
+            source_seat=raw.get("source_seat"),
             consumed_tiles=tuple(raw.get("consumed_tiles", ())),  # type: ignore[arg-type]
             offered_action_ids=tuple(raw.get("offered_action_ids", ())),  # type: ignore[arg-type]
             accepted_action_ids=tuple(raw.get("accepted_action_ids", ())),  # type: ignore[arg-type]
-            round_index=raw.get("round_index"),  # type: ignore[arg-type]
-            scores=scores,  # type: ignore[arg-type]
-            reason=raw.get("reason"),  # type: ignore[arg-type]
+            round_index=raw.get("round_index"),
+            scores=scores,
+            reason=raw.get("reason"),
         )
     except ContractError:
         raise
@@ -149,14 +149,13 @@ def _envelope_from_json(raw: Any, *, where: str) -> EventEnvelope:
         payload = _payload_from_json(raw.get("payload"), where=where)
         deltas_raw: Any = raw.get("public_delta", ())
         deltas: tuple[PublicStateDelta, ...] = tuple(
-            _delta_from_json(d, where=where)
-            for d in deltas_raw  # type: ignore[union-attr]
+            _delta_from_json(d, where=where) for d in deltas_raw
         )
         return EventEnvelope(
             game_id=str(raw.get("game_id")),
             sequence=int(raw.get("sequence")),  # type: ignore[arg-type]
             kind=raw.get("kind"),  # type: ignore[arg-type]
-            actor=raw.get("actor"),  # type: ignore[arg-type]
+            actor=raw.get("actor"),
             visibility=raw.get("visibility"),  # type: ignore[arg-type]
             visible_to=tuple(raw.get("visible_to", ())),  # type: ignore[arg-type]
             payload=payload,
@@ -191,13 +190,11 @@ def _actor_observation_from_json_dict(doc: Any, *, decision_id: str) -> ActorObs
     try:
         meld_rows_raw: Any = doc.get("visible_melds", ())
         meld_rows: tuple[tuple[VisibleMeld, ...], ...] = tuple(
-            tuple(_visible_meld_from_json(m, where=where) for m in row)  # type: ignore[union-attr]
-            for row in meld_rows_raw  # type: ignore[union-attr]
+            tuple(_visible_meld_from_json(m, where=where) for m in row) for row in meld_rows_raw
         )
         history_raw: Any = doc.get("visible_history", ())
         history: tuple[EventEnvelope, ...] = tuple(
-            _envelope_from_json(e, where=where)
-            for e in history_raw  # type: ignore[union-attr]
+            _envelope_from_json(e, where=where) for e in history_raw
         )
     except ContractError:
         raise
@@ -207,7 +204,7 @@ def _actor_observation_from_json_dict(doc: Any, *, decision_id: str) -> ActorObs
     kwargs["visible_melds"] = meld_rows
     kwargs["visible_history"] = history
     try:
-        return ActorObservation(**kwargs)  # type: ignore[arg-type]
+        return ActorObservation(**kwargs)
     except ContractError:
         raise
     except Exception as exc:
@@ -309,8 +306,8 @@ def _verify_shards(shards: list[Path]) -> None:
         # Perf-A HIGH: memory_map read + schema-only verification avoids
         # full materialization when possible.
         # Evidence:
-        #  https://arrow.apache.org/docs/python/generated/pyarrow.parquet.read_table.html  # noqa: E501 -- URL cannot be wrapped without breaking link; alternative (shortened URL) loses precision
-        #  + https://arrow.apache.org/docs/python/generated/pyarrow.parquet.ParquetFile.html  # noqa: E501 -- URL cannot be wrapped without breaking link; alternative loses precision
+        #  https://arrow.apache.org/docs/python/generated/pyarrow.parquet.read_table.html
+        #  + https://arrow.apache.org/docs/python/generated/pyarrow.parquet.ParquetFile.html
         # Use ParquetFile to inspect schema without loading all batches if
         # available; fallback to read_table.
         try:

@@ -23,7 +23,7 @@ from hydra2.contracts.common import ContractError
 try:
     from hydra2._native import contracts as _distill_bridge  # pyrefly: ignore[missing-import]
 except ImportError:  # pragma: no cover - import-time signal; probes below decide
-    _distill_bridge = None  # type: ignore[assignment]
+    _distill_bridge = None
 
 from hydra2.distillation._teacher_cases import _case_observation as _case_observation
 from hydra2.distillation._teacher_cases import _hash_to_uniform as _hash_to_uniform
@@ -249,8 +249,9 @@ def generate_privileged_labels(
     event_label = "event:" + hashlib.sha256(key).hexdigest()[:12]
     belief = tuple(_hash_to_uniform(key, i) for i in range(4))
     # Normalize belief to sum 1
-    s = sum(belief)
-    belief_norm = tuple(v / s for v in belief) if s > 0 else (0.25, 0.25, 0.25, 0.25)
+    total = sum(belief)
+    # Degenerate zero-sum belief falls back to uniform instead of dividing by zero.
+    belief_norm = tuple(mass / total for mass in belief) if total > 0 else (0.25, 0.25, 0.25, 0.25)
     return event_label, belief_norm
 
 
@@ -313,7 +314,7 @@ def generate_trajectories(
             "(exact legal mask required)"
         )
 
-    # Budget — frozen ResourceBudget-like dict
+    # Invariant: every budget carries the teacher identity for traceability.
     if budget is None:
         budget = {
             "mode": "gameplay_5s",
@@ -356,7 +357,7 @@ def generate_trajectories(
         )
         legal_mask = tuple(obs.legal_mask)
         policy, vec = _teacher_policy_and_value(observation=obs, spec=spec)
-        prov = _provenance_for_case(
+        provenance = _provenance_for_case(
             case_id=case_id,
             teacher_id=teacher_id,
             index=idx,
@@ -375,7 +376,7 @@ def generate_trajectories(
         obs_hash = obs.observation_hash
         if obs_hash is None:
             raise ContractError("WP-10 blocked: case observation missing hash")
-        rec = make_trajectory_record(
+        record = make_trajectory_record(
             case_id=case_id,
             actor=actor,
             observation_hash=obs_hash,
@@ -384,12 +385,12 @@ def generate_trajectories(
             vector_return=vec,
             teacher_spec_hash=spec_hash,
             budget=budget,
-            provenance=prov,
+            provenance=provenance,
             event_label=event_label,
             belief_label=belief_label,
         )
-        # Validate
-        validate_trajectory_record(rec)
-        records.append(rec)
+        # Fail closed: a minted record must validate before it is collected.
+        validate_trajectory_record(record)
+        records.append(record)
 
     return tuple(records)

@@ -57,7 +57,7 @@
 //! `rc_parse::stage_opt_str` (`crates/bridge/src/rc_parse.rs:510-517`);
 //! `search_err` mirrors `eval::search_err`
 //! (`crates/bridge/src/eval.rs:60-63`); `PyBytes::new(py, &out).unbind()`
-//! mirrors `contracts::ctr_block` (`crates/bridge/src/contracts.rs:454-455`);
+//! mirrors returning `PyBytes` from detached bytes (per `contracts::ctr_stream_bytes`);
 //! `Python::initialize()` in tests mirrors `canon_rng.rs:688-689`.
 //!
 //! Single-cdylib tree: registers its pyfns on the EXISTING

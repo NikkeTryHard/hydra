@@ -24,7 +24,7 @@ from hydra2.training._rc_sections import WeightsConfig as WeightsConfig
 try:
     from hydra2._native import contracts as _rc_bridge  # pyrefly: ignore[missing-import]
 except ImportError:  # pragma: no cover - import-time signal, same text as call-site
-    _rc_bridge = None  # type: ignore[assignment]
+    _rc_bridge = None
 
 
 def _require_rc_bridge() -> Any:

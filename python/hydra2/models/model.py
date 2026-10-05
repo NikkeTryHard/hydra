@@ -205,8 +205,9 @@ class _TransformerLayer(nn.Module):
         # key_padding_mask uses True=padding (single ~ inversion at :214).
         residual: torch.Tensor = x
         x = self.norm1(x)
-        batch: int = int(cast("Any", x.shape[0]))  # pyrefly: ignore[explicit-any]  # reason: deliberate Any for dynamic shape; int() validates
-        seq_len: int = int(cast("Any", x.shape[1]))  # pyrefly: ignore[explicit-any]  # reason: deliberate Any for dynamic shape; int() validates
+        # Shapes are dynamic; int() validates.
+        batch: int = int(cast("Any", x.shape[0]))
+        seq_len: int = int(cast("Any", x.shape[1]))
 
         # Chunk restores the three [B,T,D] views; the SAME view/transpose
         # blocks run on the chunks.
@@ -292,7 +293,8 @@ class _TransformerLayer(nn.Module):
         # stream reads a neighbor row — lengths are fail-closed at build.
         residual: torch.Tensor = x
         x = self.norm1(x)
-        total: int = int(cast("Any", x.shape[0]))  # pyrefly: ignore[explicit-any]  # reason: deliberate Any for dynamic shape; int() validates
+        # Shapes are dynamic; int() validates.
+        total: int = int(cast("Any", x.shape[0]))
         heads: int = self.n_heads
         head_dim: int = self.head_dim
 
@@ -634,8 +636,8 @@ class Hydra2BaselineModel(nn.Module):
         # the builder already gates both, this re-checks on device.
         cu: torch.Tensor = packed.cu_seqlens.to(torch.int32)
         row_lengths: torch.Tensor = cu[1:] - cu[:-1]
-        if int(row_lengths.shape[0]) != batch_size:
-            raise ContractError(f"packed bounds {int(row_lengths.shape[0])} != batch {batch_size}")
+        if row_lengths.shape[0] != batch_size:
+            raise ContractError(f"packed bounds {row_lengths.shape[0]} != batch {batch_size}")
         device = packed.packed_kind.device
         cu = cu.to(device)
         # Length-vs-mask agreement re-check (eager only): the builder already
@@ -680,7 +682,7 @@ class Hydra2BaselineModel(nn.Module):
         if total == 0:
             return torch.zeros((batch_size, self.d_model), dtype=x.dtype, device=device)
         sums: torch.Tensor = torch.zeros((batch_size, self.d_model), dtype=x.dtype, device=device)
-        sums.index_add_(0, row_index, x.to(sums.dtype))
+        _ = sums.index_add_(0, row_index, x.to(sums.dtype))
         lens_dev: torch.Tensor = row_lengths.to(device)
         denom: torch.Tensor = lens_dev.to(sums.dtype).clamp(min=1.0).unsqueeze(-1)
         return sums / denom

@@ -57,7 +57,7 @@ def _encode(document: Any) -> bytes:
 
 def _decode(blob: bytes, *, name: str) -> dict[str, Any]:
     try:
-        value = json.loads(bytes(blob).decode("utf-8"))
+        value = json.loads(blob.decode("utf-8"))
     except (ValueError, UnicodeDecodeError) as exc:
         raise ContractError(f"rl_restart {name} not JSON: {exc}") from exc
     if not isinstance(value, dict):
@@ -161,7 +161,7 @@ def capture_restart(
 
 
 def _restart_path(root: Path, next_generation: int) -> Path:
-    return root / f"checkpoints/restart-g{int(next_generation):02}.pt"
+    return root / f"checkpoints/restart-g{next_generation:02}.pt"
 
 
 def save_restart(*, root: Path, run_descriptor: dict[str, Any], container: dict[str, Any]) -> Path:

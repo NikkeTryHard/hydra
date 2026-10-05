@@ -97,7 +97,7 @@ class SupervisedLoopLossMixin:
             return batch
         if hasattr(src, "__len__"):
             try:
-                if len(src) == 0:  # type: ignore[arg-type]
+                if len(src) == 0:
                     return batch
             except TypeError:
                 pass

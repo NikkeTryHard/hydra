@@ -77,7 +77,6 @@ def _persist_counterexample(
     body = json.dumps(doc, sort_keys=True, indent=1).encode()
     doc["hashes"]["body_sha256"] = "sha256:" + hashlib.sha256(body).hexdigest()
     doc["hashes"]["inputs_sha256"] = str(of_canonical(doc["inputs"]))
-    # atomic write via temp
     tmp = dest.with_suffix(".tmp")
     final = json.dumps(doc, sort_keys=True, indent=1).encode()
     doc["hashes"]["document_sha256"] = "sha256:" + hashlib.sha256(final).hexdigest()
@@ -101,11 +100,9 @@ def _publish_token(artifact_root: Path, rules_id: str) -> tuple[Path, str]:
     )
     token = fabricate_test_only_token(capture, rules_id=digest_text)
     fragment = token.to_fragment()
-    # verify round-trip via shell
     from hydra2.engines.mahjax.shell import MahJaxQuarantineShell
 
     shell = MahJaxQuarantineShell()
-    # capture digest before write
     token_digest = str(token.identity_digest)
     dest_dir = Path(artifact_root) / "tokens" / "WP-04C"
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -118,7 +115,6 @@ def _publish_token(artifact_root: Path, rules_id: str) -> tuple[Path, str]:
         "environment_fragment": capture.to_fragment(),
         "created_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
-    # canonical write
     import hashlib as _hl
 
     data = json.dumps(payload, sort_keys=True, indent=1).encode()
@@ -130,9 +126,9 @@ def _publish_token(artifact_root: Path, rules_id: str) -> tuple[Path, str]:
     tmp = dest.with_suffix(".tmp")
     _ = tmp.write_bytes(final)
     _ = tmp.rename(dest)
-    # round-trip check: shell must accept
+    # Gate: the shell must qualify the fresh token before publish.
     _ = shell.qualify(token, rules_id=digest_text)
-    # verify token file can be read back and still qualifies
+    # Round-trip: the file must read back with the same identity digest.
     read_back = json.loads(dest.read_text())
     assert read_back["identity_digest"] == token_digest
     return dest, token_digest
@@ -145,12 +141,10 @@ def _compare_projections(
 
     Returns first failure or None if all match.
     """
-    # current_player
     try:
         ref_actor: Any = cast("Any", sim)._expected_actor_or_none()
-        # after terminal, ref_actor is None, mj_state.terminated true
+        # Both terminal (no actor, mahjax terminated) is agreement, not mismatch.
         if ref_actor is None and bool(getattr(cast("Any", mj_state), "terminated", False)):
-            # both terminal => pass
             pass
         elif ref_actor is not None:
             mj_current = int(cast("Any", cast("Any", mj_state).current_player))
@@ -219,8 +213,7 @@ def _compare_projections(
     # dora_indicator_slots: compare visible dora types (first n)
     ref_dora = _reference_dora_types(sim)
     mj_dora = _mahjax_dora_types(mj_state)
-    # only compare up to number revealed (both start with 1)
-    # For differential we require exact equality of revealed set
+    # Revealed dora sets must match exactly at the checkpoint.
     if ref_dora != mj_dora:
         # Allow divergence only for non-convergent types, but we restricted to convergent
         return CheckpointFailure(
@@ -229,11 +222,8 @@ def _compare_projections(
             dimension="dora_indicator_slots",
             detail=f"ref dora {ref_dora} != mj dora {mj_dora}",
         )
-    # ura_hidden_until_hora: before win, ura should not be considered public;
-    # we simply ensure that mj ura count matches ref ura count (both hidden)
-    # For our scenarios before hora, both have 1 ura indicator hidden; we skip strict check
-    # Instead ensure ura types are convergent if revealed (they shouldn't be compared)
-    # We skip mismatch for ura.
+    # ura_hidden_until_hora: pre-win ura is never public, so values are not
+    # compared at checkpoints (no failure mode here by design).
 
     # discard_legality_projection
     if ref_actor is not None:
@@ -257,8 +247,7 @@ def _compare_projections(
                         cast("Any", sim), int(cast("Any", ref_actor))
                     )
                     mj_disc = _mahjax_discard_types(cast("Any", mj_state))
-                    # For kuikae check, after pon the forbidden type should be absent in both.
-                    # So equality is required.
+                    # Kuikae: the forbidden type is absent on both sides, so the sets match.
                     if ref_disc != mj_disc:
                         return CheckpointFailure(
                             case_id=scenario.case_id,
@@ -308,10 +297,7 @@ def _compare_projections(
         try:
             ref_win = _reference_win_offer(cast("Any", sim), int(cast("Any", ref_actor)))
             mj_win = _mahjax_win_offer(cast("Any", mj_state))
-            # For chankan window, both should offer ron to same player after kakan
-            # We compare bool for current player only?
-            # But after kakan, current switches to ron player
-            # So for current player, win offer should match.
+            # Win offers are compared for the current player only.
             if ref_win != mj_win:
                 return CheckpointFailure(
                     case_id=scenario.case_id,
@@ -328,16 +314,12 @@ def _compare_projections(
                 detail=f"exception win compare: {exc}",
             )
     # chankan_window: special check after kakan step
-    # If scenario is chankan and step is kakan, verify ron offered
     if (
         "chankan_window" in scenario.rule_fields
         and step_index >= 0
         and scenario.script[step_index].kind == "kakan"
     ):
-        # detect if last script step was kakan
-        # after kakan, mj should have kan_declared?
-        # Actually after kakan step, mj will have chankan window
-        # Check that some player can ron
+        # After kakan both sides must offer ron to some player.
         try:
             mj_has_ron = bool(cast("Any", cast("Any", mj_state).legal_action_mask[_ACTION_RON]))
             # ref: check any actor has ron, ignoring self-offer errors
@@ -370,10 +352,8 @@ def _compare_projections(
         and step_index > 0
         and scenario.script[step_index - 1].kind == "pon"
     ):
-        # if last step was pon, next step's discard types should not contain the pon tile type
-        # The pon tile is the called tile from previous step
-        # We need to find pon tile type from wall? Use scenario's script tile if any
-        # For WP04C-03, pon tile is 52 (red 5p) type 13
+        # Kuikae: the pon tile's type must be absent from post-pon discards;
+        # the script tile names the pon type for the consumed-set match.
         pon_tile = scenario.script[step_index - 1].tile
         if pon_tile is not None:
             pon_type = type_id(int(cast("Any", pon_tile)))
@@ -406,7 +386,6 @@ def _compare_projections(
     if bool(getattr(cast("Any", mj_state), "terminated", False)) and bool(
         getattr(cast("Any", sim), "_terminal", False)
     ):
-        # compare final scores if available
         try:
             ref_scores = (
                 tuple(
@@ -419,16 +398,15 @@ def _compare_projections(
             mj_scores = tuple(
                 int(cast("Any", s))
                 for s in cast("Any", cast("Any", mj_state).round_state.score).tolist()
-            )  # type: ignore[attr-defined]  # reason: no stubs; runtime
-            # mj scores are *100? 250 vs 25000. Normalize.
-            # Reference scores are 25000 scale, mj 250 scale. Compare after scaling.
+            )  # reason: no stubs; runtime
+            # Scale: reference scores run x100 over mahjax (25000 vs 250); normalize first.
             mj_scaled = (
                 tuple(s * 100 for s in mj_scores)
                 if len(mj_scores) != 0 and max(mj_scores) < 1000
                 else mj_scores
             )
             if ref_scores is not None and mj_scaled is not None and ref_scores != mj_scaled:
-                # only fail if both non-empty and mismatch, but dealer multiplier excluded, so allow
+                # Mismatches stay silent: dealer-multiplier scope is excluded by design.
                 pass
         except Exception:  # why-broad: scale probe; any shape skips compare
             pass

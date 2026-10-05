@@ -139,7 +139,6 @@ def _run_one_scenario(
     wall = _wall_for_scenario(scenario)
     deck = wall_to_mahjax_deck(wall)
     env = make_single_round_env()
-    # reference
     from hydra2.contracts.common import Seat
 
     sched = wall_schedule_for(scenario.case_id, wall)
@@ -181,7 +180,7 @@ def _run_one_scenario(
     for idx, decision in enumerate(scenario.script):
         actor: Any = sim._expected_actor_or_none()  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
         if actor is None:
-            # terminal early
+            # Script overruns the reference game; fail the step, stop the scenario.
             failures.append(
                 CheckpointFailure(
                     case_id=scenario.case_id,
@@ -191,17 +190,16 @@ def _run_one_scenario(
                 )
             )
             break
-        # find reference action
         try:
             if decision.negate:
-                # check forbidden not offered
+                # Negate: the forbidden action must be absent from legals.
                 offered = [
                     a
                     for a in sim.legal_actions(Seat(actor))
                     if a.kind == decision.kind
                     and (
                         decision.tile is None
-                        or (a.tile is not None and int(cast("Any", a.tile)) == decision.tile)  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+                        or (a.tile is not None and int(cast("Any", a.tile)) == decision.tile)
                     )
                 ]
                 if len(offered) != 0:
@@ -234,7 +232,6 @@ def _run_one_scenario(
                 )
             )
             break
-        # apply reference
         try:
             sim.apply(ref_action)
         except Exception as exc:  # pragma: no cover
@@ -247,7 +244,6 @@ def _run_one_scenario(
                 )
             )
             break
-        # map and apply mahjax
         try:
             prims = map_script_step_to_mahjax(decision, ref_action)
         except TraceRunnerError as exc:
@@ -261,7 +257,6 @@ def _run_one_scenario(
             )
             break
         for prim in prims:
-            # check legality before step (current player's mask)
             mask = None  # pyrefly: init before use
             try:
                 mask: Any = mj_state.legal_action_mask  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
@@ -270,13 +265,13 @@ def _run_one_scenario(
                     bool(cast("Any", mask[prim]))
                     if prim < int(cast("Any", mask.shape[0]))
                     else False
-                )  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+                )  # reason: dynamic JAX
             except Exception:
                 legal = False
             if not legal and decision.kind == "riichi_discard" and prim != _ACTION_TSUMOGIRI:
                 # riichi_discard of drawn tile uses tsumogiri when normal discard not legal
                 try:
-                    if mask is not None and bool(cast("Any", mask[_ACTION_TSUMOGIRI])):  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+                    if mask is not None and bool(cast("Any", mask[_ACTION_TSUMOGIRI])):
                         prim = _ACTION_TSUMOGIRI
                         legal = True
                 except Exception:
@@ -314,11 +309,11 @@ def _run_one_scenario(
                     "kind": ref_action.kind,
                     "tile": int(cast("Any", ref_action.tile))
                     if ref_action.tile is not None
-                    else None,  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+                    else None,  # reason: dynamic JAX
                     "consumed": [int(x) for x in getattr(ref_action, "consumed_tiles", ())],
                 },
                 "mahjax_prims": prims,
-                "mj_current": int(cast("Any", mj_state.current_player)),  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+                "mj_current": int(cast("Any", mj_state.current_player)),  # reason: dynamic JAX
                 "ref_actor_next": sim._expected_actor_or_none(),
             }
         )
@@ -351,7 +346,6 @@ def run_differential(
         root = _ar()
     else:
         root = Path(artifact_root)
-    # manifest
     payload: Any | None = None
     if manifest is None:
         import json as _json
@@ -375,25 +369,15 @@ def run_differential(
             except Exception:
                 payload_path = _diff_repo_root() / "configs" / "rules" / "tenhou_4p_hanchan_v1.json"
         payload = _json.loads(payload_path.read_text())["payload"]
-        manifest = rules_manifest_from_payload(cast("Any", payload))  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-    # rules_id
+        manifest = rules_manifest_from_payload(cast("Any", payload))  # reason: dynamic JAX
     if rules_id is None:
-        # use manifest digest
-
-        # manifest has rules_id attribute? It's string id
+        # Token binds the payload digest (canonical bytes), not the manifest name.
         try:
             rules_id = str(manifest.rules_id)  # type: ignore[attr-defined]  # reason: no stubs; runtime
-            # need digest text form sha256:... ; use payload digest via canonical
-            # For token we need DigestText of rules manifest identity (payload hash)
-            # Use the same as WP-04A's schedule digest?
-            # Instead use manifest digest via rules_identity_hash
 
-            # compute from file
             from hydra2.config import repo_root as _rr
 
             _ = _rr() / "configs" / "rules" / "tenhou_4p_hanchan_v1.json"
-            # The file contains envelope with payload; we need payload digest?
-            # Use manifest's digest via of_canonical of payload
             if payload is None:
                 import json as _json2
 
@@ -401,27 +385,25 @@ def run_differential(
                 payload = _json2.loads(pp.read_text())["payload"]
             rules_id = str(
                 of_canonical(cast("Any", payload))
-            )  # payload canonical digest  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-            # But token expects DigestText like sha256:...
-            # Ensure prefix
+            )  # payload canonical digest  # reason: dynamic JAX
+            # DigestText must carry the sha256: prefix.
             if not rules_id.startswith("sha256:"):
                 rules_id = (
                     "sha256:"
                     + hashlib.sha256(
                         json.dumps(cast("Any", payload), sort_keys=True).encode()
-                    ).hexdigest()  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+                    ).hexdigest()  # reason: dynamic JAX
                 )
         except Exception:
+            # Zero digest keeps the suite runnable when hashing fails.
             rules_id = "sha256:" + "0" * 64
     # normalize rules_id to DigestText string
     if isinstance(rules_id, str) and not rules_id.startswith("sha256:"):
-        # try to coerce
         try:
             bound_rules: DigestText = _bridge_contracts.make_digest_text(rules_id)
             rules_id = str(bound_rules)
         except Exception:
             rules_id = "sha256:" + hashlib.sha256(str(rules_id).encode()).hexdigest()
-    # run scenarios
     all_failures: list[CheckpointFailure] = []
     first_counterexample: str | None = None
     passed = 0
@@ -442,10 +424,8 @@ def run_differential(
     total = len(SCENARIO_REGISTRY)
     failed = total - passed
     verdict = "passed" if len(all_failures) == 0 else "blocked"
-    # execution mode sweep
     sweep = execution_mode_sweep(SCENARIO_REGISTRY[0], artifact_root=root)
     deterministic = bool(sweep.get("deterministic", False))
-    # gpu probe + cpu soak
     gpu_probe = gpu_soak_probe(artifact_root=root)
     cpu = cpu_soak(artifact_root=root)
     # token issuance only on zero mismatches
@@ -460,26 +440,17 @@ def run_differential(
         env_digest = "sha256:" + "0" * 64
     if len(all_failures) == 0:
         try:
-            # rules_id for token is the manifest's rules_id string? Use the same as shell expects
-            # Shell expects DigestText of rules_id; we have payload digest
-
-            # Try to use actual manifest rules_id if available
+            # Token rules_id is the payload digest; the shell checks equality
+            # against the supplied value, so both sides use the same string.
             try:
-                _actual_rules_id = str(manifest.rules_id)  # type: ignore[attr-defined]  # reason: no stubs; runtime
-                # actual is like "tenhou_4p_hanchan_v1" not digest; need digest text
-                # Fabricate token uses make_digest_text on that string?
-                # But make_digest_text expects sha256:...
-                # So we should use payload digest as rules_id for token
-                # The shell's qualify checks token.rules_id
-                # == supplied rules_id, so we must be consistent
-                # Use payload digest as token's rules_id
+                _ = str(manifest.rules_id)  # type: ignore[attr-defined]  # reason: no stubs; runtime
                 token_rules_id: DigestText = _bridge_contracts.make_digest_text(rules_id)
             except Exception:
                 token_rules_id = _bridge_contracts.make_digest_text(rules_id)
             publish_result: tuple[Path, str] = _publish_token(root, str(token_rules_id))
-            p, d = publish_result
-            token_path = str(p)
-            token_digest = d
+            published_path, published_digest = publish_result
+            token_path = str(published_path)
+            token_digest = published_digest
         except Exception as exc:  # pragma: no cover
             # token issuance failed -> treat as blocked
             verdict = "blocked"
@@ -494,8 +465,7 @@ def run_differential(
             token_path = None
             token_digest = None
     else:
-        # ensure no token left from prior run if now failing
-        # we do not delete existing token, but we don't create new
+        # No new token on failure; existing artifacts are left untouched.
         pass
     return DifferentialResult(
         verdict=verdict,

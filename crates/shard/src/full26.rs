@@ -31,8 +31,8 @@
 //! ```
 //!
 //! Measured shape (this layout, `T = 256`): compact row
-//! [`compact_row_bytes`](compact_row_bytes)`(256)` `= 1302`B vs naive dense
-//! full-26 [`dense_full26_row_bytes`](dense_full26_row_bytes)`(256)` `= 9558`B
+//! `compact_row_bytes(256)` `= 1302`B vs naive dense
+//! full-26 `dense_full26_row_bytes(256)` `= 9558`B
 //! (≈7.3×; the legal bitpack alone saves `6792 − 850 = 5942`B/row).
 
 use core::fmt;

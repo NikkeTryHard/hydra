@@ -62,24 +62,24 @@ def _belief_target_from_privileged(
     hash-synthesize on real paths).
     """
     if isinstance(privileged_label, dict):
-        # Try to extract hidden counts if present
-        _h_a: Any | None = privileged_label.get("hidden_tiles")
-        _h_b: Any | None = privileged_label.get("hidden_tile_counts")
-        hidden: Any | None = _h_a if _h_a is not None else _h_b
+        # Real 34-count path takes precedence; hash fallback only when absent.
+        _hidden_a: Any | None = privileged_label.get("hidden_tiles")
+        _hidden_b: Any | None = privileged_label.get("hidden_tile_counts")
+        hidden: Any | None = _hidden_a if _hidden_a is not None else _hidden_b
         if isinstance(hidden, list) and len(hidden) == _bridge_contracts.ORACLE_BELIEF_DIM:
             # HEAD-identical sum (exact big-int accumulation for int lanes);
             # the total-or-1.0 rule + division live in the bridge.
-            _raw_total: float = float(sum(hidden))  # type: ignore[unknown-argument-type]  # reason: Any from privileged dict; float() validates. Evidence: https://docs.python.org/3/library/functions.html#float
+            _raw_total: float = float(sum(hidden))  # Any dict value; float() validates
             staged: list[float] = [float(x) for x in hidden]  # type: ignore[unknown-argument-type]  # reason: Any element intentional; float() validates
             normalized: list[float] = _bridge_contracts.oracle_normalize_34(staged, _raw_total)
             return tuple(normalized)
-        # Try wait tiles
-        waits: Any | None = privileged_label.get("wait_tiles")
-        if isinstance(waits, list) and len(waits) > 0:
+        # Wait-tile path covers labels with only waits (no full hidden counts).
+        wait_tiles: Any | None = privileged_label.get("wait_tiles")
+        if isinstance(wait_tiles, list) and len(wait_tiles) > 0:
             vec: list[float] = [0.0] * _bridge_contracts.ORACLE_BELIEF_DIM
-            for t in waits:
-                if isinstance(t, int) and 0 <= t < _bridge_contracts.ORACLE_BELIEF_DIM:
-                    vec[t] += 1.0
+            for tile_id in wait_tiles:
+                if isinstance(tile_id, int) and 0 <= tile_id < _bridge_contracts.ORACLE_BELIEF_DIM:
+                    vec[tile_id] += 1.0
             _vec_total: float = float(sum(vec))
             wait_normalized: list[float] = _bridge_contracts.oracle_normalize_34(vec, _vec_total)
             return tuple(wait_normalized)
@@ -88,10 +88,8 @@ def _belief_target_from_privileged(
             f"belief target: missing privileged hidden tiles for {decision_id!r} "
             "(fail closed; synthetic opt-in via allow_synthetic=True)"
         )
-    # Digest line via the canon bridge (byte-identical to the retired hashlib
-    # digest; ImportError with build-ext hint). Repeat-fold + normalize live in
-    # the bridge (32-byte digests always take the `(h * 3)[:34]` branch);
-    # allow_synthetic gate preserved (tests-only, fail-closed default).
+    # Invariant: digest via canon bridge; fold + normalize live in the bridge.
+    # Synthetic gate preserved (tests-only, fail-closed default).
     h = bytes.fromhex(str(sha256_digest(decision_id.encode())).removeprefix("sha256:"))
     digest_vec: list[float] = _bridge_contracts.oracle_belief_from_digest(h)
     return tuple(digest_vec)
@@ -170,7 +168,7 @@ def _value_from_ranks_via_utility(ranks_in: Any) -> tuple[float, ...] | None:
         3: rank_scores[2],
         4: rank_scores[3],
     }
-    final_scores = tuple(score_for_rank[r] for r in ranks)  # type: ignore[index]  # ranks validated permutation above
+    final_scores = tuple(score_for_rank[r] for r in ranks)  # ranks validated permutation above
     score_base: int = _bridge_contracts.ORACLE_SCORE_BASE
     point_deltas = tuple(s - score_base for s in final_scores)
     outcome = RawOutcome(
@@ -209,6 +207,7 @@ def _value_target_from_privileged(
         # Opaque join: actor side supplies decision_id only; privileged ranks
         # never enter the actor batch (firewall: validate_actor_batch_no_privileged).
         _ranks_candidate: Any | None = privileged_label.get("ranks")
+        # final_placement 4-list is the legacy alias for the same permutation.
         if _ranks_candidate is None:
             _fp: Any | None = privileged_label.get("final_placement")
             if isinstance(_fp, (list, tuple)) and len(_fp) == 4:
@@ -220,11 +219,11 @@ def _value_target_from_privileged(
         )
         if _via_utility is not None:
             return _via_utility
-        _v_a: Any | None = privileged_label.get("value_vector")
-        _v_b: Any | None = privileged_label.get("utility_vector")
-        _v_c: Any | None = privileged_label.get("placement")
-        _v_tmp: Any | None = _v_a if _v_a is not None else _v_b
-        v: Any | None = _v_tmp if _v_tmp is not None else _v_c
+        _value_a: Any | None = privileged_label.get("value_vector")
+        _value_b: Any | None = privileged_label.get("utility_vector")
+        _value_c: Any | None = privileged_label.get("placement")
+        _value_tmp: Any | None = _value_a if _value_a is not None else _value_b
+        v: Any | None = _value_tmp if _value_tmp is not None else _value_c
         value_dim: int = _bridge_contracts.ORACLE_VALUE_DIM
         if isinstance(v, list) and len(v) == value_dim:
             # Explicit 4-list value claim: strict validation against the

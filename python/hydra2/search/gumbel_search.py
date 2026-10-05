@@ -207,7 +207,7 @@ class GumbelSearchPlannerSearchMixin:
 
         legal_ids: tuple[int, ...] = tuple(self._action_id_for(a) for a in legal_actions)  # type: ignore[explicit-any]
         if len(set(legal_ids)) != len(legal_ids):
-            # Fallback to index-disambiguation for duplicate hash collisions (tile collision edge case)
+            # Disambiguate duplicate hash collisions by index (tile-collision edge).
             # Deterministically perturb colliding ids via index mix
             seen: dict[int, int] = {}
             new_ids: list[int] = []
@@ -222,7 +222,7 @@ class GumbelSearchPlannerSearchMixin:
             legal_ids = tuple(new_ids)
         # Stable sort by id for determinism, but keep original objects mapping
         id_to_action: dict[int, Any] = {}
-        for a, aid in zip(legal_actions, legal_ids, strict=False):  # type: ignore[explicit-any]
+        for a, aid in zip(legal_actions, legal_ids, strict=False):
             if aid not in id_to_action:
                 id_to_action[aid] = a  # type: ignore[unknown-argument-type]
         sorted_ids = tuple(sorted(legal_ids))
@@ -246,7 +246,8 @@ class GumbelSearchPlannerSearchMixin:
         cid = str(cid_raw)
         candidate_id = getattr(self._config, "candidate_id", "candidate6")
 
-        # Deterministic root Gumbels — Candidate 6: (case_id, root_seat, candidate_id, action_id); every transition exact, model supplies priors/opponent/belief/leaf only
+        # Root Gumbels keyed by (case, seat, candidate, action); transitions exact.
+        # Model supplies priors/opponent/belief/leaf only (no simulator use).
         gumbels = deterministic_root_gumbels(
             case_id=cid, root_seat=root_seat, candidate_id=candidate_id, legal_action_ids=sorted_ids
         )
@@ -319,7 +320,7 @@ class GumbelSearchPlannerSearchMixin:
                             raise ContractError("natural world must have ratio 1")
                         if particle.source != "natural":
                             raise ContractError("gumbel natural may only use natural particles")
-                        cur_world = self._world_for_particle(particle)  # type: ignore[unknown-argument-type]
+                        cur_world = self._world_for_particle(particle)
                     except ContractError:
                         raise
                     except Exception as exc:

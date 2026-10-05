@@ -103,7 +103,7 @@ from hydra2.search.joint_types import (
 try:
     from hydra2._native import search as _joint_world_bridge  # pyrefly: ignore[missing-import]
 except ImportError:  # pragma: no cover — bridge-less env keeps pure-Python oracles
-    _joint_world_bridge = None  # type: ignore[assignment]
+    _joint_world_bridge = None
 
 _U64_MAX: int = (1 << 64) - 1
 
@@ -138,7 +138,7 @@ def joint_world_next_epoch(prior_epoch: int) -> int:
         try:
             fn: Any = getattr(_joint_world_bridge, "joint_world_next_epoch", None)
             if fn is not None:
-                return fn(prior_epoch)  # pyrefly: ignore[unknown-argument-type] # untyped bridge epoch fn
+                return fn(prior_epoch)  # untyped bridge epoch fn
         except (ImportError, AttributeError):
             pass  # stale .so: fall through to the oracle below (same value)
         except (ValueError, TypeError) as exc:
@@ -165,7 +165,7 @@ def joint_world_is_next_epoch(prior_epoch: int, next_epoch: int) -> bool:
         try:
             fn: Any = getattr(_joint_world_bridge, "joint_world_is_next_epoch", None)
             if fn is not None:
-                return fn(prior_epoch, next_epoch)  # pyrefly: ignore[unknown-argument-type] # untyped bridge epoch fn
+                return fn(prior_epoch, next_epoch)  # untyped bridge epoch fn
         except (ImportError, AttributeError):
             pass  # stale .so: fall through to the oracle below (same verdict)
         except (ValueError, TypeError):
@@ -216,7 +216,7 @@ def joint_world_check_config(
         try:
             fn: Any = getattr(_joint_world_bridge, "joint_world_check_config", None)
             if fn is not None:
-                return fn(  # pyrefly: ignore[unknown-argument-type] # untyped bridge config fn
+                return fn(  # untyped bridge config fn
                     rho, epsilon, max_particles, calibration_threshold
                 )
         except (ImportError, AttributeError):

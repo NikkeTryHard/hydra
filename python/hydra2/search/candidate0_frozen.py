@@ -110,18 +110,19 @@ def frozen_choice(
         eps = 1e-9
         probs_list: list[float] = cast("list[float]", probs.tolist())
         candidates: list[int] = [i for i, p in enumerate(probs_list) if abs(p - max_prob) <= eps]
+        # Single max-prob entry: no tie to break, return directly.
         if len(candidates) == 1:
             return candidates[0]
         # value_vector may be [4] per seat or [A] per action; handle both
-        # For [4], we cannot map action tie to seat value — fall back to prob tie break via value_vector magnitude per action if sized A,
-        # otherwise use first candidate.
+        # Per-seat [4] cannot break action ties; use per-action values if sized A,
+        # else keep first candidate (deterministic, no hidden use).
         if value_vector.ndim == 1 and value_vector.numel() == len(probs):
             # per-action value proxy — pick max value among tied candidates
             vals = value_vector[candidates]
             best_local = int(torch.argmax(vals).item())  # pyrefly: ignore[pytorch-efficiency-lint-item-call]
             return candidates[best_local]
         if value_vector.ndim == 1 and value_vector.numel() == 4:
-            # per-seat vector: value_break is degenerate (single action vs seats); keep greedy tie order
+            # Per-seat value_break is degenerate; keep greedy order (no hidden use).
             # Documented: value_break with per-seat vector keeps first max (no hidden info).
             return candidates[0]
         return candidates[0]
@@ -322,15 +323,15 @@ def make_candidate0_spec(
             real = _require_real_file(p, REPO_ROOT)
             doc: Any = json.loads(real.read_text())
             payload: Any = doc.get("payload", {})
-            # The file's payload digest is the rules manifest digest in hydra2 sense
-            # but the repo stores it as artifact envelope; derive via file sha fallback is acceptable
+            # Payload digest is the manifest digest; envelope file uses file-sha fallback.
+            # File-sha still binds content; mismatch fails closed downstream.
             # Try to compute via rules module if available
             from hydra2.contracts.rules_manifest import rules_manifest_from_payload
 
             manifest: Any = rules_manifest_from_payload(payload)  # type: ignore[no-untyped-call]
             manifest_digest: Any = getattr(manifest, "digest", None)
             if manifest_digest is not None:
-                rules_hash = str(manifest_digest)  # type: ignore[attr-defined]
+                rules_hash = str(manifest_digest)
         except (
             AttributeError,
             ValueError,

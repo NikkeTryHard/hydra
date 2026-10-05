@@ -36,8 +36,8 @@ try:
 
     _TRITON_OK = True
 except Exception:
-    triton = None  # type: ignore[assignment]
-    tl = None  # type: ignore[assignment]
+    triton = None
+    tl = None
     _TRITON_OK = False
 # Triton DSL has no stubs: type the handles Any so the checker verifies
 # call-site code (shapes/dtypes/devices) without flagging kernel bodies.

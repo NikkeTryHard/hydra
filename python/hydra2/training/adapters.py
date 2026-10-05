@@ -61,7 +61,7 @@ def _require_batch_tensor(
         raise ContractError(f"{name} must be a Tensor, got {type(value).__name__}")
     if tuple(value.shape) != (batch_size, *extra_dims):
         raise ContractError(
-            f"{name} must be [{batch_size}, {', '.join(str(d) for d in extra_dims)}]"
+            f"{name} must be [{batch_size}, {', '.join(str(dim) for dim in extra_dims)}]"
             f", got {tuple(value.shape)}"
         )
     return value

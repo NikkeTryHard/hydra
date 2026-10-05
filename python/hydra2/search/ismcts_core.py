@@ -131,7 +131,7 @@ def _require_telemetry() -> Any:
 try:
     from hydra2._native import search as _ismcts_core_bridge  # pyrefly: ignore[missing-import]
 except ImportError:  # pragma: no cover — bridge-less env keeps pure-Python oracles
-    _ismcts_core_bridge = None  # type: ignore[assignment]
+    _ismcts_core_bridge = None
 
 
 def _bridge_attr(name: str, default: Any) -> Any:
@@ -287,13 +287,13 @@ def model_vector_for_world(
     """
     _wid_val: Any = getattr(world, "world_id", None)
     if _wid_val is not None and str(_wid_val) != "":
-        wid: str = str(_wid_val)  # pyrefly: ignore[explicit-any]
+        wid: str = str(_wid_val)
     else:
         _wid_ref: Any = getattr(world, "world_ref", None)
         if _wid_ref is not None and str(_wid_ref) != "":
-            wid = str(_wid_ref)  # pyrefly: ignore[explicit-any]
+            wid = str(_wid_ref)
         else:
-            wid = str(world)  # pyrefly: ignore[explicit-any]
+            wid = str(world)
     # Digest worlds ride the bridge as the single implementation (fail closed;
     # pinned (0.2, 0.51, 0.06, 0.22) in test_search_parity_wave2). Non-digest
     # shapes keep the hash below as their sole implementation (bridge gate
@@ -318,9 +318,9 @@ def terminal_vector_for_world(world: Any) -> tuple[float, float, float, float]:
     # Deterministic settlement placeholder that is stable but distinct per world.
     _wid_val2: Any = getattr(world, "world_id", None)
     if _wid_val2 is not None and str(_wid_val2) != "":
-        wid: str = str(_wid_val2)  # pyrefly: ignore[explicit-any]
+        wid: str = str(_wid_val2)
     else:
-        wid = str(world)  # pyrefly: ignore[explicit-any]
+        wid = str(world)
     # Digest worlds ride the bridge as the single implementation (fail closed);
     # non-digest shapes keep the hash below as their sole implementation.
     if wid.startswith("sha256:"):
@@ -492,7 +492,7 @@ class UniformContinuationPolicy:
         try:
             _obs_hash_raw: Any = getattr(observation, "observation_hash", None)
             if _obs_hash_raw is not None and str(_obs_hash_raw) != "":
-                h: str = str(_obs_hash_raw)  # pyrefly: ignore[explicit-any]
+                h: str = str(_obs_hash_raw)
             else:
                 h = ""
             # Use hash of observation_hash to decide bias direction
@@ -547,7 +547,7 @@ class UniformContinuationPolicy:
         if not hasattr(rng, "random_float"):
             raise ContractError("ismcts: rng must expose random_float; hash%1000 fallback removed")
         _rng_raw: Any = rng.random_float()  # pyrefly: ignore[explicit-any]
-        r: float = float(_rng_raw)  # pyrefly: ignore[explicit-any]
+        r: float = float(_rng_raw)
         cum = 0.0
         for idx, p in enumerate(dist):
             cum += p

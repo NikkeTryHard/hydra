@@ -412,7 +412,7 @@ class _WindowOracle:
             dora_raw: Any = env.dora_indicators
             sticks_raw: Any = env.riichi_sticks
             declared_raw: Any = env.riichi_declared
-            legals = list(self._legals(pid))  # pyrefly: ignore[unknown-argument-type] # untyped riichienv engine legals
+            legals = list(self._legals(pid))  # untyped riichienv engine legals
             hand = tuple(int(cast("Any", t)) for t in hands_raw[pid])
             rivers = tuple(tuple(int(cast("Any", t)) for t in river) for river in rivers_raw)
             lens = tuple(len(cast("Any", item)) for item in hands_raw)

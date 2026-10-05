@@ -44,7 +44,10 @@ _SPLIT = "oracle"
 _INFO_KEY = "sha256:0962179d2a50471795ff4cff24fbd6566c67f94bf12270c0d66684c860c472d1"
 _MODEL_VEC = (0.2, 0.51, 0.06, 0.22)
 _TERMINAL_VEC = (0.62, 0.21999999999999997, 0.74, 0.72)
-_REDET_MESSAGE = "re-determinization disabled: requires named conditional law q_j(x | I_j, immutable_constraints) with exact b/q proof"
+_REDET_MESSAGE = (
+    "re-determinization disabled: requires named conditional law "
+    "q_j(x | I_j, immutable_constraints) with exact b/q proof"
+)
 
 _SHAPE_A_CFG = {"max_simulations": 12, "max_depth": 4, "max_transitions": 64, "max_model_calls": 24}
 _SHAPE_B_CFG = {

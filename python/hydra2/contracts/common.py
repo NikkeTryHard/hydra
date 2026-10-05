@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 try:
     from hydra2._native import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 except ImportError:  # pragma: no cover - import-time signal; oracle branch below decides
-    _bridge_contracts = None  # type: ignore[assignment]
+    _bridge_contracts = None
 
 # ---------------------------------------------------------------------------
 # SPEC 3 - Failure model (typed errors). All expected Hydra2 failures derive

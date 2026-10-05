@@ -36,7 +36,7 @@ from hydra2.contracts.common import (
 try:
     from hydra2._native import search as _pbrf_bridge  # pyrefly: ignore[missing-import]
 except ImportError:  # pragma: no cover — bridge-less env keeps pure-Python oracles
-    _pbrf_bridge = None  # type: ignore[assignment]
+    _pbrf_bridge = None
 
 try:
     from hydra2.contracts.randomness import RandomStream

@@ -13,13 +13,13 @@
 //! - Keep rollout/evaluation walls disjoint.
 //! - Split manifest stores algorithm/version/seed/input hashes.
 //!
-//! Single-assignment rule (wave3 packet §1.10, Data m4): `assign_split`
+//! Single-assignment rule (wave3 packet §1.10, Data M4): `assign_split`
 //! (per-group, stream path) and `assign_partitions` (whole-corpus, partition
 //! path) MUST agree — same order, same preimage, same draw, same walk. This
 //! module implements ONE function ([`assign_one`]) called by both paths. The
 //! order table is *value-equal* to `stream_manifest.py:50` `PARTITION_ORDER`:
 //! `partition.py:161-167` holds a local literal, the import lives in the
-//! manifest — worded as value-equality per Data m4, never claimed same-symbol.
+//! manifest — worded as value-equality per Data M4, never claimed same-symbol.
 //!
 //! Identity discipline (SHA-256 only on identity paths; canon owns bytes and digest owns hashes; no second printer, no second hasher):
 //! - SHA-256 ONLY on identity paths. No BLAKE3 anywhere here.
@@ -59,7 +59,7 @@ use crate::digest::{of_canonical, sha256_hex};
 /// Partition names in cumulative-threshold order.
 ///
 /// Value-equal to `stream_manifest.PARTITION_ORDER` and to the
-/// `partition.py:161-167` local literal (Data m4: value-equality, not
+/// `partition.py:161-167` local literal (Data M4: value-equality, not
 /// same-symbol). Cumulative thresholds walk THIS order; reordering forks
 /// every assignment.
 pub const PARTITION_ORDER: [&str; 5] =

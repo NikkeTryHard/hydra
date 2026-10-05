@@ -218,8 +218,10 @@ def test_modules_one_at_a_time_candidate() -> None:
             assert len(applied_keys) == 1, f"{mid} leaked {applied_keys}"
             break
 
-    # Never call normalized finite-particle ratios unbiased: metadata must indicate search-only / biased
-    # Each module's transform must document that its estimator is biased/search-only where applicable
+    # Never call normalized finite-particle ratios unbiased: metadata must indicate search-only /
+    # biased
+    # Each module's transform must document that its estimator is biased/search-only where
+    # applicable
     spec_mis = make_candidate4_spec(module_id="defensive_mis")
     ctx_mis = _ctx(candidate_id="candidate4_defensive_mis", case_id="case-mis")
     out_mis = apply_module(ctx_mis, spec_mis)
@@ -302,7 +304,8 @@ def test_determinism() -> None:
         assert r1.metadata == r2.metadata
 
     # Different case_id yields different stochastic draw (where module is stochastic)
-    # For rao_blackwell which is deterministic in this harness, use crn/rqmc which are stochastic via seed
+    # For rao_blackwell which is deterministic in this harness, use crn/rqmc which are stochastic
+    # via seed
     spec_crn = make_candidate4_spec(module_id="structural_crn")
     ctx_a = PbrfContext(
         candidate_id="candidate4_structural_crn",
@@ -322,7 +325,8 @@ def test_determinism() -> None:
     )
     _ra = apply_module(ctx_a, spec_crn)
     _rb = apply_module(ctx_b, spec_crn)
-    # Same candidate_id but different case_id -> different primitive draw -> possibly different particles
+    # Same candidate_id but different case_id -> different primitive draw -> possibly different
+    # particles
     # Not guaranteed to differ for all seeds, but check that determinism is case-bound:
     # re-applying same case gives same result (already checked), and hashing differs
     assert (
@@ -340,8 +344,10 @@ def test_determinism() -> None:
         make_candidate4_spec(module_id="fixed_mlmc", extra_parameters={"mlmc_ladder": [0, 1, 2]})
     )
 
-    # Hidden permutation invariance: weights/particles are actor-visible only; hidden tile change would not affect transform
-    # Here we show that PbrfContext built from actor-visible state is invariant to hidden permutation mock
+    # Hidden permutation invariance: weights/particles are actor-visible only; hidden tile change
+    # would not affect transform
+    # Here we show that PbrfContext built from actor-visible state is invariant to hidden
+    # permutation mock
     ctx_hidden = PbrfContext(
         candidate_id="candidate4_rqmc",
         case_id="case-hidden",
@@ -352,7 +358,8 @@ def test_determinism() -> None:
     )
     spec_rqmc = make_candidate4_spec(module_id="rqmc")
     r_hidden = apply_module(ctx_hidden, spec_rqmc)
-    # permuting particles without permuting weights would be visible; but re-creating same visible state yields same
+    # permuting particles without permuting weights would be visible; but re-creating same visible
+    # state yields same
     ctx_hidden2 = PbrfContext(
         candidate_id="candidate4_rqmc",
         case_id="case-hidden",
@@ -500,7 +507,8 @@ def test_controlled_smc_ess_dirichlet_curve() -> None:
     # Golden counts are exact (==): seeds are sha256-derived, numpy PCG64 is
     # deterministic in-env (frozen under numpy 2.5.2). Re-freeze GOLDEN from
     # ~/tmp/ess_dirichlet.py output if numpy is bumped — never widen to
-    # tolerances (bit-identical golden contract: exact == on sha256-seeded PCG64 draws under frozen numpy; re-freeze GOLDEN on a numpy bump, never widen to tolerances).
+    # tolerances (bit-identical golden contract: exact == on sha256-seeded PCG64 draws under frozen
+    # numpy; re-freeze GOLDEN on a numpy bump, never widen to tolerances).
     GOLDEN = {0.05: 28, 0.1: 58, 0.2: 140, 0.5: 285, 1.0: 420, 2.0: 490, 5.0: 500}
     DRAWS = 500
     N = 4

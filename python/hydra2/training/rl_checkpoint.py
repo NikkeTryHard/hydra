@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 try:
     from hydra2._native import contracts as _contracts_bridge  # pyrefly: ignore[missing-import]
 except ImportError:  # pragma: no cover - import-time signal, same text as call-site
-    _contracts_bridge = None  # type: ignore[assignment]
+    _contracts_bridge = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,7 +117,7 @@ def apply_cold_seed(*, seed: bytes) -> int:
     if len(seed) != 32:
         raise ContractError(f"rl_checkpoint cold seed must be 32 bytes, got {len(seed)}")
     value = int.from_bytes(seed[:8], "big")
-    torch.manual_seed(value)
+    _ = torch.manual_seed(value)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(value)
     return value
@@ -159,12 +159,12 @@ def _publish_c0_copy(*, source: Path, run_root: Path) -> Path:
     source = Path(source)
     dest = Path(run_root) / "checkpoints" / "c0.pt"
     dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_name(dest.name + ".tmp")
-    with open(source, "rb") as fh_in, open(tmp, "wb") as fh_out:
+    staging_tmp = dest.with_name(dest.name + ".tmp")
+    with open(source, "rb") as fh_in, open(staging_tmp, "wb") as fh_out:
         shutil.copyfileobj(fh_in, fh_out)
         fh_out.flush()
         os.fsync(fh_out.fileno())
-    os.replace(tmp, dest)
+    os.replace(staging_tmp, dest)
     _fsync_dir(dest.parent)
     return dest
 
@@ -229,7 +229,7 @@ def prepare_torch_state(
         attempt_id=int(rl.attempt_id),
         initial_checkpoint_id=str(rl.initial_checkpoint_id),
     )
-    apply_cold_seed(seed=seed)
+    _ = apply_cold_seed(seed=seed)
     learner = _build_model(config)
     if device is not None:
         learner.to(device)
@@ -268,7 +268,7 @@ def prepare_torch_state(
     optimizer = build_fresh_adamw(config=config, model=learner)
     scheduler = build_constant_scheduler(optimizer=optimizer)
     _freeze_actor(actor=actor, learner=learner)
-    _publish_c0_copy(source=Path(source), run_root=Path(run_root))
+    _ = _publish_c0_copy(source=Path(source), run_root=Path(run_root))
     try:
         c0_manifest_id = str(descriptor["initial_checkpoint_id"])
     except KeyError as exc:
@@ -374,7 +374,7 @@ def build_fresh_adamw(*, config: RunConfig, model: Any) -> Any:
             head_lr_mult=float(rl.head_lr_mult),
         ),
     )
-    groups = _optimizer_param_groups(opt_view, model)  # pyrefly: ignore[arg-type]
+    groups = _optimizer_param_groups(opt_view, model)
     kwargs = _optimizer_fused_kwargs()
     if groups is None:
         return torch.optim.AdamW(

@@ -587,7 +587,7 @@ mod pool_facts_cache_tests {
         (
             str_of("digest"),
             str_of("locator"),
-            value.get("frontier").cloned().map_or(Value::Null, |v| v),
+            value.get("frontier").cloned().unwrap_or(Value::Null),
             value
                 .get("terminal_set")
                 .and_then(Value::as_array)
@@ -598,8 +598,8 @@ mod pool_facts_cache_tests {
                         .map(str::to_string)
                         .collect()
                 }),
-            value.get("tickets").cloned().map_or(Value::Null, |v| v),
-            value.get("captured_rows").and_then(Value::as_u64).map_or(0, |n| n),
+            value.get("tickets").cloned().unwrap_or(Value::Null),
+            value.get("captured_rows").and_then(Value::as_u64).unwrap_or(0),
         )
     }
 

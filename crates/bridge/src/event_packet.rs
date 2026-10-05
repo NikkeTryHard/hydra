@@ -1,9 +1,9 @@
 //! event_packet: frozen SPEC 7.2 packet-boundary values.
 //!
 //! DAG: pyo3 ONLY (frozen literals; no feed dependency — packet identity
-//! digests ride `contracts::packet_id_from_doc`, chain folds ride
-//! `contracts::public_chain_hash` / `fold_public_hash`, span checks ride
-//! `contracts::validate_packet_spans`; canon bytes stay Python-side, see
+//! digests stay Python-side (`compute_packet_id` via `canonical_json_bytes`
+//! + `hashlib`), chain folds ride `contracts::public_chain_hash`, span checks
+//! ride `contracts::validate_packet_spans`; canon bytes stay Python-side, see
 //! `contracts` rank 6 docs). FORBIDS: digest computation (needs live
 //! `ActorVisiblePacket`/`EventEnvelope` objects plus the Python canon
 //! authority), file/JSON IO (OS authority stays Python), and

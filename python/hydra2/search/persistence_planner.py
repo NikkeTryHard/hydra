@@ -135,8 +135,8 @@ class PersistencePlanner:
         # Bridge-owned final hash (owner ``epoch_for_obs``), oracle fallback.
         if isinstance(oh, str) and self.arm.id in ("B", "F", "R", "P", "C"):
             try:
-                from hydra2._native import (
-                    search as _epoch_bridge,  # pyrefly: ignore[missing-import]
+                from hydra2._native import (  # pyrefly: ignore[missing-import]
+                    search as _epoch_bridge,
                 )
 
                 _fn = _epoch_bridge.persistence_epoch_for_obs  # type: ignore[attr-defined]  # reason: persistence_kernel leaf lands with MAIN wiring; AttributeError fallback covers stale .so
@@ -144,7 +144,7 @@ class PersistencePlanner:
                 pass  # stale .so: fall through to the oracle below (same bytes)
             else:
                 try:
-                    return _fn(self.arm.id, oh)  # pyrefly: ignore[unknown-argument-type] # untyped bridge epoch fn
+                    return _fn(self.arm.id, oh)  # untyped bridge epoch fn
                 except (ValueError, TypeError) as exc:
                     raise ContractError(f"persistence epoch rejected: {exc}") from exc
         raw = f"{oh}:{self.arm.id}".encode()
@@ -269,7 +269,7 @@ class PersistencePlanner:
             "cursor": 0,
         }
         try:
-            from hydra2._native import search as _drive_bridge  # pyrefly: ignore[missing-import]
+            from hydra2._native import search as _drive_bridge
         except ImportError as exc:
             raise ImportError(
                 "hydra2._native.search not importable "
@@ -308,7 +308,7 @@ class PersistencePlanner:
             if self.arm.id in ("B", "F", "C"):
                 self._forest_blob = b""
         return _wrap_result(
-            out,  # pyrefly: ignore[unknown-argument-type] # native PersistenceOut
+            out,  # native PersistenceOut
             legal=legal,
             candidate_spec=cand_spec,
             start_ns=t0,

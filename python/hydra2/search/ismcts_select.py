@@ -31,17 +31,18 @@ def _uct_select(
     for aid in stat_ids:
         st = node.action_stats.get(aid)
         if st is None:
+            # Arm omitted from table (unvisited): skip, bridge handles unvisited-first.
             continue
         try:
             n = int(st.visits)  # type: ignore[arg-type]
-            quad = tuple(st.value_sum)
+            seat_values = tuple(st.value_sum)
         except Exception as exc:
             raise ContractError(f"uct node stats malformed for {aid!r}: {exc}") from exc
-        if len(quad) != 4:
+        if len(seat_values) != 4:
             raise ContractError(f"uct node value_sum must hold 4 entries for {aid!r}")
         actions.append(aid)
         visits.append(n)
-        sums_flat.extend(quad)
+        sums_flat.extend(seat_values)
     try:
         total = int(node.visits)  # type: ignore[arg-type]
         selected: int = _require_search_bridge().uct_select(
@@ -56,6 +57,7 @@ def _uct_select(
         )
         return selected
     except ImportError:
+        # Missing/stale bridge: let the build-ext hint propagate unwrapped.
         raise
     except Exception as exc:
         raise ContractError(f"ismcts bridge uct failed: {exc}") from exc

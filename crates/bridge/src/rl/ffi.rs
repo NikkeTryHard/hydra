@@ -6,7 +6,7 @@
 //! `wall::ctr_u53_window`). FORBIDS: per-row Python callbacks, wall-clock,
 //! RNG seeding, live-object orchestration.
 //!
-//! Concurrency pattern (matches `walls.rs`/`contracts::ctr_block`):
+//! Concurrency pattern (matches `walls.rs`/`contracts::ctr_stream_bytes`):
 //! validate attached, compute under ONE `py.detach(|| ...)` with zero
 //! Python API inside, wrap attached. Fail-closed: every shape violation is
 //! `ValueError`, never a default wall or a fallback stream.

@@ -59,14 +59,14 @@ class StageSpanSink:
         with perf_counter on the calling thread); worker-side and
         pre-measured spans pass their own wall start explicitly.
         """
-        dur = float(dur_ms)
-        start = float(t_start_s) if t_start_s is not None else time.time() - dur / 1000.0
+        dur = dur_ms
+        start = t_start_s if t_start_s is not None else time.time() - dur / 1000.0
         row = {
             "dur_ms": dur,
             "kind": "span",
-            "stage": str(stage),
+            "stage": stage,
             "t_start_s": start,
-            "update": None if update is None else int(update),
+            "update": None if update is None else update,
         }
         line = json.dumps(row, sort_keys=True) + "\n"
         with self._lock, open(self._path, "a", encoding="utf-8") as handle:
@@ -81,6 +81,8 @@ class StageSpanSink:
         sink = self
 
         class _Timer:
+            _t0: float
+
             def __enter__(self) -> _Timer:
                 self._t0 = time.perf_counter()
                 return self

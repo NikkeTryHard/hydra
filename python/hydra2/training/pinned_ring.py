@@ -186,7 +186,7 @@ def slot_dtypes(*, fields: tuple[TensorFieldSpec, ...] | None = None) -> dict[st
 
 
 def _checked_shape(name: str, dims: tuple[Any, ...]) -> tuple[int, ...]:
-    if len(dims) == 0 or any(not isinstance(d, int) or d <= 0 for d in dims):
+    if len(dims) == 0 or any(not isinstance(dim, int) or dim <= 0 for dim in dims):
         raise ContractError(f"field {name}: shape {dims!r} must be positive ints")
     return tuple(dims)
 
@@ -316,7 +316,7 @@ class PinnedRing:
         if len(layout) == 0:
             raise ContractError("ring layout must list at least one field")
         for name, (shape, _dtype) in layout.items():
-            if len(shape) == 0 or any(d <= 0 for d in shape):
+            if len(shape) == 0 or any(dim <= 0 for dim in shape):
                 raise ContractError(f"field {name}: shape {shape!r} must be positive ints")
 
         self._field_names = list(layout.keys())

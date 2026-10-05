@@ -5,7 +5,7 @@
 //! event objects' `query()` method (attached, batch-boundary only), never by
 //! linking CUDA. No per-row Python callbacks; workers never touch Python.
 //!
-//! Contract (Main's GPU-owner bindings):
+//! Contract (MAIN's GPU-owner bindings):
 //! - `NativePool.open(profile_json, context_json, derivation_hex)`.
 //! - `register_buffers(T, slot_id, host_input, host_output)`: any
 //!   buffer-protocol object (`numpy.uint8`, `bytearray`, writable
@@ -131,7 +131,6 @@ struct RegisteredBuffers {
     input_ptr: usize,
     output_ptr: usize,
     bucket_t: usize,
-    capacity: usize,
 }
 
 /// Thin pool handle: the native pool plus registered host owners.
@@ -308,7 +307,6 @@ impl PyNativePool {
             input_ptr: in_ptr,
             output_ptr: out_ptr,
             bucket_t,
-            capacity,
         });
         Ok(())
     }

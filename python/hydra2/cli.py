@@ -116,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.dry_run:
                 return 0
             try:
-                create_run_layout(config)
+                _ = create_run_layout(config)
                 summary = run_rl_training(
                     config,
                     args.resume,

@@ -357,7 +357,9 @@ def test_privileged_field_leakage_hard_failure(tmp_path: Path) -> None:
         observation_hash="sha256:" + "c" * 64,
         action_table_hash=_sha(CONFIG_ACTION_TABLE),
         derivation_hash="sha256:" + "d" * 64,
-        actor_observation=bad_obs,  # type: ignore[arg-type]  # reason: intentionally malformed obs literal for negative-path test; narrower value union vs dict[str, object] invariance
+        # reason: intentionally malformed obs literal for negative-path test; narrower value union
+        # vs dict[str, object] invariance
+        actor_observation=bad_obs,  # type: ignore[arg-type]
         chosen_action_id=0,
         privileged_label_ref=None,
     )
@@ -413,7 +415,9 @@ def test_dora_shim_hard_failure(tmp_path: Path) -> None:
         observation_hash="sha256:" + "c" * 64,
         action_table_hash=_sha(CONFIG_ACTION_TABLE),
         derivation_hash="sha256:" + "d" * 64,
-        actor_observation=bad_obs2,  # type: ignore[arg-type]  # reason: intentionally malformed obs literal for negative-path test; narrower value union vs dict[str, object] invariance
+        # reason: intentionally malformed obs literal for negative-path test; narrower value union
+        # vs dict[str, object] invariance
+        actor_observation=bad_obs2,  # type: ignore[arg-type]
         chosen_action_id=0,
         privileged_label_ref=None,
     )
@@ -521,7 +525,8 @@ def test_content_addressed_tensor_caches(tmp_path: Path) -> None:
     # Load and verify
     data = load_cache(cache_root=cache_root, key=key)
     assert "features" in data
-    assert data["features"].shape == (4, 8)  # type: ignore[union-attr]  # reason: load_cache returns dict[str, object]; value is a runtime tensor with .shape
+    # reason: load_cache returns dict[str, object]; value is a runtime tensor with .shape
+    assert data["features"].shape == (4, 8)  # type: ignore[union-attr]
 
 
 def test_cache_incompatible_never_reshapes(tmp_path: Path) -> None:
@@ -610,7 +615,9 @@ def test_loader_verifies_hashes_and_legal_masks(tmp_path: Path) -> None:
         observation_hash="sha256:" + "c" * 64,
         action_table_hash=_sha(CONFIG_ACTION_TABLE),
         derivation_hash="sha256:" + "d" * 64,
-        actor_observation=bad_obs,  # type: ignore[arg-type]  # reason: intentionally malformed obs literal for negative-path test; narrower value union vs dict[str, object] invariance
+        # reason: intentionally malformed obs literal for negative-path test; narrower value union
+        # vs dict[str, object] invariance
+        actor_observation=bad_obs,  # type: ignore[arg-type]
         chosen_action_id=0,
         privileged_label_ref=None,
     )

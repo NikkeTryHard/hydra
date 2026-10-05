@@ -145,37 +145,38 @@ def build_seeded_round_state(env: Any, deck_types: tuple[int, ...], *, dealer: i
     players: Any = dataclasses.replace(  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
         cast("Any", template.players),
         hand=cast("Any", hands.at[dealer].set(hand_dealer)),
-        can_win=can_win,  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+        can_win=can_win,  # reason: dynamic JAX
     )
     neg: Any = jnp.int8(-1)  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
     round_state: Any = dataclasses.replace(  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-        cast("Any", template.round_state),  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-        deck=deck,  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-        dora_indicators=cast("Any", jnp.array([deck[9], neg, neg, neg, neg], dtype=jnp.int8)),  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-        ura_dora_indicators=cast("Any", jnp.array([deck[8], neg, neg, neg, neg], dtype=jnp.int8)),  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-        next_deck_ix=cast("Any", jnp.int32(_MAHJAX_FIRST_DRAW_IDX - 1)),  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-        last_draw=cast("Any", jnp.int8(first)),  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-        draw_next=cast("Any", jnp.bool_(False)),  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-        dealer=cast("Any", jnp.int8(dealer)),  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-        init_wind=cast("Any", menv._calc_wind(jnp.int8(dealer))),  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-        seat_wind=cast("Any", menv._calc_wind(jnp.int8(dealer))),  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-        last_player=cast("Any", jnp.int8(-1)),  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+        cast("Any", template.round_state),  # reason: dynamic JAX
+        deck=deck,  # reason: dynamic JAX
+        # reason: dynamic JAX
+        dora_indicators=cast("Any", jnp.array([deck[9], neg, neg, neg, neg], dtype=jnp.int8)),
+        ura_dora_indicators=cast("Any", jnp.array([deck[8], neg, neg, neg, neg], dtype=jnp.int8)),
+        next_deck_ix=cast("Any", jnp.int32(_MAHJAX_FIRST_DRAW_IDX - 1)),  # reason: dynamic JAX
+        last_draw=cast("Any", jnp.int8(first)),  # reason: dynamic JAX
+        draw_next=cast("Any", jnp.bool_(False)),  # reason: dynamic JAX
+        dealer=cast("Any", jnp.int8(dealer)),  # reason: dynamic JAX
+        init_wind=cast("Any", menv._calc_wind(jnp.int8(dealer))),  # reason: dynamic JAX
+        seat_wind=cast("Any", menv._calc_wind(jnp.int8(dealer))),  # reason: dynamic JAX
+        last_player=cast("Any", jnp.int8(-1)),  # reason: dynamic JAX
     )
     base: Any = _replace(  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-        template,  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-        round_state=round_state,  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-        players=players,  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-        current_player=cast("Any", jnp.int8(dealer)),  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-        target=cast("Any", jnp.int8(-1)),  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+        template,  # reason: dynamic JAX
+        round_state=round_state,  # reason: dynamic JAX
+        players=players,  # reason: dynamic JAX
+        current_player=cast("Any", jnp.int8(dealer)),  # reason: dynamic JAX
+        target=cast("Any", jnp.int8(-1)),  # reason: dynamic JAX
     )
     mask_current: Any = menv._make_legal_action_mask_after_draw(  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
         base,
         players.hand.at[dealer].set(hand_dealer),
         jnp.int8(dealer),
-        first,  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+        first,  # reason: dynamic JAX
     )
     legal_mask: Any = jnp.zeros((4, modules["Action"].NUM_ACTION), dtype=jnp.bool_)  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-    legal_mask = legal_mask.at[dealer, :].set(mask_current)  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+    legal_mask = legal_mask.at[dealer, :].set(mask_current)  # reason: dynamic JAX
     # NOTE (mahjax cff90d1/#74): RoundState.shanten_current_player no longer
     # exists; shanten is computed on demand via Shanten.number (see
     # _mahjax_shanten and _vmap_batch_shanten). No shanten value is stored here.
@@ -251,13 +252,13 @@ def map_script_step_to_mahjax(decision: ScriptedDecision, action: Any) -> list[i
         if action.tile is None:
             # fallback via consumed_tiles for robustness
             if getattr(action, "consumed_tiles", None) is not None:
-                return [type_id(int(cast("Any", action.consumed_tiles[0])))]  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+                return [type_id(int(cast("Any", action.consumed_tiles[0])))]  # reason: dynamic JAX
             raise TraceRunnerError(f"discard action missing tile: {action}")
-        return [type_id(int(cast("Any", action.tile)))]  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+        return [type_id(int(cast("Any", action.tile)))]  # reason: dynamic JAX
     if kind == "riichi_discard":
         if action.tile is None:
             raise TraceRunnerError(f"riichi_discard missing tile: {action}")
-        return [_ACTION_RIICHI, type_id(int(cast("Any", action.tile)))]  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+        return [_ACTION_RIICHI, type_id(int(cast("Any", action.tile)))]  # reason: dynamic JAX
     if kind == "pon":
         return [_ACTION_PON]
     if kind == "daiminkan":
@@ -268,7 +269,7 @@ def map_script_step_to_mahjax(decision: ScriptedDecision, action: Any) -> list[i
         if tile is None:
             if getattr(action, "consumed_tiles", None) is None:
                 raise TraceRunnerError(f"ankan missing tile info: {action}")
-            tile = int(cast("Any", action.consumed_tiles[0]))  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+            tile = int(cast("Any", action.consumed_tiles[0]))  # reason: dynamic JAX
         return [34 + type_id(int(tile))]
     if kind == "kakan":
         tile: Any = action.tile  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
@@ -276,9 +277,9 @@ def map_script_step_to_mahjax(decision: ScriptedDecision, action: Any) -> list[i
             # engine 0.4.10 stores added tile via _kakan_added capture;
             # consumed_tiles or tile may be None; fallback to consumed
             if getattr(action, "consumed_tiles", None) is not None:
-                tile = int(cast("Any", action.consumed_tiles[0]))  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+                tile = int(cast("Any", action.consumed_tiles[0]))  # reason: dynamic JAX
             elif hasattr(action, "tile") and action.tile is not None:
-                tile = int(cast("Any", action.tile))  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+                tile = int(cast("Any", action.tile))  # reason: dynamic JAX
             else:
                 # last resort: try to infer from action metadata
                 raise TraceRunnerError(f"kakan missing tile info: {action}")
@@ -286,8 +287,8 @@ def map_script_step_to_mahjax(decision: ScriptedDecision, action: Any) -> list[i
     if kind == "chi":
         types = sorted(
             type_id(int(cast("Any", t))) for t in (action.called_tile, *action.consumed_tiles)
-        )  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-        called = type_id(int(cast("Any", action.called_tile)))  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+        )  # reason: dynamic JAX
+        called = type_id(int(cast("Any", action.called_tile)))  # reason: dynamic JAX
         low, mid, high = types
         if called == low:
             return [_ACTION_CHI_L]
@@ -306,13 +307,13 @@ def _mahjax_auto_policy(state: Any) -> int:
     """Mirror conformance.runner._auto_action semantics on the mahjax side."""
     modules = _mahjax_modules()
     mask: Any = state.legal_action_mask  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-    if bool(cast("Any", mask[_ACTION_PASS])):  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+    if bool(cast("Any", mask[_ACTION_PASS])):  # reason: dynamic JAX
         return _ACTION_PASS
-    if bool(cast("Any", mask[_ACTION_TSUMOGIRI])):  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+    if bool(cast("Any", mask[_ACTION_TSUMOGIRI])):  # reason: dynamic JAX
         return _ACTION_TSUMOGIRI
     discard_actions = [
         a for a in range(cast("Any", modules["Tile"].NUM_TILE_TYPE)) if bool(cast("Any", mask[a]))
-    ]  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+    ]  # reason: dynamic JAX
     if len(discard_actions) != 0:
         return discard_actions[0]
     offered = jnp_nonzero(mask)
@@ -322,7 +323,8 @@ def _mahjax_auto_policy(state: Any) -> int:
 
 
 def jnp_nonzero(mask: Any) -> list[int]:
-    return [int(cast("Any", i)) for i in _mahjax_modules()["jnp"].nonzero(mask)[0].tolist()]  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+    # reason: dynamic JAX
+    return [int(cast("Any", i)) for i in _mahjax_modules()["jnp"].nonzero(mask)[0].tolist()]
 
 
 def _reference_discard_types(sim: Any, actor: int) -> set[int]:
@@ -331,21 +333,22 @@ def _reference_discard_types(sim: Any, actor: int) -> set[int]:
 
     types: set[int] = set()
     for act in sim.legal_actions(Seat(actor)):
-        if cast("Any", act.kind) in ("discard", "tsumogiri") and act.tile is not None:  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-            types.add(type_id(int(cast("Any", act.tile))))  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+        # reason: dynamic JAX
+        if cast("Any", act.kind) in ("discard", "tsumogiri") and act.tile is not None:
+            types.add(type_id(int(cast("Any", act.tile))))  # reason: dynamic JAX
         elif act.kind == "discard" and act.tile is None and act.consumed_tiles:
             # fallback for malformed but keep
-            types.add(type_id(int(cast("Any", act.consumed_tiles[0]))))  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+            types.add(type_id(int(cast("Any", act.consumed_tiles[0]))))  # reason: dynamic JAX
     return types
 
 
 def _mahjax_discard_types(state: Any) -> set[int]:
     mask: Any = state.legal_action_mask  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-    types = {t for t in range(34) if bool(cast("Any", mask[t]))}  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+    types = {t for t in range(34) if bool(cast("Any", mask[t]))}  # reason: dynamic JAX
     # tsumogiri is a distinct action (68) but discards the drawn tile's type
-    if bool(cast("Any", mask[_ACTION_TSUMOGIRI])):  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+    if bool(cast("Any", mask[_ACTION_TSUMOGIRI])):  # reason: dynamic JAX
         try:
-            ld = int(cast("Any", state.round_state.last_draw))  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+            ld = int(cast("Any", state.round_state.last_draw))  # reason: dynamic JAX
             if 0 <= ld < 34:
                 types.add(ld)
         except Exception:  # why-broad: best-effort last-draw read; failure keeps probed set
@@ -368,13 +371,14 @@ def _reference_shanten(sim: Any, actor: int) -> int:
     modules = _mahjax_modules()
     shanten_cls: Any = modules["Shanten"]  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
     # hand is list of physical ids from engine
-    engine_pid = int(cast("Any", sim._perm[actor])) if hasattr(sim, "_perm") else actor  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+    # reason: dynamic JAX
+    engine_pid = int(cast("Any", sim._perm[actor])) if hasattr(sim, "_perm") else actor
     try:
         hand_list = [int(t) for t in sim._engine.hands[engine_pid]]  # type: ignore[attr-defined]  # reason: no stubs; runtime
     except Exception:  # why-broad: _engine/_env probe; any shape tries _env
         hand_list = [
             int(cast("Any", t)) for t in sim._env.hands[engine_pid]
-        ]  # fallback  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+        ]  # fallback  # reason: dynamic JAX
     # drawn tile? The hand list may include drawn tile already; we just count
     counts = [0] * 34
     for pid in hand_list:
@@ -385,7 +389,7 @@ def _reference_shanten(sim: Any, actor: int) -> int:
     import jax.numpy as jnp
 
     arr = jnp.asarray(counts, dtype=jnp.int8)
-    return int(cast("Any", shanten_cls.number(arr)))  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+    return int(cast("Any", shanten_cls.number(arr)))  # reason: dynamic JAX
 
 
 def _mahjax_shanten(state: Any) -> int:
@@ -398,9 +402,9 @@ def _mahjax_shanten(state: Any) -> int:
     """
     modules = _mahjax_modules()
     shanten_cls: Any = modules["Shanten"]  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-    current = int(cast("Any", state.current_player))  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-    hand = cast("Any", state.players.hand[current])  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-    return int(cast("Any", shanten_cls.number(hand)))  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+    current = int(cast("Any", state.current_player))  # reason: dynamic JAX
+    hand = cast("Any", state.players.hand[current])  # reason: dynamic JAX
+    return int(cast("Any", shanten_cls.number(hand)))  # reason: dynamic JAX
 
 
 def _reference_dora_types(sim: Any) -> tuple[int, ...]:
@@ -416,12 +420,13 @@ def _reference_dora_types(sim: Any) -> tuple[int, ...]:
         type_id(int(cast("Any", t)))
         for t in indicators
         if int(cast("Any", t)) != -1 and t is not None
-    )  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+    )  # reason: dynamic JAX
 
 
 def _mahjax_dora_types(state: Any) -> tuple[int, ...]:
     arr: Any = state.round_state.dora_indicators  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
-    return tuple(int(cast("Any", t)) for t in arr.tolist() if int(cast("Any", t)) != -1)  # pyrefly: ignore[explicit-any]  # reason: dynamic JAX
+    # reason: dynamic JAX
+    return tuple(int(cast("Any", t)) for t in arr.tolist() if int(cast("Any", t)) != -1)
 
 
 def _reference_win_offer(sim: Any, actor: int) -> bool:

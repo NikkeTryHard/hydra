@@ -243,7 +243,8 @@ def _request_for_obs(obs: object, spec: object, deadline_ns: int | None = None) 
                 act = CODEC.decode(idx, table=_TABLE, context=ctx)  # type: ignore[union-attr]
                 legal_actions.append(act)
             except Exception:
-                # mask said True but decode failed due to offered mismatch — skip for request (should not happen for draw_decision)
+                # mask said True but decode failed due to offered mismatch — skip for request
+                # (should not happen for draw_decision)
                 continue
     if deadline_ns is None:
         deadline_ns = time.monotonic_ns() + 5_000_000_000  # 5s
@@ -347,10 +348,12 @@ def test_greedy_frozen_temperature_value_arms() -> None:
         # determinism: replay same request gives same action
         res2 = candidate0(req, model=model, action_table=_TABLE, action_codec=CODEC)
         assert res2.selected_action == res.selected_action
-        # frozen temperature determinism: same observation_hash -> same sample across fresh model with same weights
+        # frozen temperature determinism: same observation_hash -> same sample across fresh model
+        # with same weights
         # (model weights identical, so sampling seed dominates)
         if arm.startswith("temperature"):
-            # second call with same obs_hash must give same index even with fresh generator inside frozen_choice
+            # second call with same obs_hash must give same index even with fresh generator inside
+            # frozen_choice
             probs = torch.tensor([0.1, 0.3, 0.3, 0.3], dtype=torch.float32)
             vec = torch.tensor([0.0, 0.0, 0.0, 0.0])
             # Use observation hash as seed material
@@ -376,10 +379,12 @@ def test_deadline_fallback_is_candidate0() -> None:
     res_ok = candidate0(req_ok, model=model, action_table=_TABLE, action_codec=CODEC)
     assert res_ok.completed is True
     assert res_ok.telemetry.timeout is False
-    # Already-expired deadline — fallback is self, so still completed with same action (recorded timeout flag)
+    # Already-expired deadline — fallback is self, so still completed with same action (recorded
+    # timeout flag)
     req_expired = _request_for_obs(obs, spec, deadline_ns=time.monotonic_ns() - 1_000)
     res_exp = candidate0(req_expired, model=model, action_table=_TABLE, action_codec=CODEC)
-    # Timeout flag may be True, but selected action must still be legal and equal to normal (fallback is self)
+    # Timeout flag may be True, but selected action must still be legal and equal to normal
+    # (fallback is self)
     assert res_exp.selected_action == res_ok.selected_action
     assert res_exp.completed is True
     # Fallback_used stays False because fallback is self (no divergent policy)
@@ -613,7 +618,8 @@ def test_deterministic() -> None:
     assert r1.value_vectors[0].values == r2.value_vectors[0].values
     # Even with fresh model instance but same seed, same result
     model2 = _fresh_model(77)
-    # Need spec to match model2 identity? Create new spec bound to model2 but same logical parameters
+    # Spec must match model2 identity: new spec bound to model2 with the same
+    # logical parameters
     spec2 = make_candidate0_spec(
         tie_break="temperature_0.5", model=model2, case_manifest_hash=spec.case_manifest_hash
     )

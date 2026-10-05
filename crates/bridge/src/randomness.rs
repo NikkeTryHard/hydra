@@ -49,9 +49,8 @@
 //! `PyTuple::new(py, [...])` for frozen tuples mirrors `contracts.rs:1156`;
 //! `PyFrozenSet::new(py, [...])` mirrors `contracts.rs:1186`;
 //! attached-check + `py.detach(|| ...)` with zero Python API inside mirrors
-//! `contracts::ctr_block` (`crates/bridge/src/contracts.rs:447-456`);
-//! re-canonicalize-then-hash through the feed owners mirrors
-//! `contracts::packet_id_from_doc` (`crates/bridge/src/contracts.rs:912-927`);
+//! `contracts::ctr_stream_bytes`;
+//! re-canonicalize-then-hash through the feed `canon`/`digest` owners;
 //! `SearchError` mapped onto `ValueError` mirrors `eval::search_err`
 //! (`crates/bridge/src/eval.rs:60-63`).
 

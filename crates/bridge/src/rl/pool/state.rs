@@ -124,7 +124,6 @@ pub(super) struct FillOutput {
     pub(super) slot_id: u64,
     pub(super) epoch: u64,
     pub(super) bucket_t: usize,
-    pub(super) capacity: usize,
     pub(super) staged: Vec<FilledRow>,
     pub(super) bytes: Vec<u8>,
     pub(super) logical_round: u64,

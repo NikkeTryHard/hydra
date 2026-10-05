@@ -293,12 +293,13 @@ class RandomStreamSchema:
 def _validate_field_value(name: str, value: object) -> None:
     if value is None:
         return
+    # value is object-typed (None filtered); each callee validates.
     if name == "root_seat":
-        _bridge_contracts.make_seat(value)  # type: ignore[arg-type]  # reason: value statically object; None filtered above, validated inside make_seat
+        _bridge_contracts.make_seat(value)
     elif name == "belief_epoch":
-        make_belief_epoch_id(value)  # type: ignore[arg-type]  # reason: value statically object; None filtered above, validated inside make_belief_epoch_id
+        make_belief_epoch_id(value)  # type: ignore[arg-type]
     elif name == "action_id":
-        _bridge_contracts.make_action_id(value)  # type: ignore[arg-type]  # reason: value statically object; None filtered above, validated inside make_action_id
+        _bridge_contracts.make_action_id(value)
     elif name in ("parent_id", "packet_id", "case_id", "candidate_id", "wall_id"):
         if not isinstance(value, str) or value == "":
             raise ContractError(f"{name} must be a nonempty str")
@@ -522,12 +523,13 @@ def derive_scope_material(root_material: bytes, scope: str) -> MasterSeedMateria
     oracle = hashlib.sha256(
         b"hydra2_master_scope_v1\x00" + scope.encode("ascii") + b"\x00" + root_material
     ).digest()
+    # scope is membership-narrowed above; the checker keeps the str width.
     try:
         bridged = bytes(
             _bridge_contracts.derive_scope_material(bytes(root_material), scope)  # type: ignore[attr-defined]  # reason: randomness leaf lands with MAIN wiring; AttributeError fallback covers stale .so
         )
     except AttributeError:
-        return MasterSeedMaterial(material=oracle, scope=scope)  # type: ignore[arg-type]  # reason: scope narrowed by the membership check above; checker keeps the str width
+        return MasterSeedMaterial(material=oracle, scope=scope)
     except (ValueError, TypeError, OverflowError) as exc:
         raise ContractError(f"scope derivation bridge rejected input: {exc}") from exc
     if bridged != oracle:
@@ -535,7 +537,7 @@ def derive_scope_material(root_material: bytes, scope: str) -> MasterSeedMateria
             "derive_scope_material: bridge != python oracle "
             f"(sha256:{bridged.hex()} != sha256:{oracle.hex()})"
         )
-    return MasterSeedMaterial(material=bridged, scope=scope)  # type: ignore[arg-type]  # reason: scope narrowed by the membership check above; checker keeps the str width
+    return MasterSeedMaterial(material=bridged, scope=scope)
 
 
 def authority_stream(domain: MasterSeedMaterial, key: RandomStreamKey) -> RandomStream:
@@ -549,7 +551,7 @@ def authority_stream(domain: MasterSeedMaterial, key: RandomStreamKey) -> Random
     _ = RandomStreamSchema.validate_key(key)
     key_is_final = key.purpose in FINAL_EVALUATION_PURPOSES
     try:
-        _bridge_contracts.check_authority_scope(domain.scope, key.purpose)  # type: ignore[attr-defined]  # reason: randomness leaf lands with MAIN wiring; AttributeError fallback covers stale .so
+        _bridge_contracts.check_authority_scope(domain.scope, key.purpose)  # stale .so fallback
     except AttributeError:
         if domain.scope == "final_evaluation" and not key_is_final:
             raise ContractError(

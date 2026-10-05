@@ -306,11 +306,13 @@ def parse_observation_schema(raw_bytes: bytes) -> dict[str, object]:
         raise ContractError("artifact_type must be 'hydra2.observation_schema'")
     if document["compatibility"] != "exact":
         raise ContractError("observation_schema compatibility must be exact")
-    payload: object = document["payload"]  # type: ignore[index]  # reason: document Mapping-checked above; checker cannot narrow object index
-    if not isinstance(payload, Mapping) or "digest" not in payload:  # type: ignore[attr-defined]  # reason: isinstance-narrowed Mapping; checker flags 'in' on bare Mapping
+    # document/payload are Mapping-narrowed above; the checker flags
+    # object index, 'in', and .items on bare Mapping.
+    payload: object = document["payload"]
+    if not isinstance(payload, Mapping) or "digest" not in payload:
         raise ContractError("observation_schema payload missing digest")
     expected = compute_observation_schema_digest(
-        {k: v for k, v in payload.items() if k != "digest"}  # type: ignore[attr-defined]  # reason: payload Mapping-narrowed above; checker flags .items on bare Mapping
+        {k: v for k, v in payload.items() if k != "digest"}
     )
     recorded: DigestText = _bridge_contracts.make_digest_text(str(payload["digest"]))  # pyrefly: ignore[unknown-argument-type] # reason: payload Mapping-narrowed above; str() coerces; Any intentional for raw dict  # type: ignore[index] # reason: payload Mapping-narrowed above; index on bare Mapping
     if not hmac.compare_digest(str(recorded), str(expected)):

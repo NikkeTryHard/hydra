@@ -57,7 +57,7 @@ class FullWorld:
     observation_hash: DigestText
 
     def __post_init__(self) -> None:
-        # world_id validated if present
+        # Re-verify stored id: stale/forged worlds fail closed with digest mismatch.
         if self.world_id is not None:
             validated_id: DigestText = _bridge_contracts.make_digest_text(self.world_id)
             object.__setattr__(self, "world_id", validated_id)
@@ -67,18 +67,18 @@ class FullWorld:
                     f"world_id mismatch: recorded {self.world_id} != recomputed {expected}"
                     " [PBRF_DIGEST_WORLD_ID]"
                 )
-        # concealed_hands must be 4 seats
+        # Require exactly 4 seats; fewer would silently drop hidden tiles.
         if not isinstance(self.concealed_hands, tuple) or len(self.concealed_hands) != 4:
             raise ContractError("concealed_hands must be 4-tuple of tile tuples")
-        hands = []
+        normalized_hands = []
         for seat, hand in enumerate(self.concealed_hands):
             if not isinstance(hand, tuple):
                 raise ContractError(f"concealed_hands[{seat}] must be tuple")
-            t = tuple(_bridge_contracts.make_tile_id(v) for v in hand)
-            if list(t) != sorted(t):
+            normalized_hand = tuple(_bridge_contracts.make_tile_id(v) for v in hand)
+            if list(normalized_hand) != sorted(normalized_hand):
                 raise ContractError(f"concealed_hands[{seat}] must be sorted ascending")
-            hands.append(t)
-        object.__setattr__(self, "concealed_hands", tuple(hands))
+            normalized_hands.append(normalized_hand)
+        object.__setattr__(self, "concealed_hands", tuple(normalized_hands))
         # live/dead wall
         object.__setattr__(
             self, "live_wall", tuple(_bridge_contracts.make_tile_id(v) for v in self.live_wall)
@@ -132,30 +132,29 @@ def make_full_world(
     simulator_snapshot: str | None = None,
 ) -> FullWorld:
     """Construct FullWorld with world_id bound to identity bytes."""
-    ch = tuple(tuple(t for t in hand) for hand in concealed_hands)
-    lw = tuple(t for t in live_wall)
-    dw = tuple(t for t in dead_wall)
-    latent = dict(latent_state) if latent_state is not None else {}
-    snap = simulator_snapshot if simulator_snapshot is not None else f"snap:{ch}:{lw}"
-    # Compute world_id via canonical bytes of identity document (without world_id)
-    # Identity document mirrors FullWorld.to_json() without world_id
+    concealed = tuple(tuple(t for t in hand) for hand in concealed_hands)
+    live = tuple(t for t in live_wall)
+    dead = tuple(t for t in dead_wall)
+    latent_copy = dict(latent_state) if latent_state is not None else {}
+    snapshot = simulator_snapshot if simulator_snapshot is not None else f"snap:{concealed}:{live}"
+    # Invariant: world_id binds identity bytes; mismatch fails closed in __post_init__.
     identity_doc = {
-        "simulator_snapshot": snap,
-        "concealed_hands": [list(hand) for hand in ch],
-        "live_wall": list(lw),
-        "dead_wall": list(dw),
-        "latent_state": latent,
+        "simulator_snapshot": snapshot,
+        "concealed_hands": [list(hand) for hand in concealed],
+        "live_wall": list(live),
+        "dead_wall": list(dead),
+        "latent_state": latent_copy,
         "rules_hash": rules_hash,
         "observation_hash": observation_hash,
     }
     world_id = _world_id_from_identity_doc(identity_doc)
     return FullWorld(
         world_id=world_id,
-        simulator_snapshot=snap,
-        concealed_hands=ch,  # type: ignore[arg-type]
-        live_wall=lw,  # type: ignore[arg-type]
-        dead_wall=dw,  # type: ignore[arg-type]
-        latent_state=latent,
+        simulator_snapshot=snapshot,
+        concealed_hands=concealed,  # type: ignore[arg-type]
+        live_wall=live,  # type: ignore[arg-type]
+        dead_wall=dead,  # type: ignore[arg-type]
+        latent_state=latent_copy,
         rules_hash=rules_hash,  # type: ignore[arg-type]
         observation_hash=observation_hash,  # type: ignore[arg-type]
     )
@@ -180,30 +179,34 @@ def world_actor_observation(
     """
     from hydra2.contracts.observation_types import DORA_SENTINEL
 
-    a: int = _bridge_contracts.make_seat(actor)
-    hand = world.concealed_hands[a]
-    did = (
+    seat_idx: int = _bridge_contracts.make_seat(actor)
+    hand = world.concealed_hands[seat_idx]
+    # Derive a stable id when the caller supplies none: binds hand + seat.
+    decision_text = (
         decision_id
         if decision_id is not None
-        else f"dec_hand_{'_'.join(str(int(t)) for t in hand)}_{a}"
+        else f"dec_hand_{'_'.join(str(int(t)) for t in hand)}_{seat_idx}"
     )
-    # Dummy hashes default to world hashes
-    ath = action_table_hash if action_table_hash is not None else "sha256:" + "b" * 64
-    esh = event_schema_hash if event_schema_hash is not None else "sha256:" + "c" * 64
-    osh = observation_schema_hash if observation_schema_hash is not None else "sha256:" + "d" * 64
-    pbh = packet_boundary_hash if packet_boundary_hash is not None else "sha256:" + "e" * 64
-
+    # Dummy hashes default to fixed sentinels; never derive from hidden tiles.
+    action_hash = action_table_hash if action_table_hash is not None else "sha256:" + "b" * 64
+    event_hash = event_schema_hash if event_schema_hash is not None else "sha256:" + "c" * 64
+    obs_hash = (
+        observation_schema_hash if observation_schema_hash is not None else "sha256:" + "d" * 64
+    )
+    boundary_hash = (
+        packet_boundary_hash if packet_boundary_hash is not None else "sha256:" + "e" * 64
+    )
     return make_actor_observation(
         game_id=game_id,
-        decision_id=did,
+        decision_id=decision_text,
         sequence=sequence,
-        actor=a,
+        actor=seat_idx,
         rules_id="tenhou_4p_hanchan_v1",
         rules_hash=world.rules_hash,
-        action_table_hash=ath,
-        event_schema_hash=esh,
-        observation_schema_hash=osh,
-        packet_boundary_hash=pbh,
+        action_table_hash=action_hash,
+        event_schema_hash=event_hash,
+        observation_schema_hash=obs_hash,
+        packet_boundary_hash=boundary_hash,
         round_index=0,
         round_wind=_DEFAULT_ROUND_WIND,
         hand_number=0,
@@ -212,7 +215,7 @@ def world_actor_observation(
         riichi_sticks=0,
         dealer=0,
         scores=_DEFAULT_SCORES,
-        turn_actor=a,
+        turn_actor=seat_idx,
         phase=_DEFAULT_PHASE,
         live_wall_tiles_remaining=len(world.live_wall),
         kan_count=0,

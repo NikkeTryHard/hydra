@@ -203,7 +203,8 @@ def test_non_root_policies_consume_actor_observation_in_sandbox() -> None:
     d2 = policy.distribution(obs_opp2_same, legal)
     assert d1 == d2, "equal actor observations must map to equal policy distributions"
     # changed actor-visible information may change distribution (bias flips via observation_hash)
-    # We don't require strict inequality, but verify that distribution is derived from observation_hash
+    # We don't require strict inequality, but verify that distribution is derived from
+    # observation_hash
     # so that at least for some different worlds it can differ, and that it remains valid
     d_diff = policy.distribution(obs_opp_diff, legal)
     # distribution must be valid probabilities summing to 1 and finite
@@ -386,7 +387,8 @@ def test_candidate1_blueprint_tests() -> None:
     # double weighting detection
     oracle = double_weighting_oracle_detects_correction()
     assert oracle["double_fails"] is True
-    # vector backup preserves raw settlement: terminal vs model vectors distinct but both 4-dim finite
+    # vector backup preserves raw settlement: terminal vs model vectors distinct but both 4-dim
+    # finite
     w2 = make_full_world(
         concealed_hands=((0, 1), (2, 3), (4, 5), (6, 7)),
         live_wall=(),
@@ -508,7 +510,8 @@ def test_report() -> None:
         epoch=epoch, root_observation=obs, legal_actions=legal, rng=_rng(b"report")
     )
     telemetry = res["telemetry"]
-    # report-like fields: simulations, transitions, model_calls, max_*, uct_c, tie_break, candidate_id, tree_nodes, root_seat
+    # report-like fields: simulations, transitions, model_calls, max_*, uct_c, tie_break,
+    # candidate_id, tree_nodes, root_seat
     for key in (
         "simulations",
         "transitions",
@@ -534,8 +537,10 @@ def test_report() -> None:
 
 
 def test_confirm_naturally_under_matched_resources() -> None:
-    # Matched-resource confirmation: same budget view (calls / transitions / joules) should be declared
-    # For stub, we just verify that two planners with same config produce same resource view and that natural vs natural comparison is consistent.
+    # Matched-resource confirmation: same budget view (calls / transitions / joules) should be
+    # declared
+    # For stub, we just verify that two planners with same config produce same resource view and
+    # that natural vs natural comparison is consistent.
     w, obs = _make_world_and_obs()
     belief, epoch = _make_belief_epoch(obs)
     cfg_calls = NaturalISMCTSConfig(max_simulations=10, max_depth=4, resource_view="calls")

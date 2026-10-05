@@ -53,27 +53,27 @@ if TYPE_CHECKING:
 
 def _hash_to_uniform(key: bytes, index: int) -> float:
     """Map key+index to a top-32-bits uniform in [0, 1] for deterministic draws."""
-    b = hashlib.sha256(key + index.to_bytes(4, "big")).digest()
+    digest_bytes = hashlib.sha256(key + index.to_bytes(4, "big")).digest()
     # 32-bit uniform
-    return int.from_bytes(b[:4], "big") / 0xFFFFFFFF
+    return int.from_bytes(digest_bytes[:4], "big") / 0xFFFFFFFF
 
 
 def _masked_softmax(logits: tuple[float, ...], mask: tuple[bool, ...]) -> tuple[float, ...]:
     """Masked softmax with exact-zero illegal mass; raises on empty/non-finite support."""
     if len(logits) != len(mask):
         raise ContractError(f"logits len {len(logits)} != mask len {len(mask)}")
-    # Zero out illegal by -inf
-    mx = max((lv for lv, m in zip(logits, mask, strict=True) if m), default=0.0)
+    # Invariant: illegal actions carry exactly zero mass via -inf.
+    peak = max((logit for logit, legal in zip(logits, mask, strict=True) if legal), default=0.0)
     exps: list[float] = []
-    for lv, m in zip(logits, mask, strict=True):
-        if not m:
+    for logit, legal in zip(logits, mask, strict=True):
+        if not legal:
             exps.append(0.0)
         else:
-            exps.append(math.exp(lv - mx))
-    s = sum(exps)
-    if s <= 0 or not math.isfinite(s):
-        raise ContractError(f"masked softmax sum non-finite {s}")
-    return tuple(e / s for e in exps)
+            exps.append(math.exp(logit - peak))
+    total = sum(exps)
+    if total <= 0 or not math.isfinite(total):
+        raise ContractError(f"masked softmax sum non-finite {total}")
+    return tuple(mass / total for mass in exps)
 
 
 def _provenance_for_case(
@@ -119,9 +119,9 @@ def _case_hand_tiles(*, case_id: str, teacher_id: str, seed_material: bytes) -> 
         + case_id.encode()
     ).digest()
     rng = random.Random(int.from_bytes(seed, "big"))
-    tiles = list(range(136))
-    rng.shuffle(tiles)
-    return tuple(sorted(tiles[:13]))
+    shuffled_tiles = list(range(136))
+    rng.shuffle(shuffled_tiles)
+    return tuple(sorted(shuffled_tiles[:13]))
 
 
 def _discard_mask_for_hand(hand: tuple[int, ...]) -> tuple[bool, ...]:
@@ -135,17 +135,18 @@ def _discard_mask_for_hand(hand: tuple[int, ...]) -> tuple[bool, ...]:
     bridge = _require_census_bridge()
     records = bridge.action_census()  # type: ignore[attr-defined]
     index_by_tile: dict[int, int] = {}
-    for idx, entry in enumerate(records):
+    for position, entry in enumerate(records):
         if entry.kind == "discard" and entry.tile is not None:
             tile_id: int = int(entry.tile)
+            # First census entry wins; later duplicates alias the same tile.
             if tile_id not in index_by_tile:
-                index_by_tile[tile_id] = idx
+                index_by_tile[tile_id] = position
     mask = [False] * len(records)
     for tile in hand:
-        idx = index_by_tile.get(tile)
-        if idx is None:
+        position = index_by_tile.get(tile)
+        if position is None:
             raise ContractError(f"WP-10 blocked: no canonical discard action for held tile {tile}")
-        mask[idx] = True
+        mask[position] = True
     if not any(mask):
         raise ContractError("WP-10 blocked: exact legal mask empty")
     return tuple(mask)

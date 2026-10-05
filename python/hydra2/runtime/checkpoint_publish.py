@@ -61,11 +61,13 @@ def _snapshot_payload_to_cpu(payload: Mapping[str, Any]) -> dict[str, Any]:
             f"unsupported state leaf type {type(value).__name__}; convert to tensor/scalar first"
         )
 
+    # Payload shape is a precondition; non-mappings fail before snapshotting.
     if not isinstance(payload, Mapping):
         raise ContractError("checkpoint payload must be a mapping")
-    missing: list[str] = [key for key in PAYLOAD_SECTION_KEYS if key not in payload]
-    if len(missing) != 0:
-        raise ContractError(f"checkpoint payload missing sections: {missing}")
+    # Every section snapshots, even ones the writer never inspects, to keep hashes stable.
+    missing_sections: list[str] = [key for key in PAYLOAD_SECTION_KEYS if key not in payload]
+    if len(missing_sections) != 0:
+        raise ContractError(f"checkpoint payload missing sections: {missing_sections}")
     return {key: _snap(payload[key]) for key in payload}
 
 
@@ -153,41 +155,44 @@ class _BackgroundCheckpointWriter:
         """
         import time
 
+        # Closed writer never accepts new work; fail closed instead of silently dropping.
         if self._closed:
             raise ContractError("background checkpoint writer is closed")
+        # Bool is an int subclass; exclude it so generation 0/1 never confuse flags.
         if not isinstance(generation, int) or isinstance(generation, bool) or generation < 0:
             raise ContractError(
                 f"checkpoint generation must be a non-negative int, got {generation!r}"
             )
-        for older in [pend for pend in self._pending if pend.generation < generation]:
-            self._remove_completed(older, wait=True)
+        # Backpressure: an older generation still in flight blocks until it lands.
+        for older_pending in [pend for pend in self._pending if pend.generation < generation]:
+            self._remove_completed(older_pending, wait=True)
         # Shared timings dict (not the pend: the worker can start the job
         # before _PendingSave exists; the dict object is shared either way,
         # so no stamp is lost to the race).
-        timings: dict[str, float] = {}
+        span_timings: dict[str, float] = {}
 
         def _timed_job() -> Any:
             # Bounds the true serialization window (queue wait excluded:
             # with max_workers=1 the job starts when the previous
             # generation lands, so queue time is backpressure, not work).
-            timings["start_s"] = time.time()
+            span_timings["start_s"] = time.time()
             try:
                 return job()
             finally:
-                timings["end_s"] = time.time()
+                span_timings["end_s"] = time.time()
 
-        future = self._executor.submit(_timed_job)
-        pend = _PendingSave(
-            future=future,
+        worker_future = self._executor.submit(_timed_job)
+        pending_save = _PendingSave(
+            future=worker_future,
             generation=generation,
             on_done=on_done,
             description=description,
             span_sink=span_sink,
             main_spans=main_spans,
-            worker_timings=timings,
+            worker_timings=span_timings,
         )
-        self._pending.append(pend)
-        return future
+        self._pending.append(pending_save)
+        return worker_future
 
     def poll(self) -> None:
         """Fire hooks for landed generations; raise the first worker error.
@@ -196,9 +201,10 @@ class _BackgroundCheckpointWriter:
         the worker exception on the calling thread without firing that
         generation's hook; later generations stay queued for the next poll.
         """
-        for pend in list(self._pending):
-            if pend.future.done():
-                self._remove_completed(pend, wait=False)
+        for pending_save in list(self._pending):
+            # Only landed generations settle here; in-flight ones wait for drain.
+            if pending_save.future.done():
+                self._remove_completed(pending_save, wait=False)
 
     def wait(self, future: Any) -> None:
         """Block until one submitted future lands, firing its hook on success.
@@ -209,9 +215,10 @@ class _BackgroundCheckpointWriter:
         the worker error without firing the hook; unknown futures raise
         :class:`ContractError` (never silently pass).
         """
-        for pend in list(self._pending):
-            if pend.future is future:
-                self._remove_completed(pend, wait=True)
+        for pending_save in list(self._pending):
+            # Identity match on the exact future object; unknown futures reject.
+            if pending_save.future is future:
+                self._remove_completed(pending_save, wait=True)
                 return
         raise ContractError("background checkpoint wait on unknown future")
 
@@ -237,24 +244,27 @@ class _BackgroundCheckpointWriter:
 
     def _remove_completed(self, pend: _PendingSave, *, wait: bool) -> None:
         """Drop one generation from the queue, raising or firing as due."""
+        # Blocking settle waits for the worker; polling skips in-flight generations.
         if wait:
-            exc = pend.future.exception()
+            worker_error = pend.future.exception()
         else:
             if not pend.future.done():
                 return
-            exc = pend.future.exception()
+            worker_error = pend.future.exception()
         try:
             self._pending.remove(pend)
         except ValueError:
             raise ContractError(
                 f"background checkpoint generation already settled: {pend.description}"
             ) from None
-        if exc is not None:
-            raise exc
+        # Worker failures surface on the calling thread; the confirm hook never fires.
+        if worker_error is not None:
+            raise worker_error
         if pend.on_done is not None:
             pend.on_done()
-        sink = pend.span_sink
-        if sink is not None:
+        span_sink = pend.span_sink
+        # Spans are observer-only; without a sink nothing is recorded.
+        if span_sink is not None:
             # Spans emit only on success (a failed generation raises above;
             # its cost is visible as the stall, not as spans). Main-thread
             # spans first (submit order), then the worker serialization
@@ -263,13 +273,14 @@ class _BackgroundCheckpointWriter:
             # swallowed here while the save itself already landed.
             try:
                 for stage, t_start_s, dur_ms in pend.main_spans:
-                    sink.emit(
+                    span_sink.emit(
                         stage=stage, dur_ms=dur_ms, update=pend.generation, t_start_s=t_start_s
                     )
                 start_s = pend.worker_timings.get("start_s")
                 end_s = pend.worker_timings.get("end_s")
+                # Partial timing stamps (job never started) emit nothing, never an error.
                 if start_s is not None and end_s is not None and end_s >= start_s:
-                    sink.emit(
+                    span_sink.emit(
                         stage=f"worker:{pend.description}",
                         dur_ms=(end_s - start_s) * 1000.0,
                         update=pend.generation,

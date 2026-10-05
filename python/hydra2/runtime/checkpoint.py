@@ -42,7 +42,9 @@ PAYLOAD_SECTION_KEYS = (
 )
 
 
-class StateTreeError(CorruptArtifactError):  # pyrefly: ignore[invalid-inheritance]  # reason: base is the Rust bridge exception class at runtime (statically Any); MRO/pickling follow the bridge, covered by contract tests
+# Base is the Rust bridge exception class at runtime (statically Any);
+# MRO/pickling follow the bridge, covered by contract tests.
+class StateTreeError(CorruptArtifactError):
     """Training state contains a leaf type that cannot be hashed deterministically."""
 
 

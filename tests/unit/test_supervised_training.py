@@ -207,13 +207,8 @@ def test_deterministic_training_over_authoritative_synthetic_parquet(
 
     def run_once(seed: int) -> list[dict[str, float]]:
         loop, _, _ = _build_loop(tmp_path / f"run{seed}", parquet_dir, seed=42, max_updates=4)
-        # need fresh parquet copy per run? Reuse same dir but loop clones dataset ordering via seed
-        # To keep parquet identical, pass same dir; dataset permutation seeded.
-        # But we built loop with tmp_path/run{seed} ckpt dir differ, dataset same dir.
-        # For identical comparison we want two loops both seeded 42 but reading same parquet.
-        # So override dataset to use same parquet_dir but separate loop instance
-        # Actually _build_loop above created dataset from parquet_dir; but checkpoint_dir differs.
-        # We need to recreate loop with same seed but isolated ckpt dir; the function already uses seed=42 for both.
+        # Same parquet dir for both runs (ordering cloned via seed); only the ckpt dir
+        # differs per run. Both loops train with seed 42 for an identical comparison.
         return loop.train(max_updates=4)
 
     # First run
@@ -287,7 +282,8 @@ def test_checkpoint_resume_bitwise(tmp_path: Path, actor_parquet_factory) -> Non
     assert ckpt_path.exists()
     # Capture sampler cursor at checkpoint
     cursor_at_ckpt = loop_part.state.sampler_cursor
-    # Create new loop instance to simulate fresh process resume (same seed, but will be overwritten by resume)
+    # Create new loop instance to simulate fresh process resume (same seed, but will be overwritten
+    # by resume)
     loop_resumed, ds_resumed, model_resumed = _build_loop(
         tmp_path / "resumed", parquet_dir, seed=999, max_updates=8
     )
@@ -674,7 +670,9 @@ def test_real_mode_bad_row_raises_contract_error(tmp_path: Path) -> None:
 
 
 def test_supervised_loop_wall_ledger_overlap_raises(tmp_path: Path, actor_parquet_factory) -> None:
-    """Loop ledger mirrors replay: ranks-written corpus overlapping eval walls raises from the join."""
+    """Loop ledger mirrors replay: ranks-written corpus overlapping eval walls
+    raises from the join.
+    """
     from hydra2.belief.oracle_store import PrivilegedOracleLoader
     from hydra2.data.parquet import write_privileged_ranks
 

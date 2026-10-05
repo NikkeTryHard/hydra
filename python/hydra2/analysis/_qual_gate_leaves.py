@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 try:
     from hydra2._native import search as _gates_bridge  # pyrefly: ignore[missing-import]
 except ImportError:
-    _gates_bridge = None  # type: ignore[assignment]
+    _gates_bridge = None
 
 from hydra2.contracts.common import ContractError as ContractError
 

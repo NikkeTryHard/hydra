@@ -108,7 +108,8 @@ def test_parent_only_reweight_negative_fixture() -> None:
             "successor must be transitioned world, not parent-only reweight"
         )
         assert s.delta_ref != p.world_ref
-    # Also ensure that no successor is just parent reweighted: we check that our kernel does not return parent
+    # Also ensure that no successor is just parent reweighted: we check that our kernel does not
+    # return parent
     parent_world_ids = {p.world_ref}
     successor_ids = {s.successor_world_ref for s in succs}
     assert parent_world_ids.isdisjoint(successor_ids)
@@ -244,8 +245,10 @@ def test_hidden_permutation_invariance() -> None:
     from hydra2.belief.natural import _build_tiny_corpus_for_epoch
 
     corpus = _build_tiny_corpus_for_epoch(epoch, registry=belief._worlds)  # type: ignore[attr-defined]
-    # At least w1 and w2 or their regenerated equivalents are in corpus; check that hidden permutation doesn't change belief's target
-    # More directly: sampling with same rng should have same distribution regardless of hidden permutation ordering
+    # At least w1 and w2 or their regenerated equivalents are in corpus; check that hidden
+    # permutation doesn't change belief's target
+    # More directly: sampling with same rng should have same distribution regardless of hidden
+    # permutation ordering
     # For this test we just assert observation invariance
     assert len([w for w in corpus if w.observation_hash == obs1.observation_hash]) >= 2
 
@@ -276,7 +279,8 @@ def test_density_normalization_support() -> None:
     "sha256:" + "9" * 64
     ld_unknown = belief.log_density(epoch, world_ref=corpus[0].world_id)  # valid
     assert math.isfinite(ld_unknown)
-    # Try unknown world that exists but not in corpus? We can create a world with different observation_hash
+    # Unknown world exists but is absent from the corpus: build one with a different
+    # observation_hash.
     w_bad = make_full_world(
         concealed_hands=((0, 1), (2, 3), (4, 5), (6, 8)),
         live_wall=(9, 10, 11, 12),
@@ -308,10 +312,11 @@ def test_deterministic_confirmation_replay() -> None:
     r1 = runner.confirm(cases, rng=make_rng())
     r2 = runner.confirm(cases, rng=make_rng())
     assert r1 == r2
-    # Different seed should potentially give different action distribution, but still deterministic per seed
+    # A different seed may shift the action distribution; replay stays deterministic
+    # per seed.
     rng_diff = _rng(b"different_seed")
     runner.confirm(cases, rng=rng_diff)
-    # At least not all identical? Could be same by chance but we check that rng affects output via our implementation mixing rng
-    # Our runner mixes rng.random_below and random_float, so different seeds should give different selected_action with high prob
+    # Identical output across seeds happens only by chance: the runner mixes
+    # rng.random_below and random_float, so seeds select different actions w.h.p.
     # To be robust, just check that replay with same seed is identical (already above)
     assert r1 == r2

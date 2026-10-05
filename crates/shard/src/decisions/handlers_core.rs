@@ -1,3 +1,4 @@
+//! Core draw/discard decision handlers for the log-order walker (see super).
 use super::handlers_close::{do_ankan, do_claim, do_hora, do_kakan, do_ryukyoku};
 use super::table::ActionTable;
 use super::walker::{WalkReject, Walker, in_skip, int_value, is_end, is_start, prescan};

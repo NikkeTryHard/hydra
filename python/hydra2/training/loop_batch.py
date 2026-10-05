@@ -37,7 +37,9 @@ def _window_means(*windows: list[torch.Tensor]) -> list[float]:
         if len(window) == 0:
             slots.append(None)
         else:
-            stacked = torch.stack([t.detach().float().reshape(()) for t in window])
+            stacked = torch.stack(
+                [loss_entry.detach().float().reshape(()) for loss_entry in window]
+            )
             means.append(stacked.mean())
             slots.append(len(means) - 1)
     out: list[float] = [0.0] * len(windows)
@@ -91,7 +93,8 @@ def _validate_batch_no_privileged(batch: dict[str, Any]) -> None:
             raise ContractError(
                 f"batch contains privileged field {key!r} — WP-05B forbids privileged inputs"
             )
-        # Nested dicts (event_targets etc.) — also scan string keys
+        # Invariant: nested string keys carry the same privileged ban as top level;
+        # skipping the inner scan leaks labels past the outer gate.
         val: Any = batch[key]
         if isinstance(val, dict):
             for sub_any in val:
@@ -367,10 +370,10 @@ def _batch_action_kinds(batch: dict[str, Any], targets: torch.Tensor) -> list[st
     if not isinstance(raw, (list, tuple)):
         return None
     raw_list: list[object] = list(raw)
-    kinds = [str(k) for k in raw_list]
+    kinds = [str(entry) for entry in raw_list]
     if len(kinds) != targets.shape[0]:
         return None
-    if any(k == "" for k in kinds):
+    if any(kind_entry == "" for kind_entry in kinds):
         return None
     return kinds
 

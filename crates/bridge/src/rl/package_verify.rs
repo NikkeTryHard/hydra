@@ -458,7 +458,6 @@ fn upsert_index(root: &Path, index: Option<&Value>, work_package: &str, digest: 
 
 struct RecordView<'a> {
     status: &'a str,
-    inputs: &'a Vec<Value>,
     outputs: &'a Vec<Value>,
     commands: &'a Vec<Value>,
     tests: &'a Vec<Value>,
@@ -545,7 +544,6 @@ fn validate_payload<'a>(payload: &'a Map<String, Value>, work_package: &str) -> 
     }
     Ok(RecordView {
         status,
-        inputs,
         outputs,
         commands,
         tests,

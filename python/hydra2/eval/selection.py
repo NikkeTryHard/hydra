@@ -134,8 +134,8 @@ def selection_gate_check(config: SelectionConfig, n_blocks_observed: int) -> Non
             f"extra look at {n_blocks_observed} blocks "
             f"outside declared peeks {list(config.declared_peeks)!r}"
         )
-    elapsed = tuple(peek for peek in config.declared_peeks if peek <= n_blocks_observed)
-    sequential_design_guard(design=config.design, declared_peeks=list(elapsed))
+    elapsed_peeks = tuple(peek for peek in config.declared_peeks if peek <= n_blocks_observed)
+    sequential_design_guard(design=config.design, declared_peeks=list(elapsed_peeks))
 
 
 def score_selection(
@@ -182,6 +182,7 @@ def score_selection(
         effective = tolerance
     else:
         raise ContractError(f"tolerance must be a BlockTolerance, got {type(tolerance).__name__}")
+    # Fast path: an owned dict needs no copy; other mappings are normalized.
     if isinstance(telemetry_by_game, dict):
         telemetry_dict = telemetry_by_game
     else:
@@ -203,9 +204,9 @@ def score_selection(
             f"peek_index {peek_index} != {len(result.valid)} valid wall blocks "
             f"({len(result.excluded)} excluded beyond tolerance)"
         )
-    valid_ids = {wall_id for wall_id, _ in result.valid}
+    valid_ids = {wall_id for wall_id, _mean in result.valid}
     valid_blocks = tuple(block for block in blocks if block.wall_id in valid_ids)
-    contrasts = placement_block_contrast(valid_blocks)
+    valid_contrasts = placement_block_contrast(valid_blocks)
     selection_gate_check(config, peek_index)
     seed_bytes_oracle = hashlib.sha256(f"score-selection-v1:{config.seed}".encode()).digest()
     try:
@@ -222,6 +223,6 @@ def score_selection(
         seed_bytes = bridged_seed
     stream = RandomStream(seed_bytes)
     est, low, high = bootstrap_blocks(
-        contrasts, stream=stream, resamples=config.resamples, alpha=config.alpha
+        valid_contrasts, stream=stream, resamples=config.resamples, alpha=config.alpha
     )
-    return fmean(contrasts), (est, low, high), result.excluded
+    return fmean(valid_contrasts), (est, low, high), result.excluded

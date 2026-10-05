@@ -1,3 +1,5 @@
+// CLI smoke binary: stdout timing/size report is its interface (same as feed_duel.rs).
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 use std::{error::Error, fs, time::Instant};
 
 fn main() -> Result<(), Box<dyn Error>> {

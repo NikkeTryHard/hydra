@@ -430,7 +430,7 @@ class ObservationBuilder:
             winds = _quad(
                 snapshot["seat_winds"],
                 name="seat_winds",
-                validator=lambda v, name: TileType(  # pyrefly: ignore[unknown-argument-type]  # reason: snapshot statically object; range-validated to 27..33 below
+                validator=lambda v, name: TileType(  # snapshot object; range-validated below
                     _require_plain_int(v, name=name, minimum=27, maximum=33)  # pyrefly: ignore[unknown-argument-type]  # reason: snapshot statically object; range-validated to 27..33 here
                 ),
             )
@@ -530,7 +530,7 @@ class ObservationBuilder:
             own_drawn_tile=(
                 None
                 if self._drawn[seat] is None
-                else _bridge_contracts.make_tile_id(self._drawn[seat])  # type: ignore[arg-type]  # reason: None filtered by ternary; range validated inside make_tile_id
+                else _bridge_contracts.make_tile_id(self._drawn[seat])  # range inside
             ),
             visible_discards=tuple(tuple(river) for river in self._discards),
             visible_melds=tuple(tuple(row) for row in self._melds),

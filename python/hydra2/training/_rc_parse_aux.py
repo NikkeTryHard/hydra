@@ -21,7 +21,7 @@ from hydra2.training._rc_sections import TelemetryConfig as TelemetryConfig
 try:
     from hydra2._native import contracts as _aux_bridge  # pyrefly: ignore[missing-import]
 except ImportError:  # pragma: no cover - import-time signal, same text as call-site
-    _aux_bridge = None  # type: ignore[assignment]
+    _aux_bridge = None
 
 
 def _require_aux_bridge() -> Any:

@@ -45,7 +45,7 @@
 //! module owns the manifest/scan-cache bytes the scan keys on, not the scan
 //! loop itself.
 //!
-//! Filename qualification (Data m6): `validate_manifest` lives in
+//! Filename qualification (Data M6): `validate_manifest` lives in
 //! `src/hydra2/training/shard_reader.py:562-566` — NOT in `parquet.py` (424
 //! lines, has no such symbol). Any cross-reference to `validate_manifest`
 //! without a filename is ambiguous; this module always qualifies it.
@@ -61,7 +61,7 @@ use crate::digest::sha256_hex;
 ///
 /// Value-equal to `crate::partition::PARTITION_ORDER` and to
 /// `stream_manifest.PARTITION_ORDER` (`:50`). See partition module doc for
-/// the Data m4 value-equality note.
+/// the Data M4 value-equality note.
 pub const PARTITION_ORDER: [&str; 5] =
     ["train", "validation", "test", "decision_eval", "block_eval"];
 
@@ -716,7 +716,7 @@ pub fn parse_shuffle_rng(
 }
 
 // ---------------------------------------------------------------------------
-// Stream cursor (YAML-resume round-trip, Data m9)
+// Stream cursor (YAML-resume round-trip, Data M9)
 // ---------------------------------------------------------------------------
 
 /// Resumable frontier: file seek + byte resume + accounting.
@@ -1081,7 +1081,7 @@ mod tests {
 
     #[test]
     fn cursor_to_dict_from_dict_round_trip_m9() {
-        // Data m9: the bridge needs the YAML-resume round-trip, not
+        // Data M9: the bridge needs the YAML-resume round-trip, not
         // getters-only (stream_read.py:195-222).
         let cursor = StreamCursor {
             file_index: 3,

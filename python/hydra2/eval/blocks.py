@@ -142,7 +142,8 @@ def aggregate_blocks(
     try:
         sort_leaf = _bridge_eval.eval_blocks_sort_wall_ids  # type: ignore[attr-defined]  # reason: eval_blocks leaf lands with MAIN wiring; AttributeError fallback covers stale .so
     except AttributeError:
-        ordered = sorted(blocks, key=lambda item: item.wall_id)
+        # Stale bridge without the sort leaf: wall-id order is the stable oracle.
+        ordered = sorted(blocks, key=lambda block: block.wall_id)
     else:
         try:
             visit_order: list[str] = sort_leaf([block.wall_id for block in blocks])
@@ -150,14 +151,14 @@ def aggregate_blocks(
             raise ContractError(str(exc)) from exc
         rank = {wall_id: index for index, wall_id in enumerate(visit_order)}
 
-        def _visit_key(item: WallBlock) -> int:
-            return rank[item.wall_id]
+        def _visit_key(block: WallBlock) -> int:
+            return rank[block.wall_id]
 
         ordered = sorted(blocks, key=_visit_key)
     for block in ordered:
-        exclusion = _first_disqualification(block, telemetry_by_game, tolerance)
-        if exclusion is not None:
-            excluded.append(exclusion)
+        disqualification = _first_disqualification(block, telemetry_by_game, tolerance)
+        if disqualification is not None:
+            excluded.append(disqualification)
             continue
         valid.append((block.wall_id, _bridge_eval.aggregate_wall_block(block)))
     return BlockAggregateResult(valid=tuple(valid), excluded=tuple(excluded))
@@ -172,6 +173,7 @@ def _first_disqualification(
         empty_missing = _bridge_eval.eval_blocks_empty_or_missing  # type: ignore[attr-defined]  # reason: eval_blocks leaf lands with MAIN wiring; AttributeError fallback covers stale .so
         flag_leaf = _bridge_eval.eval_blocks_flag_exclusion  # type: ignore[attr-defined]  # reason: eval_blocks leaf lands with MAIN wiring; AttributeError fallback covers stale .so
     except AttributeError:
+        # Stale bridge without the leaves: fall through to the Python oracle below.
         pass
     else:
         try:

@@ -75,10 +75,10 @@ def _actor_into_output(
     with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16, cache_enabled=False):
         logits, fused_heads = actor.tensor_forward(planes, planes["history_mask"])
     selected, old_logp = strict_categorical(logits, planes["legal_mask"], planes["uniform"])
-    output[: 8 * batch].view(torch.int64).copy_(selected)
-    output[8 * batch : 12 * batch].view(torch.float32).copy_(old_logp)
+    _ = output[: 8 * batch].view(torch.int64).copy_(selected)
+    _ = output[8 * batch : 12 * batch].view(torch.float32).copy_(old_logp)
     values = output[12 * batch : 28 * batch].view(torch.float32).view(batch, 4)
-    values.copy_(fused_heads[:, 16:20])
+    _ = values.copy_(fused_heads[:, 16:20])
     _assert_tensor(torch.isfinite(values).all(), "actor value vector must be finite")
 
 
@@ -166,7 +166,7 @@ class GpuService:
 
     def replace_pool(self, pool: Any) -> None:
         """Keep CUDA storage/streams; a live lease would make rebinding unsafe."""
-        if self.flights or any(slot.live for slot in self.slots.values()):
+        if len(self.flights) > 0 or any(slot.live for slot in self.slots.values()):
             raise ContractError("pool replacement requires all issued leases captured")
         # Register on the new pool before swapping: a registration failure
         # leaves this binding intact, and the new pool stays owned by its
@@ -200,7 +200,7 @@ class GpuService:
         raw = torch.empty(lease.input_bytes, dtype=torch.uint8, device=self.device)
         output = torch.empty(lease.output_bytes, dtype=torch.uint8, device=self.device)
         planes = _plane_views(raw, lease.input_layout)
-        raw.copy_(slot.device_input[: lease.input_bytes])
+        _ = raw.copy_(slot.device_input[: lease.input_bytes])
         warm_stream = torch.cuda.Stream(device=self.device)
         warm_stream.wait_stream(self.compute_stream)
         with torch.cuda.stream(warm_stream):
@@ -236,7 +236,7 @@ class GpuService:
         compute_done = torch.cuda.Event()
         lease.mark_h2d_issued()
         with torch.cuda.stream(self.copy_stream):
-            slot.device_input[: lease.input_bytes].copy_(
+            _ = slot.device_input[: lease.input_bytes].copy_(
                 slot.host_input[: lease.input_bytes], non_blocking=True
             )
             h2d_done.record(self.copy_stream)
@@ -250,9 +250,9 @@ class GpuService:
                     captured = self._capture_actor(lease, actor, slot)
                 elif actor is not self._graph_actor:
                     raise ContractError("CUDA replay requires stable actor module storage")
-                captured.input.copy_(slot.device_input[: lease.input_bytes])
+                _ = captured.input.copy_(slot.device_input[: lease.input_bytes])
                 captured.graph.replay()
-                slot.device_output[: lease.output_bytes].copy_(captured.output)
+                _ = slot.device_output[: lease.output_bytes].copy_(captured.output)
             else:
                 _actor_into_output(actor, planes, slot.device_output, lease.n_valid)
             compute_done.record(self.compute_stream)
@@ -269,7 +269,7 @@ class GpuService:
             with torch.cuda.stream(self.copy_stream):
                 self.copy_stream.wait_event(flight.compute_done)
                 size = flight.lease.output_bytes
-                flight.slot.host_output[:size].copy_(
+                _ = flight.slot.host_output[:size].copy_(
                     flight.slot.device_output[:size], non_blocking=True
                 )
                 event.record(self.copy_stream)
@@ -297,14 +297,14 @@ class GpuService:
         return captured
 
     def wait_for_cuda_progress(self) -> None:
-        if not self.flights:
+        if len(self.flights) == 0:
             raise ContractError("no admitted CUDA work can provide progress")
         self.flush_outputs()
         event = self.flights[0].d2h_done
         if event is None:
             raise ContractError("CUDA progress requires an issued output transfer")
         event.synchronize()
-        self.drain()
+        _ = self.drain()
 
     def copy_actor_at_boundary(self, learner: Any, actor: Any) -> None:
         """Copy at a completed optimizer boundary on the same compute stream."""
@@ -346,13 +346,13 @@ class GpuService:
 
     def quiesce(self) -> None:
         self.pool.quiesce()
-        self.drain(wait=True)
+        _ = self.drain(wait=True)
         self.compute_stream.synchronize()
         self.copy_stream.synchronize()
         self.pool.drain()
 
     def close(self) -> None:
-        if self.flights or any(slot.live for slot in self.slots.values()):
+        if len(self.flights) > 0 or any(slot.live for slot in self.slots.values()):
             raise ContractError("CUDA service close requires owner-driven quiescence")
         self.pool.close()
         self._actor_graphs.clear()

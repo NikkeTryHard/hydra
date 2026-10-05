@@ -361,7 +361,7 @@ class ActorLearnerReplay(ActorLearnerReplayCheckpointMixin):
                 if raw_batch_any is None:
                     raise CorruptArtifactError("authoritative dataset returned None batch")
                 raw_batch: dict[str, Any] = raw_batch_any
-                _validate_batch_no_privileged(raw_batch)  # pyrefly: ignore[unknown-argument-type] # dataset rows dynamic; validator owns the shape gates
+                _validate_batch_no_privileged(raw_batch)  # dynamic rows; validator gates
                 self.privileged_store.verify_no_leakage_into_batch(raw_batch)
                 raw_batch = self._maybe_join_oracle_targets(raw_batch)
                 batch = _move_batch_to_device(raw_batch, self.device)
@@ -373,15 +373,16 @@ class ActorLearnerReplay(ActorLearnerReplayCheckpointMixin):
                 self._backward(scaled)
                 step_scalar: float = step_total.detach().cpu().item()  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for logging scalar; alternative loses logging. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
                 micro_losses.append(step_scalar)
-                policy_scalar: float = losses["policy"].detach().cpu().item()  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for logging scalar; alternative loses logging. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
+                # Intentional host sync for logging scalars.
+                policy_scalar: float = losses["policy"].detach().cpu().item()
                 micro_policy.append(policy_scalar)
-                placement_scalar: float = losses["placement"].detach().cpu().item()  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for logging scalar; alternative loses logging. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
+                placement_scalar: float = losses["placement"].detach().cpu().item()
                 micro_placement.append(placement_scalar)
-                value_scalar: float = losses["value"].detach().cpu().item()  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for logging scalar; alternative loses logging. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
+                value_scalar: float = losses["value"].detach().cpu().item()
                 micro_value.append(value_scalar)
-                event_scalar: float = losses["event"].detach().cpu().item()  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for logging scalar; alternative loses logging. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
+                event_scalar: float = losses["event"].detach().cpu().item()
                 micro_event.append(event_scalar)
-                belief_scalar: float = losses["belief"].detach().cpu().item()  # pyrefly: ignore[pytorch-efficiency-lint-item-call] # intentional host sync for logging scalar; alternative loses logging. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
+                belief_scalar: float = losses["belief"].detach().cpu().item()
                 micro_belief.append(belief_scalar)
                 _event_heads_any: Any = losses.get("_event_per_head", {})
                 if isinstance(_event_heads_any, dict):

@@ -347,16 +347,16 @@ class _StreamDatasetBufferMixin(_StreamDatasetCore):
             raise ContractError("dataset buffer row hash mismatch on restore")
         if len(rebuilt_rows) != int(snapshot.get("total_rows", len(rebuilt_rows))):
             raise ContractError("dataset buffer total_rows mismatch on restore")
-        if not (dropped <= offset <= dropped + len(rebuilt_rows)):  # type: ignore[operator]
+        if not (dropped <= offset <= dropped + len(rebuilt_rows)):
             raise ContractError("dataset buffer offset outside live window on restore")
         # Commit (verify-then-mutate): rows + privileged + index + counters.
         self._rows = rebuilt_rows
         self.privileged = rebuilt_priv
         self._buffered_entries = [dict(entry) for entry in typed_entries]
-        self._offset = int(offset)  # type: ignore[arg-type]
-        self._dropped = int(dropped)  # type: ignore[arg-type]
-        self._microbatches_in_epoch = int(micro)  # type: ignore[arg-type]
-        self._epoch = int(epoch)  # type: ignore[arg-type]
+        self._offset = int(offset)
+        self._dropped = int(dropped)
+        self._microbatches_in_epoch = int(micro)
+        self._epoch = int(epoch)
         # Prefix totals (fail-closed when absent/malformed; never recomputed).
         for name in ("replayed", "sim_replayed", "expand_quarantined"):
             value = snapshot.get(name)
@@ -365,9 +365,9 @@ class _StreamDatasetBufferMixin(_StreamDatasetCore):
         reasons = snapshot.get("expand_quarantine_reasons")
         if not isinstance(reasons, dict):
             raise ContractError("dataset buffer quarantine reasons must be a mapping")
-        self.replayed = int(snapshot["replayed"])  # type: ignore[arg-type]
-        self.sim_replayed = int(snapshot["sim_replayed"])  # type: ignore[arg-type]
-        self.expand_quarantined = int(snapshot["expand_quarantined"])  # type: ignore[arg-type]
+        self.replayed = int(snapshot["replayed"])
+        self.sim_replayed = int(snapshot["sim_replayed"])
+        self.expand_quarantined = int(snapshot["expand_quarantined"])
         self.expand_quarantine_reasons = {str(k): int(v) for k, v in reasons.items()}  # pyrefly: ignore[unknown-argument-type] # snapshot reasons dynamic; str/int own the gates
 
     @property

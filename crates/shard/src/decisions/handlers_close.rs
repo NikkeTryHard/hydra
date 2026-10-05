@@ -1,3 +1,4 @@
+//! Claim/kan/hora/terminal handlers closing walker decisions (see super).
 use super::handlers_core::check_drawer;
 use super::walker::{WalkReject, Walker};
 use crate::engine::{draw_offer, kyushu_first_draw};

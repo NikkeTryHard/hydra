@@ -90,6 +90,7 @@ def _ranks_for_join(
     # Guards below prove 4 ints (bool rejected), so int() would be identity.
     _candidate_ints: list[int] = list(candidate)
     ranks_tuple: tuple[int, ...] = tuple(_candidate_ints)
+    # Accept both seat conventions: 0..3 passes through, 1..4 shifts by -1.
     if sorted(ranks_tuple) == [0, 1, 2, 3]:
         placement = tuple(ranks_tuple)
     elif sorted(ranks_tuple) == [1, 2, 3, 4]:
@@ -171,11 +172,13 @@ def join_oracle_targets(
     """
     if not isinstance(decision_ids, (list, tuple)) or len(decision_ids) == 0:
         raise ContractError("join_oracle_targets: decision_ids must be a non-empty list")
+    # Reject opaque-id violations: privileged ranks never enter the actor batch.
     for _did in decision_ids:
         if not isinstance(_did, str) or _did == "":
             raise ContractError(
                 f"join_oracle_targets: decision_id must be opaque non-empty str, got {_did!r}"
             )
+    # No source means no provenance; fail closed before joining.
     if source is None:
         raise ContractError("join_oracle_targets: source is required")
     placements: list[tuple[int, ...]] = []
@@ -436,7 +439,7 @@ def assert_privileged_loader_isolated_from_encoder() -> None:
         src: str | None = None
         try:
             from importlib.resources import (
-                as_file as _as_file,  # type: ignore[attr-defined]  # reason: as_file exported conditionally; import validates. Evidence: https://docs.python.org/3/library/importlib.resources.html#importlib.resources.as_file
+                as_file as _as_file,  # conditional export; import validates
             )
 
             _trav = _ir.files("hydra2.models") / "encoder.py"

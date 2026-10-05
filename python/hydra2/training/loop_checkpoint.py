@@ -174,7 +174,7 @@ class SupervisedLoopCheckpointMixin:
         hashes = dict(self.manifest_hashes)
         writer = self._checkpoint_writer()
         external = bool(self.__dict__.get("_ckpt_writer_external", False))
-        generation = int(self.state.global_update)
+        generation = self.state.global_update
         dest = Path(destination)
 
         def _publish() -> Path:
@@ -226,7 +226,7 @@ class SupervisedLoopCheckpointMixin:
         hooks for a writer nobody polls).
         """
         current = self.__dict__.get("_ckpt_writer")
-        if current is not None and getattr(current, "_pending", None):
+        if current is not None and bool(getattr(current, "_pending", None)):
             raise ContractError("cannot attach a checkpoint writer while saves are still pending")
         self.__dict__["_ckpt_writer"] = writer
         self.__dict__["_ckpt_writer_external"] = True

@@ -249,7 +249,7 @@ class GumbelSearchPlannerActMixin(GumbelSearchPlannerSearchMixin):
             except (AssertionError, AttributeError, ValueError, TypeError, OSError) as exc:
                 raise ContractError(f"gumbel: UtilityVector build failed: {exc}") from exc
         try:
-            spec_hash = _csh(request.candidate_spec)  # type: ignore[call-arg]
+            spec_hash = _csh(request.candidate_spec)
         except Exception as exc:
             raise ContractError(f"gumbel: candidate_spec_hash required: {exc}") from exc
         try:
@@ -304,7 +304,7 @@ class GumbelSearchPlannerActMixin(GumbelSearchPlannerSearchMixin):
             raise ContractError("deadline_monotonic_ns must be positive int")
 
 
-class GumbelSearchPlanner(  # type: ignore[misc]
+class GumbelSearchPlanner(
     GumbelSearchPlannerActMixin,
     Planner,
 ):

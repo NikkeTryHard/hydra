@@ -1,8 +1,8 @@
 //! columnar: thin Arrow-C stream capsule boundary over `hydra-shard` expand.
 //!
 //! DAG (Wave5 B6): this module is the bridge's shard edge (`feed + shard +
-//! pyo3` once the manifest edge lands; the `hydra-shard` + `arrow-array` /
-//! `arrow-schema` bridge dependencies are Main-owned — see ASSUMPTION-MANIFEST).
+//! pyo3`; the `hydra-shard` + `arrow-array` / `arrow-schema` bridge
+//! dependencies are MAIN-owned).
 //! FORBIDS: parse/encode/hash/pool logic, writer properties, batch contents —
 //! arg-check + detach + capsule return only. All expand/sim math, the batch
 //! schema, and every parquet/IPC writer knob live shard-side; this file only

@@ -166,6 +166,7 @@ def enumerate_sampled(
     frame = frame_kernel.enumerate_next(
         epoch=epoch, particle=particle, action=action, policy_set=policy_set
     )
+    # Empty frame has no categorical law; fail closed before sampling.
     if len(frame) == 0:
         raise ContractError("frame kernel returned no successors")
     probs = [_frame_probability(s) for s in frame]
@@ -173,10 +174,8 @@ def enumerate_sampled(
     if not math.isfinite(total) or total <= 0:
         raise ContractError("frame kernel total mass must be positive finite")
     draws = cfg.samples_per_parent_action
-    # Draws via the search bridge (CTR-exact categorical over the frame law).
-    # Cursor replay: seed/cursor in, end_cursor out, rng jumped so the stream
-    # continues exactly. raw_weight = P(chosen)/draws comes from the bridge
-    # (proven equal below). ImportError with build-ext hint, no fallback.
+    # Invariant: CTR-exact categorical draws via bridge; replay keeps stream exact.
+    # Bridge weight equals P(chosen)/draws (proven equal below); rejects raise.
     seed, cursor = _ctr_seed_cursor(rng)
     search_mod = _require_search_bridge(need="sampled_draws", purpose="sampling traces")
     try:
@@ -204,6 +203,7 @@ def enumerate_sampled(
     out: list[SampledSuccessor] = []
     for pick_raw, w_raw in zip(picks, weights, strict=True):
         pick: int = pick_raw
+        # Out-of-range picks would index the wrong packet; fail closed here.
         if pick < 0 or pick >= len(frame):
             raise ContractError(f"bridge pick {pick!r} out of frame range")
         chosen = frame[pick]

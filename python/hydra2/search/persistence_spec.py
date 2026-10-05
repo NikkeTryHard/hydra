@@ -171,7 +171,7 @@ def validate_deadline_and_fallback(
             "hydra2._native.search missing; rebuild the bridge with `pixi run build-ext`"
         ) from exc
     try:
-        _bridge_spec.persistence_spec_validate_deadline_and_fallback(  # type: ignore[attr-defined]
+        _bridge_spec.persistence_spec_validate_deadline_and_fallback(
             arm.id, deadline_ms, fallback_margin_ms
         )
     except (AttributeError, ImportError) as exc:
@@ -199,7 +199,7 @@ def deterministic_gumbel_for_arm(
             "hydra2._native.search missing; rebuild the bridge with `pixi run build-ext`"
         ) from exc
     try:
-        out: float = _bridge_spec.persistence_spec_gumbel_for_arm(  # type: ignore[attr-defined]
+        out: float = _bridge_spec.persistence_spec_gumbel_for_arm(
             arm_id, case_id, action_id, seed_bytes
         )
         return out

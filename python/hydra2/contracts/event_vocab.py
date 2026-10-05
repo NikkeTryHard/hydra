@@ -261,7 +261,7 @@ def _validate_delta_value(path: tuple[str | int, ...], operation: str, value: ob
 
     def _tile_value(candidate: object) -> None:
         _plain_int(candidate, "dora_indicators.append")
-        _bridge_contracts.make_tile_id(candidate)  # type: ignore[arg-type]  # reason: _plain_int bool-checks candidate above; range validated inside make_tile_id
+        _bridge_contracts.make_tile_id(candidate)  # bool-checked; range inside
 
     if root == "scores":
         if seated_second is None:
@@ -292,6 +292,7 @@ def _validate_delta_value(path: tuple[str | int, ...], operation: str, value: ob
             sorted(_MELD_OBJECT_KEYS)
         ):
             raise ContractError("melds.append requires the canonical meld object shape")
+        # Meld fields are object-typed; each callee validates.
         _ = _require_str(value["meld_id"], name="meld.meld_id")  # pyrefly: ignore[unknown-argument-type]  # reason: Mapping shape-checked above; field validators narrow each field
         meld_kind: object = value["kind"]
         _ = _require_enum(
@@ -299,11 +300,11 @@ def _validate_delta_value(path: tuple[str | int, ...], operation: str, value: ob
             name="meld.kind",
             allowed=("chi", "pon", "daiminkan", "ankan", "kakan"),
         )
-        _bridge_contracts.make_seat(value["owner"])  # type: ignore[arg-type]  # reason: meld field statically object; validated inside make_seat
+        _bridge_contracts.make_seat(value["owner"])
         if value["source_seat"] is not None:
-            _bridge_contracts.make_seat(value["source_seat"])  # type: ignore[arg-type]  # reason: meld field statically object; validated inside make_seat
+            _bridge_contracts.make_seat(value["source_seat"])
         if value["called_tile"] is not None:
-            _bridge_contracts.make_tile_id(value["called_tile"])  # type: ignore[arg-type]  # reason: meld field statically object; validated inside make_tile_id
+            _bridge_contracts.make_tile_id(value["called_tile"])
         _ = _tile_tuple(value["tiles"], name="meld.tiles")  # pyrefly: ignore[unknown-argument-type]  # reason: Mapping shape-checked above; field validators narrow each field
         return
     if root == "riichi_states":

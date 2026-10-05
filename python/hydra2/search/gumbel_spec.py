@@ -58,7 +58,7 @@ def _leaf(name: str) -> Any:
 def _pick_hash(caller_value: str | None, default_value: str) -> str:
     """Caller-override-wins hash pick via the bridge (None/empty → default)."""
     try:
-        return _leaf("gumbel_spec_pick_hash")(caller_value, default_value)  # pyrefly: ignore[unknown-argument-type] # untyped bridge pick fn
+        return _leaf("gumbel_spec_pick_hash")(caller_value, default_value)  # untyped bridge pick fn
     except (ValueError, TypeError) as exc:
         raise ContractError(str(exc)) from exc
 
@@ -107,16 +107,18 @@ def _model_hash_from_identity(model: Any | None) -> str:
     try:
         from hydra2.search.candidate0_frozen import _model_hash_from_identity as _c0_hash
 
-        return _c0_hash(model)  # pyrefly: ignore[unknown-argument-type] # untyped candidate0 hash
+        return _c0_hash(model)  # untyped candidate0 hash
     except (ImportError, AttributeError, ValueError, TypeError, OSError) as exc:
         logger.debug("gumbel: candidate0 model-hash import fallback", exc_info=exc)
     if model is not None:
         ident: Any = getattr(model, "model_identity", None)
         if ident is not None:
-            return _bridge_contracts.make_digest_text(str(ident))  # pyrefly: ignore[unknown-argument-type] # untyped bridge digest
+            return _bridge_contracts.make_digest_text(str(ident))  # untyped bridge digest
     from hydra2.models.model import Hydra2BaselineModel
 
-    return _bridge_contracts.make_digest_text(str(Hydra2BaselineModel().model_identity))  # pyrefly: ignore[unknown-argument-type] # untyped bridge digest
+    return _bridge_contracts.make_digest_text(
+        str(Hydra2BaselineModel().model_identity)
+    )  # untyped bridge digest
 
 
 def _derive_utility_manifest_hash(model: Any | None) -> str:
@@ -126,7 +128,7 @@ def _derive_utility_manifest_hash(model: Any | None) -> str:
 
         probe: Any = Hydra2BaselineModel() if model is None else model
         manifest_raw: object = probe.utility_manifest_hash
-        return _bridge_contracts.make_digest_text(str(manifest_raw))  # pyrefly: ignore[unknown-argument-type] # untyped bridge digest
+        return _bridge_contracts.make_digest_text(str(manifest_raw))  # untyped bridge digest
     except (ImportError, AttributeError, ValueError, TypeError, OSError) as exc:
         logger.debug("gumbel: utility_manifest_hash derivation failed", exc_info=exc)
         raise ContractError("gumbel: cannot derive utility_manifest_hash from model") from exc
@@ -135,7 +137,9 @@ def _derive_utility_manifest_hash(model: Any | None) -> str:
 def _canonical_hashes() -> dict[str, str]:
     """RNG/stream/case digests verbatim from candidate0 authority descriptors."""
     try:
-        hashes: tuple[str, str, str] = _leaf("gumbel_spec_canonical_hashes")()  # pyrefly: ignore[unknown-argument-type] # untyped bridge hashes fn
+        hashes: tuple[str, str, str] = _leaf(
+            "gumbel_spec_canonical_hashes"
+        )()  # untyped bridge hashes fn
         rng_hash, stream_hash, case_hash = hashes
     except ValueError as exc:
         raise ContractError(str(exc)) from exc

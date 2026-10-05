@@ -50,7 +50,7 @@ from hydra2.contracts.observation_types import (
 try:
     from hydra2._native import contracts as bridge  # pyrefly: ignore[missing-import]
 except ImportError:  # pragma: no cover - import-time signal, same text as call-site
-    bridge = None  # type: ignore[assignment]
+    bridge = None
 
 
 def _require_bridge() -> Any:
@@ -104,7 +104,7 @@ class ActionTable:
                 "run `pixi run build-ext` to build the extension before use"
             )
         try:
-            result: int | None = bridge.census_index_of(  # type: ignore[attr-defined]
+            result: int | None = bridge.census_index_of(
                 template.kind,
                 list(template.consumed_tiles),
                 tile=template.tile,
@@ -216,7 +216,7 @@ def _offset_from_source(source: Seat | None, actor: Seat) -> SourceOffset | None
             "run `pixi run build-ext` to build the extension before use"
         )
     try:
-        result: int | None = bridge.offset_from_source(source, actor)  # type: ignore[attr-defined]
+        result: int | None = bridge.offset_from_source(source, actor)
     except (ValueError, TypeError) as exc:
         raise InvalidActionError(f"source offset rejected: {exc}") from exc
     if result is None:
@@ -239,7 +239,7 @@ def _resolve_source(offset: SourceOffset | None, actor: Seat) -> Seat | None:
             "run `pixi run build-ext` to build the extension before use"
         )
     try:
-        result: int | None = bridge.resolve_source(offset, actor)  # type: ignore[attr-defined]
+        result: int | None = bridge.resolve_source(offset, actor)
     except (ValueError, TypeError) as exc:
         raise InvalidActionError(f"source resolve rejected: {exc}") from exc
     if result is None:

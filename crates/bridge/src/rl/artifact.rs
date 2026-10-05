@@ -10,14 +10,13 @@
 //! (`sha256(prev || row)`) are forbidden: identical logical rows in any
 //! completion order yield identical bytes and digest.
 //!
-//! Memory law: the 14GB expanded generation never materializes. The seal
+//! Memory law: the 14 GiB expanded generation never materializes. The seal
 //! runs two passes over the native tape, validating all rows before sorting
 //! small metadata and independently reproducing row IDs in pass two. Native
 //! workers stage at most eight rows each per bounded window; one writer emits
-//! canonical order into SHA-256/zstd. Expanded generations never materialize.
-//! Revalidation streams a bounded brace scanner. The 8GiB guard aborts the
-//! seal loudly; partial blobs are orphans (reads always verify the digest,
-//! and only the last fsynced tip is authoritative).
+//! canonical order into SHA-256/zstd. Revalidation streams a bounded brace
+//! scanner. The 8 GiB guard aborts the seal loudly; partial blobs are
+//! orphans (reads always verify the digest, and only the last fsynced tip is authoritative).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
@@ -765,7 +764,6 @@ fn pass1_admit(handle: TapeHandle, ctx: &SealContext) -> Result<Vec<AdmittedRow>
         })?;
         admitted.extend(rows);
     }
-    let mut admitted = admitted;
     admitted.sort_by(|a, b| {
         a.sort_key
             .cmp(&b.sort_key)

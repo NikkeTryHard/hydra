@@ -107,9 +107,10 @@ def validate_runtime_spec(spec: RuntimeSpec) -> None:
         )
     _validate_device_string(spec.device)
     for flag_name in ("fullgraph",):
-        value = getattr(spec, flag_name)
-        if not isinstance(value, bool):
-            raise ContractError(f"{flag_name} must be bool, got {type(value).__name__}")
+        flag_value = getattr(spec, flag_name)
+        # Compile flags must be explicit bools; None/ints would silently misconfigure.
+        if not isinstance(flag_value, bool):
+            raise ContractError(f"{flag_name} must be bool, got {type(flag_value).__name__}")
     if spec.dynamic is not None and not isinstance(spec.dynamic, bool):
         raise ContractError(f"dynamic must be bool or None, got {type(spec.dynamic).__name__}")
     if spec.backward_pass_autocast is not None and spec.backward_pass_autocast != "off":
@@ -121,10 +122,12 @@ def validate_runtime_spec(spec: RuntimeSpec) -> None:
 def _validate_device_string(device: str) -> None:
     if not isinstance(device, str):
         raise ContractError(f"device must be a str, got {type(device).__name__}")
+    # CPU binds anywhere; CUDA forms are checked below, anything else rejects.
     if device == "cpu":
         return
     if _CUDA_DEVICE_RE.match(device) is not None:
         index_text = device.split(":", 1)[1] if ":" in device else None
+        # Indices above 63 never exist on a single host; reject before binding.
         if index_text is not None and int(index_text) > 63:
             raise ContractError(f"cuda device index out of range: {device!r}")
         return
@@ -146,12 +149,12 @@ def require_device_available(device: str) -> None:
 
 def runtime_identity(spec: RuntimeSpec) -> DigestText:
     """Stable identity digest of the exact runtime configuration."""
-    payload = {
+    identity_payload = {
         "artifact_type": "hydra2.runtime_spec",
         "schema_version": "1.0.0",
         **asdict(spec),
     }
-    return of_canonical(payload)
+    return of_canonical(identity_payload)
 
 
 def build_runtime(
@@ -177,9 +180,10 @@ def build_runtime(
             "generic build_runtime never forwards it to torch.compile nor falls back to eager"
         )
 
-    def compile_once(m: object) -> object:
+    def compile_once(uncompiled_model: object) -> object:
+        # Eager keeps the exact object; compiled wraps once before setup.
         if spec.compile_mode == "eager":
-            return m
+            return uncompiled_model
         import torch
 
         # Varying shapes compile one kernel under dynamic=True; see the
@@ -187,14 +191,15 @@ def build_runtime(
         # itself refuses cudagraph capture under deterministic
         # algorithms — this code only passes the mode through, it
         # disables nothing.
-        compile_kwargs: dict[str, object] = {
+        compile_options: dict[str, object] = {
             "backend": "inductor",
             "mode": spec.compile_mode,
             "fullgraph": spec.fullgraph,
             "dynamic": spec.dynamic,
         }
+        # Optional cache bound forwards only when set; eager never reaches here.
         if spec.recompile_limit is not None:
-            compile_kwargs["recompile_limit"] = spec.recompile_limit
+            compile_options["recompile_limit"] = spec.recompile_limit
         # isolate_recompiles buckets each compile separately; the
         # TypeError fallback covers torch without the kwarg. Floor is
         # an open question (see RuntimeSpec field comment); keep the
@@ -203,20 +208,20 @@ def build_runtime(
         # 2.14 runtime (no isolate_recompiles/recompile_limit), so a
         # typed torch.compile call cannot verify. Runtime behavior is
         # unchanged; the TypeError fallback still covers 2.13.
-        torch_compile: Any = torch.compile
+        compile_fn: Any = torch.compile
         try:
-            return torch_compile(
-                cast("Any", m),
-                **compile_kwargs,
+            return compile_fn(
+                cast("Any", uncompiled_model),
+                **compile_options,
                 isolate_recompiles=spec.isolate_recompiles,
             )
         except TypeError:
             # Fallback without isolate_recompiles; recompile_limit
             # bounds the shared cache so factory-built models collide
             # less often without per-compile buckets.
-            return torch_compile(
-                cast("Any", m),
-                **compile_kwargs,
+            return compile_fn(
+                cast("Any", uncompiled_model),
+                **compile_options,
             )
 
     if spec.precision != "fp32" and spec.compile_mode != "eager":
@@ -253,13 +258,13 @@ def build_runtime(
                 functorch_config = None  # type: ignore[assignment]
         # Private patch() lacks stubs; hasattr-guarded with nullcontext
         # fallback, so the ignore is safe (see shim comment above).
-        _patch_ctx = (
+        autocast_patch = (
             functorch_config.patch(backward_pass_autocast="off")  # type: ignore[attr-defined]
             if functorch_config is not None and hasattr(functorch_config, "patch")
             else contextlib.nullcontext()
         )
-        with _patch_ctx:
-            model = compile_once(model)
-            return adapter.setup(model=model, optimizer=optimizer, spec=spec)
-    model = compile_once(model)
-    return adapter.setup(model=model, optimizer=optimizer, spec=spec)
+        with autocast_patch:
+            compiled_model = compile_once(model)
+            return adapter.setup(model=compiled_model, optimizer=optimizer, spec=spec)
+    compiled_model = compile_once(model)
+    return adapter.setup(model=compiled_model, optimizer=optimizer, spec=spec)

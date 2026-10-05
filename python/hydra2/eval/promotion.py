@@ -119,7 +119,7 @@ def make_promotion_record(**kwargs: object) -> PromotionRecord:
         raise ContractError("comparator_spec_hashes must be a tuple of digest strings")
     # reason: type arg-type on kwargs object narrowed by the tuple-of-str
     # guard above; _require_digest runtime-validates each digest.
-    comparators_t = tuple(_require_digest("comparator entry", item) for item in comparators)  # type: ignore[arg-type]
+    checked_comparators = tuple(_require_digest("comparator entry", item) for item in comparators)  # type: ignore[arg-type]
 
     resource_view = kwargs["resource_view"]
     if not isinstance(resource_view, str) or resource_view == "":
@@ -194,7 +194,7 @@ def make_promotion_record(**kwargs: object) -> PromotionRecord:
         utility_manifest_hash=_require_digest(
             "utility_manifest_hash", kwargs["utility_manifest_hash"]
         ),
-        comparator_spec_hashes=comparators_t,
+        comparator_spec_hashes=checked_comparators,
         case_manifest_hash=_require_digest("case_manifest_hash", kwargs["case_manifest_hash"]),
         result_table_hash=_require_digest("result_table_hash", kwargs["result_table_hash"]),
         resource_view=resource_view,
@@ -214,6 +214,7 @@ def make_promotion_record(**kwargs: object) -> PromotionRecord:
 
 def record_to_json(record: PromotionRecord) -> dict[str, object]:
     """Canonical JSON projection (gates as a plain sorted mapping)."""
+    # Bridge-first: the stale-.so fallback below stays byte-identical.
     bridge = _eval_fn("record_to_json")
     if bridge is not None:
         try:
@@ -261,5 +262,5 @@ def record_to_json(record: PromotionRecord) -> dict[str, object]:
 
 def promotion_digest(record: PromotionRecord) -> DigestText:
     """Content identity of a promotion decision."""
-    hex_text: str = _bridge_contracts.promotion_digest_from_doc(record_to_json(record))
-    return DigestText(hex_text)
+    digest_hex: str = _bridge_contracts.promotion_digest_from_doc(record_to_json(record))
+    return DigestText(digest_hex)

@@ -66,7 +66,7 @@ from typing import Any
 try:
     from hydra2._native import contracts as _bridge_contracts  # pyrefly: ignore[missing-import]
 except ImportError:  # pragma: no cover - import-time signal; oracle branch below decides
-    _bridge_contracts = None  # type: ignore[assignment]
+    _bridge_contracts = None
 
 from hydra2.tracking._mirror_leaves import _DEFAULT_BASE_URL as _DEFAULT_BASE_URL
 from hydra2.tracking.clearml_mirror import (

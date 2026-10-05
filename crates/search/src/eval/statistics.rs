@@ -36,8 +36,9 @@
 //!
 //! PCG64 draw-path decision (conditional GO for port-A, port-B stands
 //! until the KAT lands): numpy `bootstrap_blocks` wall (min over
-//! 60/30/15 reps, R=2000, Intel Ultra 7 265KF, numpy 2.5.3, rustc 1.98 -O optimised builds) vs a
-//! Rust same-shape draw+mean+sort kernel. N=30 (canonical
+//! 60/30/15 reps, R=2000, measured once on Intel Ultra 7 265KF, numpy 2.5.3,
+//! rustc 1.98 -O optimised builds) vs a Rust same-shape draw+mean+sort
+//! kernel. N=30 (canonical
 //! `SelectionConfig`): numpy 0.327ms vs PCG64-DXSM proxy 0.125ms (+162%)
 //! vs Xoshiro256++ ceiling 0.067ms; N=100: 0.935 vs 0.387 (+142%);
 //! N=500: 2.867 vs 1.554 (+84%). The proxy is a 128-bit LCG +

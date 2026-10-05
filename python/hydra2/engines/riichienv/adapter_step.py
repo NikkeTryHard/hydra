@@ -114,7 +114,7 @@ class AdapterStepMixin(AdapterEventsAMixin, AdapterEventsBMixin):
         # Minor destructure: local-bind inv to avoid repeated attribute lookup
         # and unpack to direct indices; keeps semantics, small hot-path win
         # (called per hand open and per score refresh).
-        inv0, inv1, inv2, inv3 = self._inv  # type: ignore[assignment]  # reason: inv is 4-tuple at runtime; checker sees generic Sequence
+        inv0, inv1, inv2, inv3 = self._inv  # 4-tuple at runtime; Sequence to checker
         return [
             canonical_scores[inv0],
             canonical_scores[inv1],

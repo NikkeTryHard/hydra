@@ -317,7 +317,7 @@ class CandidateSpec:
             raise ContractError("parameters must be mapping")
         # freeze parameters via MappingProxy + validate JSON domain
         _require_json_value("parameters", dict(self.parameters))
-        # store as plain dict for canonical hashing determinism (still frozen via object.__setattr__)
+        # Plain dict for canonical-hash determinism; frozen via object.__setattr__.
         object.__setattr__(self, "parameters", dict(self.parameters))
 
     def to_json(self) -> dict[str, object]:

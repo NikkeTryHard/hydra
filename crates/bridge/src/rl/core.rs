@@ -462,9 +462,12 @@ enum BatchOutcome {
 }
 
 /// Closed payload builder with explicit defaults for every envelope field.
+/// The event actor travels as the `make_envelope` `actor` parameter, never
+/// inside the payload: every construction site passed the same value twice
+/// and the envelope builder only read the parameter (live-reference checked;
+/// `rustc` reported the field as never read).
 #[derive(Debug, Clone, Default)]
 struct TypedPayload {
-    actor: Option<u8>,
     tile: Option<u8>,
     action_id: Option<u32>,
     source_seat: Option<u8>,

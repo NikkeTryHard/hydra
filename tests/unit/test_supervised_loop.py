@@ -202,7 +202,7 @@ def test_loss_logging_and_reporting(tmp_path: Path, actor_parquet_factory) -> No
         "legal_uniform_comparison",
     ):
         assert k in report, f"report missing {k}"
-    # legal-uniform comparison: gap positive means better than uniform? Not guaranteed early, but nll finite
+    # Legal-uniform gap: positive favors the model (not guaranteed early); NLL stays finite.
     assert report["masked_nll"] == report["masked_nll"]
     assert 0 <= report["top1"] <= 1
     assert report["num_eval_batches"] >= 1
@@ -267,7 +267,8 @@ def test_no_privileged_fields_rejected_in_parquet(tmp_path: Path) -> None:
         )
     # Clean and test dora shim: create rows with (4,) shim via manual parquet
     (dest / "privileged-train.parquet").unlink()
-    # Test privileged column injection via direct parquet write (bypass write_actor_shards validation)
+    # Test privileged column injection via direct parquet write (bypass write_actor_shards
+    # validation)
 
     table = pq.read_table(dest / "actor-train.parquet")
     # Add privileged column by reconstructing table
@@ -322,7 +323,8 @@ def test_dora_shim_rejected_in_parquet(tmp_path: Path) -> None:
 def test_authoritative_parquet_is_synthetic_qualified(
     tmp_path: Path, actor_parquet_factory
 ) -> None:
-    # Authoritative dataset must be loadable from synthetic actor shards; privileged joined via opaque ref only
+    # Authoritative dataset must be loadable from synthetic actor shards; privileged joined via
+    # opaque ref only
     parquet_dir = actor_parquet_factory(num_rows=16)
     # Verify no privileged table exists and loader does not accept privileged path
     ds = AuthoritativeParquetDataset(
@@ -368,7 +370,8 @@ def test_local_artifacts_authoritative(tmp_path: Path, actor_parquet_factory) ->
     orig_hash = hashlib.sha256(ckpt.read_bytes()).hexdigest()
     mirror_hash = hashlib.sha256(mirror.read_bytes()).hexdigest()
     assert orig_hash == mirror_hash
-    # Mirror must not overwrite local: local still exists and is not replaced when mirror is written again
+    # Mirror must not overwrite local: local still exists and is not replaced when mirror is written
+    # again
     # Write a fake different checkpoint to mirror location (simulate overwrite attempt)
     mirror.write_bytes(b"fake wandb overwrite")
     assert ckpt.read_bytes() != mirror.read_bytes()

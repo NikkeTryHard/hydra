@@ -245,7 +245,7 @@ def double_weighting_oracle_detects_correction(
     }
 
 
-class NaturalISMCTSPlanner(  # type: ignore[misc]
+class NaturalISMCTSPlanner(
     NaturalISMCTSPlannerActMixin,
     Planner,
 ):

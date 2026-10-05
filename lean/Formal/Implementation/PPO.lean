@@ -309,9 +309,9 @@ theorem ach_gate_logic_zero_adv (A_bar rho y l_th eps : ℝ) (h_zero : A_bar = 0
   simp [h_zero]
 theorem ach_microbatch_invariance {α ι : Type} [DecidableEq α] [DecidableEq ι]
     (B : Finset α) (I : Finset ι) (t : ι → Finset α)
-    (f : α → ℝ) (hCover : B = I.biUnion t) (_hDisj : (I : Set ι).PairwiseDisjoint t) :
+    (f : α → ℝ) (hCover : B = I.biUnion t) (hDisj : (I : Set ι).PairwiseDisjoint t) :
     (∑ x ∈ B, f x) = ∑ i ∈ I, ∑ x ∈ t i, f x := by
-  rw [hCover, Finset.sum_biUnion _hDisj]
+  rw [hCover, Finset.sum_biUnion hDisj]
 end ACH
 
 section MatchedGroup

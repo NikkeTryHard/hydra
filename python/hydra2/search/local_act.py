@@ -151,7 +151,7 @@ class LocalResolvingPlannerActMixin(LocalResolvingPlannerSearchMixin):
         # Plus synthetic keys for other public nodes via hash
         for actor in range(4):
             # info_key for root actor's observation at this actor's viewpoint
-            # Use observation's info_key directly for this actor (may be same across actors if observation_hash same)
+            # Reuse observation info_key here; shared hash may collide across actors.
             # For other actors we synthesize via public node hash
             for node in subgame.nodes[: min(4, len(subgame.nodes))]:
                 # Use node hash as info_hash surrogate for that actor's information set
@@ -173,7 +173,7 @@ class LocalResolvingPlannerActMixin(LocalResolvingPlannerSearchMixin):
                     else:
                         table.table[(actor, info_hash)] = uniform
                 else:
-                    # Warm start initialization: if warm_start flag true via config, bias toward first action
+                    # Warm start: bias toward first action when config requests it.
                     if self.config.abstraction == "identity" and self.warm_start_prior is None:
                         # Check if spec says warm_start
                         ws = False
@@ -209,7 +209,7 @@ class LocalResolvingPlannerActMixin(LocalResolvingPlannerSearchMixin):
         return table
 
     def _deterministic_rng(self, case_id: str, root_seat: int, attempt: int = 0) -> Any:
-        # Counter-based semantic seed: purposes actor_policy_sample + confirmation (fail closed, no LCG fallback).
+        # Counter-based seed for sample+confirm purposes; fail closed, no LCG.
         _require_random_stream()
         try:
             import hashlib as _hl
@@ -229,7 +229,7 @@ class LocalResolvingPlannerActMixin(LocalResolvingPlannerSearchMixin):
                 root_seat=root_seat,
             )
             raw = semantic_seed(_MASTER_SEED, key=key)
-            return RandomStream(raw)  # type: ignore[no-untyped-call]
+            return RandomStream(raw)
         except ImportError:
             raise
         except Exception as exc:
@@ -267,7 +267,7 @@ class LocalResolvingPlannerActMixin(LocalResolvingPlannerSearchMixin):
         # Use time.monotonic_ns for deadline check
         now = time.monotonic_ns()
         deadline_ns: Any | None = getattr(cast("Any", request), "deadline_monotonic_ns", None)
-        is_expired: bool = isinstance(deadline_ns, int) and now > deadline_ns  # type: ignore[operator]
+        is_expired: bool = isinstance(deadline_ns, int) and now > deadline_ns
         # Run search
         epoch = getattr(request, "belief_epoch", None)
         obs = getattr(request, "observation", None)
@@ -279,7 +279,7 @@ class LocalResolvingPlannerActMixin(LocalResolvingPlannerSearchMixin):
             # Use observation's legal_mask to validate if present
             mask: Any | None = getattr(obs, "legal_mask", None) if obs is not None else None
             if mask is not None and isinstance(mask, (list, tuple)):
-                # For each legal action, ensure its id corresponds to True mask entry where applicable
+                # Each legal id must hit a True mask entry where mask applies.
                 pass
         except Exception:
             pass
@@ -318,7 +318,7 @@ class LocalResolvingPlannerActMixin(LocalResolvingPlannerSearchMixin):
             from hydra2.search.common import SearchResult as CommonResult
             from hydra2.search.common import candidate_spec_hash
 
-            spec_hash = candidate_spec_hash(request.candidate_spec)  # type: ignore[arg-type]
+            spec_hash = candidate_spec_hash(request.candidate_spec)
         except Exception:
             # NEVER-bind: fallback digest, not a verified binding.
             spec_hash = "sha256:" + "0" * 64
@@ -428,7 +428,7 @@ class LocalResolvingPlannerActMixin(LocalResolvingPlannerSearchMixin):
         return result
 
 
-class LocalResolvingPlanner(  # type: ignore[misc]
+class LocalResolvingPlanner(
     LocalResolvingPlannerActMixin,
     Planner,
 ):

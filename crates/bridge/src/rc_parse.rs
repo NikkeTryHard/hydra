@@ -2309,9 +2309,7 @@ pub fn register(sub: &Bound<'_, PyModule>) -> PyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rc_parse_train::{
-        OPTIMIZER_ALLOWED, RUNTIME_ALLOWED, SCHEDULER_ALLOWED, rc_parse_optimizer,
-    };
+    use crate::rc_parse_train::{OPTIMIZER_ALLOWED, rc_parse_optimizer};
 
     #[test]
     fn section_shapes_match_oracle() {

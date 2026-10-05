@@ -119,9 +119,8 @@ def test_belief_epoch_immutable_target_identity() -> None:
     # Epoch id monotonic
     # Second begin on same belief increments
     _w4, _obs4 = _make_world_and_obs(hand=(0, 1))
-    # Use different decision_id to get different observation hash even if hand same?
-    # Our helper uses same decision_id for same hand, so hash same -> target same but epoch id should increment
-    # Let's force different observation via different game_id
+    # Same hand reuses decision_id in the helper, so hash and target stay put while
+    # epoch id increments; force a different observation via game_id instead.
     obs_diff = make_actor_observation(
         game_id="game_diff",
         decision_id="dec_diff",
@@ -428,8 +427,8 @@ def test_exact_pushforward_then_condition() -> None:
     # And it should have a corpus (pushforward's store)
     # Rebuild via fresh belief and same obs_new should give same distribution shape (uniform)
     belief2 = _make_belief()
-    # Align hashes for rebuild to match pushforward's hashes to ensure target equality?
-    # Reuse same belief_model etc are default same, so target will match new_epoch's target
+    # Align hashes so the rebuild matches pushforward hashes and target equality holds.
+    # Same default belief_model keeps the target equal to the new epoch's target.
     rebuilt = belief2.begin(obs_new, model_id=belief2._belief_model_hash)  # type: ignore[attr-defined]
     assert rebuilt.observation_hash == new_epoch.observation_hash
     # Both corpora should have same size and uniform probs
@@ -681,9 +680,8 @@ def test_stale_provenance_epoch_target_rejection() -> None:
     # Old particle should be stale for new epoch
     try:
         belief.sample_natural(epoch0, count=1, rng=_rng(b"stale2"))
-        # This should still succeed? epoch0 is still stored, but is it considered stale?
-        # Our implementation allows old epoch to still be sampled unless we consider current epoch only.
-        # For this test we check kernel stale and particle stale.
+        # Sampling epoch0 still succeeds (it is stored); only the current epoch is live.
+        # Staleness is enforced at kernel/particle level, checked below.
         pass
     except StaleBeliefError:
         pass
@@ -694,7 +692,8 @@ def test_stale_provenance_epoch_target_rejection() -> None:
         raise AssertionError("kernel should reject stale particle")
     except StaleBeliefError:
         pass
-    # Using particle's world_ref with new epoch's log_density should be okay (world still exists) but particle provenance stale
+    # Using particle's world_ref with new epoch's log_density should be okay (world still exists)
+    # but particle provenance stale
     # Also test that tampered target fails
     tampered = BeliefEpoch(
         epoch=epoch0.epoch,
@@ -737,13 +736,13 @@ def test_tiny_finite_world_corpus_with_exact_probabilities() -> None:
     Counter(p.world_ref for p in particles)
     # Each world should appear ~50 times (200/4) within tolerance
     for _world_id in [w.world_id for w in corpus.worlds]:
-        # Map corpus world_id to belief world_id: belief's worlds have different ids (different registry)
+        # Map corpus world_id to belief world_id: belief's worlds have different ids (different
+        # registry)
         # Instead compare distribution shape: we check that all 4 belief worlds are sampled
         pass
     # Check that belief's log_density matches oracle uniform
     for cw in corpus.worlds:
-        # Find corresponding belief world with same observation_hash and same concealed pattern?
-        # For this test we instead check that corpus log_prob is -log(4)
+        # No per-world matching here: corpus log_prob is -log(4).
         assert abs(corpus.log_prob(cw.world_id) - (-math.log(4))) < 1e-9
     # Particle's log_target should equal oracle log prob for its world (uniform)
     for p in particles:

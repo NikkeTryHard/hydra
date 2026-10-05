@@ -1,4 +1,3 @@
-# ruff: noqa: E501
 """WP-07A natural full-fidelity confirmation runner (deterministic).
 
 Runs decision cases under the exact tiny simulator using semantic confirmation streams.
@@ -68,38 +67,37 @@ class NaturalConfirmationRunner:
         rng: RandomStream,
         corpus: TinyCorpus | None = None,
     ) -> tuple[ConfirmationResult, ...]:
+        # Reject empty input: confirmation needs at least one case to score.
         if not isinstance(cases, (list, tuple)) or len(cases) == 0:
             raise ContractError("cases must be non-empty sequence")
-        # Determinism: each case's result depends only on (case_id, world_id, rng seed).
-        # We use rng.random_float for each case sequentially, which is deterministic given rng cursor.
-        out: list[ConfirmationResult] = []
+        # Invariant: result depends only on (case_id, world_id, rng seed).
+        # Sequential draws stay deterministic under the incoming cursor.
+        results: list[ConfirmationResult] = []
         for case in cases:
+            # Reject non-case entries: heterogeneous input would skew determinism.
             if not isinstance(case, ConfirmationCase):
                 raise ContractError("cases entries must be ConfirmationCase")
-            # Derive deterministic action/value from rng
-            # Use rng to sample action among 2 legal actions (0 or 1) uniformly
-            act = rng.random_below(2)
-            # Value derived from hash of world_id + observation_hash + rng seed (deterministic)
+            # Sample one of 2 legal actions (0 or 1) uniformly via rng.
+            action_id = rng.random_below(2)
+            # Invariant: value binds world_id + observation_hash + rng seed.
             seed_hex = rng.checkpoint().seed_hex if hasattr(rng, "checkpoint") else "noseed"
-            # Digest line via the canon bridge (byte-identical to the retired
-            # hashlib hexdigest slice; ImportError with build-ext hint).
-            val_raw = int(
+            # Invariant: digest via canon bridge; rejects raise, never silent.
+            digest_word = int(
                 str(
                     sha256_digest(f"{case.world_id}:{case.observation_hash}:{seed_hex}".encode())
                 ).removeprefix("sha256:")[:8],
                 16,
             )
-            # Value fold via the bridge (byte-identical to the inline mix above);
-            # the single RNG draw stays caller-side (live cursor).
-            mixed: float = _bridge_contracts.confirmation_value_mix(val_raw, rng.random_float())
+            # Invariant: bridge folds the digest with one live-cursor draw.
+            mixed: float = _bridge_contracts.confirmation_value_mix(digest_word, rng.random_float())
             value: float = mixed
-            out.append(
+            results.append(
                 ConfirmationResult(
                     case_id=case.case_id,
-                    selected_action=act,
+                    selected_action=action_id,
                     value=value,
                     observation_hash=case.observation_hash,
                     rng_digest=seed_hex[:16],
                 )
             )
-        return tuple(out)
+        return tuple(results)

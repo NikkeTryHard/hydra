@@ -591,7 +591,9 @@ def test_quarantine_invalid_with_lineage() -> None:
         packaged_object_id=rec_invalid.packaged_object_id,
     )
     quarantined = quarantine_invalid(
-        raw_rows=[raw_valid, raw_invalid],  # type: ignore[arg-type]  # reason: fake_raw returns object by design; list[object] vs list[RawObjectRow] invariance, runtime-validated
+        # reason: fake_raw returns object by design; list[object] vs list[RawObjectRow] invariance,
+        # runtime-validated
+        raw_rows=[raw_valid, raw_invalid],  # type: ignore[arg-type]
         game_records={rec_valid.object_id: rec_valid, rec_invalid.object_id: rec_invalid},
         outcomes=outcomes,
     )
@@ -840,7 +842,9 @@ def test_real_tenhou_sample_5_files_decode_validate_and_quarantine_corrupt(tmp_p
         game_records[obj.raw.object_id] = rec
         outcomes[obj.raw.object_id] = validate_game(rec)
     quarantined = quarantine_invalid(
-        raw_rows=list(raw_by_id.values()),  # type: ignore[arg-type]  # reason: raw_by_id values intentionally object-typed to exercise generic quarantine path; list[object] vs list[RawObjectRow] invariance
+        # reason: raw_by_id values intentionally object-typed to exercise generic quarantine path;
+        # list[object] vs list[RawObjectRow] invariance
+        raw_rows=list(raw_by_id.values()),  # type: ignore[arg-type]
         game_records=game_records,
         outcomes=outcomes,
     )
@@ -893,7 +897,9 @@ def test_real_tenhou_full_pipeline_sample_20_games(tmp_path: Path) -> None:
             "timestamp": "2024-01-01T00:00:00Z",
         }
     quarantined = quarantine_invalid(
-        raw_rows=list(raw_by_id.values()),  # type: ignore[arg-type]  # reason: raw_by_id values intentionally object-typed to exercise generic quarantine path; list[object] vs list[RawObjectRow] invariance
+        # reason: raw_by_id values intentionally object-typed to exercise generic quarantine path;
+        # list[object] vs list[RawObjectRow] invariance
+        raw_rows=list(raw_by_id.values()),  # type: ignore[arg-type]
         game_records={r.object_id: r for r in game_records},
         outcomes=outcomes,
     )
@@ -970,7 +976,8 @@ def test_real_tenhou_full_pipeline_sample_20_games(tmp_path: Path) -> None:
     dest = build_cache(cache_root=cache_root, key=key, tensors={"features": torch.randn(4, 8)})
     assert dest.is_file()
     loaded = load_cache(cache_root=cache_root, key=key)
-    assert loaded["features"].shape == (4, 8)  # type: ignore[union-attr]  # reason: load_cache returns dict[str, object]; value is a runtime tensor with .shape
+    # reason: load_cache returns dict[str, object]; value is a runtime tensor with .shape
+    assert loaded["features"].shape == (4, 8)  # type: ignore[union-attr]
     # Loader hash+mask verify + fresh-process batch load
     train_shard = actor_dir / "actor-train.parquet"
     if not train_shard.is_file():

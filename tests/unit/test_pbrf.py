@@ -111,7 +111,8 @@ def test_natural_immutable_parent_population() -> None:
         assert math.isfinite(p.log_target_density)
         assert p.target_id == epoch.target_id
         assert p.epoch == epoch.epoch
-    # immutability: ChildEntry and ImmutableForest are frozen, parents tuple cannot be mutated without error
+    # immutability: ChildEntry and ImmutableForest are frozen, parents tuple cannot be mutated
+    # without error
     cfg = PbrfConfig(parent_count=4, max_search_batches=8)
     legal = _legal_pair()
     forest = build_pbrf(
@@ -166,7 +167,8 @@ def test_freeze_root_candidate_generator_before_search_evidence() -> None:
         rng=RandomStream(b"freeze"),
         config=cfg,
     )
-    # frozen_candidates must be sorted lexicographically by action_id deterministically, not order of call
+    # frozen_candidates must be sorted lexicographically by action_id deterministically, not order
+    # of call
     aids = [_aid(a) for a in forest.frozen_candidates]
     assert aids == sorted(aids)
     # fn must have been called exactly once (before enumeration)
@@ -264,8 +266,8 @@ def test_commit_only_authoritative_realized_child() -> None:
     # Promoted parents should be successors
     promoted_refs = {str(p.world_ref) for p in promoted.parents}  # type: ignore[attr-defined]
     expected_refs = {e.successor_world_ref for e in entries}
-    # Our promoted合成 uses successor_world_refs, check at least one matches? For strict check, all expected should be subset of promoted
-    # Since forest had multiple parents contributing to same packet, promoted should contain exactly those successors
+    # Promotion carries successor_world_refs: every expected ref is a subset of promoted —
+    # exactly the successors of the parents that fed this packet.
     assert promoted_refs == expected_refs or promoted_refs.issuperset(expected_refs)
 
 
@@ -367,7 +369,8 @@ def test_increment_belief_epoch_squash_incompatible_siblings_statistics() -> Non
     other_pids = [pid2 for (ka, pid2) in forest.children if ka == aid and pid2 != pid]
     for opid in other_pids:
         assert (aid, opid) not in promoted.children
-    # Other action's children also squashed? Spec says squash_all_sibling_values_visits_posteriors_pairings -> only realized child remains
+    # Sibling squash keeps only the realized child; see
+    # squash_all_sibling_values_visits_posteriors_pairings.
     other_aids = [a for a in legal if _aid(a) != aid]
     for oa in other_aids:
         oaid = _aid(oa)
@@ -405,7 +408,8 @@ def test_no_hidden_state_leak() -> None:
             # Packet's events are public discards only
             # Already ensured via kernel: visibility public
             pass
-    # Verify planner's tree keys would not leak hidden info (we check planner doesn't use world_id in selection)
+    # Verify planner's tree keys would not leak hidden info (we check planner doesn't use world_id
+    # in selection)
     spec = make_pbrf_candidate_spec(parent_count=4, max_search_batches=8)
     planner = PbrfPlanner(candidate_spec=spec, belief=b, kernel=NaturalPacketKernel())
     _, obs = _world_and_obs()
@@ -427,11 +431,15 @@ def test_no_hidden_state_leak() -> None:
 
 
 def test_hidden_permutation_invariance_for_pbrf() -> None:
-    # Two worlds differing only by hidden permutation should give same root observation and same forest shape
+    # Two worlds differing only by hidden permutation should give same root observation and same
+    # forest shape
     b, epoch, _ = _belief_epoch()
-    # Already tiny corpus hidden permutation invariance is covered by belief tests; here we ensure PBRF respects it
-    # Build two forests from same epoch (same observation) but different rng seeds that would sample different hidden permutations
-    # The forest structure (number of children keys) should be identical (since kernel enumerates per parent/action)
+    # Already tiny corpus hidden permutation invariance is covered by belief tests; here we ensure
+    # PBRF respects it
+    # Build two forests from same epoch (same observation) but different rng seeds that would sample
+    # different hidden permutations
+    # The forest structure (number of children keys) should be identical (since kernel enumerates
+    # per parent/action)
     legal = _legal_pair()
     cfg = PbrfConfig(parent_count=4, max_search_batches=8)
     f1 = build_pbrf(
@@ -451,7 +459,8 @@ def test_hidden_permutation_invariance_for_pbrf() -> None:
         config=cfg,
     )
     assert set(f1.children.keys()) == set(f2.children.keys())
-    # But raw weights per child should still partition to 1 per action regardless of hidden permutation
+    # But raw weights per child should still partition to 1 per action regardless of hidden
+    # permutation
     for action in legal:
         aid = _aid(action)
         tot1 = sum(sum(e.raw_weight for e in v) for (ka, _), v in f1.children.items() if ka == aid)
@@ -506,7 +515,8 @@ def test_determinism() -> None:
     assert r1.value_vectors == r2.value_vectors
     assert r1.candidate_spec_hash == r2.candidate_spec_hash
     assert r1.telemetry.model_calls == r2.telemetry.model_calls
-    # Different case_id should be deterministic but may differ in selection due to hash, but still deterministic across repeats
+    # Different case_id should be deterministic but may differ in selection due to hash, but still
+    # deterministic across repeats
     req2 = SearchRequest(
         observation=obs,
         legal_actions=legal,

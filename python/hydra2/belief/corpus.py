@@ -1,4 +1,3 @@
-# ruff: noqa: N806
 """WP-07A tiny finite world corpus with exact probabilities (oracle).
 
 Provides a deterministic, fully enumerated set of worlds consistent with an
@@ -49,21 +48,21 @@ class TinyCorpus:
         total = sum(self.probabilities)
         if abs(total - 1.0) > 1e-9:
             raise ValueError(f"probabilities must sum to 1, got {total}")
-        for p in self.probabilities:
-            if not math.isfinite(p) or p < 0:
-                raise ValueError(f"probability {p} must be finite nonnegative")
-        # Ensure worlds observation_hash matches corpus observation_hash
-        for w in self.worlds:
-            if w.observation_hash != self.observation_hash:
+        for prob in self.probabilities:
+            if not math.isfinite(prob) or prob < 0:
+                raise ValueError(f"probability {prob} must be finite nonnegative")
+        # Invariant: every world binds the corpus hashes; mismatch fails closed.
+        for world in self.worlds:
+            if world.observation_hash != self.observation_hash:
                 raise ValueError("world observation_hash mismatch corpus")
-            if w.rules_hash != self.rules_hash:
+            if world.rules_hash != self.rules_hash:
                 raise ValueError("world rules_hash mismatch corpus")
 
     def log_prob(self, world_id: str) -> float:
-        logp: float = _bridge_contracts.corpus_log_prob_for(
-            tuple(w.world_id for w in self.worlds), self.probabilities, world_id
+        log_prob_value: float = _bridge_contracts.corpus_log_prob_for(
+            tuple(world.world_id for world in self.worlds), self.probabilities, world_id
         )
-        return logp
+        return log_prob_value
 
 
 def build_tiny_corpus(
@@ -81,51 +80,49 @@ def build_tiny_corpus(
     in opponent assignments, providing the oracle exact distribution (uniform).
     """
     if observation is not None:
-        obs_hash: DigestText = _bridge_contracts.make_digest_text(  # type: ignore[arg-type]
-            observation.observation_hash
-        )
+        obs_hash: DigestText = _bridge_contracts.make_digest_text(observation.observation_hash)
         r_hash: DigestText = _bridge_contracts.make_digest_text(observation.rules_hash)
     else:
         if observation_hash is None or rules_hash is None:
             raise ValueError("must supply observation or hashes")
         obs_hash = _bridge_contracts.make_digest_text(observation_hash)
         r_hash = _bridge_contracts.make_digest_text(rules_hash)
-    # Fixed tile pool for tiny domain — 0..11 as in natural harness
-    opts: tuple[tuple[tuple[int, ...], ...], ...] = _BASE_OPTIONS[:size]
+    # Invariant: tiny tile pool 0..11 matches the natural harness exactly.
+    hand_options: tuple[tuple[tuple[int, ...], ...], ...] = _BASE_OPTIONS[:size]
     wall = _TINY_WALL
     worlds: list[FullWorld] = []
-    for idx, hands in enumerate(opts):
-        # Override root hand if supplied differs from (0,1) — keep root consistent with observation
+    for idx, hands in enumerate(hand_options):
+        # Keep root hand consistent with the observation that binds the corpus.
         # If observation supplied, its concealed_hand should equal root_hand; we enforce.
         if observation is not None:
+            # Prefer the observation hand: corpus must share the actor view.
             exp_hand = tuple(int(t) for t in observation.concealed_hand)
             if tuple(hands[0]) != exp_hand:
                 # Replace root hand to match observation while preserving other seats
                 hands = (exp_hand, hands[1], hands[2], hands[3])
         else:
-            # Use supplied root_hand
+            # No observation binds the corpus, so fall back to supplied root_hand.
             if tuple(hands[0]) != tuple(root_hand):
                 hands = (tuple(root_hand), hands[1], hands[2], hands[3])
-        w = make_full_world(
+        world = make_full_world(
             concealed_hands=hands,
             live_wall=wall,
             dead_wall=(),
             latent_state={
                 "corpus_idx": idx,
-                # Digest line via the canon bridge (byte-identical to the
-                # retired hashlib hexdigest slice; ImportError with build-ext
-                # hint, no fallback). Corpus order (sorted world_id) untouched.
+                # Invariant: tag via canon bridge; rejects raise, never silent.
+                # Corpus order (sorted world_id) untouched.
                 "tag": str(sha256_digest(f"{obs_hash}:{idx}".encode())).removeprefix("sha256:")[:8],
             },
             rules_hash=r_hash,
             observation_hash=obs_hash,
             simulator_snapshot=f"tiny_corpus:{obs_hash[:8]}:{idx}",
         )
-        worlds.append(w)
-    worlds_sorted = tuple(sorted(worlds, key=lambda w: w.world_id))
-    # Uniform exact probabilities
-    K = len(worlds_sorted)
-    probs = tuple(1.0 / K for _ in range(K))
+        worlds.append(world)
+    worlds_sorted = tuple(sorted(worlds, key=lambda world: world.world_id))
+    # Uniform exact probabilities over the sorted corpus.
+    num_worlds = len(worlds_sorted)
+    probs = tuple(1.0 / num_worlds for _ in range(num_worlds))
     return TinyCorpus(
         observation_hash=obs_hash,
         rules_hash=r_hash,

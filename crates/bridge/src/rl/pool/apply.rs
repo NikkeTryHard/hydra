@@ -2,9 +2,10 @@
 //!
 //! Invariant: `commit_actions` validates the ENTIRE batch (length, ownership,
 //! legal membership, finite logp/value4, `0 < exp(logp) <= 1`,
-//! epoch/cursor/policy match) BEFORE any capture; the slot flips to
-//! `OwnedCapture` only after validation, captured rows are retained per game
-//! before any worker apply is admitted, and every apply channel is registered
+//! epoch/generation/policy identity under the lease binding) BEFORE any
+//! capture; the sampler cursor binds verbatim, never matched. The slot flips
+//! to `OwnedCapture` only after validation; captured rows are retained per
+//! game before any worker apply is admitted, and every apply channel is registered
 //! with its outstanding count BEFORE the slot releases, so an admitted fill
 //! can never stage a decision these applies have not landed. Completions are
 //! harvested nonblocking; only quiesce/snapshot/close join. Failure mode: any
@@ -111,8 +112,8 @@ impl NativePool {
     }
 
     /// Nonblocking scan of ALL READY unleased tickets; min eligible
-    /// `(generation, logical_round, policy_id, T, chunk)`. Never waits for a
-    /// FILLING lower-T lane (work-conserving eligibility).
+    /// `(generation, logical_round, policy_id, bucket_t, chunk; slot id
+    /// breaks ties)`. Never waits for a FILLING lower-T lane
     pub fn peek_ready(self: &Arc<Self>) -> Result<Option<Lease>, PoolError> {
         self.harvest_applies();
         let mut state = self.lock_state()?;
@@ -130,7 +131,7 @@ impl NativePool {
                 slot.chunk,
                 slot.id,
             );
-            if best.as_ref().map_or(true, |current| key < *current) {
+            if best.as_ref().is_none_or(|current| key < *current) {
                 best = Some(key);
             }
         }
@@ -227,13 +228,13 @@ impl NativePool {
         let mut state = self.lock_state()?;
         self.lease_checked(&state, lease)?;
         let slot = slot_mut(&mut state, lease.slot_id)?;
-        let allowed = match (slot.phase, phase) {
+        let allowed = matches!(
+            (slot.phase, phase),
             (SlotPhase::Ready, SlotPhase::H2dIssued)
-            | (SlotPhase::H2dIssued, SlotPhase::InferQueued)
-            | (SlotPhase::InferQueued, SlotPhase::D2hIssued)
-            | (SlotPhase::D2hIssued, SlotPhase::HostReady) => true,
-            _ => false,
-        };
+                | (SlotPhase::H2dIssued, SlotPhase::InferQueued)
+                | (SlotPhase::InferQueued, SlotPhase::D2hIssued)
+                | (SlotPhase::D2hIssued, SlotPhase::HostReady)
+        );
         if !allowed {
             return Err(PoolError(format!(
                 "lease {} phase {:?} -> {:?} rejected",
@@ -246,7 +247,7 @@ impl NativePool {
     }
 
     /// Commit GPU outputs: validate the ENTIRE batch first (length, finite,
-    /// `0 < exp(logp) <= 1`, legal membership, epoch/cursor/policy match),
+    /// `0 < exp(logp) <= 1`, legal membership, epoch/generation/policy identity),
     /// capture owned rows against the live plans, retain them per game for
     /// the generation-end tape handoff, release the slot immediately,
     /// enqueue deterministic worker applies in game order, and return the

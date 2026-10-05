@@ -28,7 +28,7 @@ from hydra2.training.loop_state import TrainingState as TrainingState
 try:
     from hydra2._native import contracts as _resume_cfg_bridge  # pyrefly: ignore[missing-import]
 except ImportError:  # pragma: no cover - import-time signal, same text as call-site
-    _resume_cfg_bridge = None  # type: ignore[assignment]
+    _resume_cfg_bridge = None
 
 if TYPE_CHECKING:
     from collections.abc import Mapping

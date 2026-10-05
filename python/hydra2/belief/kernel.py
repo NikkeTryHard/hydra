@@ -1,4 +1,3 @@
-# ruff: noqa: E501
 """WP-07A disjoint next actor-visible packet kernel.
 
 Implements SPEC 14.3 PacketKernel with:
@@ -201,17 +200,17 @@ class NaturalPacketKernel:
         action: Any,
         policy_set: PolicySet | None = None,
     ) -> tuple[PacketSuccessor, ...]:
-        # Stale checks
+        # Reject stale provenance: epoch/target drift would mix laws silently.
         if int(particle.epoch) != int(epoch.epoch) or particle.target_id != epoch.target_id:
             raise StaleBeliefError("particle epoch/target stale for kernel [PBRF_STALE_EPOCH]")
+        # Reject missing ref: successors synthesize from the ref, never a default.
         if particle.world_ref is None:
             raise ContractError("particle world_ref missing")
-        # Registry-free by design: successors are synthesized deterministically
-        # from (particle_world_ref, tile, aid); probability splits exactly once
-        # into physical x policy (log_phys=log(0.5), log_policy=0.0).
+        # Invariant: registry-free synthesis from (world_ref, tile, aid);
+        # mass splits exactly once into physical x policy (0.5 x 1.0).
         # Exactly 2 disjoint packets per parent/action.
         if not hasattr(action, "action_id") and not isinstance(action, int):
-            # Accept raw int or CanonicalAction; normalize to int id
+            # Accept raw int or CanonicalAction; normalize to int id (bool-free gate).
             try:
                 aid = int(action)
             except Exception:
@@ -222,14 +221,13 @@ class NaturalPacketKernel:
             except Exception:
                 aid = 0
 
-        # Use deterministic physical draws: two possibilities (tile 8 vs 9 etc)
-        # For hidden permutation test, the packets must be disjoint by packet_id.
-        # We create two packets with distinct tile discards.
+        # Invariant: two packets with distinct tile discards (disjoint packet_id).
         _ = policy_set if policy_set is not None else PolicySet()
-        # Retrieve epoch hashes for event creation
-        rh = epoch.rules_hash
-        # Use event_schema_hash dummy as c*64 for packet events
-        sh = _valid_digest(_KERNEL_SCHEMA_HASH)
+        # Epoch rules hash binds the synthesized discard events below.
+        rules_digest = epoch.rules_hash
+        # Packet events carry the fixed c*64 schema hash, never per-epoch data.
+        schema_digest = _valid_digest(_KERNEL_SCHEMA_HASH)
+        # Reject empty ref: hashed refs would collide on a default string.
         if not isinstance(particle.world_ref, str) or particle.world_ref == "":
             raise ContractError("particle world_ref must be non-empty str")
         try:
@@ -238,7 +236,7 @@ class NaturalPacketKernel:
             raise ContractError(f"epoch root_actor must be int seat: {exc}") from exc
         root_seat: int = _check_root_actor(root_seat_init)
         aid = _check_action_id(aid)
-        rules_hash_str: str = str(rh)
+        rules_hash_str: str = str(rules_digest)
         # Bridge assembly: successor/chain/hash via search.packet_successors.
         # The bridge computes tile/seq/actor layout, successor/delta refs,
         # observation/packet/chain hashes, and split mass detached; Python
@@ -280,25 +278,21 @@ class NaturalPacketKernel:
                     f"bridge layout mismatch idx={idx}: got {(tile, seq, actor_opponent)}, "
                     f"expected {(exp_tile, exp_seq, exp_actor)}"
                 )
-            # Ensure actor_opponent != root_actor to make packet actor-visible?
-            # Use opponent as actor of discard
+            # Discard actor is the bridge opponent: keeps packets actor-visible.
             events.append(
                 _make_public_discard_event(
                     sequence=seq,
                     actor=actor_opponent,
                     tile=tile,
-                    rules_hash=rh,
-                    schema_hash=sh,
+                    rules_hash=rules_digest,
+                    schema_hash=schema_digest,
                 )
             )
             tiles.append(tile)
             seqs.append(seq)
-        # Batch form: observation + chain-fold docs for both successors serialize
-        # in ONE bridge FFI (byte-identical blobs to the retired per-successor
-        # Python serializes + lru-cached digests); digests hash with hashlib
-        # exactly like the single paths. The empty-before digest is constant.
-        # Fold shape {"prefix", "event"} mirrors event_packet._fold_chain_digest;
-        # any divergence fails the chain_after bridge equality below (fail closed).
+        # Invariant: batch FFI blobs equal per-successor oracle bytes exactly.
+        # Fold {"prefix", "event"} mirrors _fold_chain_digest; empty-before fixed.
+        # Divergence fails the chain_after equality below (fail closed).
         before = public_state_chain_hash([])
         obs_docs: list[dict[str, object]] = [
             {"packet_seq": seq, "tile": tile} for seq, tile in zip(seqs, tiles, strict=True)
@@ -370,22 +364,22 @@ class NaturalPacketKernel:
                     log_actor_policy_probability=log_policy,
                 )
             )
-        # Post-conditions: check invariants
+        # Post-conditions: fail closed if enumeration breaks kernel invariants.
         # 1. pairwise disjoint by packet identity
-        pids = [s.packet.packet_id for s in successors]
-        if len(pids) != len(set(pids)):
+        packet_ids = [successor.packet.packet_id for successor in successors]
+        if len(packet_ids) != len(set(packet_ids)):
             raise ContractError("packet successors not pairwise disjoint")
         # 2. probabilities sum to 1 within tolerance
-        total = sum(s.probability for s in successors)
-        if abs(total - 1.0) > self._tol:
-            raise ContractError(f"packet mass {total} != 1 within {self._tol}")
+        total_mass = sum(successor.probability for successor in successors)
+        if abs(total_mass - 1.0) > self._tol:
+            raise ContractError(f"packet mass {total_mass} != 1 within {self._tol}")
         # 3. each probability finite nonnegative
-        for s in successors:
-            if not math.isfinite(s.probability) or s.probability < 0:
+        for successor in successors:
+            if not math.isfinite(successor.probability) or successor.probability < 0:
                 raise ContractError("probability must be finite nonnegative")
-            if not math.isfinite(s.log_physical_probability) or not math.isfinite(
-                s.log_actor_policy_probability
+            if not math.isfinite(successor.log_physical_probability) or not math.isfinite(
+                successor.log_actor_policy_probability
             ):
                 raise ContractError("log probabilities must be finite")
-        # 4. successor state follows exact simulator transition — we claim deterministic synthesis is exact for tiny model
+        # 4. successors follow the exact tiny-model transition (deterministic).
         return tuple(successors)

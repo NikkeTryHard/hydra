@@ -63,6 +63,8 @@ pub fn policy_identity(
             "rl live generation {generation} outside 0..{generations_total}"
         )));
     }
+    // The live profile covers generations 0..8 even when the descriptor spans
+    // more; later generations collect under a different profile.
     if generation > 7 {
         return Err(lc_err(format!(
             "rl live generation {generation} outside the 0..8 live profile"

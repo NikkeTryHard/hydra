@@ -36,7 +36,7 @@
 //! - `backward_autocast_for` <- `_backward_pass_autocast_for`
 //!   (`stream_resume.py:712-721`: compiled non-fp32 -> `"off"`, else `None`).
 //! - `require_replay_backend` <- `_require_replay_backend`
-//!   (`stream_expand.py:106-112`). NOTE the near-twin in `rc_parse.rs:1114`
+//!   (`stream_expand.py:106-112`). NOTE the near-twin in `rc_parse.rs:1213-1221`
 //!   gates `data.replay_backend` with a different text (`data.replay_backend
 //!   must be 'rust'`) and a `"rust"` default — that gate stays
 //!   the owner there; this one mirrors the stream-expand text verbatim.
@@ -137,9 +137,9 @@ pub const TRAINING_SINGLETON_WORLD: i64 = 1;
 /// Single-process rank (`stream_expand.py:284`).
 pub const TRAINING_SINGLETON_RANK: i64 = 0;
 
-/// Prefetch-depth bounds (`loop_state.py:275`: `1 <= depth <= 16`).
+/// Lower prefetch-depth bound (`loop_state.py:275`: `1 <= depth <= 16`).
 pub const TRAINING_PREFETCH_MIN: i64 = 1;
-/// Prefetch-depth bounds (`loop_state.py:275`: `1 <= depth <= 16`).
+/// Upper prefetch-depth bound (`loop_state.py:275`: `1 <= depth <= 16`).
 pub const TRAINING_PREFETCH_MAX: i64 = 16;
 
 /// Loop precisions (`loop_state.py:238`).
@@ -205,7 +205,10 @@ fn py_str_repr(text: &str) -> String {
 
 /// Python `str(float)` for an `f64`: `Debug` already prints `2.0`-style with
 /// a trailing `.0`; only `NaN` needs remapping to Python's lowercase `nan`
-/// (`inf` / `-inf` already agree).
+/// (`inf` / `-inf` already agree). Test-only: no production caller formats
+/// floats for Python repr (checked via live references); the unit test pins
+/// the rendering contract for future error-message use.
+#[cfg(test)]
 fn py_float_str(value: f64) -> String {
     if value.is_nan() {
         return "nan".to_owned();
@@ -214,6 +217,9 @@ fn py_float_str(value: f64) -> String {
 }
 
 /// Python `repr(list[str])`: `['a', 'b']` with `py_str_repr` elements.
+/// Test-only: the only production repr use is the single-element
+/// `py_str_repr` call in `plane_suffix`; list rendering has no live caller.
+#[cfg(test)]
 fn py_str_list_repr(keys: &[String]) -> String {
     let parts: Vec<String> = keys.iter().map(|k| py_str_repr(k)).collect();
     format!("[{}]", parts.join(", "))
@@ -306,7 +312,7 @@ fn training_sizes_gate(
     let (_, accum) = stage_int(&accumulation_steps)?;
     let (max_repr, max) = stage_int(&max_updates)?;
     let (ckpt_repr, ckpt) = stage_int(&checkpoint_frequency_updates)?;
-    // Non-int sizes fail closed on the staged repr (new-projection text:
+    // Non-int sizes fail closed on the staged repr (bridge-only text:
     // the oracle fields are pre-validated ints, so only the bridge sees raw).
     let (Some(micro), Some(accum), Some(max), Some(ckpt)) = (micro, accum, max, ckpt) else {
         let bad = if micro.is_none() {
@@ -385,8 +391,8 @@ fn replay_precision_gate(py: Python<'_>, precision: Bound<'_, PyAny>) -> PyResul
 }
 
 /// Replay sha gate (`replay_state.py:54-57`): same loose shape as the loop
-/// twin (`loop_state.rs:90-92`), own name per the `loop_state.rs:36-38`
-/// claim note. Translators call positionally; the bridge raises
+/// twin (`loop_state.py:90-92`); error text carries the caller-supplied
+/// field name. Translators call positionally; the bridge raises
 /// `ValueError`, Python maps to `ContractError`.
 #[pyfunction]
 #[pyo3(signature = (name, value))]

@@ -40,9 +40,9 @@ _MASK64 = (1 << 64) - 1
 
 # Optional numpy for vectorized permutation; fallback keeps correctness.
 try:  # pragma: no cover - import probe
-    import numpy as np  # type: ignore[import-not-found]
+    import numpy as np
 except ImportError:  # pragma: no cover
-    np = None  # type: ignore[assignment]
+    np = None
 
 
 def _keystream(key_material: bytes):
@@ -78,26 +78,19 @@ def derive_hand_wall(
             str(hand_index),
         )
     ).encode("utf-8")
-    # Fast path: single-hash-seeded vectorized permutation replaces the
-    # 135xsha256 Fisher-Yates.
+    # Vectorized fast path: one digest seeds the permutation, so SPEC 9 and
+    # SPEC 13 hold exactly as in the fallback below, at C speed.
     # Evidence: https://numpy.org/doc/stable/reference/random/generated/numpy.random.Generator.permutation.html
-    #  + https://numpy.org/doc/stable/reference/random/generated/numpy.random.default_rng.html
-    #  — permutation(136) is O(136) in C vs 135xpython rejection + 5 sha256 digests per hand; still
-    #  deterministic via WALL_STREAM_NAME keyed digest (SPEC 13) and preserves SPEC 9 invariant.
-    # Single-hash-seeded permutation costs ~5µs vs ~25µs for the Python Fisher-Yates fallback.
-    # Fallback keeps correctness when numpy absent.
     digest = hashlib.sha256(key).digest()
     seed = int.from_bytes(digest[:8], "big")
     if np is not None:  # vectorized fast path
-        # default_rng seeded permutation is deterministic per seed, compiled C shuffle.
-        tiles_np = np.array(range(136), dtype=np.int64)  # type: ignore[attr-defined]
-        # Use Generator permutation; permute copy in place for zero-copy path.
-        rng = np.random.default_rng(seed)  # type: ignore[attr-defined]
-        perm = rng.permutation(tiles_np)  # type: ignore[attr-defined]
+        tiles_np = np.array(range(136), dtype=np.int64)
+        rng = np.random.default_rng(seed)
+        perm = rng.permutation(tiles_np)
         return tuple(TileId(int(t)) for t in perm.tolist())
     stream = _keystream(key)
     tiles = list(range(136))
-    # Fisher-Yates shuffle driven by rejection-sampled unbiased draws (fallback).
+    # Fallback: rejection-sampled Fisher-Yates; unbiased draws from the same key.
     for position in range(135, 0, -1):
         bound = position + 1
         limit = (1 << 64) // bound * bound

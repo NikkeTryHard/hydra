@@ -212,7 +212,7 @@ def _scan_report(
     try:
         from hydra2 import _native as _ext  # pyrefly: ignore[missing-import]
     except ImportError:
-        _ext = None  # type: ignore[assignment]
+        _ext = None
     bridge = (
         getattr(getattr(_ext, "columnar", None), "stream_report_check_wall_disjoint", None)
         if _ext is not None

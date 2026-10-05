@@ -62,7 +62,7 @@
 //! `sub.add(<str>, <&str>)` mirrors `contracts.rs:1153`;
 //! `PyTuple::new(py, [...])` for frozen tuples mirrors `contracts.rs:1156`;
 //! attached-check + `py.detach(|| ...)` with zero Python API inside mirrors
-//! `contracts::ctr_block` (`crates/bridge/src/contracts.rs:447-456`);
+//! `contracts::ctr_stream_bytes`;
 //! `SearchError` mapped onto `ValueError` mirrors `eval::search_err`
 //! (`crates/bridge/src/eval.rs:60-63`), except `InvalidArg` details are
 //! returned bare (no `invalid search argument: ` prefix) so validator texts

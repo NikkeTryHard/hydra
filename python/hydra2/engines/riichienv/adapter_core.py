@@ -95,7 +95,7 @@ __all__ = [
 ]
 
 
-class RiichiEnvExactSimulator(AdapterStepMixin):  # type: ignore[misc]
+class RiichiEnvExactSimulator(AdapterStepMixin):
     """SPEC 9 exact simulator backed by pinned RiichiEnv 0.4.10."""
 
     def __init__(self) -> None:
@@ -489,28 +489,29 @@ class RiichiEnvExactSimulator(AdapterStepMixin):  # type: ignore[misc]
         # - copy.deepcopy(x): recursively copies, expensive for frozen dataclasses
         builder = self._builder
         if builder is None:
-            replica._builder = None  # type: ignore[assignment]  # reason: replica via __new__; builder Optional at runtime
+            replica._builder = None  # reason: replica via __new__; builder Optional at runtime
         else:
             try:
                 new_builder = copy.copy(builder)
-                # Histories/discards/melds are tuple[list[...]]; copy each inner list
-                new_builder._histories = tuple(list(h) for h in builder._histories)  # type: ignore[attr-defined]  # reason: external builder lacks stubs; attrs exist at runtime
-                new_builder._discards = tuple(list(d) for d in builder._discards)  # type: ignore[attr-defined]  # reason: external builder lacks stubs; attrs exist at runtime
-                new_builder._melds = tuple(list(m) for m in builder._melds)  # type: ignore[attr-defined]  # reason: external builder lacks stubs; attrs exist at runtime
-                new_builder._concealed = list(builder._concealed)  # type: ignore[attr-defined]  # reason: external builder lacks stubs; attrs exist at runtime
-                new_builder._drawn = list(builder._drawn)  # type: ignore[attr-defined]  # reason: external builder lacks stubs; attrs exist at runtime
-                new_builder._dora = list(builder._dora)  # type: ignore[attr-defined]  # reason: external builder lacks stubs; attrs exist at runtime
-                new_builder._furiten = list(builder._furiten)  # type: ignore[attr-defined]  # reason: external builder lacks stubs; attrs exist at runtime
-                new_builder._can_tsumo = list(builder._can_tsumo)  # type: ignore[attr-defined]  # reason: external builder lacks stubs; attrs exist at runtime
-                new_builder._can_riichi = list(builder._can_riichi)  # type: ignore[attr-defined]  # reason: external builder lacks stubs; attrs exist at runtime
-                new_builder._pending_discard = list(builder._pending_discard)  # type: ignore[attr-defined]  # reason: external builder lacks stubs; attrs exist at runtime
-                new_builder._riichi_states = list(builder._riichi_states)  # type: ignore[attr-defined]  # reason: external builder lacks stubs; attrs exist at runtime
-                new_builder._public = dict(builder._public)  # type: ignore[attr-defined]  # reason: external builder lacks stubs; attrs exist at runtime
-                replica._builder = new_builder  # type: ignore[assignment]  # reason: replica via __new__; builder assignment valid at runtime
+                # Histories/discards/melds are tuple[list[...]]; copy each inner list.
+                # Builder attrs exist at runtime (external builder lacks stubs).
+                new_builder._histories = tuple(list(h) for h in builder._histories)
+                new_builder._discards = tuple(list(d) for d in builder._discards)
+                new_builder._melds = tuple(list(m) for m in builder._melds)
+                new_builder._concealed = list(builder._concealed)
+                new_builder._drawn = list(builder._drawn)
+                new_builder._dora = list(builder._dora)
+                new_builder._furiten = list(builder._furiten)
+                new_builder._can_tsumo = list(builder._can_tsumo)
+                new_builder._can_riichi = list(builder._can_riichi)
+                new_builder._pending_discard = list(builder._pending_discard)
+                new_builder._riichi_states = list(builder._riichi_states)
+                new_builder._public = dict(builder._public)
+                replica._builder = new_builder  # replica via __new__
             except Exception:  # pragma: no cover - defensive fallback
                 # why-broad: shallow-copy shim touches untyped builder attrs;
                 # any shape falls back to deepcopy.
-                replica._builder = copy.deepcopy(builder)  # type: ignore[assignment]  # reason: fallback preserves semantics; checker cannot narrow __new__ replica
+                replica._builder = copy.deepcopy(builder)  # deepcopy fallback
         replica._events = list(self._events)
         replica._applied = list(self._applied)
         replica._settlements = list(self._settlements)

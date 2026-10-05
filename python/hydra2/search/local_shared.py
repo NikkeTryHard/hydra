@@ -37,9 +37,9 @@ try:
 
     _CONTRACTS_IMPORT_ERROR: ImportError | None = None
 except ImportError as exc:  # pragma: no cover
-    canonical_bytes = Any  # type: ignore[no-redef]  # placeholder; _require_contracts() raises on use
-    ContractError = Any  # type: ignore[no-redef]
-    DigestText = Any  # type: ignore[no-redef]
+    canonical_bytes = Any  # placeholder; _require_contracts() raises on use
+    ContractError = Any
+    DigestText = Any
     _CONTRACTS_IMPORT_ERROR = exc
 
 
@@ -58,7 +58,7 @@ try:
 
     _RANDOM_IMPORT_ERROR: ImportError | None = None
 except ImportError as exc:  # pragma: no cover
-    RandomStream = Any  # type: ignore[no-redef]  # placeholder; _require_random_stream() raises on use
+    RandomStream = Any  # placeholder; _require_random_stream() raises on use
     make_random_stream_key = Any
     semantic_seed = Any
     _RANDOM_IMPORT_ERROR = exc
@@ -80,8 +80,8 @@ try:
 
     _BELIEF_IMPORT_ERROR: ImportError | None = None
 except ImportError as exc:  # pragma: no cover
-    BeliefEpoch = Any  # type: ignore[no-redef]  # placeholder; _require_belief() raises on use
-    NaturalBelief = Any  # type: ignore[no-redef]
+    BeliefEpoch = Any  # placeholder; _require_belief() raises on use
+    NaturalBelief = Any
     _BELIEF_IMPORT_ERROR = exc
 
 
@@ -117,8 +117,10 @@ def _require_obs() -> Any:
 
 logger = logging.getLogger(__name__)
 
-_MASTER_SEED: bytes = _bridge_search.LOCAL_RESOLVING_MASTER_SEED  # pyrefly: ignore[unknown-variable-type] # untyped bridge constant
-FORBIDDEN_IN_STRATEGY_KEY: frozenset[str] = _bridge_search.FORBIDDEN_IN_STRATEGY_KEY  # pyrefly: ignore[unknown-variable-type] # untyped bridge constant
+_MASTER_SEED: bytes = _bridge_search.LOCAL_RESOLVING_MASTER_SEED  # untyped bridge constant
+FORBIDDEN_IN_STRATEGY_KEY: frozenset[str] = (
+    _bridge_search.FORBIDDEN_IN_STRATEGY_KEY
+)  # untyped bridge constant
 
 
 def _h(data: bytes) -> str:

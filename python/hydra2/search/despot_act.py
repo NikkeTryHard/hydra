@@ -185,7 +185,7 @@ class NaturalDespotPlannerActMixin(NaturalDespotPlannerResultMixin):
         except (AttributeError, ValueError, TypeError) as exc:
             raise ContractError(f"despot: rng jump_to failed: {exc}") from exc
         return _wrap_result(
-            out,  # pyrefly: ignore[unknown-argument-type] # native DespotOut
+            out,  # native DespotOut
             legal=legal,
             candidate_spec=cand_spec,
             start_ns=start_ns,
@@ -194,7 +194,7 @@ class NaturalDespotPlannerActMixin(NaturalDespotPlannerResultMixin):
         )
 
 
-class NaturalDespotPlanner(  # type: ignore[misc]
+class NaturalDespotPlanner(
     NaturalDespotPlannerActMixin,
     Planner,
 ):

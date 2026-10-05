@@ -2,7 +2,8 @@
 """WP-13 Candidate 8 Joint Type/World — checklist coverage.
 
 Implements BUILD §16 WP-13 checklist:
-- joint type world candidate (observation-only type policy, joint posterior, correlation, uncertainty set)
+- joint type world candidate (observation-only type policy, joint posterior,
+  correlation, uncertainty set)
 - determinism (deterministic joint posterior & planner replay)
 - hidden permutation invariance (info_key invariant, planner decision invariant)
 - report (module fixtures via conftest aggregation)

@@ -1,3 +1,4 @@
+//! Log-order decision walker over the engine (see super for the feature map).
 use super::table::ActionTable;
 use crate::engine::{EngineDesync, ResponderView, SeatView, window_open};
 use crate::mjai_event::{SKIP_TYPES, TRANSPARENT_KINDS, is_claim_kind};

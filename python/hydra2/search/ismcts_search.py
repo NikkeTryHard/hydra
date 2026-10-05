@@ -59,18 +59,18 @@ def _actor_to_move(world: Any) -> int:
         if _latent_raw is not None and isinstance(_latent_raw, dict) and len(_latent_raw) > 0:
             latent: dict[Any, Any] = _latent_raw  # pyrefly: ignore[explicit-any]
         elif _latent_raw is not None and isinstance(_latent_raw, dict):
-            latent = _latent_raw  # pyrefly: ignore[explicit-any]
+            latent = _latent_raw
         else:
             latent = {}
         if isinstance(latent, dict) and "turn" in latent:
             _t_raw: Any = latent["turn"]  # pyrefly: ignore[explicit-any]
-            t: int = int(_t_raw)  # pyrefly: ignore[explicit-any]
+            t: int = int(_t_raw)
             if 0 <= t < 4:
                 return t
         # fallback: cycle based on step
         if isinstance(latent, dict):
             _step_raw2: Any = latent.get("step", 0)  # pyrefly: ignore[explicit-any]
-            step: int = int(_step_raw2)  # pyrefly: ignore[explicit-any]
+            step: int = int(_step_raw2)
         else:
             step = 0
         return step % 4
@@ -186,16 +186,16 @@ class NaturalISMCTSPlannerSearchMixin:
                 getattr(candidate_spec, "candidate_id", "candidate1")
                 if candidate_spec is not None
                 else "candidate1"
-            )  # pyrefly: ignore[explicit-any]
+            )
             self._config = NaturalISMCTSConfig(
-                uct_c=float(_uct_c_raw),  # pyrefly: ignore[explicit-any]
-                max_depth=int(_max_depth_raw),  # pyrefly: ignore[explicit-any]
-                max_simulations=int(_max_sim_raw),  # pyrefly: ignore[explicit-any]
-                max_transitions=_max_trans_raw,  # pyrefly: ignore[explicit-any]
-                max_model_calls=_max_model_raw,  # pyrefly: ignore[explicit-any]
-                tie_break=str(_tie_break_raw),  # pyrefly: ignore[explicit-any]
-                candidate_id=str(_cand_id_val) if candidate_spec is not None else "candidate1",  # pyrefly: ignore[explicit-any]
-                resource_view=str(_resource_view_raw),  # pyrefly: ignore[explicit-any]
+                uct_c=float(_uct_c_raw),
+                max_depth=int(_max_depth_raw),
+                max_simulations=int(_max_sim_raw),
+                max_transitions=_max_trans_raw,
+                max_model_calls=_max_model_raw,
+                tie_break=str(_tie_break_raw),
+                candidate_id=str(_cand_id_val) if candidate_spec is not None else "candidate1",
+                resource_view=str(_resource_view_raw),
                 seed_material=master_seed,
             )
         if continuation_policies is not None and len(continuation_policies) > 0:
@@ -261,7 +261,7 @@ class NaturalISMCTSPlannerSearchMixin:
         root_key = info_key_for_observation(root_observation)
         try:
             _cand_ids_list: list[int] = []
-            for _cand_item in legal_actions:  # pyrefly: ignore[explicit-any]
+            for _cand_item in legal_actions:
                 _cand_any: Any = _cand_item  # pyrefly: ignore[explicit-any]
                 _v: Any = getattr(_cand_any, "action_id", None)  # pyrefly: ignore[explicit-any]
                 if isinstance(_v, int) and not isinstance(_v, bool):
@@ -295,9 +295,7 @@ class NaturalISMCTSPlannerSearchMixin:
         # constant for the search. Proven exact against constructed
         # observations (cheap==real on all continuation steps).
         try:
-            _template_doc: dict[str, Any] = dict(
-                observation_identity_document(root_observation)  # type: ignore[arg-type]
-            )
+            _template_doc: dict[str, Any] = dict(observation_identity_document(root_observation))
         except ContractError:
             raise
         except Exception as exc:
@@ -463,10 +461,10 @@ class NaturalISMCTSPlannerSearchMixin:
             raise ContractError(f"ismcts: descent tree dump malformed: {exc}") from exc
         for entry in dump:
             try:
-                key = str(entry["key"])  # pyrefly: ignore[unknown-argument-type] # Any JSON value
+                key = str(entry["key"])  # Any JSON value
                 node = InformationSetNode(
                     key=key,
-                    visits=int(entry["visits"]),  # pyrefly: ignore[unknown-argument-type] # Any JSON value
+                    visits=int(entry["visits"]),  # Any JSON value
                     legal_actions=tuple(sorted_legal),
                 )
                 for arm in entry["arms"]:
@@ -521,17 +519,17 @@ class NaturalISMCTSPlannerSearchMixin:
 
         # Resolve selected CanonicalAction object if possible
         selected_action: Any | None = None  # pyrefly: ignore[explicit-any]
-        for _a_item in legal_actions:  # pyrefly: ignore[explicit-any]
+        for _a_item in legal_actions:
             a: Any = _a_item  # pyrefly: ignore[explicit-any]
             try:
                 _a_id_raw: Any = getattr(a, "action_id", a)  # pyrefly: ignore[explicit-any]
-                if int(_a_id_raw) == selected_id:  # pyrefly: ignore[explicit-any]
-                    selected_action = a  # pyrefly: ignore[explicit-any]
+                if int(_a_id_raw) == selected_id:
+                    selected_action = a
                     break
             except Exception:
                 continue
         if selected_action is None:
-            selected_action = legal_actions[0]  # pyrefly: ignore[explicit-any]
+            selected_action = legal_actions[0]
 
         telemetry = {
             "simulations": self._simulations,

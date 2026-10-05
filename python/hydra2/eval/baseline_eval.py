@@ -85,7 +85,7 @@ def fresh_process_metrics(
         in_path = tmp / "in.json"
         out_path = tmp / "out.json"
         _ = in_path.write_text(json.dumps(payload), encoding="utf-8")
-        # Subprocess script: recompute via same module, write metrics json.
+        # Invariant: the child recomputes via this same module; digest drift fails closed.
         script = tmp / "run.py"
         _ = script.write_text(
             """
@@ -130,7 +130,7 @@ out_path.write_text(_json.dumps(out), encoding="utf-8")
         if proc.returncode != 0:
             raise RuntimeError(f"fresh-process metrics failed: {proc.stdout}\n{proc.stderr}")
         out_raw = json.loads(out_path.read_text(encoding="utf-8"))
-        # Recompute digest locally to verify subprocess didn't drift.
+        # Invariant: the local recompute pins the child's digest; drift raises.
         expected = compute_baseline_metrics(logits, targets, legal_mask, compile_mode=compile_mode)
         if out_raw["digest"] != expected.digest:
             raise ContractError(
@@ -175,18 +175,20 @@ def tiny_shard_overfit(
     for i in range(shard_size):
         # Randomly choose num_legal in [2, num_actions]
         num_legal = int(torch.randint(2, num_actions + 1, (1,), generator=g).item())  # pyrefly: ignore[pytorch-efficiency-lint-item-call]  # reason: eager host sync for synthetic shard; single scalar must cross host. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
-        perm: list[int] = torch.randperm(num_actions, generator=g).tolist()  # type: ignore[assignment]  # reason: tolist() statically Any; ints validated by construction
-        legal_idx: list[int] = perm[:num_legal]
+        # tolist() is Any-typed; ints validated by construction.
+        shuffled_actions: list[int] = torch.randperm(num_actions, generator=g).tolist()
+        legal_idx: list[int] = shuffled_actions[:num_legal]
         legal_mask[i, legal_idx] = True
         # Choose target among legal
         t: int = legal_idx[int(torch.randint(0, len(legal_idx), (1,), generator=g).item())]  # pyrefly: ignore[pytorch-efficiency-lint-item-call]  # reason: eager host sync for synthetic target; single scalar must cross host. Evidence: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.item.html
-        targets[i] = t  # pyrefly: ignore[bad-assignment]  # reason: Tensor index assignment with int; runtime validates
-    # Tiny model: single hidden layer, maps features -> logits over actions.
+        targets[i] = t  # reason: Tensor index assignment with int; runtime validates
+    # Invariant: one hidden layer maps features to per-action logits.
     model = torch.nn.Sequential(
         torch.nn.Linear(16, hidden),
         torch.nn.Tanh(),
         torch.nn.Linear(hidden, num_actions),
     )
+    # CUDA runs only when requested and present; CPU is the deterministic default.
     if device.startswith("cuda") and torch.cuda.is_available():
         dev = torch.device(device)
         model = model.to(dev)
@@ -261,24 +263,27 @@ def _to_jsonable(value: Any) -> Any:
         except (ValueError, TypeError):
             pass
     if isinstance(value, tuple):
-        out: list[Any] = []
-        for elem in value:
-            v: Any = elem
-            out.append(_to_jsonable(v))
-        return out
+        # Tuples become JSON arrays; each element converts recursively.
+        as_list: list[Any] = []
+        for element in value:
+            item: Any = element
+            as_list.append(_to_jsonable(item))
+        return as_list
     if isinstance(value, list):
-        out2: list[Any] = []
-        for elem2 in value:
-            v2: Any = elem2
-            out2.append(_to_jsonable(v2))
-        return out2
+        # Lists copy element-wise so the caller keeps ownership of the input.
+        copied: list[Any] = []
+        for element in value:
+            item: Any = element
+            copied.append(_to_jsonable(item))
+        return copied
     if isinstance(value, dict):
-        out3: dict[Any, Any] = {}
-        for k, v in value.items():  # type: ignore[attr-defined]  # reason: value Any narrowed to dict by isinstance; checker flags .items on Any
-            kv: Any = k
-            vv: Any = v
-            out3[kv] = _to_jsonable(vv)
-        return out3
+        # Mappings rebuild key-wise; values convert recursively.
+        mapped: dict[Any, Any] = {}
+        for key, child in value.items():
+            mapped_key: Any = key
+            mapped_value: Any = child
+            mapped[mapped_key] = _to_jsonable(mapped_value)
+        return mapped
     return value
 
 
@@ -325,10 +330,11 @@ def evaluate_reference_games(
     game_hashes: list[str] = []
     for game_index in range(num_games):
         # Deterministic wall per game via seeded physical tiles.
-        g = torch.Generator().manual_seed(seed + game_index * 9973)
+        rng = torch.Generator().manual_seed(seed + game_index * 9973)
         # Sample a random wall permutation deterministically.
-        perm: list[int] = torch.randperm(136, generator=g).tolist()  # type: ignore[assignment]  # reason: tolist() statically Any; ints validated by construction
-        wall: tuple[TileId, ...] = tuple(TileId(x) for x in perm)
+        # tolist() is Any-typed; ints validated by construction.
+        tile_order: list[int] = torch.randperm(136, generator=rng).tolist()
+        wall: tuple[TileId, ...] = tuple(TileId(x) for x in tile_order)
         digest = wall_schedule_digest(f"wp05c-ref-{seed}-{game_index}", wall)
         schedule = WallSchedule(
             schedule_id=f"wp05c-ref-{seed}-{game_index}", physical_tiles=wall, digest=digest
@@ -423,7 +429,8 @@ def check_hidden_permutation_invariance(
     # Ensure at least 2 legal per row and target legal.
     targets = torch.empty(rows, dtype=torch.int64)
     for i in range(rows):
-        legal_idx: list[int] = torch.where(legal_mask[i])[0].tolist()  # type: ignore[assignment]  # reason: tolist() statically Any; ints validated by construction
+        # tolist() is Any-typed; ints validated by construction.
+        legal_idx: list[int] = torch.where(legal_mask[i])[0].tolist()
         if len(legal_idx) < 2:
             # Force 2 legal
             legal_mask[i, 0] = True
@@ -503,8 +510,7 @@ def make_baseline_report(
     _bridge_contracts.make_digest_text(held_out_split.digest)
     _bridge_contracts.make_digest_text(metrics.digest)
     _bridge_contracts.make_digest_text(held_out_metrics.digest)
-    # Use a stable UTC timestamp truncated to seconds for determinism in tests;
-    # callers that need wall-clock time can supply their own.
+    # Invariant: second-truncated UTC keeps reports deterministic; wall-clock callers override.
     import datetime
 
     created_at = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -556,11 +562,11 @@ def make_baseline_report(
         "hidden_invariance_digest": hidden_digest,
         "created_at_utc": created_at,
     }
-    # Ensure any remaining tuples from caller are sanitized before canonicalization.
+    # Invariant: sanitize caller tuples before canonicalization.
     doc = _to_jsonable(doc)
-    # Digest is over the document WITHOUT the digest field itself (canonical).
+    # Invariant: the digest covers the document minus itself.
     doc_digest = of_canonical({k: v for k, v in doc.items() if k != "digest"})
     doc["digest"] = str(doc_digest)
-    # Validate canonical round-trip.
+    # Fail closed: the digest must survive a canonical round-trip.
     _ = canonical_bytes(doc)
     return doc

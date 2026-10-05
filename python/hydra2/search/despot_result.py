@@ -210,7 +210,9 @@ class NaturalDespotPlannerSearchMixin:
             pass  # stale .so: fall through to the oracle below (same value)
         else:
             try:
-                return _proxy_fn(lower_value, visits, self._config.regularization)  # pyrefly: ignore[unknown-argument-type] # untyped bridge proxy fn
+                return _proxy_fn(
+                    lower_value, visits, self._config.regularization
+                )  # untyped bridge proxy fn
             except (TypeError, ValueError, OverflowError):
                 pass  # exotic input: fall through to the oracle below (same value)
         bonus = 0.0
@@ -341,7 +343,7 @@ class NaturalDespotPlannerResultMixin(NaturalDespotPlannerSearchMixin):
         completed: bool,
     ) -> Any:
         legal = tuple(getattr(request, "legal_actions", ()))
-        # Build UtilityVector per legal action (feasible lower estimate) — fail closed, no raw fallback.
+        # Per-action UtilityVector holds feasible lower estimate; fail closed, no raw.
         _require_utility()
         # Need rules_hash for UtilityVector; derive from observation or candidate spec
         obs = getattr(request, "observation", None)
@@ -374,7 +376,7 @@ class NaturalDespotPlannerResultMixin(NaturalDespotPlannerSearchMixin):
             # Clamp v to [-5,5] for safety (bridge single implementation; oracle fallback)
             if _clamp_fn is not None:
                 try:
-                    v_clamped: float = _clamp_fn(v)  # pyrefly: ignore[unknown-argument-type] # untyped bridge clamp fn
+                    v_clamped: float = _clamp_fn(v)  # untyped bridge clamp fn
                 except (TypeError, ValueError, OverflowError):
                     v_clamped = max(-5.0, min(5.0, v))
             else:
@@ -424,7 +426,7 @@ class NaturalDespotPlannerResultMixin(NaturalDespotPlannerSearchMixin):
         pid: Any = pid_first if pid_first is not None else pid_second
         if pid is None and packet is not None:
             try:
-                pid = packet.packet_id  # type: ignore[union-attr]
+                pid = packet.packet_id
             except (AttributeError, ValueError, TypeError) as exc:
                 logger.debug("despot: packet_id fallback to str", exc_info=exc)
                 pid = str(packet)

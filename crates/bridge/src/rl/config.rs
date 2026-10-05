@@ -1,4 +1,4 @@
-//? rl/config.rs: closed RL schema registry + schema-bound identities.
+//! rl/config.rs: closed RL schema registry + schema-bound identities.
 //!
 //! DAG: pyo3 + serde_json + the feed crate (`canon`, `digest`) ONLY — same
 //! edge shape as `rc_digest.rs:3-9`. FORBIDS: YAML/file IO, `${VAR}`

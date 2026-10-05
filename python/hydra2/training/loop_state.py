@@ -102,12 +102,12 @@ def _atomic_publish_best(source: Path, dest: Path) -> str:
         raise ContractError(f"selection ckpt missing: {src}")
     data = src.read_bytes()
     digest = _best_ckpt_digest_for(data)
-    tmp = dst.with_name(dst.name + ".tmp")
-    with open(tmp, "wb") as fh:
+    staging_tmp = dst.with_name(dst.name + ".tmp")
+    with open(staging_tmp, "wb") as fh:
         _ = fh.write(data)  # intentionally discarded: byte count unneeded after fsync
         fh.flush()
         os.fsync(fh.fileno())
-    os.replace(tmp, dst)
+    os.replace(staging_tmp, dst)
     try:
         dir_fd = os.open(dst.parent, os.O_DIRECTORY)
     except Exception:

@@ -175,7 +175,7 @@ def admit(
         raise ContractError(str(exc)) from exc
     if picked is None:
         return "candidate0"
-    return profiles[picked]  # pyrefly: ignore[unknown-argument-type] # bridge-picked index
+    return profiles[picked]  # bridge-picked index
 
 
 def compare_gumbel_puct(

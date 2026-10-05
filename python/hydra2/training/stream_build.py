@@ -28,7 +28,7 @@ from hydra2.training.stream_expand import _MODEL_PARAMETERS as _MODEL_PARAMETERS
 try:
     from hydra2._native import contracts as _build_bridge  # pyrefly: ignore[missing-import]
 except ImportError:  # pragma: no cover - import-time signal, same text as call-site
-    _build_bridge = None  # type: ignore[assignment]
+    _build_bridge = None
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -332,12 +332,12 @@ def _manifest_hashes_for_loop(
     rules_hex: str = sha256_digest(rules_bytes)
     return {
         "run_spec_hash": run_config_digest(config),
-        "model_spec_hash": model.model_identity,  # pyrefly: ignore[unknown-argument-type] # live model owns the identity digest
+        "model_spec_hash": model.model_identity,  # live model owns the identity digest
         "optimizer_spec_hash": optimizer_hex,
         "scheduler_spec_hash": scheduler_hex,
         "environment_hash": str(ENGINE_IDENTITY.environment_hash),
         "rules_hash": rules_hex,
-        "utility_manifest_hash": model.utility_manifest_hash,  # pyrefly: ignore[unknown-argument-type] # live model owns the manifest digest
+        "utility_manifest_hash": model.utility_manifest_hash,  # live model owns the manifest digest
         "action_schema_hash": action_digest,
         "observation_schema_hash": observation_digest,
         "dataset_manifest_hash": stream_digest,
@@ -372,7 +372,7 @@ def _verify_rng_anchors(payload_rng: Any, anchors: Any, *, ckpt: Path) -> None:
         raise ContractError(f"checkpoint sidecar rng_state must be a mapping: {ckpt}")
     expected_cpu = anchors.get("torch_cpu_sha256")
     raw_cpu: Any = payload_rng["cpu"]
-    payload_cpu: bytes = bytes(raw_cpu)  # pyrefly: ignore[unknown-argument-type] # payload RNG dynamic; sha256 owns the bytes gate
+    payload_cpu: bytes = bytes(raw_cpu)  # payload RNG dynamic; sha256 owns the bytes gate
     actual_cpu: str = sha256_digest(payload_cpu)
     if expected_cpu != actual_cpu:
         raise ContractError(f"checkpoint RNG state mismatch (torch cpu): {ckpt}")
@@ -382,12 +382,12 @@ def _verify_rng_anchors(payload_rng: Any, anchors: Any, *, ckpt: Path) -> None:
         return
     if payload_cuda is None or expected_cuda is None:
         raise ContractError(f"checkpoint RNG state mismatch (torch cuda): {ckpt}")
-    cuda_states: list[bytes] = payload_cuda
+    cuda_states: list[Any] = payload_cuda
     # Mirror the mint side (`_rng_anchors` hashes `bytes(s)` per state):
     # payload states load back as ByteTensors, never raw bytes, so hash
     # `bytes(s)` here too. Any byte divergence still mismatches by design.
     actual_list: list[str] | str = (
-        [sha256_digest(bytes(s)) for s in cuda_states]  # pyrefly: ignore[unknown-argument-type] # payload CUDA states dynamic; sha256 owns the bytes gate
+        [sha256_digest(bytes(s)) for s in cuda_states]  # states dynamic; sha256 gates bytes
         if isinstance(payload_cuda, list)
         else sha256_digest(bytes(payload_cuda))  # pyrefly: ignore[unknown-argument-type] # payload CUDA state dynamic; sha256 owns the bytes gate
     )

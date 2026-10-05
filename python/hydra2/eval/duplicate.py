@@ -118,6 +118,7 @@ def validate_blocks_disjoint(blocks: tuple[WallBlock, ...]) -> None:
     try:
         leaf = _bridge_eval.record_validate_blocks_disjoint  # type: ignore[attr-defined]  # reason: record_leaves leaf lands with MAIN wiring; AttributeError fallback covers stale .so
     except AttributeError:
+        # Stale bridge without the leaf: fall through to the Python oracle below.
         pass
     else:
         try:
@@ -205,11 +206,9 @@ def build_wall_blocks(
         # WallBlock validates finiteness and equal lengths internally.
         blocks.append(WallBlock(wall_id=wall_id, game_ids=game_ids, contrasts=contrasts))
 
-    # Enforce disjointness before returning.
-    # Chain: build enforces -> manifest re-checks order/disjointness ->
-    # split re-checks partitions (validate_blocks/walls_disjoint).
+    # Invariant: blocks leave disjoint (manifest and split re-check downstream).
     validate_blocks_disjoint(tuple(blocks))
-    # No silent imputation of telemetry — caller aggregates separately.
+    # Invariant: no telemetry is imputed here; the caller aggregates separately.
     return tuple(blocks)
 
 
@@ -245,10 +244,10 @@ def make_block_manifest(
             if block.wall_id not in schedule_order:
                 raise ContractError(f"block wall {block.wall_id!r} not in schedule")
 
-        def _wall_order(b: WallBlock) -> int:
-            return schedule_order[b.wall_id]
+        def schedule_rank(block: WallBlock) -> int:
+            return schedule_order[block.wall_id]
 
-        ordered = tuple(sorted(blocks, key=_wall_order))
+        ordered = tuple(sorted(blocks, key=schedule_rank))
         if ordered != blocks:
             raise ContractError("blocks must be in schedule wall order")
         manifest_wall_ids = tuple(block.wall_id for block in ordered)
@@ -329,6 +328,7 @@ def split_blocks_held_out(
     try:
         count_leaf = _bridge_eval.eval_held_count  # type: ignore[attr-defined]  # reason: eval_leaves2 leaf lands with MAIN wiring; AttributeError fallback covers stale .so
     except AttributeError:
+        # Stale bridge without the leaf: the Python oracle below is authoritative.
         held_n = held_n_oracle
     else:
         try:
@@ -340,7 +340,7 @@ def split_blocks_held_out(
     generator = torch.Generator().manual_seed(seed)
     # reason: explicit-any on tolist(); randperm(n) yields indices in
     # [0, n) by construction, in-range for blocks_list below.
-    perm: list[int] = torch.randperm(n, generator=generator).tolist()  # pyrefly: ignore[explicit-any]
+    perm: list[int] = torch.randperm(n, generator=generator).tolist()
     blocks_list: list[WallBlock] = list(blocks)
     held = tuple(blocks_list[i] for i in perm[:held_n])
     train = tuple(blocks_list[i] for i in perm[held_n:])
@@ -419,7 +419,7 @@ def report_telemetry_completeness(
     :class:`TelemetryTolerance` is supplied it governs per-row missing-field
     tolerance only (fallback/timeout/illegal handling remains strict).
     """
-    if not isinstance(blocks, tuple) or any(not isinstance(b, WallBlock) for b in blocks):
+    if not isinstance(blocks, tuple) or any(not isinstance(block, WallBlock) for block in blocks):
         raise ContractError("blocks must be tuple of WallBlock")
     if not isinstance(telemetry_by_game, Mapping):
         raise ContractError("telemetry_by_game must be mapping game_id -> ResourceTelemetry")

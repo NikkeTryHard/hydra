@@ -36,6 +36,9 @@ from hydra2.distillation._teacher_records import TrajectoryRecord
 if TYPE_CHECKING:
     from hydra2.contracts.observation_actor import ActorObservation
     from hydra2.distillation._teacher_gate import TeacherJustification
+#: Masked-out logit for illegal actions; -inf yields exactly zero softmax mass.
+_NEG_INF = float("-inf")
+
 # ---------------------------------------------------------------------------
 # Distillation — student model, loss, BC anchors, legal mask
 # ---------------------------------------------------------------------------
@@ -109,7 +112,7 @@ class StudentModel(nn.Module):
         logits = out["policy_logits"]
         # Illegal mask -> -inf
         masked = torch.where(
-            legal_mask.bool(), logits, torch.tensor(float("-inf"), device=logits.device)
+            legal_mask.bool(), logits, torch.tensor(_NEG_INF, device=logits.device)
         )
         return torch.argmax(masked, dim=-1)
 
@@ -195,8 +198,8 @@ def features_for_record(record: TrajectoryRecord) -> torch.Tensor:
 
 def build_student_model(*, num_actions: int | None = None) -> StudentModel:
     """Construct StudentModel, defaulting num_actions to import-time _NUM_ACTIONS."""
-    n = num_actions if num_actions is not None else _NUM_ACTIONS
-    return StudentModel(num_actions=n)
+    resolved = num_actions if num_actions is not None else _NUM_ACTIONS
+    return StudentModel(num_actions=resolved)
 
 
 def compute_distillation_loss(
@@ -231,7 +234,7 @@ def compute_distillation_loss(
         raise ContractError("teacher illegal has non-zero mass")
     # Student masked log_softmax
     masked_logits = torch.where(
-        legal_mask.bool(), student_logits, torch.tensor(float("-inf"), device=student_logits.device)
+        legal_mask.bool(), student_logits, torch.tensor(_NEG_INF, device=student_logits.device)
     )
     log_probs = F.log_softmax(masked_logits / config.temperature, dim=-1)
     # Teacher already zero on illegal, safe
@@ -257,6 +260,7 @@ def compute_distillation_loss(
         mse = F.mse_loss(student_value.float(), teacher_vector.float())
         losses["value"] = mse * config.w_value
     elif (student_value is None) != (teacher_vector is None):
+        # Half-supplied value pair hides a wiring bug; fail closed.
         raise ContractError("value both or neither required")
 
     if anchor_logits is not None and config.w_bc > 0:
@@ -266,7 +270,7 @@ def compute_distillation_loss(
         masked_anchor = torch.where(
             legal_mask.bool(),
             anchor_logits,
-            torch.tensor(float("-inf"), device=anchor_logits.device),
+            torch.tensor(_NEG_INF, device=anchor_logits.device),
         )
         ce = F.cross_entropy(masked_anchor, anchor_target.long(), reduction="mean")
         losses["bc"] = ce * config.w_bc
@@ -304,9 +308,8 @@ def train_student_distillation(
         student.parameters(), lr=cfg.learning_rate, weight_decay=cfg.l2_reg
     )
 
-    # Prepare tensors
+    # Invariant: record tensors stack once in deterministic order.
     losses_trace: list[float] = []
-    # Convert records to tensors once (deterministic order)
     features = torch.stack([features_for_record(r) for r in records])
     teacher_policies = torch.tensor([list(r.teacher_policy) for r in records], dtype=torch.float32)
     legal_masks = torch.tensor([list(r.legal_mask) for r in records], dtype=torch.bool)
@@ -318,28 +321,28 @@ def train_student_distillation(
 
     _ = student.train()
     losses: dict[str, torch.Tensor] = {}
-    for _ in range(cfg.max_updates):
+    for epoch in range(cfg.max_updates):
         # Mini-batch loop deterministic (shuffle via seeded permutation)
-        gen = torch.Generator().manual_seed(seed + _)
-        perm = torch.randperm(len(records), generator=gen)
+        epoch_rng = torch.Generator().manual_seed(seed + epoch)
+        order = torch.randperm(len(records), generator=epoch_rng)
         for start in range(0, len(records), cfg.batch_size):
-            idx = perm[start : start + cfg.batch_size]
-            b_feat = features[idx]
-            b_teacher = teacher_policies[idx]
-            b_mask = legal_masks[idx]
-            b_vec = teacher_vectors[idx]
-            b_anchor_tgt = anchor_targets[idx]
-            out: dict[str, torch.Tensor] = student(b_feat, legal_mask=b_mask)
+            batch_idx = order[start : start + cfg.batch_size]
+            batch_features = features[batch_idx]
+            batch_teacher = teacher_policies[batch_idx]
+            batch_mask = legal_masks[batch_idx]
+            batch_vector = teacher_vectors[batch_idx]
+            batch_anchor_targets = anchor_targets[batch_idx]
+            out: dict[str, torch.Tensor] = student(batch_features, legal_mask=batch_mask)
             # Need anchor_logits for BC: use student logits as anchor logits (preserves BC)
             anchor_logits = out["policy_logits"] if cfg.w_bc > 0 else None
             losses = compute_distillation_loss(
                 student_logits=out["policy_logits"],
-                teacher_policy=b_teacher,
-                legal_mask=b_mask,
+                teacher_policy=batch_teacher,
+                legal_mask=batch_mask,
                 student_value=out["value"],
-                teacher_vector=b_vec,
+                teacher_vector=batch_vector,
                 anchor_logits=anchor_logits,
-                anchor_target=b_anchor_tgt if cfg.w_bc > 0 else None,
+                anchor_target=batch_anchor_targets if cfg.w_bc > 0 else None,
                 config=cfg,
             )
             _ = optimizer.zero_grad()

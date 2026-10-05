@@ -4,8 +4,7 @@ Every arm logs actual model calls, transitions, synchronized duration, peak
 memory, and joules when available; counters include all planner overhead
 named by the resource view.
 
-Missing
-required telemetry invalidates a block according to the predeclared tolerance
+Missing required telemetry invalidates a block according to the predeclared tolerance
 and is NEVER imputed silently: :func:`telemetry_invalid_reason` names every
 missing field, and :func:`block_missing_telemetry_report` aggregates the
 violations per game so the exclusion surfaces in the evaluation report.
@@ -91,10 +90,10 @@ def _require_nonneg_int(name: str, value: object) -> int:
 def _require_nonneg_float(name: str, value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise TypeError(f"{name} must be a finite number")
-    number = float(value)
-    if not math.isfinite(number) or number < 0:
+    amount = float(value)
+    if not math.isfinite(amount) or amount < 0:
         raise TypeError(f"{name} must be finite and >= 0")
-    return number
+    return amount
 
 
 def _require_optional_int(name: str, value: object) -> int | None:
@@ -117,13 +116,13 @@ def make_resource_telemetry(**kwargs: object) -> ResourceTelemetry:
     mode = kwargs["mode"]
     if not isinstance(mode, str) or mode == "":
         raise TypeError("mode must be a nonempty str")
-    for digest_name in ("candidate_spec_hash", "hardware_hash", "environment_hash"):
+    for digest_field in ("candidate_spec_hash", "hardware_hash", "environment_hash"):
         # reason: type arg-type on kwargs object value; validate_digest
         # runtime-validates the digest and raises on mismatch.
-        validate_digest(kwargs[digest_name])  # type: ignore[arg-type]
+        validate_digest(kwargs[digest_field])  # type: ignore[arg-type]
     for identifier in ("wall_id", "case_id"):
-        value = kwargs[identifier]
-        if value is not None and (not isinstance(value, str) or value == ""):
+        entry = kwargs[identifier]
+        if entry is not None and (not isinstance(entry, str) or entry == ""):
             raise TypeError(f"{identifier} must be None or a nonempty str")
     invalid_reason = kwargs["invalid_reason"]
     if invalid_reason is not None and (not isinstance(invalid_reason, str) or invalid_reason == ""):
@@ -204,6 +203,7 @@ def block_missing_telemetry_report(
 ) -> dict[str, str]:
     """Per-game invalidity report; empty mapping means fully usable rows."""
     report: dict[str, str] = {}
+    # Sorted game order keeps the report deterministic across runs.
     for game_id in sorted(rows_by_game):
         reason = telemetry_invalid_reason(rows_by_game[game_id], tolerance)
         if reason is not None:

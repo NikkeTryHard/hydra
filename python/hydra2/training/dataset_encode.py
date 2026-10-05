@@ -113,14 +113,15 @@ def tensorize_actor_row(
     _require_action_width(num_actions, allow_narrow=allow_narrow, where="tensorize_actor_row")
     decision_id: str = str(row["decision_id"])
     chosen_raw: int = int(row["chosen_action_id"])
-    # Deterministic features from decision_id hash
-    h = bytes.fromhex(str(sha256_digest(f"{decision_id}:{seed}".encode()))[7:])
-    # Expand to feature_dim floats via hash bytes
+    # Invariant: synthetic features derive only from the decision_id hash
+    # (no privileged inputs); any hash-source change breaks determinism.
+    hash_bytes = bytes.fromhex(str(sha256_digest(f"{decision_id}:{seed}".encode()))[7:])
+    # Invariant: exactly feature_dim entries in [-1, 1]; fewer breaks the [F] shape.
     vals: list[float] = []
-    for i in range(feature_dim):
-        # cycle through hash bytes
-        b = h[i % len(h)]
-        vals.append((b / 255.0) * 2 - 1)  # in [-1,1]
+    for dim_index in range(feature_dim):
+        # Cycle hash bytes so short digests still fill wide feature dims.
+        hash_byte = hash_bytes[dim_index % len(hash_bytes)]
+        vals.append((hash_byte / 255.0) * 2 - 1)  # in [-1,1]
     features = torch.tensor(vals, dtype=torch.float32)
     # Deterministic legal mask: ensure chosen is legal, plus random other legals
     gen = torch.Generator().manual_seed(_lexicographic_hash(decision_id) ^ seed)
@@ -140,11 +141,12 @@ def tensorize_actor_row(
             )
         chosen = chosen_raw
     legal_mask[chosen] = True
-    # Fill remaining
+    # Invariant: chosen plus (legal_count - 1) distinct others stay legal;
+    # omitting the fill breaks the 1..min(8, A) density contract.
     candidates: list[int] = list(range(num_actions))
     candidates.remove(chosen)
     perm_any: Any = torch.randperm(len(candidates), generator=gen).tolist()
-    perm: list[int] = [int(x) for x in perm_any]
+    perm: list[int] = [int(perm_entry) for perm_entry in perm_any]
     for idx in perm[: legal_count - 1]:
         cand: int = candidates[idx]
         legal_mask[cand] = True
@@ -198,7 +200,7 @@ def _real_features_from_encoder_batch(batch: Any, *, feature_dim: int) -> torch.
     parts.append(feats["actor_can_tsumo"].to(torch.float32).unsqueeze(1))
     parts.append(feats["history_event_kind"].to(torch.float32) / 16.0)
     parts.append(feats["history_mask"].to(torch.float32))
-    wide = torch.cat([p.reshape(p.shape[0], -1) for p in parts], dim=1)
+    wide = torch.cat([part.reshape(part.shape[0], -1) for part in parts], dim=1)
     batch_size = wide.shape[0]
     if feature_dim <= 0:
         raise ContractError(f"feature_dim must be positive, got {feature_dim}")

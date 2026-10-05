@@ -265,12 +265,13 @@ impl NativePool {
     /// minimum committed-decision count. Pins prevent duplicate staging;
     /// outstanding applies at that frontier prevent the next round opening.
     /// This keeps real batch membership independent of worker completion.
+    /// Staged rows are capped at the lane `capacity` admit_fill copied from
+    /// the slot; excess eligible games stay for the next fill.
     pub(super) fn run_fill(&self, slot_id: u64, epoch: u64, bucket_t: usize, capacity: usize) -> FillOutput {
         let failed = |detail: String| FillOutput {
             slot_id,
             epoch,
             bucket_t,
-            capacity,
             staged: Vec::new(),
             bytes: Vec::new(),
             logical_round: 0,
@@ -322,7 +323,6 @@ impl NativePool {
                 slot_id,
                 epoch,
                 bucket_t,
-                capacity,
                 staged: Vec::new(),
                 bytes: Vec::new(),
                 logical_round: 0,
@@ -458,7 +458,6 @@ impl NativePool {
                 slot_id,
                 epoch,
                 bucket_t,
-                capacity,
                 staged,
                 bytes: Vec::new(),
                 logical_round: 0,
@@ -474,7 +473,6 @@ impl NativePool {
             slot_id,
             epoch,
             bucket_t,
-            capacity,
             staged,
             bytes,
             logical_round,
@@ -749,6 +747,8 @@ impl NativePool {
         }
         // Clone the staged rows' facts under one short lock, then encode
         // without holding state (game locks only, never nested in state).
+        // `cursor_before: 0` is a safe placeholder: `encode_staged` reads
+        // obs/uniform only, so refill restores bytes, never reservations.
         let rows: Vec<(usize, NativeObservation, f64)> = {
             let state = self.lock_state()?;
             slot_ref(&state, slot_id)?

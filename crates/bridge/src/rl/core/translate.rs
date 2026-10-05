@@ -177,7 +177,6 @@ impl super::NativeGame {
             Visibility::Public,
             vec![0, 1, 2, 3],
             TypedPayload {
-                actor: Some(dealer),
                 round_index: Some(self.hand_index),
                 scores: Some(scores),
                 ..TypedPayload::empty()
@@ -199,7 +198,7 @@ impl super::NativeGame {
             Some(actor),
             Visibility::Public,
             vec![0, 1, 2, 3],
-            TypedPayload { actor: Some(actor), ..TypedPayload::empty() },
+            TypedPayload::empty(),
             vec![],
         )?;
         self.emit(advance)?;
@@ -208,7 +207,7 @@ impl super::NativeGame {
             Some(actor),
             Visibility::ActorPrivate,
             vec![actor],
-            TypedPayload { actor: Some(actor), tile: Some(tile), ..TypedPayload::empty() },
+            TypedPayload { tile: Some(tile), ..TypedPayload::empty() },
             vec![],
         )?;
         self.emit(draw)?;
@@ -237,7 +236,6 @@ impl super::NativeGame {
             Visibility::Public,
             vec![0, 1, 2, 3],
             TypedPayload {
-                actor: Some(actor),
                 tile: Some(tile),
                 action_id: Some(action_id),
                 ..TypedPayload::empty()
@@ -280,7 +278,6 @@ impl super::NativeGame {
             Visibility::Public,
             vec![0, 1, 2, 3],
             TypedPayload {
-                actor: Some(actor),
                 tile: Some(tile),
                 action_id: Some(action_id),
                 ..TypedPayload::empty()
@@ -322,7 +319,7 @@ impl super::NativeGame {
             Some(actor),
             Visibility::Public,
             vec![0, 1, 2, 3],
-            TypedPayload { actor: Some(actor), ..TypedPayload::empty() },
+            TypedPayload::empty(),
             deltas,
         )?;
         self.emit(envelope)?;
@@ -374,7 +371,6 @@ impl super::NativeGame {
             Visibility::Public,
             vec![0, 1, 2, 3],
             TypedPayload {
-                actor: Some(actor),
                 tile: Some(called),
                 action_id: Some(action_id),
                 source_seat: source,
@@ -416,7 +412,6 @@ impl super::NativeGame {
             Visibility::Public,
             vec![0, 1, 2, 3],
             TypedPayload {
-                actor: Some(actor),
                 action_id,
                 consumed_tiles: consumed,
                 ..TypedPayload::empty()
@@ -471,7 +466,6 @@ impl super::NativeGame {
             Visibility::Public,
             vec![0, 1, 2, 3],
             TypedPayload {
-                actor: Some(actor),
                 tile: Some(added),
                 action_id,
                 ..TypedPayload::empty()
@@ -566,7 +560,6 @@ impl super::NativeGame {
             Visibility::Public,
             vec![0, 1, 2, 3],
             TypedPayload {
-                actor: Some(winner),
                 tile: Some(tile),
                 action_id,
                 source_seat: source,

@@ -26,7 +26,7 @@ from hydra2.data.replay_expand import pop_live_observation as pop_live_observati
 try:
     from hydra2._native import contracts as _expand_bridge  # pyrefly: ignore[missing-import]
 except ImportError:  # pragma: no cover - import-time signal, same text as call-site
-    _expand_bridge = None  # type: ignore[assignment]
+    _expand_bridge = None
 
 if TYPE_CHECKING:
     from hydra2.data.decode import GameRecord as GameRecord
@@ -526,16 +526,16 @@ def _sidecar_window_hash(entries: list[dict[str, Any]], rows: list[dict[str, Any
         total += count_any
     if total != len(rows):
         raise ContractError(f"buffer index drift: {total} indexed rows != {len(rows)} buffered")
-    h = hashlib.sha256()
+    window_hasher = hashlib.sha256()
     pos = 0
     for entry in entries:
         key = entry["key"]
         if not isinstance(key, str) or key == "":
             raise ContractError("sidecar window entry key must be a non-empty str")
         count = int(entry["rows"])
-        h.update(key.encode("utf-8"))
-        h.update(b"\x00")
-        h.update(count.to_bytes(8, "little"))
+        window_hasher.update(key.encode("utf-8"))
+        window_hasher.update(b"\x00")
+        window_hasher.update(count.to_bytes(8, "little"))
         for row in rows[pos : pos + count]:
             chosen_any = row.get("chosen_action_id", 0)
             if isinstance(chosen_any, bool) or not isinstance(chosen_any, int):
@@ -543,11 +543,11 @@ def _sidecar_window_hash(entries: list[dict[str, Any]], rows: list[dict[str, Any
             kind_any = row.get("action_kind", "")
             if not isinstance(kind_any, str):
                 raise ContractError("sidecar window row action_kind must be a str")
-            h.update(chosen_any.to_bytes(8, "little", signed=True))
-            h.update(kind_any.encode("utf-8"))
-            h.update(b"\x00")
+            window_hasher.update(chosen_any.to_bytes(8, "little", signed=True))
+            window_hasher.update(kind_any.encode("utf-8"))
+            window_hasher.update(b"\x00")
         pos += count
-    return "sha256:" + h.hexdigest()
+    return "sha256:" + window_hasher.hexdigest()
 
 
 def _history_bucket_of(row: dict[str, Any]) -> int:

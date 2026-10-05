@@ -110,7 +110,7 @@ def test_despot_no_proposal_weights() -> None:
     belief, epoch, _ = _belief_and_epoch()
     cand = make_despot_candidate_spec(num_scenarios=8, rules_hash=_MASTER_RULES)
     planner = NaturalDespotPlanner(candidate_spec=cand, belief=belief)
-    # Sample twice with same case_id -> same world_refs? Deterministic same distribution
+    # Same case_id sampled twice yields identical world_refs (deterministic distribution).
     sc1 = planner._sample_natural_scenarios(
         belief_epoch=epoch, candidate_id=cand.candidate_id, case_id="case_same", k=8
     )

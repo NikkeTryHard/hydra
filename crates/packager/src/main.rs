@@ -1,3 +1,4 @@
+//! Restart-safe MJAI JSON-to-zstd dataset packager binary (transport authority: integrity.rs).
 mod integrity;
 
 use std::{

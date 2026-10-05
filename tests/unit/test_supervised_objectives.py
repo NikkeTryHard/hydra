@@ -192,8 +192,7 @@ def test_masked_bc_rejects_illegal_target_and_all_false(tmp_path: Path) -> None:
 
 
 def test_auxiliary_weights_explicit(tmp_path: Path) -> None:
-    # Need placement and event targets in batch — inject via
-    # monkey-patching tensorize? Instead test compute_supervised_loss directly.
+    # Placement/event targets bypass the batch: test compute_supervised_loss directly.
     # Day-one: placement is per-seat [B,4,4] vs [B,4] (mean over seats) and
     # value is MSE on [B,4] UtilityVector.values.
     torch.manual_seed(1)

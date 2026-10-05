@@ -28,7 +28,7 @@ pub struct CohortGame {
 /// Key provenance for the prescribed `actor_policy_sample` sampler:
 /// `master_seed_hex` is the selection-training scope material (hex);
 /// `experiment_id` is the frozen pipeline experiment; `replicate_id` and
-/// `attempt_id` are the explicit pipeline scope ( retries bump attempt via
+/// `attempt_id` are the explicit pipeline scope (`retries` bump attempt via
 /// `retry_key`); `generation` doubles as the collection split scope
 /// (`selection_training:g={g}`). The pool derives one semantic seed per
 /// (game, seat) from these fields; the lifecycle descriptor MUST carry them

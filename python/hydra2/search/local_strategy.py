@@ -188,7 +188,7 @@ def exhaustive_tiny_game_values(
                     - 0.05
                     for d, aid in enumerate(path)
                 )
-            # Apply offset to actor 0 component only for distinguishability (keep zero-sum via re-center)
+            # Offset actor 0 only for distinguishability; re-center keeps zero-sum.
             # Add off to first seat then re-center
             vec = cast(
                 "tuple[float, float, float, float]",

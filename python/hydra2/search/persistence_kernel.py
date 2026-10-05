@@ -86,7 +86,8 @@ __all__ = [
 
 
 # ---------------------------------------------------------------------------
-# PersistenceArm — frozen record (id, retain_state, opponent_time_compute, own_deadline_ms, extra_wait_allowance_ms, deployable); B/F/R/P share the deployable own deadline of at most 5000 ms minus the frozen fallback margin; every arm logs actual model calls, transitions, synchronized duration, peak memory, and joules when available
+# PersistenceArm — frozen record; B/F/R/P share deployable deadline/margin.
+# Every arm logs calls/transitions/duration/memory/joules when available.
 # ---------------------------------------------------------------------------
 
 
@@ -119,7 +120,7 @@ class PersistenceArm:
                 raise ContractError("own_deadline_ms must be positive")
         if not isinstance(self.deployable, bool):
             raise ContractError("deployable must be bool")
-        # Per-arm invariants (B: no retain, no opponent-time compute, deployable; F: no retain, no opponent-time compute, deployable; R/P: retain, P with opponent-time compute, deployable; C: laboratory-only, not deployable)
+        # Per-arm invariants: B/F no retain+no compute; R/P retain; C lab-only.
         expected = ARM_DEFS[self.id]
         for k in ("retain_state", "opponent_time_compute", "deployable"):
             if getattr(self, k) != expected[k]:
@@ -330,11 +331,11 @@ def enumerate_packets_for(
     epoch_id = epoch.epoch if isinstance(epoch, BeliefEpochLite) else epoch
     return tuple(
         FinitePacket(
-            packet_id=packet_id,  # pyrefly: ignore[unknown-argument-type] # bridge packet row
-            action_id=action_id,  # pyrefly: ignore[unknown-argument-type] # bridge packet row
-            epoch_before=epoch_id,  # pyrefly: ignore[unknown-argument-type] # bridge packet row
-            epoch_after=epoch_after,  # pyrefly: ignore[unknown-argument-type] # bridge packet row
-            probability=probability,  # pyrefly: ignore[unknown-argument-type] # bridge packet row
+            packet_id=packet_id,  # bridge packet row
+            action_id=action_id,  # bridge packet row
+            epoch_before=epoch_id,  # bridge packet row
+            epoch_after=epoch_after,  # bridge packet row
+            probability=probability,  # bridge packet row
             delta=(action_id, branch),
         )
         for packet_id, epoch_after, probability, branch in rows
@@ -359,7 +360,7 @@ def fresh_rebuild_epoch(
     except ImportError:
         raise
     try:
-        return bridge.persistence_rebuild_epoch(epoch_before, packet)  # pyrefly: ignore[unknown-argument-type] # untyped bridge epoch fn
+        return bridge.persistence_rebuild_epoch(epoch_before, packet)  # untyped bridge epoch fn
     except (ValueError, TypeError) as exc:
         raise ContractError(f"persistence rebuild rejected: {exc}") from exc
 
@@ -379,7 +380,9 @@ def commit_equals_rebuild(
     except ImportError:
         raise
     try:
-        return bridge.persistence_commit_equals_rebuild(epoch_before, packet)  # pyrefly: ignore[unknown-argument-type] # untyped bridge epoch fn
+        return bridge.persistence_commit_equals_rebuild(
+            epoch_before, packet
+        )  # untyped bridge epoch fn
     except (ValueError, TypeError) as exc:
         raise ContractError(f"persistence commit check rejected: {exc}") from exc
 
