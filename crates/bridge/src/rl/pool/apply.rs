@@ -21,6 +21,270 @@ use super::state::{ApplyJob, PendingApply, WorkerJob, slot_mut, slot_ref};
 use super::{DrainStatus, Lease, NativePool, PoolError, PoolStatus, SlotPhase, output_plane_bases};
 
 impl NativePool {
+    /// Packed token total for one lease: sum of retained `obs.history_indices`
+    /// lengths (actual real lengths, `B <= 128`). Safe at READY (before
+    /// `mark_h2d_issued`): requires the lease pinned with rows present, never
+    /// the hot output path. Cold per-ticket scan is acceptable.
+    pub fn packed_tokens(&self, lease: &Lease) -> Result<usize, PoolError> {
+        let state = self.lock_state()?;
+        self.lease_checked(&state, lease)?;
+        let slot = slot_ref(&state, lease.slot_id)?;
+        if slot.rows.len() != lease.n_valid {
+            return Err(PoolError(format!("lease {} row count drift", lease.lease_id)));
+        }
+        if lease.n_valid == 0 || lease.n_valid > super::TICKET_CAP {
+            return Err(PoolError(format!(
+                "lease {} batch {} outside 1..={}",
+                lease.lease_id,
+                lease.n_valid,
+                super::TICKET_CAP
+            )));
+        }
+        let mut total = 0usize;
+        for row in &slot.rows {
+            total = total.saturating_add(row.obs.history_indices.len());
+        }
+        Ok(total)
+    }
+
+    /// Packed metadata layout for one lease at token capacity `C`
+    /// (`B` rides the lease): `(name, dtype, shape, byte_offset)` in fill
+    /// order (`packed_kind` int64[C], `cu_seqlens` int32[B+1], align8,
+    /// `token_row` int64[C], `token_pos` int64[C], `valid` bool[C]).
+    pub fn packed_layout_for_lease(
+        &self,
+        lease: &Lease,
+        token_capacity: usize,
+    ) -> Result<Vec<(String, String, Vec<usize>, usize)>, PoolError> {
+        let state = self.lock_state()?;
+        self.lease_checked(&state, lease)?;
+        crate::rl::observation::packed::packed_layout(token_capacity, lease.n_valid)
+            .map_err(|e| PoolError(format!("packed layout rejected: {e}")))
+    }
+
+    /// Packed metadata byte total for one lease at token capacity `C`.
+    pub fn packed_bytes_for_lease(
+        &self,
+        lease: &Lease,
+        token_capacity: usize,
+    ) -> Result<usize, PoolError> {
+        let state = self.lock_state()?;
+        self.lease_checked(&state, lease)?;
+        crate::rl::observation::packed::packed_bytes(token_capacity, lease.n_valid)
+            .map_err(|e| PoolError(format!("packed bytes rejected: {e}")))
+    }
+
+    /// Batched packed metadata fill from the registered dense host input.
+    /// Validates the READY/issued pinned lease, `C >= total` (`C <= 32768`),
+    /// dense prefix agreement (mask/kind strict prefix vs retained obs +
+    /// arena), then fills exactly the metadata slab (dense unchanged). Tail
+    /// storage is deterministic zeros with `valid` False.
+    pub fn fill_packed(
+        &self,
+        lease: &Lease,
+        dense_input: &[u8],
+        metadata: &mut [u8],
+        token_capacity: usize,
+    ) -> Result<(), PoolError> {
+        use crate::rl::events::history_kind_id;
+        let staged: Vec<(usize, NativeObservation)> = {
+            let state = self.lock_state()?;
+            self.lease_checked(&state, lease)?;
+            let slot = slot_ref(&state, lease.slot_id)?;
+            match slot.phase {
+                SlotPhase::Ready
+                | SlotPhase::H2dIssued
+                | SlotPhase::InferQueued
+                | SlotPhase::D2hIssued
+                | SlotPhase::HostReady
+                | SlotPhase::OwnedCapture => {}
+                _ => {
+                    return Err(PoolError(format!(
+                        "lease {} packed fill before READY (phase {:?})",
+                        lease.lease_id, slot.phase
+                    )));
+                }
+            }
+            if !slot.leased || slot.rows.len() != lease.n_valid {
+                return Err(PoolError(format!("lease {} row count drift", lease.lease_id)));
+            }
+            slot.rows
+                .iter()
+                .map(|r| (r.game_idx, r.obs.clone()))
+                .collect()
+        };
+        let batch = lease.n_valid;
+        if batch == 0 || batch > super::TICKET_CAP {
+            return Err(PoolError(format!(
+                "lease {} batch {batch} outside 1..={}",
+                lease.lease_id,
+                super::TICKET_CAP
+            )));
+        }
+        if token_capacity > crate::rl::observation::packed::PACKED_MAX_TOKENS {
+            return Err(PoolError(format!(
+                "packed capacity {token_capacity} exceeds {}",
+                crate::rl::observation::packed::PACKED_MAX_TOKENS
+            )));
+        }
+        let mut lengths = Vec::with_capacity(batch);
+        let mut total = 0usize;
+        for (_, obs) in &staged {
+            let len = obs.history_indices.len();
+            if len > 256 {
+                return Err(PoolError(format!("packed history {len} exceeds transport 256")));
+            }
+            lengths.push(len);
+            total = total.saturating_add(len);
+        }
+        if token_capacity < total {
+            return Err(PoolError(format!(
+                "packed capacity {token_capacity} < total {total}"
+            )));
+        }
+        let need_meta = crate::rl::observation::packed::packed_bytes(token_capacity, batch)
+            .map_err(|e| PoolError(format!("packed bytes rejected: {e}")))?;
+        if metadata.len() < need_meta {
+            return Err(PoolError(format!(
+                "metadata slab {} < packed {need_meta} for C={token_capacity} B={batch}",
+                metadata.len()
+            )));
+        }
+        let transport = lease.bucket_t;
+        let need_dense =
+            crate::rl::observation::active_input_bytes(transport, batch);
+        if dense_input.len() < need_dense {
+            return Err(PoolError(format!(
+                "dense slab {} < active {need_dense} for B={batch} T={transport}",
+                dense_input.len()
+            )));
+        }
+        let layout = crate::rl::observation::active_layout(transport, batch, true);
+        let mut kind_off: Option<usize> = None;
+        let mut mask_off: Option<usize> = None;
+        for (name, _, _, off) in &layout {
+            if name == "history_event_kind" {
+                kind_off = Some(*off);
+            } else if name == "history_mask" {
+                mask_off = Some(*off);
+            }
+        }
+        let (kind_off, mask_off) = match (kind_off, mask_off) {
+            (Some(k), Some(m)) => (k, m),
+            _ => return Err(PoolError("dense layout lacks history planes".to_string())),
+        };
+        let read_i64 = |buf: &[u8], at: usize| -> Result<i64, PoolError> {
+            let slice = buf.get(at..at + 8).ok_or_else(|| {
+                PoolError(format!("dense overrun at offset {at}"))
+            })?;
+            let mut bytes = [0u8; 8];
+            bytes.copy_from_slice(slice);
+            Ok(i64::from_le_bytes(bytes))
+        };
+        // Strict dense prefix agreement against retained obs + arena.
+        for (row, (game_idx, obs)) in staged.iter().enumerate() {
+            let len = lengths[row];
+            let game = self.lock_game(*game_idx)?;
+            let arena = game.arena();
+            for pos in 0..len {
+                let index = *obs.history_indices.get(pos).ok_or_else(|| {
+                    PoolError(format!("row {row} history index {pos} missing"))
+                })?;
+                let event = arena.get(index).ok_or_else(|| {
+                    PoolError(format!("row {row} history index {index} outside arena"))
+                })?;
+                let expect_kind = history_kind_id(&event.kind);
+                let at_kind = kind_off + (row * transport + pos) * 8;
+                let got_kind = read_i64(dense_input, at_kind)?;
+                if got_kind != expect_kind {
+                    return Err(PoolError(format!(
+                        "row {row} dense kind drift at pos {pos}"
+                    )));
+                }
+                let at_mask = mask_off + row * transport + pos;
+                let got_mask = *dense_input.get(at_mask).ok_or_else(|| {
+                    PoolError(format!("dense overrun at offset {at_mask}"))
+                })?;
+                if got_mask != 1 {
+                    return Err(PoolError(format!(
+                        "row {row} dense mask must be True on real prefix"
+                    )));
+                }
+            }
+            for pos in len..transport {
+                let at_kind = kind_off + (row * transport + pos) * 8;
+                let got_kind = read_i64(dense_input, at_kind)?;
+                if got_kind != 0 {
+                    return Err(PoolError(format!(
+                        "row {row} dense kind tail must be zero"
+                    )));
+                }
+                let at_mask = mask_off + row * transport + pos;
+                let got_mask = *dense_input.get(at_mask).ok_or_else(|| {
+                    PoolError(format!("dense overrun at offset {at_mask}"))
+                })?;
+                if got_mask != 0 {
+                    return Err(PoolError(format!(
+                        "row {row} dense mask tail must be False"
+                    )));
+                }
+            }
+        }
+        // Fill metadata: zero all, then real prefixes.
+        for byte in metadata[..need_meta].iter_mut() {
+            *byte = 0;
+        }
+        let packed = crate::rl::observation::packed::packed_layout(token_capacity, batch)
+            .map_err(|e| PoolError(format!("packed layout rejected: {e}")))?;
+        let mut off_kind = 0usize;
+        let mut off_cu = 0usize;
+        let mut off_row = 0usize;
+        let mut off_pos = 0usize;
+        let mut off_valid = 0usize;
+        for (name, _, _, off) in &packed {
+            match name.as_str() {
+                "packed_kind" => off_kind = *off,
+                "cu_seqlens" => off_cu = *off,
+                "token_row" => off_row = *off,
+                "token_pos" => off_pos = *off,
+                "valid" => off_valid = *off,
+                _ => {}
+            }
+        }
+        let mut cu = 0i32;
+        let mut token = 0usize;
+        for (row, (game_idx, obs)) in staged.iter().enumerate() {
+            let len = lengths[row];
+            let game = self.lock_game(*game_idx)?;
+            let arena = game.arena();
+            metadata[off_cu + row * 4..off_cu + row * 4 + 4]
+                .copy_from_slice(&cu.to_le_bytes());
+            for pos in 0..len {
+                let index = obs.history_indices[pos];
+                let event = arena.get(index).ok_or_else(|| {
+                    PoolError(format!("row {row} history index {index} outside arena"))
+                })?;
+                let kind = history_kind_id(&event.kind);
+                metadata[off_kind + token * 8..off_kind + token * 8 + 8]
+                    .copy_from_slice(&kind.to_le_bytes());
+                let row_i = row as i64;
+                metadata[off_row + token * 8..off_row + token * 8 + 8]
+                    .copy_from_slice(&row_i.to_le_bytes());
+                let pos_i = pos as i64;
+                metadata[off_pos + token * 8..off_pos + token * 8 + 8]
+                    .copy_from_slice(&pos_i.to_le_bytes());
+                metadata[off_valid + token] = 1;
+                token += 1;
+            }
+            cu = cu.saturating_add(len as i32);
+        }
+        metadata[off_cu + batch * 4..off_cu + batch * 4 + 4]
+            .copy_from_slice(&cu.to_le_bytes());
+        Ok(())
+    }
+ }
+
+impl NativePool {
     /// Nonblocking harvest of admitted worker applies: completed jobs retire
     /// their game's outstanding count; worker errors, lost workers, and
     /// post-apply `last_error` findings poison the generation loudly. Never
@@ -387,6 +651,12 @@ impl NativePool {
         for (row_index, (game_idx, actor, cursor_before, _)) in staged_meta.iter().enumerate() {
             let mut game = self.lock_game(*game_idx)?;
             let staged_obs = &staged_obses[row_index];
+            // Commit re-derives the staged legal plan via view_for (hit-clone of
+            // the ordered actions plus the full mask) instead of reusing the
+            // staged observation's plan. Fusing the two needs the staged mask
+            // proved identical at the pinned prefix plus plumbing the ids
+            // through staged_meta into capture_row; per-row cost unmeasured,
+            // count before optimizing, and ask before changing this boundary.
             let (ordered, _) = game
                 .view_for(*actor)
                 .map_err(|e| PoolError(format!("commit plan re-derivation rejected: {e}")))?;

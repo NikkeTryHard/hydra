@@ -143,69 +143,61 @@ def _move_batch_to_device(batch: dict[str, Any], device: torch.device) -> dict[s
             except Exception:
                 moved[k] = v
                 continue
-            if isinstance(v, ActorTensorBatch):
-                _to = getattr(v, "to", None)
-                if callable(_to):
-                    try:
-                        moved[k] = _to(device)
-                    except Exception:
-                        moved[k] = v
-                else:
-                    try:
-                        _moved_features: dict[str, Any] = {
-                            _fk: (
-                                _ft.to(device, non_blocking=True)
-                                if isinstance(_ft, torch.Tensor)
-                                else _ft
-                            )
-                            for _fk, _ft in dict(v.features).items()
-                        }
-                        _hm = (
-                            v.history_mask.to(device, non_blocking=True)
-                            if isinstance(v.history_mask, torch.Tensor)
-                            else v.history_mask
-                        )
-                        _lm = (
-                            v.legal_mask.to(device, non_blocking=True)
-                            if isinstance(v.legal_mask, torch.Tensor)
-                            else v.legal_mask
-                        )
-                        _seats = (
-                            v.actor_seats.to(device, non_blocking=True)
-                            if isinstance(v.actor_seats, torch.Tensor)
-                            else v.actor_seats
-                        )
-                        _packed = getattr(v, "packed", None)
-                        if _packed is not None:
-                            # Packed stream rides the same H2D as the planes
-                            # (small: concatenated prefixes + int32 bounds).
-                            from hydra2.models.encoder import PackedHistories
-
-                            _packed = PackedHistories(
-                                packed_kind=_packed.packed_kind.to(device, non_blocking=True),
-                                cu_seqlens=_packed.cu_seqlens.to(device, non_blocking=True),
-                                row_lengths=tuple(_packed.row_lengths),
-                                max_len=int(_packed.max_len),
-                            )
-                        moved[k] = ActorTensorBatch(
-                            features=_moved_features,
-                            history_mask=_hm,
-                            legal_mask=_lm,
-                            observation_hashes=v.observation_hashes,
-                            actor_seats=_seats,
-                            packed=_packed,
-                        )
-                    except Exception:
-                        moved[k] = v
-            else:
-                _v_to = getattr(v, "to", None)
-                if callable(_v_to):
-                    try:
-                        moved[k] = _v_to(device)
-                    except Exception:
-                        moved[k] = v
-                else:
+            _to = getattr(v, "to", None)
+            if callable(_to):
+                try:
+                    moved[k] = _to(device)
+                except Exception:
                     moved[k] = v
+            elif isinstance(v, ActorTensorBatch):
+                try:
+                    _moved_features: dict[str, Any] = {
+                        _fk: (
+                            _ft.to(device, non_blocking=True)
+                            if isinstance(_ft, torch.Tensor)
+                            else _ft
+                        )
+                        for _fk, _ft in dict(v.features).items()
+                    }
+                    _hm = (
+                        v.history_mask.to(device, non_blocking=True)
+                        if isinstance(v.history_mask, torch.Tensor)
+                        else v.history_mask
+                    )
+                    _lm = (
+                        v.legal_mask.to(device, non_blocking=True)
+                        if isinstance(v.legal_mask, torch.Tensor)
+                        else v.legal_mask
+                    )
+                    _seats = (
+                        v.actor_seats.to(device, non_blocking=True)
+                        if isinstance(v.actor_seats, torch.Tensor)
+                        else v.actor_seats
+                    )
+                    _packed = getattr(v, "packed", None)
+                    if _packed is not None:
+                        # Packed stream rides the same H2D as the planes
+                        # (small: concatenated prefixes + int32 bounds).
+                        from hydra2.models.encoder import PackedHistories
+
+                        _packed = PackedHistories(
+                            packed_kind=_packed.packed_kind.to(device, non_blocking=True),
+                            cu_seqlens=_packed.cu_seqlens.to(device, non_blocking=True),
+                            row_lengths=tuple(_packed.row_lengths),
+                            max_len=int(_packed.max_len),
+                        )
+                    moved[k] = ActorTensorBatch(
+                        features=_moved_features,
+                        history_mask=_hm,
+                        legal_mask=_lm,
+                        observation_hashes=v.observation_hashes,
+                        actor_seats=_seats,
+                        packed=_packed,
+                    )
+                except Exception:
+                    moved[k] = v
+            else:
+                moved[k] = v
     return moved
 
 

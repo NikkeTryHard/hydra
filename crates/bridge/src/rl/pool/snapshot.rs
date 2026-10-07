@@ -18,6 +18,7 @@ use std::sync::Arc;
 use super::super::actions::CanonicalAction;
 use super::super::core::{GameRow, PendingDecision, TerminalOutcome};
 use super::super::{events, observation, trajectory};
+use super::round_plan::RoundPlan;
 use super::state::{FilledRow, Slot, slot_mut, slot_ref};
 use super::{Lease, NativePool, PoolError, PoolProfile, SlotPhase, buffer_geometry, json_str};
 
@@ -188,10 +189,25 @@ pub struct SlotSnapshot {
 pub struct PoolSnapshot {
     pub pool_id: String,
     pub generation: u64,
+    /// Row-derivation digest of the run that wrote this snapshot. Restore
+    /// compares it before opening or replaying anything: rows captured under
+    /// different scheduling/provenance laws MUST NOT mix into this run, and
+    /// old keyless snapshots fail parsing instead of loading silently.
+    pub derivation: [u8; 32],
     pub games: Vec<GameSnapshot>,
     pub slots: Vec<SlotSnapshot>,
     pub leases: Vec<Lease>,
+    /// Active per-frontier round plan at capture (None before the first
+    /// freeze and between rounds). Serializes as the `round_plan` root key
+    /// (typed JSON) or null; restore re-adopts it, then checks unissued refs
+    /// against pending replayed games via `validate_restored_plan`.
+    pub round_plan: Option<RoundPlan>,
     pub poison: Option<String>,
+    /// Immutable live source binding (`Some` for live pools from `open_live`,
+    /// `None` for archive/test pools). Serializes as the required
+    /// `live_binding` root key (object or null); restore reopens with the
+    /// saved binding and validates policy/generation.
+    pub live_binding: Option<trajectory::LiveTapeBinding>,
 }
 
 fn hex_of(raw: &[u8; 32]) -> String {
@@ -203,6 +219,7 @@ impl PoolSnapshot {
         serde_json::json!({
             "pool_id": self.pool_id,
             "generation": self.generation,
+            "derivation": hex_of(&self.derivation),
             "games": self.games.iter().map(|g| serde_json::json!({
                 "wall_id": g.wall_id,
                 "ordinal": g.ordinal,
@@ -230,6 +247,12 @@ impl PoolSnapshot {
                 "n_valid": l.n_valid, "logical_round": l.logical_round,
             })).collect::<Vec<_>>(),
             "poison": self.poison,
+            "round_plan": self.round_plan.as_ref().map_or(serde_json::Value::Null, |p| p.to_json()),
+            "live_binding": self.live_binding.as_ref().map_or(serde_json::Value::Null, |b| serde_json::json!({
+                "pipeline_spec_id": b.pipeline_spec_id,
+                "generation": b.generation,
+                "behavior_policy_id": b.behavior_policy_id,
+            })),
         })
     }
 }
@@ -591,7 +614,7 @@ impl NativePool {
         self.join_applies()?;
         // Slot/lease summary first (state guard drops before game guards;
         // locks are never nested).
-        let (slots, leases, poison) = {
+        let (slots, leases, poison, round_plan) = {
             let state = self.lock_state()?;
             if state.drained {
                 return Err(PoolError("pool trajectories already drained".to_string()));
@@ -638,7 +661,7 @@ impl NativePool {
             slots.sort_by_key(|s| s.id);
             let mut leases: Vec<Lease> = state.leases.values().cloned().collect();
             leases.sort_by_key(|l| l.lease_id);
-            (slots, leases, state.poison.clone())
+            (slots, leases, state.poison.clone(), state.round_plan.clone())
         };
         let mut games = vec![];
         for idx in 0..self.games.len() {
@@ -659,10 +682,13 @@ impl NativePool {
         Ok(PoolSnapshot {
             pool_id: self.profile.pool_id.clone(),
             generation: self.profile.generation,
+            derivation: self.derivation,
             games,
             slots,
             leases,
             poison,
+            round_plan,
+            live_binding: self.live_binding.clone(),
         })
     }
 
@@ -684,7 +710,39 @@ impl NativePool {
         if snap.games.len() != profile.games.len() {
             return Err(PoolError("snapshot cohort size mismatch".to_string()));
         }
-        let pool = NativePool::open(profile, derivation)?;
+        // Derivation gate BEFORE open/replay: rows captured under different
+        // scheduling/provenance laws must never mix into this run. Re-run
+        // prepare_run for this source tree instead; snapshots never migrate
+        // across derivations, and no silent fallback exists.
+        if snap.derivation != derivation {
+            return Err(PoolError(
+                "snapshot derivation mismatch: re-run prepare_run for this source tree; snapshots never migrate across derivations".to_string(),
+            ));
+        }
+        // Retained reservations and leases belong to a frozen plan. A null
+        // plan is legal only without them; otherwise restore would skip
+        // the frontier, bucket, and exact chunk checks for live rows.
+        if snap.round_plan.is_none()
+            && (!snap.leases.is_empty() || snap.slots.iter().any(|slot| !slot.staged.is_empty()))
+        {
+            return Err(PoolError(
+                "snapshot retains rows or leases without a frozen round plan".to_string(),
+            ));
+        }
+        if let Some(binding) = snap.live_binding.as_ref() {
+            if binding.generation != profile.generation {
+                return Err(PoolError(format!(
+                    "snapshot live binding generation {} mismatches profile generation {}",
+                    binding.generation, profile.generation
+                )));
+            }
+            if binding.behavior_policy_id != profile.policy_id {
+                return Err(PoolError(
+                    "snapshot live binding behavior policy mismatches profile policy".to_string(),
+                ));
+            }
+        }
+        let pool = NativePool::open_impl(profile, derivation, snap.live_binding.clone())?;
         for (idx, game_snap) in snap.games.iter().enumerate() {
             if game_snap.wall_id != pool.wall_ids[idx] {
                 return Err(PoolError(format!("game {idx} wall mismatch on restore")));
@@ -793,7 +851,28 @@ impl NativePool {
                     state.next_lease = lease.lease_id + 1;
                 }
             }
+            // Round-plan adoption: the parsed plan rides the snapshot struct.
+            // Adopt under the state lock, then validate AFTER the lock drops
+            // (game/completed locks only, never nested in state): every
+            // unissued ref must still be pending on its replayed game at the
+            // frozen frontier/bucket, every retained READY row must be an
+            // issued ref in exact chunk order, and every issued ref must be
+            // retained or already captured. A terminal game holding an
+            // unissued ref, a missing ref, or a retained row outside the
+            // plan fails closed here, never loads silently.
+            let adopted = snap.round_plan.clone();
+            state.round_plan = adopted;
             pool.notify(&mut state);
+        }
+        // Clone the adopted plan under a short scope: an if-let scrutinee
+        // temporary would extend the state MutexGuard through the body and
+        // self-deadlock validation's own state lock (non-reentrant).
+        let restored_plan = {
+            let state = pool.lock_state()?;
+            state.round_plan.clone()
+        };
+        if let Some(plan) = restored_plan {
+            pool.validate_restored_plan(&plan)?;
         }
         Ok(pool)
     }

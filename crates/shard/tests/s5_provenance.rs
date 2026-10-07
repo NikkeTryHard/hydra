@@ -68,7 +68,12 @@ fn s5_tampered_manifest_is_evident_and_structural_tamper_fails() {
     // Structural tampering fails closed with an error.
     assert!(load_rules_manifest("not json").is_err());
     let baked = BAKED_RULES_MANIFEST;
-    assert!(load_rules_manifest(&baked[..baked.len() / 2]).is_err());
+    // Half-length truncation must stay a char boundary for any token length.
+    let mut cut = baked.len() / 2;
+    while !baked.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    assert!(load_rules_manifest(&baked[..cut]).is_err());
     assert!(
         load_rules_manifest(&baked.replacen("tenhou_4p_hanchan_v1", "other_rules_v9", 1)).is_err()
     );

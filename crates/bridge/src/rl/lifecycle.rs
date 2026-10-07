@@ -60,11 +60,13 @@ pub const MODEL_INPUT_RELPATH: &str = "configs/models/model_input_v1.json";
 pub const CARGO_RELPATH: &str = "crates/bridge/Cargo.toml";
 
 /// Code owners frozen into `row_derivation_hash`: the derivation binds the
-/// ACTUAL source bytes of these twelve files (name, repo-relative path),
+/// ACTUAL source bytes of these sixteen files (name, repo-relative path),
 /// read and hashed at `prepare_run` time. Any edit invalidates the
 /// descriptor (re-run); weight identity is unaffected.
-pub const LIFECYCLE_CODE_SOURCES: [(&str, &str); 12] = [
+pub const LIFECYCLE_CODE_SOURCES: [(&str, &str); 16] = [
     ("rl_gpu.py", "python/hydra2/training/rl_gpu.py"),
+    ("rl_actor_packed.py", "python/hydra2/training/rl_actor_packed.py"),
+    ("observation/packed.rs", "crates/bridge/src/rl/observation/packed.rs"),
     ("rl_objective.py", "python/hydra2/training/rl_objective.py"),
     ("wall.rs", "crates/bridge/src/rl/wall.rs"),
     ("observation.rs", "crates/bridge/src/rl/observation.rs"),
@@ -76,4 +78,6 @@ pub const LIFECYCLE_CODE_SOURCES: [(&str, &str); 12] = [
     ("core/row.rs", "crates/bridge/src/rl/core/row.rs"),
     ("core/driver.rs", "crates/bridge/src/rl/core/driver.rs"),
     ("pool/fill.rs", "crates/bridge/src/rl/pool/fill.rs"),
+    ("pool/round_plan.rs", "crates/bridge/src/rl/pool/round_plan.rs"),
+    ("pool/round_plan_runtime.rs", "crates/bridge/src/rl/pool/round_plan_runtime.rs"),
 ];

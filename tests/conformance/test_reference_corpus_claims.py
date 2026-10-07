@@ -120,9 +120,10 @@ def test_wp04a_04a_temp_furiten_clears_then_ron_lands(runner=None) -> None:
     """seat1 waits 9s tanki on a concealed haku triplet hand (fanpai 1han,
     ankoh 8fu + tanki 2fu + menzen 10fu + base 20fu = 40fu). Dealer tedashis
     9s#1: seat1 passes (temporary furiten), then clears it at own tsumogiri.
-    Dealer tedashis 9s#2 later: the ron MUST land, paying dealer 2600
-    (child-table 1300 doubled because the discarder is the dealer).
-    DOCUMENTED DEVIATION: RiichiEnv pays the child value 1300."""
+    Dealer tedashis 9s#2 later: the ron MUST land, paying 1300
+    (child-table 1han40fu; ron payment depends on the WINNER's rank only —
+    no dealer-deal-in double exists. Prior D1 deviation claim retracted per
+    2026-10-05 correction: the engine CONFORMS)."""
 
     def check_ron(sim) -> str | None:
         ron = _first_ron(sim)
@@ -140,15 +141,15 @@ def test_wp04a_04a_temp_furiten_clears_then_ron_lands(runner=None) -> None:
     result = _run(
         "WP04A-04a",
         "furiten variant: passed ron clears at own discard, later ron lands",
-        ("scoring_tables",),
+        ("furiten_policy",),
         (
             "manifest furiten_policy="
             "river_only_permanent_after_riichi_miss_same_goaround_temporary",
             "tenhou.net/man furiten: temporary furiten ends at own discard",
             "engine flag missed_agari_doujun maps to 'temporary' (state.py D-WP03A-3)",
-            "probe: riichienv.calculate_score(han,fu,is_oya=is WINNER only) pay_ron child=1300 "
-            "oya=2000; dealer-discarder x2 multiplier absent in RiichiEnv 0.4.10",
-            "shape: seat1 haku ankoh + 234m 678m 123s, 9s tanki; 40fu 1han; dealer pays 2600",
+            "standard scoring (winner rank only): pay_ron child 1han40fu=1300, "
+            "oya=2000 (1.5x); discarder attribute absent from the formula",
+            "shape: seat1 haku ankoh + 234m 678m 123s, 9s tanki; 40fu 1han; dealer pays 1300",
         ),
         hands={
             0: {
@@ -225,12 +226,12 @@ def test_wp04a_04a_temp_furiten_clears_then_ron_lands(runner=None) -> None:
         ),
         expectations=[
             expect_predicate("ron by seat1 on dealer's 105", check_ron),
-            _expect_scores_delta([-2600, 2600, 0, 0]),
+            _expect_scores_delta([-1300, 1300, 0, 0]),
         ],
         finish_to_terminal=True,
         runner=runner,
     )
-    assert_documented_mismatch(result, "WP04A-04a")
+    assert_supported(result, "WP04A-04a")
 
 
 def test_wp04a_04b_permanent_furiten_after_riichi_miss(runner=None) -> None:
@@ -354,18 +355,20 @@ def test_wp04a_05_double_ron_priority_packets_upstream_first(runner=None) -> Non
     ippatsu alive), both waiting 3s/6s through 4s5s; child seat3 tedashis sou3
     83 within the same go-around. Table: seat1 riichi+ippatsu+tanyao+pinfu+aka
     = 5han30fu mangan 8000; seat2 same without aka = 4han30fu 7700; BOTH sticks
-    go UPSTREAM (walking backward from discarder 3: seat2 first) => packet
-    heads with seat2 and deltas [0,8000,9700,-15700].
-    DOCUMENTED DEVIATION: packet heads with seat1 and seat1 takes both sticks."""
+    go to the turn-priority winner (forward from discarder 3: seat1 before
+    seat2) => packet heads with seat1 and deltas [0,10000,7700,-15700]
+    (seat1 8000+2000 sticks; seat2 base 7700; discarder pays both bases).
+    Prior D2 backward-walk expectation retracted per 2026-10-05 correction:
+    the engine CONFORMS."""
 
     def check_packet(sim) -> str | None:
         ron = _first_ron(sim)
         if ron is None:
             return "no ron envelope (double ron merged packet missing)"
-        if int(ron.actor) != 2:
+        if int(ron.actor) != 1:
             return (
-                f"merged ron packet actor={int(ron.actor)} != 2 "
-                "(upstream winner must head the packet)"
+                f"merged ron packet actor={int(ron.actor)} != 1 "
+                "(turn-priority winner seat1 must head the packet)"
             )
         if int(ron.payload.source_seat) != 3 or int(ron.payload.tile) != 83:
             return f"ron src/tile {int(ron.payload.source_seat)}/{int(ron.payload.tile)} != 3/83"
@@ -393,17 +396,18 @@ def test_wp04a_05_double_ron_priority_packets_upstream_first(runner=None) -> Non
 
     result = _run(
         "WP04A-05",
-        "double ron priority packets: upstream-first merge, call_resolved ids, sticks upstream",
-        ("multi_ron_resolution", "riichi_stick_rule"),
+        "double ron priority packets: turn-order-first merge, call_resolved ids, sticks to priority winner",
+        ("multiple_ron_policy", "riichi_stick_allocation"),
         (
-            "manifest multi-ron: wins establish from the discarder's kamicha side upward",
-            "riichi stick rule: kyotaku to the upstream winner on double ron (tenhou.net/man)",
-            "upstream derivation: walking backward from discarder seat3 (2->1->0) the first "
-            "winner is seat2 => seat2 heads packets and takes both sticks",
+            "manifest multiple_ron_policy: all winners paid; honba+sticks to the "
+            "first winner in turn order from the discarder (tenhou.net/man RULE "
+            "L1033-1034; SEGA MJ FAQ: closest in turn order from discarder)",
+            "turn-priority derivation: forward from discarder seat3 (0->1->2) the first "
+            "winner is seat1 => seat1 heads packets and takes both sticks",
             "yaku derivation (second-turn declares: daburi impossible; ippatsu alive): "
             "seat1 riichi+ippatsu+tanyao+pinfu+aka-sou5 = 5han30fu mangan 8000; "
             "seat2 riichi+ippatsu+tanyao+pinfu = 4han30fu 7700",
-            "table deltas: [0,8000,9700,-15700]",
+            "table deltas: [0,10000,7700,-15700] (sticks 2x1000 to seat1)",
         ),
         hands={
             0: dict(_HONORS_FIRST_JUN),
@@ -478,24 +482,26 @@ def test_wp04a_05_double_ron_priority_packets_upstream_first(runner=None) -> Non
             _do("ron", 83),
         ),
         expectations=[
-            expect_predicate("merged ron packet headed by upstream winner seat2", check_packet),
+            expect_predicate(
+                "merged ron packet headed by turn-priority winner seat1", check_packet
+            ),
             expect_predicate("call_resolved offered>=2 accepted==ron id", check_call_resolved),
-            _expect_scores_delta([0, 8000, 9700, -15700]),
+            _expect_scores_delta([0, 10000, 7700, -15700]),
         ],
         finish_to_terminal=True,
         runner=runner,
     )
-    assert_documented_mismatch(result, "WP04A-05")
+    assert_supported(result, "WP04A-05")
 
 
 def test_wp04a_06_multi_ron_sticks_upstream_with_dealer_co_winner(runner=None) -> None:
     """Dealer and seat1 riichi (SECOND turns) and both ron child seat3's sou3
-    tedashi. Upstream walk from discarder 3 hits seat1 before the dealer, so
-    the packet must head with seat1 and BOTH sticks belong to seat1: dealer
-    oya-win 5han30fu (incl aka) = 12000, seat1 4han30fu = 7700 =>
-    [12000, 9700, 0, -21700].
-    DOCUMENTED DEVIATION: packet heads with the dealer (seat order 0<1) and the
-    dealer collects both sticks: observed [14000, 7700, 0, -19700].
+    tedashi. Turn order forward from discarder 3 hits the dealer (seat0)
+    first, so the packet heads with the dealer and BOTH sticks belong to
+    the dealer: dealer oya-win 5han30fu (incl aka) = 12000 + 2000 sticks =
+    14000, seat1 4han30fu child-ron 7700 => [14000, 7700, 0, -19700].
+    Prior D2 backward-walk expectation retracted per 2026-10-05 correction:
+    the engine CONFORMS.
     HONBA SCOPE: honba is NOT injectable through the conformance reset surface
     (adapter.reset(rules=,wall=,seat_permutation=) only; _open_hand hardcodes
     honba=0), so this case asserts the sticks-only slice per scope note."""
@@ -504,10 +510,10 @@ def test_wp04a_06_multi_ron_sticks_upstream_with_dealer_co_winner(runner=None) -
         ron = _first_ron(sim)
         if ron is None:
             return "no ron envelope"
-        if int(ron.actor) != 1:
+        if int(ron.actor) != 0:
             return (
-                f"merged ron packet actor={int(ron.actor)} != 1 "
-                "(upstream winner seat1 must head packet)"
+                f"merged ron packet actor={int(ron.actor)} != 0 "
+                "(turn-priority winner dealer seat0 must head packet)"
             )
         if int(ron.payload.source_seat) != 3 or int(ron.payload.tile) != 82:
             return f"ron src/tile {int(ron.payload.source_seat)}/{int(ron.payload.tile)} != 3/82"
@@ -515,17 +521,17 @@ def test_wp04a_06_multi_ron_sticks_upstream_with_dealer_co_winner(runner=None) -
 
     result = _run(
         "WP04A-06",
-        "multi-ron sticks+honba: child discarder, dealer co-winner, sticks to upstream seat1",
-        ("multi_ron_resolution", "riichi_stick_rule"),
+        "multi-ron sticks+honba: child discarder, dealer co-winner, sticks to turn-priority dealer",
+        ("multiple_ron_policy", "riichi_stick_allocation"),
         (
             "manifest honba: 300xN per honba; honba NOT injectable via reset "
             "(adapter.reset(rules=,wall=,seat_permutation=) only, _open_hand honba=0 hardcoded)",
             "scope note: sticks-only asserted; honba split deferred until injection surface exists",
-            "atamahane: walking backward from discarder seat3 (2->1->0) seat1 precedes the dealer",
+            "atamahane priority: forward from discarder seat3 (0->1->2) the dealer is the turn-priority winner",
             "yaku derivation (second-turn declares: daburi void; ippatsu alive): dealer "
             "riichi+ippatsu+tanyao+pinfu+aka = 5han30fu OYA-ron 12000; seat1 same minus aka "
             "= 4han30fu child-ron 7700",
-            "table deltas: [12000,9700,0,-21700]; sticks (2x1000) upstream to seat1",
+            "table deltas: [14000,7700,0,-19700]; sticks (2x1000) to turn-priority dealer; all winners paid",
         ),
         hands={
             0: {
@@ -614,14 +620,15 @@ def test_wp04a_06_multi_ron_sticks_upstream_with_dealer_co_winner(runner=None) -
         ),
         expectations=[
             expect_predicate(
-                "merged ron packet headed by seat1 (upstream of child discarder)", check_packet
+                "merged ron packet headed by dealer seat0 (turn-priority of child discarder)",
+                check_packet,
             ),
-            _expect_scores_delta([12000, 9700, 0, -21700]),
+            _expect_scores_delta([14000, 7700, 0, -19700]),
         ],
         finish_to_terminal=True,
         runner=runner,
     )
-    assert_documented_mismatch(result, "WP04A-06")
+    assert_supported(result, "WP04A-06")
 
 
 def _first_ron(sim):
@@ -639,26 +646,7 @@ def assert_documented_mismatch(result: CaseResult, case_id: str) -> None:
     )
 
 
-DOCUMENTED_DEVIATIONS: dict[str, str] = {
-    "WP04A-04a": (
-        "RiichiEnv 0.4.10 pays the CHILD table value when a child rons off a DEALER "
-        "discard (calculate_score models only the WINNER's rank; the dealer-pays-"
-        "double channel-hon rule is absent): observed [-1300,1300,0,0] vs Tenhou "
-        "40fu 1han dealer-discarder 2600."
-    ),
-    "WP04A-05": (
-        "Multi-ron resolution orders winners by seat number and allocates the "
-        "kyotaku sticks to the first-processed winner: walking backward from "
-        "discarder seat3 the upstream winner is seat2, yet the packet heads with "
-        "seat1 and seat1 takes both sticks."
-    ),
-    "WP04A-06": (
-        "Same seat-order deviation with the dealer as co-winner (seat-order 0,1 "
-        "differs from upstream order 1,0): packet heads with the dealer and the "
-        "dealer receives both sticks; observed [14000,7700,0,-19700] vs table "
-        "[12000,9700,0,-21700]."
-    ),
-}
+DOCUMENTED_DEVIATIONS: dict[str, str] = {}
 
 _HONORS_FIRST_JUN = {
     108: 1,

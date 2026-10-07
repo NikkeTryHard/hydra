@@ -258,6 +258,12 @@ class _TransformerLayer(nn.Module):
                 is_causal=False,
             ).to(queries.dtype)
         else:
+            # Backend note: no sdpa_kernel pin anywhere, so dispatch takes the
+            # fastest available kernel per op; probed on this GPU at B=32, 8 heads,
+            # T=64, head_dim=32, bf16 with bool mask: flash=False, efficient=True.
+            # Pinning MATH would be slower by construction and numerically
+            # different across backends (bitwise match is not guaranteed), forking
+            # trajectories; do not pin without a selection-agreement gate.
             attended = F.scaled_dot_product_attention(
                 queries,
                 keys,

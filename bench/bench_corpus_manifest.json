@@ -224,7 +224,7 @@
    ],
    "kind": "privileged-vector",
    "relpath": "crates/tests/fixtures/s5/rules-tampered.json",
-   "sha256": "sha256:03a9d495536def755d5b5afb1b91eedd16dc776d1460f66d2966a4c45425c641"
+   "sha256": "sha256:6a7ee6557180de9e817ab00f50ac1ffff1e62645cb0d65b39b6817194fb51a72"
   },
   {
    "fixtures": [
@@ -248,7 +248,7 @@
    ],
    "kind": "plane-geometry",
    "relpath": "python/hydra2/models/schema.py",
-   "sha256": "sha256:35cd64cd33a55c4697abf81dddf532ded37f75c111345ceab82712b10b902438"
+   "sha256": "sha256:5219adb6437b4cf824a419da4e59da989306561a3e97a0faa23e784ad191052b"
   },
   {
    "fixtures": [
@@ -256,7 +256,7 @@
    ],
    "kind": "plane-geometry",
    "relpath": "python/hydra2/models/encoder.py",
-   "sha256": "sha256:0aeff4a630bc0d6aa35721987cba26b63fff4fc0107974917fc1ea7385a1fa08"
+   "sha256": "sha256:49de3a528667148d6e4b75aadf973fc086d9ab910b35008f15b986c6f5b77a08"
   },
   {
    "fixtures": [
@@ -1804,7 +1804,7 @@
    ],
    "kind": "cutover-source",
    "relpath": "python/hydra2/training/rust_stream.py",
-   "sha256": "sha256:8edf6ed01aee8d3df6cfcf58b2a23d300b33a9564879cf5c0e3bcde8f53bb49e"
+   "sha256": "sha256:35bb38b81c8dad0a4e10acced374abc39bef3a2af57e5a7f47d9162138187580"
   },
   {
    "fixtures": [
@@ -1812,7 +1812,7 @@
    ],
    "kind": "cutover-source",
    "relpath": "python/hydra2/training/stream_train.py",
-   "sha256": "sha256:439abde003aa3084c929c031d82c912f8de1fcdefad0e7e79ed63bb20e145847"
+   "sha256": "sha256:8c3f4ec636d91d37e354b543be54133042f5e7156ff1c47c0b2135656ffc5dcc"
   },
   {
    "fixtures": [
@@ -1929,6 +1929,6 @@
    "module": "tests.parity.test_parity_gates_g1_g7"
   }
  ],
- "manifest_digest": "sha256:d67c346a56733ba1027b9240d4b2368dbabb595584c93e00478471fd50239a90",
+ "manifest_digest": "sha256:31138c57d925d73f0ed04cfcc14500cf7cbce65976b9e8bf6bd3b065f1ebe53d",
  "manifest_version": "2"
 }

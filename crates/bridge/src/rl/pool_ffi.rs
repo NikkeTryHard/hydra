@@ -62,6 +62,7 @@ use super::pool::{
     GameSnapshot, Lease, NativePool, PoolProfile, PoolSnapshot, SlotPhase, SlotSnapshot,
     StagedRowSnapshot, StoredAction, buffer_geometry as pool_buffer_geometry,
 };
+use super::pool::round_plan::RoundPlan;
 
 /// Fail-closed Python error for every pool boundary rejection.
 fn pool_error(detail: impl Into<String>) -> PyErr {
@@ -575,11 +576,11 @@ impl PyNativePool {
         self.pool.resume_admission().map_err(|e| pool_error(e.0))
     }
 
-    /// Collector fill choice + admission in one call: the native router
-    /// picks the eligible bucket among the owner's FREE lanes (yield-aware
-    /// rotation, starves no bucket) and admits its fill. Returns the
-    /// chosen slot, or `None` when no lane is free/quiesced (expected
-    /// stall, never poison). Collect with `take_fill`.
+    /// Admit one fill only when an unpinned current-round game can advance.
+    /// Yield-aware FREE-lane rotation remains unchanged; `None` also means
+    /// issued CUDA work or native applies must unblock the frontier first.
+    /// The owner waits for that progress instead of admitting empty fills;
+    /// collect admitted results with `take_fill` before any commit.
     fn admit_next_fill(&mut self, free_slot_ids: Vec<u64>) -> PyResult<Option<u64>> {
         if self.closed {
             return Err(pool_error("pool is closed"));
@@ -672,13 +673,22 @@ impl PyNativePool {
     /// Close: rejects issued work (leases, leased/Filling lanes, applies,
     /// in-flight fills) but accepts retained unissued READY (snapshot
     /// first); joins workers, then releases host owners.
-    fn close(&mut self) -> PyResult<()> {
+    fn close(&mut self, py: Python<'_>) -> PyResult<()> {
         if self.closed {
             return Ok(());
         }
         self.pool.close().map_err(|e| pool_error(e.0))?;
         self.buffers.clear();
         self.closed = true;
+        // Python owns diagnostic output; writing through its stderr respects
+        // redirection and reports output errors without leaving a closed pool
+        // marked open or retaining buffers after its workers have joined.
+        if std::env::var("HYDRA2_RL_VIEW_STATS").is_ok() {
+            let (hits, misses) = super::core::view_cache_counts();
+            py.import("sys")?
+                .getattr("stderr")?
+                .call_method1("write", (format!("rl-view-stats hits={hits} misses={misses}\n"),))?;
+        }
         Ok(())
     }
 }
@@ -776,6 +786,69 @@ impl PyLease {
         super::observation::active_layout(self.lease.bucket_t, self.lease.n_valid, true)
     }
 
+    /// Packed token total: sum of retained actual history lengths
+    /// (`obs.history_indices.len()` per row, `B <= 128`). Safe at READY,
+    /// before `mark_h2d_issued`; cold per-ticket scan is acceptable.
+    #[getter]
+    fn packed_tokens(&self) -> PyResult<usize> {
+        self.pool
+            .packed_tokens(&self.lease)
+            .map_err(|e| pool_error(e.0))
+    }
+
+    /// Packed metadata layout for token capacity `C` (`B` rides the lease):
+    /// `(name, dtype, shape, byte_offset)` in fill order (`packed_kind`
+    /// int64[C] at 0, `cu_seqlens` int32[B+1] at 8*C, align8, `token_row`
+    /// int64[C], `token_pos` int64[C], `valid` bool[C]).
+    fn packed_layout(&self, token_capacity: usize) -> PyResult<Vec<(String, String, Vec<usize>, usize)>> {
+        self.pool
+            .packed_layout_for_lease(&self.lease, token_capacity)
+            .map_err(|e| pool_error(e.0))
+    }
+
+    /// Packed metadata byte total for token capacity `C` (`B` rides the lease).
+    fn packed_bytes(&self, token_capacity: usize) -> PyResult<usize> {
+        self.pool
+            .packed_bytes_for_lease(&self.lease, token_capacity)
+            .map_err(|e| pool_error(e.0))
+    }
+
+    /// One batched packed metadata fill from the registered dense host input.
+    /// Both exporters are contiguous uint8 byte slabs; Rust validates the
+    /// READY/issued pinned lease plus dense prefix agreement, then fills
+    /// only the metadata slab. Returns `None`.
+    fn fill_packed(
+        &self,
+        py: Python<'_>,
+        input_exporter: Bound<'_, PyAny>,
+        metadata_exporter: Bound<'_, PyAny>,
+        token_capacity: usize,
+    ) -> PyResult<()> {
+        use pyo3::buffer::PyBuffer;
+        let input_buf = PyBuffer::<u8>::get(&input_exporter)
+            .map_err(|e| pool_error(format!("input exporter lost: {e}")))?;
+        let meta_buf = PyBuffer::<u8>::get(&metadata_exporter)
+            .map_err(|e| pool_error(format!("metadata exporter lost: {e}")))?;
+        let input_span = buffer_span(&input_exporter)?;
+        let meta_span = buffer_span(&metadata_exporter)?;
+        if ranges_overlap(input_span.0, input_span.1, meta_span.0, meta_span.1) {
+            return Err(pool_error("input/metadata spans must not overlap"));
+        }
+        let dense = read_prefix(&input_buf, input_span.1)?;
+        let mut staging = vec![0u8; meta_span.1];
+        let pool = std::sync::Arc::clone(&self.pool);
+        let lease = self.lease.clone();
+        let staging = py.detach(move || {
+            pool.fill_packed(&lease, &dense, &mut staging, token_capacity)?;
+            Ok::<_, super::pool::PoolError>(staging)
+        }).map_err(|e| pool_error(e.0))?;
+        let need = self
+            .pool
+            .packed_bytes_for_lease(&self.lease, token_capacity)
+            .map_err(|e| pool_error(e.0))?;
+        write_prefix(&meta_buf, &staging[..need])?;
+        Ok(())
+    }
     fn mark_h2d_issued(&self) -> PyResult<()> {
         self.pool
             .mark_phase(&self.lease, SlotPhase::H2dIssued)
@@ -805,7 +878,6 @@ impl PyLease {
             .map_err(|e| pool_error(e.0))
     }
 }
-
 /// Cold geometry helper: exact `(input_bytes, output_bytes)` for registration.
 #[pyfunction]
 fn buffer_geometry(bucket_t: usize, capacity: usize) -> PyResult<(usize, usize)> {
@@ -854,6 +926,16 @@ fn parse_snapshot(snapshot_json: &str) -> PyResult<PoolSnapshot> {
     use super::core::GameRow;
     let value: serde_json::Value =
         serde_json::from_str(snapshot_json).map_err(|e| pool_error(e.to_string()))?;
+    // Root derivation gate FIRST, before any game/row allocation: snapshots
+    // written before the scheduling/provenance cutover carry no derivation
+    // key and fail here fast, never loading rows captured under other laws.
+    let derivation: [u8; 32] = {
+        let text = value
+            .get("derivation")
+            .and_then(|d| d.as_str())
+            .ok_or_else(|| pool_error("snapshot lacks derivation; old keyless snapshots cannot load"))?;
+        parse_hex32(text)?
+    };
     let mut games = vec![];
     for game in value.get("games").and_then(|g| g.as_array()).cloned().unwrap_or_default() {
         let mut applied = vec![];
@@ -868,26 +950,25 @@ fn parse_snapshot(snapshot_json: &str) -> PyResult<PoolSnapshot> {
             );
         }
         let digest_hex = game.get("digest").and_then(|d| d.as_str()).unwrap_or("");
-        // Per-seat counters (new shape); a legacy scalar migrates by
-        // broadcast (skip-ahead, never word reuse: each seat resumes at or
-        // past every word its game ever issued).
-        let sample_counters = match game.get("sample_counters").and_then(|c| c.as_array()) {
-            Some(counters) if counters.len() == 4 => {
-                let mut out = [0u64; 4];
-                for (i, slot) in out.iter_mut().enumerate() {
-                    *slot = counters[i].as_u64().ok_or_else(|| {
-                        pool_error("snapshot sample_counters must hold u64s".to_string())
-                    })?;
-                }
-                out
-            }
-            _ => {
-                let legacy = game.get("sample_counter").and_then(|c| c.as_u64()).ok_or_else(|| {
-                    pool_error("snapshot game lacks sample_counters".to_string())
-                })?;
-                [legacy; 4]
-            }
-        };
+        // Per-seat counters (closed four-u64 shape only): the legacy scalar
+        // broadcast is obsolete with the derivation cutover — keyless old
+        // shapes already fail parsing, so no silent migration remains. A
+        // missing key, wrong-length array, or non-u64 entry rejects here;
+        // legal RNG never skips words as fake compatibility.
+        let counters = game.get("sample_counters").and_then(|c| c.as_array()).ok_or_else(|| {
+            pool_error("snapshot game lacks sample_counters".to_string())
+        })?;
+        if counters.len() != 4 || counters.iter().any(|c| c.as_u64().is_none()) {
+            return Err(pool_error(
+                "snapshot sample_counters must hold exactly four u64s".to_string(),
+            ));
+        }
+        let mut sample_counters = [0u64; 4];
+        for (i, slot) in sample_counters.iter_mut().enumerate() {
+            *slot = counters[i].as_u64().ok_or_else(|| {
+                pool_error("snapshot sample_counters must hold u64s".to_string())
+            })?;
+        }
         games.push(GameSnapshot {
             wall_id: game.get("wall_id").and_then(|w| w.as_str()).unwrap_or("").to_string(),
             ordinal: game.get("ordinal").and_then(|o| o.as_u64()).unwrap_or(0),
@@ -899,6 +980,23 @@ fn parse_snapshot(snapshot_json: &str) -> PyResult<PoolSnapshot> {
             completed,
         });
     }
+    // Round-plan root key (required, even null): snapshots predating the
+    // plan cutover carry no key and fail here fast, before any slot/lease
+    // allocation below. Null restores plan-less; otherwise the common
+    // structural parser runs (semantics re-checked at restore).
+    let round_plan = match value.get("round_plan") {
+        None => {
+            return Err(pool_error(
+                "snapshot lacks round_plan; pre-plan snapshots cannot load".to_string(),
+            ));
+        }
+        Some(serde_json::Value::Null) => None,
+        Some(plan_value) => {
+            let plan = RoundPlan::from_json(plan_value).map_err(|e| pool_error(e.0))?;
+            plan.validate(games.len()).map_err(|e| pool_error(e.0))?;
+            Some(plan)
+        }
+    };
     let mut slots = vec![];
     for slot in value.get("slots").and_then(|s| s.as_array()).cloned().unwrap_or_default() {
         let phase = match slot.get("phase").and_then(|p| p.as_str()).unwrap_or("Free") {
@@ -951,13 +1049,29 @@ fn parse_snapshot(snapshot_json: &str) -> PyResult<PoolSnapshot> {
             logical_round: lease.get("logical_round").and_then(|l| l.as_u64()).unwrap_or(0),
         });
     }
+    let live_binding = match value.get("live_binding") {
+        None => {
+            return Err(pool_error(
+                "snapshot lacks live_binding; pre-live snapshots cannot load".to_string(),
+            ));
+        }
+        Some(serde_json::Value::Null) => None,
+        Some(binding_value) => {
+            let bytes = serde_json::to_vec(binding_value)
+                .map_err(|e| pool_error(format!("live binding not JSON: {e}")))?;
+            Some(parse_live_binding(&bytes)?)
+        }
+    };
     Ok(PoolSnapshot {
         pool_id: value.get("pool_id").and_then(|p| p.as_str()).unwrap_or("").to_string(),
         generation: value.get("generation").and_then(|g| g.as_u64()).unwrap_or(0),
+        derivation,
         games,
         slots,
         leases,
         poison: value.get("poison").and_then(|p| p.as_str()).map(str::to_string),
+        round_plan,
+        live_binding,
     })
 }
 

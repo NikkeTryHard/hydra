@@ -105,6 +105,9 @@ impl super::NativeGame {
                     if following.is_none() {
                         *consumed = index + 1;
                         let pre = self.state.mjai_log.len();
+                        // Automatic hand advancement mutates engine legality
+                        // too; retaining a prepared view would bypass refresh.
+                        self.views.clear();
                         self.state.step(&HashMap::new());
                         self.check_error()?;
                         self.note_step_draws(pre);

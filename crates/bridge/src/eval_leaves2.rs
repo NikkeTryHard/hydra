@@ -115,6 +115,7 @@
 //! `eval::register` before `m.add_submodule(&sub)`
 //! (`crates/bridge/src/eval.rs:124-131`).
 
+use crate::rc_require::py_repr;
 use hydra_search::SearchError;
 use hydra_search::eval::partition as partition_owner;
 use hydra_search::eval::wall as wall_owner;
@@ -125,12 +126,6 @@ use pyo3::types::{PyBool, PyModule};
 /// Physical wall length, tiles `0..136` (`duplicate.py` 136-gates,
 /// `wall::WALL_TILES`, `wall.rs:27`) — referenced, never recopied.
 const WALL_TILES: usize = wall_owner::WALL_TILES;
-
-/// Attached staging helper: exact `repr(value)` text for every `{value!r}`
-/// slot (mirrors `rc_require.rs:63-65`).
-fn py_repr(obj: &Bound<'_, PyAny>) -> PyResult<String> {
-    Ok(obj.repr()?.to_str()?.to_owned())
-}
 
 // ---------------------------------------------------------------------------
 // Detached checks (owned plain data only, zero Python API).

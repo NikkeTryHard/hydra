@@ -24,6 +24,7 @@ use serde_json::{Map, Value};
 
 use crate::rl::core::GameRow;
 use crate::rl::pool::StoredAction;
+use crate::rl::pool::round_plan::RoundPlan;
 use crate::rl::trajectory::TapeError;
 
 /// Bare 64-hex digest (pool snapshot digests are unprefixed hex).
@@ -126,13 +127,23 @@ pub fn verify_pool_snapshot(doc: &[u8]) -> Result<VerifiedPool, TapeError> {
     let map = value
         .as_object()
         .ok_or_else(|| rt_err("pool snapshot must be an object"))?;
-    if map.len() != 6
-        || !["pool_id", "generation", "games", "slots", "leases", "poison"]
-            .iter()
-            .all(|k| map.contains_key(*k))
+    if map.len() != 9
+        || ![
+            "pool_id",
+            "generation",
+            "derivation",
+            "games",
+            "slots",
+            "leases",
+            "poison",
+            "round_plan",
+            "live_binding",
+        ]
+        .iter()
+        .all(|k| map.contains_key(*k))
     {
         return Err(rt_err(
-            "pool snapshot must carry exactly pool_id+generation+games+slots+leases+poison",
+            "pool snapshot must carry exactly pool_id+generation+derivation+games+slots+leases+poison+round_plan+live_binding",
         ));
     }
     let pool_id = req_str(map, "pool_id", "pool")?;
@@ -140,10 +151,49 @@ pub fn verify_pool_snapshot(doc: &[u8]) -> Result<VerifiedPool, TapeError> {
         return Err(rt_err("pool snapshot pool_id must be nonempty"));
     }
     let generation = req_u64(map, "generation", "pool")?;
+    match map.get("derivation").and_then(|d| d.as_str()) {
+        Some(text) => {
+            parse_hex_digest(text, "pool derivation")?;
+        }
+        None => return Err(rt_err("pool snapshot lacks derivation")),
+    }
     match map.get("poison").unwrap_or(&Value::Null) {
         Value::Null => {}
         Value::String(_) => return Err(rt_err("pool snapshot carries worker poison")),
         _ => return Err(rt_err("pool snapshot poison has a bad shape")),
+    }
+    match map.get("live_binding") {
+        None => return Err(rt_err("pool snapshot lacks live_binding")),
+        Some(Value::Null) => {}
+        Some(binding) => {
+            let bmap = binding
+                .as_object()
+                .ok_or_else(|| rt_err("pool live_binding must be an object or null"))?;
+            if bmap.len() != 3
+                || !["pipeline_spec_id", "generation", "behavior_policy_id"]
+                    .iter()
+                    .all(|k| bmap.contains_key(*k))
+            {
+                return Err(rt_err(
+                    "pool live_binding must carry exactly pipeline_spec_id+generation+behavior_policy_id",
+                ));
+            }
+            let pipeline = bmap
+                .get("pipeline_spec_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| rt_err("pool live_binding pipeline_spec_id must be a string"))?;
+            let behavior = bmap
+                .get("behavior_policy_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| rt_err("pool live_binding behavior_policy_id must be a string"))?;
+            crate::rl::trajectory::parse_digest_text(pipeline)
+                .map_err(|e| rt_err(format!("pool live_binding pipeline rejected: {e}")))?;
+            crate::rl::trajectory::parse_digest_text(behavior)
+                .map_err(|e| rt_err(format!("pool live_binding behavior rejected: {e}")))?;
+            bmap.get("generation")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| rt_err("pool live_binding generation must be an integer"))?;
+        }
     }
     let games = map
         .get("games")
@@ -254,6 +304,20 @@ pub fn verify_pool_snapshot(doc: &[u8]) -> Result<VerifiedPool, TapeError> {
             return Err(rt_err(format!(
                 "{what} completed rows {completed_count} != captured counter {captured}"
             )));
+        }
+    }
+    // Round-plan root key via the common structural parser (no inline
+    // validator duplication): null means plan-less; otherwise closed-shape
+    // parse + cohort-bounds check. Semantic cross-checks against replayed
+    // games happen on the restore path, not in this verifier.
+    match map.get("round_plan") {
+        None => return Err(rt_err("pool snapshot lacks round_plan")),
+        Some(Value::Null) => {}
+        Some(plan_value) => {
+            let plan = RoundPlan::from_json(plan_value)
+                .map_err(|e| rt_err(format!("pool round plan rejected: {}", e.0)))?;
+            plan.validate(games.len())
+                .map_err(|e| rt_err(format!("pool round plan rejected: {}", e.0)))?;
         }
     }
     terminal_set.sort();
@@ -544,12 +608,16 @@ mod pool_facts_cache_tests {
     }
 
     /// Minimal verifiable snapshot: one empty game, one free lane, no
-    /// leases, no poison. Exercises the cache paths without a 400MB
-    /// corpus; full-row validation stays covered by the seal corpus.
+    /// leases, no poison, plan-less (`round_plan` null but present: the key
+    /// is mandatory since the plan cutover) and live-less (`live_binding`
+    /// null but present: the key is mandatory since the live cutover).
+    /// Exercises the cache paths without a 400MB corpus; full-row validation
+    /// stays covered by the seal corpus.
     fn minimal_snapshot(pool_id: &str) -> String {
         serde_json::json!({
             "pool_id": pool_id,
             "generation": 0u64,
+            "derivation": "ab".repeat(32),
             "games": [{
                 "wall_id": "w0",
                 "ordinal": 0u64,
@@ -572,6 +640,8 @@ mod pool_facts_cache_tests {
             }],
             "leases": [],
             "poison": Value::Null,
+            "round_plan": Value::Null,
+            "live_binding": Value::Null,
         })
         .to_string()
     }
@@ -629,5 +699,44 @@ mod pool_facts_cache_tests {
         std::fs::write(&path, &bytes).expect("corrupt blob");
         assert!(check_pool_ref(&root, &digest, &locator, &frontier, &terminal_set, &tickets, captured)
             .is_err());
+    }
+
+    #[test]
+    fn keyless_snapshot_cannot_save() {
+        // Snapshots written before the scheduling/provenance cutover carry
+        // no derivation root key; the closed seven-key gate rejects them
+        // instead of admitting rows captured under different laws.
+        let root = tmp_root();
+        let mut value: serde_json::Value =
+            serde_json::from_str(&minimal_snapshot("keyless-test")).expect("parse minimal");
+        value.as_object_mut().expect("snapshot object").remove("derivation");
+        assert!(save_pool(&root, &value.to_string()).is_err());
+    }
+
+    #[test]
+    fn malformed_derivation_cannot_save() {
+        // A present-but-malformed derivation is not a digest: exact hex
+        // decode rejects it instead of persisting an unmatchable snapshot.
+        let root = tmp_root();
+        let mut value: serde_json::Value =
+            serde_json::from_str(&minimal_snapshot("badhex-test")).expect("parse minimal");
+        value.as_object_mut().expect("snapshot object")["derivation"] =
+            serde_json::Value::from("zz".repeat(32));
+        assert!(save_pool(&root, &value.to_string()).is_err());
+    }
+
+    #[test]
+    fn missing_required_with_unknown_same_count_cannot_save() {
+        // Boundary: swapping a required key for an unknown key keeps the
+        // count at nine but breaks the closed shape; the gate must still
+        // reject (length check alone would admit it).
+        let root = tmp_root();
+        let mut value: serde_json::Value =
+            serde_json::from_str(&minimal_snapshot("unknown-key-test")).expect("parse minimal");
+        let obj = value.as_object_mut().expect("snapshot object");
+        obj.remove("round_plan");
+        obj.insert("unknown_key".to_string(), serde_json::Value::Null);
+        assert_eq!(obj.len(), 9);
+        assert!(save_pool(&root, &value.to_string()).is_err());
     }
 }

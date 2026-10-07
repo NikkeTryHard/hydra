@@ -84,6 +84,7 @@
 //! `crate::eval_leaves::register(&sub)?;` in `contracts::register` next to
 //! `crate::rc_sections::register(&sub)?;` (`contracts.rs:1295`).
 
+use crate::rc_require::py_repr;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyModule, PyString, PyTuple};
@@ -135,12 +136,6 @@ fn mode_extras(mode: &str) -> &'static [&'static str] {
     } else {
         &[]
     }
-}
-
-/// Attached staging helper: exact `repr(value)` text for every `{value!r}`
-/// slot (mirrors `rc_require.rs:63-65`).
-fn py_repr(obj: &Bound<'_, PyAny>) -> PyResult<String> {
-    Ok(obj.repr()?.to_str()?.to_owned())
 }
 
 /// Python-`list` rendering of plain field names (`['a', 'b']`, `[]` when
@@ -317,7 +312,7 @@ fn invalid_reason_for(
 /// window rejected; finite `float` only; `str`; `list` element-wise, where
 /// `tuple` is NOT a list and is rejected; `dict` with non-`str` keys
 /// rejected; anything else rejected). `record` names the digest call.
-fn py_to_value(obj: &Bound<'_, PyAny>, record: &str) -> Result<serde_json::Value, String> {
+pub(crate) fn py_to_value(obj: &Bound<'_, PyAny>, record: &str) -> Result<serde_json::Value, String> {
     if obj.is_none() {
         return Ok(serde_json::Value::Null);
     }

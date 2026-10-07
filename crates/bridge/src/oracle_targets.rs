@@ -129,7 +129,7 @@ const ORACLE_UTILITY_SCHEMA_VERSION: &str = "1.0.0";
 
 /// Canonical day-one rules hash (`oracle_targets.py:109`).
 const ORACLE_RULES_HASH: &str =
-    "sha256:3042a493280224f533d831f371275b1c96585cf1db5a2e5fb86ec259f403286b";
+    "sha256:7a40e1edba541444fb205080f44306436a85b54b7a7a3afb5c36b9bea2acce9d";
 
 /// Pure 34-normalize core (`oracle_targets.py:65-67,75-77,92-93`): every lane
 /// divided by the caller-computed `total`, except a `total` of exactly `0.0`
@@ -403,7 +403,7 @@ mod tests {
         assert_eq!(ORACLE_UTILITY_SCHEMA_VERSION, "1.0.0");
         assert_eq!(
             ORACLE_RULES_HASH,
-            "sha256:3042a493280224f533d831f371275b1c96585cf1db5a2e5fb86ec259f403286b"
+            "sha256:7a40e1edba541444fb205080f44306436a85b54b7a7a3afb5c36b9bea2acce9d"
         );
     }
 

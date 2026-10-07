@@ -37,6 +37,7 @@
 mod fill;
 mod identity;
 mod layout;
+pub mod packed;
 mod seal;
 #[cfg(test)]
 mod tests;
@@ -46,6 +47,7 @@ pub use self::layout::{
     PlaneBuffers, PLANE_COUNT, active_feature_bytes, active_input_bytes, active_layout,
     plane_layout, split_planes,
 };
+pub use self::packed::{PACKED_CAP_QUANTUM, PACKED_MAX_ROWS, PACKED_MAX_TOKENS, packed_bytes, packed_layout};
 pub use self::seal::{encode_canonical_doc, encode_row_facts, materialize_canonical};
 
 use super::events::{EventArena, EventError, TypedEvent, visible_to_actor};

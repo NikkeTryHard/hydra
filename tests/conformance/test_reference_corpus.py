@@ -49,24 +49,6 @@ DOCUMENTED_UNSUPPORTED: dict[str, str] = {
         "RiichiEnv 0.4.10 never emits the four-winds abortive ryukyoku: four "
         "first-turn own-wind discards leave the hand running (probe DUT-1)."
     ),
-    "scoring_tables": (
-        "owner_decision D1: RiichiEnv 0.4.10 omits the dealer-discarder x2 "
-        "payment multiplier (child ron off dealer pays 1300 where Tenhou "
-        "tables require 2600); counterexample WP04A-04a.json. Expectations "
-        "stay Tenhou-correct; upstream fix or adapter correction layer is "
-        "tracked as follow-up debt."
-    ),
-    "multi_ron_resolution": (
-        "owner_decision D2: double-ron packets and riichi-stick attribution "
-        "follow seat number instead of kamicha-upstream priority; "
-        "counterexamples WP04A-05.json / WP04A-06.json. Payments themselves "
-        "match tables; only ordering/attribution deviates."
-    ),
-    "riichi_stick_rule": (
-        "owner_decision D2 (stick slice): on multi-ron the engine hands every "
-        "kyotaku stick to the lowest seat number rather than the upstream "
-        "winner; see WP04A-05.json / WP04A-06.json."
-    ),
     "all_last_policy": (
         "owner_decision D3: RiichiEnv YON_HANCHAN has no West-round entry, so "
         "all-last continuation below return points cannot occur; "
@@ -567,7 +549,7 @@ def _record(result: CaseResult) -> CaseResult:
     return result
 
 
-_RULES_MANIFEST_SHA256 = "sha256:3042a493280224f533d831f371275b1c96585cf1db5a2e5fb86ec259f403286b"
+_RULES_MANIFEST_SHA256 = "sha256:7a40e1edba541444fb205080f44306436a85b54b7a7a3afb5c36b9bea2acce9d"
 
 # Full 17-case census for the FIX-01 split (WP04A-14c included: it runs in the
 # terminals group and lands in the merged id set even though the pre-split

@@ -111,13 +111,16 @@ EXCLUDED_DIMENSIONS: tuple[tuple[str, str], ...] = (
     ),
     (
         "multi_ron_resolution",
-        "WP-04A owner decision D2 documented RiichiEnv's seat-order packet "
-        "deviation; single-winner scenarios avoid the dimension entirely",
+        "RETRACTED 2026-10-05: WP-04A D2 backward-walk claim was erroneous; "
+        "the pinned engine implements forward turn-order priority per "
+        "tenhou.net/man RULE L1033-1034 (SEGA MJ FAQ). Single-winner "
+        "scenarios avoid the dimension entirely.",
     ),
     (
         "dealer_ron_multiplier",
-        "WP-04A owner decision D1 documented RiichiEnv's missing x2 "
-        "dealer-payment multiplier; scenarios use child-off-child settlements",
+        "RETRACTED 2026-10-05: WP-04A D1 dealer-x2 claim was erroneous; "
+        "standard scoring pays winner-rank multiples only (no discarder "
+        "multiplier). Scenarios use child-off-child settlements.",
     ),
     (
         "abortive_draw_specials",

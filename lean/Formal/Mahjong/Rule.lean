@@ -91,7 +91,7 @@ def TenhouYakuPolicyKind.toString : TenhouYakuPolicyKind → String
   | .kanDoraAnkanImmediateOpenDelayed => "ankan_immediate_open_delayed"
   | .kanUraPresent => "present"
   | .paoDaisangenDaisuushiTsumoFullRonHalf => "daisangen_daisuishi_tsumo_full_ron_half"
-  | .multipleRonAllWinnersPaid => "all_winners_paid_sticks_to_dealer_left"
+  | .multipleRonAllWinnersPaid => "all_winners_paid_honba_and_sticks_to_first_winner_in_turn_order_from_discarder"
 
 /-- Yakuman compound policy — `yakuman_policy = compound_multiple_upgraded_forms_single`;
 wrong policy mis-grades multi-yakuman and fails closed. -/

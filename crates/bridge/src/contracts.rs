@@ -1298,7 +1298,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?;
     sub.add(
         "MULTIPLE_RON_POLICIES",
-        PyTuple::new(py, ["all_winners_paid_sticks_to_dealer_left"])?,
+        PyTuple::new(py, ["all_winners_paid_honba_and_sticks_to_first_winner_in_turn_order_from_discarder"])?,
     )?;
     sub.add(
         "RIICHI_STICK_ALLOCATIONS",

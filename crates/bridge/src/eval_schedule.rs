@@ -113,11 +113,12 @@
 //! `crate::eval_schedule::register(&sub)?;` in `contracts::register` next to
 //! `crate::eval_leaves::register(&sub)?;` (`contracts.rs:1296`).
 
+use crate::eval_leaves::py_to_value;
 use hydra_search::SearchError;
 use hydra_search::eval::schedule as schedule_owner;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyModule, PyString, PyTuple};
+use pyo3::types::{PyBool, PyList, PyModule, PyTuple};
 
 // ---------------------------------------------------------------------------
 // Detached checks (owned plain data only, zero Python API).
@@ -380,103 +381,6 @@ fn check_placements(wall_ids: &[String], allocations: &[Vec<String>]) -> Result<
     Ok(())
 }
 
-/// Stage one closed-domain Python object to a serde `Value` (attached only).
-/// Mirrors `eval_leaves::py_to_value` arm-for-arm (`None` -> null; `bool`
-/// BEFORE `int`; double-safe `int` only; finite `float` only; `str`; `list`
-/// element-wise where `tuple` is rejected; `dict` with non-`str` keys
-/// rejected). `record` names the digest call.
-fn py_to_value(obj: &Bound<'_, PyAny>, record: &str) -> Result<serde_json::Value, String> {
-    if obj.is_none() {
-        return Ok(serde_json::Value::Null);
-    }
-    if obj.is_instance_of::<PyBool>() {
-        let flag = obj
-            .extract::<bool>()
-            .map_err(|e| format!("{record}: bool unreadable: {e}"))?;
-        return Ok(serde_json::Value::Bool(flag));
-    }
-    if obj.is_instance_of::<PyInt>() {
-        match obj.extract::<i64>() {
-            Ok(n) => {
-                if !(-hydra_feed::canon::MAX_SAFE_INTEGER..=hydra_feed::canon::MAX_SAFE_INTEGER)
-                    .contains(&n)
-                {
-                    return Err(format!(
-                        "{record}: integer {n} exceeds the IEEE 754 double-safe range; serialize it as a float or string"
-                    ));
-                }
-                return Ok(serde_json::Value::Number(n.into()));
-            }
-            Err(_) => {
-                return Err(format!(
-                    "{record}: integer exceeds the IEEE 754 double-safe range; serialize it as a float or string"
-                ));
-            }
-        }
-    }
-    if obj.is_instance_of::<PyFloat>() {
-        let value = obj
-            .extract::<f64>()
-            .map_err(|e| format!("{record}: float unreadable: {e}"))?;
-        if !value.is_finite() {
-            return Err(format!(
-                "{record}: non-finite number {value:?} has no canonical serialization"
-            ));
-        }
-        match serde_json::Number::from_f64(value) {
-            Some(number) => return Ok(serde_json::Value::Number(number)),
-            None => {
-                return Err(format!(
-                    "{record}: non-finite number has no canonical serialization"
-                ));
-            }
-        }
-    }
-    if obj.is_instance_of::<PyString>() {
-        match obj.extract::<String>() {
-            Ok(text) => return Ok(serde_json::Value::String(text)),
-            Err(e) => {
-                return Err(format!(
-                    "{record}: string contains an unpaired surrogate (invalid Unicode): {e}"
-                ));
-            }
-        }
-    }
-    if obj.is_instance_of::<PyList>() {
-        let elements: Vec<Bound<'_, PyAny>> = obj
-            .extract()
-            .map_err(|e| format!("{record}: list unreadable: {e}"))?;
-        let mut array = Vec::with_capacity(elements.len());
-        for item in &elements {
-            array.push(py_to_value(item, record)?);
-        }
-        return Ok(serde_json::Value::Array(array));
-    }
-    if obj.is_instance_of::<PyDict>() {
-        let dict: Bound<'_, PyDict> = obj
-            .extract()
-            .map_err(|e| format!("{record}: dict unreadable: {e}"))?;
-        let mut map = serde_json::Map::with_capacity(dict.len());
-        for (key, value) in dict.iter() {
-            if !key.is_instance_of::<PyString>() {
-                return Err(format!(
-                    "{record}: object key is not a string; JSON objects are string-keyed only"
-                ));
-            }
-            let name: String = key.extract().map_err(|e| {
-                format!(
-                    "{record}: object key contains an unpaired surrogate (invalid Unicode): {e}"
-                )
-            })?;
-            map.insert(name, py_to_value(&value, record)?);
-        }
-        return Ok(serde_json::Value::Object(map));
-    }
-    Err(format!(
-        "{record}: value is outside the canonical JSON domain (null, bool, string, finite number, array, string-keyed object only)"
-    ))
-}
-
 /// Pure seal over a staged value through the feed digest owner
 /// (byte-identical to `artifacts/digest.py::of_canonical` by construction:
 /// same fused `of_canonical` entry `validate::validation_hash` uses).
@@ -629,11 +533,9 @@ fn eval_schedule_commitment_hash_from_doc(
         .map_err(PyValueError::new_err)
 }
 
-/// Exactness gates (`seat_pair_placements_exact`, `:246-288`) over
-/// caller-passed scalars: `wall_ids` + `seat_allocations` rows (each a
-/// 4-label list). Shape gates fire attached AND detached (total); the
-/// placement/coverage/rotation decisions render the oracle-exact
-/// `wall '<id>': ...` texts. Compute runs detached.
+/// Validate owned placement rows once while detached; repeating the same
+/// gate while attached adds a full scan without protecting another boundary.
+/// Shape, coverage, and rotation failures retain their exact error text.
 #[pyfunction]
 #[pyo3(signature = (wall_ids, seat_allocations))]
 fn eval_schedule_placements_check(
@@ -641,7 +543,6 @@ fn eval_schedule_placements_check(
     wall_ids: Vec<String>,
     seat_allocations: Vec<Vec<String>>,
 ) -> PyResult<()> {
-    check_placements(&wall_ids, &seat_allocations).map_err(PyValueError::new_err)?;
     py.detach(|| check_placements(&wall_ids, &seat_allocations))
         .map_err(PyValueError::new_err)
 }
@@ -680,6 +581,7 @@ pub fn register(sub: &Bound<'_, PyModule>) -> PyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pyo3::types::{PyInt, PyString};
 
     #[test]
     fn frozen_consts_match_oracle() {

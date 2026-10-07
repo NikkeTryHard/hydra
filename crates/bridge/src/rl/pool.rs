@@ -66,6 +66,8 @@
 //!   primitives, `open` (sole constructor; workers spawn here).
 //! - `fill`: lane registration, dispatched fills, takes, refills (`Free` ->
 //!   `Filling` -> `Ready`; sampler reservations happen only in `run_fill`).
+//! - `round_plan`: frozen per-frontier refs, min-cap chunks, head progress,
+//!   plus the restore-time semantic check (`validate_restored_plan`).
 //! - `apply`: leases, phases, `commit_actions`, worker harvest/join,
 //!   poll/wait, quiesce/resume/drain/close (`Ready` -> ... -> `Free`).
 //! - `snapshot`: Main descriptors, tape handoff, snapshot/restore/restage,
@@ -74,6 +76,8 @@
 mod apply;
 mod fill;
 mod profile;
+pub(crate) mod round_plan;
+mod round_plan_runtime;
 mod snapshot;
 mod state;
 
@@ -453,7 +457,6 @@ mod tests {
         assert_eq!(count, lease8.n_valid);
         pool.quiesce().unwrap();
     }
-
     #[test]
     fn snapshot_restore_round_trip() {
         let (profile, context) = profile_json();
@@ -468,6 +471,29 @@ mod tests {
             assert_eq!(a.digest, b.digest);
             assert_eq!(a.sample_counters, b.sample_counters);
             assert_eq!(a.completed.len(), b.completed.len());
+        }
+    }
+
+    #[test]
+    fn restore_rejects_retained_rows_without_round_plan() {
+        let (profile, context) = profile_json();
+        let profile = PoolProfile::parse(&profile, &context).unwrap();
+        let pool = NativePool::open(profile.clone(), [3u8; 32]).unwrap();
+        pool.register_slot(1, 32, 8).unwrap();
+        let (input_need, output_need) = buffer_geometry(32, 8).unwrap();
+        let mut input = vec![0u8; input_need];
+        let ticket = pool.request_ready_fill(1, &mut input, output_need).unwrap();
+        assert!(ticket.n_valid > 0);
+        let mut snap = pool.snapshot().unwrap();
+        snap.round_plan = None;
+        // Retained reservations require their frozen plan; dropping it must
+        // reject instead of bypassing frontier and bucket verification.
+        match NativePool::restore(profile, &snap, [3u8; 32]) {
+            Ok(restored) => {
+                restored.close().unwrap();
+                panic!("restore accepted retained rows without a frozen plan");
+            }
+            Err(_) => {}
         }
     }
 
@@ -503,5 +529,415 @@ mod tests {
         for (a, b) in snap.games.iter().zip(snap2.games.iter()) {
             assert_eq!(a.sample_counters, b.sample_counters);
         }
+    }
+
+    #[test]
+    fn snapshot_carries_writing_derivation() {
+        // The snapshot root binds the writing run's row-derivation digest so
+        // restores can reject foreign scheduling/provenance laws outright.
+        let (profile, context) = profile_json();
+        let profile = PoolProfile::parse(&profile, &context).unwrap();
+        let pool = NativePool::open(profile, [9u8; 32]).unwrap();
+        let snap = pool.snapshot().unwrap();
+        assert_eq!(snap.derivation, [9u8; 32]);
+    }
+
+    #[test]
+    fn restore_rejects_foreign_derivation() {
+        // Same bytes, foreign derivation: restore must fail BEFORE opening
+        // or replaying anything — old-law rows must never mix into this run.
+        let (profile, context) = profile_json();
+        let profile = PoolProfile::parse(&profile, &context).unwrap();
+        let pool = NativePool::open(profile.clone(), [9u8; 32]).unwrap();
+        let snap = pool.snapshot().unwrap();
+        assert!(NativePool::restore(profile, &snap, [1u8; 32]).is_err());
+    }
+
+    fn live_binding_for(profile: &PoolProfile) -> super::super::trajectory::LiveTapeBinding {
+        super::super::trajectory::LiveTapeBinding {
+            pipeline_spec_id: format!("sha256:{}", "aa".repeat(32)),
+            generation: profile.generation,
+            behavior_policy_id: profile.policy_id.clone(),
+        }
+    }
+
+    fn open_live_pool() -> Arc<NativePool> {
+        let (profile_json, context) = profile_json();
+        let profile = PoolProfile::parse(&profile_json, &context).unwrap();
+        let binding = live_binding_for(&profile);
+        NativePool::open_live(profile, [9u8; 32], binding).unwrap()
+    }
+
+    #[test]
+    fn live_mixed_transport_freezes_T256_with_original_order() {
+        let pool = open_live_pool();
+        pool.register_slot(7, 256, 8).unwrap();
+        let (input_need, output_need) = buffer_geometry(256, 8).unwrap();
+        let mut input = vec![0u8; input_need];
+        let ticket = pool.request_ready_fill(7, &mut input, output_need).unwrap();
+        assert!(ticket.n_valid > 0);
+        assert_eq!(ticket.bucket_t, 256);
+        let lease = pool.peek_ready().unwrap().expect("ready lease");
+        assert_eq!(lease.bucket_t, 256);
+        // Live references before exported changes: wall/game identity rides
+        // the descriptor, never a tape handle.
+        let descriptor = pool.lease_descriptor(&lease).unwrap();
+        let rows = descriptor.get("rows").and_then(|r| r.as_array()).unwrap();
+        assert_eq!(rows.len(), lease.n_valid);
+        for row in rows {
+            let wall = row.get("wall_id").and_then(|w| w.as_str()).unwrap();
+            assert!(wall == "w0" || wall == "w1");
+            assert!(row.get("game_id").and_then(|g| g.as_str()).is_some());
+        }
+        // No missing refs: every staged row appears in the frozen T256 plan
+        // with its true original bucket derived from history length.
+        let plan = pool.snapshot().unwrap().round_plan.expect("live plan");
+        assert!(plan.refs[0].is_empty() && plan.refs[1].is_empty() && plan.refs[2].is_empty());
+        assert_eq!(plan.refs[3].len(), lease.n_valid);
+        let mut prev: Option<(usize, usize, u8)> = None;
+        let order = |b: usize| [32, 64, 128, 256].iter().position(|x| *x == b).unwrap();
+        for row in &plan.refs[3] {
+            let key = (order(row.original_bucket), row.game_idx, row.actor);
+            if let Some(p) = prev {
+                assert!(p < key, "live T256 refs must hold (original_bucket, game, actor) order");
+            }
+            prev = Some(key);
+        }
+        // Dense T256 preserves every real mask/kind prefix; tails stay zero.
+        let layout = observation::active_layout(256, lease.n_valid, true);
+        let (mut kind_off, mut mask_off) = (0usize, 0usize);
+        for (name, _, _, off) in &layout {
+            if name == "history_event_kind" {
+                kind_off = *off;
+            } else if name == "history_mask" {
+                mask_off = *off;
+            }
+        }
+        let staged_lengths: Vec<usize> = {
+            let state = pool.lock_state().unwrap();
+            let slot = state.slots.get(&lease.slot_id).unwrap();
+            slot.rows.iter().map(|r| r.obs.history_indices.len()).collect()
+        };
+        for (r, len) in staged_lengths.iter().enumerate() {
+            for pos in 0..*len {
+                assert_eq!(input[mask_off + r * 256 + pos], 1);
+                let at = kind_off + (r * 256 + pos) * 8;
+                let mut bytes = [0u8; 8];
+                bytes.copy_from_slice(&input[at..at + 8]);
+                assert_ne!(i64::from_le_bytes(bytes), 0xffff_ffff_ffff_ffffu64 as i64);
+            }
+            for pos in *len..256 {
+                assert_eq!(input[mask_off + r * 256 + pos], 0);
+                let at = kind_off + (r * 256 + pos) * 8;
+                let mut bytes = [0u8; 8];
+                bytes.copy_from_slice(&input[at..at + 8]);
+                assert_eq!(i64::from_le_bytes(bytes), 0);
+            }
+        }
+        drive_to_host_ready(&pool, &lease);
+        let output = first_legal_output(&pool, &lease);
+        let count = pool.commit_actions(&lease, &output).unwrap();
+        assert_eq!(count, lease.n_valid);
+        pool.quiesce().unwrap();
+    }
+
+    #[test]
+    fn archive_vs_live_first_legal_parity_over_closed_frontiers() {
+        use std::collections::{BTreeMap, BTreeSet};
+        // Independent deterministic first-legal drives to completion:
+        // archive per-bucket lanes and live T256 transport must reach equal
+        // per-game terminal digests/outcomes with equal legal sets at every
+        // decision. Uniforms are ignored by first-legal choice, so the live
+        // binding hash never forks the comparison. The bound guarantees a
+        // genuine mixed history (32 with 128/256 across varied games).
+        let (profile_json, context) = profile_json();
+        let profile = PoolProfile::parse(&profile_json, &context).unwrap();
+        let archive = NativePool::open(profile.clone(), [9u8; 32]).unwrap();
+        for (id, bucket) in [(10u64, 32usize), (11, 64), (12, 128), (13, 256)] {
+            archive.register_slot(id, bucket, 8).unwrap();
+        }
+        let live_binding = live_binding_for(&profile);
+        let live = NativePool::open_live(profile.clone(), [9u8; 32], live_binding).unwrap();
+        live.register_slot(20, 256, 8).unwrap();
+        let drain_one = |pool: &Arc<NativePool>, slots: &[(u64, usize)], decisions: &mut std::collections::BTreeMap<(String, u8, u64), Vec<u64>>| -> bool {
+            for (slot_id, bucket) in slots {
+                let (input_need, output_need) = buffer_geometry(*bucket, 8).unwrap();
+                let mut input = vec![0u8; input_need];
+                let ticket = match pool.request_ready_fill(*slot_id, &mut input, output_need) {
+                    Ok(ticket) => ticket,
+                    Err(_) => continue,
+                };
+                if ticket.n_valid == 0 {
+                    continue;
+                }
+                let lease = pool.peek_ready().unwrap().expect("ready lease");
+                let descriptor = pool.lease_descriptor(&lease).unwrap();
+                let rows = descriptor.get("rows").and_then(|r| r.as_array()).unwrap().clone();
+                assert_eq!(rows.len(), lease.n_valid);
+                for row in &rows {
+                    let key = (
+                        row.get("wall_id").and_then(|w| w.as_str()).unwrap().to_string(),
+                        row.get("actor").and_then(|a| a.as_u64()).unwrap() as u8,
+                        row.get("sequence").and_then(|s| s.as_u64()).unwrap(),
+                    );
+                    let legal: Vec<u64> = row
+                        .get("legal")
+                        .and_then(|l| l.as_array())
+                        .unwrap()
+                        .iter()
+                        .map(|e| e.get("id").and_then(|v| v.as_u64()).unwrap())
+                        .collect();
+                    assert!(!legal.is_empty());
+                    if let Some(prior) = decisions.insert(key.clone(), legal.clone()) {
+                        assert_eq!(prior, legal, "legal drift at {key:?}");
+                    }
+                }
+                drive_to_host_ready(pool, &lease);
+                let output = first_legal_output(pool, &lease);
+                assert_eq!(pool.commit_actions(&lease, &output).unwrap(), lease.n_valid);
+                pool.quiesce().unwrap();
+                pool.resume_admission().unwrap();
+                return true;
+            }
+            false
+        };
+        let all_terminal = |pool: &Arc<NativePool>| -> bool {
+            pool.snapshot().unwrap().games.iter().all(|g| g.terminal)
+        };
+        let archive_slots = [(10u64, 32usize), (11, 64), (12, 128), (13, 256)];
+        let live_slots = [(20u64, 256usize)];
+        let mut archive_decisions: BTreeMap<(String, u8, u64), Vec<u64>> = BTreeMap::new();
+        let mut live_decisions: BTreeMap<(String, u8, u64), Vec<u64>> = BTreeMap::new();
+        let mut live_orig_seen: BTreeSet<usize> = BTreeSet::new();
+        let mut live_max_len: usize = 0;
+        for _ in 0..2000 {
+            if all_terminal(&archive) {
+                break;
+            }
+            assert!(drain_one(&archive, &archive_slots, &mut archive_decisions), "archive stalled before terminal");
+        }
+        assert!(all_terminal(&archive), "archive never reached hanchan end");
+        for _ in 0..2000 {
+            if all_terminal(&live) {
+                break;
+            }
+            let (input_need, output_need) = buffer_geometry(256, 8).unwrap();
+            let mut input = vec![0u8; input_need];
+            let ticket = live.request_ready_fill(20, &mut input, output_need).unwrap();
+            if ticket.n_valid == 0 {
+                assert!(all_terminal(&live), "live stalled with empty fill before terminal");
+                break;
+            }
+            let lease = live.peek_ready().unwrap().expect("ready lease");
+            // READY-retained measurement, before commit clears the slot:
+            // frozen plan originals plus staged true lengths.
+            {
+                let state = live.lock_state().unwrap();
+                if let Some(plan) = state.round_plan.as_ref() {
+                    for row in &plan.refs[3] {
+                        live_orig_seen.insert(row.original_bucket);
+                    }
+                }
+                let slot = state.slots.get(&lease.slot_id).unwrap();
+                for row in &slot.rows {
+                    if let Ok(bucket) = super::bucket_ceil(row.obs.history_indices.len()) {
+                        live_orig_seen.insert(bucket);
+                    }
+                    live_max_len = live_max_len.max(row.obs.history_indices.len());
+                }
+            }
+            let descriptor = live.lease_descriptor(&lease).unwrap();
+            let rows = descriptor.get("rows").and_then(|r| r.as_array()).unwrap().clone();
+            assert_eq!(rows.len(), lease.n_valid);
+            for row in &rows {
+                let key = (
+                    row.get("wall_id").and_then(|w| w.as_str()).unwrap().to_string(),
+                    row.get("actor").and_then(|a| a.as_u64()).unwrap() as u8,
+                    row.get("sequence").and_then(|s| s.as_u64()).unwrap(),
+                );
+                let legal: Vec<u64> = row
+                    .get("legal")
+                    .and_then(|l| l.as_array())
+                    .unwrap()
+                    .iter()
+                    .map(|e| e.get("id").and_then(|v| v.as_u64()).unwrap())
+                    .collect();
+                assert!(!legal.is_empty());
+                if let Some(prior) = live_decisions.insert(key.clone(), legal.clone()) {
+                    assert_eq!(prior, legal, "legal drift at {key:?}");
+                }
+            }
+            drive_to_host_ready(&live, &lease);
+            let output = first_legal_output(&live, &lease);
+            assert_eq!(live.commit_actions(&lease, &output).unwrap(), lease.n_valid);
+            live.quiesce().unwrap();
+            live.resume_admission().unwrap();
+        }
+        assert!(all_terminal(&live), "live never reached hanchan end");
+        // Genuine mixed history: initial T32 plus a later 128/256 bucket
+        // across varied games, with >128 real events observed.
+        assert!(live_orig_seen.contains(&32), "live never saw original T32, got {live_orig_seen:?}");
+        assert!(
+            live_orig_seen.contains(&128) || live_orig_seen.contains(&256),
+            "live never reached mixed 128/256, got {live_orig_seen:?}"
+        );
+        assert!(live_max_len > 64, "live max history {live_max_len} never exceeded T64");
+        // Per-decision legal parity across the full hanchan.
+        assert_eq!(archive_decisions, live_decisions);
+        let archive_snap = archive.snapshot().unwrap();
+        let live_snap = live.snapshot().unwrap();
+        assert_eq!(archive_snap.games.len(), live_snap.games.len());
+        for (a, b) in archive_snap.games.iter().zip(live_snap.games.iter()) {
+            assert_eq!(a.digest, b.digest);
+            assert_eq!(a.captured, b.captured);
+            assert_eq!(a.completed.len(), b.completed.len());
+            assert_eq!(a.terminal, b.terminal);
+        }
+    }
+
+    #[test]
+    fn packed_metadata_prefix_empty_bounds() {
+        let pool = open_live_pool();
+        pool.register_slot(30, 256, 8).unwrap();
+        let (input_need, output_need) = buffer_geometry(256, 8).unwrap();
+        let mut input = vec![0u8; input_need];
+        let ticket = pool.request_ready_fill(30, &mut input, output_need).unwrap();
+        assert!(ticket.n_valid > 0);
+        let lease = pool.peek_ready().unwrap().expect("ready lease");
+        // Getter safe at READY, before any H2D issue.
+        let total = pool.packed_tokens(&lease).unwrap();
+        let staged_total: usize = {
+            let state = pool.lock_state().unwrap();
+            let slot = state.slots.get(&lease.slot_id).unwrap();
+            slot.rows.iter().map(|r| r.obs.history_indices.len()).sum()
+        };
+        assert_eq!(total, staged_total);
+        // Exact layout: kind at 0, cu at 8*C, align8, row/pos/valid.
+        let capacity = 2048usize;
+        let layout = pool.packed_layout_for_lease(&lease, capacity).unwrap();
+        let mut offsets = std::collections::HashMap::new();
+        for (name, _, _, off) in &layout {
+            offsets.insert(name.clone(), *off);
+        }
+        assert_eq!(offsets["packed_kind"], 0);
+        assert_eq!(offsets["cu_seqlens"], 8 * capacity);
+        let aligned = ((8 * capacity + (lease.n_valid + 1) * 4 + 7) / 8) * 8;
+        assert_eq!(offsets["token_row"], aligned);
+        assert_eq!(offsets["token_pos"], aligned + 8 * capacity);
+        assert_eq!(offsets["valid"], aligned + 16 * capacity);
+        let need = pool.packed_bytes_for_lease(&lease, capacity).unwrap();
+        assert_eq!(need, aligned + 16 * capacity + capacity);
+        // Bounds: under-capacity and over-max fail closed.
+        if total > 0 {
+            assert!(pool.packed_bytes_for_lease(&lease, total.saturating_sub(1)).is_ok());
+            let mut tiny = vec![0u8; pool.packed_bytes_for_lease(&lease, total).unwrap().max(1)];
+            assert!(pool.fill_packed(&lease, &input, &mut tiny, total.saturating_sub(1)).is_err());
+        }
+        assert!(pool.packed_layout_for_lease(&lease, 32769).is_err());
+        // Fill and verify prefix boundaries, positions, tails.
+        let mut meta = vec![0u8; need];
+        pool.fill_packed(&lease, &input, &mut meta, capacity).unwrap();
+        let read_i64 = |at: usize| {
+            let mut bytes = [0u8; 8];
+            bytes.copy_from_slice(&meta[at..at + 8]);
+            i64::from_le_bytes(bytes)
+        };
+        let read_i32 = |at: usize| {
+            let mut bytes = [0u8; 4];
+            bytes.copy_from_slice(&meta[at..at + 4]);
+            i32::from_le_bytes(bytes)
+        };
+        assert_eq!(read_i32(offsets["cu_seqlens"]), 0);
+        assert_eq!(read_i32(offsets["cu_seqlens"] + lease.n_valid * 4) as usize, total);
+        for i in 0..lease.n_valid {
+            let cu = read_i32(offsets["cu_seqlens"] + i * 4) as usize;
+            let next = read_i32(offsets["cu_seqlens"] + (i + 1) * 4) as usize;
+            assert!(next >= cu);
+        }
+        for t in 0..total {
+            assert_eq!(meta[offsets["valid"] + t], 1);
+            assert!(read_i64(offsets["token_row"] + t * 8) >= 0);
+            assert!(read_i64(offsets["token_pos"] + t * 8) >= 0);
+        }
+        for t in total..capacity {
+            assert_eq!(meta[offsets["valid"] + t], 0);
+            assert_eq!(read_i64(offsets["packed_kind"] + t * 8), 0);
+            assert_eq!(read_i64(offsets["token_row"] + t * 8), 0);
+            assert_eq!(read_i64(offsets["token_pos"] + t * 8), 0);
+        }
+        drive_to_host_ready(&pool, &lease);
+        let output = first_legal_output(&pool, &lease);
+        pool.commit_actions(&lease, &output).unwrap();
+        pool.quiesce().unwrap();
+    }
+
+    #[test]
+    fn live_ready_restore_preserves_mixed_order_and_binding() {
+        let (profile_json, context) = profile_json();
+        let profile = PoolProfile::parse(&profile_json, &context).unwrap();
+        let binding = live_binding_for(&profile);
+        let pool = NativePool::open_live(profile.clone(), [9u8; 32], binding.clone()).unwrap();
+        pool.register_slot(40, 256, 8).unwrap();
+        let (input_need, output_need) = buffer_geometry(256, 8).unwrap();
+        let mut input = vec![0u8; input_need];
+        let ticket = pool.request_ready_fill(40, &mut input, output_need).unwrap();
+        assert!(ticket.n_valid > 0);
+        let snap = pool.snapshot().unwrap();
+        let plan = snap.round_plan.clone().expect("live plan");
+        // Required live_binding preserves the mixed stage ordering.
+        let saved = snap.live_binding.clone().expect("live binding");
+        assert_eq!(saved.generation, profile.generation);
+        assert_eq!(saved.behavior_policy_id, profile.policy_id);
+        assert_eq!(saved.pipeline_spec_id, binding.pipeline_spec_id);
+        let json = snap.to_json();
+        assert!(json.get("live_binding").is_some());
+        assert_ne!(json.get("live_binding").unwrap(), &serde_json::Value::Null);
+        // Restore keeps the exact T256 original-bucket order (32→256 law:
+        // every retained row's derived bucket equals its frozen original).
+        let restored = NativePool::restore(profile.clone(), &snap, [9u8; 32]).unwrap();
+        let restored_snap = restored.snapshot().unwrap();
+        assert_eq!(restored_snap.live_binding.unwrap().pipeline_spec_id, binding.pipeline_spec_id);
+        let restored_plan = restored_snap.round_plan.expect("restored plan");
+        assert_eq!(restored_plan.refs[3], plan.refs[3]);
+        restored.attach_slot(40, 256, 8).unwrap();
+        let mut restored_input = vec![0u8; input_need];
+        let refilled = restored.refill_staged(40, &mut restored_input).unwrap();
+        assert_eq!(refilled, ticket.n_valid);
+        let active = observation::active_input_bytes(256, ticket.n_valid);
+        assert_eq!(restored_input[..active], input[..active]);
+        // Pending original refs still bind after restore.
+        for row in &restored_plan.refs[3] {
+            assert!([32, 64, 128, 256].contains(&row.original_bucket));
+        }
+    }
+
+    #[test]
+    fn mixed_freeze_splits_same_game_across_chunks_without_skipping() {
+        use super::round_plan::RoundPlan;
+        // Same game seats reordered by original bucket: cohort order alone
+        // would interleave them, but live transport sorts by original first,
+        // so one game's seats can land in different chunks. Pins must wait,
+        // never skip the later chunk.
+        let plan = RoundPlan::freeze(
+            0,
+            [
+                vec![],
+                vec![],
+                vec![],
+                vec![
+                    super::round_plan::PlanRow { game_idx: 0, actor: 0, seq: 1, original_bucket: 32 },
+                    super::round_plan::PlanRow { game_idx: 1, actor: 0, seq: 2, original_bucket: 64 },
+                    super::round_plan::PlanRow { game_idx: 0, actor: 1, seq: 3, original_bucket: 256 },
+                ],
+            ],
+            [None, None, None, Some(2)],
+        )
+        .unwrap();
+        assert!(plan.is_mixed());
+        let (ordinal, rows) = plan.head_rows(256).unwrap().unwrap();
+        assert_eq!(ordinal, 0);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].original_bucket, 32);
+        assert_eq!(rows[1].original_bucket, 64);
     }
 }

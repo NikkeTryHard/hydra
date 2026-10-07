@@ -57,10 +57,9 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyModule, PyString};
 
-/// Attached staging helper: exact `repr(value)` text for every `{value!r}`
-/// slot. GIL-held by construction; `extract::<String>()` is the
-/// `canon_rng.rs:322-323` half of the same round-trip.
-fn py_repr(obj: &Bound<'_, PyAny>) -> PyResult<String> {
+/// Render Python values while attached; using Rust formatting would change
+/// the user-input details returned by boundary validation failures.
+pub(crate) fn py_repr(obj: &Bound<'_, PyAny>) -> PyResult<String> {
     Ok(obj.repr()?.to_str()?.to_owned())
 }
 

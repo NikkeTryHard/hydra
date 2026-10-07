@@ -435,98 +435,89 @@ class ActorLearnerReplay(ActorLearnerReplayCheckpointMixin):
                     "skipped_updates": float(self.state.skipped_updates),
                     "skipped_this_update": 1.0,
                 }
-                self.loss_history.append(_skip_entry)
-                self._global_metrics_history.append(dict(_skip_entry))
                 entry = _skip_entry
-                if self.state.global_update % self.config.checkpoint_frequency_updates == 0:
-                    dest: Path = self.save_checkpoint()
-                    self._mirror.log_update(_skip_entry, step=self.state.global_update)
-                    self._mirror.log_checkpoint(
-                        checkpoint_path=dest,
-                        manifest_json={
-                            "checkpoint_file": dest.name,
-                            "global_update": self.state.global_update,
-                            "manifest_hashes": dict(self.manifest_hashes),
-                        },
+            else:
+                if self.config.gradient_clip_norm is not None:
+                    model_params: Any = self.model.parameters()
+                    _clipped: torch.Tensor = torch.nn.utils.clip_grad_norm_(
+                        model_params,
+                        self.config.gradient_clip_norm,  # pyrefly: ignore[unknown-argument-type] # ReplayConfig.gradient_clip_norm owns the bound; clip takes the validated float
                     )
-                continue
-            if self.config.gradient_clip_norm is not None:
-                model_params: Any = self.model.parameters()
-                _clipped: torch.Tensor = torch.nn.utils.clip_grad_norm_(
-                    model_params,
-                    self.config.gradient_clip_norm,  # pyrefly: ignore[unknown-argument-type] # ReplayConfig.gradient_clip_norm owns the bound; clip takes the validated float
-                )
-            self.optimizer.step()
-            if self.scheduler is not None:
-                self.scheduler.step()
-            self.optimizer.zero_grad(set_to_none=True)
-            self.state.global_update += 1
-            self.state.epoch = int(self._sampler_state_snapshot().get("epoch", 0))
-            self.state.semantic_rng_state = None
-            avg_loss = sum(micro_losses) / len(micro_losses) if len(micro_losses) > 0 else 0.0
-            try:
-                train_logits: torch.Tensor = model_out["policy_logits"]
-                train_targets: torch.Tensor = batch["chosen_action_id"]
-                train_mask: torch.Tensor = batch["legal_mask"]
-                metrics: dict[str, float] = compute_metrics(
-                    train_logits.detach(),
-                    train_targets.detach(),
-                    train_mask.detach(),
-                    action_kinds=_batch_action_kinds(batch, train_targets),
-                )
-            except Exception:
-                fallback: dict[str, float] = {
-                    "masked_nll": avg_loss,
-                    "top1": 0.0,
-                    "top3": 0.0,
-                    "top5": 0.0,
-                    "calibration_ece": 0.0,
-                    "legal_uniform_nll": 0.0,
-                    "legal_uniform_gap": 0.0,
-                    "support_min": 0.0,
-                    "support_max": 0.0,
-                    "strata": 0.0,
-                    "confusion": 0.0,
+                self.optimizer.step()
+                if self.scheduler is not None:
+                    self.scheduler.step()
+                self.optimizer.zero_grad(set_to_none=True)
+                self.state.global_update += 1
+                self.state.epoch = int(self._sampler_state_snapshot().get("epoch", 0))
+                self.state.semantic_rng_state = None
+                avg_loss = sum(micro_losses) / len(micro_losses) if len(micro_losses) > 0 else 0.0
+                try:
+                    train_logits: torch.Tensor = model_out["policy_logits"]
+                    train_targets: torch.Tensor = batch["chosen_action_id"]
+                    train_mask: torch.Tensor = batch["legal_mask"]
+                    metrics: dict[str, float] = compute_metrics(
+                        train_logits.detach(),
+                        train_targets.detach(),
+                        train_mask.detach(),
+                        action_kinds=_batch_action_kinds(batch, train_targets),
+                    )
+                except Exception:
+                    fallback: dict[str, float] = {
+                        "masked_nll": avg_loss,
+                        "top1": 0.0,
+                        "top3": 0.0,
+                        "top5": 0.0,
+                        "calibration_ece": 0.0,
+                        "legal_uniform_nll": 0.0,
+                        "legal_uniform_gap": 0.0,
+                        "support_min": 0.0,
+                        "support_max": 0.0,
+                        "strata": 0.0,
+                        "confusion": 0.0,
+                    }
+                    metrics = fallback
+                entry: dict[str, float] = {
+                    "global_update": float(self.state.global_update),
+                    "total": avg_loss,
+                    "policy": sum(micro_policy) / len(micro_policy)
+                    if len(micro_policy) > 0
+                    else 0.0,
+                    "placement": sum(micro_placement) / len(micro_placement)
+                    if len(micro_placement) > 0
+                    else 0.0,
+                    "value": sum(micro_value) / len(micro_value) if len(micro_value) > 0 else 0.0,
+                    "event": sum(micro_event) / len(micro_event) if len(micro_event) > 0 else 0.0,
+                    "belief": sum(micro_belief) / len(micro_belief)
+                    if len(micro_belief) > 0
+                    else 0.0,
+                    "masked_nll": metrics.get("masked_nll", avg_loss),
+                    "top1": metrics.get("top1", 0.0),
+                    "top3": metrics.get("top3", 0.0),
+                    "top5": metrics.get("top5", 0.0),
+                    "calibration_ece": metrics.get("calibration_ece", 0.0),
+                    "legal_uniform_nll": metrics.get("legal_uniform_nll", 0.0),
+                    "legal_uniform_gap": metrics.get("legal_uniform_gap", 0.0),
+                    "strata": metrics.get("strata", 0.0),
+                    "confusion": metrics.get("confusion", 0.0),
+                    "skipped_updates": float(self.state.skipped_updates),
+                    "skipped_this_update": 0.0,
                 }
-                metrics = fallback
-            entry: dict[str, float] = {
-                "global_update": float(self.state.global_update),
-                "total": avg_loss,
-                "policy": sum(micro_policy) / len(micro_policy) if len(micro_policy) > 0 else 0.0,
-                "placement": sum(micro_placement) / len(micro_placement)
-                if len(micro_placement) > 0
-                else 0.0,
-                "value": sum(micro_value) / len(micro_value) if len(micro_value) > 0 else 0.0,
-                "event": sum(micro_event) / len(micro_event) if len(micro_event) > 0 else 0.0,
-                "belief": sum(micro_belief) / len(micro_belief) if len(micro_belief) > 0 else 0.0,
-                "masked_nll": metrics.get("masked_nll", avg_loss),
-                "top1": metrics.get("top1", 0.0),
-                "top3": metrics.get("top3", 0.0),
-                "top5": metrics.get("top5", 0.0),
-                "calibration_ece": metrics.get("calibration_ece", 0.0),
-                "legal_uniform_nll": metrics.get("legal_uniform_nll", 0.0),
-                "legal_uniform_gap": metrics.get("legal_uniform_gap", 0.0),
-                "strata": metrics.get("strata", 0.0),
-                "confusion": metrics.get("confusion", 0.0),
-                "skipped_updates": float(self.state.skipped_updates),
-                "skipped_this_update": 0.0,
-            }
-            # Per-type scorecards: flattened ``per_type/<kind>/*`` floats ride
-            # the entry when the batch carries kind labels (mirrors
-            # ``SupervisedLoop``; report-only, never loss).
-            for _mkey, _mval in metrics.items():
-                if _mkey.startswith("per_type/") and isinstance(_mval, float):
-                    entry[_mkey] = _mval
-            for _event_head in sorted(micro_event_heads):
-                _event_vals = micro_event_heads[_event_head]
-                entry[f"event_{_event_head}"] = (
-                    sum(_event_vals) / len(_event_vals) if len(_event_vals) > 0 else 0.0
-                )
-            for _belief_head in sorted(micro_belief_heads):
-                _belief_vals = micro_belief_heads[_belief_head]
-                entry[f"belief_{_belief_head}"] = (
-                    sum(_belief_vals) / len(_belief_vals) if len(_belief_vals) > 0 else 0.0
-                )
+                # Per-type scorecards: flattened ``per_type/<kind>/*`` floats ride
+                # the entry when the batch carries kind labels (mirrors
+                # ``SupervisedLoop``; report-only, never loss).
+                for _mkey, _mval in metrics.items():
+                    if _mkey.startswith("per_type/") and isinstance(_mval, float):
+                        entry[_mkey] = _mval
+                for _event_head in sorted(micro_event_heads):
+                    _event_vals = micro_event_heads[_event_head]
+                    entry[f"event_{_event_head}"] = (
+                        sum(_event_vals) / len(_event_vals) if len(_event_vals) > 0 else 0.0
+                    )
+                for _belief_head in sorted(micro_belief_heads):
+                    _belief_vals = micro_belief_heads[_belief_head]
+                    entry[f"belief_{_belief_head}"] = (
+                        sum(_belief_vals) / len(_belief_vals) if len(_belief_vals) > 0 else 0.0
+                    )
             self.loss_history.append(entry)
             self._global_metrics_history.append(dict(entry))
             if self.state.global_update % self.config.checkpoint_frequency_updates == 0:

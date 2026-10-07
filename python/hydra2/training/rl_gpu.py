@@ -8,6 +8,7 @@ from typing import Any
 import torch
 
 from hydra2.contracts.common import ContractError
+from hydra2.training.rl_actor_packed import packed_actor_forward
 from hydra2.training.rl_objective import _assert_tensor
 
 _DTYPES = {
@@ -71,9 +72,13 @@ def _actor_into_output(
     planes: dict[str, torch.Tensor],
     output: torch.Tensor,
     batch: int,
+    packed: dict[str, torch.Tensor] | None = None,
 ) -> None:
     with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16, cache_enabled=False):
-        logits, fused_heads = actor.tensor_forward(planes, planes["history_mask"])
+        if packed is None:
+            logits, fused_heads = actor.tensor_forward(planes, planes["history_mask"])
+        else:
+            logits, fused_heads = packed_actor_forward(actor, planes, packed)
     selected, old_logp = strict_categorical(logits, planes["legal_mask"], planes["uniform"])
     _ = output[: 8 * batch].view(torch.int64).copy_(selected)
     _ = output[8 * batch : 12 * batch].view(torch.float32).copy_(old_logp)
@@ -93,6 +98,9 @@ class _Slot:
     output_exporter: Any
     views: dict[tuple[int, int], dict[str, torch.Tensor]] = field(default_factory=dict)
     live: bool = False
+    packed_host: dict[tuple[int, int], torch.Tensor] = field(default_factory=dict)
+    packed_device: dict[tuple[int, int], torch.Tensor] = field(default_factory=dict)
+    packed_views: dict[tuple[int, int], dict[str, torch.Tensor]] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -109,6 +117,7 @@ class _ActorGraph:
     input: torch.Tensor
     output: torch.Tensor
     graph: torch.cuda.CUDAGraph
+    packed: torch.Tensor | None = None
 
 
 class GpuService:
@@ -132,17 +141,28 @@ class GpuService:
             raise ContractError("RL CUDA owner supports eager or exact CUDA replay only")
         self.pool = pool
         self.device = device
+        # Streams stay at default priority: a compute-high experiment measured
+        # 335.9s versus 332.7-335.2s baselines with exact parity, so priority is
+        # a no-op here and ordering stays on events alone. Do not re-try
+        # without new evidence; the two-stream pipeline is not priority-bound.
         self.compute_stream = torch.cuda.Stream(device=device)
         self.copy_stream = torch.cuda.Stream(device=device)
+        self.capture_stream = torch.cuda.Stream(device=device)
         self.slots: dict[int, _Slot] = {}
         self.flights: list[_Flight] = []
         self.compile_mode = compile_mode
         self.span_sink: Any = span_sink
-        self._actor_graphs: dict[tuple[int, int], _ActorGraph] = {}
+        self._actor_graphs: dict[tuple[int, int, int], _ActorGraph] = {}
         self._graph_actor: Any = None
         self._actor_pool = (
             torch.cuda.graph_pool_handle() if compile_mode == "cuda_graph_replay" else None
         )
+
+        # Allocator note: slabs are fixed-geometry and preallocated once per
+        # bucket, so the caching allocator never fragments here; six measured
+        # 8x128 runs peaked at 6.2-7.1G of 12G with zero OOM pressure, and
+        # expandable_segments targets varying-batch inference, not static
+        # slabs, so it stays off. Revisit only if a snapshot shows split blocks.
 
     def register_slot(
         self, bucket_t: int, slot_id: int, input_bytes: int, output_bytes: int
@@ -191,7 +211,7 @@ class GpuService:
         slot.views[key] = planes
         return planes
 
-    def _capture_actor(self, lease: Any, actor: Any, slot: _Slot) -> _ActorGraph:
+    def _capture_actor(self, lease: Any, actor: Any, slot: _Slot, capacity: int) -> _ActorGraph:
         if self._graph_actor is not None and actor is not self._graph_actor:
             raise ContractError("CUDA replay requires stable actor module storage")
         self._graph_actor = actor
@@ -201,21 +221,35 @@ class GpuService:
         output = torch.empty(lease.output_bytes, dtype=torch.uint8, device=self.device)
         planes = _plane_views(raw, lease.input_layout)
         _ = raw.copy_(slot.device_input[: lease.input_bytes])
-        warm_stream = torch.cuda.Stream(device=self.device)
+        packed_raw = None
+        packed_views = None
+        if capacity:
+            packed_slot = slot.packed_device[capacity, lease.n_valid]
+            packed_raw = torch.empty_like(packed_slot)
+            packed_raw.copy_(packed_slot)
+            packed_views = _plane_views(packed_raw, lease.packed_layout(capacity))
+        warm_stream = self.capture_stream
         warm_stream.wait_stream(self.compute_stream)
         with torch.cuda.stream(warm_stream):
             for _ in range(3):
-                _actor_into_output(actor, planes, output, lease.n_valid)
+                _actor_into_output(actor, planes, output, lease.n_valid, packed_views)
             ready = torch.cuda.Event(blocking=True)
             ready.record(warm_stream)
         ready.synchronize()
         graph = torch.cuda.CUDAGraph()
-        # Only transient allocations share this pool; persistent inputs/outputs
-        # are external, so another real B/T replay cannot clobber their values.
-        with torch.cuda.graph(graph, pool=self._actor_pool, stream=self.compute_stream):
-            _actor_into_output(actor, planes, output, lease.n_valid)
-        result = _ActorGraph(raw, output, graph)
-        self._actor_graphs[lease.bucket_t, lease.n_valid] = result
+        # Shared transient storage remains alive for the retained graph set;
+        # no graph is retired while another graph can still replay.
+        warm_stream.wait_stream(self.compute_stream)
+        with torch.cuda.graph(
+            graph,
+            pool=self._actor_pool,
+            stream=self.capture_stream,
+            check_input_liveness=True,
+        ):
+            _actor_into_output(actor, planes, output, lease.n_valid, packed_views)
+        self.compute_stream.wait_stream(self.capture_stream)
+        result = _ActorGraph(raw, output, graph, packed_raw)
+        self._actor_graphs[lease.bucket_t, lease.n_valid, capacity] = result
         if self.span_sink is not None:
             self.span_sink(f"graph-capture-end-actor-T{lease.bucket_t}-B{lease.n_valid}")
         return result
@@ -231,6 +265,22 @@ class GpuService:
             or lease.output_bytes > slot.host_output.numel()
         ):
             raise ContractError("native active lease exceeds its registered CUDA slab")
+        capacity = 0
+        if lease.n_valid > 0:
+            tokens = lease.packed_tokens
+            if tokens > 0:
+                capacity = ((tokens + 2047) // 2048) * 2048
+                size = lease.packed_bytes(capacity)
+                packed_key = (capacity, lease.n_valid)
+                host = slot.packed_host.get(packed_key)
+                if host is None:
+                    host = torch.empty(size, dtype=torch.uint8, pin_memory=True)
+                    slot.packed_host[packed_key] = host
+                    with torch.cuda.stream(self.copy_stream):
+                        slot.packed_device[packed_key] = torch.empty(
+                            size, dtype=torch.uint8, device=self.device
+                        )
+                lease.fill_packed(slot.input_exporter, host.numpy(), capacity)
         slot.live = True
         h2d_done = torch.cuda.Event()
         compute_done = torch.cuda.Event()
@@ -239,22 +289,48 @@ class GpuService:
             _ = slot.device_input[: lease.input_bytes].copy_(
                 slot.host_input[: lease.input_bytes], non_blocking=True
             )
+            if capacity:
+                packed_key = (capacity, lease.n_valid)
+                slot.packed_device[packed_key].copy_(
+                    slot.packed_host[packed_key], non_blocking=True
+                )
             h2d_done.record(self.copy_stream)
-        planes = self._input_views(slot, lease)
+        # Graph replay never reads tensor views; building them on every
+        # graph hit only burns host time constructing metadata the replay
+        # path ignores. Views are shape metadata, not contents, so building
+        # them lazily in the eager branch preserves exact numerics.
         lease.mark_inference_queued()
         with torch.cuda.stream(self.compute_stream):
             self.compute_stream.wait_event(h2d_done)
-            if self.compile_mode == "cuda_graph_replay":
-                captured = self._actor_graphs.get((lease.bucket_t, lease.n_valid))
+            packed_views = None
+            if capacity:
+                packed_key = (capacity, lease.n_valid)
+                packed_views = slot.packed_views.get(packed_key)
+                if packed_views is None:
+                    packed_views = _plane_views(
+                        slot.packed_device[packed_key], lease.packed_layout(capacity)
+                    )
+                    slot.packed_views[packed_key] = packed_views
+                _assert_tensor(packed_views["cu_seqlens"][0] == 0, "packed H2D start is corrupt")
+            key = (lease.bucket_t, lease.n_valid, capacity)
+            if self.compile_mode == "cuda_graph_replay" and (
+                lease.n_valid <= 16 or lease.n_valid == 128
+            ):
+                captured = self._actor_graphs.pop(key, None)
                 if captured is None:
-                    captured = self._capture_actor(lease, actor, slot)
+                    captured = self._capture_actor(lease, actor, slot, capacity)
                 elif actor is not self._graph_actor:
                     raise ContractError("CUDA replay requires stable actor module storage")
+                self._actor_graphs[key] = captured
                 _ = captured.input.copy_(slot.device_input[: lease.input_bytes])
+                if capacity:
+                    assert captured.packed is not None
+                    captured.packed.copy_(slot.packed_device[capacity, lease.n_valid])
                 captured.graph.replay()
                 _ = slot.device_output[: lease.output_bytes].copy_(captured.output)
             else:
-                _actor_into_output(actor, planes, slot.device_output, lease.n_valid)
+                planes = self._input_views(slot, lease)
+                _actor_into_output(actor, planes, slot.device_output, lease.n_valid, packed_views)
             compute_done.record(self.compute_stream)
         self.flights.append(_Flight(lease, slot, h2d_done, compute_done))
 

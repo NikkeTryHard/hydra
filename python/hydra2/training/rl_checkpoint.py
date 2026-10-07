@@ -169,11 +169,30 @@ def _publish_c0_copy(*, source: Path, run_root: Path) -> Path:
     return dest
 
 
+def _freeze_actor_linear_dtypes(*, actor: Any) -> None:
+    """Freeze actor Linear weight/bias storage to BF16 once, before graph capture.
+
+    Persistent BF16 storage removes per-replay casts. LayerNorm/embeddings stay FP32;
+    the learner stays FP32. Boundary loads strict in place and never replace storage,
+    so captured graphs do not go stale.
+    """
+    import torch
+    import torch.nn as nn
+
+    with torch.no_grad():
+        for module in actor.modules():
+            if isinstance(module, nn.Linear):
+                module.weight.data = module.weight.data.to(torch.bfloat16)
+                if module.bias is not None:
+                    module.bias.data = module.bias.data.to(torch.bfloat16)
+
+
 def _freeze_actor(*, actor: Any, learner: Any) -> None:
     """Freeze a C0-loaded actor: eval, no grad, distinct finite storage."""
     import torch
 
     actor.load_state_dict(learner.state_dict(), strict=True)
+    _freeze_actor_linear_dtypes(actor=actor)
     actor.eval()
     actor.requires_grad_(False)
     for (_, lparam), (aname, aparam) in zip(
@@ -495,6 +514,7 @@ def restore_actor_weights(*, model: Any, weights: Any) -> None:
     import torch
 
     model.load_state_dict(weights, strict=True)
+    _freeze_actor_linear_dtypes(actor=model)
     model.eval()
     model.requires_grad_(False)
     with torch.no_grad():

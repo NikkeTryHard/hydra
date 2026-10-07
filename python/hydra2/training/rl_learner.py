@@ -216,10 +216,19 @@ class LearnerService:
         slot = self.slots[slot_id]
         if slot is self.active:
             raise ContractError("cannot overwrite an accumulating replay batch")
+        # Learner-stall marks: the consumed sync waits for prior GPU work on
+        # this slot, and the native fill encodes rows on Rust workers. Both are
+        # host timestamps only and never gate numerics.
         if slot.consumed is not None:
+            if self.span_sink is not None:
+                self.span_sink("learner-sync-start")
             slot.consumed.synchronize()
+            if self.span_sink is not None:
+                self.span_sink("learner-sync-end")
         import json
 
+        if self.span_sink is not None:
+            self.span_sink("learner-native-fill-start")
         spec = json.loads(
             native.fill_live_slab(
                 tape_handle=tape,
@@ -229,6 +238,8 @@ class LearnerService:
                 facts_buffer=slot.fact_exporter,
             )
         )
+        if self.span_sink is not None:
+            self.span_sink("learner-native-fill-end")
         return self.install_filled_slot(slot_id, spec)
 
     def install_filled_slot(self, slot_id: int, spec: dict[str, Any]) -> dict[str, Any]:
@@ -246,6 +257,8 @@ class LearnerService:
             raise ContractError("native replay descriptor exceeds registered cache capacity")
         slot.count, slot.bucket_t = count, int(spec["t"])
         with torch.cuda.stream(self.copy_stream):
+            if self.span_sink is not None:
+                self.span_sink("learner-h2d-start")
             _ = slot.device_features[:feature_bytes].copy_(
                 slot.host_features[:feature_bytes], non_blocking=True
             )
@@ -254,6 +267,8 @@ class LearnerService:
             )
             slot.ready = torch.cuda.Event()
             slot.ready.record(self.copy_stream)
+            if self.span_sink is not None:
+                self.span_sink("learner-h2d-end")
         planes = {}
         for field in spec["input_layout"]:
             name, shape, offset = field["name"], field["shape"], field["offset"]

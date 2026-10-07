@@ -47,6 +47,8 @@ import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from hydra2.tracking._mirror_leaves import _env_truthy
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -78,12 +80,6 @@ VALID_INTERVALS_MS: tuple[int, ...] = _VALID_RAW if _VALID_RAW is not None else 
 #: Consecutive NVML failures before the GPU group is dropped for the run.
 _DROP_RAW: int | None = getattr(_bridge_contracts, "TRACKING_GPU_DROP_AFTER_ERRORS", None)
 _GPU_DROP_AFTER_ERRORS: int = _DROP_RAW if _DROP_RAW is not None else 100
-
-_TRUTHY = frozenset({"1", "true", "yes", "on"})
-
-
-def _env_truthy(name: str) -> bool:
-    return os.environ.get(name, "").strip().lower() in _TRUTHY
 
 
 def resolve_interval_ms(explicit: int | float | None = None) -> int:

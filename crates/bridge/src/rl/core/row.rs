@@ -258,7 +258,12 @@ impl super::NativeGame {
             return Err(CoreError(format!("selected action {selected} outside served legal set")));
         }
         let prefix_len = self.arena.len() as u32;
-        let provenance = self.transition_provenance(prefix_len)?;
+        // Capture ordinal BEFORE increment: the row's scheduling identity.
+        // Captures precede applies within a commit, so reading the live
+        // applied-action count here would give every same-fill seat one
+        // shared value and erase their per-answer distinction.
+        let capture_ordinal = self.captured;
+        let provenance = self.transition_provenance(prefix_len, capture_ordinal)?;
         let mut ippatsu_bits = 0u8;
         for (i, active) in obs.ippatsu_active.iter().enumerate() {
             if *active {
@@ -341,12 +346,18 @@ impl super::NativeGame {
         Ok(row)
     }
 
-    fn transition_provenance(&self, prefix_len: u32) -> Result<[u8; 32], CoreError> {
+    fn transition_provenance(&self, prefix_len: u32, capture_ordinal: u64) -> Result<[u8; 32], CoreError> {
         let doc = serde_json::json!({
             "game": self.game_id,
             "ordinal": self.hand_index,
             "prefix": prefix_len,
-            "applied": self.applied.len(),
+            // Capture ordinal, NOT the live applied count: on sequential paths
+            // with no outstanding applies it equals the applied length (one
+            // apply lands per captured row before the next stages), while
+            // coalesced same-fill seats get consecutive distinct values.
+            // Sharing one live-count value across a coalesced window would
+            // collide provenances and fork row identities downstream.
+            "applied": capture_ordinal,
         });
         let bytes = hydra_feed::canon::canonical_bytes_value(&doc, "rl:transition-provenance")
             .map_err(|e| CoreError(format!("provenance canon failed: {e:?}")))?;

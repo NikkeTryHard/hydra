@@ -329,20 +329,30 @@ def _slab_planes(host_input: object, lease: object) -> dict[str, tuple[str, tupl
     return {name: (dtype, tuple(shape), off) for name, dtype, shape, off in lease.input_layout}
 
 
-def test_generated_hanchan_matches_reference_action_event_observation_digest() -> None:
+@pytest.mark.parametrize(
+    ("lane_capacity", "perm_kind", "perm"),
+    [
+        (16, "identity", [0, 1, 2, 3]),
+        (1, "shift1", [1, 2, 3, 0]),
+        (2, "shift2", [2, 3, 0, 1]),
+        (16, "shift3", [3, 0, 1, 2]),
+    ],
+)
+def test_generated_hanchan_matches_reference_action_event_observation_digest(
+    lane_capacity: int, perm_kind: str, perm: list[int]
+) -> None:
     """Complete generated hanchan parity: native drives first, the
     reference replays forced onto the same choices. Every decision
     compares legal sets, chosen actions, observation facts, decision
     identity, and game identity; the terminal outcome must agree."""
     schedule = _schedule(20260823, "rl-pool-parity")
-    perm = [0, 1, 2, 3]
     # The reference sim is reset FIRST so the pool opens on the identical
     # adapter lineage (game_id derives from these hashes; fakes would fork it).
     _sim_for_context = RiichiEnvExactSimulator()
     _sim_for_context.reset(
         rules=_MANIFEST,
         wall=schedule,
-        seat_permutation=seat_permutation_literal("identity"),
+        seat_permutation=seat_permutation_literal(perm_kind),
     )
     pool = _open_pool(_profile(schedule, perm), _context(_sim_for_context))
     host: dict[int, tuple[object, object]] = {}
@@ -350,7 +360,7 @@ def test_generated_hanchan_matches_reference_action_event_observation_digest() -
     native_outcome: dict | None = None
     try:
         for slot, bucket_t in enumerate(_BUCKETS):
-            host[slot] = _register_lane(pool, bucket_t, slot, 16)
+            host[slot] = _register_lane(pool, bucket_t, slot, lane_capacity)
         for _ in range(20000):
             for slot in host:
                 pool.request_ready_fill(slot)
@@ -370,6 +380,12 @@ def test_generated_hanchan_matches_reference_action_event_observation_digest() -
                 host_input, host_output = host[lease.slot_id]
                 _settle(pool, lease)
                 descriptor = json.loads(pool.lease_descriptor(lease))
+                # Freeze scheduling + sampler identity per staged row: logical
+                # round must stay equal across split leases of one decision
+                # (single game; no cohort barrier here). Uniform collisions are
+                # legitimate so only cursor_before words are asserted exact,
+                # never uniform distinctness.
+                logical_round = int(descriptor["logical_round"])
                 planes = _slab_planes(host_input, lease)
                 for index, row in enumerate(descriptor["rows"]):
                     legal = sorted(row["legal"], key=lambda e: int(e["id"]))
@@ -379,6 +395,11 @@ def test_generated_hanchan_matches_reference_action_event_observation_digest() -
                     chosen = legal[0]
                     records.append(
                         {
+                            "slot": int(lease.slot_id),
+                            "bucket": int(lease.bucket_t),
+                            "lease": int(lease.lease_id),
+                            "logical_round": logical_round,
+                            "wall": str(row["wall_id"]),
                             "actor": int(row["actor"]),
                             "legal": [_native_sig(e) for e in legal],
                             "chosen": _native_sig(chosen),
@@ -425,24 +446,33 @@ def test_generated_hanchan_matches_reference_action_event_observation_digest() -
         pool.close()
 
     assert records, "native drive recorded no decisions"
-
+    # Sampler cursors advance exactly one 8-byte word per staged decision per
+    # seat, in record order (`cursor_before` is the byte cursor `counter * 8`,
+    # never the count): unstaged seats (overflow, cross-bucket waits, pinned
+    # games) reserve no words, so no phantom reservations can fork uniforms.
+    staged_counts: dict[tuple[str, int], int] = {}
+    for record in records:
+        key = (record["wall"], record["actor"])
+        assert record["cursor_before"] == 8 * staged_counts.get(key, 0), (
+            f"seat {key} cursor skipped words outside staged decisions"
+        )
+        staged_counts[key] = staged_counts.get(key, 0) + 1
     # Reference replay forced onto the native choices.
     sim = RiichiEnvExactSimulator()
     sim.reset(
         rules=_MANIFEST,
         wall=schedule,
-        seat_permutation=seat_permutation_literal("identity"),
+        seat_permutation=seat_permutation_literal(perm_kind),
     )
     assert sim._game_id, "reference produced no game id"
-    # Window rows share one frozen decision_id (the arena cannot grow while
-    # answers are outstanding), so consecutive same-id records form one window
-    # instance. The oracle answers windows strictly min-first while pool lanes
     # commit in staged order, so each group is CHECKED in record order (reads
     # only; the sim state is frozen for the whole group) but APPLIED ascending
     # by actor. The combined step is order-independent, so the trajectory and
     # outcome gates are unchanged. Draws have unique ids (one-row groups).
     step = 0
     cursor = 0
+    multi_actor_windows = 0
+    same_bucket_windows = 0
     while cursor < len(records):
         end = cursor + 1
         while end < len(records) and records[end]["decision_id"] == records[cursor]["decision_id"]:
@@ -487,16 +517,47 @@ def test_generated_hanchan_matches_reference_action_event_observation_digest() -
             assert str(ref_obs.game_id) == str(sim._game_id), f"step {step}: game scope drift"
             matched.append((int(actor), match[0]))
             step += 1
+        actors = [record["actor"] for record in records[cursor:end]]
+        if len(set(actors)) > 1:
+            # Multi-responder window: every seat observes the same frozen
+            # decision. Split leases of one decision must share logical_round
+            # (single game; pool hold cannot wait on earliest games here).
+            multi_actor_windows += 1
+            rounds = {record["logical_round"] for record in records[cursor:end]}
+            assert rounds == {records[cursor]["logical_round"]}, (
+                f"step {step}: split window decision {records[cursor]['decision_id']} "
+                f"spans logical rounds {sorted(rounds)}"
+            )
+            assert len(actors) == len(set(actors)), (
+                f"step {step}: duplicate answer in window {records[cursor]['decision_id']}"
+            )
+            buckets = {record["bucket"] for record in records[cursor:end]}
+            if len(buckets) == 1:
+                same_bucket_windows += 1
+                leases = {record["lease"] for record in records[cursor:end]}
+                # Fixed per-frontier chunk boundaries may legally split a
+                # same-bucket window even when it fits the lane cap: only
+                # per-lease capacity bounds, every-seat-once, and
+                # logical-round stability are pinned here.
+                for lid in leases:
+                    n = sum(1 for r in records[cursor:end] if r["lease"] == lid)
+                    assert 0 < n <= lane_capacity, (
+                        f"step {step}: lease {lid} carries {n} rows outside (0, cap]"
+                    )
         for _, action in sorted(matched, key=lambda pair: pair[0]):
             sim.apply(action)
         cursor = end
+    assert same_bucket_windows > 0, "hanchan exercised no same-bucket multi-responder window"
+    assert multi_actor_windows > 0, "hanchan exercised no multi-responder window"
     assert sim._terminal, "reference did not terminate on the forced trajectory"
     outcome = sim._raw_outcome
     assert outcome is not None
+    # Per-seat exact: native canonical_scores(inv) and adapter
+    # _to_canonical_scores(perm) both map engine order to canonical seats, so
+    # with matching perms the lists compare directly (sorted() would weaken).
     assert list(outcome.final_scores) == native_outcome["outcome"]["final_scores"]
-    assert sorted(outcome.ranks) == sorted(native_outcome["outcome"]["ranks"])
+    assert list(outcome.ranks) == list(native_outcome["outcome"]["ranks"])
     assert native_outcome["captured"] == len(records)
-
     # Game identity derives from the same lineage on both sides.
     pool2 = _open_pool(
         _profile(schedule, perm, pool_id="parity-gid"),
@@ -667,6 +728,326 @@ def test_forked_snapshot_preserves_ready_reservations() -> None:
         pool.close()
 
 
+def test_frozen_head_pin_refuses_reassign_then_converges() -> None:
+    """Frozen-head pin: a held READY pins the global head; next converges.
+
+    Two distinct-wall games (cap 1) hunt the first intermediate READY
+    snapshot: immediately after one productive head install, before the next
+    chunk stages, the held READY row H is still issued while the frozen plan
+    still shows an unfinished head chunk naming the same game. Both forks
+    adopt that READY snapshot and reuse the same H (no new admit for H); the
+    held branch refuses the next admit (no overtake, no reassignment), then
+    both commit H and stage identical next rows/cursors/observations.
+    """
+    sched_a = _schedule(1000, "rl-pool-barrier-a")
+    sched_b = _schedule(2000, "rl-pool-barrier-b")
+    profile = _profile(sched_a, [0, 1, 2, 3], games=2)
+    second = profile["games"][1]
+    second["schedule_id"] = sched_b.schedule_id
+    second["schedule_digest"] = str(sched_b.digest)
+    second["schedule_tiles"] = [int(t) for t in sched_b.physical_tiles]
+    second["seat_perm"] = [1, 2, 3, 0]
+    context = _context()
+    pool = _open_pool(profile, context)
+    lanes: dict[int, tuple] = {}
+    slot = 0
+    try:
+        for bucket in _BUCKETS:
+            for _ in range(2):
+                lanes[slot] = (bucket, *_register_lane(pool, bucket, slot, 1))
+                slot += 1
+
+        def drain_all(target: object) -> list:
+            found = []
+            while True:
+                lease = target.peek_ready()
+                if lease is None:
+                    return found
+                found.append(lease)
+
+        base_ready: str | None = None
+        held_slot = -1
+        held_n = 0
+        held_input: bytes | None = None
+        head_pos = -1
+        for _ in range(500):
+            if base_ready is not None:
+                break
+            for lane in sorted(lanes):
+                n = pool.request_ready_fill(lane)
+                if n == 0:
+                    continue
+                # Productive install: snapshot at once, before the next lane
+                # can stage the following chunk, so READY H stays observable.
+                snap = pool.snapshot()
+                doc = json.loads(snap)
+                plan = doc.get("round_plan")
+                probe = pool.peek_ready()
+                assert probe is not None, (
+                    "productive fill left no READY lease to inspect; the pool "
+                    "must install exactly the frozen head chunk at READY"
+                )
+                descriptor = json.loads(pool.lease_descriptor(probe))
+                probe_rows = descriptor["rows"]
+                wall_order = [g["wall_id"] for g in doc["games"]]
+                held_games = {wall_order.index(str(r["wall_id"])) for r in probe_rows}
+                edge = False
+                head = None
+                following: list = []
+                cap = 0
+                if isinstance(plan, dict) and int(probe.slot_id) == lane:
+                    refs = plan["refs"]
+                    caps = plan["min_cap"]
+                    issued = plan["issued"]
+                    head = next((b for b in range(4) if int(issued[b]) < len(refs[b])), None)
+                    # Same-bucket continuation keeps the same-T mate
+                    # eligible, so a None admit below proves a pin rather
+                    # than a wrong-bucket wait.
+                    if (
+                        head is not None
+                        and caps[head] is not None
+                        and _BUCKETS[head] == lanes[lane][0]
+                    ):
+                        cap = int(caps[head])
+                        start = int(issued[head])
+                        following = refs[head][start : start + cap]
+                        following_games = {int(r["game"]) for r in following}
+                        if following and held_games & following_games:
+                            edge = True
+                if edge:
+                    assert head is not None
+                    base_ready = snap
+                    held_slot = lane
+                    held_n = n
+                    held_input = bytes(lanes[lane][1])
+                    head_pos = head
+                    pool.return_ready_lease(probe)
+                    break
+                pool.return_ready_lease(probe)
+                # Not the pinned window: commit everything staged so the next
+                # productive attempt starts from a single outstanding H again.
+                staged = drain_all(pool)
+                for lease in staged:
+                    _commit_first_legal(pool, lanes[int(lease.slot_id)][2], lease)
+                while pool.poll()["pending_applies"]:
+                    pool.wait_for_progress()
+            else:
+                completions = json.loads(pool.completions())
+                if completions and all(c["terminal"] for c in completions):
+                    break
+                continue
+        assert base_ready is not None, (
+            "frozen-head pin edge not observed within 500 rounds for seeds "
+            "1000+2000 cap1: no intermediate READY chunk whose held game "
+            "recurs in the next unissued head chunk, so a pin refusal would "
+            "be vacuous without that same-game recurrence"
+        )
+        pool.quiesce()
+    finally:
+        pool.close()
+    assert head_pos in range(4)
+    assert held_slot >= 0 and held_input is not None
+    head_t = _BUCKETS[head_pos]
+    assert lanes[held_slot][0] == head_t, (
+        "hunted H must sit on the next head bucket, otherwise the same-T "
+        "mate admit below waits on bucket order instead of the game pin"
+    )
+    blob = (json.dumps(profile), json.dumps(context))
+    fork_hold = rl_native.PyNativePool.restore(*blob, base_ready, "sha256:" + "09" * 32)
+    fork_fast = rl_native.PyNativePool.restore(*blob, base_ready, "sha256:" + "09" * 32)
+    hold_h: object | None = None
+    fast_h: object | None = None
+    hold_next: object | None = None
+    fast_next: object | None = None
+    try:
+        owned: dict[str, dict] = {"hold": {}, "fast": {}}
+        for fork, table in ((fork_hold, owned["hold"]), (fork_fast, owned["fast"])):
+            lane_id = 0
+            for bucket_t in _BUCKETS:
+                for _ in range(2):
+                    table[lane_id] = (bucket_t, *_register_lane(fork, bucket_t, lane_id, 1))
+                    lane_id += 1
+
+        def row_tuple(target: object, lease: object) -> tuple:
+            descriptor = json.loads(target.lease_descriptor(lease))
+            assert len(descriptor["rows"]) == 1
+            row = descriptor["rows"][0]
+            return (
+                int(descriptor["logical_round"]),
+                str(row["wall_id"]),
+                str(row["game_id"]),
+                str(row["decision_id"]),
+                int(row["actor"]),
+                int(row["sequence"]),
+                int(row["cursor_before"]),
+                float(row["uniform"]),
+                str(row["obs_hash"]),
+                tuple(sorted(_native_sig(e) for e in row["legal"])),
+            )
+
+        # Adopted READY H re-encodes byte-identically (no new sampler words);
+        # never admit a fresh H, which the pin must block while H is held.
+        assert fork_hold.refill_staged(held_slot) == held_n, (
+            "restored hold fork must re-encode the retained READY H row count"
+        )
+        assert fork_fast.refill_staged(held_slot) == held_n, (
+            "restored fast fork must re-encode the retained READY H row count"
+        )
+        assert bytes(owned["hold"][held_slot][1]) == held_input, (
+            "hold fork READY H input prefix must match the hunted H bytes"
+        )
+        assert bytes(owned["fast"][held_slot][1]) == held_input, (
+            "fast fork READY H input prefix must match the hunted H bytes"
+        )
+        hold_h = fork_hold.peek_ready()
+        fast_h = fork_fast.peek_ready()
+        assert hold_h is not None and fast_h is not None, (
+            "both restores must expose the retained READY H without a new admit"
+        )
+        assert int(hold_h.slot_id) == held_slot and int(fast_h.slot_id) == held_slot, (
+            "retained READY H must sit on the hunted lane on both forks"
+        )
+        held_tuple = row_tuple(fork_hold, hold_h)
+        assert row_tuple(fork_fast, fast_h) == held_tuple, (
+            "both forks must adopt identical READY H rows"
+        )
+        # Nonvacuous metadata proof on the fork: the next head chunk still
+        # names the held game, so the refusal below is a game pin and not an
+        # empty-head or wrong-bucket wait.
+        staged_doc = json.loads(fork_hold.snapshot())
+        staged_plan = staged_doc["round_plan"]
+        assert isinstance(staged_plan, dict), "plan missing with READY H held"
+        refs = staged_plan["refs"]
+        cap = int(staged_plan["min_cap"][head_pos])
+        start = int(staged_plan["issued"][head_pos])
+        wall_order = [g["wall_id"] for g in staged_doc["games"]]
+        held_idx = wall_order.index(str(held_tuple[1]))
+        following = refs[head_pos][start : min(start + cap, len(refs[head_pos]))]
+        assert following, "head exhausted while READY H still held"
+        assert held_idx in {int(r["game"]) for r in following}, (
+            "held game absent from the next planned head chunk; the pin "
+            "refusal below would be vacuous without that recurrence"
+        )
+        mate = min(s for s in owned["hold"] if s != held_slot and owned["hold"][s][0] == head_t)
+        # Pinned global head admits nothing later (no overtake, no reassign).
+        assert fork_hold.admit_next_fill([mate]) is None, (
+            "held READY H must pin the global head: an eligible same-T mate "
+            "for the next head chunk sharing H's game must wait, never "
+            "overtake or reassigned around the pin"
+        )
+        _commit_first_legal(fork_fast, owned["fast"][held_slot][2], fast_h)
+        fast_h = None
+        while fork_fast.poll()["pending_applies"]:
+            fork_fast.wait_for_progress()
+        fork_fast.quiesce()
+        fork_fast.resume_admission()
+        assert fork_fast.admit_next_fill([mate]) == mate, (
+            "once H commits, the same mate lane must serve the next head chunk"
+        )
+        assert int(fork_fast.take_fill_blocking(mate)["n_valid"]) == 1
+        fast_next = fork_fast.peek_ready()
+        assert fast_next is not None
+        assert int(fast_next.slot_id) == mate
+        fast_next_tuple = row_tuple(fork_fast, fast_next)
+        fast_next_input = bytes(owned["fast"][mate][1])
+        fast_next_round = json.loads(fork_fast.lease_descriptor(fast_next))["logical_round"]
+        _commit_first_legal(fork_hold, owned["hold"][held_slot][2], hold_h)
+        hold_h = None
+        while fork_hold.poll()["pending_applies"]:
+            fork_hold.wait_for_progress()
+        fork_hold.quiesce()
+        fork_hold.resume_admission()
+        assert fork_hold.admit_next_fill([mate]) == mate, (
+            "held branch must converge onto the same next head chunk after "
+            "committing the identical H"
+        )
+        assert int(fork_hold.take_fill_blocking(mate)["n_valid"]) == 1
+        hold_next = fork_hold.peek_ready()
+        assert hold_next is not None
+        assert int(hold_next.slot_id) == mate
+        assert row_tuple(fork_hold, hold_next) == fast_next_tuple, (
+            "both branches must stage identical next rows after the pin clears"
+        )
+        assert bytes(owned["hold"][mate][1]) == fast_next_input, (
+            "both branches must encode identical next input bytes"
+        )
+        assert json.loads(fork_hold.lease_descriptor(hold_next))["logical_round"] == fast_next_round
+        _commit_first_legal(fork_hold, owned["hold"][mate][2], hold_next)
+        hold_next = None
+        _commit_first_legal(fork_fast, owned["fast"][mate][2], fast_next)
+        fast_next = None
+        fork_hold.quiesce()
+        fork_fast.quiesce()
+    finally:
+        for fork, lease in (
+            (fork_hold, hold_h),
+            (fork_fast, fast_h),
+            (fork_hold, hold_next),
+            (fork_fast, fast_next),
+        ):
+            if lease is not None:
+                fork.return_ready_lease(lease)
+        try:
+            fork_hold.quiesce()
+            fork_hold.close()
+        finally:
+            fork_fast.quiesce()
+            fork_fast.close()
+
+
+def test_restore_rejects_foreign_derivation() -> None:
+    """Same bytes, foreign derivation: restore fails before open/replay."""
+    schedule = _schedule(7013, "rl-pool-snapderiv-mismatch")
+    profile = _profile(schedule, [0, 1, 2, 3])
+    context = _context()
+    pool = _open_pool(profile, context)
+    try:
+        snap = pool.snapshot()
+        with pytest.raises(ValueError, match="derivation"):
+            rl_native.PyNativePool.restore(
+                json.dumps(profile), json.dumps(context), snap, "sha256:" + "08" * 32
+            )
+    finally:
+        pool.close()
+
+
+def test_restore_rejects_keyless_snapshot() -> None:
+    """Snapshots predating the derivation root key cannot load."""
+    schedule = _schedule(7014, "rl-pool-snapderiv-keyless")
+    profile = _profile(schedule, [0, 1, 2, 3])
+    context = _context()
+    pool = _open_pool(profile, context)
+    try:
+        doc = json.loads(pool.snapshot())
+        del doc["derivation"]
+        with pytest.raises(ValueError, match="derivation"):
+            rl_native.PyNativePool.restore(
+                json.dumps(profile),
+                json.dumps(context),
+                json.dumps(doc),
+                "sha256:" + "09" * 32,
+            )
+    finally:
+        pool.close()
+
+
+def test_restore_rejects_malformed_derivation() -> None:
+    """A present-but-malformed derivation hex is not a digest: reject."""
+    schedule = _schedule(7015, "rl-pool-snapderiv-badhex")
+    profile = _profile(schedule, [0, 1, 2, 3])
+    context = _context()
+    pool = _open_pool(profile, context)
+    try:
+        doc = json.loads(pool.snapshot())
+        doc["derivation"] = "zz" * 32
+        with pytest.raises(ValueError, match="32 bytes hex"):
+            rl_native.PyNativePool.restore(
+                json.dumps(profile), json.dumps(context), json.dumps(doc), "sha256:" + "09" * 32
+            )
+    finally:
+        pool.close()
+
+
 def test_fixed_round_blocks_next_fill_until_cohort_round_complete() -> None:
     """A held cohort chunk prevents earlier games advancing or consuming draws."""
     schedule = _schedule(7011, "rl-pool-fixed-round")
@@ -687,18 +1068,31 @@ def test_fixed_round_blocks_next_fill_until_cohort_round_complete() -> None:
         _commit_first_legal(pool, host[first.slot_id][1], first)
         while pool.poll()["pending_applies"]:
             pool.wait_for_progress()
+        assert pool.admit_next_fill([first.slot_id]) is None
         assert pool.request_ready_fill(first.slot_id) == 0
         assert pool.peek_ready() is None
         assert json.loads(pool.lease_descriptor(held))["rows"] == held_rows
         _commit_first_legal(pool, host[held.slot_id][1], held)
         while pool.poll()["pending_applies"]:
             pool.wait_for_progress()
-        assert pool.request_ready_fill(first.slot_id) == 2
+        assert pool.admit_next_fill([first.slot_id]) == first.slot_id
+        assert pool.take_fill_blocking(first.slot_id)["n_valid"] == 2
         next_lease = pool.peek_ready()
         assert next_lease is not None
         descriptor = json.loads(pool.lease_descriptor(next_lease))
         assert descriptor["logical_round"] == 1
-        assert len({row["wall_id"] for row in descriptor["rows"]}) == 2
+        walls = [row["wall_id"] for row in descriptor["rows"]]
+        assert len(walls) == 2
+        if len(set(walls)) != 2:
+            # Coalesced claim window: one game contributes both seats of a
+            # single frozen window in one cap-2 fill (shared decision_id,
+            # distinct actors, buckets matched). Two games would show two
+            # distinct walls instead; both shapes are exact, never partial.
+            assert [row["wall_id"] for row in descriptor["rows"]] == [walls[0], walls[0]]
+            ids = [row["decision_id"] for row in descriptor["rows"]]
+            assert ids[0] == ids[1]
+            actors = [row["actor"] for row in descriptor["rows"]]
+            assert actors[0] != actors[1]
         _commit_first_legal(pool, host[next_lease.slot_id][1], next_lease)
         pool.quiesce()
         assert pool.poll()["poison"] is None
@@ -942,3 +1336,36 @@ def test_drain_moves_live_tape_identical_to_clone_export() -> None:
     assert native_artifact.drop_tape(tape_c) is None
     with pytest.raises(ValueError):
         rl_bridge.terminal_inputs(tape_b)
+
+
+def test_close_diagnostic_respects_python_stderr(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("HYDRA2_RL_VIEW_STATS", "1")
+    pool = _open_pool(_profile(_schedule(7012, "rl-close-diagnostic"), [0, 1, 2, 3]), _context())
+    pool.close()
+    report = capsys.readouterr().err
+    assert report.startswith("rl-view-stats hits=")
+    assert " misses=" in report and report.endswith("\n")
+    pool.close()
+    assert capsys.readouterr().err == ""
+    with pytest.raises(ValueError, match="closed"):
+        pool.snapshot()
+
+
+def test_close_diagnostic_failure_keeps_pool_closed(monkeypatch) -> None:
+    import sys
+
+    class BrokenStderr:
+        def write(self, text: str) -> None:
+            raise OSError("diagnostic sink failed")
+
+    monkeypatch.setenv("HYDRA2_RL_VIEW_STATS", "1")
+    pool = _open_pool(
+        _profile(_schedule(7013, "rl-close-output-failure"), [0, 1, 2, 3]), _context()
+    )
+    with monkeypatch.context() as patch:
+        patch.setattr(sys, "stderr", BrokenStderr())
+        with pytest.raises(OSError, match="diagnostic sink failed"):
+            pool.close()
+    pool.close()
+    with pytest.raises(ValueError, match="closed"):
+        pool.snapshot()

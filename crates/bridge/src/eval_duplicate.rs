@@ -76,6 +76,7 @@
 //! `crate::eval_duplicate::register(&sub)?;` in `contracts::register` next to
 //! `crate::eval_leaves::register(&sub)?;` (`contracts.rs:1296`).
 
+use crate::rc_require::py_repr;
 use std::collections::HashMap;
 
 use pyo3::exceptions::PyValueError;
@@ -93,12 +94,6 @@ fn is_digest_shape(text: &str) -> bool {
     bytes[7..]
         .iter()
         .all(|c| c.is_ascii_digit() || matches!(c, b'a'..=b'f'))
-}
-
-/// Attached staging helper: exact `repr(value)` text for every `{value!r}`
-/// slot (mirrors `rc_require.rs:63-65`).
-fn py_repr(obj: &Bound<'_, PyAny>) -> PyResult<String> {
-    Ok(obj.repr()?.to_str()?.to_owned())
 }
 
 // ---------------------------------------------------------------------------

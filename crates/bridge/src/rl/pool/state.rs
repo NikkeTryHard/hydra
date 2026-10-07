@@ -17,7 +17,7 @@ use std::thread::JoinHandle;
 use super::super::actions::CanonicalAction;
 use super::super::core::NativeGame;
 use super::super::trajectory;
-use super::{PoolError, PoolProfile, sampler_seed, sampler_split_id};
+use super::{round_plan::RoundPlan, PoolError, PoolProfile, sampler_seed, sampler_split_id};
 
 /// Slot lifecycle phase (lease state machine).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,7 +126,6 @@ pub(super) struct FillOutput {
     pub(super) bucket_t: usize,
     pub(super) staged: Vec<FilledRow>,
     pub(super) bytes: Vec<u8>,
-    pub(super) logical_round: u64,
     /// Worker-side failure (install frees the lane, poisons loudly, and
     /// never rewinds sampler counters).
     pub(super) error: Option<String>,
@@ -143,7 +142,11 @@ pub(super) struct PoolState {
     pub(super) slots: HashMap<u64, Slot>,
     pub(super) leases: HashMap<u64, Lease>,
     pub(super) next_lease: u64,
-    pub(super) next_chunk: HashMap<usize, u64>,
+    /// Active per-frontier round plan (None before the first freeze and
+    /// between rounds). Replaces the old per-bucket chunk counter table:
+    /// chunk ordinals now derive from plan progress, never from a global
+    /// counter, so restores and replays agree without extra state.
+    pub(super) round_plan: Option<RoundPlan>,
     pub(super) poison: Option<String>,
     pub(super) quiesced: bool,
     pub(super) progress: u64,
@@ -155,12 +158,6 @@ pub(super) struct PoolState {
     /// At most one dispatched fill at a time (fills drain games
     /// sequentially; concurrent fills could stage the same decision twice).
     pub(super) fill_inflight: Option<FillInflight>,
-    /// Last installed row count per lane (advisory fill routing: lanes
-    /// that recently yielded rows are preferred; empty lanes are retried
-    /// only when nothing productive is free).
-    pub(super) fill_yield: HashMap<u64, usize>,
-    /// Rotation cursor for advisory fill routing (no lane starves).
-    pub(super) advise_cursor: u64,
     /// Generation-end tape handle from the last `export_tape` (None until
     /// the first export; reported in the poll descriptor for the seal loop).
     pub(super) last_tape_handle: Option<u64>,
@@ -273,8 +270,9 @@ impl NativePool {
 
     /// Shared open implementation with an optional immutable live source
     /// binding (installed at construction because worker `Weak` handles
-    /// forbid post-hoc `Arc::get_mut`).
-    fn open_impl(
+    /// forbid post-hoc `Arc::get_mut`). Snapshot restore reopens with the
+    /// saved binding so live READY plans keep mixed stage ordering.
+    pub(super) fn open_impl(
         profile: PoolProfile,
         derivation: [u8; 32],
         live_binding: Option<trajectory::LiveTapeBinding>,
@@ -334,15 +332,13 @@ impl NativePool {
                 slots: HashMap::new(),
                 leases: HashMap::new(),
                 next_lease: 1,
-                next_chunk: HashMap::new(),
+                round_plan: None,
                 poison: None,
                 quiesced: false,
                 progress: 0,
                 pending_applies: Vec::new(),
                 apply_outstanding: vec![0usize; cohort],
                 fill_inflight: None,
-                fill_yield: HashMap::new(),
-                advise_cursor: 0,
                 admit_ok: 0,
                 advise_none_quiesced: 0,
                 advise_none_owner_empty: 0,

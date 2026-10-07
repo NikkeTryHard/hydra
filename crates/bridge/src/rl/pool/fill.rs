@@ -13,8 +13,12 @@ use std::sync::Arc;
 
 use super::super::core::PendingDecision;
 use super::super::observation::{self, NativeObservation};
+use super::round_plan::{PlanRow, RoundPlan};
 use super::state::{FillInflight, FillOutput, FilledRow, WorkerJob, slot_mut, slot_ref};
-use super::{NativePool, PoolError, SlotPhase, TicketDescriptor, bucket_ceil, buffer_geometry};
+use super::{
+    HISTORY_BUCKETS, NativePool, PoolError, SlotPhase, TicketDescriptor, bucket_ceil,
+    buffer_geometry,
+};
 
 impl NativePool {
     pub fn register_slot(
@@ -43,6 +47,12 @@ impl NativePool {
                 logical_round: 0,
             },
         );
+        // A bucket with frozen refs but no registered lane waits with
+        // `min_cap` unset; the FIRST lane registration freezes its chunk
+        // size. Later registrations never repartition the active grid.
+        if let Some(plan) = state.round_plan.as_mut() {
+            plan.note_lane(bucket_t, capacity)?;
+        }
         self.notify(&mut state);
         Ok(())
     }
@@ -84,6 +94,9 @@ impl NativePool {
                 },
             );
         }
+        if let Some(plan) = state.round_plan.as_mut() {
+            plan.note_lane(bucket_t, capacity)?;
+        }
         self.notify(&mut state);
         Ok(())
     }
@@ -119,6 +132,9 @@ impl NativePool {
                     "fill already in flight; take before admitting".to_string(),
                 ));
             }
+            // Retire a settled plan before this admission creates a Filling pin;
+            // retiring inside the worker can never see a fully settled state.
+            RoundPlan::maybe_retire(&mut state);
             // Copy geometry under a short slot borrow, then release it before
             // touching `fill_inflight` (a live `&mut Slot` forbids it).
             let (slot_bucket, slot_capacity, slot_epoch) = {
@@ -209,15 +225,21 @@ impl NativePool {
         }
     }
 
-    /// Advisory fill routing for the collector: among the owner's FREE
-    /// lanes (intersected with truly-Free lanes here), prefer lanes with
-    /// recent row yield and rotate within the preferred set; when every
-    /// free lane recently yielded empty, rotate through all of them
-    /// (conditions change as commits land, so empty lanes are retried,
-    /// never parked). Returns `None` when no lane is free or the pool is
-    /// quiesced (expected stall, never poison).
+    /// Route the frozen head chunk to one fitting free lane. The head is the
+    /// lowest bucket with unissued refs; a missing cap or a pinned head
+    /// WAITS (returns None), never bypasses to a later bucket and never
+    /// shrinks or skips rows. Among free lanes that fit the whole head
+    /// chunk, the lowest slot id wins (deterministic: every fitting lane
+    /// serves identical rows). A disjoint next chunk may fill while a
+    /// previous READY chunk is still outstanding; run_fill rechecks head,
+    /// pins, and frontier before staging, so advice never authorizes a
+    /// stale row.
     pub fn advise_fill(&self, free_slot_ids: &[u64]) -> Result<Option<u64>, PoolError> {
         self.harvest_applies();
+        {
+            let mut state = self.lock_state()?;
+            RoundPlan::maybe_retire(&mut state);
+        }
         let mut state = self.lock_state()?;
         self.fail_if_poisoned(&state)?;
         if state.drained {
@@ -231,42 +253,75 @@ impl NativePool {
             state.advise_none_owner_empty = state.advise_none_owner_empty.saturating_add(1);
             return Ok(None);
         }
-        let mut free: Vec<u64> = free_slot_ids
+        let free: Vec<u64> = free_slot_ids
             .iter()
             .copied()
             .filter(|id| {
-                state
-                    .slots
-                    .get(id)
-                    .is_some_and(|s| s.phase == SlotPhase::Free)
+                state.slots.get(id).is_some_and(|s| s.phase == SlotPhase::Free)
             })
             .collect();
         if free.is_empty() {
             state.advise_none_no_truly_free = state.advise_none_no_truly_free.saturating_add(1);
             return Ok(None);
         }
-        free.sort_unstable();
-        let productive: Vec<u64> = free
+        // Never nest state/game locks: the freeze scans games without the
+        // state lock held, then re-locks to serve the frozen head.
+        drop(state);
+        if !self.ensure_round_plan()? {
+            return Ok(None);
+        }
+        let state = self.lock_state()?;
+        self.fail_if_poisoned(&state)?;
+        let plan = match state.round_plan.as_ref() {
+            Some(plan) => plan,
+            None => return Ok(None),
+        };
+        let head = match plan.head_bucket() {
+            Some(head) => head,
+            // Exhausted but unsettled (leases/applies/READY outstanding):
+            // the round is not complete, so no new fill can help yet.
+            None => return Ok(None),
+        };
+        let head_t = HISTORY_BUCKETS[head];
+        let head_rows = match plan.head_rows(head_t)? {
+            Some((_, rows)) => rows,
+            // Head refs exist but no lane ever registered this bucket:
+            // wait for the first registration to freeze the chunk size.
+            None => return Ok(None),
+        };
+        if head_rows.is_empty() {
+            return Ok(None);
+        }
+        let pinned = RoundPlan::pins(&state);
+        // A chunk naming a pinned game waits unchanged: rows stay frozen
+        // for the next fill instead of splitting around the pin.
+        if head_rows.iter().any(|row| pinned[row.game_idx] != 0) {
+            return Ok(None);
+        }
+        // Larger fitting lanes may serve the frozen chunk; smaller lanes
+        // wait for a chunk that fits them (never a shrunk repack).
+        let mut fitting: Vec<u64> = free
             .iter()
             .copied()
-            .filter(|id| state.fill_yield.get(id).is_none_or(|yielded| *yielded > 0))
+            .filter(|id| {
+                state.slots.get(id).is_some_and(|slot| {
+                    slot.phase == SlotPhase::Free
+                        && slot.bucket_t == head_t
+                        && slot.capacity >= head_rows.len()
+                })
+            })
             .collect();
-        let set = if productive.is_empty() {
-            free
-        } else {
-            productive
-        };
-        let cursor = state.advise_cursor as usize % set.len();
-        state.advise_cursor = state.advise_cursor.wrapping_add(1);
-        Ok(Some(set[cursor]))
+        fitting.sort_unstable();
+        Ok(fitting.into_iter().next())
     }
 
-    /// Freeze one next canonical decision per nonterminal cohort game at the
-    /// minimum committed-decision count. Pins prevent duplicate staging;
-    /// outstanding applies at that frontier prevent the next round opening.
-    /// This keeps real batch membership independent of worker completion.
-    /// Staged rows are capped at the lane `capacity` admit_fill copied from
-    /// the slot; excess eligible games stay for the next fill.
+    /// Stage exactly the frozen head chunk for this lane's bucket. Lanes on
+    /// other buckets, lanes smaller than the chunk, and chunks naming a
+    /// pinned game all wait empty (never bypass, shrink, or skip). Sampler
+    /// reservations still bind once per real staged decision with the same
+    /// legal/observation/bucket checks; a terminal game holding an unissued
+    /// head ref fails the fill loud (poison at install, never a silent
+    /// drop). The head advances only at READY install, never here.
     pub(super) fn run_fill(&self, slot_id: u64, epoch: u64, bucket_t: usize, capacity: usize) -> FillOutput {
         let failed = |detail: String| FillOutput {
             slot_id,
@@ -274,61 +329,72 @@ impl NativePool {
             bucket_t,
             staged: Vec::new(),
             bytes: Vec::new(),
-            logical_round: 0,
             error: Some(detail),
         };
+        let empty = || FillOutput {
+            slot_id,
+            epoch,
+            bucket_t,
+            staged: Vec::new(),
+            bytes: Vec::new(),
+            error: None,
+        };
         self.harvest_applies();
-        // Locks never nest: snapshot staged/apply pins before reading games.
-        // Separate bits retain the apply barrier without a second allocation.
-        let pinned: Vec<u8> = match self.lock_state() {
+        {
+            let mut state = match self.lock_state() {
+                Ok(state) => state,
+                Err(e) => return failed(e.0),
+            };
+            RoundPlan::maybe_retire(&mut state);
+        }
+        match self.ensure_round_plan() {
+            Ok(true) => {}
+            Ok(false) => return empty(),
+            Err(e) => return failed(e.0),
+        }
+        // Load the head chunk plus pins under one lock; the chunk rows are
+        // the only copy across the lock boundary (cap-bounded, never the
+        // full plan). Locks never nest.
+        struct HeadChunk {
+            round: u64,
+            rows: Vec<PlanRow>,
+        }
+        let head: Option<HeadChunk> = match self.lock_state() {
             Ok(state) => {
                 if let Err(e) = self.fail_if_poisoned(&state) {
                     return failed(e.0);
                 }
-                let mut pinned = vec![0u8; self.games.len()];
-                for slot in state.slots.values() {
-                    if slot.phase == SlotPhase::Free {
-                        continue;
-                    }
-                    for row in &slot.rows {
-                        pinned[row.game_idx] |= 1;
-                    }
+                let plan = match state.round_plan.as_ref() {
+                    Some(plan) => plan,
+                    None => return empty(),
+                };
+                let pos = match RoundPlan::bucket_pos(bucket_t) {
+                    Ok(pos) => pos,
+                    Err(e) => return failed(e.0),
+                };
+                if plan.head_bucket() != Some(pos) {
+                    return empty();
                 }
-                for (idx, count) in state.apply_outstanding.iter().enumerate() {
-                    if *count > 0 {
-                        pinned[idx] |= 2;
-                    }
+                let (round, rows) = match plan.head_rows(bucket_t) {
+                    Ok(Some((_, rows))) => (plan.round(), rows.to_vec()),
+                    Ok(None) => return empty(),
+                    Err(e) => return failed(e.0),
+                };
+                if rows.len() > capacity {
+                    return empty();
                 }
-                pinned
+                let pinned = RoundPlan::pins(&state);
+                if rows.iter().any(|row| pinned[row.game_idx] != 0) {
+                    return empty();
+                }
+                Some(HeadChunk { round, rows })
             }
             Err(e) => return failed(e.0),
         };
-        let mut logical_round = u64::MAX;
-        let mut applying_frontier = u64::MAX;
-        for (game_idx, pins) in pinned.iter().enumerate() {
-            let game = match self.lock_game(game_idx) {
-                Ok(game) => game,
-                Err(e) => return failed(e.0),
-            };
-            let committed = game.captured_count();
-            if !game.is_terminal() {
-                logical_round = logical_round.min(committed);
-            }
-            if pins & 2 != 0 {
-                applying_frontier = applying_frontier.min(committed);
-            }
-        }
-        if logical_round == u64::MAX || applying_frontier <= logical_round {
-            return FillOutput {
-                slot_id,
-                epoch,
-                bucket_t,
-                staged: Vec::new(),
-                bytes: Vec::new(),
-                logical_round: 0,
-                error: None,
-            };
-        }
+        let Some(chunk) = head else {
+            return empty();
+        };
+        let logical_round = chunk.round;
         // Group only this frozen round, in fixed cohort order.
         let mut observations = Vec::with_capacity(capacity);
         let sender = match self.lock_workers().and_then(|workers| {
@@ -341,19 +407,32 @@ impl NativePool {
             Err(e) => return failed(e.0),
         };
         let mut staged: Vec<FilledRow> = vec![];
-        for game_idx in 0..self.games.len() {
-            if observations.len() >= capacity {
-                break;
-            }
-            if pinned[game_idx] != 0 {
-                continue;
+        // Stage exactly the frozen chunk refs (already canonical
+        // (game, seat) order, so same-game seats form contiguous runs).
+        // Reservations stay actual-stage-only: only seats staged here draw
+        // sampler words, with the same per-seat checks as before.
+        let mut cursor = 0usize;
+        while cursor < chunk.rows.len() {
+            let game_idx = chunk.rows[cursor].game_idx;
+            let mut run_end = cursor;
+            while run_end < chunk.rows.len() && chunk.rows[run_end].game_idx == game_idx {
+                run_end += 1;
             }
             // Game guard is scoped: it drops before the sampler-counter lock
             // below (locks are never nested game -> counter).
             let seats: Vec<u8> = match self.lock_game(game_idx) {
                 Ok(mut game) => {
-                    if game.is_terminal() || game.captured_count() != logical_round {
-                        continue;
+                    if game.is_terminal() {
+                        return failed(format!(
+                            "game {} terminal with unissued frozen ref",
+                            self.wall_ids[game_idx]
+                        ));
+                    }
+                    if game.frontier_count() != logical_round {
+                        return failed(format!(
+                            "game {} frontier drift from frozen round {logical_round}",
+                            self.wall_ids[game_idx]
+                        ));
                     }
                     let decision = match game.drain() {
                         Ok(decision) => decision,
@@ -364,16 +443,17 @@ impl NativePool {
                             ));
                         }
                     };
-                    let seats: Vec<u8> = match decision {
+                    let pending: Vec<u8> = match decision {
                         None => vec![],
                         Some(PendingDecision::Draw { seat }) => vec![seat],
                         Some(PendingDecision::Window { pending }) => pending,
                     };
                     let mut rows = vec![];
-                    for seat in seats.into_iter().take(1) {
-                        if seat > 3 {
+                    for row in &chunk.rows[cursor..run_end] {
+                        let seat = row.actor;
+                        if !pending.contains(&seat) {
                             return failed(format!(
-                                "game {} decision seat {seat} outside 0..=3",
+                                "game {} seat {seat} left the frozen chunk",
                                 self.wall_ids[game_idx]
                             ));
                         }
@@ -389,8 +469,30 @@ impl NativePool {
                                 ));
                             }
                         };
-                        if bucket != bucket_t {
-                            continue;
+                        if self.live_binding.is_some() {
+                            if bucket != row.original_bucket {
+                                return failed(format!(
+                                    "game {} seat {seat} original bucket drift from {}",
+                                    self.wall_ids[game_idx], row.original_bucket
+                                ));
+                            }
+                            if bucket_t != 256 {
+                                return failed(format!(
+                                    "game {} seat {seat} live transport must be T256",
+                                    self.wall_ids[game_idx]
+                                ));
+                            }
+                        } else if bucket != bucket_t || bucket != row.original_bucket {
+                            return failed(format!(
+                                "game {} seat {seat} bucket drift from T={bucket_t}",
+                                self.wall_ids[game_idx]
+                            ));
+                        }
+                        if RoundPlan::decision_seq(&game, seat) != row.seq {
+                            return failed(format!(
+                                "game {} seat {seat} decision turned over since freeze",
+                                self.wall_ids[game_idx]
+                            ));
                         }
                         rows.push(seat);
                     }
@@ -412,6 +514,7 @@ impl NativePool {
                 }
                 observations.push((game_idx, seat, receiver));
             }
+            cursor = run_end;
         }
         // Eligible jobs are selected in cohort order before sampler reservation;
         // ordered receives preserve rows, and a lost worker rejects the fill.
@@ -421,6 +524,43 @@ impl NativePool {
                 Ok(Err(detail)) => return failed(detail),
                 Err(_) => return failed("observation worker lost".to_string()),
             };
+            // Original observation bucket stays true: the staged observation's
+            // real history length must ceil to the frozen `original_bucket`
+            // (derived from `history_indices.len()`); transport T256 merely
+            // permits `<=256` and never authorizes skipping gates.
+            let actual_bucket = match super::bucket_ceil(obs.history_indices.len()) {
+                Ok(bucket) => bucket,
+                Err(e) => return failed(format!("game {game_idx} over-cap history: {e}")),
+            };
+            let expect = chunk.rows.iter().find(|row| row.game_idx == game_idx && row.actor == seat);
+            match expect {
+                Some(row) => {
+                    if actual_bucket != row.original_bucket {
+                        return failed(format!(
+                            "game {} seat {seat} original bucket drift from {}",
+                            self.wall_ids[game_idx], row.original_bucket
+                        ));
+                    }
+                    if obs.sequence != row.seq {
+                        return failed(format!(
+                            "game {} seat {seat} decision turned over since freeze",
+                            self.wall_ids[game_idx]
+                        ));
+                    }
+                    if self.live_binding.is_some() && bucket_t != 256 {
+                        return failed(format!(
+                            "game {} seat {seat} live transport must be T256",
+                            self.wall_ids[game_idx]
+                        ));
+                    }
+                }
+                None => {
+                    return failed(format!(
+                        "game {} seat {seat} outside frozen chunk",
+                        self.wall_ids[game_idx]
+                    ));
+                }
+            }
             // One reservation per real decision on the seat's own stream
             // (counter advances exactly once here, never rewound, even
             // if the row is later dropped by quiesce: skipped words are
@@ -460,7 +600,6 @@ impl NativePool {
                 bucket_t,
                 staged,
                 bytes: Vec::new(),
-                logical_round: 0,
                 error: None,
             };
         }
@@ -475,7 +614,6 @@ impl NativePool {
             bucket_t,
             staged,
             bytes,
-            logical_round,
             error: None,
         }
     }
@@ -538,7 +676,6 @@ impl NativePool {
             self.release_to_free(output.slot_id)?;
             self.clear_inflight(output.slot_id)?;
             if let Ok(mut state) = self.lock_state() {
-                state.fill_yield.insert(output.slot_id, 0);
                 self.notify(&mut state);
             }
             return Ok(TicketDescriptor {
@@ -577,7 +714,7 @@ impl NativePool {
             .map(|r| self.wall_ids[r.game_idx].clone())
             .collect();
         let cursors_before: Vec<u64> = output.staged.iter().map(|r| r.cursor_before).collect();
-        let chunk = {
+        let (chunk, round) = {
             let mut state = self.lock_state()?;
             // Clear the matching inflight entry when present (nonblocking
             // take leaves it in place; the blocking take removed it before
@@ -606,9 +743,52 @@ impl NativePool {
                     )));
                 }
             }
-            let entry = state.next_chunk.entry(output.bucket_t).or_insert(0);
-            let chunk = *entry;
-            *entry += 1;
+            // The head advances EXACTLY once here, at READY installation
+            // (never at advice or staging): the payload must be the frozen
+            // head chunk for its bucket, in plan order.
+            let plan = state.round_plan.as_mut().ok_or_else(|| {
+                PoolError(format!(
+                    "slot {} fill installed with no active round plan",
+                    output.slot_id
+                ))
+            })?;
+            let pos = RoundPlan::bucket_pos(output.bucket_t).map_err(|e| {
+                PoolError(format!(
+                    "slot {} fill installed outside plan buckets: {e}",
+                    output.slot_id
+                ))
+            })?;
+            if plan.head_bucket() != Some(pos) {
+                return Err(PoolError(format!(
+                    "slot {} fill installed for non-head bucket T={}",
+                    output.slot_id, output.bucket_t
+                )));
+            }
+            let head_rows = plan.head_rows(output.bucket_t)?.ok_or_else(|| {
+                PoolError(format!(
+                    "slot {} fill installed past plan issuance",
+                    output.slot_id
+                ))
+            })?;
+            if head_rows.1.len() != n_valid
+                || head_rows
+                    .1
+                    .iter()
+                    .zip(output.staged.iter())
+                    .any(|(expect, got)| {
+                        expect.game_idx != got.game_idx
+                            || expect.actor != got.actor
+                            || expect.seq != got.obs.sequence
+                            || super::bucket_ceil(got.obs.history_indices.len()).unwrap_or(0) != expect.original_bucket
+                    })
+            {
+                return Err(PoolError(format!(
+                    "slot {} fill rows drift from frozen head chunk",
+                    output.slot_id
+                )));
+            }
+            let chunk = plan.advance(output.bucket_t, n_valid)?;
+            let round = plan.round();
             // Install rows under a fresh short borrow (no other `state`
             // borrow is live across this move).
             {
@@ -616,19 +796,19 @@ impl NativePool {
                 slot.rows = output.staged;
                 slot.phase = SlotPhase::Ready;
                 slot.chunk = chunk;
-                slot.logical_round = output.logical_round;
+                slot.logical_round = round;
             }
             state.fill_inflight = None;
-            state.fill_yield.insert(output.slot_id, n_valid);
+            RoundPlan::maybe_retire(&mut state);
             self.notify(&mut state);
-            chunk
+            (chunk, round)
         };
         input[..active].copy_from_slice(&output.bytes[..active]);
         Ok(TicketDescriptor {
             slot_id: output.slot_id,
             slot_epoch: output.epoch,
             generation: self.profile.generation,
-            logical_round: output.logical_round,
+            logical_round: round,
             policy_id: self.profile.policy_id.clone(),
             bucket_t: output.bucket_t,
             chunk,

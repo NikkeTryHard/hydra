@@ -43,7 +43,7 @@ fn provenance() -> RowProvenance {
     RowProvenance {
         source_object_id: "s7-obj".to_string(),
         split: "train".to_string(),
-        rules_hash: "sha256:3042a493280224f533d831f371275b1c96585cf1db5a2e5fb86ec259f403286b"
+        rules_hash: "sha256:7a40e1edba541444fb205080f44306436a85b54b7a7a3afb5c36b9bea2acce9d"
             .to_string(),
         adapter_hash: "sha256:61f4d0328b5fbf46c0bdd9331e573b11e0166b357e93e218e96a5152c7c71c33"
             .to_string(),

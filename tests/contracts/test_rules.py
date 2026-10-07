@@ -27,7 +27,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = _REPO_ROOT / "configs" / "rules" / "tenhou_4p_hanchan_v1.json"
 
 #: Golden identity of the published manifest envelope (RFC 8785 + SHA-256).
-GOLDEN_ENVELOPE_DIGEST = "sha256:3042a493280224f533d831f371275b1c96585cf1db5a2e5fb86ec259f403286b"
+GOLDEN_ENVELOPE_DIGEST = "sha256:7a40e1edba541444fb205080f44306436a85b54b7a7a3afb5c36b9bea2acce9d"
 GOLDEN_SOURCE_SHA256 = "sha256:3de07f2c338caf520f6c4dc2160270adb7b1fbd25c1666bf61d3f351902f210a"
 
 OWNER_DECISION_IDS = (
@@ -99,7 +99,10 @@ class TestCompleteFlagSet:
         assert manifest.rinshan_policy == "dead_wall_14"
         assert manifest.kan_dora_reveal_policy == "ankan_immediate_open_delayed"
         assert manifest.kan_ura_policy == "present"
-        assert manifest.multiple_ron_policy == "all_winners_paid_sticks_to_dealer_left"
+        assert (
+            manifest.multiple_ron_policy
+            == "all_winners_paid_honba_and_sticks_to_first_winner_in_turn_order_from_discarder"
+        )
         assert manifest.tobi_policy == "negative_points_immediate_end"
         assert manifest.bankruptcy_threshold == 0
         assert manifest.abortive_draws == (

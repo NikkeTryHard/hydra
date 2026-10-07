@@ -26,6 +26,7 @@ class Collector:
         compile_mode: str = "eager",
         span_sink: Any = None,
     ) -> None:
+        self.span_sink = span_sink
         self.native = native
         self.spec = spec
         self._live_binding = json.dumps(
@@ -46,7 +47,7 @@ class Collector:
                 self.gpu = GpuService(
                     self.pool, device=device, compile_mode=compile_mode, span_sink=span_sink
                 )
-                for bucket_index, bucket in enumerate((32, 64, 128, 256)):
+                for bucket_index, bucket in enumerate((256,)):
                     input_bytes, output_bytes = native.buffer_geometry(bucket, capacity)
                     for pair in range(2):
                         self.gpu.register_slot(
@@ -121,16 +122,33 @@ class Collector:
 
     def wait(self) -> None:
         """Block only when neither useful CUDA class can advance."""
+        # Wait-cause marks: each blocking branch records a span pair so the run
+        # attributes idle time to fills (native encode), CUDA progress (GPU
+        # inference/learner), or pool progress (game evolution). Marks are
+        # monotonic host timestamps only; they never gate numerics and leave
+        # trajectories bitwise-identical.
         self.gpu.flush_outputs()
         if self.filling is not None:
+            if self.span_sink is not None:
+                self.span_sink("wait-fill-start")
             ticket = self.pool.take_fill_blocking(self.filling)
             if ticket["n_valid"]:
                 self.ready_slots.add(self.filling)
             self.filling = None
+            if self.span_sink is not None:
+                self.span_sink("wait-fill-end")
         elif len(self.gpu.flights) > 0:
+            if self.span_sink is not None:
+                self.span_sink("wait-cuda-start")
             self.gpu.wait_for_cuda_progress()
+            if self.span_sink is not None:
+                self.span_sink("wait-cuda-end")
         else:
+            if self.span_sink is not None:
+                self.span_sink("wait-pool-start")
             self.pool.wait_for_progress()
+            if self.span_sink is not None:
+                self.span_sink("wait-pool-end")
 
     def quiesce(self) -> None:
         """Drain issued work without serializing rows; durable consumers snapshot once."""

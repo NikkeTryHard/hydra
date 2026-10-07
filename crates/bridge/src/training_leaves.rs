@@ -111,6 +111,7 @@
 //! `crate::training_leaves::register(&sub)?;` in `contracts.rs` next to the
 //! `crate::loop_state::register(&sub)?;` line (`contracts.rs:1311`).
 
+use crate::rc_require::py_repr;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyModule, PyTuple};
@@ -159,11 +160,6 @@ pub const REPLAY_FORBIDDEN_BATCH_KEYS: [&str; 11] = [
     "privileged_labels",
     "opponent_hidden",
 ];
-
-/// Attached staging helper: exact `repr(value)` text (per `rc_require.rs:60-65`).
-fn py_repr(obj: &Bound<'_, PyAny>) -> PyResult<String> {
-    Ok(obj.repr()?.to_str()?.to_owned())
-}
 
 /// Stage an int-or-other value: `bool` maps to `0`/`1` (oracle arithmetic
 /// admits `True == 1`); anything else is `extract::<i64>()` or `None`.

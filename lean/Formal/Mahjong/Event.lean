@@ -36,7 +36,9 @@ Faithful Lean port of:
   `wall → hand → discard → meld` transitions, `wall pointer` consumption,
   `round wind / kyoku / honba / kyotaku` counters, `scores` quad,
   `call window` open/close envelope, `ron/tsumo/ryukyoku` terminal handling,
-  multi-ron priority (first winner in turn order owns honba+riichi sticks).
+  multi-ron priority (first winner in FORWARD turn order from the discarder
+  owns honba+riichi sticks; 上家取り is NOT backward — see 2026-10-05 norm
+  correction record).
 
 Packet boundary enforces (violation leaks private tiles and fails closed):
 
@@ -483,11 +485,14 @@ theorem call_window_transition_balanced :
 -- ---------------------------------------------------------------------------
 -- 6. Multi-ron attribution — first winner owns honba + kyotaku (riichi sticks)
 --    Tenhou settlement via `riichienv-core/src/score.rs` and `riichienv-core/src/state/event_handler.rs` terminal handling.
---    On a discard, 1–3 players may ron; Tenhou orders winners by turn distance
---    from discarder (atamahane does not apply in Tenhou 4p, but nearSeat priority
---    holds). Scoring: each winner receives `base` from discarder; honba (+300 ron)
---    and kyotaku (riichi sticks ×1000) go wholly to the *first* winner in turn
---    order, not split. This is the `multi-ron attribution` required theorem.
+--    On a discard, 1–3 players may ron; Tenhou orders winners by FORWARD turn
+--    distance from the discarder (atamahane does not apply in Tenhou 4p, but
+--    the atamahane-priority seat — nearest in turn order after the discarder —
+--    takes honba+kyotaku). Scoring: each winner receives `base` from discarder;
+--    honba (+300 ron) and kyotaku (riichi sticks ×1000) go wholly to the *first*
+--    winner in forward turn order, not split. This is the `multi-ron attribution`
+--    required theorem. (Direction corrected 2026-10-05; proofs are
+--    direction-agnostic over `isFirst`.)
 -- ---------------------------------------------------------------------------
 
 /-- Ron bonus pool — honba and riichi sticks aggregated on the discarding round.

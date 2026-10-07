@@ -37,6 +37,10 @@ mod row;
 mod tiles;
 mod translate;
 
+// Diagnostic view-cache totals for the env-gated pool-close report; the
+// counters live in driver and never feed control flow.
+pub(crate) use driver::view_cache_counts;
+
 #[cfg(test)]
 mod tests;
 
@@ -281,6 +285,12 @@ pub struct NativeGame {
     terminal: bool,
     outcome: Option<TerminalOutcome>,
     captured: u64,
+    /// Resolved engine decisions: draw answers plus completed claim windows.
+    /// Scheduling rounds key on this counter, never on staged answers or
+    /// captures: a partially answered window MUST NOT advance it, or the
+    /// cohort barrier releases early and admits the next round over games
+    /// whose responders have not all applied.
+    resolved_frontier_count: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -337,6 +347,7 @@ impl NativeGame {
             terminal: false,
             outcome: None,
             captured: 0,
+            resolved_frontier_count: 0,
             ctx,
         };
         game.open_hand(0, &seed_tiles, perm0, 0, 0, engine_order_of(starting, game.inv), 0)?;
@@ -387,6 +398,13 @@ impl NativeGame {
 
     pub fn captured_count(&self) -> u64 {
         self.captured
+    }
+    /// Resolved-frontier reads for the collection scheduler (pool fill and
+    /// advise paths) and the snapshot/control round fields that serialize
+    /// those scheduling values. Never for serialized row steps, hashes, or
+    /// sampler math: mixing it into capture math would fork trajectory identities.
+    pub fn frontier_count(&self) -> u64 {
+        self.resolved_frontier_count
     }
 
     /// Reinstate the row counter on resume (sealed rows already exist;

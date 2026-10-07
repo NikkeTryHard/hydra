@@ -19,7 +19,6 @@ on import or in unit flows without a run dir).
 
 from __future__ import annotations
 
-import contextlib
 import json
 import threading
 import time
@@ -95,13 +94,3 @@ class StageSpanSink:
                 )
 
         return _Timer()
-
-
-@contextlib.contextmanager
-def maybe_timed(sink: StageSpanSink | None, stage: str, update: int | None = None) -> Any:
-    """No-op when ``sink`` is None, else :meth:`StageSpanSink.timed`."""
-    if sink is None:
-        yield None
-    else:
-        with sink.timed(stage, update):
-            yield None

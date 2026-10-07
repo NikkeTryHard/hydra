@@ -15,6 +15,7 @@
 //! walls. Any engine error fails closed. No Python.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use hydra_feed::census::ActionKind;
 use riichienv_core::action::{Action as CoreAction, ActionType, Phase};
@@ -34,6 +35,17 @@ use super::{
     BatchOutcome, BufferedDecision, CoreError, GAME_MODE_YON_HANCHAN, GameMode, HandCarry,
     PendingDecision, Stamp, TypedPayload, canonical_scores, seat_winds_for,
 };
+// Process-global legal-view cache counters, measurement only. Relaxed
+// increments never feed control flow, so torn reads only perturb the
+// diagnostic print; the cache behaves identically with counters present.
+// Reported env-gated at pool close, so default runs emit nothing.
+static VIEW_HITS: AtomicU64 = AtomicU64::new(0);
+static VIEW_MISSES: AtomicU64 = AtomicU64::new(0);
+
+/// Diagnostic view-cache totals for the env-gated close report.
+pub(crate) fn view_cache_counts() -> (u64, u64) {
+    (VIEW_HITS.load(Ordering::Relaxed), VIEW_MISSES.load(Ordering::Relaxed))
+}
 
 impl super::NativeGame {
     // -- hand lifecycle ----------------------------------------------------
@@ -133,6 +145,19 @@ impl super::NativeGame {
         loop {
             if self.terminal {
                 return Ok(None);
+            }
+            // A record-free re-drain cannot change this prepared draw. Every
+            // engine step clears views first; skipping detection without both
+            // guards would reuse stale legal actions after a kan or new draw.
+            if self.cursor == self.state.mjai_log.len()
+                && self.state.phase == Phase::WaitAct
+                && !self.state.is_done
+                && self.mode == Some(GameMode::Draw)
+            {
+                let seat = self.inv[self.state.current_player as usize] as u8;
+                if self.decision_seat == Some(seat) && self.views.contains_key(&seat) {
+                    return Ok(Some(PendingDecision::Draw { seat }));
+                }
             }
             if self.cursor < self.state.mjai_log.len() {
                 let records: Vec<serde_json::Value> = self.state.mjai_log[self.cursor..]
@@ -275,13 +300,30 @@ impl super::NativeGame {
     }
 
     /// Sorted canonical actions plus the full legal mask over the frozen action table.
+    /// View-prep note: every cache hit clones the full plan (ordered actions
+    /// plus the 6792-bool mask), and a staged draw row re-derives it at
+    /// observe, apply-verify, and commit — one build plus up to three clones
+    /// per row. A borrowed or reference-counted view would need exactly the
+    /// pre-step invalidation already enforced in this file (clears before
+    /// every engine step); skipping any of them re-serves stale legality
+    /// after a kan or new draw. Measured on the frozen 8x128 workload
+    /// (HYDRA2_RL_VIEW_STATS=1): 2,742,855 hits versus 914,285 misses, exactly
+    /// 3:1, i.e. one build plus three clones per staged row at roughly 8KB per
+    /// clone (~22GB moved plus ~5.5M small allocations per run). A temporary
+    /// Arc-shared build measured 336.0s versus 326.9-337.2s same-code range
+    /// with 3776/3776 bitwise parity: the clones hide inside overlapped
+    /// windows, so fusion saves nothing measurable. Reverted; do not re-fuse
+    /// without new evidence, and fusing shares one object between observe,
+    /// apply-verify, and commit, which weakens their independence anyway.
     pub fn view_for(
         &mut self,
         seat: u8,
     ) -> Result<(Vec<(u32, CanonicalAction)>, Vec<bool>), CoreError> {
         if let Some(cached) = self.views.get(&seat) {
+            VIEW_HITS.fetch_add(1, Ordering::Relaxed);
             return Ok(cached.clone());
         }
+        VIEW_MISSES.fetch_add(1, Ordering::Relaxed);
         let pid = self.ctx.seat_perm[seat as usize];
         let hand = self.state.players[pid as usize].hand.clone();
         let drawn = self.state.drawn_tile;
@@ -488,6 +530,9 @@ impl super::NativeGame {
             }
             self.capture_hands(&combined);
             let pre = self.state.mjai_log.len();
+            // The engine mutation invalidates all prepared legal plans;
+            // leaving them live would make a later record-free drain stale.
+            self.views.clear();
             self.state.step(&combined);
             self.check_error()?;
             self.note_step_draws(pre);
@@ -497,6 +542,9 @@ impl super::NativeGame {
             self.buffered.clear();
         } else {
             self.applied.push(action.clone());
+            // Riichi may step twice and kakan may retain the deciding seat;
+            // neither may leave a pre-step legal plan available for reuse.
+            self.views.clear();
             if action.kind == ActionKind::RiichiDiscard {
                 let declaration = matched;
                 let pre = self.state.mjai_log.len();
@@ -541,6 +589,12 @@ impl super::NativeGame {
             }
         }
         let _ = self.drain()?;
+        // One fully resolved engine decision: draw answers and completed
+        // windows converge here after successful drain. Buffered partial
+        // answers return early above and failures return Err above, so
+        // neither advances the scheduling frontier. The counter counts
+        // resolutions only — never staged answers, captures, or rows.
+        self.resolved_frontier_count += 1;
         Ok(())
     }
 

@@ -62,6 +62,11 @@ def run_rl_training(
     _ = os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     configure_torch_matmul()
     torch.use_deterministic_algorithms(True)
+    # Precision note: bf16 reduced-precision GEMM reductions stay at their
+    # default (True). Disabling them measured 329.9s versus 332.7-335.2s but
+    # with reforked trajectories from update 1 (235 versus 237 updates), so the
+    # wall delta is different work, not faster compute, and the bitwise
+    # trajectory contract breaks. This default is load-bearing, not hardening.
     root = run_dir_for(config)
     source = initial_checkpoint if initial_checkpoint is not None else root / "checkpoints/c0.pt"
     device = torch.device(config.runtime.device)

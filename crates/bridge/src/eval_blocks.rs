@@ -114,17 +114,12 @@
 //! `crate::eval_blocks::register(&sub)?;` in `eval::register` before
 //! `m.add_submodule(&sub)` (`crates/bridge/src/eval.rs:124-131`).
 
+use crate::rc_require::py_repr;
 use hydra_search::eval::blocks::EXCLUSION_REASONS;
 use hydra_search::eval::py_list_repr;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyModule, PyTuple};
-
-/// Attached staging helper: exact `repr(value)` text for every `{value!r}`
-/// slot (mirrors `rc_require.rs:63-65`).
-fn py_repr(obj: &Bound<'_, PyAny>) -> PyResult<String> {
-    Ok(obj.repr()?.to_str()?.to_owned())
-}
 
 // ---------------------------------------------------------------------------
 // Detached checks (owned plain data only, zero Python API).
