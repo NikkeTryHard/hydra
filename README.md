@@ -1,40 +1,35 @@
 <p align="center">
-<img src="assets/hydra.webp" alt="Hydra2 banner" width="720">
+<img src="assets/hydra.webp" alt="Hydra banner" width="720">
 </p>
 
-<h1 align="center">Hydra v2</h1>
+<h1 align="center">Hydra v3</h1>
 
-Tenhou 4-player hanchan Mahjong AI.
-Goal: beat LuckyJ/Mortal by tenhou stable dan. See `AGENTS.md` for agent rules.
+<p align="center">An attempt at making Mahjong reinforcement learning as fast as possible.</p>
+
+Hydra v3 trains a PyTorch tile-edit Transformer on four-player red-five hanchan self-play. Rollout and paired-evaluation rules run in MahJax; the Rust arena remains a separate reference implementation. No trained weights or model-strength claim are included.
 
 ## Quick start
 
 ```sh
-pixi install                        # only supported env (never uv/venv/bare pytest)
-pixi run test-unit -q               # fast gate (~1 min)
-pixi run lint                       # ruff
-pixi run typecheck                   # pyrefly
-pixi run runtime-probe               # runtime environment report
+pixi run build        # native reference extension
+pixi run test         # rebuilds it, then runs the suite
+pixi run typecheck && pixi run lint
+pixi run agent --help
 ```
 
-Full suite takes ~30 min (conformance soak). `HYDRA2_SKIP_GPU_SOAK=1` skips GPU soak on non-CUDA machines.
-
-## Docs
-
-- `AGENTS.md` — agent rules, commands, invariants
-- `docs/PROJECT_PLAN.md` — direction and boundaries
-- `docs/BUILD_EXECUTION_PLAN.md` — work order and done-gates
-- `docs/IMPLEMENTATION_SPEC.md` — schemas, APIs, contracts
-- `docs/ALGORITHM_EXPERIMENT_BLUEPRINT.md` — candidates and promotion rules
-- `lean/` — formal specs sidecar (Lean 4 + mathlib, manual sync)
+Requires Pixi 0.84.2+, Git 2.49+ and stable Rust; on x86-64 Linux also Clang, mold and sccache on `PATH`. PPO and paired evaluation default to CUDA, and `--device cpu` is available for diagnostics.
 
 ## Repo map
 
-- `src/hydra2/` — contracts, engines (RiichiEnv/MahJax), search, belief, training, eval, artifacts
-- `configs/` — rules, contracts, model specs, attestations
-- `crates/packager/` — restart-safe Rust MJAI packager
-- `crates/` — replay-only Rust core (encode stays Python)
-- `tests/` — unit, contracts, search, integration, conformance
+- `python/hydra3/` — actor graph, PPO learner, collector, evaluation, checkpoints
+- `native/` — Rust arena, exposed as `hydra3._arena`
+- `vendor/mahjax/` — pinned rules engine, worked on in-tree
+- `tests/` — suite plus the pinned engine parity trace
+- `benchmarks/mahjax/` — recorded RTX 5070 runs
+
+## Notes
+
+Engine pinning, parity checking, telemetry and the RTX 5070 throughput record live in [`docs/NOTES.md`](docs/NOTES.md).
 
 ## Compute support
 
@@ -42,4 +37,4 @@ Full suite takes ~30 min (conformance soak). `HYDRA2_SKIP_GPU_SOAK=1` skips GPU 
 <img src="assets/delta.webp" alt="Delta GPU node" width="720">
 </p>
 
-Hydra v2 remains sponsored with compute support from Delta advanced computing and data resources, supported by the National Science Foundation (award OAC 2005572) and the State of Illinois. Delta is a joint effort of the University of Illinois Urbana-Champaign and its National Center for Supercomputing Applications.
+Hydra v3 remains sponsored with compute support from Delta advanced computing and data resources, supported by the National Science Foundation (award OAC 2005572) and the State of Illinois. Delta is a joint effort of the University of Illinois Urbana-Champaign and its National Center for Supercomputing Applications.

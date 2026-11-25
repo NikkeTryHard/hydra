@@ -1,37 +1,11 @@
-# Rust and editor-generated build state (plus the maturin-develop cdylib,
-# which always lands beside the `python/hydra2/` sources; never committed)
-/target/
-**/target/
-*.so
-
-# Local profiling artifacts (perf record output + backups; never committed)
-perf.data*
-**/perf.data*
-
-# Python caches and local environments
-__pycache__/
-*.py[cod]
-.venv/
 .pixi/
 .pytest_cache/
-.mypy_cache/
 .ruff_cache/
-
-# Local tooling and secrets
-.env
-.env.*
-!.env.example
-*.log
-.DS_Store
-
-# Rival lockfile + agent litter (pixi is the sole env authority; see pyproject.toml:15-16)
-uv.lock
+__pycache__/
+*.so
+*.pyc
+native/target/
+runs/
 .serena/
-ideas/
-
-# Raw benchmark corpus (D-017: never publish raw samples; regenerate via
-# `pixi run python bench/feed_rate.py build-corpus`, pinned by manifest shas)
-bench/corpus/
-
-# Generated bench artifacts (belong under $HYDRA2_ARTIFACT_ROOT outside repo; never committed)
-artifacts/reports/
+vendor/hydra2/
+/ppo.local.args

@@ -1,0 +1,13 @@
+{
+  "checkpoints": {
+    "0": "e468e514d0a72efba1347c75aabb2a1c9669fb0b26dc813009534574e16d4e93",
+    "12": "a21ba5055c55e8538b7afc8c1f47336d8e374f41d6089adbcf0207d8672d9b39",
+    "16": "d89c8e274a7bcbba347825a31f4ba8f6c35e520d3babd8a6cfa55d2d2ef9209c",
+    "20": "70872f640ffd5d9b0474e367619f90b43dae51e647cf524df9e489e8a4b9c9d3",
+    "4": "91f612c26411fabc5f1f75bd9525c40d1f2e870cbe37a53807e18c345ab3bcd9",
+    "8": "e2e461c3cc0e91431dba86a6a8fad6df0956d95aba5ca5bb4c9da766e9b44d05",
+    "final": "8f59800cf05cee6037e1cdcfc46237adc584606ee699732ed8637db1bab464a0"
+  },
+  "engine": "/home/cachybtw/dev/hydra3/.pixi/envs/default/lib/python3.15/site-packages/mahjax/__init__.py",
+  "turns": 23
+}

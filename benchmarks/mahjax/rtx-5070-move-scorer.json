@@ -1,0 +1,169 @@
+{
+  "format": "hydra3.move-scorer-qualification.v1",
+  "device": "NVIDIA GeForce RTX 5070",
+  "driver": "620.73.04",
+  "initial_checkpoint_sha256": "78d9fabcfede5debc7de27a95b63f8896f5650759e3f3a53cdc2b8227475ff9d",
+  "configuration": "Same default policy and direct tile lookup in both arms. Both use bf16 autocast, full hanchan, 1024 games, 1024-decision minibatches, one training epoch and real checkpoints. Compiled scorer pads execution shapes only, and never removes legal actions. The engine and the move sampler are unchanged.",
+  "training": {
+    "timing": "Production CLI, 9 consecutive generations from the same initial checkpoint, first excluded, 1,024 matches then one PPO epoch per generation. Identical generation seeds and legal engine; trajectories may diverge from the first actor call.",
+    "eager": {
+      "complete_games": 8192,
+      "decisions": 8486960,
+      "updates": 8292,
+      "elapsed_ns": 202415348182,
+      "collect_ns": 92025168473,
+      "learn_ns": 110287971325,
+      "end_to_end_per_s": 41928.44,
+      "collection_per_s": 92224.34,
+      "learner_per_s": 76952.73,
+      "generation_rates": [
+        43122.15,
+        42464.11,
+        42655.71,
+        41444.58,
+        41551.46,
+        41200.65,
+        41468.09,
+        41546.58
+      ],
+      "compiled_calls": 0,
+      "eager_fallback_calls": 0,
+      "log_sha256": "2a28d8e7320335730a5571360e0de10c507a8f13f26778f20e05d88551b53384",
+      "checkpoint_sha256": "5f67825b82121b8a0ced7bffbca118c323458a4ff472434844c93e4a36c6dbd8"
+    },
+    "compiled": {
+      "complete_games": 8192,
+      "decisions": 8490399,
+      "updates": 8297,
+      "elapsed_ns": 183113619419,
+      "collect_ns": 72688768995,
+      "learn_ns": 110322427707,
+      "end_to_end_per_s": 46366.84,
+      "collection_per_s": 116804.83,
+      "learner_per_s": 76959.86,
+      "generation_rates": [
+        48416.49,
+        47148.2,
+        47363.29,
+        46831.78,
+        45670.97,
+        45968.26,
+        45189.87,
+        44494.71
+      ],
+      "compiled_calls": 11539,
+      "eager_fallback_calls": 0,
+      "log_sha256": "f6dfc6d207838fa1be56db768a541c469c8085fb7fe50a1e79764a91d18ea486",
+      "checkpoint_sha256": "38ed1b63ed3b6e0c984435af8efea0e172a7395e4aa87895c481f687ab3d5b2e"
+    },
+    "percent_change": {
+      "end_to_end_per_s": 10.586,
+      "collection_per_s": 26.653,
+      "learner_per_s": 0.009
+    }
+  },
+  "legal_decisions": {
+    "decisions": 16905,
+    "changed_action_ids": 17,
+    "changed_fraction": 0.001005619647912681,
+    "legal_id_mismatch_rows": 0,
+    "illegal_choices": {
+      "eager": 0,
+      "compiled": 0
+    },
+    "legal_probability_mass_total_variation": {
+      "mean": 8.545826708467608e-05,
+      "max": 0.0020640977178386505,
+      "p95": 0.0005261941978506671
+    },
+    "legal_logits": {
+      "max_abs_error": 0.03125,
+      "mean_abs_error": 0.00011790662065082616,
+      "abs_sum": 17.078420281410217,
+      "count": 144847
+    },
+    "values": {
+      "max_abs_error": 0.0078125,
+      "mean_abs_error": 0.00023455985090994194,
+      "abs_sum": 3.9652342796325684,
+      "count": 16905
+    },
+    "eager_top2_margin_for_changed": {
+      "count": 17,
+      "min": 0.0,
+      "p10": 0.0,
+      "median": 0.00390625,
+      "mean": 0.003676470588235294,
+      "p90": 0.0078125,
+      "max": 0.0078125
+    }
+  },
+  "legal_stress_cases": {
+    "cases": 33,
+    "synthetic_layout_rows": 128,
+    "compiled_hits": 33,
+    "compiled_fallbacks": 3,
+    "illegal_choices_all_cases": 0
+  },
+  "placement": {
+    "games_per_arm": 16384,
+    "wall_blocks": 4096,
+    "mean_rank_by_arm": {
+      "eager_trained_eager": 2.45111083984375,
+      "eager_trained_compiled": 2.45220947265625,
+      "compiled_trained_compiled": 2.64801025390625
+    },
+    "paired": {
+      "same_weights_control": {
+        "estimate": 0.0010986328125,
+        "independent_95pct": [
+          -0.005615234375,
+          0.007997131347656228
+        ],
+        "predeclared_95pct": [
+          -0.005615234375,
+          0.00787353515625
+        ]
+      },
+      "primary_contrast": {
+        "estimate": 0.1968994140625,
+        "independent_95pct": [
+          0.17346038818359374,
+          0.22015380859375
+        ],
+        "predeclared_95pct": [
+          0.173583984375,
+          0.220703125
+        ]
+      }
+    },
+    "gate": {
+      "applies_to": "compiled_trained_compiled - eager_trained_eager",
+      "margin": 0.03,
+      "pass": false,
+      "upper_95pct": 0.220703125
+    },
+    "training_wall_overlap": 0,
+    "primary_hypothesis": "Compiled-trained/compiled scorer minus eager-trained/eager scorer mean focal rank. Lower is better; pass only if the upper bound of the two-sided 95% paired wall bootstrap is below +0.03.",
+    "design": "Each arm played the same independent walls from every focal seat against three copies of the same frozen opponent. Every match was required to terminate with a 1..4 rank permutation. Greedy BF16 decisions for evaluation; sampling remains enabled during training.",
+    "uncertainty": "One training seed and one frozen opponent. The interval resamples whole walls, not individual seats; it does not estimate variation across training seeds or opponents.",
+    "opponent_sha256": "e0ed075602832480b115747189a13409fd8258eb5d7e302fe67397cc7c77ae94",
+    "held_out_seed_sha256": "98b091ef2dc47a13237564220a04505cabbcf8823d9a9405acb280358c9d6f5a",
+    "placement_npz_sha256": "cdb177a2dd2bf628be96062a8ff88f92b9ababaa2ff122527c561dcb27c38ace"
+  },
+  "inputs": {
+    "policy_eager_sha256": "5f67825b82121b8a0ced7bffbca118c323458a4ff472434844c93e4a36c6dbd8",
+    "policy_compiled_sha256": "38ed1b63ed3b6e0c984435af8efea0e172a7395e4aa87895c481f687ab3d5b2e",
+    "dataset_sha256": "ac7d37620b34687beadbc266ea1d96d315213aeb36b55f3e8952d7673c5b65e4"
+  },
+  "evidence_sha256": {
+    "training.json": "509f15fe6aecb18b9bfc58579b6a2d341c224c027144b77eb835c567cb4004c6",
+    "legality.json": "f225b9a210e35dcd0f4d5f8765905c18a192f4285ff590de41e180769ef4ecb2",
+    "placement/report.json": "bdfa186f876f132608c3d8b9ad81b92c08083e719782a341ef026db6365bffc9",
+    "placement/manifest.json": "6946227fb6bd89ddde61e03c100a4777f4950d1a7592d37572a5711ce167dc35",
+    "placement-verified.json": "8b81ebea96a9eacad5abfbece76717f4d81f4913323acbedecbdebbd3e6f32bc",
+    "protocol.txt": "f3d0c47c416e791973174071d72f1177c057b3d48ffad4d9dc0205a9bd140f8b",
+    "placement.py": "f6578f70435fa1591cafe4533acee5084c99c7f56d3b40f988cef4f458a363c6",
+    "legality.py": "0b939b9beb64051e6107cfe133c4c81805d109e7f5145df8e5313404570aefc5"
+  }
+}

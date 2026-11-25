@@ -1,0 +1,91 @@
+{
+  "device": "NVIDIA GeForce RTX 5070",
+  "driver": "620.73.04",
+  "initial_checkpoint_sha256": "78d9fabcfede5debc7de27a95b63f8896f5650759e3f3a53cdc2b8227475ff9d",
+  "invocation": "pixi run --locked agent ppo <default-init> <output> --generations N --telemetry",
+  "games": 1024,
+  "minibatch": 1024,
+  "epochs": 1,
+  "warmup_generations_excluded": 1,
+  "timing": "from first included collect start through last included checkpoint end, including gaps and learning",
+  "baseline": {
+    "first_generation": 1,
+    "last_generation": 4,
+    "complete_hanchan": 4096,
+    "decisions": 4287425,
+    "elapsed_ns": 126609466123,
+    "collect_ns": 62642583140,
+    "learn_ns": 63917645486,
+    "end_to_end_per_s": 33863.38,
+    "collection_per_s": 68442.66,
+    "learner_per_s": 67077.33,
+    "all_archives_on_gpu": true
+  },
+  "optimized_same_generation_window": {
+    "first_generation": 1,
+    "last_generation": 4,
+    "complete_hanchan": 4096,
+    "decisions": 4294859,
+    "elapsed_ns": 112288766457,
+    "collect_ns": 46222709133,
+    "learn_ns": 66014390225,
+    "end_to_end_per_s": 38248.34,
+    "collection_per_s": 92916.64,
+    "learner_per_s": 65059.44,
+    "all_archives_on_gpu": true
+  },
+  "optimized_sustained": {
+    "first_generation": 1,
+    "last_generation": 8,
+    "complete_hanchan": 8192,
+    "decisions": 8474414,
+    "elapsed_ns": 224215072334,
+    "collect_ns": 93989657392,
+    "learn_ns": 130120556504,
+    "end_to_end_per_s": 37795.92,
+    "collection_per_s": 90163.26,
+    "learner_per_s": 65127.4,
+    "all_archives_on_gpu": true
+  },
+  "matched_percent_change": {
+    "collection_per_s": 35.76,
+    "end_to_end_per_s": 12.95
+  },
+  "fixed_input_parity": {
+    "complete_hanchan": 1024,
+    "decisions": 1090939,
+    "rollout_sha256": "d57cc38d4b3e6147bddb029eb12b7ca77c22a0ed45d0b8b766e09beb653dd0f5",
+    "packet_count": 21504,
+    "wait_cases": [
+      {
+        "width": 34,
+        "hands": 46848,
+        "tenpai": 35998,
+        "mismatches": 0
+      },
+      {
+        "width": 37,
+        "hands": 46848,
+        "tenpai": 35998,
+        "mismatches": 0
+      }
+    ],
+    "step_state_action_sha256": "01e387c867e07fbc45eee92ddccace3238c94a26e3a65402f8bee2bc59c30372"
+  },
+  "microbenchmarks": {
+    "legal_rules_step_ms_before": 5.86836445,
+    "legal_rules_step_ms_after": 2.1767231,
+    "packet_median_ms_before": 1.0080196666666668,
+    "packet_median_ms_after": 0.9759499166666666
+  },
+  "input_files": {
+    "before.log": "d45e5477255b594458023e8218fd7abd95ff9295771fd1a1bb86938780b3f913",
+    "final.log": "d6a19a0bb940a62c5bb1a3510b622e15a05ea2e0960d7c2280be22984ffad2e2",
+    "full-installed.log": "3cd5f64ea7402c53f9f55b1202c7bcea2f1e79d5a7ab6565b680885d61b0ab7c",
+    "full-final.log": "0d8a594b7e67699d20c1b5b000c2cd21cf7b0496b72eb15aa4287cd1025d73f1",
+    "check.log": "ddc037635ecabb5db337c25ab92198114a937d4b1113fc0181ef1240d555d073",
+    "packet-ab.log": "7acc979a85a0e7f9840910ea3eeacf03a5fa7f8d069426925f5c611ea4591b2b",
+    "base.log": "1d6f8cf89b50b56bc4bcdf5fdfbc16b6cdd736233de89431c62b3a0c0612a781",
+    "lookup.log": "e86ec07b987b78d8b7ccbd0f14f008304923ee366d0b247fd727d335af38ade7"
+  }
+}

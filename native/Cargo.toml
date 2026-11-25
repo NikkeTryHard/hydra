@@ -1,0 +1,36 @@
+[workspace]
+members = ["reference"]
+resolver = "3"
+
+[package]
+name = "hydra3-arena"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "_arena"
+# Build only the Python extension; combining it with an rlib prevents Cargo from applying cross-crate LTO here.
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+pyo3 = "=0.30.1"
+rayon = "=1.12.0"
+riichienv-core = { version = "=0.4.11", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hydra_rules = { package = "hydra-rules", path = "reference" }
+
+[profile.dev]
+debug = 2
+strip = "none"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
+
+[profile.release-native]
+inherits = "release"

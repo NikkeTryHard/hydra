@@ -1,262 +1,79 @@
 [build-system]
-requires = ["maturin>=1.15"]
+requires = ["maturin==1.16.0"]
 build-backend = "maturin"
 
 [project]
-name = "hydra2"
+name = "hydra3"
 version = "0.1.0"
-description = "Hydra2 mahjong research stack: locked runtime, contracts, engines, search."
+description = "Four-player Riichi policy learning with tile-edit Transformers"
 readme = "README.md"
-requires-python = ">=3.12,<3.13"
-license = { text = "Proprietary" }
-authors = [{ name = "Hydra2 builders" }]
-dependencies = ["pyarrow>=25.0.1,<26", "zstandard>=0.25.0,<0.26", "jax[cuda13]>=0.11.1,<0.12", "nvidia-cudnn-cu13>=9.20.0.48,<10", "mlflow-skinny>=3.16.0,<4"]
+requires-python = ">=3.15,<3.16"
+dependencies = ["torch>=2.15,<2.16", "numpy>=2.5.5,<2.6"]
 
-# Dependency authority for third-party packages lives ONLY in [tool.pixi.*].
-# Pixi is the sole environment/lock authority (pixi.lock); never create uv.lock.
 [project.scripts]
-hydra2 = "hydra2.cli:main"
+hydra3 = "hydra3.cli:main"
 
 [tool.maturin]
-bindings = "pyo3"
+manifest-path = "native/Cargo.toml"
 python-source = "python"
-module-name = "hydra2._native"
-manifest-path = "crates/bridge/Cargo.toml"
+module-name = "hydra3._arena"
+bindings = "pyo3"
 
 [tool.pixi.workspace]
-name = "hydra2"
-version = "0.1.0"
 channels = ["conda-forge"]
 platforms = ["linux-64"]
+requires-pixi = ">=0.84.2"
 
 [tool.pixi.dependencies]
-python = "3.12.*"
-nvidia-ml-py = ">=13.610.43,<14"
-psutil = ">=7.2.2,<8"
-sqlalchemy = ">=2.0.52,<3"
-alembic = ">=1.19.2,<2"
-msgspec = ">=0.21.1,<0.22"
+python = "==3.15.2"
+libpython = "==3.15.2"
 
 [tool.pixi.pypi-dependencies]
-clearml = "==2.1.12"
-torch = "==2.14.0"
-riichienv = "==0.4.10"
-mahjax = { git = "https://github.com/nissymori/mahjax.git", rev = "cff90d1e68cf21464071864672a9618bb20f2551" }
-pyyaml = "==6.0.3"
-hydra2 = { path = ".", editable = true }
-
-# Dev-only dependency (exact pin) kept out of the runtime surface.
-[tool.pixi.feature.dev.pypi-dependencies]
-pytest = "==9.1.1"
+torch = "==2.15.0"
+numpy = "==2.5.5"
+maturin = "==1.16.0"
+pytest = "==9.2.0"
 pytest-xdist = "==3.8.0"
-ruff = "==0.16.6"
-pyrefly = "==1.2.0"
-maturin = "==1.15.0"
-
-[tool.pixi.environments]
-default = { features = ["dev"] }
+ruff = "==0.17.6"
+pip = "==26.3"
+pyrefly = "==1.5.0"
+jax = { version = "==0.11.1", extras = ["cuda13"] }
+jaxlib = "==0.11.1"
+mahjax = { git = "https://github.com/nissymori/mahjax.git", rev = "d4ca79a49676232f48d275d746d7b26dc50a534d" }
+svgwrite = "==1.4.3"
+typing-extensions = ">=4.16,<5"
 
 [tool.pixi.tasks]
-test = { cmd = "pixi run test-cpu; CPU=$?; pixi run test-serial; SER=$?; [ $CPU -eq 0 ] && [ $SER -eq 0 ]" }
-# Lane precondition: run `pixi run build-ext` first. The unit-tree
-# `rust_extension` fixture is import-only (zero cargo, no tmp .so copies);
-# a missing bridge fails loud at import instead of rebuilding.
-test-cpu = { cmd = "pytest tests -m 'not gpu and not serial' -n 16 --dist loadscope --durations=15 --durations-min=1.0", env = { CUDA_VISIBLE_DEVICES = "", JAX_PLATFORMS = "cpu", XLA_PYTHON_CLIENT_PREALLOCATE = "false" } }
-# Serial file order is load-bearing: GPU files run cheap→compile→heavy so the
-# CUDA context, eager parity premise, and inductor cache warm before the
-# bf16/attention timing matrices; serial-CPU shards then run largest-first;
-# MahJax closes (single XLA init, after CUDA work). A new gpu/serial file MUST
-# be appended here in cheapness order — the lane lists files, never globs.
-# Same precondition as test-cpu: `pixi run build-ext` first (import-only fixture).
-test-serial = { cmd = "pytest tests/integration/test_env_manifest_gpu.py tests/integration/test_parity_plain_fabric.py tests/integration/test_checkpoint_resume_gpu.py tests/integration/test_compile_ordering_gpu.py tests/unit/test_supervised_training.py tests/unit/test_supervised_objectives.py tests/unit/test_supervised_loop.py tests/integration/test_bf16_parity.py tests/integration/test_attention_dispatch.py tests/unit/test_rust_batch.py tests/unit/test_rust_stream.py tests/unit/test_replay_backend.py tests/unit/test_parallel_expand.py tests/unit/test_shard_build.py tests/unit/test_pinned_ring.py tests/unit/test_precision_failclosed.py tests/unit/test_stream_train.py tests/unit/test_stream_train_segments.py tests/unit/test_rl_gpu.py tests/unit/test_rl_actor_packed.py tests/unit/test_rl_pool.py tests/unit/test_rl_resume.py tests/engines/mahjax/test_mahjax_shell.py tests/conformance/test_mahjax_qualification.py -m 'gpu or serial' -n 0 --durations=15 --durations-min=1.0" }
-test-unit = { cmd = "pytest tests/unit -m 'not gpu and not serial' -n 16 --dist loadscope --durations=15 --durations-min=1.0", env = { CUDA_VISIBLE_DEVICES = "", JAX_PLATFORMS = "cpu", XLA_PYTHON_CLIENT_PREALLOCATE = "false" } }
-test-integration = { cmd = "pytest tests/integration -m 'not gpu and not serial' -n 16 --dist loadscope --durations=15 --durations-min=1.0", env = { CUDA_VISIBLE_DEVICES = "", JAX_PLATFORMS = "cpu", XLA_PYTHON_CLIENT_PREALLOCATE = "false" } }
-test-contracts = { cmd = "pytest tests/contracts -m 'not gpu and not serial' -n 16 --dist loadscope --durations=15 --durations-min=1.0", env = { CUDA_VISIBLE_DEVICES = "", JAX_PLATFORMS = "cpu", XLA_PYTHON_CLIENT_PREALLOCATE = "false" } }
-test-search = { cmd = "pytest tests/search -m 'not gpu and not serial' -n 16 --dist loadscope --durations=15 --durations-min=1.0", env = { CUDA_VISIBLE_DEVICES = "", JAX_PLATFORMS = "cpu", XLA_PYTHON_CLIENT_PREALLOCATE = "false" } }
-test-training = { cmd = "pytest tests/unit -k 'train or loop or replay or stream or baseline or supervised or rl or rollout or native_pool' -m 'not gpu and not serial' -n 16 --dist loadscope --durations=15 --durations-min=1.0", env = { CUDA_VISIBLE_DEVICES = "", JAX_PLATFORMS = "cpu", XLA_PYTHON_CLIENT_PREALLOCATE = "false" } }
-test-analysis = { cmd = "pytest tests --package WP-12" }
-# jax-import lint scope (m8): eager `import jax` is barred in python/hydra2/training +
-# tests/unit (XLA init cost + GPU OOM + concurrent-import aborts in xdist lanes);
-# tests/engines is EXEMPT (mahjax needs in-proc JAX there); lazy/function-level
-# imports are covered too (the CI grep must match indented imports, no ^ anchor);
-# training workers force CPU determinism via differential_modes (never in-proc JAX
-# in the hot lane). Scope note only — enforced as a CI grep, not a pixi task change.
-lint = { cmd = "ruff check python tests" }
-format-check = { cmd = "ruff format --check python tests" }
-typecheck = { cmd = "pyrefly check python" }
-loc-gate = { cmd = "python scripts/check_loc.py" }
-config-check = { cmd = "python -m hydra2.config_check" }
-env-manifest = { cmd = "python -m hydra2.runtime.environment" }
-runtime-probe = { cmd = "python -m hydra2.probe" }
-# build-ext staleness gate (Phase 6): pixi inputs/outputs fingerprinting is the
-# SOLE staleness authority. DELETED here: the hand-rolled mtime gate
-# (max-st_mtime over crates + hydra2_replay_rs.build.json stamp) and the raw
-# `cargo build --release -p ... && cp .../*.so $EXTDST` install path — barred per
-# wave2-packaging §8.1 (unversioned name, no ABI/platform tags, no dist-info,
-# invisible to lockfile, forks env from pixi). inputs MUST span Cargo.lock +
-# pyproject.toml + crate manifests + rust/python sources: dep bumps and
-# packaging-config edits invalidate, pure-Rust mtime gates miss both; pixi env
-# changes invalidate automatically; cargo fingerprinting handles intra-Rust
-# incrementality underneath (two layers, no overlap, no custom gate script).
-# `maturin develop` against the bridge PACKAGE manifest (not the virtual
-# workspace root — maturin needs a package manifest). Develop installs
-# EDITABLE: the cdylib lands beside the sources at
-# `python/hydra2/_native*.so` (imported via the `hydra2.pth` hook), NOT in
-# site-packages — so `outputs` points at the source-tree artifact. `outputs`
-# MUST stay project-relative globs (`$PIXI_PROJECT_ROOT/` prefix never
-# matches). `py.typed` + `_native.pyi` are tracked sources (inputs here via
-# `python/**/*.py`), never outputs.
-# Explicit baseline flags prevent global Cargo target-cpu=native from leaking
-# into portable artifacts and triggering slow mixed-vector SHA code on this CPU.
-build-ext = { cmd = "maturin develop --release --manifest-path \"$PIXI_PROJECT_ROOT/crates/bridge/Cargo.toml\"", inputs = ["crates/Cargo.toml", "crates/Cargo.lock", "crates/**/*.rs", "crates/**/Cargo.toml", "crates/**/*.py", "python/**/*.py", "pyproject.toml", "pixi.lock"], outputs = ["python/hydra2/_native*.so"], env = { RUSTFLAGS = "-C target-cpu=x86-64 -C link-arg=-fuse-ld=mold" } }
-# build-ext-max: local-benchmark ONLY. Same as build-ext plus
-# `-C target-cpu=native` (host SIMD for the numeric hot loops). The link-arg
-# is folded into RUSTFLAGS on purpose: cargo's rustflag sources are MUTUALLY
-# EXCLUSIVE (RUSTFLAGS env beats config files, never merges), so env without
-# link-arg silently fell back to bfd (measured 2026-09-21: GCC ident, no
-# mold). Binaries are non-portable and MUST NEVER back published artifacts —
-# rebuild plain `build-ext` before any measured run. No `outputs` stamp on
-# purpose: the output path is identical to build-ext, so fingerprinting cannot
-# tell them apart; this task always rebuilds.
-build-ext-max = { cmd = "maturin develop --release --manifest-path \"$PIXI_PROJECT_ROOT/crates/bridge/Cargo.toml\"", inputs = ["crates/Cargo.toml", "crates/Cargo.lock", "crates/**/*.rs", "crates/**/Cargo.toml", "crates/**/*.py", "python/**/*.py", "pyproject.toml", "pixi.lock"], env = { RUSTFLAGS = "-C target-cpu=native -C link-arg=-fuse-ld=mold" } }
-# Conformance area runs single-process with no -m filter: it mixes CPU,
-# serial, and GPU-soak gates that only run outside xdist workers.
-test-conformance = { cmd = "pytest tests/conformance tests/engines tests/parity -n 0 --durations=15 --durations-min=1.0" }
-[tool.ruff]
-target-version = "py312"
-line-length = 100  # E501 relaxed per-file where long literals aid readability
-src = ["python", "tests"]
-
-[tool.ruff.lint]
-
-# Lean-strict for an AI research stack: hygiene + bug prevention on, velocity killers off.
-# On, non-negotiable: E,F,W (pycodestyle) + I (isort) + N (pep8-naming).
-# On: UP (pyupgrade) enforces current-version idioms.
-# On: B, C4, SIM, RUF, A (built-in shadowing) — bug prevention for training/belief code.
-# On: DTZ — tz-aware datetimes for distributed logs/metrics.
-# On: TC — typing-only imports under TYPE_CHECKING (runtime overhead + cycle risk).
-# On: TID — reserves banned-api policy for later.
-# On, hot-path scoped: PERF — alloc anti-patterns where tensors loop; ignored elsewhere.
-# Off: S (bandit) — asserts are test idiom, sim RNG is non-crypto by design,
-#   cache-miss pass-handling is intentional; no untrusted input in this stack.
-# Off: ARG — protocol/interface stubs carry signatures required by contract.
-# Off: ANN/D and friends — annotation/docstring tax kills research velocity.
-# line-length lives with the [tool.ruff] table; E501 relaxed per-file where literals run long.
-select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM", "RUF", "DTZ", "TC", "TID", "PERF", "RET", "FURB", "ISC001", "ICN001", "T201"]
-# Return discipline (RET: assign-before-return, else-after-return, return-None): mechanical
-# readability wins for numeric/model code; all autofixable, so future hits stay green via --fix.
-# Idioms (FURB: min/max, if-exp, slice-prefix): handbook-blessed, all autofixable.
-# Missing-comma catcher (ISC001): single-line implicit string concat is almost always a bug.
-# Alias convention (ICN001): standard scientific-stack import aliases.
-# No-print rule (T201): print in library code is a perf + hygiene bug. Scoped below —
-# entry-point CLIs print as their interface, training phase-log is a deliberate stdout
-# contract, test harnesses keep output; everything else uses logging.getLogger(__name__).
-# Evaluated and DEFERRED (real signal, wrong shape for a bulk edit):
-# - TRY300/301: raise-in-try/else hygiene needs manual, behavior-touching refactors across
-#   search/training — a per-site wave, not a flag flip.
-# - BLE001: mostly intentional stale-.so fallback and quarantine blind-excepts.
-# - SLF001: cross-module private access is load-bearing in tests and belief scaffolding.
-# - FBT: boolean-trap fixes change public API signatures — needs API review first.
-# - COM812: trailing commas are formatter territory; bulk --fix is diff noise.
-# - EM, whole-TRY (TRY003 fights EM), PLC0415 (fights TC lazy imports), ANN/D/PLR0913/C901
-#   (research-velocity killers) — stay off.
-
-[tool.ruff.lint.per-file-ignores]
-# Search: wall/score tables exceed 100 cols — wrapping harms readability; PERF noisy outside hot path
-"python/hydra2/search/*.py" = ["E501", "PERF"]
-"tests/search/*.py" = ["E501", "PERF"]
-# Tests: fixture literals are long (E501) and scientific notation uses capitals (B, A, K, SEED) for batch/action dims
-# — N806 would force `b`/`a` renaming that hurts readability vs paper notation. Keep N for python strict, relax for tests.
-# S101 kept ignored for future if S re-enabled (assert is test idiom). PERF ignored in tests (not hot path).
-"tests/**/*.py" = ["E501", "S101", "N806", "PERF", "T201"]
-# Non-hot modules: PERF advisory only for training/models; ignore elsewhere to keep gate green while exposing hot-path allocs
-"python/hydra2/eval/*.py" = ["PERF"]
-"python/hydra2/runtime/*.py" = ["PERF"]
-"python/hydra2/data/*.py" = ["PERF"]
-"python/hydra2/contracts/*.py" = ["PERF"]
-"python/hydra2/engines/*.py" = ["PERF"]
-"python/hydra2/belief/*.py" = ["PERF"]
-# T201 scope: entry-point CLIs print as their interface; training phase-log is a deliberate
-# stdout contract (see stream_expand.py phase-log note); harness/test output stays.
-"python/hydra2/cli.py" = ["T201"]
-"python/hydra2/config_check.py" = ["T201"]
-"python/hydra2/probe.py" = ["T201"]
-"python/hydra2/runtime/environment.py" = ["T201"]
-"python/hydra2/training/*.py" = ["T201"]
+prepare-rules = "sh scripts/prepare-rules.sh"
+build = { cmd = "maturin develop --release --locked --manifest-path native/Cargo.toml", depends-on = ["prepare-rules"], env = { RUSTFLAGS = "-C link-arg=-fuse-ld=mold" } }
+build-debug = { cmd = "maturin develop --locked --manifest-path native/Cargo.toml", depends-on = ["prepare-rules"], env = { RUSTFLAGS = "-C link-arg=-fuse-ld=mold" } }
+build-native = { cmd = "maturin develop --profile release-native --locked --manifest-path native/Cargo.toml", depends-on = ["prepare-rules"], env = { RUSTFLAGS = "-C target-cpu=native -C link-arg=-fuse-ld=mold" } }
+agent = { cmd = "python -m hydra3", env = { PYTHONPATH = "python", XLA_PYTHON_CLIENT_PREALLOCATE = "false" } }
+test-cpu = { cmd = "python -m pytest -q -n 4 --dist loadscope -m \"not gpu\"", depends-on = ["build"], env = { XLA_PYTHON_CLIENT_PREALLOCATE = "false", JAX_COMPILATION_CACHE_DIR = ".pixi/jax-cache", JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS = "0", TORCHINDUCTOR_CACHE_DIR = ".pixi/torchinductor-cache" } }
+test-gpu = { cmd = "python -m pytest -q -m \"gpu\"", depends-on = ["build"], env = { XLA_PYTHON_CLIENT_PREALLOCATE = "false", JAX_COMPILATION_CACHE_DIR = ".pixi/jax-cache", JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS = "0", TORCHINDUCTOR_CACHE_DIR = ".pixi/torchinductor-cache" } }
+test = { cmd = "python -m pytest -q -n 4 --dist loadscope -m \"not gpu\" && python -m pytest -q -m \"gpu\"", depends-on = ["build"], env = { XLA_PYTHON_CLIENT_PREALLOCATE = "false", JAX_COMPILATION_CACHE_DIR = ".pixi/jax-cache", JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS = "0", TORCHINDUCTOR_CACHE_DIR = ".pixi/torchinductor-cache" } }
+test-native = { cmd = "cargo nextest run --manifest-path native/Cargo.toml --workspace --locked --release", depends-on = ["prepare-rules"], env = { PYO3_PYTHON = "$CONDA_PREFIX/bin/python", LD_LIBRARY_PATH = "$CONDA_PREFIX/lib", RUSTFLAGS = "-C link-arg=-fuse-ld=mold" } }
+typecheck = "pyrefly check python tests"
+lsp = "pyrefly lsp"
+lint = "ruff check python tests"
+format-check = "ruff format --check python tests"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra --strict-markers"
 markers = [
-  "gpu: probe requires a CUDA device (RTX 5070); absence is a hard failure",
-  "serial: JAX-init/CUDA/shared-cache test, runs only in the single-process serial lane",
-  "slow: multi-second CPU test (opt-in lane via -m, never deselected by default)",
-  "soak: minute-scale GPU soak / nightly-only test (opt-in lane via -m, never deselected by default)",
+    "gpu: needs the CUDA device; runs in one serial process so compile and memory do not overlap",
 ]
 
+[tool.ruff]
+target-version = "py315"
+line-length = 100
+
+[tool.ruff.lint]
+extend-select = ["I"]
+
 [tool.pyrefly]
-# Strictness is declared per code below. Per-line ignores mark intentional Any at the
-# torch/JAX/C++ boundary (untyped extensions); blanket file-level ignores are out —
-# every suppression names its code, inline, with a reason.
-project-includes = ["python"]
-# Point at the pixi interpreter explicitly: a stray .venv in the project root (empty,
-# no third-party packages) shadows the pixi env under pyrefly's auto-discovery and
-# produces phantom missing-import errors for installed packages. The pin outranks any
-# stray .venv in CLI and LSP. Removal condition: dump-config proves auto-discovery
-# without the pin.
-# Relative to project root; standard pixi layout, works on any checkout.
-# pixi has no native pyrefly support, so `pixi run` drives execution while this pin
-# drives analysis-time resolution.
-# uv.lock is banned here (per the sole-authority note under [project]) — uv recreates
-# the shadowing .venv.
-python-interpreter-path = ".pixi/envs/default/bin/python"
-[tool.pyrefly.errors]
-# Promoted to error: fail CI. Each code names a real contract-bug class.
-bad-argument-type = "error"          # Seat/TileId newtype confusion, int|None → int
-missing-argument = "error"           # CandidateSpec missing required fields
-bad-instantiation = "error"          # Any cannot be instantiated
-missing-attribute = "error"          # None.shape, object.get on payload
-bad-return = "error"                 # return-shape mismatch (fixed placement tuples, etc.)
-unsupported-operation = "error"      # None subscript, list[str].__setitem__
-invalid-inheritance = "error"        # union as base class
-unbound-name = "error"               # uninitialized streams/state (determinism)
-missing-module-attribute = "error"   # qualification gate missing import
-bad-assignment = "error"             # event envelope vocab type mismatch
-bad-index = "error"                  # observation tuple indexing confusion
-not-iterable = "error"               # object not iterable (attestation)
-not-callable = "error"               # None called as function
-# missing-super-call catches skipped cooperative init in multi-inheritance (silent init
-# bugs); redundant-cast keeps explicit casts honest (the codebase's own converter emits
-# this deliberately). no-any-return and unannotated-return stay out: they fire across the
-# torch/JAX boundary where Any is the interface, and need per-site triage first.
-missing-super-call = "error"
-redundant-cast = "error"
-# Explicit pins (match current defaults, guard against upstream drift): untyped third-party
-# imports stay warnings, redundant int()/str() conversions stay warnings for later cleanup.
-untyped-import = "warn"
-unnecessary-type-conversion = "warn"
-read-only = "error"                  # read-only cursor set (replay)
-invalid-argument = "error"           # Any passed as class
-no-matching-overload = "error"       # sorted(dict.get) overload ambiguity
-# Promoted to warn: hygiene, triaged per file (never CI-blocking).
-implicit-bool = "warn"               # str|None/list → bool hides empty-vs-missing
-unknown-argument-type = "warn"       # JAX Any arg, coverage (dominant)
-unknown-variable-type = "warn"       # rows.setdefault etc. (strict surface)
-unknown-attribute-type = "warn"      # inferred Any attr (rare)
-unused-call-result = "warn"          # ignored handle.write()/encode() results
-implicit-reexport = "warn"           # CanonicalizationError re-export hygiene
-implicitly-defined-attribute = "warn" # self.x in non-ctor (test setup)
-pytorch-efficiency-lint-item-call = "warn" # Tensor.item() GPU sync (perf)
-pytorch-efficiency-lint-cuda-call = "warn" # pins future CUDA-sync call sites
-pytorch-efficiency-lint-print-tensor = "warn"
-# Kept suppressed: intentional Any at the torch/JAX bridge (untyped C++/CUDA
-# extensions; annotating every site would churn with no bug value).
-explicit-any = "ignore"              # JAX state dict Any intentional
-implicit-any = "ignore"              # umbrella — covers all implicit-Any sub-kinds
-implicit-any-attribute = "ignore"    # Any|None attr (search scaffolding)
-implicit-any-empty-container = "ignore" # [] vs list[X]()
-implicit-any-lambda = "ignore"       # lambda w: w.world_id pedantic
-implicit-any-parameter = "ignore"    # protocol/interface stubs carry required signatures
-implicit-any-type-argument = "ignore" # Queue[_T] missing param
-unannotated-return = "ignore"        # inferred returns for simulation stubs
-missing-override-decorator = "ignore" # torch nn.Module forward overrides
+project-includes = ["python", "tests"]
+python-version = "3.15"
+search-path = ["python"]
+python-interpreter = ".pixi/envs/default/bin/python"
+site-package-path = [".pixi/envs/default/lib/python3.15/site-packages"]
