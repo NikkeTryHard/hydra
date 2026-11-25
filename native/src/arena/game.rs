@@ -19,7 +19,7 @@ use riichienv_core::state::GameState;
 
 use self::history::History;
 use self::window::WindowState;
-use crate::view::{EventArena, Observation};
+use crate::view::Snapshot;
 
 pub(super) struct Game {
     state: GameState,
@@ -71,12 +71,8 @@ impl Game {
         &self,
         seat: u8,
         legal: &[(u32, CanonicalAction)],
-    ) -> Result<Observation, String> {
+    ) -> Result<Snapshot<'_>, String> {
         self.history.observe(&self.state, seat, legal)
-    }
-
-    pub(super) fn arena(&self) -> &EventArena {
-        self.history.arena()
     }
 
     pub(super) fn apply(&mut self, seat: u8, action: &CanonicalAction) -> Result<(), String> {

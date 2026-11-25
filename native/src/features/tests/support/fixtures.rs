@@ -1,6 +1,6 @@
 //! Synthetic observation, action, and wire-buffer fixtures.
 
-use crate::view::{EventArena, Observation as NativeObservation};
+use crate::view::{EventArena, Observation as NativeObservation, Snapshot};
 use hydra_rules::census::ActionKind;
 use hydra_rules::rl::actions::{CanonicalAction, canonical_id};
 
@@ -69,9 +69,13 @@ pub(crate) fn encode_pair(
     arena: &EventArena,
     legal: &[(u32, CanonicalAction)],
 ) -> (Vec<f32>, Vec<i32>) {
+    let snapshot = Snapshot {
+        observation: obs.clone(),
+        events: arena,
+    };
     let mut tokens = vec![0.0; TOKENS * WIDTH];
     let mut candidates = vec![0; legal.len() * ACTION];
-    encode(obs, arena, legal, &mut tokens, &mut candidates)
+    encode(&snapshot, legal, &mut tokens, &mut candidates)
         .unwrap_or_else(|error| panic!("encode failed: {error}"));
     (tokens, candidates)
 }

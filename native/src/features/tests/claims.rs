@@ -1,6 +1,7 @@
 use hydra_rules::census::ActionKind;
 
-use super::super::layout::{desc, tile};
+use super::super::candidates::desc;
+use super::super::records::tile;
 use super::support::{
     Log, action, ankan, descriptor, discard, draw, encode_pair, kakan, legal, meld, observation,
     record, tile as tile_value,

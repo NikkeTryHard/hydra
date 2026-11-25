@@ -4,7 +4,7 @@ use riichienv_core::action::Phase;
 use riichienv_core::state::GameState;
 
 use super::History;
-use crate::view::{HISTORY_EVENT_CAP, Observation};
+use crate::view::{HISTORY_EVENT_CAP, Observation, Snapshot};
 
 impl History {
     pub(in crate::arena::game) fn observe(
@@ -12,7 +12,7 @@ impl History {
         state: &GameState,
         seat: u8,
         legal: &[(u32, CanonicalAction)],
-    ) -> Result<Observation, String> {
+    ) -> Result<Snapshot<'_>, String> {
         let slot = usize::from(seat);
         let player = state
             .players
@@ -43,7 +43,7 @@ impl History {
             ));
         }
         let has = |kind| legal.iter().any(|(_, action)| action.kind == kind);
-        Ok(Observation {
+        let observation = Observation {
             actor: seat,
             round_index: self.round_index,
             round_wind: 27 + i64::from(state.round_wind),
@@ -73,6 +73,10 @@ impl History {
             riichi_states: self.riichi,
             dora_indicators: self.dora,
             history_indices,
+        };
+        Ok(Snapshot {
+            observation,
+            events: &self.events,
         })
     }
 }

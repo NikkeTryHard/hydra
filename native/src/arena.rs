@@ -83,7 +83,7 @@ impl Arena {
     fn batch(&mut self, py: Python<'_>) -> PyResult<buffers::WireBuffers> {
         self.ensure_live()?;
         let start = self.telemetry.as_ref().map(|_| Instant::now());
-        let prepared = match py.detach(|| batch::prepare(self)) {
+        let prepared = match py.detach(|| batch::prepare(&mut self.games, &self.pool)) {
             Ok(prepared) => prepared,
             Err(message) => return Err(self.fail_closed(message)),
         };

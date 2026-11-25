@@ -1,8 +1,8 @@
 //! Actor features for the tile-edit Transformer.
 //!
 //! `encode` writes one 39x48 token block and one 16-column descriptor per
-//! legal action. It reads only the acting seat's [`NativeObservation`] and the
-//! events named by `obs.history_indices`; server-private events, hidden hands,
+//! legal action. It reads one [`Snapshot`]: the acting seat's observation and
+//! the events its `history_indices` name; server-private events, hidden hands,
 //! wall order, and absolute event sequence numbers never influence a value.
 //!
 //! # Token rows
@@ -145,21 +145,20 @@ mod seats;
 #[cfg(test)]
 mod tests;
 
-use crate::view::{EventArena, Observation as NativeObservation};
+use crate::view::Snapshot;
 use hydra_rules::rl::actions::CanonicalAction;
 
 pub const TOKENS: usize = 39;
 pub const WIDTH: usize = 48;
 pub const ACTION: usize = 16;
 
-/// Encode one acting seat's observation and canonical legal set.
+/// Encode one seat's snapshot and canonical legal set.
 ///
 /// `tokens` must be exactly `TOKENS * WIDTH` floats and `candidates` must be
 /// exactly `legal.len() * ACTION` integers. Every output element is written;
 /// buffer lengths, tile ids, event shapes, and action identities are checked.
 pub fn encode(
-    obs: &NativeObservation,
-    arena: &EventArena,
+    snapshot: &Snapshot<'_>,
     legal: &[(u32, CanonicalAction)],
     tokens: &mut [f32],
     candidates: &mut [i32],
@@ -184,7 +183,8 @@ pub fn encode(
         ));
     }
     tokens.fill(0.0);
-    let ledger = ledger::build(obs, arena)?;
+    let obs = &snapshot.observation;
+    let ledger = ledger::build(snapshot)?;
     for face in 0..layout::TILE_ROWS {
         records::write_tile_row(
             face,

@@ -2,7 +2,7 @@ use crate::view::EventArena;
 use hydra_rules::census::ActionKind;
 
 use super::super::ACTION;
-use super::super::layout::desc;
+use super::super::candidates::desc;
 use super::support::{action, descriptor, encode_pair, legal, observation};
 
 struct Expected {

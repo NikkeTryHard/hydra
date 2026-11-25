@@ -6,11 +6,11 @@
 //! can validate and apply without rebuilding it. Rows are collected in slot
 //! order so both the wire batch and the staged selection are stable.
 
+use rayon::ThreadPool;
 use rayon::prelude::*;
 
 use crate::features;
 
-use super::Arena;
 use super::game::Game;
 use super::step::StagedRow;
 
@@ -27,9 +27,7 @@ pub(super) struct PreparedBatch {
     pub(super) staged: Vec<StagedRow>,
 }
 
-pub(super) fn prepare(arena: &mut Arena) -> Result<PreparedBatch, String> {
-    let pool = &arena.pool;
-    let games = &mut arena.games;
+pub(super) fn prepare(games: &mut [Game], pool: &ThreadPool) -> Result<PreparedBatch, String> {
     let serial = pool.current_num_threads() == 1
         || games.iter().filter(|game| !game.is_terminal()).count() <= 1;
 
@@ -84,7 +82,7 @@ fn prepare_row(game: &mut Game, slot: usize) -> Result<(PreparedRow, StagedRow),
     if legal.is_empty() {
         return Err(format!("slot {slot} seat {seat} has no legal actions"));
     }
-    let observation = game
+    let snapshot = game
         .observe(seat, &legal)
         .map_err(|error| format!("slot {slot} observation failed: {error}"))?;
 
@@ -92,14 +90,8 @@ fn prepare_row(game: &mut Game, slot: usize) -> Result<(PreparedRow, StagedRow),
     let candidate_len = legal.len() * features::ACTION;
     let mut tokens = vec![0.0f32; token_len];
     let mut candidates = vec![0i32; candidate_len];
-    features::encode(
-        &observation,
-        game.arena(),
-        &legal,
-        &mut tokens,
-        &mut candidates,
-    )
-    .map_err(|error| format!("slot {slot} feature encode failed: {error}"))?;
+    features::encode(&snapshot, &legal, &mut tokens, &mut candidates)
+        .map_err(|error| format!("slot {slot} feature encode failed: {error}"))?;
     if tokens.len() != token_len || candidates.len() != candidate_len {
         return Err(format!(
             "slot {slot} feature encoder changed buffer geometry"

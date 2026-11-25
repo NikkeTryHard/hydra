@@ -1,9 +1,23 @@
 //! Fixed-capacity per-face copy records and the tile-row renderer.
 
 use super::WIDTH;
-use super::layout::{
-    self, DORA_SLOTS, RECORD_WIDTH, RECORDS, is_red, norm_position, relative_owner, tile, tile_face,
-};
+use super::layout::{ABSENT_SEAT, TILE_ROWS, base, is_red, norm_position, relative_seat, tile_face};
+
+pub(super) const DORA_SLOTS: usize = 5;
+pub(super) const RECORDS: usize = 4;
+pub(super) const RECORD_WIDTH: usize = 9;
+
+pub(super) mod tile {
+    pub(crate) const OWN_COUNT: usize = 0;
+    pub(crate) const OWN_RED: usize = 1;
+    pub(crate) const DRAWN_FACE: usize = 2;
+    pub(crate) const DRAWN_RED: usize = 3;
+    pub(crate) const PUBLIC_COUNT: usize = 4;
+    pub(crate) const PUBLIC_RED: usize = 5;
+    pub(crate) const DORA0: usize = 6;
+    pub(crate) const RECORD0: usize = 11;
+    pub(crate) const RESERVED: usize = 47;
+}
 
 pub(super) const ORIGIN_OWN_CONCEALED: u8 = 1;
 pub(super) const ORIGIN_OWN_DRAWN: u8 = 2;
@@ -31,8 +45,8 @@ pub(super) struct CopyRecord {
 
 pub(super) const EMPTY: CopyRecord = CopyRecord {
     origin: 0,
-    owner: layout::ABSENT_SEAT,
-    source: layout::ABSENT_SEAT,
+    owner: ABSENT_SEAT,
+    source: ABSENT_SEAT,
     exposed: None,
     call: None,
     red: false,
@@ -132,6 +146,14 @@ fn sort_key(record: &CopyRecord) -> (u32, u32, u8, u8, u8, u8, bool, bool) {
     )
 }
 
+fn relative_owner(owner: u8, actor: u8) -> u8 {
+    if owner < 4 {
+        relative_seat(owner, actor)
+    } else {
+        ABSENT_SEAT
+    }
+}
+
 pub(super) fn write_tile_row(
     face: usize,
     copies: &FaceCopies,
@@ -140,11 +162,11 @@ pub(super) fn write_tile_row(
     dora: &[i32; DORA_SLOTS],
     tokens: &mut [f32],
 ) -> Result<(), String> {
-    if face >= layout::TILE_ROWS {
+    if face >= TILE_ROWS {
         return Err(format!("tile row {face} outside 0..34"));
     }
-    let base = layout::base(face);
-    if tokens.len() < base + WIDTH {
+    let row = base(face);
+    if tokens.len() < row + WIDTH {
         return Err("token row outside buffer".to_owned());
     }
     let own_count = copies.own_count();
@@ -154,19 +176,19 @@ pub(super) fn write_tile_row(
     let drawn_face = drawn.is_some_and(|(tile, _)| usize::from(tile / 4) == face);
     let drawn_red = drawn.is_some_and(|(tile, _)| is_red(tile));
 
-    tokens[base + tile::OWN_COUNT] = own_count as f32;
-    tokens[base + tile::OWN_RED] = f32::from(u8::from(own_red));
-    tokens[base + tile::DRAWN_FACE] = f32::from(u8::from(drawn_face));
-    tokens[base + tile::DRAWN_RED] = f32::from(u8::from(drawn_red));
-    tokens[base + tile::PUBLIC_COUNT] = public_count as f32;
-    tokens[base + tile::PUBLIC_RED] = public_red as f32;
-    tokens[base + tile::RESERVED] = 0.0;
+    tokens[row + tile::OWN_COUNT] = own_count as f32;
+    tokens[row + tile::OWN_RED] = f32::from(u8::from(own_red));
+    tokens[row + tile::DRAWN_FACE] = f32::from(u8::from(drawn_face));
+    tokens[row + tile::DRAWN_RED] = f32::from(u8::from(drawn_red));
+    tokens[row + tile::PUBLIC_COUNT] = public_count as f32;
+    tokens[row + tile::PUBLIC_RED] = public_red as f32;
+    tokens[row + tile::RESERVED] = 0.0;
 
     for (slot, indicator) in dora.iter().enumerate() {
         if *indicator >= 0 {
             let indicator_face = tile_face(*indicator as u8)?;
             if indicator_face == face {
-                tokens[base + tile::DORA0 + slot] = 1.0;
+                tokens[row + tile::DORA0 + slot] = 1.0;
             }
         }
     }
@@ -185,7 +207,7 @@ pub(super) fn write_tile_row(
     }
 
     for slot in 0..RECORDS {
-        let offset = base + tile::RECORD0 + slot * RECORD_WIDTH;
+        let offset = row + tile::RECORD0 + slot * RECORD_WIDTH;
         let Some(record) = (slot < count).then(|| &copies.records[order[slot]]) else {
             for field in 0..RECORD_WIDTH {
                 tokens[offset + field] = 0.0;
@@ -196,9 +218,9 @@ pub(super) fn write_tile_row(
         tokens[offset + 1] = f32::from(record.origin);
         tokens[offset + 2] = f32::from(relative_owner(record.owner, actor));
         tokens[offset + 3] = f32::from(if record.source < 4 {
-            super::layout::relative_seat(record.source, actor)
+            relative_seat(record.source, actor)
         } else {
-            layout::ABSENT_SEAT
+            ABSENT_SEAT
         });
         tokens[offset + 4] = norm_position(record.exposed);
         tokens[offset + 5] = norm_position(record.call);

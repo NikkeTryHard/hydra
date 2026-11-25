@@ -1,7 +1,9 @@
 use hydra_rules::census::ActionKind;
 
 use super::super::WIDTH;
-use super::super::layout::{desc, seat, tile};
+use super::super::candidates::desc;
+use super::super::records::tile;
+use super::super::seats::seat;
 use super::support::{
     Log, action, descriptor, discard, draw, encode_pair, legal, meld, observation, record,
     riichi_declared, tile as tile_value,

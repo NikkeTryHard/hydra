@@ -3,11 +3,53 @@
 use crate::view::Observation as NativeObservation;
 
 use super::WIDTH;
-use super::layout::{
-    MATCH_ROW, SEAT_ROW0, base, furiten_ordinal, match_row, norm_position, phase_ordinal, rank_of,
-    relative_seat, riichi_ordinal, round_wind_ordinal, seat, wind_ordinal,
-};
+use super::layout::{TILE_ROWS, base, norm_position, relative_seat};
 use super::ledger::Ledger;
+
+pub(super) const SEAT_ROW0: usize = TILE_ROWS;
+pub(super) const MATCH_ROW: usize = SEAT_ROW0 + 4;
+
+pub(super) mod seat {
+    pub(crate) const PRESENT: usize = 0;
+    pub(crate) const RELATIVE: usize = 1;
+    pub(crate) const WIND: usize = 2;
+    pub(crate) const DEALER: usize = 3;
+    pub(crate) const SCORE: usize = 4;
+    pub(crate) const RANK: usize = 5;
+    pub(crate) const RIICHI: usize = 6;
+    pub(crate) const IPPATSU: usize = 7;
+    pub(crate) const MELD_COUNT: usize = 8;
+    pub(crate) const LAST_PUBLIC: usize = 9;
+    pub(crate) const LAST_DISCARD: usize = 10;
+    pub(crate) const LAST_CALL: usize = 11;
+    pub(crate) const RIICHI_DECLARED: usize = 12;
+    pub(crate) const RIICHI_ACCEPTED: usize = 13;
+    pub(crate) const IS_TURN: usize = 14;
+    pub(crate) const FURITEN: usize = 15;
+    pub(crate) const CAN_TSUMO: usize = 16;
+    pub(crate) const CAN_RIICHI: usize = 17;
+    pub(crate) const DEALER_OFFSET: usize = 18;
+    pub(crate) const WIND_OFFSET: usize = 19;
+}
+
+pub(super) mod match_row {
+    pub(crate) const PRESENT: usize = 0;
+    pub(crate) const ROUND_WIND: usize = 1;
+    pub(crate) const HAND_NUMBER: usize = 2;
+    pub(crate) const HONBA: usize = 3;
+    pub(crate) const RIICHI_STICKS: usize = 4;
+    pub(crate) const DEALER_OFFSET: usize = 5;
+    pub(crate) const LIVE_WALL: usize = 6;
+    pub(crate) const KAN_COUNT: usize = 7;
+    pub(crate) const PHASE: usize = 8;
+    pub(crate) const ACTOR_DEALER: usize = 9;
+    pub(crate) const ACTOR_WIND: usize = 10;
+    pub(crate) const ROUND_INDEX: usize = 11;
+    pub(crate) const SCORE_SPREAD: usize = 12;
+    pub(crate) const ACTOR_SCORE: usize = 13;
+    pub(crate) const ACTOR_RANK: usize = 14;
+    pub(crate) const TURN_ACTOR: usize = 15;
+}
 
 pub(super) fn write_seat_rows(
     obs: &NativeObservation,
@@ -92,4 +134,54 @@ pub(super) fn write_match_row(obs: &NativeObservation, tokens: &mut [f32]) -> Re
     tokens[offset + match_row::TURN_ACTOR] =
         f32::from(relative_seat(obs.turn_actor, obs.actor)) / 3.0;
     Ok(())
+}
+
+fn rank_of(scores: &[i32; 4], seat: u8) -> u8 {
+    let own = scores[usize::from(seat)];
+    let better = scores.iter().filter(|score| **score > own).count();
+    u8::try_from(better + 1).unwrap_or(4)
+}
+
+fn wind_ordinal(obs: &NativeObservation, seat: u8) -> Result<u8, String> {
+    wind_ordinal_of(obs.seat_winds[usize::from(seat)])
+        .map_err(|error| format!("seat wind: {error}"))
+}
+
+fn round_wind_ordinal(obs: &NativeObservation) -> Result<u8, String> {
+    wind_ordinal_of(obs.round_wind).map_err(|error| format!("round wind: {error}"))
+}
+
+fn wind_ordinal_of(tile: i64) -> Result<u8, String> {
+    if (27..=30).contains(&tile) {
+        Ok((tile - 27) as u8)
+    } else {
+        Err(format!("wind tile {tile} not in 27..30"))
+    }
+}
+
+fn riichi_ordinal(state: &str) -> Result<u8, String> {
+    match state {
+        "none" => Ok(0),
+        "declared" => Ok(1),
+        "accepted" => Ok(2),
+        _ => Err(format!("unknown riichi state {state:?}")),
+    }
+}
+
+fn phase_ordinal(phase: &str) -> Result<u8, String> {
+    match phase {
+        "draw_decision" => Ok(1),
+        "discard_response" => Ok(2),
+        "kan_response" => Ok(3),
+        _ => Err(format!("unknown decision phase {phase:?}")),
+    }
+}
+
+fn furiten_ordinal(state: &str) -> Result<u8, String> {
+    match state {
+        "none" => Ok(0),
+        "temporary" => Ok(1),
+        "riichi" => Ok(2),
+        _ => Err(format!("unknown furiten state {state:?}")),
+    }
 }

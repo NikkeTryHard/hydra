@@ -1,6 +1,6 @@
 use hydra_rules::census::ActionKind;
 
-use super::super::layout::tile;
+use super::super::records::tile;
 use super::support::{
     Log, action, call_window, discard, dora, draw, encode_pair, hidden_call, legal, observation,
     record, tile as tile_value,

@@ -45,6 +45,7 @@ impl TypedEvent {
 
 pub(crate) type EventArena = Vec<TypedEvent>;
 
+#[derive(Clone)]
 pub(crate) struct Observation {
     pub actor: u8,
     pub round_index: u64,
@@ -69,4 +70,12 @@ pub(crate) struct Observation {
     pub riichi_states: [&'static str; 4],
     pub dora_indicators: [i32; 5],
     pub history_indices: Vec<usize>,
+}
+
+/// One seat's observation together with the exact event log its
+/// `history_indices` refer to. Only the history that built the observation
+/// constructs this, so encoder code cannot be handed a different log.
+pub(crate) struct Snapshot<'a> {
+    pub observation: Observation,
+    pub events: &'a [TypedEvent],
 }

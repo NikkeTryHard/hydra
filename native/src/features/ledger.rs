@@ -10,7 +10,7 @@
 mod apply;
 mod copies;
 
-use crate::view::{EventArena, HISTORY_EVENT_CAP, Observation as NativeObservation};
+use crate::view::{HISTORY_EVENT_CAP, Snapshot};
 
 use super::draw::{DrawState, current_drawn, kept_draw};
 use super::records::{FaceCopies, ORIGIN_OWN_CONCEALED, ORIGIN_OWN_DRAWN};
@@ -40,7 +40,8 @@ impl Ledger {
     }
 }
 
-pub(super) fn build(obs: &NativeObservation, arena: &EventArena) -> Result<Ledger, String> {
+pub(super) fn build(snapshot: &Snapshot<'_>) -> Result<Ledger, String> {
+    let obs = &snapshot.observation;
     if obs.actor > 3 {
         return Err(format!("actor {} outside 0..4", obs.actor));
     }
@@ -60,7 +61,8 @@ pub(super) fn build(obs: &NativeObservation, arena: &EventArena) -> Result<Ledge
     let mut draw = DrawState::default();
     let mut provenance_position = 0u16;
     for index in &obs.history_indices {
-        let event = arena
+        let event = snapshot
+            .events
             .get(*index)
             .ok_or_else(|| format!("history index {index} outside event arena"))?;
         if !event.visible_to(obs.actor) {

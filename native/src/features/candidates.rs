@@ -4,8 +4,21 @@ use crate::view::Observation as NativeObservation;
 use hydra_rules::census::ActionKind;
 use hydra_rules::rl::actions::{BASELINE_ACTIONS, CanonicalAction};
 
-use super::layout::{desc, is_red, relative_source, tile_face};
+use super::layout::{ABSENT_SEAT, is_red, relative_seat, tile_face};
 use super::ledger::Ledger;
+
+pub(super) mod desc {
+    pub(crate) const ID: usize = 0;
+    pub(crate) const KIND: usize = 1;
+    pub(crate) const SOURCE: usize = 2;
+    pub(crate) const FACE: usize = 3;
+    pub(crate) const RED: usize = 4;
+    pub(crate) const FROM_DRAW: usize = 5;
+    pub(crate) const RIICHI: usize = 6;
+    pub(crate) const REMOVALS: usize = 7;
+    pub(crate) const REMOVAL_RED: usize = 11;
+    pub(crate) const CONTESTED: usize = 15;
+}
 
 pub(super) fn write_candidates(
     obs: &NativeObservation,
@@ -154,4 +167,12 @@ fn is_contested(kind: ActionKind) -> bool {
         kind,
         ActionKind::Chi | ActionKind::Pon | ActionKind::Daiminkan | ActionKind::Ron
     )
+}
+
+fn relative_source(source: Option<u8>, actor: u8) -> Result<u8, String> {
+    match source {
+        None => Ok(ABSENT_SEAT),
+        Some(seat) if seat < 4 && seat != actor => Ok(relative_seat(seat, actor)),
+        Some(seat) => Err(format!("invalid source seat {seat} for actor {actor}")),
+    }
 }

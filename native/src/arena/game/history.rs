@@ -35,10 +35,6 @@ impl History {
         Ok(history)
     }
 
-    pub(super) fn arena(&self) -> &EventArena {
-        &self.events
-    }
-
     pub(super) fn update(
         &mut self,
         state: &GameState,
