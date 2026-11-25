@@ -45,14 +45,14 @@ typing-extensions = ">=4.16,<5"
 
 [tool.pixi.tasks]
 prepare-rules = "sh scripts/prepare-rules.sh"
-build = { cmd = "maturin develop --release --locked --manifest-path native/Cargo.toml", depends-on = ["prepare-rules"], env = { RUSTFLAGS = "-C link-arg=-fuse-ld=mold" } }
-build-debug = { cmd = "maturin develop --locked --manifest-path native/Cargo.toml", depends-on = ["prepare-rules"], env = { RUSTFLAGS = "-C link-arg=-fuse-ld=mold" } }
-build-native = { cmd = "maturin develop --profile release-native --locked --manifest-path native/Cargo.toml", depends-on = ["prepare-rules"], env = { RUSTFLAGS = "-C target-cpu=native -C link-arg=-fuse-ld=mold" } }
+build = { cmd = "maturin develop --release --locked --manifest-path native/Cargo.toml", depends-on = ["prepare-rules"] }
+build-debug = { cmd = "maturin develop --locked --manifest-path native/Cargo.toml", depends-on = ["prepare-rules"] }
+build-native = { cmd = "maturin develop --profile release-native --locked --manifest-path native/Cargo.toml", depends-on = ["prepare-rules"] }
 agent = { cmd = "python -m hydra3", env = { PYTHONPATH = "python", XLA_PYTHON_CLIENT_PREALLOCATE = "false" } }
 test-cpu = { cmd = "python -m pytest -q -n 4 --dist loadscope -m \"not gpu\"", depends-on = ["build"], env = { XLA_PYTHON_CLIENT_PREALLOCATE = "false", JAX_COMPILATION_CACHE_DIR = ".pixi/jax-cache", JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS = "0", TORCHINDUCTOR_CACHE_DIR = ".pixi/torchinductor-cache" } }
 test-gpu = { cmd = "python -m pytest -q -m \"gpu\"", depends-on = ["build"], env = { XLA_PYTHON_CLIENT_PREALLOCATE = "false", JAX_COMPILATION_CACHE_DIR = ".pixi/jax-cache", JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS = "0", TORCHINDUCTOR_CACHE_DIR = ".pixi/torchinductor-cache" } }
 test = { cmd = "python -m pytest -q -n 4 --dist loadscope -m \"not gpu\" && python -m pytest -q -m \"gpu\"", depends-on = ["build"], env = { XLA_PYTHON_CLIENT_PREALLOCATE = "false", JAX_COMPILATION_CACHE_DIR = ".pixi/jax-cache", JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS = "0", TORCHINDUCTOR_CACHE_DIR = ".pixi/torchinductor-cache" } }
-test-native = { cmd = "cargo nextest run --manifest-path native/Cargo.toml --workspace --locked --release", depends-on = ["prepare-rules"], env = { PYO3_PYTHON = "$CONDA_PREFIX/bin/python", LD_LIBRARY_PATH = "$CONDA_PREFIX/lib", RUSTFLAGS = "-C link-arg=-fuse-ld=mold" } }
+test-native = { cmd = "cargo nextest run --manifest-path native/Cargo.toml --workspace --locked --release", depends-on = ["prepare-rules"], env = { PYO3_PYTHON = "$CONDA_PREFIX/bin/python", LD_LIBRARY_PATH = "$CONDA_PREFIX/lib" } }
 typecheck = "pyrefly check python tests"
 lsp = "pyrefly lsp"
 lint = "ruff check python tests"

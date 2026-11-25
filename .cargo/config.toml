@@ -1,18 +1,15 @@
-# Project build defaults.
+# Project build defaults: compile for this machine.
 #
-# The user-level Cargo config on this machine sets target-cpu=native. Cargo
-# merges target rustflags from parent config directories, so append the
-# baseline last: rustc uses the final target-cpu flag. Direct project builds
-# therefore stay portable while still using clang + mold.
-#
-# The native release task replaces these rustflags with an explicit
-# RUSTFLAGS value so only that target uses target-cpu=native.
+# These target flags apply to every Cargo invocation in this project, whether
+# run through pixi or directly, as long as RUSTFLAGS is not set in the
+# environment. The pixi tasks leave it unset so this file stays authoritative.
+# sccache wraps rustc; clang and mold handle the link.
 [build]
 rustc-wrapper = "sccache"
 
 [target.x86_64-unknown-linux-gnu]
 linker = "clang"
 rustflags = [
+    "-C", "target-cpu=native",
     "-C", "link-arg=-fuse-ld=mold",
-    "-C", "target-cpu=x86-64",
 ]
